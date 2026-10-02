@@ -11,7 +11,7 @@
  * `uiPath` is missing, or older than the newest file matching `ui.build`'s
  * `sources` globs (default `["src/**"]`, resolved against `ui.build.cwd` —
  * default the app dir), it runs `ui.build.command` once, captures output to
- * `<appDir>/.agentproto/ui-build.log`, and returns a result the caller turns
+ * `~/.agentproto/logs/app-ui-build/` (see `appUiBuildLogPath`), and returns a result the caller turns
  * into either a served page or a readable error. Concurrent callers for the
  * same `uiPath` share one in-flight build (single-flight, keyed on the
  * absolute `uiPath` — an app's bundle lives at one path regardless of which
@@ -23,9 +23,11 @@
  */
 
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import type { Dirent, Stats } from "node:fs"
-import { dirname, isAbsolute, join } from "node:path"
+import { homedir } from "node:os"
+import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import type { AppUiBuildConfig } from "@agentproto/app-kit"
 
 /**
@@ -170,9 +172,19 @@ const DEFAULT_SOURCE_GLOBS = ["src/**"]
 const LOG_TAIL_LINES = 40
 
 /** Where a `ui.build` run's captured output lands — read this on a build
- *  failure for the full log; the returned error carries only a tail. */
+ *  failure for the full log; the returned error carries only a tail.
+ *  Lives under the daemon state dir
+ *  (`$AGENTPROTO_HOME|~/.agentproto/logs/app-ui-build/<name>-<hash>.log`),
+ *  never inside the app dir: an installed app's dir is replaceable code
+ *  (swapped on reinstall, packed into `.agentapp`s), not a place for
+ *  runtime output. `<hash>` is over the absolute app dir, so two apps with
+ *  the same folder name never share a log. */
 export function appUiBuildLogPath(appDir: string): string {
-  return join(appDir, ".agentproto", "ui-build.log")
+  const abs = resolve(appDir)
+  const home = process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+  const name = basename(abs).replace(/[^A-Za-z0-9._-]+/g, "-") || "app"
+  const hash = createHash("sha1").update(abs).digest("hex").slice(0, 12)
+  return join(home, "logs", "app-ui-build", `${name}-${hash}.log`)
 }
 
 function tailLines(text: string, n: number): string {

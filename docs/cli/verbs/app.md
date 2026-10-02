@@ -64,7 +64,10 @@ The registered **data dir** is resolved, in order: `--data-dir` → the entry's
 previously registered data dir (a bare re-install never moves an app's data)
 → the APP.md `data.dir` frontmatter hint (relative to `<appDir>`) →
 `<appDir>/data`. It is stored absolute; the daemon's `app_install {dir,
-dataDir}` follows the same precedence.
+dataDir}` follows the same precedence. A git URL or `.agentapp` install,
+whose app dir is replaced on every reinstall, falls back to
+`~/.agentproto/app-data/<url-encoded appId>` instead of `<appDir>/data`
+(existing installs keep their recorded data dir).
 
 How paths resolve against it (the daemon's rule, `packages/runtime/src/app-data.ts`):
 
@@ -144,7 +147,7 @@ mtime against `ui.path` to decide staleness. `app_install`, this command,
 the daemon's `GET /apps/:appId/ui`, and the MCP panel all resolve it
 through the same `ensureAppUiBuilt` (`@agentproto/runtime/app-ui-build`),
 single-flight per bundle path so concurrent first requests build once.
-Output is captured to `<appDir>/.agentproto/ui-build.log`; a failing build
+Output is captured to `~/.agentproto/logs/app-ui-build/<app>-<hash>.log` (outside the app dir); a failing build
 surfaces that log's tail in the error instead of a bare 404. This is
 distinct from [`agentproto app build`](#build-appdir---json), which only
 knows the `<appDir>/ui/` Vite-project convention and must be run by hand —

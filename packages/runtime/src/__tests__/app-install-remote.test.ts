@@ -136,7 +136,7 @@ describe("app_install remote sources + app_resync", { timeout: 60_000 }, () => {
     expect(rec.dir).toBe(join(appsDir, "fixture-app"))
     expect(rec.source).toEqual({ kind: "git", url: remote.url, sha: sha1 })
 
-    // durable data written under the default `<dir>/data` must survive a resync
+    // durable data written under the default dataDir must survive a resync
     await mkdir(rec.dataDir, { recursive: true })
     await writeFile(join(rec.dataDir, "keep.txt"), "mine")
 
@@ -286,5 +286,23 @@ describe("app_install remote sources + app_resync", { timeout: 60_000 }, () => {
     expect(isError(local)).toBe(true)
     expect(errText(local)).toContain("local dir")
     expect(isError(await call("app_resync", { appId: "nope" }))).toBe(true)
+  })
+
+  it("remote installs default their dataDir to <state dir>/app-data/<id>, outside the code dir, and reinstall keeps it", async () => {
+    const src = join(root, "data-src")
+    await emitFixture(src)
+    const { file } = await packApp({ appDir: src, out: join(root, "d.agentapp") })
+
+    const first = parse(await call("app_install", { file }))
+    const expected = join(root, "state", "app-data", encodeURIComponent("@test/remote-app"))
+    expect(first.dataDir).toBe(expected)
+    expect(first.dataDir.startsWith(first.dir)).toBe(false)
+    await mkdir(first.dataDir, { recursive: true })
+    await writeFile(join(first.dataDir, "keep.txt"), "mine")
+
+    const again = await call("app_install", { file })
+    expect(isError(again), errText(again)).toBe(false)
+    expect(parse(again).dataDir).toBe(expected)
+    expect(await readFile(join(expected, "keep.txt"), "utf8")).toBe("mine")
   })
 })
