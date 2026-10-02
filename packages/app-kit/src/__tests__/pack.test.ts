@@ -5,7 +5,16 @@ import { spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { AgentAppPackError, aggregateSha256, packApp, unpackApp } from "../pack.js"
+import matter from "gray-matter"
+
+import {
+  AgentAppPackError,
+  aggregateSha256,
+  packApp,
+  RELEASE_DEFAULT_EXCLUDE,
+  globToRegExp,
+  unpackApp,
+} from "../pack.js"
 
 const roots: string[] = []
 afterEach(async () => {
@@ -75,7 +84,7 @@ describe("packApp / unpackApp", () => {
     expect(spawnSync("tar", ["-xzf", file, "-C", scratch]).status).toBe(0)
     await writeFile(join(scratch, "notes", "a.md"), "tampered\n")
     const bad = join(root, "bad.agentapp")
-    expect(spawnSync("tar", ["-czf", bad, ".agentproto", "manifest.json", "notes", "ui"], { cwd: scratch }).status).toBe(0)
+    expect(spawnSync("tar", ["-czf", bad, ".agentproto", "manifest.json", "notes"], { cwd: scratch }).status).toBe(0)
 
     const dest = join(root, "dest")
     const err = await unpackApp({ file: bad, dest }).catch((e: unknown) => e)
@@ -109,5 +118,102 @@ describe("packApp / unpackApp", () => {
     const bundle = join(root, "nomanifest.agentapp")
     spawnSync("tar", ["-czf", bundle, "f.txt"], { cwd: join(root, "s") })
     await expect(unpackApp({ file: bundle, dest: join(root, "d") })).rejects.toMatchObject({ code: "missing-manifest" })
+  })
+
+  it("globToRegExp: ** spans segments, * stays in one", () => {
+    expect(globToRegExp("ui/**").test("ui/src/a.ts")).toBe(true)
+    expect(globToRegExp("**/dev/**").test("ui/dev/x.html")).toBe(true)
+    expect(globToRegExp("**/dev/**").test("dev/x.html")).toBe(true)
+    expect(globToRegExp("**/*.log").test(".agentproto/ui-build.log")).toBe(true)
+    expect(globToRegExp("*.md").test("notes/a.md")).toBe(false)
+    expect(globToRegExp(".agentproto/**").test(".agentproto/APP.md")).toBe(true)
+    expect(RELEASE_DEFAULT_EXCLUDE).toContain("ui/**")
+    // A shipped agent named `dev` must survive the release defaults.
+    const defaults = RELEASE_DEFAULT_EXCLUDE.map(globToRegExp)
+    expect(defaults.some((re) => re.test(".agentproto/agents/dev/AGENT.md"))).toBe(false)
+    expect(defaults.some((re) => re.test("dev/fixture.json"))).toBe(true)
+  })
+
+  async function releaseFixture(root: string, opts: { built: boolean; extraFront?: string }): Promise<string> {
+    const appDir = join(root, "rel-app")
+    await mkdir(join(appDir, ".agentproto", "ui"), { recursive: true })
+    await mkdir(join(appDir, "ui", "src"), { recursive: true })
+    await mkdir(join(appDir, "ui", "dev"), { recursive: true })
+    await mkdir(join(appDir, "docs"), { recursive: true })
+    await mkdir(join(appDir, "data"), { recursive: true })
+    await writeFile(
+      join(appDir, ".agentproto", "APP.md"),
+      "---\nid: rel-app\nversion: 0.2.0\nui:\n  path: .agentproto/ui/index.html\n  build:\n    command: pnpm run build\n    cwd: ui\n" +
+        (opts.extraFront ?? "") +
+        "---\n# Rel\n",
+    )
+    if (opts.built) await writeFile(join(appDir, ".agentproto", "ui", "index.html"), "<html></html>\n")
+    await writeFile(join(appDir, ".agentproto", "ui-build.log"), "log\n")
+    await writeFile(join(appDir, "ui", "src", "main.tsx"), "src\n")
+    await writeFile(join(appDir, "ui", "dev", "x.html"), "dev\n")
+    await writeFile(join(appDir, "docs", "README.md"), "docs\n")
+    await writeFile(join(appDir, "data", "shot.png"), "png\n")
+    await writeFile(join(appDir, "ui", "bundle.js.map"), "map\n")
+    return appDir
+  }
+
+  it("release pack ships only .agentproto (no sources/docs/data/logs/maps) and strips ui.build", async () => {
+    const root = await mktmp()
+    const appDir = await releaseFixture(root, { built: true })
+    const out = join(root, "rel.agentapp")
+    const { manifest } = await packApp({ appDir, out, release: true })
+    expect(manifest.files).toEqual([".agentproto/APP.md", ".agentproto/ui/index.html"])
+
+    const dest = join(root, "rel-restored")
+    await unpackApp({ file: out, dest })
+    const fm = matter(await readFile(join(dest, ".agentproto", "APP.md"), "utf8")).data as {
+      ui: Record<string, unknown>
+    }
+    expect(fm.ui.path).toBe(".agentproto/ui/index.html")
+    expect(fm.ui.build).toBeUndefined()
+    expect(existsSync(join(dest, "ui"))).toBe(false)
+    expect(existsSync(join(dest, "docs"))).toBe(false)
+    // The source APP.md on disk is untouched.
+    expect(await readFile(join(appDir, ".agentproto", "APP.md"), "utf8")).toContain("command: pnpm run build")
+  })
+
+  it("release pack fails with missing-ui when ui.path was never built", async () => {
+    const root = await mktmp()
+    const appDir = await releaseFixture(root, { built: false })
+    await expect(packApp({ appDir, out: join(root, "x.agentapp"), release: true })).rejects.toMatchObject({
+      code: "missing-ui",
+    })
+  })
+
+  it("package.stripBuild:false keeps ui.build; package.exclude adds to the release defaults", async () => {
+    const root = await mktmp()
+    const appDir = await releaseFixture(root, {
+      built: true,
+      extraFront: "package:\n  stripBuild: false\n  exclude:\n    - \".agentproto/ui/*.html.bak\"\n",
+    })
+    await writeFile(join(appDir, ".agentproto", "ui", "old.html.bak"), "bak\n")
+    const out = join(root, "keep.agentapp")
+    const { manifest } = await packApp({ appDir, out, release: true })
+    expect(manifest.files).not.toContain(".agentproto/ui/old.html.bak")
+    const dest = join(root, "keep-restored")
+    await unpackApp({ file: out, dest })
+    expect(await readFile(join(dest, ".agentproto", "APP.md"), "utf8")).toContain("command: pnpm run build")
+  })
+
+  it("package.include restricts a non-release pack; invalid package block is rejected", async () => {
+    const root = await mktmp()
+    const appDir = await fixture(root)
+    await writeFile(
+      join(appDir, ".agentproto", "APP.md"),
+      `---\nid: demo-app\nversion: 1.2.3\npackage:\n  include:\n    - ".agentproto/**"\n---\n# Demo\n`,
+    )
+    const { manifest } = await packApp({ appDir, out: join(root, "inc.agentapp") })
+    expect(manifest.files.every((f) => f.startsWith(".agentproto/"))).toBe(true)
+    expect(manifest.files).not.toContain("notes/a.md")
+
+    await writeFile(join(appDir, ".agentproto", "APP.md"), `---\nid: demo-app\npackage: nope\n---\n`)
+    await expect(packApp({ appDir, out: join(root, "bad.agentapp") })).rejects.toMatchObject({
+      code: "invalid-package",
+    })
   })
 })

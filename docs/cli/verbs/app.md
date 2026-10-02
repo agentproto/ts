@@ -4,7 +4,7 @@
 agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--data-dir <path>]
 agentproto app resync <appId>
 agentproto app list
-agentproto app pack   <appDir> [--out <path.agentapp>] [--json]
+agentproto app pack   <appDir> [--out <path.agentapp>] [--release] [--json]
 agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
 agentproto app serve  [appDir] [--port <n>] [--app <appId>] [--json]
                       [--remote-mcp-url <url>] [--remote-mcp-auth <token>]
@@ -39,7 +39,8 @@ An app folder is any directory with `.agentproto/APP.md` plus the agents
 `node_modules/` or `.git/` directory at any depth — a `ui/` source tree ships
 both and neither belongs in the shipped app), so unpacking restores the
 exact tree and relative paths that `readAppRefs` / `app_install` depend on
-survive the round-trip.
+survive the round-trip. The APP.md `package` block narrows what ships, and
+`pack --release` drops dev-only files and the build step (see `pack` below).
 
 ## Subverbs
 
@@ -176,7 +177,7 @@ the HTML is fetched over MCP (`readResource`) and no `ui.tools` allowlist
 applies: every tool the remote server exposes is forwarded, with the
 loopback-only bind as the safety gate.
 
-### `pack <appDir> [--out <path.agentapp>] [--json]`
+### `pack <appDir> [--out <path.agentapp>] [--release] [--json]`
 
 Reads `<appDir>/.agentproto/APP.md`, walks the entire app dir, computes an
 aggregate SHA-256 over every file, writes a `manifest.json` at the bundle
@@ -187,9 +188,39 @@ app folder's *contents* (not a wrapping folder). Extraction therefore yields
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <path>` | `<safeId>-<version>.agentapp` in cwd | The output `.agentapp` path. When omitted, derives a filesystem-safe filename from the app `id` and `version` (e.g. `@agentproto/job-application-kit` v`0.1.0` → `agentproto-job-application-kit-0.1.0.agentapp`). |
+| `--release` | `false` | Build the publishable bundle (see below). |
 | `--json` | `false` | Print the generated `manifest.json` on stdout instead of a human summary. |
 
 Fails with exit code `2` if `<appDir>` has no `.agentproto/APP.md`.
+
+**What ships.** Every file except `node_modules/` and `.git/`, filtered by the
+optional APP.md `package` block:
+
+```yaml
+package:
+  include: [".agentproto/**"]   # when set, only matching files ship
+  exclude: ["notes/**"]         # matching files are dropped
+  stripBuild: true              # drop ui.build from the packed APP.md
+```
+
+Globs are `/`-separated paths relative to the app dir: `**` spans
+directories, `*` stays inside one segment (no braces, no negation).
+`.agentproto/APP.md`, the `ui.path` entry and the files in its sibling
+`assets/` directory always ship.
+
+**`--release`** is the mode for a bundle you publish:
+
+1. Runs `ui.build` first when the UI bundle is missing or stale (same check
+   as `app build` / the daemon).
+2. Adds the default excludes `ui/**`, `docs/**`, `data/**`, `scripts/**`,
+   `dev/**`, `**/*.log`, `**/*.map`, `**/.DS_Store`, `**/.env`, `**/.env.*`
+   to `package.exclude` (a declared `exclude` adds to these, it never removes
+   them).
+3. Fails (`missing-ui`, exit `1`) if the declared `ui.path` is not in the
+   bundle after the build.
+4. Removes `ui.build` from the packed APP.md (unless `package.stripBuild:
+   false`), so an install never runs a build command. The SHA-256 covers
+   the rewritten APP.md, so always publish the digest of the release pack.
 
 ### `unpack <file.agentapp> [--dir <outDir>] [--json]`
 

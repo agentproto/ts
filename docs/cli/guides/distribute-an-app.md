@@ -49,8 +49,13 @@ stays registered and usable until the new one validates.
 ## 2. Install from a `.agentapp` bundle
 
 ```bash
-agentproto app pack ./my-app --out ./my-app.agentapp
+agentproto app pack ./my-app --release --out ./my-app.agentapp
 ```
+
+`--release` builds the UI first, leaves UI sources, docs, data, scripts,
+logs and source maps out of the bundle, and strips `ui.build` from the
+packed APP.md. Narrow the contents further with the APP.md `package` block
+(`include` / `exclude` globs, see `agentproto app pack`).
 
 Then host the `.agentapp` file anywhere static files are served, and:
 
@@ -167,7 +172,7 @@ required.
 
 ```bash
 # author & publish (once)
-agentproto app pack ./my-app --out ./my-app.agentapp
+agentproto app pack ./my-app --release --out ./my-app.agentapp
 # host my-app.agentapp + catalog.json on any static host
 
 # consume (anywhere)

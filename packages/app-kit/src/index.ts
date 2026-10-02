@@ -51,8 +51,11 @@ export {
   safeId,
   AGENTAPP_FORMAT,
   AgentAppPackError,
+  RELEASE_DEFAULT_EXCLUDE,
+  globToRegExp,
+  readPackageRules,
 } from "./pack.js"
-export type { AgentAppManifest, BundleFile, AgentAppPackErrorCode } from "./pack.js"
+export type { AgentAppManifest, BundleFile, AgentAppPackErrorCode, AppPackageRules } from "./pack.js"
 export { refKey, stripOwner } from "./refs.js"
 export type {
   AppDefinition,
