@@ -22,6 +22,7 @@ import { registerAgentTools } from "../agent-tools.js"
 import {
   createSessionsRegistry,
   INTERRUPT_SETTLE_TIMEOUT_MS,
+  interruptDeliveryNotice,
   type AgentSessionLike,
 } from "../sessions.js"
 
@@ -30,6 +31,11 @@ import {
  *  fixtures below record that wrapped shape, not the raw string. */
 function wrapped(text: string): string {
   return JSON.stringify({ type: "text", text })
+}
+
+/** A prompt delivered by cutting a turn opens with the "not a stop" notice. */
+function delivered(text: string): string {
+  return wrapped(`${interruptDeliveryNotice("user")}\n\n${text}`)
 }
 
 /** A fake agent-cli session whose first turn hangs until `cancel()`
@@ -170,7 +176,7 @@ describe("enqueuePrompt({interrupt: true}) — registry", () => {
       "cancel-called",
       "cancel-resolved",
       "turn1-yielding-cancelled",
-      `turn2-started:${wrapped("second")}`,
+      `turn2-started:${delivered("second")}`,
     ])
 
     // Redirected, not killed — the session is still alive.
@@ -364,7 +370,7 @@ describe("sendPrompt({interrupt: true}) — the BLOCKING arm", () => {
       "cancel-called",
       "cancel-resolved",
       "turn1-yielding-cancelled",
-      `turn2-started:${wrapped("second")}`,
+      `turn2-started:${delivered("second")}`,
     ])
     expect(reg.get(desc.id)?.status).toBe("running")
 
@@ -465,7 +471,7 @@ describe("agent_prompt (MCP): interrupt", () => {
       "cancel-called",
       "cancel-resolved",
       "turn1-yielding-cancelled",
-      `turn2-started:${wrapped("second")}`,
+      `turn2-started:${delivered("second")}`,
     ])
     expect(registry.get(desc.id)?.status).toBe("running")
     registry.shutdown()

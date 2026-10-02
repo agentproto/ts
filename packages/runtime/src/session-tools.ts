@@ -3134,7 +3134,10 @@ export function registerSessionTools(
       "turn is currently running on the session and delivering this item as " +
       "the new turn (removing it from the queue). The \"I need this NOW\" op — " +
       "distinct from `session_queue_promote`, which only reorders and lets the " +
-      "current turn finish. No-op (error) if the item is not in the queue. " +
+      "current turn finish. The delivered prompt opens with a one-line " +
+      "`[agentproto]` notice telling the agent its turn was cut to deliver " +
+      "it, not stopped; the rest of the queue drains FIFO once that turn " +
+      "ends on its own. No-op (error) if the item is not in the queue. " +
       "The queueId comes from `session_queue_list`.",
     {
       sessionId: z

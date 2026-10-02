@@ -2588,6 +2588,14 @@ interface SessionRuntime {
    *  delivered only after a turn that ends on its own — except the one item
    *  `deliverQueuedPrompt` interrupted for (`deliverQueueId`). */
   interruptRequested?: { by: string; deliverQueueId?: string }
+  /** Model-facing line explaining that the previous turn was cut to deliver
+   *  a prompt NOW (deliver-now / `interrupt: true`), set by
+   *  `interruptInFlightTurn` and prepended — once — to the next turn's
+   *  string prompt by `runAgentTurn`. Without it the model only sees its
+   *  turn cancelled then a new prompt, which reads exactly like a human
+   *  Esc/stop, and an agent may park itself waiting for a go-ahead.
+   *  Never set for a bare stop (`interruptSession`), which clears it. */
+  pendingInterruptNotice?: string
   /** In-flight resume promise. Deduplicates concurrent prompt
    *  attempts on a dead agent session — only one resume call hits
    *  the adapter, the rest await this promise. Cleared once
@@ -2848,6 +2856,16 @@ const INTERRUPT_CALLER_LABELS: Record<string, string> = {
   enqueuePrompt: "a prompt sent with interrupt: true",
   sendPrompt: "a prompt sent with interrupt: true",
   deliverQueuedPrompt: "a queue deliver-now (session_queue_deliver)",
+}
+
+/** The line `runAgentTurn` prepends to a prompt delivered by interrupting
+ *  the previous turn — tells the MODEL the cancellation was mechanical, not
+ *  a stop. `origin` is a `promptOriginLabel` ("user", "agent <id>", ...). */
+export function interruptDeliveryNotice(origin: string): string {
+  return (
+    `[agentproto] Your previous turn was interrupted to deliver this message immediately (from ${origin}). ` +
+    "This is NOT a stop request: resume your work after handling it."
+  )
 }
 
 /** Stamp the derived `desc.alive` liveness signal (§SessionDescriptor.alive):
@@ -6492,8 +6510,12 @@ export function createSessionsRegistry(opts?: {
     rt: SessionRuntime,
     id: string,
     caller: string,
-    deliverQueueId?: string
+    deliverQueueId?: string,
+    deliveryOrigin?: string
   ): Promise<void> => {
+    // A bare stop means stop: a delivery notice armed by an earlier
+    // interrupt whose prompt never ran must not ride on the next turn.
+    if (deliveryOrigin === undefined) rt.pendingInterruptNotice = undefined
     // An autonomous turn has no `session/prompt` to cancel (cancelling with
     // none in flight would mark the adapter's session cancelled and swallow
     // the NEXT prompt's result). Close the daemon-side turn; the agent folds
@@ -6515,6 +6537,9 @@ export function createSessionsRegistry(opts?: {
     }
     if (rt.busy) {
       rt.interruptRequested = { by: caller, ...(deliverQueueId ? { deliverQueueId } : {}) }
+      if (deliveryOrigin !== undefined) {
+        rt.pendingInterruptNotice = interruptDeliveryNotice(deliveryOrigin)
+      }
       const held = (rt.desc.promptQueue ?? []).filter(p => p.id !== deliverQueueId).length
       const banner =
         `── turn interrupted by ${INTERRUPT_CALLER_LABELS[caller] ?? caller}` +
@@ -6530,6 +6555,7 @@ export function createSessionsRegistry(opts?: {
       // Nothing was cancelled — the turn will end on its own, so its
       // `finally` must drain the queue as usual.
       rt.interruptRequested = undefined
+      rt.pendingInterruptNotice = undefined
       throw new Error(
         `${caller}: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
           err instanceof Error ? err.message : String(err)
@@ -7528,6 +7554,16 @@ export function createSessionsRegistry(opts?: {
         message = `${digest}\n\n${message}`
         turnOpts = { ...turnOpts, system: turnOpts?.system ? `${digest}\n\n${turnOpts.system}` : digest }
       }
+    }
+    // This turn was delivered by cutting the previous one — say so first,
+    // as a `system-prompt` slice, so the model doesn't read the cancel as a
+    // human stop and park. String messages only (same rule as the resume
+    // digest below): a raw content block keeps it for the next string turn.
+    if (rt.pendingInterruptNotice && typeof message === "string") {
+      const notice = rt.pendingInterruptNotice
+      rt.pendingInterruptNotice = undefined
+      message = `${notice}\n\n${message}`
+      turnOpts = { ...turnOpts, system: turnOpts?.system ? `${notice}\n\n${turnOpts.system}` : notice }
     }
     // `if (!title)`, not "on turn 1": every session already running when this
     // shipped has already had its first prompt, so a turn-1-only check would
@@ -9555,7 +9591,7 @@ export function createSessionsRegistry(opts?: {
       // silently dropped on the blocking path — the caller asked to
       // redirect the session and got a 409 (or, worse, nothing).
       if (opts?.interrupt && rtPre?.busy) {
-        await interruptInFlightTurn(rtPre, id, "sendPrompt")
+        await interruptInFlightTurn(rtPre, id, "sendPrompt", undefined, promptOriginLabel({ source: opts.source }))
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
@@ -9591,7 +9627,13 @@ export function createSessionsRegistry(opts?: {
       // only ever reached once the prior turn is genuinely over.
       const interrupted = opts?.interrupt === true && rtPre.busy
       if (interrupted) {
-        await interruptInFlightTurn(rtPre, id, "enqueuePrompt")
+        await interruptInFlightTurn(
+          rtPre,
+          id,
+          "enqueuePrompt",
+          undefined,
+          promptOriginLabel({ source: opts?.source, origin: opts?.origin })
+        )
       }
       // Queue arm (additive, opt-in — see this method's doc comment):
       // reached only when the caller explicitly asked to queue AND the
@@ -9861,7 +9903,7 @@ export function createSessionsRegistry(opts?: {
       if (wasBusy) {
         // Await the cancelled turn actually settling — the interruption is
         // real and delivery is imminent (its finally dispatches the target).
-        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId)
+        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId, promptOriginLabel(item))
         return { delivered: true, interrupted: true }
       }
       dispatchQueuedPrompt(rt)
