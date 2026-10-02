@@ -194,6 +194,7 @@ agentproto policy cancel pol_xyz789
 
 ## See also
 
+- [Gates guide](../guides/gates.md) — run tests or a judge at every turn end, end to end
 - [`sessions.md`](./sessions.md) — the sessions a policy attaches to
 - [`permissions.md`](./permissions.md) — the other human-in-the-loop inbox
 - [`serve.md`](./serve.md) — the daemon hosting `/policies`
