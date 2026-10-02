@@ -40,6 +40,7 @@ import {
   type McpEventEnvelope,
 } from "./webhook-egress/delivery.js"
 import type { SentinelEvent } from "./sentinel-providers/types.js"
+import { toMcpEvent } from "./mcp-events/adapter.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -153,19 +154,14 @@ export function webhookRequestId(sentinelId: string, eventId: string): `sub_${st
   return `sub_${digest.slice(0, 32)}`
 }
 
-/** The CloudEvents → MCP-Events-envelope fusion this WP owns (W-C's adapter
- *  becomes the canonical owner of the same mapping; this shape is the frozen
- *  §3 wire envelope — insertion order stable, so its serialization is
- *  byte-stable across restarts). `data` gains `subject`/`summary` so the
- *  256 KiB clamp's `{summary, subject}` replacement never goes blind. */
+/** The CloudEvents → MCP-Events-envelope fusion. W-C's `mcp-events/adapter.ts`
+ *  is now the canonical owner of this mapping (`toMcpEvent`); this alias keeps
+ *  the W-B call sites/tests working. The shape is the frozen §3 wire envelope —
+ *  insertion order stable, so its serialization is byte-stable across
+ *  restarts. `data` gains `subject`/`summary` so the 256 KiB clamp's
+ *  `{summary, subject}` replacement never goes blind. */
 export function toWebhookEnvelope(event: SentinelEvent): McpEventEnvelope {
-  return {
-    eventId: event.id,
-    name: event.type,
-    timestamp: event.time,
-    data: { ...event.data, subject: event.subject, summary: event.summary },
-    cursor: null,
-  }
+  return toMcpEvent(event)
 }
 
 // ── Factory ───────────────────────────────────────────────────────────

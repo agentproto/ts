@@ -21,7 +21,7 @@ import { existsSync, mkdtempSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { createMcpServer, registerUiResource } from "@agentproto/mcp-server"
+import { createMcpServer, registerEventsMethods, registerUiResource } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
 
 import { writeRuntimeMeta } from "./agentproto-dir.js"
@@ -127,6 +127,15 @@ import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
 import { registerSentinelTools } from "./sentinel-tools.js"
+import {
+  eventsList,
+  eventsSubscribe,
+  eventsUnsubscribe,
+  type EventsListRequest,
+  type EventsSubscribeInput,
+  type EventsUnsubscribeInput,
+} from "./mcp-events/adapter.js"
+import { daemonBearerPrincipal, sessionPrincipal } from "./mcp-events/events-registry.js"
 import { createSentinelAutoLinker } from "./sentinel-autolink.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
@@ -781,6 +790,51 @@ export type {
   SentinelTarget,
 } from "./sentinel-providers/types.js"
 export type { SentinelView } from "./sentinel-tools.js"
+// MCP Events adapter (W-C of .plans/sentinel-mcp-events): deterministic
+// subscription ids, the per-scheme event registry, and the three native
+// methods' logic (`eventsList`/`eventsSubscribe`/`eventsUnsubscribe`). The
+// native JSON-RPC transport + `server/discover` capability live in
+// `@agentproto/mcp-server` (`registerEventsMethods`).
+export {
+  eventsList,
+  eventsSubscribe,
+  eventsUnsubscribe,
+  toMcpEvent,
+  computeRefreshBefore,
+  untilForTtl,
+  McpEventsError,
+  DEFAULT_TTL_MS,
+  MAX_TTL_MS,
+  MIN_TTL_MS,
+  type EventsListRequest,
+  type EventsListContext,
+  type EventsListResult,
+  type EventsSubscribeInput,
+  type EventsSubscribeContext,
+  type EventsSubscribeResult,
+  type EventsUnsubscribeInput,
+  type EventsUnsubscribeContext,
+} from "./mcp-events/adapter.js"
+export {
+  subscriptionId,
+  canonicalizeJcs,
+  type SubscriptionIdentity,
+} from "./mcp-events/subscription-id.js"
+export {
+  GITHUB_SCHEME,
+  EVENT_REGISTRY,
+  tenantScope,
+  findEventDefinition,
+  validateAgainstInputSchema,
+  daemonBearerPrincipal,
+  sessionPrincipal,
+  type Principal,
+  type EventDefinition,
+  type InternalEventMeta,
+  type EventRegistration,
+  type SchemeRegistry,
+  type ArgumentsResult,
+} from "./mcp-events/events-registry.js"
 // Webhook egress primitives (W-A of .plans/sentinel-mcp-events):
 // Standard Webhooks signing, SSRF-guarded POST gate, challenge verification,
 // signed event delivery. Consumed in-process by the mcp-events adapter (W-C).
@@ -3145,6 +3199,28 @@ export async function createGateway(
     // into `adapterPresets` here so adapter-contributed gateways surface in
     // the catalog. Today the seam exists and is tested but is passed none.
     registerPresetTools(server)
+    // MCP Events (W-C of .plans/sentinel-mcp-events): the three NATIVE
+    // JSON-RPC methods (`events/list|subscribe|unsubscribe`) + the
+    // `events:{}` capability in `server/discover`, on this same authenticated
+    // `/mcp` surface. The adapter is principal-scoped: the trusted
+    // `?callerSessionId=` names a session caller, otherwise the single
+    // operator bearer (plan §1 — no per-caller auth-profile principal in v1).
+    const eventsPrincipal = callerSessionId ? sessionPrincipal(callerSessionId) : daemonBearerPrincipal()
+    registerEventsMethods(server, {
+      list: (params) => eventsList(params as EventsListRequest, { principal: eventsPrincipal }),
+      subscribe: (params) =>
+        eventsSubscribe(params as unknown as EventsSubscribeInput, {
+          principal: eventsPrincipal,
+          store: sentinelStore,
+          resolveProvider: resolveSentinelProviderResolved,
+        }),
+      unsubscribe: (params) =>
+        eventsUnsubscribe(params as unknown as EventsUnsubscribeInput, {
+          principal: eventsPrincipal,
+          store: sentinelStore,
+          resolveProvider: resolveSentinelProviderResolved,
+        }),
+    })
     return server
   }
 

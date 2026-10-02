@@ -146,6 +146,16 @@ export {
   type RefSummary,
   type SelfInspectResult,
 } from "./self-inspect-tool.js"
+export {
+  registerEventsMethods,
+  MCP_EVENTS_PROTOCOL_VERSION,
+  ServerDiscoverRequestSchema,
+  EventsListRequestSchema,
+  EventsSubscribeRequestSchema,
+  EventsUnsubscribeRequestSchema,
+  type EventsMethodsHandlers,
+  type ServerDiscoverResult,
+} from "./events-methods.js"
 
 // ── verb registration ───────────────────────────────────────────────
 
