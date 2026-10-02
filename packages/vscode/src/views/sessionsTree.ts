@@ -425,7 +425,7 @@ export function registerSessionsView(
   filter: SessionFilterController,
   seen: SeenTracker,
   watched?: WatchedSessions,
-): void {
+): vscode.TreeView<RootNode> {
   const provider = new SessionsTreeProvider(store, filter, seen, watched)
   const view = vscode.window.createTreeView("agentproto.sessions", {
     treeDataProvider: provider,
@@ -526,4 +526,5 @@ export function registerSessionsView(
   }
   updateViewMeta()
   ctx.subscriptions.push(provider.onDidChangeTreeData(updateViewMeta))
+  return view
 }

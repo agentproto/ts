@@ -1564,3 +1564,56 @@ export interface DeviceSessionOutput {
   stale?: boolean
   capturedAt?: string
 }
+
+/** Subset of `capabilities_inventory` (packages/runtime/src/capabilities-inventory.ts) the Capabilities view reads. */
+export interface CapabilitiesInventoryView {
+  mcp: {
+    imported: Array<{
+      id: string
+      alias?: string
+      name: string
+      type: string
+      source: string
+      status: "connected" | "idle" | "error" | "unknown"
+      error?: string
+      toolCount?: number
+      usedBySessions: string[]
+      reach: Record<string, "native" | "indirect" | "none">
+      alsoNativeIn?: Array<{ source: string; scope: string; name: string; sameName: boolean }>
+    }>
+    discovered: Array<{ id: string; source: string; name: string; imported: boolean }>
+    error?: string
+  }
+  skills: {
+    byHarness: Array<{
+      adapter: string
+      target?: { format: string; dir: string }
+      installed: string[]
+      native: string[]
+      spawnOption: boolean
+    }>
+    error?: string
+  }
+}
+
+/** One `bundle_list` entry (packages/runtime/src/bundles.ts plus the computed `dangling`). */
+export interface CapabilityBundle {
+  id: string
+  label: string
+  description?: string
+  mcpImports: string[] | "*"
+  includeDaemon?: boolean
+  skills: string[]
+  dangling: string[]
+}
+
+/** `session_capabilities` / `GET /sessions/:id/capabilities` (packages/runtime/src/session-capabilities.ts). */
+export interface SessionCapabilitiesView {
+  sessionId: string
+  adapter: string
+  arm: "acp" | "print" | "pty" | "other"
+  model?: string
+  mcpServers: Array<{ name: string; transport: string; ref?: string }>
+  skills: string[]
+  skillsApplied: boolean
+}
