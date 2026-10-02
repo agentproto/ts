@@ -1,7 +1,9 @@
 /**
- * Daemon-scoped `cron:*` events (including `cron:unhealthy`) must reach the
- * SAME global notify URL session events use — no separate notification
- * channel. Cron events carry no sessionId, so only the global URL applies.
+ * `cron:unhealthy` must reach the SAME global notify URL session events use —
+ * no separate notification channel; cron events carry no sessionId, so only
+ * the global URL applies. The other cron:* events stay filtered: relaying
+ * every `cron:fired`/`succeeded` would spam an operator's global URL (e.g. a
+ * Telegram relay) on a schedule that can be every 20 minutes.
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
@@ -58,27 +60,16 @@ describe("webhook-notifier — cron event relay", () => {
     expect(calls[0]).not.toHaveProperty("sessionId")
   })
 
-  it("relays cron:succeeded and cron:failed too", async () => {
+  it("does NOT relay cron:fired/succeeded/failed — only cron:unhealthy", async () => {
     const calls = capture()
     const notifier = createWebhookNotifier({ globalUrl: "http://example.invalid/hook" })
 
-    notifier.onSessionEvent({
-      type: "cron:succeeded",
-      jobId: "cron_1",
-      summary: "ok",
-      ts: "t",
-    })
-    notifier.onSessionEvent({
-      type: "cron:failed",
-      jobId: "cron_1",
-      error: "boom",
-      ts: "t",
-    })
+    notifier.onSessionEvent({ type: "cron:fired", jobId: "cron_1", ts: "t" })
+    notifier.onSessionEvent({ type: "cron:succeeded", jobId: "cron_1", summary: "ok", ts: "t" })
+    notifier.onSessionEvent({ type: "cron:failed", jobId: "cron_1", error: "boom", ts: "t" })
     await new Promise(res => setTimeout(res, 0))
 
-    expect(calls).toHaveLength(2)
-    expect(calls[0]).toMatchObject({ event: "cron:succeeded", jobId: "cron_1", summary: "ok" })
-    expect(calls[1]).toMatchObject({ event: "cron:failed", jobId: "cron_1", error: "boom" })
+    expect(calls).toHaveLength(0)
   })
 
   it("still relays session events to a per-session URL", async () => {

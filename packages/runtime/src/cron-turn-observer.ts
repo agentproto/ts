@@ -10,6 +10,8 @@
  * Classification (matches `cron-scheduler.ts`'s outcome vocabulary):
  *   - timedOut                        → "timeout"
  *   - exited before a completed turn  → "errored"
+ *   - awaiting-input mid-turn         → "errored" (a job stuck on a
+ *     permission prompt / question is NOT productive — nobody will answer it)
  *   - turn-end reason "error"         → "errored"
  *   - turn-end `empty` or 0 tokens    → "empty"
  *   - anything else                   → "produced"
@@ -59,6 +61,21 @@ export function createSessionTurnObserver(deps: {
         ...tokenField,
         durationMs,
         error: `session ${result.status ?? "exited"} before completing a turn`,
+      }
+    }
+    // A first turn that parked on a permission prompt / question is not
+    // productive: nobody is watching a cron-spawned session to answer it, so
+    // the run is stuck. Treat it as an error (with the question text when the
+    // harness supplied one) rather than a green "produced".
+    if (result.event === "awaiting-input") {
+      return {
+        outcome: "errored",
+        ...tokenField,
+        durationMs,
+        reason: "awaiting-input",
+        error: result.question?.text
+          ? `blocked awaiting input: ${result.question.text}`
+          : "blocked awaiting input",
       }
     }
     if (result.reason === "error") {

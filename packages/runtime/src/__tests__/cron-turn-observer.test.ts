@@ -88,6 +88,30 @@ describe("createSessionTurnObserver — outcome classification", () => {
     expect(obs.error).toMatch(/exited before completing a turn/)
   })
 
+  it("classifies a first turn parked on awaiting-input as errored, with the question text", async () => {
+    const observer = observerFor({
+      s1: desc("s1", {
+        turnsCompleted: 1,
+        busy: false,
+        awaitingInput: true,
+        awaitingQuestion: { text: "Approve the deploy?", source: "structured" },
+      }),
+    })
+    const obs = await observer({ sessionId: "s1", jobId: "cron_1", timeoutMs: 5_000 })
+    expect(obs.outcome).toBe("errored")
+    expect(obs.reason).toBe("awaiting-input")
+    expect(obs.error).toBe("blocked awaiting input: Approve the deploy?")
+  })
+
+  it("classifies an awaiting-input turn with no question text as errored too", async () => {
+    const observer = observerFor({
+      s1: desc("s1", { turnsCompleted: 1, busy: false, awaitingInput: true }),
+    })
+    const obs = await observer({ sessionId: "s1", jobId: "cron_1", timeoutMs: 5_000 })
+    expect(obs.outcome).toBe("errored")
+    expect(obs.error).toBe("blocked awaiting input")
+  })
+
   it("classifies no turn-end within the bound as timeout", async () => {
     const observer = observerFor({
       s1: desc("s1", { status: "running", turnsCompleted: 0, busy: true }),

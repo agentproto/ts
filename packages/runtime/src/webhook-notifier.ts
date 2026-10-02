@@ -9,16 +9,18 @@
  * Retry policy: one retry after 2 s on network error. No retry on 4xx/5xx.
  * Timeout: 10 s per attempt. All errors are swallowed — the notifier never
  * throws into the session's hot path.
+ *
+ * Of the daemon-scoped `cron:*` events, ONLY `cron:unhealthy` is relayed (to
+ * the global URL — cron events carry no sessionId). `cron:fired` /
+ * `cron:succeeded` / `cron:failed` stay filtered: relaying every fire would
+ * spam whatever the operator's global URL feeds (e.g. a Telegram relay) on a
+ * schedule that can be every 20 minutes.
  */
 
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { SessionEvent, SessionAwaitingQuestion } from "./session-event-bus.js"
-
-/** The daemon-scoped cron members of the `SessionEvent` union. */
-type CronEvent = Extract<SessionEvent, { type: `cron:${string}` }>
-const isCronEvent = (ev: SessionEvent): ev is CronEvent => ev.type.startsWith("cron:")
 
 export interface WebhookNotifier {
   /** Register a per-session URL (called from agent_start). */
@@ -50,10 +52,8 @@ interface NotifyPayload {
    *  adapter emitted an `error` stream event. Without this a registered
    *  webhook learned only that a turn-end happened, not that it failed or
    *  why — the same blind spot `agent_sessions_list`/`monitorSessionWait`
-   *  had before this field existed. Also carries `cron:failed`'s error. */
+   *  had before this field existed. */
   error?: string
-  /** `cron:succeeded`'s summary. */
-  summary?: string
   /** `cron:unhealthy`'s consecutive non-productive run count at pause time. */
   consecutiveFailures?: number
   /** `cron:unhealthy`'s real outcome of the run that tripped the threshold. */
@@ -117,27 +117,25 @@ export function createWebhookNotifier(opts?: {
       perSession.delete(sessionId)
     },
     onSessionEvent(ev) {
-      // Daemon-scoped cron events carry no sessionId, so only the GLOBAL URL
-      // applies. Relaying them here (rather than in a cron-specific channel)
-      // is what lets `cron:unhealthy` reach the same webhook an operator
-      // already points at the daemon — no new notification path.
-      if (isCronEvent(ev)) {
+      // The ONE daemon-scoped cron event worth waking an operator for: a job
+      // that just auto-paused. It carries no sessionId, so only the GLOBAL
+      // URL applies (not a per-session notifyUrl). Relaying it here — rather
+      // than in a cron-specific channel — reuses the webhook an operator
+      // already points at the daemon. cron:fired/succeeded/failed stay
+      // filtered (see the module doc): relaying every fire would spam the
+      // same URL on a schedule that can be every 20 minutes.
+      if (ev.type === "cron:unhealthy") {
         const globalUrl = resolveGlobalUrl()
         if (!globalUrl) return
-        const payload: NotifyPayload = {
+        void post(globalUrl, {
           event: ev.type,
           jobId: ev.jobId,
           label: ev.label,
           ts: ev.ts,
-        }
-        if (ev.type === "cron:succeeded") payload.summary = ev.summary
-        if (ev.type === "cron:failed") payload.error = ev.error
-        if (ev.type === "cron:unhealthy") {
-          payload.consecutiveFailures = ev.consecutiveFailures
-          payload.outcome = ev.lastOutcome
-          payload.reason = ev.reason
-        }
-        void post(globalUrl, payload)
+          consecutiveFailures: ev.consecutiveFailures,
+          outcome: ev.lastOutcome,
+          reason: ev.reason,
+        })
         return
       }
 
