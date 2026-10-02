@@ -277,11 +277,11 @@ jobs:
       # BILLING LADDER. 2026-09-01: two Anthropic orgs and a Moonshot account
       # all ran dry within the hour and every agentic post-release step died on
       # its first API call — the batch shipped to npm with no notes at all. The
-      # notes step now walks lanes (scripts/lib/agent-lane.mjs), the same shape
-      # as the CI review job's subscription → fallback → API-key ladder:
+      # notes step now walks lanes (scripts/lib/agent-lane.mjs). Claude
+      # subscription first, then GLM (openrouter), then the fallbacks:
       #   1. subscription          CLAUDE_CODE_OAUTH_TOKEN (claude.ai plan, no per-token bill)
       #   2. subscription-fallback CLAUDE_CODE_OAUTH_TOKEN_FALLBACK
-      #   3. openrouter            OPENROUTER_API_KEY via OpenRouter's Anthropic-compatible endpoint
+      #   3. openrouter            OPENROUTER_API_KEY via OpenRouter's Anthropic-compatible endpoint (GLM)
       #   4. api-key               ANTHROPIC_API_KEY, last resort (the only lane that bills the org)
       # Each lane is followed by `release-notes.mjs --check`, which asks GitHub
       # whether a consolidated release already carries THIS batch's marker; the
@@ -400,12 +400,11 @@ jobs:
       # SDK). "Machine proposes, human merges": like catalog-sync.yml, edits
       # land as a draft PR, never a direct commit to main.
       #
-      # Same billing ladder as the notes above, Moonshot last (it was the only
-      # lane before, and its account is the one that went "suspended due to
-      # insufficient balance"). Each step reports `status=ok|error|no-result|
-      # no-lane`; the next lane only runs when the previous one wasn't ok.
-      # Every lane is continue-on-error and the script itself soft-fails —
-      # this is a best-effort bonus on top of an already-published release.
+      # Same lane-walking shape as the notes above (subscription → fallback →
+      # openrouter). Each step reports `status=ok|error|no-result|no-lane`; the
+      # next lane only runs when the previous one wasn't ok. Every lane is
+      # continue-on-error and the script itself soft-fails — this is a
+      # best-effort bonus on top of an already-published release.
       - name: Check docs for release drift (subscription)
         id: docs-1
         if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
@@ -433,17 +432,6 @@ jobs:
         env:
           AGENT_LANE: openrouter
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      - name: Check docs for release drift (moonshot)
-        id: docs-4
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
-          steps.docs-1.outputs.status != 'ok' &&
-          steps.docs-2.outputs.status != 'ok' &&
-          steps.docs-3.outputs.status != 'ok'
-        continue-on-error: true
-        run: node scripts/docs-check.mjs
-        env:
-          AGENT_LANE: moonshot
-          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
       - name: Detect docs drift
         id: docs-drift
         if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
@@ -468,8 +456,8 @@ jobs:
           draft: true
           body: |
             Automated doc-drift check after the latest release, via
-            `scripts/docs-check.mjs` (Claude Agent SDK on Moonshot's
-            `kimi-k2.7-code`).
+            `scripts/docs-check.mjs` (Claude Agent SDK on OpenRouter's
+            `z-ai/glm-5.3-flash`).
 
             The agent compared each published package's CHANGELOG entry
             against `docs/**`, the root `README.md`, and per-package

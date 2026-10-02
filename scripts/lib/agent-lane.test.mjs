@@ -11,7 +11,6 @@ import assert from 'node:assert/strict'
 import {
   AUTO_ORDER,
   LANES,
-  MOONSHOT_ANTHROPIC_BASE_URL,
   OPENROUTER_ANTHROPIC_BASE_URL,
   describeLane,
   laneAvailable,
@@ -24,7 +23,6 @@ const EVERYTHING = {
   CLAUDE_CODE_OAUTH_TOKEN: 'oauth-main',
   CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: 'oauth-fallback',
   OPENROUTER_API_KEY: 'or-key',
-  MOONSHOT_API_KEY: 'ms-key',
   ANTHROPIC_BASE_URL: 'https://stale.example',
   CLAUDE_CODE_USE_BEDROCK: '1',
   PATH: '/usr/bin',
@@ -39,8 +37,7 @@ test('subscription lane keeps only its OAuth token and scrubs the API key + gate
   assert.equal(r.env.ANTHROPIC_AUTH_TOKEN, undefined)
   assert.equal(r.env.CLAUDE_CODE_USE_BEDROCK, undefined)
   assert.equal(r.env.PATH, '/usr/bin') // unrelated env passes through
-  assert.equal(r.model, 'claude-sonnet-4-6')
-  assert.equal(r.thinking, false)
+  assert.equal(r.model, 'claude-sonnet-5-5')
 })
 
 test('subscription-fallback maps the FALLBACK secret onto CLAUDE_CODE_OAUTH_TOKEN', () => {
@@ -56,19 +53,8 @@ test('openrouter lane is a gateway spawn: base_url + bearer, no native key, mode
   assert.equal(r.env.ANTHROPIC_AUTH_TOKEN, 'or-key')
   assert.equal(r.env.ANTHROPIC_API_KEY, undefined)
   assert.equal(r.env.CLAUDE_CODE_OAUTH_TOKEN, undefined)
-  assert.equal(r.env.ANTHROPIC_MODEL, 'anthropic/claude-sonnet-4.6')
-  assert.equal(r.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'anthropic/claude-sonnet-4.6')
-  assert.equal(r.thinking, false)
-})
-
-test('moonshot lane pins kimi, requires thinking, accepts ANTHROPIC_AUTH_TOKEN as the bearer', () => {
-  const r = resolveLane('moonshot', EVERYTHING)
-  assert.equal(r.env.ANTHROPIC_BASE_URL, MOONSHOT_ANTHROPIC_BASE_URL)
-  assert.equal(r.env.ANTHROPIC_AUTH_TOKEN, 'ms-key')
-  assert.equal(r.model, 'kimi-k2.7-code')
-  assert.equal(r.thinking, true)
-  const viaBearer = resolveLane('moonshot', { ANTHROPIC_AUTH_TOKEN: 'bearer-only' })
-  assert.equal(viaBearer.env.ANTHROPIC_AUTH_TOKEN, 'bearer-only')
+  assert.equal(r.env.ANTHROPIC_MODEL, 'z-ai/glm-5.3-flash')
+  assert.equal(r.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'z-ai/glm-5.3-flash')
 })
 
 test('api-key lane keeps only ANTHROPIC_API_KEY', () => {
@@ -98,10 +84,10 @@ test('resolveLane never mutates the base env', () => {
 })
 
 test('pickLane honours AGENT_LANE, else walks AUTO_ORDER by credential presence', () => {
-  assert.equal(pickLane({ ...EVERYTHING, AGENT_LANE: 'moonshot' }), 'moonshot')
+  assert.equal(pickLane({ ...EVERYTHING, AGENT_LANE: 'api-key' }), 'api-key')
   assert.equal(pickLane(EVERYTHING), 'subscription')
   assert.equal(pickLane({ OPENROUTER_API_KEY: 'x', ANTHROPIC_API_KEY: 'y' }), 'openrouter')
-  assert.equal(pickLane({ MOONSHOT_API_KEY: 'x' }), 'moonshot')
+  assert.equal(pickLane({ ANTHROPIC_API_KEY: 'y' }), 'api-key')
   assert.equal(pickLane({}), null)
   assert.throws(() => pickLane({ AGENT_LANE: 'bogus' }), /not one of/)
   assert.deepEqual([...AUTO_ORDER].sort(), [...LANES].sort())
