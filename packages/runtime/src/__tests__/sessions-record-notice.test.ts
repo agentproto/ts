@@ -55,7 +55,10 @@ describe("registry.recordNotice", () => {
     tmp = mkdtempSync(join(tmpdir(), "record-notice-"))
   })
   afterEach(() => {
-    rmSync(tmp, { recursive: true, force: true })
+    // The registry's transcript writer flushes asynchronously, so a plain rm
+    // can race a late write and fail with ENOTEMPTY. `maxRetries` makes
+    // `fs.rm` retry the whole removal on ENOTEMPTY/EBUSY/EPERM, absorbing it.
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   })
 
   it("appends a `notice` event to events.jsonl and returns true", async () => {
