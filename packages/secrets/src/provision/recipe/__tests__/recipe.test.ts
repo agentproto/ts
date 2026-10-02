@@ -110,6 +110,7 @@ describe("registry + flavor selection", () => {
     expect(ids).toContain("opencode")
     expect(ids).toContain("mastracode")
     expect(ids).toContain("jcode")
+    expect(ids).toContain("mastracode-inprocess")
   })
 
   it("jcode recipe points at the CLI's own claude and openai OAuth stores", () => {
@@ -124,6 +125,14 @@ describe("registry + flavor selection", () => {
       file: "~/.jcode/openai-auth.json",
       jsonPath: "openai_accounts.0.access_token",
     })
+  })
+
+  it("mastracode-inprocess resolves the same login sources as mastracode, for both providers", () => {
+    for (const methodId of ["anthropic-oauth", "openai-oauth"]) {
+      expect(resolveRecipeMethod("mastracode-inprocess", methodId).method.source).toEqual(
+        resolveRecipeMethod("mastracode", methodId).method.source,
+      )
+    }
   })
 
   it("opencode/mastracode recipes point at each CLI's own anthropic OAuth entry", () => {
