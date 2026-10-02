@@ -44,6 +44,7 @@ import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
+import { spawnEligibilityManifest } from "./eligibility-manifest.js"
 import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
@@ -453,22 +454,6 @@ function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key"
   return method === "oauth-bearer" ? "subscription" : "api-key"
 }
 
-function directAuthMethods(
-  descriptor: AdapterAuthDescriptor | undefined,
-  endpoint?: string,
-): AuthMethod[] {
-  const methods: AuthMethod[] = []
-  // oauth-bearer requires an explicit, provider-matching subscription
-  // surface — `modelDerivedApiKey` alone no longer implies it (that
-  // assumption injected subscription OATs into x-api-key vars; see
-  // `subscriptionSurfaceFor`'s doc in spawn-defaults.ts).
-  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
-    methods.push("oauth-bearer")
-  }
-  if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
-  return methods
-}
-
 /** The provision-recipe methodId to verify a FILE-BASED subscription login
  *  under — convention `<provider>-oauth` (mastracode/opencode's
  *  `anthropic-oauth`/`openai-oauth`). Only meaningful for a MULTI-SURFACE
@@ -483,53 +468,6 @@ function subscriptionOauthMethodId(
 ): string | undefined {
   if (!Array.isArray(descriptor?.authSubscription) || !provider) return undefined
   return `${provider}-oauth`
-}
-
-/** Build the one-route eligibility projection used for an initial spawn AND
- * for a restart / resume (`session-restart-core.ts` imports this rather than
- * keeping a mirror — its old copy drifted and lost the `modelProviders` /
- * `modelIdPrefixProvider` tiers, so an `opencode-go/<id>` session with no
- * persisted route could spawn but never restart). A gateway bills the gateway
- * endpoint and accepts only its API key; a direct route uses the adapter's
- * native auth vocabulary. */
-export function spawnEligibilityManifest(
-  adapter: string,
-  descriptor: AdapterAuthDescriptor | undefined,
-  route: RouteSpec | undefined,
-  model: string | undefined,
-): { manifest: AdapterAuthManifest; routeId: string; direct: boolean } | undefined {
-  // Endpoint precedence: adapter's FIXED provider (single-provider adapters)
-  // > the adapter's OWN declared per-model provider (`modelProviders`, a
-  // model-derived-api-key adapter's `models.allowed[].provider` — the
-  // authoritative statement of who bills THIS adapter for THIS model) > the
-  // GLOBAL catalog's model→provider derivation. The middle tier exists
-  // because a model-derived adapter has no fixed `provider` at all, so
-  // without it the catalog fallback is the ONLY signal — and the catalog's
-  // route for a given model id is a global fact that can legitimately differ
-  // from what one specific adapter actually bills it through (D3: pi bills
-  // `moonshotai/kimi-k2.7-code` via `moonshot`, but the catalog routes that
-  // id to `openrouter`).
-  const directEndpoint =
-    descriptor?.provider ??
-    (model ? descriptor?.modelProviders?.[model] : undefined) ??
-    (model && descriptor?.modelDerivedApiKey
-      ? modelIdPrefixProvider(model)
-      : undefined) ??
-    (model ? getModelProvider(model) : undefined)
-  const routeId = route?.gateway ?? directEndpoint
-  if (!routeId) return undefined
-  const direct = directEndpoint !== undefined && routeId === directEndpoint
-  return {
-    manifest: {
-      id: adapter,
-      endpointByRoute: { [routeId]: direct ? directEndpoint : routeId },
-      methodsByRoute: {
-        [routeId]: direct ? directAuthMethods(descriptor, directEndpoint) : ["api-key"],
-      },
-    },
-    routeId,
-    direct,
-  }
 }
 
 /** When the naive prefix-guessed route (`spawnEligibilityManifest`'s tier-3

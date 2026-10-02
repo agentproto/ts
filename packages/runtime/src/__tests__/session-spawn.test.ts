@@ -111,6 +111,7 @@ vi.mock("@agentproto/llm-endpoint", async importOriginal => {
 
 import {
   spawnAgentSession,
+  resolveAccessProfileAuth,
   cleanAgentLines,
   gcSpawnClaims,
   shouldInjectDaemonSelfMount,
@@ -119,6 +120,8 @@ import {
   type SpawnAgentSessionResult,
   type SpawnClaim,
 } from "../session-spawn.js"
+import { buildCatalogModels, type CatalogAdapterInput } from "../catalog-models.js"
+import type { AuthProfile } from "@agentproto/auth"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
@@ -4504,6 +4507,99 @@ describe("spawnAgentSession — access.profileRef profile-aware route fallback (
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.provider).toBe("openrouter")
     expect(result.descriptor.auth?.setEnv).toBe("OPENROUTER_API_KEY")
+  })
+})
+
+// Catalog↔spawn eligibility parity (route-authority): for EVERY route
+// `catalog_models {adapter}` reports runnable with a profile P, the spawn
+// layer's `resolveAccessProfileAuth` must NOT refuse P with
+// `access_profile_ineligible`. The one refusal the catalog legitimately cannot
+// see is the local-CLI-login probe (external subscription adapters), asserted
+// separately below.
+describe("resolveAccessProfileAuth — catalog_models eligibility parity (route-authority)", () => {
+  const OPENCODE_LIKE: AdapterAuthDescriptor = {
+    modelDerivedApiKey: true,
+    authSubscription: [
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ],
+  }
+  const ADAPTER_INPUT: CatalogAdapterInput = {
+    slug: "opencode",
+    models: [
+      { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+      { id: "openai/gpt-5.1", provider: "openai" },
+    ],
+    authDescriptor: OPENCODE_LIKE,
+    routeSelection: "derived-from-model",
+  }
+  const PROFILES: AuthProfile[] = [
+    { id: "claude-subs-agentik", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" },
+    { id: "codex-openai", endpoint: "openai", method: "oauth-bearer", credentialRef: "agentproto.auth.openai.oauth" },
+    { id: "personal-anthropic", endpoint: "anthropic", method: "api-key", credentialRef: "agentproto.auth.anthropic.key" },
+    { id: "personal-openai", endpoint: "openai", method: "api-key", credentialRef: "agentproto.auth.openai.key" },
+  ]
+
+  beforeEach(() => {
+    authProfileState.profiles = Object.fromEntries(PROFILES.map(p => [p.id, p]))
+    authProfileState.keychain = {
+      "agentproto.auth.openai.oauth": "sk-openai-oauth",
+      "agentproto.auth.anthropic.key": "sk-ant-key",
+      "agentproto.auth.openai.key": "sk-openai-key",
+    }
+    oauthState.verifyImpl = async () => {}
+  })
+
+  it("every profile catalog_models offers on a runnable (adapter, route, model) is NOT refused access_profile_ineligible", async () => {
+    const catalog = buildCatalogModels({
+      adapters: [ADAPTER_INPUT],
+      profiles: PROFILES,
+      query: { adapter: "opencode", runnableOnly: true },
+    })
+    let checked = 0
+    for (const vendor of catalog.vendors) {
+      for (const product of vendor.products) {
+        for (const route of product.routes) {
+          for (const profileRef of route.eligibleProfiles) {
+            checked++
+            const result = await resolveAccessProfileAuth({
+              adapter: "opencode",
+              profileRef,
+              authDescriptor: OPENCODE_LIKE,
+              route: { gateway: route.route },
+              model: route.ref,
+            })
+            if (!result.ok) {
+              expect(result.code).not.toBe("access_profile_ineligible")
+            }
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(0)
+  })
+
+  it("a catalog-runnable external-subscription profile with NO local CLI login is refused auth_source_unresolved (legitimate, not ineligible)", async () => {
+    // opencode's surfaces are EXTERNAL — the daemon injects nothing, it only
+    // verifies opencode's own login file. The catalog does no I/O, so a
+    // missing login is the one refusal it cannot pre-compute; the spawn must
+    // still fail loud.
+    oauthState.verifyImpl = async () => {
+      throw new SubscriptionSourceError(
+        "auth_source_unresolved",
+        "no opencode login found — run `opencode auth login` first.",
+      )
+    }
+    const result = await resolveAccessProfileAuth({
+      adapter: "opencode",
+      profileRef: "claude-subs-agentik",
+      authDescriptor: OPENCODE_LIKE,
+      route: { gateway: "anthropic" },
+      model: "anthropic/claude-sonnet-4-5",
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("auth_source_unresolved")
   })
 })
 

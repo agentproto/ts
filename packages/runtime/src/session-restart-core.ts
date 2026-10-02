@@ -79,7 +79,7 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
-import { spawnEligibilityManifest } from "./session-spawn.js"
+import { spawnEligibilityManifest } from "./eligibility-manifest.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {

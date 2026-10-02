@@ -49,6 +49,7 @@ import {
 } from "@agentproto/model-catalog/llm"
 import { getAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { subscriptionSurfaceFor, type AdapterAuthDescriptor } from "./spawn-defaults.js"
+import { spawnEligibilityManifest } from "./eligibility-manifest.js"
 import type { RouteSpec } from "./session-config.js"
 
 export type { RouteSpec } from "./session-config.js"
@@ -645,6 +646,18 @@ export function buildCatalogModels(
   const merged = mergeContributions(contributions)
   const query = input.query ?? {}
 
+  // The adapter named by the query (if any). When set, each row's
+  // `eligibleProfiles` is projected through THAT adapter's REAL auth
+  // descriptor — the SAME `spawnEligibilityManifest` tiers
+  // `resolveAccessProfileAuth` resolves — instead of the route-level
+  // synthetic manifest below. The synthetic manifest unions auth methods
+  // across EVERY adapter that curates the route, so it can offer a profile
+  // the named adapter's spawn then refuses (route-authority drift). One
+  // lookup, reused for every row — no per-route N+1 adapter resolution.
+  const queryAdapter = query.adapter
+    ? input.adapters.find(a => a.slug === query.adapter)
+    : undefined
+
   // Servable-models-per-route (SPEC §3.9), over the FULL join — a route's
   // model-count is an intrinsic capability, not a view of the caller's
   // query, so `multiModel` stays stable under filtering. A model identity is
@@ -685,7 +698,30 @@ export function buildCatalogModels(
       !isDirectVendorRoute ||
       checkModelWalletEligibility(`${row.vendor}/${row.product}`, row.route).ok
 
-    const manifest: AdapterAuthManifest = {
+    // Adapter-grounded projection when the caller named one: the row's
+    // eligible set is exactly what `resolveAccessProfileAuth` accepts for
+    // THIS adapter on THIS route — the row's route is treated as pinned
+    // (`{gateway: row.route}`), so `direct`/methods fall out of the adapter's
+    // own descriptor tiers (fixed provider > `modelProviders` > catalog
+    // prefix), never a union across unrelated adapters.
+    //   `undefined` ⇒ no adapter named: keep the route-level synthetic
+    //   manifest (it feeds nothing adapter-sensitive).
+    //   `null` ⇒ an adapter was named but presents no billing-auth: the spawn
+    //   layer refuses EVERY profile for it (`resolveAccessProfileAuth`'s
+    //   `!authDescriptor` branch), so the row is honestly unrunnable through
+    //   that adapter rather than offered on the sibling-union methods.
+    const projected =
+      queryAdapter === undefined
+        ? undefined
+        : queryAdapter.authDescriptor
+          ? spawnEligibilityManifest(
+              queryAdapter.slug,
+              queryAdapter.authDescriptor,
+              { gateway: row.route },
+              row.ref,
+            )
+          : null
+    const manifest: AdapterAuthManifest = projected?.manifest ?? {
       id: `${row.vendor}/${row.product}@${row.route}`,
       endpointByRoute: { [row.route]: billedVendor(row.vendor, row.route) },
       methodsByRoute: { [row.route]: row.methods },
@@ -695,11 +731,12 @@ export function buildCatalogModels(
     // by each profile's per-model curation allowlist (WS3). A profile with no
     // `models` field passes through untouched, so the non-curated join is
     // byte-identical to before.
-    const eligible = walletEligible
-      ? eligibleProfiles(input.profiles, manifest, row.route).filter(p =>
-          profileAllowsModel(p, row.ref, `${row.vendor}/${row.product}`),
-        )
-      : []
+    const eligible =
+      walletEligible && projected !== null
+        ? eligibleProfiles(input.profiles, manifest, projected?.routeId ?? row.route).filter(p =>
+            profileAllowsModel(p, row.ref, `${row.vendor}/${row.product}`),
+          )
+        : []
     const runnable = eligible.length > 0
     if (query.runnableOnly && !runnable) continue
 
