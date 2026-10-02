@@ -12,12 +12,17 @@
  * Env: GH_TOKEN (post), ANTHROPIC_API_KEY (cloud engine). PR_NUMBER as fallback.
  */
 
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { runLlm, stripFences } from './agentflow/llm.mjs'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 const run = (c) => execSync(c, { cwd: ROOT, encoding: 'utf8' }).trim()
+/** Run a binary with an argv array — NO shell, so a value containing shell
+ *  metacharacters (backticks, `$`, quotes) is passed through verbatim. Used
+ *  wherever a model-authored string (the drafted PR body) or a caller value
+ *  reaches the command. */
+const runArgs = (bin, args) => execFileSync(bin, args, { cwd: ROOT, encoding: 'utf8' }).trim()
 const argv = process.argv.slice(2)
 const flag = (n) => {
   const i = argv.indexOf(n)
@@ -40,7 +45,7 @@ function cfg() {
 const MIN = Number(cfg().minBodyChars ?? 80)
 
 // Respect an existing body — only fill when it's empty/thin (unless --force).
-const currentBody = run(`gh pr view "${PR}" --json body -q '.body'`)
+const currentBody = runArgs('gh', ['pr', 'view', String(PR), '--json', 'body', '-q', '.body'])
 if (!FORCE && currentBody && currentBody.replace(/\s/g, '').length >= MIN) {
   console.log(`[describe] PR #${PR} already has a body (${currentBody.length} chars) — leaving it. Use --force to overwrite.`)
   process.exit(0)
@@ -78,5 +83,5 @@ try {
 }
 
 const marker = '\n\n<sub>📝 description drafted by agentflow — edit freely.</sub>'
-run(`gh pr edit "${PR}" --body ${JSON.stringify(body + marker)}`)
+runArgs('gh', ['pr', 'edit', String(PR), '--body', body + marker])
 console.log(`[describe] set description on PR #${PR} (${body.length} chars).`)
