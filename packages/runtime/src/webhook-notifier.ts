@@ -16,6 +16,10 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { SessionEvent, SessionAwaitingQuestion } from "./session-event-bus.js"
 
+/** The daemon-scoped cron members of the `SessionEvent` union. */
+type CronEvent = Extract<SessionEvent, { type: `cron:${string}` }>
+const isCronEvent = (ev: SessionEvent): ev is CronEvent => ev.type.startsWith("cron:")
+
 export interface WebhookNotifier {
   /** Register a per-session URL (called from agent_start). */
   register(sessionId: string, url: string): void
@@ -25,25 +29,35 @@ export interface WebhookNotifier {
 }
 
 interface NotifyPayload {
-  sessionId: string
+  /** Present for `session:*` events; absent for daemon-scoped `cron:*` events. */
+  sessionId?: string
+  /** Present for `cron:*` events (no session to attribute them to). */
+  jobId?: string
   label?: string
   event: string
-  awaitingInput: boolean
+  awaitingInput?: boolean
   ts: string
   exitCode?: number
   status?: string
   question?: SessionAwaitingQuestion
   /** `session:turn-end`'s `SessionTurnEndEvent.reason` (e.g. `"completed"`,
    *  `"error"`, `"aborted"`), when the daemon/adapter reported one. Absent
-   *  for other event types and for a turn-end with no reason to report. */
+   *  for other event types and for a turn-end with no reason to report. Also
+   *  carries `cron:unhealthy`'s pause reason. */
   reason?: string
   /** `session:turn-end`'s `SessionTurnEndEvent.error` — the captured
    *  in-band error text, when the turn ended with `reason: "error"` and the
    *  adapter emitted an `error` stream event. Without this a registered
    *  webhook learned only that a turn-end happened, not that it failed or
    *  why — the same blind spot `agent_sessions_list`/`monitorSessionWait`
-   *  had before this field existed. */
+   *  had before this field existed. Also carries `cron:failed`'s error. */
   error?: string
+  /** `cron:succeeded`'s summary. */
+  summary?: string
+  /** `cron:unhealthy`'s consecutive non-productive run count at pause time. */
+  consecutiveFailures?: number
+  /** `cron:unhealthy`'s real outcome of the run that tripped the threshold. */
+  outcome?: string
 }
 
 export function createWebhookNotifier(opts?: {
@@ -103,6 +117,30 @@ export function createWebhookNotifier(opts?: {
       perSession.delete(sessionId)
     },
     onSessionEvent(ev) {
+      // Daemon-scoped cron events carry no sessionId, so only the GLOBAL URL
+      // applies. Relaying them here (rather than in a cron-specific channel)
+      // is what lets `cron:unhealthy` reach the same webhook an operator
+      // already points at the daemon — no new notification path.
+      if (isCronEvent(ev)) {
+        const globalUrl = resolveGlobalUrl()
+        if (!globalUrl) return
+        const payload: NotifyPayload = {
+          event: ev.type,
+          jobId: ev.jobId,
+          label: ev.label,
+          ts: ev.ts,
+        }
+        if (ev.type === "cron:succeeded") payload.summary = ev.summary
+        if (ev.type === "cron:failed") payload.error = ev.error
+        if (ev.type === "cron:unhealthy") {
+          payload.consecutiveFailures = ev.consecutiveFailures
+          payload.outcome = ev.lastOutcome
+          payload.reason = ev.reason
+        }
+        void post(globalUrl, payload)
+        return
+      }
+
       // Only fire on meaningful lifecycle events (not command-done, which
       // goes through the command-tools layer)
       if (

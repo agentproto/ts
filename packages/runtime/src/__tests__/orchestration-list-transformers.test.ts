@@ -344,6 +344,7 @@ describe("cron_list transformer migration", () => {
       expect(Object.keys(j).sort()).toEqual([
         "active",
         "finished",
+        "health",
         "id",
         "label",
         "lastOk",
@@ -355,14 +356,20 @@ describe("cron_list transformer migration", () => {
       // A failed last run is visible without `full: true`.
       expect(j.lastOk).toBe(true)
       expect(j.finished).toBe(false)
+      // Health is projected even for a job with no recorded real outcome yet.
+      expect(j.health).toEqual({ consecutiveFailures: 0, maxConsecutiveFailures: 2 })
     }
 
     const full = JSON.parse(
       textOf(
         await client.callTool({ name: "cron_list", arguments: { full: true } }),
       ),
-    ) as { jobs: CronJob[] }
-    expect(full.jobs).toEqual(jobs)
+    ) as { jobs: Array<CronJob & { health: unknown }> }
+    expect(full.jobs).toHaveLength(5)
+    for (let i = 0; i < jobs.length; i++) {
+      expect(full.jobs[i]).toMatchObject(jobs[i]!)
+      expect(full.jobs[i]).toHaveProperty("health")
+    }
     expect(full.jobs[0]).toHaveProperty("action")
     expect(full.jobs[0]).toHaveProperty("createdAt")
     expect(full.jobs[0]).toHaveProperty("lastResult")

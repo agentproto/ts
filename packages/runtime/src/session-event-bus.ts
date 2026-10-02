@@ -49,6 +49,7 @@ export type SessionEventType =
   | "cron:fired"
   | "cron:succeeded"
   | "cron:failed"
+  | "cron:unhealthy"
   | "activity:changed"
   | "task:changed"
   | "workflow:gate-report"
@@ -776,6 +777,29 @@ export interface CronFailedEvent {
 }
 
 /**
+ * Emitted by CronScheduler when a job trips its health threshold: `N`
+ * consecutive non-productive runs (default 2, per-job
+ * `maxConsecutiveFailures`) pause the job (`active:false` + `pausedReason`)
+ * instead of letting it keep firing into a wall. `lastOutcome` is the run
+ * that tripped it; `consecutiveFailures` is the count at trip time (mirrors
+ * the job's own counter and `cron_list`'s `health`). Rides the same bus
+ * fan-out as every other cron event (`session_events_poll`, the webhook
+ * notifier), so an existing global notify URL relays it with no new channel.
+ */
+export interface CronUnhealthyEvent {
+  type: "cron:unhealthy"
+  jobId: string
+  label?: string
+  /** Consecutive non-productive runs at the moment the job was paused. */
+  consecutiveFailures: number
+  /** The real outcome of the run that tripped the threshold. */
+  lastOutcome: "produced" | "empty" | "errored" | "timeout"
+  /** Human-readable pause reason now stored on the job. */
+  reason: string
+  ts: string
+}
+
+/**
  * Emitted by the activity projector (`activities.ts`) whenever an
  * {@link ActivityRecord}'s state or waitingOn actually changed — the ONE
  * new event the Activity ledger adds. Because EventRing wires via `onAny`,
@@ -998,6 +1022,7 @@ export type SessionEvent =
   | CronFiredEvent
   | CronSucceededEvent
   | CronFailedEvent
+  | CronUnhealthyEvent
   | ActivityChangedEvent
   | TaskChangedEvent
   | WorkflowGateReportEvent
