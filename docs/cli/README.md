@@ -67,6 +67,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
 - [`agentproto run-swarm`](./verbs/run-swarm.md) — kernel-routed multi-agent loop
 - [`agentproto sandbox`](./verbs/sandbox.md) — attach to an already-existing sandbox (Box/e2b) without tearing it down
+- [`agentproto sentinel`](./verbs/sentinel.md) — watch a GitHub PR/subject, deliver matching events back into a session's inbox
 - [`agentproto serve`](./verbs/serve.md) — daemon mode (local-only or tunnelled)
 - [`agentproto sessions`](./verbs/sessions.md) — browse/start/attach/stop daemon sessions
 - [`agentproto setup`](./verbs/setup.md) — onboarding wizard (no slug), or re-run an adapter's post-install pipeline (`setup <slug>`)
