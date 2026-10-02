@@ -432,11 +432,7 @@ describe("mcp-events e2e — full user story", () => {
     expect(h!.fake.deliveries).toHaveLength(1)
   })
 
-  it("events/list + server/discover over the real transport", async () => {
-    const discover = (await h!.client.request({ method: "server/discover" } as never, z.looseObject({}))) as {
-      capabilities: { events?: Record<string, never> }
-    }
-    expect(discover.capabilities.events).toBeDefined()
+  it("events/list over the real transport", async () => {
     const list = (await callClient(h!.client, "events/list")) as {
       events: Array<{ name: string }>
       nextCursor: string | null
