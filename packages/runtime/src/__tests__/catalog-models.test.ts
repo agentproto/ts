@@ -976,6 +976,133 @@ describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC
   })
 })
 
+// Route-authority parity (the `picker-route-wallet` bug): `catalog_models`
+// queried WITH an adapter must project each route's `eligibleProfiles` through
+// THAT adapter's real auth descriptor — the same `spawnEligibilityManifest`
+// tiers `resolveAccessProfileAuth` resolves — never the route-level synthetic
+// manifest, which unions auth methods across EVERY adapter curating the route.
+// Without the adapter grounding the catalog offered profiles the named
+// adapter's spawn then refused with `access_profile_ineligible`.
+describe("buildCatalogModels — adapter-grounded eligibleProfiles (route-authority parity)", () => {
+  const codexOpenai: AuthProfile = {
+    id: "codex-openai",
+    endpoint: "openai",
+    method: "oauth-bearer",
+    credentialRef: "ref-codex-openai",
+  }
+  const claudeSubs: AuthProfile = {
+    id: "claude-subs-agentik",
+    endpoint: "anthropic",
+    method: "oauth-bearer",
+    credentialRef: "ref-claude-subs",
+  }
+  const openaiApiKey: AuthProfile = {
+    id: "personal-openai",
+    endpoint: "openai",
+    method: "api-key",
+    credentialRef: "ref-openai-key",
+  }
+
+  // A model-derived adapter that presents api-key on EVERY route but no
+  // subscription surface at all (jcode's real shape) — the adapter whose
+  // spawn would refuse an oauth-bearer profile on any route.
+  const API_KEY_ONLY: CatalogAdapterInput = {
+    slug: "jcode",
+    models: [{ id: "anthropic/claude-opus-4-8", provider: "anthropic" }],
+    authDescriptor: { modelDerivedApiKey: true },
+    routeSelection: "derived-from-model",
+  }
+
+  it("the known repro: opencode on a claude/anthropic route lists claude-subs-agentik, never codex-openai/openai-oauth-bearer", () => {
+    const opencode: CatalogAdapterInput = {
+      slug: "opencode",
+      models: [{ id: "anthropic/claude-sonnet-4-5", provider: "anthropic" }],
+      authDescriptor: {
+        modelDerivedApiKey: true,
+        authSubscription: [
+          { external: true, provider: "anthropic" },
+          { external: true, provider: "openai" },
+        ],
+      },
+      routeSelection: "derived-from-model",
+    }
+    const response = buildCatalogModels({
+      adapters: [opencode],
+      profiles: [codexOpenai, claudeSubs],
+      query: { adapter: "opencode", runnableOnly: true },
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["claude-subs-agentik"])
+    expect(route?.eligibleProfiles).not.toContain("codex-openai")
+  })
+
+  it("does NOT union a sibling adapter's subscription methods onto an api-key-only adapter's route", () => {
+    // claude-code CAN present an anthropic oauth-bearer; jcode cannot. The
+    // merged route row's methods union would offer the Claude subscription for
+    // jcode, which jcode's spawn refuses. The adapter query must drop it.
+    const withSubscription: CatalogAdapterInput = {
+      slug: "claude-code",
+      models: [{ id: "anthropic/claude-opus-4-8", provider: "anthropic" }],
+      authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" } },
+      routeSelection: "free",
+    }
+    const noAdapterQuery = buildCatalogModels({
+      adapters: [API_KEY_ONLY, withSubscription],
+      profiles: [claudeSubs, anthropicApiKey],
+    })
+    // Route-level (no adapter named): the union still offers the subscription.
+    expect(
+      findRoute(noAdapterQuery, "anthropic", "claude-opus-4-8", "anthropic")?.eligibleProfiles.sort(),
+    ).toEqual(["claude-subs-agentik", "work-anthropic-key"])
+
+    const jcodeQuery = buildCatalogModels({
+      adapters: [API_KEY_ONLY, withSubscription],
+      profiles: [claudeSubs, anthropicApiKey],
+      query: { adapter: "jcode", runnableOnly: true },
+    })
+    const route = findRoute(jcodeQuery, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
+  })
+
+  it("an adapter with NO auth descriptor yields no eligible profiles (the spawn layer refuses every profile for it)", () => {
+    const noAuth: CatalogAdapterInput = {
+      slug: "jcode",
+      models: [{ id: "anthropic/claude-opus-4-8", provider: "anthropic" }],
+    }
+    const response = buildCatalogModels({
+      adapters: [noAuth],
+      profiles: [anthropicOauth, anthropicApiKey],
+      query: { adapter: "jcode", runnableOnly: true },
+    })
+    expect(findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")).toBeUndefined()
+  })
+
+  it("drops codex-openai for an adapter with no openai subscription surface, even when a sibling adapter's row would offer it", () => {
+    const apiKeyOnlyOpenai: CatalogAdapterInput = {
+      slug: "jcode",
+      models: [{ id: "openai/gpt-5.1", provider: "openai" }],
+      authDescriptor: { modelDerivedApiKey: true },
+      routeSelection: "derived-from-model",
+    }
+    const codex: CatalogAdapterInput = {
+      slug: "codex",
+      models: [{ id: "openai/gpt-5.1", provider: "openai" }],
+      authDescriptor: { provider: "openai", authSubscription: { external: true } },
+    }
+    const response = buildCatalogModels({
+      adapters: [apiKeyOnlyOpenai, codex],
+      profiles: [codexOpenai, openaiApiKey],
+      query: { adapter: "jcode", runnableOnly: true },
+    })
+    const route = findRoute(response, "openai", "gpt-5.1", "openai")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-openai"])
+    expect(route?.eligibleProfiles).not.toContain("codex-openai")
+  })
+})
+
 describe("buildCatalogModels — first-party ↔ router-key collision (firstparty-eligibility bug)", () => {
   // Regression for the first-party-eligibility bug: OpenRouter keys
   // `anthropic/claude-sonnet-5` and `anthropic/claude-fable-5` with the SAME
