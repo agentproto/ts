@@ -79,17 +79,19 @@ The checkpoint is a JSON file at
 
 | Field | Meaning |
 |-------|---------|
-| `checkpointId`, `sourceSessionId`, `createdAt` | Identity and timestamp. |
+| `schemaVersion`, `checkpointId`, `sourceSessionId`, `createdAt` | Format version, identity and timestamp. |
 | `contextPct` | How full the source session's context window was. |
-| `sections` | The handoff content: `goal`, `plan`, `decisions`, `changedFiles`, `gitStatus`, `tests`, `errors`, `risks`, `nextStep`, `config`. Which sections are captured follows the session's context-continuity policy. |
+| `sections` | The handoff content: `goal`, `plan`, `decisions`, `changedFiles`, `gitStatus`, `tests`, `errors`, `risks`, `nextStep`, `notes`, `config`. Which sections are captured follows the session's context-continuity policy. |
 | `recentDigest` | Bounded digest of the most recent turns. |
 | `originalTranscriptPath` | The source session's full `events.jsonl` — preserved; the checkpoint is a summary, never a replacement. |
 | `checkpointPath` | Where this file lives. |
 | `policy`, `nextAction` | The effective context-continuity policy and the suggested next action. |
 
-`--note` text is stored with the checkpoint and appended to the resume prompt as
-operator notes. Depending on your version, some `sections` entries may be placeholders such as
-`(captured in recent digest)` — the actual content is then in `recentDigest`.
+`--note` text is stored verbatim in `sections.notes` and rendered in the resume
+prompt under "notes (from the operator)". When the source session is idle, a real
+handoff (not `--dry-run`, which never talks to the source session) also asks it to
+summarise itself; sections the extraction can't fill may read `(… captured in recent
+digest)`, in which case the content is in `recentDigest`.
 
 The prompt the new agent receives is this checkpoint rendered as text:
 `--dry-run` prints exactly that.

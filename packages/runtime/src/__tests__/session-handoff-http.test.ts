@@ -118,14 +118,14 @@ describe("POST /sessions/:id/checkpoint + /handoff", () => {
       const body = (await res.json()) as {
         checkpointId: string
         path: string
-        checkpoint: { checkpointId: string; sourceSessionId: string; notes?: string }
+        checkpoint: { checkpointId: string; sourceSessionId: string }
       }
       expect(body.checkpointId).toBe(body.checkpoint.checkpointId)
       expect(body.checkpoint.sourceSessionId).toBe(h.source.id)
       expect(body.path.startsWith(tmp)).toBe(true)
       expect(existsSync(body.path)).toBe(true)
-      const onDisk = JSON.parse(readFileSync(body.path, "utf8")) as { notes?: string }
-      expect(onDisk.notes).toBe("keep the migration")
+      const onDisk = JSON.parse(readFileSync(body.path, "utf8")) as { sections: { notes?: string } }
+      expect(onDisk.sections.notes).toBe("keep the migration")
     } finally {
       await h.stop()
     }
