@@ -7,6 +7,7 @@ agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
 agentproto sessions --stats[=full] [--verbose] [--json] [--no-color]
                                                    per-session RAM / CPU / process counts
+agentproto sessions board    [--json] [--watch] [--all]
 agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                         [--model <id>] [--base-url <url>]
                                         [--auth subscription|api-key]
@@ -128,6 +129,36 @@ what it is doing: `starting queued #2` while it waits for a provisioning slot
 / `starting setup` etc. once it holds one. `sessions show <id>` prints a
 `provision:` line, and `--json` carries the full
 `provisioning: { state, position, phase, startedAt }` object.
+
+### `board`
+
+```bash
+agentproto sessions board
+agentproto sessions board --json
+agentproto sessions board --watch
+agentproto sessions board --all
+```
+
+At-a-glance status board: every session is assigned exactly one Badge sorted
+by attention-worthiness, with a one-line summary header.
+
+| Badge | Condition |
+|-------|-----------|
+| `AWAITING` | `awaitingInput` or `awaitingPermission` — needs a human |
+| `BLOCKED` | `blockedOn` is set — wedged on a subagent, command, or inbox |
+| `STALE` | Running, not busy, no `keepAlive`, idle past the 15-min reap-risk age — or `interrupted: true` (will never wake on its own) |
+| `ACTIVE` | Running and busy (a turn is in flight) |
+| `IDLE` | Running, not busy, not stale (young or `keepAlive: true`) |
+| `COMMAND` | `kind: "command"` execution-log row (only visible with `--all`) |
+| `ENDED` | Terminal status (`exited` / `killed` / `error`) |
+
+Sort order (most-attention-worthy first): `AWAITING > BLOCKED > STALE > ACTIVE > IDLE > COMMAND > ENDED`.
+
+| Flag | Description |
+|------|-------------|
+| `--all` | Include `kind: "command"` execution-log rows (same rows `command_list` returns). |
+| `--json` | Emit the classified rows as JSON — includes the Badge plus every evidence field the rules read (`keepAlive`, `interrupted`, `continuedFrom`, `blockedOn`, `idleMs`, `costUsd` when usage exists). Cannot be combined with `--watch`. |
+| `--watch` | Re-render every 2 s on a TTY (`q` to quit). On non-TTY stdout falls back to a single snapshot. |
 
 ### `--stats[=full]` (who is eating the host)
 
