@@ -58,6 +58,7 @@
       "default": "./dist/workspace-fs.mjs"
     },
     "./package.json": "./package.json",
+    "./schemas/checkpoint.v1.json": "./schemas/checkpoint.v1.json",
     "./pr-provenance": {
       "types": "./dist/pr-provenance.d.ts",
       "import": "./dist/pr-provenance.mjs",
@@ -147,6 +148,7 @@
   "files": [
     "dist",
     "docs",
+    "schemas",
     "README.md",
     "LICENSE"
   ],
@@ -160,6 +162,7 @@
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
+    "gen:checkpoint-schema": "vite-node scripts/gen-checkpoint-schema.mjs",
     "sim:inbound": "vite-node scripts/simulate-inbound.mjs",
     "telegram:proxy": "vite-node scripts/telegram-proxy.mjs",
     "bench:review-ledger": "vite-node scripts/bench-review-ledger.mjs"
@@ -218,6 +221,7 @@
     "@agentproto/transcript-fixtures": "workspace:*",
     "@types/node": "^25.9.5",
     "@types/ws": "^8.18.1",
+    "ajv": "^8.20.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vite-node": "^3.2.4",

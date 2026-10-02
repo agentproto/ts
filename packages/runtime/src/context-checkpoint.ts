@@ -10,6 +10,31 @@
 import { execFile } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
+import {
+  CHECKPOINT_SCHEMA_VERSION,
+} from "./checkpoint-schema.js"
+import {
+  DEFAULT_HANDOFF_TIMEOUT_MS,
+  HANDOFF_PROMPT,
+  createRegistryHandoffAsker,
+  extractGoal,
+  extractLastAgentMessage,
+  extractLastError,
+  extractLastTestRun,
+  extractPlan,
+  formatBullets,
+  formatGateResult,
+  formatHandoffTests,
+  formatLastAgentMessage,
+  formatOpenTasks,
+  formatTestRun,
+  parseHandoffReply,
+  type CheckpointSources,
+  HandoffUnavailableError,
+  type HandoffAsker,
+  type HandoffRegistry,
+  type HandoffReply,
+} from "./checkpoint-extract.js"
 import type { SessionDescriptor } from "./sessions.js"
 import { exportDaemonEventsSession, renderMarkdown, type ExportedMessage } from "./transcript-export.js"
 import { sessionEventsPath, sessionTranscriptDir } from "./transcript-writer.js"
@@ -21,6 +46,8 @@ import type {
 
 /** A persisted structured checkpoint. */
 export interface ContextCheckpoint {
+  /** Contract version of this document — see `schemas/checkpoint.v1.json`. */
+  schemaVersion: typeof CHECKPOINT_SCHEMA_VERSION
   /** Stable checkpoint identifier. */
   checkpointId: string
   /** Session that produced the checkpoint. */
@@ -31,8 +58,12 @@ export interface ContextCheckpoint {
   contextPct: number
   /** Effective policy snapshot. */
   policy: ResolvedContextContinuityPolicy
-  /** Sections requested and present. */
+  /** Sections requested and present. A section with nothing real to say is
+   *  omitted — never a placeholder. */
   sections: ContextCheckpointSections
+  /** How the optional handoff turn (asking the live source session to
+   *  summarise itself) went. Absent on checkpoints written before it existed. */
+  handoffTurn?: CheckpointHandoffTurn
   /** Bounded digest of the most recent turns. */
   recentDigest: string
   /** Absolute path to the original events.jsonl transcript. */
@@ -41,6 +72,13 @@ export interface ContextCheckpoint {
   checkpointPath: string
   /** Suggested next action at the time the checkpoint was taken. */
   nextAction: "continue" | "compact_then_continue" | "ask"
+}
+
+export interface CheckpointHandoffTurn {
+  /** `answered`: valid summary received; `skipped`: not requested or no live
+   *  idle session; `failed`: asked, but timed out or the reply was unusable. */
+  status: "answered" | "skipped" | "failed"
+  reason?: string
 }
 
 export interface ContextCheckpointSections {
@@ -54,6 +92,8 @@ export interface ContextCheckpointSections {
   risks?: string
   nextStep?: string
   config?: string
+  /** Free-text notes the operator attached to the handoff, verbatim. */
+  notes?: string
 }
 
 export interface BuildContextCheckpointOptions {
@@ -63,6 +103,25 @@ export interface BuildContextCheckpointOptions {
   sections?: ContextContinuityCheckpointSections
   /** Base directory for session storage (defaults to ~/.agentproto/sessions). */
   baseDir?: string
+  /** Operator notes (e.g. decisions to carry over), stored verbatim in `sections.notes`. */
+  notes?: string
+  /**
+   * Ask the live source session to summarise itself (goal, decisions, tests,
+   * risks, next step) before the checkpoint is built. Defaults to `true`, but
+   * only takes effect when `registry` (or `handoffAsker`) is supplied and the
+   * session is running and idle; any failure or timeout falls back to the
+   * deterministic extraction. Pass `false` for read-only flows (dry runs) and
+   * when the session is already at its context limit.
+   */
+  askSource?: boolean
+  /** Time the source session gets to answer. Default {@link DEFAULT_HANDOFF_TIMEOUT_MS}. */
+  askTimeoutMs?: number
+  /** Registry used to prompt the source session for the handoff turn. */
+  registry?: HandoffRegistry
+  /** Custom asker, overriding the registry-backed one (tests, remote sessions). */
+  handoffAsker?: HandoffAsker
+  /** Supervisor gate results / task ledger lookups (see `createCheckpointSources`). */
+  sources?: CheckpointSources
 }
 
 /** Character budget for the rendered recent-turn digest. */
@@ -72,9 +131,9 @@ const SECTION_CHAR_CAP = 1200
 /** Character cap for tool-result bodies inside the digest. */
 const TOOL_CHAR_CAP = 200
 
-function truncSection(text: string): string {
-  if (text.length <= SECTION_CHAR_CAP) return text
-  return `${text.slice(0, SECTION_CHAR_CAP)}\n… [${text.length - SECTION_CHAR_CAP} chars truncated]`
+function truncText(text: string, cap: number): string {
+  if (text.length <= cap) return text
+  return `${text.slice(0, cap)}\n… [${text.length - cap} chars truncated]`
 }
 
 function approxMessageLen(m: ExportedMessage): number {
@@ -86,13 +145,22 @@ function approxMessageLen(m: ExportedMessage): number {
   return (m.text?.length ?? 0) + (m.reasoning?.length ?? 0) + toolLen + 32
 }
 
-async function buildRecentDigest(sessionId: string): Promise<string> {
+interface TranscriptView {
+  messages: ExportedMessage[]
+  digest: string
+}
+
+async function readTranscript(sessionId: string): Promise<TranscriptView> {
   let messages: ExportedMessage[]
   try {
     messages = (await exportDaemonEventsSession(sessionId)).messages
   } catch {
-    return "(no daemon transcript available)"
+    return { messages: [], digest: "(no daemon transcript available)" }
   }
+  return { messages, digest: buildRecentDigest(messages) }
+}
+
+function buildRecentDigest(messages: ExportedMessage[]): string {
   if (messages.length === 0) return "(no turns yet)"
 
   let total = 0
@@ -166,12 +234,99 @@ function effectiveSections(
   }
 }
 
+/** Character cap for operator notes — they are deliberate, so given more room. */
+const NOTES_CHAR_CAP = 4000
+
+interface HandoffTurnOutcome {
+  reply?: HandoffReply
+  turn: CheckpointHandoffTurn
+}
+
+async function runHandoffTurn(
+  desc: SessionDescriptor,
+  opts: BuildContextCheckpointOptions,
+): Promise<HandoffTurnOutcome> {
+  if (opts.askSource === false) {
+    return { turn: { status: "skipped", reason: "askSource disabled" } }
+  }
+  const asker =
+    opts.handoffAsker ??
+    (opts.registry ? createRegistryHandoffAsker(opts.registry, desc, opts.baseDir) : undefined)
+  if (!asker) {
+    return { turn: { status: "skipped", reason: "no registry available to prompt the source session" } }
+  }
+  let text: string
+  try {
+    text = await asker(HANDOFF_PROMPT, { timeoutMs: opts.askTimeoutMs ?? DEFAULT_HANDOFF_TIMEOUT_MS })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    return {
+      turn: {
+        status: err instanceof HandoffUnavailableError ? "skipped" : "failed",
+        reason,
+      },
+    }
+  }
+  const reply = parseHandoffReply(text)
+  if (!reply) {
+    return { turn: { status: "failed", reason: "source session reply was not a valid handoff JSON object" } }
+  }
+  return { reply, turn: { status: "answered" } }
+}
+
+function buildGoalSection(
+  messages: ExportedMessage[],
+  desc: SessionDescriptor,
+  reply: HandoffReply | undefined,
+): string | undefined {
+  const initial = extractGoal(messages) ?? desc.title?.trim() ?? undefined
+  const current = reply?.goal
+  if (initial && current && current !== initial) {
+    return `${initial}\n\nCurrent goal (per the source session): ${current}`
+  }
+  return initial ?? current
+}
+
+function buildTestsSection(
+  messages: ExportedMessage[],
+  desc: SessionDescriptor,
+  reply: HandoffReply | undefined,
+  sources: CheckpointSources | undefined,
+): string {
+  const parts: string[] = []
+  const gate = sources?.lastGate?.(desc.id)
+  if (gate) parts.push(formatGateResult(gate))
+  else {
+    const run = extractLastTestRun(messages)
+    if (run) parts.push(formatTestRun(run))
+  }
+  const reported = reply?.tests ? formatHandoffTests(reply.tests) : undefined
+  if (reported) parts.push(reported)
+  return parts.join("\n\n") || "no test run recorded"
+}
+
+function buildNextStepSection(
+  messages: ExportedMessage[],
+  desc: SessionDescriptor,
+  reply: HandoffReply | undefined,
+  sources: CheckpointSources | undefined,
+): string | undefined {
+  const tasks = sources?.openTasks?.(desc.id) ?? []
+  const tasksText = tasks.length > 0 ? formatOpenTasks(tasks) : undefined
+  if (reply?.nextStep) return [reply.nextStep, tasksText].filter(Boolean).join("\n\n")
+  if (tasksText) return tasksText
+  const last = extractLastAgentMessage(messages)
+  return last ? formatLastAgentMessage(last) : undefined
+}
+
 /**
  * Build a bounded structured checkpoint for `desc`.
  *
  * Reads the daemon's own `events.jsonl` transcript so the original history
- * is never discarded; the checkpoint only carries a bounded digest plus
- * optional summary sections.
+ * is never discarded; the checkpoint carries a bounded digest plus sections
+ * filled from, in order of preference: the source session's own answer to a
+ * handoff turn, the daemon's records (last policy gate, open tasks) and the
+ * transcript. A section with nothing real to say is omitted.
  */
 export async function buildContextCheckpoint(
   desc: SessionDescriptor,
@@ -186,33 +341,46 @@ export async function buildContextCheckpoint(
   const checkpointPath = checkpointFilePath(desc.id, checkpointId, opts.baseDir)
 
   const gitStatus = sectionsReq.gitStatus ? await captureGitStatus(desc.cwd) : undefined
-  const recentDigest = await buildRecentDigest(desc.id)
+  // Read BEFORE the handoff turn so the digest and extraction describe the
+  // work itself, not the handoff exchange.
+  const { messages, digest: recentDigest } = await readTranscript(desc.id)
+  const { reply, turn: handoffTurn } = await runHandoffTurn(desc, opts)
 
   const sections: ContextCheckpointSections = {}
-  if (sectionsReq.goal) sections.goal = truncSection(desc.title ?? "(goal not recorded)")
-  if (sectionsReq.plan) sections.plan = truncSection("(plan captured in recent digest)")
-  if (sectionsReq.decisions) sections.decisions = truncSection("(decisions captured in recent digest)")
+  const put = (key: keyof ContextCheckpointSections, value: string | undefined, cap = SECTION_CHAR_CAP): void => {
+    const trimmed = value?.trim()
+    if (trimmed) sections[key] = truncText(trimmed, cap)
+  }
+  if (sectionsReq.goal) put("goal", buildGoalSection(messages, desc, reply))
+  if (sectionsReq.plan) put("plan", extractPlan(messages))
+  if (sectionsReq.decisions && reply?.decisions.length) put("decisions", formatBullets(reply.decisions))
   if (sectionsReq.changedFiles) {
-    sections.changedFiles = truncSection(
+    put(
+      "changedFiles",
       gitStatus && gitStatus !== "(working tree clean)"
         ? `Changed files:\n${gitStatus}`
         : "(no changed files captured)",
     )
   }
-  if (sectionsReq.gitStatus) sections.gitStatus = truncSection(gitStatus ?? "(not a git repository)")
-  if (sectionsReq.tests) sections.tests = truncSection("(test results captured in recent digest)")
-  if (sectionsReq.errors) sections.errors = truncSection("(errors captured in recent digest)")
-  if (sectionsReq.risks) sections.risks = truncSection("(risks captured in recent digest)")
-  if (sectionsReq.nextStep) sections.nextStep = truncSection("(next step captured in recent digest)")
-  if (sectionsReq.config) sections.config = truncSection(formatConfigSection(desc))
+  if (sectionsReq.gitStatus) put("gitStatus", gitStatus ?? "(not a git repository)")
+  if (sectionsReq.tests) put("tests", buildTestsSection(messages, desc, reply, opts.sources))
+  if (sectionsReq.errors) {
+    put("errors", extractLastError(messages) ?? desc.lastTurnErrorMessage ?? desc.lastError)
+  }
+  if (sectionsReq.risks && reply?.openRisks.length) put("risks", formatBullets(reply.openRisks))
+  if (sectionsReq.nextStep) put("nextStep", buildNextStepSection(messages, desc, reply, opts.sources))
+  if (sectionsReq.config) put("config", formatConfigSection(desc))
+  put("notes", opts.notes, NOTES_CHAR_CAP)
 
   return {
+    schemaVersion: CHECKPOINT_SCHEMA_VERSION,
     checkpointId,
     sourceSessionId: desc.id,
     createdAt: now,
     contextPct: opts.contextPct,
     policy,
     sections,
+    handoffTurn,
     recentDigest,
     originalTranscriptPath: sessionEventsPath(desc.id, opts.baseDir),
     checkpointPath,
@@ -261,12 +429,13 @@ export function renderCheckpointPrompt(checkpoint: ContextCheckpoint): string {
     "errors",
     "risks",
     "nextStep",
+    "notes",
     "config",
   ]
   for (const key of sectionOrder) {
     const value = checkpoint.sections[key]
     if (value) {
-      lines.push(`## ${key}`)
+      lines.push(key === "notes" ? "## notes (from the operator)" : `## ${key}`)
       lines.push(value)
       lines.push("")
     }
@@ -276,7 +445,9 @@ export function renderCheckpointPrompt(checkpoint: ContextCheckpoint): string {
   lines.push(checkpoint.recentDigest)
   lines.push("")
   lines.push(
-    "Continue from the 'next step' above. Do not re-run completed work unless asked.",
+    checkpoint.sections.nextStep
+      ? "Continue from the 'next step' above. Do not re-run completed work unless asked."
+      : "Continue from where the recent turns left off. Do not re-run completed work unless asked.",
   )
 
   return lines.join("\n")
