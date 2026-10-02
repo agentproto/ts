@@ -455,7 +455,8 @@ export const agentStartInputShape = {
     .describe(
       "Override lazy MCP tool loading for this spawn: `true` hides most " +
         "tools from `tools/list` (still callable via `tool_search`), `false` " +
-        `keeps the full eager surface. Omit to use the role/daemon default. ${help("deferredTools")}`
+        `keeps the full eager surface. Omit to use the harness/role/daemon default ` +
+        `(harnesses with native tool search default to eager). ${help("deferredTools")}`
     ),
   browser: z
     .preprocess(

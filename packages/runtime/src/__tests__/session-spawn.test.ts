@@ -1706,6 +1706,68 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     }
   })
 
+  describe("self-mount `deferred` resolution: spawn override > native tool search > role > gateway default", () => {
+    const URL = "http://127.0.0.1:18790/mcp"
+    type Expected = "deferred=1" | "deferred=0" | "none"
+    // [label, adapter, harness declares nativeToolSearch, role, agent_start.deferredTools, expected `?deferred=`]
+    const table: Array<[string, string, boolean, "executor" | "supervisor", boolean | undefined, Expected]> = [
+      ["claude-code executor, no override ⇒ native search beats the role's ON", "claude-code", true, "executor", undefined, "deferred=0"],
+      ["claude-code supervisor, no override ⇒ eager (also beats a deferred gateway default)", "claude-code", true, "supervisor", undefined, "deferred=0"],
+      ["claude-code executor, deferredTools:true ⇒ spawn override wins over native", "claude-code", true, "executor", true, "deferred=1"],
+      ["claude-code supervisor, deferredTools:false ⇒ eager", "claude-code", true, "supervisor", false, "deferred=0"],
+      ["hermes executor (no native search) ⇒ role default ON", "hermes", false, "executor", undefined, "deferred=1"],
+      ["hermes supervisor (no native search) ⇒ no opinion, gateway default applies", "hermes", false, "supervisor", undefined, "none"],
+      ["hermes executor, deferredTools:false ⇒ eager", "hermes", false, "executor", false, "deferred=0"],
+      ["hermes supervisor, deferredTools:true ⇒ deferred", "hermes", false, "supervisor", true, "deferred=1"],
+    ]
+    it.each(table)("%s", async (_label, adapter, nativeToolSearch, role, deferredTools, expected) => {
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const { deps } = baseDeps({
+        daemonMcpUrl: URL,
+        loadDefaultsConfig: async () => ({ mcp: { deferredTools: true } }),
+        resolveAgentAdapter: async () => ({
+          startSession: startSession as any,
+          commandPreview: "mock-adapter",
+          ...(nativeToolSearch ? { nativeToolSearch: true } : {}),
+        }),
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter,
+        cwd: "/tmp",
+        role,
+        ...(deferredTools !== undefined ? { deferredTools } : {}),
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const ref = String(result.descriptor.mcpServers?.[0]?.ref)
+      const params = new URL(ref).searchParams
+      if (expected === "none") expect(params.has("deferred")).toBe(false)
+      else expect(params.get("deferred")).toBe(expected.split("=")[1])
+      // Only the loading strategy changes — the executor's tool gate is untouched.
+      expect(params.has("denyTools")).toBe(role === "executor")
+    })
+
+    it("a caller-supplied mount keeps its own ?deferred= regardless of the harness", async () => {
+      const { deps } = baseDeps({
+        daemonMcpUrl: URL,
+        resolveAgentAdapter: async () => ({
+          startSession: vi.fn(async () => fakeAgentSession()) as any,
+          commandPreview: "mock-adapter",
+          nativeToolSearch: true,
+        }),
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter: "claude-code",
+        cwd: "/tmp",
+        role: "executor",
+        mcpServers: [{ name: "agentproto", transport: "http", ref: `${URL}?deferred=1` }],
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(new URL(String(result.descriptor.mcpServers?.[0]?.ref)).searchParams.get("deferred")).toBe("1")
+    })
+  })
+
   it("an unknown role name is rejected with a clear error, no session created", async () => {
     const { registry, deps } = baseDeps()
 

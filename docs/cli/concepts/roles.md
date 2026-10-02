@@ -119,7 +119,8 @@ strips `agent_start`/`agent_prompt` for it), so the daemon's own
 ~190-tool `/mcp` surface is mostly dead weight in its context; hiding it
 behind `tool_search` (see `deferred-tools.ts`) saves real turn-0 tokens
 without losing any capability (every tool stays fully callable, just
-absent from `tools/list` until searched). `supervisor` has no opinion
+absent from `tools/list` until searched; on a harness with native tool
+search the role default yields to eager loading). `supervisor` has no opinion
 (`undefined`) and falls through to whatever the daemon's own boot-time
 default is.
 
@@ -129,9 +130,13 @@ described above: when the resolved role (or an explicit
 `session-spawn.ts` appends `&deferred=1` or `&deferred=0` to the injected
 `mcpServers` ref — e.g. an executor's hermes self-mount ends up
 `...?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=...`.
-Precedence, highest first: explicit `agent_start.deferredTools` → the
-resolved role's `deferredTools` → (no override at all) the gateway's own
-`defaults.mcp.deferredTools` config.json default, which is **off**
+Precedence, highest first: explicit `agent_start.deferredTools` → a
+caller-supplied mount's own `?deferred=` → a harness whose manifest declares
+`capabilities.nativeToolSearch` (claude-code ⇒ **eager**, since it already
+defers MCP tools behind its own `ToolSearch` — see
+[MCP in coding CLIs](../guides/mcp-in-coding-cli.md#native-tool-search-per-harness))
+→ the resolved role's `deferredTools` → (no override at all) the gateway's
+own `defaults.mcp.deferredTools` config.json default, which is **off**
 globally unless an operator opts in.
 
 The same `?deferred=1|0` query works standalone on any `/mcp` connection

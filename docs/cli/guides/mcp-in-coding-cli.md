@@ -255,24 +255,47 @@ instead of loading all ~190 upfront. Measured on a real daemon boot: 191
 tools / ~238 KB / ~60K tokens (chars/4) eager vs. 18 tools / ~58 KB / ~14K
 tokens deferred — a ~76% smaller `tools/list` payload.
 
-Three independent knobs turn it on, checked in this order (first one that
-has an opinion wins):
+Four knobs decide it, checked in this order (first one that has an opinion
+wins):
 
-1. **Per-mount query** — append `?deferred=1` (or `0` to force it off) to
+1. **Per-spawn** — `agent_start`'s `deferredTools: true|false`.
+2. **Per-mount query** — append `?deferred=1` (or `0` to force it off) to
    any `/mcp` connection URL: `http://127.0.0.1:18790/mcp?deferred=1`.
    Composes with `?denyTools=` (used for the executor tool gate — see
    [Roles](../concepts/roles.md#role-level-default-for-deferred-tool-loading)):
    `denyTools` always wins for an excluded name, regardless of deferred
-   status.
-2. **Per-spawn / per-role** — `agent_start`'s `deferredTools: true|false`
-   overrides the resolved role's own default; the built-in `executor` role
-   defaults it ON (it can't delegate anyway, so the daemon's full surface is
-   mostly dead weight), `supervisor` has no opinion.
-3. **Daemon-wide default** — `~/.agentproto/config.json`'s
+   status. A caller-supplied mount keeps its own query verbatim.
+3. **Harness with native tool search** — when the adapter's manifest
+   declares `capabilities.nativeToolSearch` (see the verdict table below),
+   the daemon's default self-mount is **eager** (`?deferred=0`): the harness
+   already defers MCP tools behind its own search, and a second layer would
+   hide tools from that search (a tool the daemon keeps out of `tools/list`
+   is invisible to the harness's native search).
+4. **Role default** — the built-in `executor` role defaults it ON (it can't
+   delegate anyway, so the daemon's full surface is mostly dead weight);
+   `supervisor` has no opinion.
+5. **Daemon-wide default** — `~/.agentproto/config.json`'s
    `defaults.mcp.deferredTools` (`false` | `true` | `{ "alwaysOn": [...] }`).
-   Read once at boot; **off by default** — an existing client sees no
-   behaviour change unless it opts in via one of the two overrides above or
-   this config key.
+   Read once at boot; **off by default**.
+
+Only the loading strategy changes — no tool is removed. Imported MCP servers
+stay reachable exactly as before (mounted natively via `bundles`, or through
+`mcp_imported_*` on the daemon's `/mcp`).
+
+### Native tool search per harness
+
+Verdicts were established against the versions installed on the dev host
+(2026-10-02). Only a verified, default-on native deferral is declared in the
+manifest; everything else keeps the role/daemon default.
+
+| Harness | `nativeToolSearch` | Verdict and source |
+|---|---|---|
+| claude-code | **declared** | Defers MCP tool schemas behind its `ToolSearch` tool (Claude Code docs, "MCP Tool Search", `code.claude.com/docs/en/mcp`; modes `standard`/`tst`/`tst-auto` read from the pinned 2.1.280 binary, see the `lean` mode comment in `adapters/claude-code/src/index.ts`). Default is threshold-based (`ENABLE_TOOL_SEARCH=auto`); the adapter's `tool_search` option (`true`/`false`/`auto`) overrides it. Caveat: Claude Code turns it off against a non-first-party `ANTHROPIC_BASE_URL` unless `ENABLE_TOOL_SEARCH` is set, so such routes get the eager daemon surface. |
+| codex | not declared | Ships a BM25 `tool_search` tool (`core/src/tools/handlers/tool_search.rs`, `mcp_tool_exposure.rs` in `codex-cli 0.153.4`, strings scan of the binary) with a per-model `supports_search_tool` flag and a direct/deferred exposure split, but which MCP tools it defers (and under what threshold) is not verified, and it is model-gated. Revisit once confirmed. Not auto-mounted anyway (`daemonMount: true` needed). |
+| opencode | no | Loads every MCP tool into the tool list; the `tool_search_tool_*` strings in `opencode 1.18.33` belong to the bundled `@ai-sdk/anthropic` provider types, not an opencode feature (strings scan). |
+| gemini | no | No tool-search/deferral code in the `@google/gemini-cli 0.46.0` bundle (0 matches for `tool_search`/`ToolSearch`/`defer_loading`); MCP tools are filtered only via `includeTools`/`excludeTools`. |
+| pi | no | Has no MCP client at all: "No MCP" (`@earendil-works/pi-coding-agent 0.80.3` README, "No MCP" section); the daemon's tools reach it through its own `mcp-bridge` extension. |
+| hermes | no | `hermes-agent 2026.9.14` registers MCP tools eagerly into its tool registry (`tools/mcp_tool_registration.py`); no tool-search or deferral code in `agent/`, `hermes_cli/`, `tools/`. It has zero built-in tools, so the daemon mount is its toolset. |
 
 ```json
 {

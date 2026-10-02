@@ -556,6 +556,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.nativeTerminalResume === true
           ? { nativeTerminalResume: true }
           : {}),
+        ...(adapter.handle.capabilities?.nativeToolSearch === true
+          ? { nativeToolSearch: true }
+          : {}),
       }
     } catch (err) {
       console.warn(
