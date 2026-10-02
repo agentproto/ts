@@ -112,9 +112,78 @@ Two limits worth knowing:
 - **Switching harness is never automatic.** The policy's continue-fresh keeps
   the same harness; moving to a *different* one (`--to codex`) is always an
   explicit `sessions handoff` (or the `session_continue_fresh` MCP tool with
-  `harness`). agentproto does not hand off when a quota is hit.
+  `harness`). agentproto only suggests it — see below.
 - **The old session is not stopped**, and its working tree is shared — see
   step 3.
+
+## When agentproto suggests a handoff
+
+agentproto tells you when a handoff is worth it; you decide. There are three
+triggers, and in each one **the switch is never automatic**: a suggestion
+spawns nothing, and the new session only exists once you run the command or
+answer the question yourself.
+
+A harness is only suggested when it is installed, has a usable credential
+(the same discovery `harness_capabilities` reports), and is not the harness
+the session already runs on. With no such harness, nothing is suggested.
+
+**Context threshold (`ask` mode).** When the context window crosses the
+`compactAtPct` / `continueFreshAtPct` band, the session's question gains one
+`handoff:<harness>` option per eligible harness, next to `continue-fresh` and
+`keep-going`:
+
+```
+Context is at 78%. Continue fresh to avoid losing continuity?
+options: continue-fresh · handoff:codex · keep-going
+```
+
+Answering `handoff:codex` is the same as `agentproto sessions handoff <id> --to
+codex`. This only fires for adapters whose usage frames carry both a context
+window size and the tokens used: `claude-code`, `claude-sdk`, `pi` and
+`opencode` do. Adapters that report `size: 0` (`antigravity`, `jcode`) never reach the
+threshold, so no question is raised there; for any other ACP-backed adapter it
+depends on whether its server sends a `usage_update` with both figures.
+
+**Provider usage limit.** When a session dies on a provider cap (Claude Code's
+"You've hit your usage limit" / "session limit"), besides the
+`provider-limit` end reason agentproto emits a `session:handoff-suggested`
+event and writes a transcript line with the command in clear:
+
+```
+[handoff] Claude Code hit its usage limit. Hand off to Codex? agentproto sessions handoff ses_abc12 --to codex
+```
+
+The event rides the normal event bus (`GET /events`, `session_events_poll`), so
+the CLI, VS Code and the panel all see it:
+
+```json
+{
+  "type": "session:handoff-suggested",
+  "sessionId": "ses_abc12",
+  "fromHarness": "claude-code",
+  "reason": "provider-limit",
+  "suggestions": [
+    { "harness": "codex", "command": "agentproto sessions handoff ses_abc12 --to codex" }
+  ]
+}
+```
+
+**Quota threshold (opt-in).** Set `handoffAtQuotaRemaining` in the
+context-continuity policy and agentproto reads the session's auth profile
+quota after each turn (at most every 5 minutes). When the remaining quota is at
+or below the threshold it emits the same event with `"reason":
+"quota-threshold"`, once per quota window:
+
+```bash
+agentproto config set defaults.contextContinuity '{"handoffAtQuotaRemaining": 10}'
+```
+
+The unit is the `remaining` figure Anthropic's rate-limit headers report, the
+same number `usage_rollup` shows per profile: a count, not a percentage, since
+the header carries no limit to divide by. Only sessions pinned to an Anthropic
+auth profile (`access`) are watched. Unset, the check never runs and makes no
+provider call; when set, each read is a one-token probe that uses a sliver of
+that profile's own budget.
 
 ## See also
 
