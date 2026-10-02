@@ -1,5 +1,31 @@
 # @agentproto/runtime
 
+## 5.9.0
+
+### Minor Changes
+
+- a75032a: Add per-session index sidecar and `sessions find`/`recap` commands
+- c2472bf: Add session_mark_completed tool to close a session with a verdict
+- 22f58a7: Expose `origin` on the compact `session_list` rows and `wrapupFlag` on the session summary. Both are already on the session descriptor; surfacing them in the summary/compact projections lets UIs (session tree grouping, session-steward) read them without opting into `full: true`.
+- a8d3495: Add MCP Events adapter and native events/* JSON-RPC transport
+
+### Patch Changes
+
+- 20dd08f: Session-index follow-up fixes that missed the #1665 squash: capText slices by code point (no lone-surrogate split at the 500/300 boundary), backfilled `startedAt` uses the transcript's birthtime, and `sessions find --limit` is capped at 200 to match the MCP surface.
+- 3959962: fix(runtime): detect a dead ACP connection instead of reporting it alive — a
+  second, independent liveness axis (`adapterConnected`) so a row whose ACP
+  transport died is no longer reported as running/Idle forever.
+- 1a2ca41: Retry tmp-dir cleanup in session tests to deflake ENOTEMPTY
+- 16a3b8f: Base catalog_models eligibleProfiles on the queried adapter's auth
+- a8d3495: fix(webhook-egress): `ssrfFetch` now defaults the HTTP `Host` header to the original hostname (with `:port` on non-default ports) instead of letting the socket derive it from the connect IP, and the test seam receives the same final wire headers. Prevents name-based vhosts (e.g. CF edge / cloudflared) from answering a literal-IP `Host` with 403/421, which mis-categorised subscribers as `non_2xx` instead of `challenge_failed`. Explicit caller `Host` headers are preserved verbatim.
+- 6ccad21: docs: sentinel webhook target, MCP Events integration + test checklist
+- Updated dependencies [3959962]
+- Updated dependencies [a8d3495]
+  - @agentproto/acp@0.10.0
+  - @agentproto/mcp-server@0.6.0
+  - @agentproto/driver-agent-cli@2.7.1
+  - @agentproto/pairing-host@0.2.3
+
 ## 5.8.0
 
 ### Minor Changes

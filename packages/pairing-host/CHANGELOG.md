@@ -1,5 +1,12 @@
 # @agentproto/pairing-host
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [3959962]
+  - @agentproto/acp@0.10.0
+
 ## 0.2.2
 
 ### Patch Changes
