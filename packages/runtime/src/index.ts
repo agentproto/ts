@@ -182,7 +182,8 @@ import { registerApprovalCardDecideTool } from "./approvals/card-tool.js"
 import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/card.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
-import { createCronScheduler } from "./cron-scheduler.js"
+import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
+import { createSessionTurnObserver } from "./cron-turn-observer.js"
 import { getAuthProfile } from "@agentproto/auth"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
@@ -2179,6 +2180,10 @@ export async function createGateway(
   // create time, refuses an agent job whose adapter doesn't resolve
   // (`getAuthProfile`/`listAgentAdapters` only word that error). Command
   // jobs need none of them.
+  // Follow a cron-spawned session's first turn to a real outcome, reusing the
+  // same `monitorSessionWait` core `agentproto sessions wait --until turn-end`
+  // / `session_monitor` use. Injected so the scheduler stays unit-testable.
+  const observeCronTurn = createSessionTurnObserver({ registry: sessions, sessionEvents, eventRing })
   const cronScheduler = createCronScheduler({
     sessionEvents,
     registry: sessions,
@@ -2192,6 +2197,8 @@ export async function createGateway(
     dispatchTool,
     workspace,
     persist,
+    observeTurn: observeCronTurn,
+    observeTimeoutMs: DEFAULT_OBSERVE_TIMEOUT_MS,
   })
 
   // AIP-41 routine registrar — reads `.routines/*/ROUTINE.md`, validates,

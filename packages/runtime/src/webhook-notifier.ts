@@ -9,6 +9,12 @@
  * Retry policy: one retry after 2 s on network error. No retry on 4xx/5xx.
  * Timeout: 10 s per attempt. All errors are swallowed — the notifier never
  * throws into the session's hot path.
+ *
+ * Of the daemon-scoped `cron:*` events, ONLY `cron:unhealthy` is relayed (to
+ * the global URL — cron events carry no sessionId). `cron:fired` /
+ * `cron:succeeded` / `cron:failed` stay filtered: relaying every fire would
+ * spam whatever the operator's global URL feeds (e.g. a Telegram relay) on a
+ * schedule that can be every 20 minutes.
  */
 
 import { readFileSync } from "node:fs"
@@ -25,17 +31,21 @@ export interface WebhookNotifier {
 }
 
 interface NotifyPayload {
-  sessionId: string
+  /** Present for `session:*` events; absent for daemon-scoped `cron:*` events. */
+  sessionId?: string
+  /** Present for `cron:*` events (no session to attribute them to). */
+  jobId?: string
   label?: string
   event: string
-  awaitingInput: boolean
+  awaitingInput?: boolean
   ts: string
   exitCode?: number
   status?: string
   question?: SessionAwaitingQuestion
   /** `session:turn-end`'s `SessionTurnEndEvent.reason` (e.g. `"completed"`,
    *  `"error"`, `"aborted"`), when the daemon/adapter reported one. Absent
-   *  for other event types and for a turn-end with no reason to report. */
+   *  for other event types and for a turn-end with no reason to report. Also
+   *  carries `cron:unhealthy`'s pause reason. */
   reason?: string
   /** `session:turn-end`'s `SessionTurnEndEvent.error` — the captured
    *  in-band error text, when the turn ended with `reason: "error"` and the
@@ -44,6 +54,10 @@ interface NotifyPayload {
    *  why — the same blind spot `agent_sessions_list`/`monitorSessionWait`
    *  had before this field existed. */
   error?: string
+  /** `cron:unhealthy`'s consecutive non-productive run count at pause time. */
+  consecutiveFailures?: number
+  /** `cron:unhealthy`'s real outcome of the run that tripped the threshold. */
+  outcome?: string
 }
 
 export function createWebhookNotifier(opts?: {
@@ -103,6 +117,28 @@ export function createWebhookNotifier(opts?: {
       perSession.delete(sessionId)
     },
     onSessionEvent(ev) {
+      // The ONE daemon-scoped cron event worth waking an operator for: a job
+      // that just auto-paused. It carries no sessionId, so only the GLOBAL
+      // URL applies (not a per-session notifyUrl). Relaying it here — rather
+      // than in a cron-specific channel — reuses the webhook an operator
+      // already points at the daemon. cron:fired/succeeded/failed stay
+      // filtered (see the module doc): relaying every fire would spam the
+      // same URL on a schedule that can be every 20 minutes.
+      if (ev.type === "cron:unhealthy") {
+        const globalUrl = resolveGlobalUrl()
+        if (!globalUrl) return
+        void post(globalUrl, {
+          event: ev.type,
+          jobId: ev.jobId,
+          label: ev.label,
+          ts: ev.ts,
+          consecutiveFailures: ev.consecutiveFailures,
+          outcome: ev.lastOutcome,
+          reason: ev.reason,
+        })
+        return
+      }
+
       // Only fire on meaningful lifecycle events (not command-done, which
       // goes through the command-tools layer)
       if (
