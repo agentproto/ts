@@ -50,11 +50,14 @@ import {
   mintSessionId,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
+  isResumable,
+  canResume,
   type SessionDescriptor,
   type SessionsRegistry,
   type SessionAuthEcho,
   type SessionAccessProfileEcho,
 } from "./sessions.js"
+import { DELIBERATE_END_REASONS } from "./sentinel-runtime.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
@@ -512,6 +515,139 @@ export interface RestartAgentSessionOptions {
    *  local session. Omitted for a sandbox session ⇒ a loud error — never a
    *  local spawn of a box path (`/home/user` etc.). */
   resolveSandboxProvider?: SandboxProviderResolver
+}
+
+// ── In-place restart (same-id revival) ─────────────────────────────────
+//
+// Restarting an ended-but-resumable agent-cli session used to ALWAYS mint a
+// new row (continuedFrom/continuedTo chain), even though the registry can
+// revive the dead row IN PLACE — same id — via the lazy resume-on-prompt
+// primitive (`maybeResumeAgent`, sessions.ts). Users saw a "new
+// conversation" every time. These helpers are the ONE shared decision both
+// restart paths go through:
+//
+//   - `session_restart` (explicit operator action) — tries the in-place
+//     revival first when the row is ended + resumable + carries no override
+//     axes; on success returns the SAME id with `sameId: true`.
+//   - `restartInboundSession` (AUTOMATIC — sentinel + inbound router) —
+//     same helper, but `allowDeliberateEnd` stays false: a deliberate end
+//     (`operator-completed`/`operator-stopped`/`steward-completed`/
+//     `steward-abandoned`, `DELIBERATE_END_REASONS`) is never revived in
+//     place; it falls back to today's new-id restart unchanged. (The
+//     sentinel additionally never reaches the helper for a deliberate end —
+//     its own `sessionInfo` guard routes those to the parent / parking.)
+//
+// On any failure (triggerResume returns false / throws / ResumeDisabledError
+// / the row isn't eligible) the caller falls back to `restartAgentSession`'s
+// new-id path — byte-identical to the pre-change behaviour.
+
+export interface RestartPreferInPlaceOptions extends RestartAgentSessionOptions {
+  /** Whether a deliberate end (see `DELIBERATE_END_REASONS`) may still be
+   *  restarted. Default false — automatic paths never revive a deliberate
+   *  end. `session_restart` passes true: an explicit operator action is
+   *  deliberate intent, so the row may come back in place when resumable. */
+  allowDeliberateEnd?: boolean
+}
+
+export interface RestartPreferInPlaceResult {
+  /** The live descriptor — the SAME row when `sameId` is true. */
+  desc: SessionDescriptor
+  /** True when the restart revived the existing row in place (no new id,
+   *  no `continuedFrom`/`continuedTo` chain). */
+  sameId: boolean
+  /** The id this restart continued from — `prev.id` in both branches (equal
+   *  to `desc.id` when `sameId` is true). */
+  resumedFrom: string
+  /** Which path was used — `"in-place"` for the in-place revival. */
+  resumeVia: string
+  resumeFallback?: boolean
+  digestRecovered?: boolean
+}
+
+/** The shared in-place eligibility decision: the row must be ENDED (not
+ *  running/starting — a live row keeps today's new-id restart), carry no
+ *  override axes (a config change needs a fresh descriptor), not be a
+ *  deliberate end unless the caller is an explicit operator action, and
+ *  pass the registry's own resume gates (`isResumable` — agent-cli with
+ *  adapterSlug/adapterSessionId/cwd, not archived — and `canResume` —
+ *  under `MAX_RESUME_ATTEMPTS`). */
+export function restartInPlaceEligible(
+  desc: SessionDescriptor,
+  opts: { overrides?: RestartOverrides; allowDeliberateEnd?: boolean } = {},
+): boolean {
+  const hasOverrides = Object.keys(opts.overrides ?? {}).length > 0
+  const ended = desc.status !== "running" && desc.status !== "starting"
+  const deliberateEnd =
+    desc.endedReason !== undefined && DELIBERATE_END_REASONS.has(desc.endedReason)
+  return (
+    ended &&
+    !hasOverrides &&
+    (opts.allowDeliberateEnd === true || !deliberateEnd) &&
+    isResumable(desc) &&
+    canResume(desc)
+  )
+}
+
+/** Try the in-place revival of an ended row via the registry's own
+ *  `triggerResume` (the primitive lazy resume-on-prompt uses — wraps
+ *  `maybeResumeAgent(rt, "restarted")`, returns whether the row is bound
+ *  again). Returns the revived SAME-id descriptor, or `undefined` when the
+ *  row isn't eligible or the resume didn't take — the caller then falls
+ *  back to the new-id restart. */
+export async function tryRestartInPlace(
+  registry: SessionsRegistry,
+  desc: SessionDescriptor,
+  opts: { overrides?: RestartOverrides; allowDeliberateEnd?: boolean } = {},
+): Promise<SessionDescriptor | undefined> {
+  if (!restartInPlaceEligible(desc, opts)) return undefined
+  let resumed = false
+  try {
+    resumed = await registry.triggerResume(desc.id)
+  } catch {
+    resumed = false
+  }
+  if (!resumed) return undefined
+  const live = registry.get(desc.id)
+  // `triggerResume` answers "is a binding present" — which is also true for
+  // the STALE binding `kill()` leaves behind (it closes the session but keeps
+  // the reference, so a killed row is deliberately NOT lazy-resumable in
+  // the same daemon lifetime). A real revival flips the row back to
+  // running (`maybeResumeAgent` clears the terminal fields), so require
+  // exactly that: a still-terminal row means the resume didn't take, and
+  // the caller falls back to the new-id restart.
+  if (!live || (live.status !== "running" && live.status !== "starting")) return undefined
+  return live
+}
+
+/** The full shared restart decision for the AUTOMATIC paths: in-place
+ *  revival when eligible, else today's new-id `restartAgentSession`
+ *  unchanged. `restartInboundSession` (sentinel + inbound router) calls
+ *  this with `forceAgentResume: true` and the default
+ *  `allowDeliberateEnd: false`. */
+export async function restartPreferInPlace(
+  registry: SessionsRegistry,
+  resolveAgentAdapter: AgentAdapterResolver,
+  prev: SessionDescriptor,
+  opts: RestartPreferInPlaceOptions = {},
+): Promise<RestartPreferInPlaceResult> {
+  const inPlace = await tryRestartInPlace(registry, prev, opts)
+  if (inPlace) {
+    return {
+      desc: inPlace,
+      sameId: true,
+      resumedFrom: prev.id,
+      resumeVia: "in-place",
+    }
+  }
+  const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, opts)
+  return {
+    desc: restarted.desc,
+    sameId: false,
+    resumedFrom: restarted.resumedFrom,
+    resumeVia: restarted.resumeVia,
+    ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+    ...(restarted.digestRecovered ? { digestRecovered: true } : {}),
+  }
 }
 
 /**

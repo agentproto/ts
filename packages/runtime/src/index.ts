@@ -115,7 +115,7 @@ import { loadConfig } from "./config.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { backfillSessionIndexes } from "./session-index.js"
-import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
+import { resolveResumeAuth, restartAgentSession, restartPreferInPlace } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
@@ -2527,7 +2527,15 @@ export async function createGateway(
         `restartInboundSession: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
       )
     }
-    const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter, desc, {
+    // Shared restart core (PR C): an ended-but-resumable agent-cli row is
+    // revived IN PLACE (same id) via the registry's resume primitive instead
+    // of minting a new row — the sentinel's re-target below then no-ops.
+    // `allowDeliberateEnd` stays false (default): this is an AUTOMATIC path,
+    // so a deliberate end (operator-completed / steward-*) is never revived
+    // in place — it falls back to today's new-id restart. (The sentinel
+    // never reaches here for a deliberate end anyway — its own sessionInfo
+    // guard routes those to the parent / parking.)
+    const restarted = await restartPreferInPlace(sessions, opts.resolveAgentAdapter, desc, {
       forceAgentResume: true,
     })
     return restarted.desc.id

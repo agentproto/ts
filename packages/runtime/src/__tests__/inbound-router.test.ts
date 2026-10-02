@@ -175,6 +175,38 @@ describe("routeInboundMessage", () => {
     })
   })
 
+  it('mode "route" with a dead bound session that resumes IN PLACE routes to the SAME id (no restarted-routed)', async () => {
+    // PR C: the inbound restart now revives an ended-but-resumable row on
+    // the SAME id, so the message is a plain "routed" — the binding is
+    // already on the right session and no new conversation is started.
+    const { store, upsert } = makeBindingStore({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: "sess_1",
+      mode: "route",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const isSessionAlive = vi.fn(() => false)
+    const restartSession = vi.fn(async (id: string) => id)
+    const deps = makeDeps({ bindings: store, enqueuePrompt, isSessionAlive, restartSession })
+
+    const msg = makeMsg()
+    const result = await routeInboundMessage(deps, msg, "route")
+
+    expect(result).toEqual({ action: "routed", sessionId: "sess_1" })
+    expect(restartSession).toHaveBeenCalledWith("sess_1")
+    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", msg.text, { queue: true })
+    expect(upsert).toHaveBeenCalledWith({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: "sess_1",
+      mode: "route",
+    })
+  })
+
   it('mode "route" with no binding skips without spawning', async () => {
     const spawnForContact = vi.fn(async () => {})
     const deps = makeDeps({ spawnForContact })
