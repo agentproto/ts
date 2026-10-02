@@ -225,7 +225,8 @@ function parseLogfmtLine(line: string): Record<string, string> {
     const key = m[1]!
     let value = m[2]!
     if (value.startsWith('"')) {
-      value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\")
+      // Single-pass unescape so `\\` and `\"` can't be mis-ordered.
+      value = value.slice(1, -1).replace(/\\(.)/g, "$1")
     }
     out[key] = value
   }
