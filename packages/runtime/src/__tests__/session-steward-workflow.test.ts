@@ -41,6 +41,8 @@ interface PlanEntry {
   class: "close" | "stuck" | "judge" | "keep"
   reasons: string[]
   signals: Record<string, unknown>
+  origin?: string
+  parentSessionId?: string
 }
 
 const entry = (sessionId: string, cls: PlanEntry["class"], rssMB: number, extra: Partial<PlanEntry> = {}): PlanEntry => ({
@@ -51,6 +53,9 @@ const entry = (sessionId: string, cls: PlanEntry["class"], rssMB: number, extra:
   class: cls,
   reasons: [`${cls} reason`],
   signals: {},
+  // A cron origin keeps the default fixture closeable; origin-policy tests
+  // below override it with a user origin / no origin.
+  origin: "cron:fixture",
   ...extra,
 })
 
@@ -248,7 +253,10 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     expect(new Set(j.spawns.map(s => s.model))).toEqual(new Set(["claude-sonnet-5-5"]))
     expect(j.released.sort()).toEqual(j.spawns.map(s => s.id).sort())
     expect(out.report).toContain("dry run")
-    expect(out.report).toContain("none (dry run)")
+    // The retained action is shown even in dry run (origin-bounded decision).
+    expect(out.report).toContain("close (règle certaine) (dry run)")
+    expect(out.report).toContain("| origin |")
+    expect(out.report).toContain("cron:fixture")
   })
 
   it("never makes the caller's own session or a keep-class session a candidate", async () => {
@@ -313,6 +321,44 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     expect(forId("keepalive_done")[0]!.judgedBy).toMatch(/^judge_/)
     // No rules-pass call (no judgedBy) ever names a keepAlive session.
     expect(applies.filter(a => a.judgedBy === undefined).flatMap(a => a.sessionIds as string[])).toEqual(["close_1", "stuck_1"])
+  })
+
+  it("apply: a user-origin session is only ever flagged — never closed, even with a confident done", async () => {
+    const entries: PlanEntry[] = [
+      entry("chat_close", "close", 200, { origin: "chat-starter" }),
+      entry("vscode_close", "close", 100, { origin: "vscode" }),
+      entry("human_close", "close", 50, { origin: undefined }),
+      entry("cron_close", "close", 40, { origin: "cron:job" }),
+      entry("chat_done", "judge", 30, { origin: "chat-starter" }),
+      entry("human_done", "judge", 20, { origin: undefined }),
+      entry("exec_done", "judge", 10, { parentSessionId: "sess_parent", origin: undefined }),
+    ]
+    const replies: Replies = {
+      chat_done: verdict("chat_done", "done", 0.99, "finished"),
+      human_done: verdict("human_done", "done", 0.99, "finished"),
+      exec_done: verdict("exec_done", "done", 0.99, "finished"),
+    }
+    const { dispatchTool, calls } = fakeTools({ entries })
+    const j = judgeHost(replies)
+    const out = await run(dispatchTool, j.host, { apply: true })
+
+    const applies = calls.filter(c => c.name === "session_wrapup_apply").map(c => c.inputs)
+    const byId = new Map(applies.map(a => [(a.sessionIds as string[])[0], a]))
+    // Rule-certain user-origin sessions: flagged needs-input, never closed.
+    expect(byId.get("chat_close")).toMatchObject({ verdict: "needs-input", note: "flag (origine utilisateur)" })
+    expect(byId.get("vscode_close")).toMatchObject({ verdict: "needs-input", note: "flag (origine utilisateur)" })
+    expect(byId.get("human_close")).toMatchObject({ verdict: "needs-input", note: "flag (origine utilisateur)" })
+    // Closable origins still close.
+    expect(byId.get("cron_close")).toMatchObject({ verdict: "done" })
+    expect(byId.get("exec_done")).toMatchObject({ verdict: "done" })
+    // A confident done on a user origin is still only a flag.
+    expect(byId.get("chat_done")).toMatchObject({ verdict: "needs-input" })
+    expect(byId.get("human_done")).toMatchObject({ verdict: "needs-input" })
+    expect(byId.get("chat_done")!.judgedBy).toMatch(/^judge_/)
+    // The report carries the origin column and the retained action.
+    expect(out.report).toContain("flag (origine utilisateur)")
+    expect(out.report).toContain("chat-starter (user)")
+    expect(out.report).toContain("(none, user)")
   })
 
   it("orders judge candidates most RAM first and caps them at maxJudged", async () => {

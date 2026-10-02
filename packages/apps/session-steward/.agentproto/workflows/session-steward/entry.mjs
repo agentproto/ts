@@ -19,6 +19,14 @@
 //   - treats a malformed judge reply as `active` with confidence 0 (never
 //     acted on).
 
+import {
+  classifyOrigin,
+  decideAction,
+  resolveOriginPolicy,
+  DEFAULT_CLOSABLE_ORIGINS,
+  DEFAULT_USER_ORIGINS,
+} from "./origin-policy.mjs"
+
 const DEFAULT_IDLE_MINUTES = 30
 const DEFAULT_MIN_CONFIDENCE = 0.8
 // The agent judge's model is the `judge.session` model ROLE, resolved at run
@@ -37,7 +45,6 @@ const ASK_POLL_MS = 45_000
 
 const JUDGE_REF = "@agentproto/session-steward-judge"
 const VERDICTS = ["done", "abandoned", "blocked", "needs-input", "active"]
-const APPLY_VERDICTS = new Set(["done", "abandoned", "blocked", "needs-input"])
 
 export const ASK_PROMPT =
   "Steward check: is your task complete? Reply exactly `STEWARD: DONE <one line>` " +
@@ -61,6 +68,7 @@ function explicitOrRole(explicit, modelRoles, role) {
  *  never a raw `$input.*` that may be absent. */
 export function resolveSettings(input, modelRoles) {
   const i = input ?? {}
+  const originPolicy = resolveOriginPolicy({ userOrigins: i.userOrigins, closableOrigins: i.closableOrigins })
   return {
     idleMinutes: Math.floor(num(i.idleMinutes, DEFAULT_IDLE_MINUTES, { min: 1 })),
     apply: i.apply === true,
@@ -71,7 +79,29 @@ export function resolveSettings(input, modelRoles) {
     maxJudged: Math.floor(num(i.maxJudged, DEFAULT_MAX_JUDGED)),
     askSessions: i.askSessions === true,
     callerSessionId: typeof i.callerSessionId === "string" && i.callerSessionId ? i.callerSessionId : null,
+    userOrigins: originPolicy.userOrigins,
+    closableOrigins: originPolicy.closableOrigins,
   }
+}
+
+/** The origin policy a settings object carries, as `decideAction` wants it. */
+function policyOf(settings) {
+  return { userOrigins: settings?.userOrigins, closableOrigins: settings?.closableOrigins }
+}
+
+/** `decideAction` over one candidate entry, with the run's policy folded in.
+ *  Used by both the apply-queue builders and the report, so the action shown
+ *  and the action executed can never drift. */
+export function decideFor(entry, planClass, verdict, confidence, settings) {
+  return decideAction({
+    session: entry,
+    planClass,
+    verdict,
+    confidence,
+    apply: settings?.apply === true,
+    policy: policyOf(settings),
+    minConfidence: settings?.minConfidence,
+  })
 }
 
 // ── plan → candidates ────────────────────────────────────────────────────
@@ -97,21 +127,26 @@ export function splitCandidates(planResult, settings) {
   }
 }
 
-/** Rules pass: `close` → done, `stuck` → abandoned — only when `apply`. */
+/** Rules pass: `close` → done, `stuck` → abandoned — only when `apply`, and
+ *  bounded by origin. A user-origin candidate is never closed: it is queued
+ *  as a `needs-input` FLAG instead, with the "origine utilisateur" reason. */
 export function buildRuleApplyQueue(candidates, settings) {
   if (!settings?.apply) return []
-  return [
-    ...(candidates?.close ?? []).map(e => ({
-      sessionId: e.sessionId,
-      verdict: "done",
-      note: `steward-rules: ${(e.reasons ?? []).join("; ") || "close class"}`,
-    })),
-    ...(candidates?.stuck ?? []).map(e => ({
-      sessionId: e.sessionId,
-      verdict: "abandoned",
-      note: "stuck starting, never ran",
-    })),
-  ]
+  const queue = []
+  const push = (entries, planClass, closeVerdict, closeNote) => {
+    for (const e of entries ?? []) {
+      const d = decideFor(e, planClass, closeVerdict, 1, settings)
+      if (d.action === "skip") continue
+      queue.push({
+        sessionId: e.sessionId,
+        verdict: d.action === "close" ? closeVerdict : "needs-input",
+        note: d.action === "close" ? closeNote(e) : d.reason,
+      })
+    }
+  }
+  push(candidates?.close, "close", "done", e => `steward-rules: ${(e.reasons ?? []).join("; ") || "close class"}`)
+  push(candidates?.stuck, "stuck", "abandoned", () => "stuck starting, never ran")
+  return queue
 }
 
 // ── evidence ─────────────────────────────────────────────────────────────
@@ -380,18 +415,25 @@ export function mergeDeclared(verdicts, askQueue, askResult) {
 // ── judged apply ─────────────────────────────────────────────────────────
 
 /** `done`/`abandoned` (close) and `blocked`/`needs-input` (flag) at or above
- *  `minConfidence` — only when `apply`. A malformed reply is `active`/0 and
- *  can never qualify. */
+ *  `minConfidence` — only when `apply`, and bounded by origin: a user-origin
+ *  candidate is downgraded to a `needs-input` FLAG, never a close. A malformed
+ *  reply is `active`/0 and can never qualify. */
 export function buildJudgedApplyQueue(finalVerdicts, settings) {
   if (!settings?.apply) return []
-  return (finalVerdicts ?? [])
-    .filter(r => !r.malformed && APPLY_VERDICTS.has(r.verdict) && r.confidence >= settings.minConfidence)
-    .map(r => ({
+  const queue = []
+  for (const r of finalVerdicts ?? []) {
+    if (r.malformed) continue
+    const d = decideFor(r.entry, "judge", r.verdict, r.confidence, settings)
+    if (d.action === "skip") continue
+    const isFlagVerdict = r.verdict === "blocked" || r.verdict === "needs-input"
+    queue.push({
       sessionId: r.entry.sessionId,
-      verdict: r.verdict,
+      verdict: d.action === "close" ? r.verdict : isFlagVerdict ? r.verdict : "needs-input",
       judgedBy: r.source === "declared" ? `steward-ask:${r.entry.sessionId}` : r.judgedBy ?? r.judgeSessionId ?? "steward-judge",
-      note: r.reason,
-    }))
+      note: d.action === "close" ? r.reason : `${d.reason}${r.reason ? ` — ${r.reason}` : ""}`,
+    })
+  }
+  return queue
 }
 
 // ── report ───────────────────────────────────────────────────────────────
@@ -418,10 +460,28 @@ function cell(s) {
   return String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ")
 }
 
-function actionOf(applied, apply, wouldAct) {
-  if (applied) return applied.ok ? applied.action ?? "applied" : `refused (${applied.error})`
-  if (!apply) return wouldAct ? "none (dry run)" : "none"
-  return "none"
+function actionOf(applied) {
+  return applied.ok ? applied.action ?? "applied" : `refused (${applied.error})`
+}
+
+/** The `origin` column: the provenance label plus `(user)` when the origin
+ *  policy bounds this candidate to flag-only. `(none, user)` is a root with
+ *  no origin and no parent — human-launched, never closed. */
+function originCell(entry, settings) {
+  const origin = entry?.origin
+  const userBound = classifyOrigin(entry, policyOf(settings)) === "user"
+  if (!origin) return userBound ? "(none, user)" : "(none)"
+  return userBound ? `${origin} (user)` : origin
+}
+
+/** The `action` column: what actually happened (apply) or the retained action
+ *  the policy decided (dry run / skipped). When an outcome exists, the
+ *  retained-action label stays visible next to it — that label is what
+ *  carries the origin bound ("flag (origine utilisateur)"). */
+function actionCell(id, decision, applied) {
+  const a = applied.get(id)
+  if (!a) return decision.reason
+  return `${actionOf(a)} — ${decision.reason}`
 }
 
 export function buildReport(b) {
@@ -437,27 +497,29 @@ export function buildReport(b) {
       `(jev \`${s.jevModel}\`, agent \`${s.judgeModel ?? "agent default"}\`)` +
       (s.askSessions ? " · askSessions on" : ""),
   )
+  lines.push(`origins: user=${s.userOrigins.join(", ")} · closable=${s.closableOrigins.join(", ")}`)
   if (!s.apply) lines.push("", "_Dry run: nothing was closed or flagged. Re-run with `apply: true` to act._")
   lines.push("")
-  lines.push("| class | session | idle | RAM | verdict | confidence | reason | action |")
-  lines.push("|---|---|---|---|---|---|---|---|")
+  lines.push("| class | session | origin | idle | RAM | verdict | confidence | reason | action |")
+  lines.push("|---|---|---|---|---|---|---|---|---|")
   const row = (cls, e, verdict, conf, reason, action) =>
     lines.push(
-      `| ${cls} | ${cell(e.label ?? e.sessionId)} | ${e.idleMinutes ?? "?"} min | ${fmtMB(e.rssBytes)} | ` +
+      `| ${cls} | ${cell(e.label ?? e.sessionId)} | ${cell(originCell(e, s))} | ${e.idleMinutes ?? "?"} min | ${fmtMB(e.rssBytes)} | ` +
         `${cell(verdict)} | ${conf === undefined ? "—" : conf.toFixed(2)} | ${cell(reason)} | ${cell(action)} |`,
     )
-  for (const e of c.close) row("close", e, "done (rules)", undefined, (e.reasons ?? []).join("; "), actionOf(applied.get(e.sessionId), s.apply, true))
-  for (const e of c.stuck) row("stuck", e, "abandoned (rules)", undefined, "stuck starting, never ran", actionOf(applied.get(e.sessionId), s.apply, true))
+  for (const e of c.close) {
+    const d = decideFor(e, "close", "done", 1, s)
+    row("close", e, "done (rules)", undefined, (e.reasons ?? []).join("; "), actionCell(e.sessionId, d, applied))
+  }
+  for (const e of c.stuck) {
+    const d = decideFor(e, "stuck", "abandoned", 1, s)
+    row("stuck", e, "abandoned (rules)", undefined, "stuck starting, never ran", actionCell(e.sessionId, d, applied))
+  }
   for (const r of verdicts) {
-    const wouldAct = !r.malformed && APPLY_VERDICTS.has(r.verdict) && r.confidence >= s.minConfidence
-    const action = applied.get(r.entry.sessionId)
-      ? actionOf(applied.get(r.entry.sessionId), s.apply, wouldAct)
-      : wouldAct
-        ? s.apply ? "none" : "none (dry run)"
-        : "untouched (below threshold or active)"
+    const d = decideFor(r.entry, "judge", r.verdict, r.confidence, s)
     const by = r.source === "declared" ? " (declared)" : r.source === "jev" ? " (jev)" : r.source === "judged" ? " (agent)" : ""
     const reason = r.jevFallback ? `${r.reason} [jev failed: ${r.jevFallback} → agent judge]` : r.reason
-    row("judge", r.entry, `${r.verdict}${by}`, r.confidence, reason, action)
+    row("judge", r.entry, `${r.verdict}${by}`, r.confidence, reason, actionCell(r.entry.sessionId, d, applied))
   }
   for (const e of c.judgeOverflow ?? []) row("judge", e, "—", undefined, `not judged this run (maxJudged ${s.maxJudged})`, "none")
   lines.push("")
@@ -502,6 +564,8 @@ export default {
     "`close`/`stuck` sessions, judge the ambiguous `judge` ones with a cheap " +
     "one-shot model over compact evidence, optionally ask a session directly, " +
     "then close or flag the confident verdicts with a recorded outcome — and report. " +
+    "Origin-bounded: a human-launched session (`chat-starter`, `vscode`, or a " +
+    "root with no origin and no parent) is only ever flagged, never closed. " +
     "Dry run unless `apply` is true.",
   version: "0.1.0",
   inputs: {
@@ -514,6 +578,8 @@ export default {
     maxJudged: { type: "number", description: `Most \`judge\` sessions judged per run, most RAM first. Default ${DEFAULT_MAX_JUDGED}.`, default: DEFAULT_MAX_JUDGED },
     askSessions: { type: "boolean", description: "Ask low-confidence idle sessions directly whether they're done. Default false — it spends a turn in someone else's conversation.", default: false },
     callerSessionId: { type: "string", description: "The calling session's id — never a candidate. The CLI passes AGENTPROTO_SESSION_ID." },
+    userOrigins: { type: "array", description: `Origins that are ALWAYS flag-only, never closed (a human is in the loop). Trailing \`*\` is a prefix wildcard. Default ${JSON.stringify(DEFAULT_USER_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_USER_ORIGINS },
+    closableOrigins: { type: "array", description: `Origins that may be closed under the current rules (cron jobs, gates). Trailing \`*\` is a prefix wildcard. Executors (a session with a parentSessionId) are closable regardless. Default ${JSON.stringify(DEFAULT_CLOSABLE_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_CLOSABLE_ORIGINS },
   },
   outputs: {},
   steps: [

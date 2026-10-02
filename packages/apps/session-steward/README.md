@@ -14,7 +14,8 @@ loader path can carry.
 1. `plan` — `session_wrapup_plan { idleMinutes }` (dry run).
 2. `autoApply` (only with `apply`) — `close` ids →
    `session_wrapup_apply { verdict: "done", note: "steward-rules: …" }`,
-   `stuck` ids → `{ verdict: "abandoned" }`.
+   `stuck` ids → `{ verdict: "abandoned" }` — unless the session is
+   user-origin, which is flagged instead (see Origin policy).
 3. `evidence` — per `judge` candidate (at most `maxJudged`, most RAM first),
    the read-only `session_evidence` tool: label, cwd, idle, keepAlive, RAM,
    the plan's signals, the last ~10 turns (~3 KB), and worktree
@@ -39,8 +40,24 @@ loader path can carry.
 6. `judgedApply` (only with `apply`) — confident `done`/`abandoned` close
    (resumable, with a recorded outcome); confident `blocked`/`needs-input`
    only flag. Everything else is left alone and reported.
-7. `report` — markdown table (class, session, idle, RAM, verdict,
+7. `report` — markdown table (class, session, origin, idle, RAM, verdict,
    confidence, reason, action) plus RAM freed / still held.
+
+## Origin policy (never close a human's session)
+
+Every candidate's `origin`/`parentSessionId` runs through the pure
+`decideAction` (`workflows/session-steward/origin-policy.mjs`), configured by
+the `userOrigins` / `closableOrigins` inputs:
+
+- **Flag only, never close:** `chat-starter`, `vscode`, and any root with no
+  `origin` and no `parentSessionId` (a human launched it). A would-be close —
+  even a rule-certain `close`/`stuck`, even a confident `done` — is recorded
+  as a `needs-input` flag with reason `flag (origine utilisateur)`.
+- **Close allowed:** `cron:*`, `gate`, and executors (a session with a
+  `parentSessionId`).
+
+A trailing `*` in either list is a prefix wildcard. The report carries the
+origin column and the retained action in dry run as well as apply.
 
 ## Running it
 

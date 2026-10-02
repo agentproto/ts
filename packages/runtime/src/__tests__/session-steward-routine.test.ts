@@ -30,6 +30,11 @@ describe("session-steward-hourly routine", () => {
     expect(frontmatter.schedule).toMatchObject({ kind: "cron", cron: "0 * * * *" })
     const target = frontmatter.target as { workflow?: { file?: string }; inputs?: Record<string, unknown> }
     expect(target.workflow?.file).toMatch(/session-steward\/\.agentproto\/workflows\/session-steward\/WORKFLOW\.md$/)
-    expect(target.inputs).toEqual({ apply: true, askSessions: false })
+    expect(target.inputs).toEqual({
+      apply: true,
+      askSessions: false,
+      userOrigins: ["chat-starter", "vscode"],
+      closableOrigins: ["cron:*", "gate"],
+    })
   })
 })
