@@ -528,8 +528,10 @@ export function registerAgentTools(
       "turn-end. Pass `interrupt: true` to " +
       "cancel the in-flight turn and redirect the SAME session onto this " +
       "prompt instead, without losing its context (unlike `agent_kill`, " +
-      "which ends the session entirely). `interrupt` is a no-op on an " +
-      "already-idle session.",
+      "which ends the session entirely); the redirected prompt opens with a " +
+      "one-line `[agentproto]` notice telling the agent the cut was a " +
+      "delivery, not a stop, so it resumes its work. `interrupt` is a no-op " +
+      "on an already-idle session.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
