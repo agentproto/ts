@@ -233,7 +233,11 @@ export async function registerSentinelAdapterTools(
       "ready), version, and declared capabilities (subjects, push, poll, " +
       "durable, needsPublicUrl, requiresAuth, typicalLatencyMs). Credentials " +
       "are never returned. Use `setup_sentinel_provider` to configure a " +
-      "provider that needs creds.",
+      "provider that needs creds. A `webhook` sentinel target (Standard " +
+      "Webhooks signed delivery to an external HTTP callback, with persisted " +
+      "outbox and resume post-restart) is accepted since W-B; the " +
+      "`mcp-events` MCP surface (events/list, events/subscribe, " +
+      "events/unsubscribe) ships with W-C.",
     lister: makeSentinelLister({ credsStore, ledger }),
   })
 
