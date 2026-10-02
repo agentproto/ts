@@ -19,6 +19,10 @@ export async function dialRendezvous(
   opts: DialRendezvousOptions = {},
 ): Promise<FrameSink> {
   const ws = new WebSocket(url, opts.agent ? { agent: opts.agent } : undefined)
+  // Aborting a CONNECTING socket makes `ws` emit an async 'error' after the dial
+  // listeners are gone; with no listener that crashes the process. The dial
+  // outcome is reported through the promise, so this one is intentionally inert.
+  ws.on("error", () => {})
   await new Promise<void>((resolve, reject) => {
     const cleanup = (): void => {
       ws.off("open", onOpen)
@@ -36,7 +40,7 @@ export async function dialRendezvous(
     const onAbort = (): void => {
       cleanup()
       try {
-        ws.close()
+        ws.terminate()
       } catch {
         /* ignore */
       }

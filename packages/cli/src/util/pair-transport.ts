@@ -60,9 +60,11 @@ export function dialRendezvous(url: string, timeoutMs = DIAL_TIMEOUT_MS): Promis
   return new Promise((resolve, reject) => {
     const { agent } = resolveProxyDialOptions(url)
     const ws = new WebSocket(url, agent ? { agent } : undefined)
+    // Closing a CONNECTING socket emits an async 'error'; never leave it unhandled.
+    ws.on("error", () => {})
     const timer = setTimeout(() => {
       try {
-        ws.close()
+        ws.terminate()
       } catch {
         /* ignore */
       }
