@@ -11,10 +11,11 @@
  * removed. Where it finds drift, it edits the doc file directly. It never
  * invents new doc files — only existing ones are in scope.
  *
- * Runs on Moonshot's `kimi-k2.7-code` via the Claude Agent SDK's gateway mode
- * (cheap enough to run on every release without burning Anthropic spend) —
- * see adapters/claude-sdk/src/options.ts for the auth-hygiene rules this
- * mirrors (never let ANTHROPIC_API_KEY reach a third-party gateway) and for
+ * Runs on OpenRouter's `z-ai/glm-5.3-flash` via the Claude Agent SDK's
+ * gateway mode (cheap enough to run on every release without burning
+ * Anthropic spend) — see adapters/claude-sdk/src/options.ts for the
+ * auth-hygiene rules this mirrors (never let ANTHROPIC_API_KEY reach a
+ * third-party gateway) and for
  * why `bypassPermissions` is required: this runs unattended in CI, with no
  * human able to answer a tool-permission prompt.
  *
@@ -40,12 +41,12 @@
  *
  * Env:
  *   AGENT_LANE         — billing lane (see scripts/lib/agent-lane.mjs); unset ⇒ first lane
- *                        whose credential is present (subscription → … → moonshot)
+ *                        whose credential is present (subscription → … → openrouter)
  *   <lane credential>  — CLAUDE_CODE_OAUTH_TOKEN / …_FALLBACK / OPENROUTER_API_KEY /
- *                        MOONSHOT_API_KEY / ANTHROPIC_API_KEY
+ *                        ANTHROPIC_API_KEY
  *   ANTHROPIC_API_KEY  — must NOT be set for this to reach the gateway; if it
  *                        is set, it is scrubbed before the SDK spawns its child
- *                        (see buildEnv below) so it can never leak to Moonshot.
+ *                        (see buildEnv below) so it can never leak to OpenRouter.
  *
  * Exit codes:
  *   0 — completed (edits made, or none needed, or dry-run report printed), or
@@ -246,19 +247,19 @@ When you're done, summarize what you changed (or confirm nothing needed changing
 //
 // Mirrors adapters/claude-sdk/src/options.ts's gateway-mode env building: a
 // gateway base_url means ANTHROPIC_API_KEY must never be sent (it would 401
-// against Moonshot, and would leak the real Anthropic key to a third party),
+// against OpenRouter, and would leak the real Anthropic key to a third party),
 // and any CLAUDE_CODE_USE_* cloud-provider redirect leaked from a parent
 // Claude Code shell must be scrubbed so it doesn't out-rank ANTHROPIC_BASE_URL.
 
 // ── billing lane ─────────────────────────────────────────────────────────────
 //
 // One lane per invocation, picked by AGENT_LANE (see scripts/lib/agent-lane.mjs):
-// subscription | subscription-fallback | openrouter | moonshot | api-key. The
-// release workflow walks the lanes in order until this step reports
-// `status=ok`, so a dead Moonshot account (2026-09-01: "suspended due to
-// insufficient balance") no longer means no docs check at all. The lane env
-// is built with every OTHER lane's credential scrubbed — a stale
-// ANTHROPIC_API_KEY on the runner must never out-rank the lane asked for.
+// subscription | subscription-fallback | openrouter | api-key. The release
+// workflow walks the lanes in order until this step reports `status=ok`, so a
+// dead credential (2026-09-01: "suspended due to insufficient balance") no
+// longer means no docs check at all. The lane env is built with every OTHER
+// lane's credential scrubbed — a stale ANTHROPIC_API_KEY on the runner must
+// never out-rank the lane asked for.
 
 const LANE_NAME = pickLane()
 const LANE = LANE_NAME ? resolveLane(LANE_NAME) : null
@@ -275,7 +276,7 @@ function emitStatus(status) {
 function buildEnv() {
   if (!LANE || LANE.missing) {
     console.error(
-      `Error: no usable agent lane — ${LANE ? describeLane(LANE) : 'no credential set (CLAUDE_CODE_OAUTH_TOKEN / OPENROUTER_API_KEY / MOONSHOT_API_KEY / ANTHROPIC_API_KEY)'}.`,
+      `Error: no usable agent lane — ${LANE ? describeLane(LANE) : 'no credential set (CLAUDE_CODE_OAUTH_TOKEN / OPENROUTER_API_KEY / ANTHROPIC_API_KEY)'}.`,
     )
     emitStatus('no-lane')
     process.exit(0)
@@ -308,12 +309,11 @@ async function main() {
       allowDangerouslySkipPermissions: true,
       hooks: { PreToolUse: [{ hooks: [confineToRepoRoot] }] },
       settingSources: [],
-      // Kimi's --thinking mode can run a long stretch with zero top-level
-      // messages before the first one arrives; partials keep the stream
-      // observably alive in the meantime (mirrors adapters/claude-sdk's
-      // acp-host.ts, which depends on this for the same reason).
+      // A gateway model can run a long stretch with zero top-level messages
+      // before the first one arrives; partials keep the stream observably
+      // alive in the meantime (mirrors adapters/claude-sdk's acp-host.ts,
+      // which depends on this for the same reason).
       includePartialMessages: true,
-      ...(LANE.thinking ? { thinking: { type: 'enabled' } } : {}),
       // `tools` restricts the base toolset available at all — Read/Grep/Glob
       // always, Edit only outside --dry-run. The PreToolUse hook above then
       // confines every call within that set to ROOT.

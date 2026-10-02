@@ -50,7 +50,7 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
 ```jsonc
 {
   "blocking": true,                 // CHANGES_REQUESTED fails the merge gate
-  "model": "claude-sonnet-4-6",     // model for all flows
+  "model": "claude-sonnet-5-5",     // model for all flows
   "fixDelivery": "commit",          // default for on-demand /fix: "commit" | "pr"
   "botMention": "@agentproto-bot",  // literal trigger word — see note below
   "maxFixIterations": 3,            // auto-fix loop bound

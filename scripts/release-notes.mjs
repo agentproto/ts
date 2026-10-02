@@ -26,16 +26,16 @@
  *
  * Billing: the model runs through the Claude Agent SDK on ONE lane per
  * invocation, selected by `AGENT_LANE` (see scripts/lib/agent-lane.mjs):
- * subscription | subscription-fallback | openrouter | moonshot | api-key. The
- * release workflow walks those lanes in order until `--check` passes, so a
- * single dead credential (2026-09-01: two Anthropic orgs and a Moonshot
- * account, all "balance too low" within the hour) no longer leaves a batch
- * without notes. Unset ⇒ the first lane whose credential is present.
+ * subscription | subscription-fallback | openrouter | api-key. The release
+ * workflow walks those lanes in order until `--check` passes, so a single dead
+ * credential (2026-09-01: two Anthropic orgs and a Moonshot account, all
+ * "balance too low" within the hour) no longer leaves a batch without notes.
+ * Unset ⇒ the first lane whose credential is present.
  *
  * Env:
  *   AGENT_LANE         — lane to run (optional, see above)
  *   <lane credential>  — CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN_FALLBACK /
- *                        OPENROUTER_API_KEY / MOONSHOT_API_KEY / ANTHROPIC_API_KEY
+ *                        OPENROUTER_API_KEY / ANTHROPIC_API_KEY
  *   AGENT_MODEL        — override the lane's default model (optional)
  *   GITHUB_TOKEN       — required for posting / --check (not needed with --dry-run)
  *
@@ -514,7 +514,6 @@ async function generateBody(resolved, context) {
       settingSources: [],
       tools: ['Read', 'Grep', 'Glob'],
       maxTurns: 40,
-      ...(resolved.thinking ? { thinking: { type: 'enabled' } } : {}),
     },
   })
   let final = null
@@ -554,7 +553,7 @@ async function main() {
   if (!laneName) {
     log(
       'Error: no agent lane credential set — need one of CLAUDE_CODE_OAUTH_TOKEN, ' +
-        'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, MOONSHOT_API_KEY.',
+        'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.',
     )
     return 1
   }
