@@ -2,10 +2,11 @@
 
 > The agentproto daemon is OpenAI MCP Events compatible: native JSON-RPC
 > methods `events/list`, `events/subscribe`, `events/unsubscribe` on the
-> authenticated `/mcp` endpoint, plus an `events:{}` capability in
-> `server/discover`. This doc is the single mapping authority — the Contract
-> Map below is reprinted verbatim from the plan and is the source of truth
-> for both the AIP-60 doc update and the test matrix.
+> authenticated `/mcp` endpoint, plus an `events:{}` capability at
+> `initialize` (`server/discover` is not served until the 2026-07-28 era is).
+> This doc is the single mapping authority — the Contract Map below is
+> reprinted verbatim from the plan and is the source of truth for both the
+> AIP-60 doc update and the test matrix.
 
 ## 1. Architecture
 
@@ -21,7 +22,7 @@ Events envelope. The envelope fields are `eventId`, `name`, `data`,
 
 | MCP Events concept (OpenAI doc) | Contract in our system | Lives in | Test names (grep-able) |
 |---|---|---|---|
-| `server/discover` advertises `events:{}` capability | the TRANSPORT's capabilities object, not the adapter | `packages/mcp-server` (request handling) | `discover-exposes-events-capability` |
+| `events:{}` capability advertised at `initialize` (`server/discover` unregistered — FIX-10 / #1508) | the TRANSPORT's capabilities object, not the adapter | `packages/mcp-server` (request handling) | `discover-exposes-events-capability` |
 | `events/list` — stable `name`, specific `description`, `inputSchema` (filters), `payloadSchema` | EventDefinition, declared **per provider scheme** from `defaultTypes()` + a hand-written payload map per scheme (W-B1) | `mcp-events/events-registry.ts` | `events-list-tenant-scoped`, `events-list-pagination` |
 | server-side filter application | `SentinelSpec.match` clauses (subject prefix + type globs) | `sentinel-store.ts` (exists) | existing store tests + `filters-applied-server-side` |
 | only tenant-visible events | registry filters definitions by principal's reachable schemes | `events-registry.ts` | merged into `events-list-tenant-scoped` |

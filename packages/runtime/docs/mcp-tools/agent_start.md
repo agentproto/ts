@@ -265,6 +265,13 @@ child agent a host-chosen scoped toolset (e.g. the daemon's own
 orchestration gateway so it can spawn + supervise sub-agents). Adapters
 that don't model MCP mounting ignore it.
 
+A `mcpServers` entry in the descriptor (or the daemon self-mount) only
+means the mount was *requested*: it does not guarantee the child actually
+loaded any tools. A client can connect yet end up with 0 tools if the
+server's MCP handshake is not one it can use (e.g. a protocol-era mismatch
+on `server/discover` / `tools/list`). Verify from inside the session (list
+its tools) before relying on a mount.
+
 Each entry's `headers` are static HTTP headers sent with every request to
 an `http`/`sse` server (ignored for `stdio`). `credentialRef` resolves a
 brokered credential at spawn time into additional headers (typically
