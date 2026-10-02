@@ -398,3 +398,52 @@ export function createRemoteCatalogClient(
     },
   }
 }
+
+/**
+ * Compare dotted numeric versions (`1.2.10` > `1.2.9`); a pre-release suffix
+ * (`1.2.0-beta`) ranks below the same core. Returns -1 | 0 | 1, or
+ * `undefined` when either side isn't `N.N.N`-shaped.
+ */
+export function compareCatalogVersions(a: string, b: string): number | undefined {
+  const parse = (v: string): { core: number[]; pre: boolean } | undefined => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)(-.+)?$/.exec(v.trim())
+    return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] !== undefined } : undefined
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  if (pa === undefined || pb === undefined) return undefined
+  for (let i = 0; i < 3; i++) {
+    const d = pa.core[i]! - pb.core[i]!
+    if (d !== 0) return d < 0 ? -1 : 1
+  }
+  if (pa.pre === pb.pre) return 0
+  return pa.pre ? -1 : 1
+}
+
+/**
+ * Is catalog `entry` an update for an installed app (recorded `source`,
+ * APP.md `version`)? Only for the same source kind, only when the pin
+ * differs (bundle sha256 / git commit), and never when the entry's version
+ * is LOWER than the installed one — a catalog listing an older release is
+ * not an update.
+ */
+export function isCatalogUpdate(
+  installed: { readonly source?: AppSource; readonly version?: string },
+  entry: AppCatalogEntry,
+): boolean {
+  const s = installed.source
+  if (s === undefined || s.kind === "local" || s.kind !== entry.source.kind) return false
+  const offered = entry.source
+  const differs =
+    s.kind === "agentapp"
+      ? offered.kind === "agentapp" && offered.sha256.toLowerCase() !== s.sha256.toLowerCase()
+      : offered.kind === "git" && offered.sha.toLowerCase() !== s.sha.toLowerCase()
+  if (!differs) return false
+  const installedVersion = s.kind === "agentapp" ? s.version : installed.version
+  const offeredVersion = offered.kind === "agentapp" ? offered.version : entry.version
+  if (installedVersion !== undefined && offeredVersion !== undefined) {
+    const cmp = compareCatalogVersions(offeredVersion, installedVersion)
+    if (cmp !== undefined && cmp < 0) return false
+  }
+  return true
+}

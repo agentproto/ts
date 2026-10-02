@@ -10,7 +10,9 @@ import {
   AppCatalogEntrySchema,
   DEFAULT_CATALOG_SOURCE_URL,
   catalogCachePath,
+  compareCatalogVersions,
   createRemoteCatalogClient,
+  isCatalogUpdate,
   loadAppCatalogFile,
   resolveCatalogSources,
 } from "../app-catalog.js"
@@ -204,5 +206,33 @@ describe("catalog file sources + precedence", () => {
     expect(parsed.schema).toBe("app-catalog/v1")
     expect(parsed.entries.length).toBeGreaterThan(0)
     for (const e of parsed.entries) expect(AppCatalogEntrySchema.safeParse(e).success).toBe(true)
+  })
+})
+
+describe("catalog updates", () => {
+  const bundle = (version: string, sha256: string) => ({
+    appId: "@a/x",
+    source: { kind: "agentapp" as const, url: `https://e/x-${version}.agentapp`, sha256, version },
+  })
+  it("compareCatalogVersions orders numerically and ranks pre-releases lower", () => {
+    expect(compareCatalogVersions("1.2.10", "1.2.9")).toBe(1)
+    expect(compareCatalogVersions("0.2.0", "0.3.0")).toBe(-1)
+    expect(compareCatalogVersions("1.0.0-beta", "1.0.0")).toBe(-1)
+    expect(compareCatalogVersions("1.0.0", "1.0.0")).toBe(0)
+    expect(compareCatalogVersions("latest", "1.0.0")).toBeUndefined()
+  })
+  it("isCatalogUpdate: different digest + not-lower version, same source kind only", () => {
+    const installed = { source: { kind: "agentapp" as const, url: "u", sha256: "aa", version: "0.2.0" } }
+    expect(isCatalogUpdate(installed, bundle("0.3.0", "bb"))).toBe(true)
+    expect(isCatalogUpdate(installed, bundle("0.2.0", "bb"))).toBe(true)
+    expect(isCatalogUpdate(installed, bundle("0.2.0", "AA"))).toBe(false)
+    expect(isCatalogUpdate(installed, bundle("0.1.0", "cc"))).toBe(false)
+    expect(isCatalogUpdate({ source: { kind: "local" } }, bundle("9.9.9", "dd"))).toBe(false)
+    expect(
+      isCatalogUpdate(
+        { source: { kind: "git", url: "g", sha: "s1" } },
+        bundle("1.0.0", "ee"),
+      ),
+    ).toBe(false)
   })
 })
