@@ -114,6 +114,17 @@ export const jcode: AgentCliHandle = defineAgentCli({
     },
   },
   modelDerivedApiKey: true,
+  // jcode ships two native OAuth logins, separate from its API-key routes:
+  // `jcode login --provider claude` (Claude Max) and `--provider openai`
+  // (ChatGPT/Codex), stored in `~/.jcode/auth.json` / `openai-auth.json`.
+  // Both are EXTERNAL — the runtime injects no bearer, it verifies the login
+  // is present (the `jcode` provision recipe, `<provider>-oauth` methods) and
+  // scrubs the matching api-key vars so a leftover key can't win. Each is
+  // scoped to its provider, so neither lights up the other's models.
+  authSubscription: [
+    { external: true, provider: "anthropic" },
+    { external: true, provider: "openai" },
+  ],
   sandbox: "./SANDBOX.md",
   protocol: "print",
   print: {
