@@ -408,7 +408,7 @@ async function main() {
   //      these on the FAILURE path too),
   //   2. `sess_…` ids embedded in run/step error strings (e.g. "session
   //      sess_ab12cd34 ended with status 'error'"),
-  //   3. LAST RESORT, only when 1+2 found nothing: `agent_sessions_list`,
+  //   3. LAST RESORT, only when 1+2 found nothing: `session_list`,
   //      filtered to sessions started after this driver booted the daemon —
   //      a daemon can carry persisted session state from previous runs
   //      (observed locally: an unfiltered list dumped megabytes of
@@ -432,13 +432,27 @@ async function main() {
   const structuredIdCount = sessionIds.size
   let listedSessions = []
   try {
+    // `session_list` (NOT `agent_sessions_list`): the runner ARCHIVES every
+    // session it spawned before the run goes terminal (`releaseScope` →
+    // `archiveSession`), and `agent_sessions_list` hides archived rows with no
+    // opt-in — so it silently returns nothing for this run's own session and
+    // the provenance footer degrades to a session-less "legacy fallback" label
+    // (observed on the sandboxed reviewer lane, PR #1667). `session_list` takes
+    // `includeArchived`, and `full: true` returns the unprojected descriptor
+    // (remote / sandboxId / adapterSessionId) this provenance record reads —
+    // the same call `buildProgressContext` above already uses. `kind:
+    // "agent-cli"` keeps the LAST-RESORT sweep (structuredIdCount === 0) to
+    // agent sessions.
     const listed = parseToolResult(
-      await client.callTool({ name: "agent_sessions_list", arguments: {} }),
+      await client.callTool({
+        name: "session_list",
+        arguments: { full: true, includeArchived: true, kind: "agent-cli" },
+      }),
     )
     listedSessions = Array.isArray(listed) ? listed : Array.isArray(listed?.sessions) ? listed.sessions : []
   } catch (err) {
     console.error(
-      `driver: agent_sessions_list failed: ${err instanceof Error ? err.message : String(err)}`,
+      `driver: session_list lookup for provenance failed: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
   if (structuredIdCount === 0) {
