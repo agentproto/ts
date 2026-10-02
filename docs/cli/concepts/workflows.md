@@ -6,10 +6,12 @@ explicit **barrier** gates the next stage: stage N+1 does not start until every
 step of stage N has finished (or failed).
 
 It is the `parallel()` half of a harness-style orchestration primitive. The
-daemon exposes it as the `workflow_start` / `workflow_status` MCP tools — there
-is no `agentproto workflow` verb; you drive it from any MCP client (a coding CLI,
-another agent, your own code) against a running [`serve`](../verbs/serve.md)
-daemon.
+daemon exposes it as the `workflow_start` / `workflow_status` MCP tools, and
+the [`agentproto workflow`](../verbs/workflow.md) verb drives the same runner
+from the shell against a running [`serve`](../verbs/serve.md) daemon:
+`workflow start` (stages JSON), `workflow run-file` (a `WORKFLOW.md` file),
+`workflow status` / `workflow list` (inspect runs), `workflow cancel`, and
+`workflow resolve` (answer a parked approval).
 
 ```
   stage 1                    barrier            stage 2
