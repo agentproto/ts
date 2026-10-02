@@ -59,6 +59,15 @@ export interface SessionWrapupEntry {
    *  (`session_list`'s `withMemory: true` / `processTreeRss`). Absent when
    *  the caller didn't gather it. */
   rssBytes?: number
+  /** The session's provenance label (`SessionDescriptor.origin` — "cron:<id>",
+   *  "gate", "chat-starter", "vscode", …), copied through so the session
+   *  steward's origin policy can bound what it may close. Absent for a root
+   *  spawned with no origin. */
+  origin?: string
+  /** The session's parent id (`SessionDescriptor.parentSessionId`), copied
+   *  through: a session with a parent is an executor the steward may close,
+   *  a root with no origin is human-launched and is not. */
+  parentSessionId?: string
   class: SessionWrapupClass
   /** Short machine-stable reason codes explaining the classification —
    *  every guard/signal that fired, not just the first. */
@@ -183,6 +192,8 @@ export function planSessionWrapup(input: PlanSessionWrapupInput): SessionWrapupE
       ...(desc.label !== undefined ? { label: desc.label } : {}),
       idleMinutes: Math.round(idleMinutesActual),
       ...(desc.rssBytes !== undefined ? { rssBytes: desc.rssBytes } : {}),
+      ...(desc.origin !== undefined ? { origin: desc.origin } : {}),
+      ...(desc.parentSessionId !== undefined ? { parentSessionId: desc.parentSessionId } : {}),
       class: cls,
       reasons,
       signals: sig,

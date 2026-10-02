@@ -64,6 +64,15 @@ describe("planSessionWrapup — class: close", () => {
     const entries = plan([row({ id: "a", rssBytes: 12_345 })], signalsFor("a", { worktreeMerged: true }))
     expect(entries[0]!.rssBytes).toBe(12_345)
   })
+
+  it("carries origin and parentSessionId through — the steward's origin bound reads them", () => {
+    const entries = plan(
+      [row({ id: "a", origin: "cron:job", parentSessionId: "parent" })],
+      signalsFor("a", { worktreeMerged: true }),
+    )
+    expect(entries[0]!.origin).toBe("cron:job")
+    expect(entries[0]!.parentSessionId).toBe("parent")
+  })
 })
 
 describe("planSessionWrapup — class: stuck", () => {
