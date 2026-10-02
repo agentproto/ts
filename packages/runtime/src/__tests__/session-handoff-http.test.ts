@@ -224,7 +224,7 @@ describe("POST /sessions/:id/checkpoint + /handoff", () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
     let allowResolve = true
     const resolveAgentAdapter: AgentAdapterResolver = async () =>
-      allowResolve ? { startSession: vi.fn(async () => fakeAgentSession()), commandPreview: "m" } : undefined
+      allowResolve ? { startSession: vi.fn(async () => fakeAgentSession()), commandPreview: "m" } : null
     const port = await freePort()
     const http = await startHttpServer({
       port,
