@@ -85,6 +85,16 @@ import {
   type ExportedSession,
 } from "@agentproto/runtime/session-story"
 import type { LabeledProcessStatsReport, SessionDescriptor } from "@agentproto/runtime"
+import {
+  buildSessionRecap,
+  defaultTranscriptBaseDir,
+  deriveIndexFromTranscript,
+  readAllSessionIndexes,
+  readSessionIndex,
+  searchSessionIndexes,
+  sessionEventsPath,
+  setDefaultSessionsBaseDir,
+} from "@agentproto/runtime"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 const USAGE = `agentproto sessions — browse and control daemon sessions
@@ -137,6 +147,15 @@ Usage:
                              [--source auto|native|daemon] [--adapter <name>]
   agentproto sessions story <id-or-name> [--json] [--no-color]
                              [--source auto|native|daemon] [--adapter <name>]
+  agentproto sessions find <query> [--status <status>] [--limit N] [--json]
+                             (case-insensitive match on id prefix, label,
+                              title, cwd or workspace slug; reads the per-session
+                              index sidecars, so it is instant and works with no
+                              daemon running. Default limit 20.)
+  agentproto sessions recap <id-or-name> [--last N] [--json]
+                             (one-glance "where did we stop": the last N user
+                              prompts with timestamps, the final assistant text
+                              of the last turn, and session meta. Default N=8.)
   agentproto sessions prompt <id-or-name> --prompt <text>
                               [--wait] [--interrupt] [--force] [--json]
                               (default: fire-and-forget, queued behind any
@@ -373,6 +392,8 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "terminal") return runTerminal(args.slice(1))
   if (sub === "export") return runExport(args.slice(1))
   if (sub === "story") return runStory(args.slice(1))
+  if (sub === "find") return runFind(args.slice(1))
+  if (sub === "recap") return runRecap(args.slice(1))
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
@@ -1187,6 +1208,143 @@ async function runShow(args: readonly string[]): Promise<number> {
   ]
   process.stdout.write(header.join("\n") + "\n")
   if (desc.outcome) process.stdout.write("\n" + formatOutcomeBlock(desc.outcome))
+  return 0
+}
+
+/**
+ * Resolve the sessions/transcript base dir the SAME way the daemon does:
+ * config `sessions.eventsDir` > the hardcoded `~/.agentproto/sessions`.
+ * `find`/`recap` read the index sidecars directly from here, so they work
+ * with no daemon running (the provenance case this feature exists for).
+ */
+async function resolveSessionsBaseDir(): Promise<string> {
+  const cfg = await loadConfig().catch(() => undefined)
+  setDefaultSessionsBaseDir(cfg?.sessions?.eventsDir)
+  return defaultTranscriptBaseDir()
+}
+
+/**
+ * `agentproto sessions find <query> [--status <s>] [--limit N] [--json]` —
+ * case-insensitive search across id prefix, label, title, cwd and workspace
+ * slug, answered from the per-session `index.json` sidecars (never the
+ * jsonl), so it is instant even on a store with thousands of sessions.
+ */
+async function runFind(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+      status: { type: "string" },
+      limit: { type: "string" },
+    },
+  })
+  const query = positionals.join(" ").trim()
+  let limit = 20
+  if (values.limit !== undefined) {
+    const n = Number(values.limit)
+    if (!Number.isInteger(n) || n < 1) {
+      process.stderr.write("agentproto sessions find: --limit must be a positive integer\n")
+      return 2
+    }
+    limit = n
+  }
+  const baseDir = await resolveSessionsBaseDir()
+  const entries = readAllSessionIndexes(baseDir)
+  const matches = searchSessionIndexes(entries, query, {
+    ...(values.status ? { status: values.status } : {}),
+    limit,
+  })
+  if (values.json) {
+    process.stdout.write(JSON.stringify(matches, null, 2) + "\n")
+    return 0
+  }
+  if (matches.length === 0) {
+    process.stdout.write("No matching sessions.\n")
+    return 0
+  }
+  const nameOf = (e: (typeof matches)[number]): string => e.label ?? e.title ?? ""
+  const idWidth = Math.max(...matches.map(e => e.id.length), 4)
+  const statusWidth = Math.max(...matches.map(e => e.status.length), 6)
+  const nameWidth = Math.max(...matches.map(e => nameOf(e).length), 5)
+  for (const e of matches) {
+    process.stdout.write(
+      `${e.id.padEnd(idWidth)}  ${e.status.padEnd(statusWidth)}  ` +
+        `${nameOf(e).padEnd(nameWidth)}  ${e.cwd ?? ""}\n`,
+    )
+  }
+  return 0
+}
+
+/**
+ * `agentproto sessions recap <id-or-name> [--last N] [--json]` — one-glance
+ * "where did we stop": the last K user prompts with timestamps, the final
+ * assistant text of the last turn, and the session meta. Backed by the index
+ * sidecar plus a bounded tail read of events.jsonl (seek from end, ≤256KB).
+ */
+async function runRecap(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+      last: { type: "string" },
+    },
+  })
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write("usage: agentproto sessions recap <id-or-name> [--last N] [--json]\n")
+    return 2
+  }
+  let last = 8
+  if (values.last !== undefined) {
+    const n = Number(values.last)
+    if (!Number.isInteger(n) || n < 1) {
+      process.stderr.write("agentproto sessions recap: --last must be a positive integer\n")
+      return 2
+    }
+    last = n
+  }
+  const baseDir = await resolveSessionsBaseDir()
+  const entry = readSessionIndex(id, baseDir) ?? deriveIndexFromTranscript(id, baseDir)
+  if (!entry) {
+    process.stderr.write(`agentproto sessions recap: no session "${id}".\n`)
+    return 2
+  }
+  const children = readAllSessionIndexes(baseDir)
+    .filter(e => e.parentSessionId === id)
+    .map(e => e.id)
+  const recap = buildSessionRecap({
+    entry,
+    eventsPath: sessionEventsPath(id, baseDir),
+    last,
+    children,
+  })
+  if (values.json) {
+    process.stdout.write(JSON.stringify(recap, null, 2) + "\n")
+    return 0
+  }
+  const lines = [
+    `${recap.id}${recap.label ?? recap.title ? `  ${recap.label ?? recap.title}` : ""}`,
+    `  status:    ${recap.status}${recap.alive ? " (alive)" : ""}${recap.lastTurnReason ? ` · last turn ${recap.lastTurnReason}` : ""}`,
+    `  model:     ${recap.model ?? "—"}${recap.adapter ? `  ·  ${recap.adapter}` : ""}`,
+    `  cwd:       ${recap.cwd ?? "—"}`,
+    `  parent:    ${recap.parentSessionId ?? "—"}   children: ${recap.children.length > 0 ? recap.children.join(", ") : "—"}`,
+    `  started:   ${recap.startedAt}${recap.lastActivityAt ? `  last activity: ${recap.lastActivityAt}` : ""}`,
+    `  turns:     ${recap.turnsCompleted ?? 0}${recap.costUsd !== undefined ? `   cost: $${recap.costUsd.toFixed(4)}` : ""}${recap.queuedPrompts !== undefined && recap.queuedPrompts > 0 ? `   queued: ${recap.queuedPrompts}` : ""}`,
+  ]
+  if (recap.prompts.length > 0) {
+    lines.push("", `LAST ${recap.prompts.length} USER PROMPT(S)`)
+    for (const p of recap.prompts) {
+      lines.push(`  ${p.ts ? `[${p.ts}] ` : ""}${p.text.replace(/\s+/g, " ").trim()}`)
+    }
+  }
+  if (recap.lastOutputText) {
+    lines.push("", "LAST OUTPUT", `  ${recap.lastOutputText.replace(/\s+/g, " ").trim()}`)
+  }
+  process.stdout.write(lines.join("\n") + "\n")
   return 0
 }
 

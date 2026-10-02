@@ -85,6 +85,14 @@ import {
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
 import { processTreeRss } from "./process-memory.js"
+import { sessionEventsPath } from "./transcript-writer.js"
+import {
+  INDEX_DEFAULT_LIMIT,
+  buildSessionRecap,
+  indexEntryFromDescriptor,
+  matchesSessionQuery,
+  readSessionIndex,
+} from "./session-index.js"
 import {
   buildLabeledStatsReport,
   statsDetailOf,
@@ -1231,6 +1239,114 @@ export function registerSessionTools(
         itemKey: "sessions",
       }),
     ],
+  })
+
+  // ── session_search ───────────────────────────────────────────────
+  // The CLI's `agentproto sessions find <query>` as an MCP verb. Same filters
+  // (case-insensitive id-prefix/label/title/cwd/workspaceSlug, optional exact
+  // status, default 20 results) and the SAME compact per-item shape as
+  // `session_list`, so a caller can pipe a hit straight into `session_recap`.
+  // Answers from the live registry (which the index sidecar mirrors) so it is
+  // instant even on a store with thousands of rows.
+  const sessionSearchSchema = z.object({
+    query: z
+      .string()
+      .describe(
+        "Case-insensitive substring to match: a session id PREFIX, or a " +
+          "substring of label, title, cwd, or workspace slug. Empty matches all.",
+      ),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status."),
+    ...pageParamsShape,
+  })
+  type SessionSearchInput = z.infer<typeof sessionSearchSchema>
+
+  registerBuiltinTool<SessionSearchInput, Array<Omit<SessionDescriptor, "ptyResumeEnv">>>(server, {
+    id: "session_search",
+    description:
+      "Find sessions by a case-insensitive query across id prefix, label, title, cwd and " +
+      "workspace slug — the daemon-side twin of `agentproto sessions find <query>`. " +
+      "Optional `status` filters to an exact lifecycle status; `limit` (default 20) caps " +
+      "the result. Each hit uses the same compact shape as `session_list`. Read-only; " +
+      "use `session_recap` on a hit to see where that session stopped.",
+    inputSchema: sessionSearchSchema,
+    handler: async input => {
+      let rows = registry.list({ includeArchived: true })
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+        rows = rows.filter(s => subtree.has(s.id))
+      }
+      rows = rows.filter(s => matchesSessionQuery(s, input.query))
+      if (input.status) rows = rows.filter(s => s.status === input.status)
+      const limit = Math.max(1, Math.min(200, input.limit ?? INDEX_DEFAULT_LIMIT))
+      rows = rows
+        .sort((a, b) => (b.lastActivityAt ?? b.startedAt).localeCompare(a.lastActivityAt ?? a.startedAt))
+        .slice(0, limit)
+      return rows.map(publicSessionDescriptor)
+    },
+    transformers: [
+      paginated({
+        project: compactSessionItem,
+        keyOf: s => s.id,
+        maxLimit: 200,
+        itemKey: "sessions",
+      }),
+    ],
+  })
+
+  // ── session_recap ────────────────────────────────────────────────
+  // The CLI's `agentproto sessions recap <id>` as an MCP verb. One glance at
+  // "where did we stop": the last K user prompts (with timestamps), the final
+  // assistant text of the last turn, and the session's meta (status/alive,
+  // model, adapter, cwd, parent, children, cost, queued prompts). Backed by
+  // the index sidecar plus a BOUNDED tail read of events.jsonl (seek from
+  // end, ≤256KB) — never a whole-file load. Unknown id refuses gracefully.
+  registerBuiltinTool<
+    { id: string; last?: number },
+    ReturnType<typeof buildSessionRecap>
+  >(server, {
+    id: "session_recap",
+    description:
+      "One-glance \"where did we stop\" for a session: the last K user prompts with " +
+      "timestamps, the final assistant text of the last turn, and meta (status/alive, " +
+      "model, adapter, cwd, parent, child ids, cost, queued prompts). Reads the session's " +
+      "index sidecar plus a bounded tail of its transcript — never the whole file. Use it " +
+      "to resume an interrupted session by id (find the id with `session_search`).",
+    inputSchema: z.object({
+      id: z.string().min(1).describe("Session id or name — from `session_list`/`session_search`."),
+      last: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("How many recent user prompts to include (default 8)."),
+    }),
+    handler: async input => {
+      const resolved = registry.findByIdOrName(input.id)
+      if (!resolved) throw new Error(`session_recap: no session "${input.id}"`)
+      const desc = registry.get(resolved.id) ?? resolved
+      const baseDir = registry.transcriptBaseDir
+      const index = readSessionIndex(desc.id, baseDir)
+      const entry = indexEntryFromDescriptor(desc, {
+        ...(index?.lastUserPrompt ? { lastUserPrompt: index.lastUserPrompt } : {}),
+        ...(index?.lastOutputText ? { lastOutputText: index.lastOutputText } : {}),
+      })
+      const children = registry
+        .list({ includeArchived: true })
+        .filter(s => s.parentSessionId === desc.id)
+        .map(s => s.id)
+      return buildSessionRecap({
+        entry,
+        eventsPath: sessionEventsPath(desc.id, baseDir),
+        last: input.last ?? 8,
+        children,
+        ...(desc.queuedPrompts !== undefined ? { queuedPrompts: desc.queuedPrompts } : {}),
+      })
+    },
+    transformers: [catchErrors()],
   })
 
   // ── session_stats ────────────────────────────────────────────────

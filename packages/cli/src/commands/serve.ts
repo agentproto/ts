@@ -1013,6 +1013,28 @@ export async function runServe(args: readonly string[]): Promise<number> {
     )
   }
 
+  // ── per-session index backfill ──
+  // Create the compact `index.json` sidecar for every session dir that lacks
+  // one, so `agentproto sessions find`/`recap` answer instantly (and without a
+  // running daemon) even for sessions that predate the sidecar. Synchronous
+  // and best-effort: one readdir plus one bounded tail read per missing index;
+  // a failure here must never gate the daemon being up.
+  try {
+    const backfilled = gateway.backfillSessionIndexes()
+    if (backfilled.created > 0) {
+      process.stderr.write(
+        `${color.dim}indexed ${backfilled.created} session(s)` +
+          `${color.reset}\n`,
+      )
+    }
+  } catch (err) {
+    process.stderr.write(
+      `${color.dim}session index backfill skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }${color.reset}\n`,
+    )
+  }
+
   // ── sandbox ledger reconcile ──
   // The ledger (~/.agentproto/sandboxes.json) can drift from what a
   // provider actually still has running — a failed teardown, a daemon that
