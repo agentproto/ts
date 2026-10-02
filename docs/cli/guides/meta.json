@@ -8,6 +8,8 @@
     "app-agent-tools",
     "no-admin-install",
     "fleets",
-    "gates"
+    "gates",
+    "cron",
+    "workflows"
   ]
 }
