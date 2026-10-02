@@ -107,7 +107,13 @@ import {
   type SessionWrapupEntry,
   type SessionWrapupSignals,
 } from "./session-wrapup.js"
-import { buildSessionEvidence, readRecentTurnsSync } from "./session-evidence.js"
+import {
+  buildSessionEvidence,
+  readLastMessageTimesSync,
+  readRecentToolCallRecordsSync,
+  readRecentTurnsSync,
+  summarizeToolCalls,
+} from "./session-evidence.js"
 import { judgeSessionWithJev, resolveJevApiKey, resolveJevConfig } from "./jev-client.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
@@ -5009,6 +5015,20 @@ export function registerSessionTools(
         }
       }
       const turns = desc.eventsPath ? readRecentTurnsSync(desc.eventsPath) : []
+      const records = desc.eventsPath ? readRecentToolCallRecordsSync(desc.eventsPath) : []
+      const times = desc.eventsPath ? readLastMessageTimesSync(desc.eventsPath) : {}
+      const lastRecord = records.length > 0 ? records[records.length - 1] : undefined
+      const lastToolCall = lastRecord
+        ? {
+            tool: lastRecord.tool ?? "unknown",
+            ...(lastRecord.command ? { command: lastRecord.command } : {}),
+            ...(lastRecord.ts ? { ts: lastRecord.ts } : {}),
+            ...(lastRecord.isError ? { isError: true } : {}),
+          }
+        : undefined
+      const liveChildren = registry
+        .list({ includeArchived: false })
+        .filter(s => s.parentSessionId === desc.id && (s.status === "running" || s.status === "starting")).length
       let worktree: WorktreeStatusView | undefined
       const scope = sessionWorktreeScope(desc)
       if (scope && listWorktreeStatuses) {
@@ -5019,7 +5039,23 @@ export function registerSessionTools(
           // Best-effort — evidence without the worktree view is still evidence.
         }
       }
-      const evidence = buildSessionEvidence({ desc, turns, ...(worktree ? { worktree } : {}), nowMs: Date.now() })
+      const prState = worktree?.pr?.state ?? null
+      const evidence = buildSessionEvidence({
+        desc,
+        turns,
+        ...(worktree ? { worktree } : {}),
+        nowMs: Date.now(),
+        ...(records.length > 0 ? { toolStats: summarizeToolCalls(records) } : {}),
+        ...(lastToolCall ? { lastToolCall } : {}),
+        liveChildren,
+        ...(times.lastUserAt ? { lastUserAt: times.lastUserAt } : {}),
+        ...(times.lastAgentAt ? { lastAgentAt: times.lastAgentAt } : {}),
+        pullRequests: {
+          opened: desc.openedPrs?.length ?? 0,
+          merged: prState === "merged" ? 1 : 0,
+          state: prState,
+        },
+      })
       return { content: [{ type: "text", text: JSON.stringify(evidence) }] }
     },
   )
