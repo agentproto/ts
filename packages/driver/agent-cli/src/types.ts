@@ -1120,6 +1120,16 @@ export interface AgentCliClient {
    * Not part of the protocol; internal to the runner.
    */
   _stderrTail?: () => string
+  /**
+   * Live stderr subscription — the push half of {@link _stderrTail}. Set by
+   * the runner after spawn; `promptTurn` subscribes for the duration of a
+   * turn to surface provider errors that exist ONLY on stderr. Some ACP
+   * servers (opencode) treat a provider 429/usage-cap as retryable and loop
+   * internally, logging the reason to stderr while `session/prompt` never
+   * resolves — the stderr line is the only evidence. Returns an unsubscribe
+   * function. Not part of the protocol; internal to the runner.
+   */
+  _onStderrLine?: (listener: (line: string) => void) => () => void
 }
 
 /**

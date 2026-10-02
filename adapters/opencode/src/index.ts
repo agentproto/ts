@@ -92,7 +92,12 @@ export const opencode: AgentCliHandle = defineAgentCli({
     "sst/opencode — open-source coding agent with first-party ACP mode. Spawned via `npx -y opencode-ai acp` and driven over stdio JSON-RPC. Multi-provider (Anthropic / OpenAI / OpenRouter / Groq / OpenCode hosted).",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "opencode-ai", "acp"],
+  // `--print-logs --log-level ERROR` makes the ACP server echo its structured
+  // logs to stderr. Without it a provider 429/usage-cap is swallowed into an
+  // internal retry loop and `session/prompt` never resolves, leaving the
+  // daemon with a silent 0-token busy session. The driver's stderr hook
+  // (`parseStderrStreamError`) reads those lines back into a turn error.
+  bin_args: ["-y", "opencode-ai", "acp", "--print-logs", "--log-level", "ERROR"],
   install: [
     { method: "npm", package: "opencode-ai", global: true },
     { method: "curl", url: "https://opencode.ai/install" },

@@ -14,6 +14,8 @@ agents:
 workflows:
   - id: session-steward
     path: .agentproto/workflows/session-steward/WORKFLOW.md
+skill:
+  path: skill
 ---
 
 Wraps up idle agent sessions — see README.md for how to install and run it,
