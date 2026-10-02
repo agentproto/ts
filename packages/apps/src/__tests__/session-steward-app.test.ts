@@ -29,7 +29,7 @@ describe("session-steward app", () => {
     expect(agent.model).toBe("role:judge.session")
   })
 
-  it("routes every mutation through session_wrapup_apply — nowhere else", async () => {
+  it("routes every SESSION mutation through session_wrapup_apply — the app_state ledger is the only other write", async () => {
     const app = await loadAppHandle(APP_DIR)
     const [workflow] = app.workflows
     const tools = new Set<string>()
@@ -42,13 +42,24 @@ describe("session-steward app", () => {
     walk(workflow!.steps as never)
     expect([...tools].sort()).toEqual([
       "agent_prompt",
+      "app_state_append",
+      "app_state_list",
+      "host_load",
       "model_roles",
       "session_evidence",
       "session_judge_jev",
+      "session_list",
       "session_monitor",
       "session_wrapup_apply",
       "session_wrapup_plan",
+      "tool_calls_list",
     ])
+    // The only session-closing tool is session_wrapup_apply; the only other
+    // write is the append-only verdict-memory ledger (never a session).
+    expect(tools.has("session_wrapup_apply")).toBe(true)
+    expect(tools.has("app_state_append")).toBe(true)
+    expect(tools.has("agent_kill")).toBe(false)
+    expect(tools.has("session_restart")).toBe(false)
   })
 
   describe("judge model comes from the judge.session role", () => {
