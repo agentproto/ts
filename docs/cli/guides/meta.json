@@ -2,6 +2,7 @@
   "title": "Guides",
   "pages": [
     "mcp-in-coding-cli",
+    "central-capabilities",
     "create-agentproto-app",
     "distribute-an-app",
     "app-agent-tools",

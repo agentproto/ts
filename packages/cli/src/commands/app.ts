@@ -1,5 +1,5 @@
 /**
- * `agentproto app pack <appDir> [--out <path.agentapp>] [--json]`
+ * `agentproto app pack <appDir> [--out <path.agentapp>] [--release] [--json]`
  * `agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]`
  * `agentproto app install <dir|url|file.agentapp> [--ref] [--subdir] [--sha] [--sha256] [--allow-build] [--data-dir]`
  * `agentproto app resync <appId>`
@@ -22,7 +22,8 @@ import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
-import { AgentAppPackError, packApp, unpackApp } from "@agentproto/app-kit"
+import { AgentAppPackError, packApp, peekAppUi, unpackApp } from "@agentproto/app-kit"
+import { ensureAppUiBuilt } from "@agentproto/runtime/app-ui-build"
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
 import {
@@ -39,7 +40,7 @@ import { runAppInit, runAppValidate } from "./app-init.js"
 const USAGE = `agentproto app — package, unpack, install, serve, build, or dev an agentproto app
 
 Usage:
-  agentproto app pack <appDir> [--out <path.agentapp>] [--json]
+  agentproto app pack <appDir> [--out <path.agentapp>] [--release] [--json]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--sha <commit>]
                          [--sha256 <digest>] [--allow-build] [--data-dir <path>]
@@ -55,7 +56,12 @@ pack:
   Walk <appDir> (must contain .agentproto/APP.md), write manifest.json and a
   sha256 aggregate over every file, and emit a verified .agentapp tar.gz.
   Without --out, derives <id>-<version>.agentapp in the current directory.
-  Skips any node_modules/ or .git/ directory at any depth.
+  Skips any node_modules/ or .git/ directory at any depth, and honors the
+  APP.md \`package\` block (\`include\` / \`exclude\` globs, \`stripBuild\`).
+  --release builds the publishable bundle: runs \`ui.build\` first when the UI
+  is missing or stale, drops dev-only files (ui/, docs/, data/, scripts/,
+  dev/, *.log, *.map, .env*), fails if the built ui.path is missing, and
+  strips \`ui.build\` from the packed APP.md so installs never run it.
 
 unpack:
   Extract a .agentapp, verify format agentapp/v1 and the sha256 aggregate,
@@ -377,6 +383,7 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
     strict: false,
     options: {
       out: { type: "string" },
+      release: { type: "boolean" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -392,10 +399,25 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto app pack: <appDir> is required.\n${USAGE}\n`)
     return 2
   }
+  const appDirAbs = resolve(process.cwd(), expandHome(appDir))
+  const release = values.release === true
 
   try {
+    // A release bundle ships the BUILT UI and no build step: build it here,
+    // where the sources are, so the installer never has to.
+    if (release) {
+      const uiPeek = await peekAppUi(appDirAbs)
+      if (uiPeek?.build) {
+        const ensured = await ensureAppUiBuilt({ dir: appDirAbs, uiPath: uiPeek.path, build: uiPeek.build })
+        if (!ensured.ok) {
+          process.stderr.write(`agentproto app pack: ${ensured.error}\n`)
+          return 1
+        }
+      }
+    }
     const { file, manifest } = await packApp({
-      appDir: resolve(process.cwd(), expandHome(appDir)),
+      appDir: appDirAbs,
+      ...(release ? { release: true } : {}),
       ...(typeof values.out === "string"
         ? { out: resolve(process.cwd(), expandHome(values.out)) }
         : {}),

@@ -43,7 +43,7 @@ import type { TransmitterBindingStore } from "./transmitter-bindings.js"
 import type { InboundEndpointStore } from "./inbound-endpoints.js"
 import type { InboundEndpoint } from "./inbound-endpoints.js"
 import type { WatcherDescriptor } from "./inbound-watcher.js"
-import type { CronJob } from "./cron-scheduler.js"
+import { cronJobHealth, type CronJob } from "./cron-scheduler.js"
 import type { RoutineFrontmatter } from "@agentproto/routine"
 import { type InboundProvider, INBOUND_PROVIDERS } from "./inbound-adapters.js"
 import {
@@ -812,7 +812,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "session:spawned", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed", "activity:changed", "task:changed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "session:spawned", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed", "cron:unhealthy", "activity:changed", "task:changed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -2666,6 +2666,12 @@ export function registerOrchestrationTools(
           "existing, already-running session in place (for durable check-in jobs); " +
           "'tool' calls a registered daemon MCP tool in-process (cron_* refused).",
         ),
+        maxConsecutiveFailures: z.number().int().min(1).optional().describe(
+          "Health threshold: pause the job after this many consecutive non-productive runs. Default 2.",
+        ),
+        runTimeoutMs: z.number().int().positive().optional().describe(
+          "Bound (ms) on following a spawned session's first turn before recording `timeout`. Default 30 min.",
+        ),
       },
       async input => {
         try {
@@ -2683,6 +2689,10 @@ export function registerOrchestrationTools(
             timezone: input.timezone,
             recurring: input.recurring ?? true,
             action: input.action,
+            ...(input.maxConsecutiveFailures !== undefined
+              ? { maxConsecutiveFailures: input.maxConsecutiveFailures }
+              : {}),
+            ...(input.runTimeoutMs !== undefined ? { runTimeoutMs: input.runTimeoutMs } : {}),
           })
           return {
             content: [
@@ -2728,15 +2738,21 @@ export function registerOrchestrationTools(
       lastRunAt: j.lastRunAt,
       // A failed last run must be visible without `full: true`.
       lastOk: j.lastResult?.ok,
+      // Real-run health: last outcome, consecutive non-productive count, and
+      // (when auto-paused) the reason — see `CronJobHealth`.
+      health: cronJobHealth(j),
     })
     registerBuiltinTool<CronListInput, CronJob[]>(server, {
       id: "cron_list",
       description: "List all cron jobs (active and inactive) with their schedule, last result, and next fire time. " +
           "COMPACT BY DEFAULT: each entry is a slim projection (id/label/schedule/" +
-          "recurring/active/finished/nextRunAt/lastRunAt/lastOk); pass `full: true` (or `compact: false`) " +
-          "for the complete job record including action/createdAt/lastResult.",
+          "recurring/active/finished/nextRunAt/lastRunAt/lastOk/health); pass `full: true` (or `compact: false`) " +
+          "for the complete job record including action/createdAt/lastResult. `health` carries the last real " +
+          "run outcome (produced/empty/errored/timeout), the consecutiveFailures count, and pausedReason.",
       inputSchema: cronListSchema,
-      handler: async () => cronScheduler.list(),
+      // `health` is a computed projection, not persisted on the job — attach it
+      // here so `full: true` surfaces it too.
+      handler: async () => cronScheduler.list().map(j => ({ ...j, health: cronJobHealth(j) })),
       transformers: [
         catchErrors(),
         paginated({
@@ -2759,6 +2775,12 @@ export function registerOrchestrationTools(
         recurring: z.boolean().optional(),
         active: z.boolean().optional(),
         action: cronActionSchema.optional(),
+        maxConsecutiveFailures: z.number().int().min(1).optional().describe(
+          "Health threshold: pause after this many consecutive non-productive runs. Default 2.",
+        ),
+        runTimeoutMs: z.number().int().positive().optional().describe(
+          "Bound (ms) on following a spawned session's first turn before recording `timeout`.",
+        ),
       },
       async input => {
         try {

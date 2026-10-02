@@ -105,7 +105,7 @@ export interface AppUiBuildingHtmlInput {
    *  counter is computed client-side off this, not baked in as static text,
    *  so it keeps ticking between reloads. */
   readonly startedAt: number
-  /** Last lines of `.agentproto/ui-build.log`, if cheap to read. */
+  /** Last lines of the app's ui-build log (`appUiBuildLogPath`), if cheap to read. */
   readonly logTail?: string
 }
 

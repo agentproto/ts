@@ -53,6 +53,25 @@ inputs:
   callerSessionId:
     type: string
     description: The calling session's id — never a candidate.
+  userOrigins:
+    type: array
+    description: >-
+      Origins that are ALWAYS flag-only, never closed (a human is in the
+      loop). A trailing `*` is a prefix wildcard. Default
+      `["chat-starter", "vscode"]`; a root with no origin and no parent is
+      treated as a user origin too.
+    items:
+      type: string
+    default: ["chat-starter", "vscode"]
+  closableOrigins:
+    type: array
+    description: >-
+      Origins that may be closed under the current rules. A trailing `*` is a
+      prefix wildcard. Default `["cron:*", "gate"]`. Executors (a session with
+      a `parentSessionId`) are closable regardless.
+    items:
+      type: string
+    default: ["cron:*", "gate"]
 outputs: {}
 steps:
   - id: modelRoles
@@ -88,6 +107,8 @@ steps:
     name: Rule verdicts to apply
     description: >-
       Entry-based. Empty unless `apply`: `close` → done, `stuck` → abandoned.
+      Origin-bounded — a user-origin candidate is queued as a `needs-input`
+      FLAG instead of a close.
 
   - id: autoApply
     kind: map
@@ -207,7 +228,8 @@ steps:
     name: Confident verdicts to apply
     description: >-
       Entry-based. Empty unless `apply`: done/abandoned/blocked/needs-input at
-      or above `minConfidence`.
+      or above `minConfidence`. Origin-bounded — a user-origin candidate is
+      downgraded to a `needs-input` FLAG, never a close.
 
   - id: judgedApply
     kind: map
@@ -258,6 +280,15 @@ report with RAM freed / still held.
 - A malformed judge reply is `active` with confidence 0 — never acted on.
 - The caller's own session (`callerSessionId`) is dropped from every list.
 - `blocked` / `needs-input` only FLAG a session; it keeps running.
+- **Origin bound (never close a human's session).** Every candidate's
+  `origin`/`parentSessionId` runs through the pure `decideAction`
+  (`origin-policy.mjs`): a `userOrigins` match (`chat-starter`, `vscode` by
+  default) or a root with no origin and no parent is FLAG-ONLY, even with
+  `apply: true` and a confident `done` verdict. `cron:*`, `gate`, and
+  executors (a session with a `parentSessionId`) stay closeable. Both lists
+  are workflow inputs; a trailing `*` is a prefix wildcard.
+- The report carries an `origin` column and the retained action (e.g.
+  `flag (origine utilisateur)`), in dry run as well as apply.
 
 ## The judge
 

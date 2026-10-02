@@ -53,6 +53,7 @@ import { WorkspacePinStore } from "./services/workspacePin.js"
 import { registerAppsView } from "./views/appsTree.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
+import { registerCapabilitiesView } from "./views/capabilitiesTree.js"
 import { registerHarnessesView } from "./views/harnessesTree.js"
 import { registerAuthProfilesView } from "./views/authProfilesTree.js"
 import { registerAuthSettingsPanel } from "./webview/authSettingsPanel.js"
@@ -118,9 +119,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // the transition toasts off the store's onDidChange.
   const watched = new WatchedSessions(ctx.workspaceState)
   ctx.subscriptions.push(watched, watched.attach(store))
-  registerSessionsView(ctx, store, filter, seen, watched)
+  const sessionsView = registerSessionsView(ctx, store, filter, seen, watched)
   registerPermissionsView(ctx, store)
   const harnessesProvider = registerHarnessesView(ctx, client)
+  registerCapabilitiesView(ctx, client, sessionsView)
   const authProfilesProvider = registerAuthProfilesView(ctx, client)
   const appsProvider = registerAppsView(ctx, client)
   registerStatusBar(ctx, store)

@@ -40,7 +40,7 @@ import { buildAppBoundary } from "./app-boundary.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
-import { createAppRegistry, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
+import { createAppRegistry, APP_DATA_ROOT_SUBDIR, defaultRemoteAppDataDir, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
 import {
   APP_INSTALL_EXCLUSIVE_ERROR,
   appInstallInputSchema,
@@ -687,14 +687,19 @@ export interface PerformInstallOptions {
    *  `ui.build` is dropped from the persisted record so no later request
    *  (`GET /apps/:id/ui`, the MCP panel cache) runs it either. */
   readonly allowUiBuild?: boolean
+  /** Last-resort data root when no explicit, previous or APP.md-hinted
+   *  `dataDir` applies — remote installs pass `<state dir>/app-data/<id>` so
+   *  data never lands in their replaceable code dir. Absent = `<dir>/data`. */
+  readonly defaultDataDir?: (appId: string) => string
 }
 
 /**
  * Resolve the data root persisted on the `InstalledApp` record (see
  * `InstalledApp.dataDir`). Precedence: explicit `opts.dataDir` > the
  * previously persisted `dataDir` of the same appId (so a bare re-install
- * never silently moves an app's data) > the APP.md `data.dir` hint >
- * `<dir>/data`. Always absolute. A path that exists but is not a directory
+ * never silently moves an app's data) > the APP.md `data.dir` hint > the caller's
+ * `fallback` (remote installs: `<state dir>/app-data/<id>`) > `<dir>/data`.
+ * Always absolute. A path that exists but is not a directory
  * is rejected; a missing one is fine — `app_data_write` creates it lazily.
  */
 export async function resolveInstallDataDir(input: {
@@ -702,12 +707,15 @@ export async function resolveInstallDataDir(input: {
   explicit?: string
   previous?: string
   hint?: string
+  fallback?: string
 }): Promise<{ ok: true; dataDir: string } | { ok: false; error: string }> {
   const raw = input.explicit ?? input.previous ?? input.hint
   const dataDir =
-    raw === undefined
-      ? resolve(input.dir, DEFAULT_APP_DATA_SUBDIR)
-      : resolve(input.dir, expandHome(raw))
+    raw !== undefined
+      ? resolve(input.dir, expandHome(raw))
+      : input.fallback !== undefined
+        ? resolve(input.fallback)
+        : resolve(input.dir, DEFAULT_APP_DATA_SUBDIR)
   try {
     const st = await stat(dataDir)
     if (!st.isDirectory()) {
@@ -874,6 +882,7 @@ export async function performInstall(
       ? { previous: appRegistry.getApp(handle.id)!.dataDir }
       : {}),
     ...(handle.data?.dir !== undefined ? { hint: handle.data.dir } : {}),
+    ...(opts?.defaultDataDir !== undefined ? { fallback: opts.defaultDataDir(handle.id) } : {}),
   })
   if (!dataDirResult.ok) return { ok: false, error: `app_install: ${dataDirResult.error}` }
 
@@ -940,6 +949,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         source: staged.source,
         // Only a git source may build, and only with explicit consent.
         allowUiBuild: staged.source.kind === "git" && allowBuild === true,
+        defaultDataDir: (appId: string) =>
+          defaultRemoteAppDataDir(join(dirname(appsDir), APP_DATA_ROOT_SUBDIR), appId),
       })
     } catch (err) {
       await swap.rollback()
@@ -1009,7 +1020,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         .describe(
           "Where the app's durable data (`app_data_*`) lives. Absolute or `~`-relative; a " +
             "relative path is taken relative to `dir`. Defaults to the previously installed " +
-            "dataDir, else the APP.md `data.dir` hint, else `<dir>/data`.",
+            "dataDir, else the APP.md `data.dir` hint, else `<dir>/data` (local dir install) or " +
+            "`<daemon state dir>/app-data/<appId>` (git / .agentapp install).",
         ),
     },
     async rawInput => {

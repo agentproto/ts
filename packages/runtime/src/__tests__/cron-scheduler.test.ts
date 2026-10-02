@@ -14,7 +14,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { join } from "node:path"
 import { mkdtempSync, rmSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { createCronScheduler } from "../cron-scheduler.js"
+import { createCronScheduler, type CronTurnObservation, type CronTurnObserver } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 
@@ -925,6 +925,293 @@ describe("CronScheduler — create-time adapter check", () => {
       expect(resolveAgentAdapter).not.toHaveBeenCalled()
     } finally {
       scheduler.shutdown()
+    }
+  })
+})
+
+// ── run health: real outcome + auto-pause ───────────────────────────
+
+describe("CronScheduler — run health", () => {
+  let tmpDirs: string[] = []
+
+  afterEach(() => {
+    for (const d of tmpDirs) {
+      try { rmSync(d, { recursive: true }) } catch { /* ignore */ }
+    }
+    tmpDirs = []
+  })
+
+  /** Scheduler with an injected turn observer + an agent_start stub that
+   *  returns a session id, so the observed path is exercised. */
+  function makeAgentScheduler(
+    observeTurn: CronTurnObserver,
+    extra: Partial<Parameters<typeof createCronScheduler>[0]> = {},
+  ) {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const sessionEvents = createSessionEventBus()
+    const registry = { get: vi.fn(), sendPrompt: vi.fn(), spawnAgent: vi.fn() } as unknown as SessionsRegistry
+    const dispatchTool = vi.fn(async () => ({
+      content: [{ type: "text", text: JSON.stringify({ id: "sess_obs" }) }],
+    }))
+    const scheduler = createCronScheduler({
+      sessionEvents,
+      registry,
+      dispatchTool,
+      workspace,
+      observeTurn,
+      ...extra,
+    })
+    return { scheduler, sessionEvents, dispatchTool, workspace }
+  }
+
+  const staticObserver = (obs: CronTurnObservation): CronTurnObserver => vi.fn(async () => obs)
+
+  it("records the real outcome, output tokens, and duration of an observed agent run", async () => {
+    const { scheduler, dispatchTool } = makeAgentScheduler(
+      staticObserver({ outcome: "produced", tokensOut: 120, durationMs: 4210 }),
+    )
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "work" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result?.ok).toBe(true)
+      expect(dispatchTool).toHaveBeenCalledOnce()
+
+      const runs = scheduler.runs({ jobId: job.id }).runs
+      expect(runs).toHaveLength(1)
+      expect(runs[0]).toMatchObject({
+        outcome: "produced",
+        ok: true,
+        sessionId: "sess_obs",
+        tokensOut: 120,
+        durationMs: 4210,
+      })
+      expect(scheduler.get(job.id)?.lastOutcome).toBe("produced")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it.each([
+    ["empty", { outcome: "empty", tokensOut: 0, durationMs: 12 }],
+    ["errored", { outcome: "errored", error: "boom" }],
+    ["timeout", { outcome: "timeout", durationMs: 30_000 }],
+  ] as Array<[string, CronTurnObservation]>)(
+    "classifies a %s run as non-productive",
+    async (expected, obs) => {
+      const { scheduler } = makeAgentScheduler(staticObserver(obs))
+      try {
+        const job = await scheduler.create({
+          schedule: "0 0 1 1 *",
+          recurring: true,
+          action: { kind: "agent", adapter: "mock", prompt: "work" },
+        })
+        await scheduler.run(job.id)
+        const run = scheduler.runs({ jobId: job.id }).runs[0]!
+        expect(run.outcome).toBe(expected)
+        expect(run.ok).toBe(false)
+        expect(scheduler.get(job.id)?.consecutiveFailures).toBe(1)
+      } finally {
+        scheduler.shutdown()
+      }
+    },
+  )
+
+  it("counts a failed command as non-productive (no observer involved)", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { mkdirSync, writeFileSync } = await import("node:fs")
+    mkdirSync(join(workspace, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(workspace, ".agentproto", "allowed-commands.json"),
+      JSON.stringify({ version: 1, commands: [] }),
+    )
+    const { sessionEvents, registry } = makeDeps(workspace)
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "command", command: "uname" },
+      })
+      await scheduler.run(job.id)
+      const run = scheduler.runs({ jobId: job.id }).runs[0]!
+      expect(run.outcome).toBe("errored")
+      expect(scheduler.get(job.id)?.consecutiveFailures).toBe(1)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("pauses the job after N consecutive non-productive runs and emits cron:unhealthy", async () => {
+    const { scheduler, sessionEvents } = makeAgentScheduler(staticObserver({ outcome: "errored", error: "boom" }))
+    const unhealthy: Array<{ jobId: string; consecutiveFailures: number; lastOutcome: string }> = []
+    sessionEvents.on("cron:unhealthy", ev =>
+      unhealthy.push({ jobId: ev.jobId, consecutiveFailures: ev.consecutiveFailures, lastOutcome: ev.lastOutcome }),
+    )
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "work" },
+      })
+      await scheduler.run(job.id)
+      expect(scheduler.get(job.id)?.active).toBe(true)
+      expect(scheduler.get(job.id)?.consecutiveFailures).toBe(1)
+      expect(unhealthy).toHaveLength(0)
+
+      await scheduler.run(job.id)
+      const after = scheduler.get(job.id)!
+      expect(after.active).toBe(false)
+      expect(after.consecutiveFailures).toBe(2)
+      expect(after.pausedReason).toMatch(/auto-paused after 2 consecutive non-productive runs/)
+      expect(unhealthy).toEqual([{ jobId: job.id, consecutiveFailures: 2, lastOutcome: "errored" }])
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("honours a per-job maxConsecutiveFailures", async () => {
+    const { scheduler } = makeAgentScheduler(staticObserver({ outcome: "empty", tokensOut: 0 }))
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "work" },
+        maxConsecutiveFailures: 3,
+      })
+      await scheduler.run(job.id)
+      await scheduler.run(job.id)
+      expect(scheduler.get(job.id)?.active).toBe(true)
+      await scheduler.run(job.id)
+      expect(scheduler.get(job.id)?.active).toBe(false)
+      expect(scheduler.get(job.id)?.consecutiveFailures).toBe(3)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("resets the failure counter on a produced run", async () => {
+    let call = 0
+    const observeTurn = vi.fn(async () =>
+      call++ === 0
+        ? ({ outcome: "errored", error: "boom" } as CronTurnObservation)
+        : ({ outcome: "produced", tokensOut: 5 } as CronTurnObservation),
+    )
+    const { scheduler } = makeAgentScheduler(observeTurn)
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "work" },
+      })
+      await scheduler.run(job.id)
+      expect(scheduler.get(job.id)?.consecutiveFailures).toBe(1)
+      await scheduler.run(job.id)
+      expect(scheduler.get(job.id)?.consecutiveFailures).toBe(0)
+      expect(scheduler.get(job.id)?.lastOutcome).toBe("produced")
+      expect(scheduler.get(job.id)?.active).toBe(true)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("clears the pause reason and counter on an explicit resume", async () => {
+    const { scheduler } = makeAgentScheduler(staticObserver({ outcome: "timeout" }))
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "work" },
+      })
+      await scheduler.run(job.id)
+      await scheduler.run(job.id)
+      expect(scheduler.get(job.id)?.active).toBe(false)
+      const resumed = await scheduler.update(job.id, { active: true })
+      expect(resumed.active).toBe(true)
+      expect(resumed.pausedReason).toBeUndefined()
+      expect(resumed.consecutiveFailures).toBe(0)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("does not re-fire a job while its previous run is still being observed", async () => {
+    let resolveObs: ((obs: CronTurnObservation) => void) | undefined
+    let markStarted: (() => void) | undefined
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    const observeTurn: CronTurnObserver = vi.fn(
+      () =>
+        new Promise<CronTurnObservation>(resolve => {
+          resolveObs = resolve
+          markStarted?.()
+        }),
+    )
+    const { scheduler, dispatchTool } = makeAgentScheduler(observeTurn)
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "work" },
+      })
+      const first = scheduler.run(job.id)
+      await started
+      // A second fire while the first is still observed must be a no-op.
+      await scheduler.run(job.id)
+      expect(dispatchTool).toHaveBeenCalledOnce()
+
+      resolveObs!({ outcome: "produced", tokensOut: 1, durationMs: 1 })
+      await first
+      expect(scheduler.runs({ jobId: job.id }).runs).toHaveLength(1)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("ledger stays backward-compatible: a pre-outcome entry still parses", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const persistPath = join(workspace, "cron-jobs.json")
+    const { sessionEvents, registry } = makeDeps(workspace)
+    const first = createCronScheduler({ sessionEvents, registry, workspace, persistPath, persist: true })
+    const job = await first.create({
+      schedule: "0 0 1 1 *",
+      recurring: true,
+      action: { kind: "command", command: "echo" },
+    })
+    first.shutdown()
+
+    const { writeFileSync } = await import("node:fs")
+    writeFileSync(
+      `${persistPath}.runs.json`,
+      JSON.stringify({
+        [job.id]: [
+          {
+            runId: "run_legacy",
+            jobId: job.id,
+            startedAt: "2026-01-01T00:00:00.000Z",
+            endedAt: "2026-01-01T00:00:01.000Z",
+            ok: true,
+            result: "legacy entry without an outcome",
+          },
+        ],
+      }),
+    )
+
+    const second = createCronScheduler({ sessionEvents, registry, workspace, persistPath, persist: true })
+    try {
+      const runs = second.runs({ jobId: job.id }).runs
+      expect(runs).toHaveLength(1)
+      expect(runs[0]).toMatchObject({ runId: "run_legacy", ok: true, result: "legacy entry without an outcome" })
+      expect(runs[0]?.outcome).toBeUndefined()
+      // A job persisted before health fields existed still reads as healthy.
+      expect(second.get(job.id)?.consecutiveFailures).toBeUndefined()
+    } finally {
+      second.shutdown()
     }
   })
 })

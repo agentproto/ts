@@ -150,6 +150,29 @@ describe("ensureAppUiBuilt", () => {
     expect(result).toEqual({ ok: true, built: true })
     expect(await readFile(uiPath, "utf8")).toBe("source")
   })
+
+  it("writes the build log under the daemon state dir, never inside the app dir", async () => {
+    const prev = process.env.AGENTPROTO_HOME
+    const home = await mkdtemp(join(tmpdir(), "agentproto-home-"))
+    process.env.AGENTPROTO_HOME = home
+    try {
+      const logPath = appUiBuildLogPath(dir)
+      expect(logPath.startsWith(join(home, "logs", "app-ui-build") + "/")).toBe(true)
+      expect(logPath.startsWith(dir)).toBe(false)
+      const result = await ensureAppUiBuilt({
+        dir,
+        uiPath,
+        build: { command: `echo "log-line" && mkdir -p "${dirname(uiPath)}" && printf '<html/>' > "${uiPath}"` },
+      })
+      expect(result.ok).toBe(true)
+      expect(await readFile(logPath, "utf8")).toContain("log-line")
+      await expect(readFile(join(dir, ".agentproto", "ui-build.log"), "utf8")).rejects.toThrow()
+    } finally {
+      if (prev === undefined) delete process.env.AGENTPROTO_HOME
+      else process.env.AGENTPROTO_HOME = prev
+      await rm(home, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("resolveAppUiBuildState", () => {

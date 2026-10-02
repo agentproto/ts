@@ -107,6 +107,10 @@
           "when": "config.agentproto.harnessesView == 'webview'"
         },
         {
+          "id": "agentproto.capabilities",
+          "name": "Capabilities"
+        },
+        {
           "id": "agentproto.authProfiles",
           "name": "Auth Profiles",
           "when": "config.agentproto.authProfilesView == 'tree'"
@@ -438,6 +442,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "agentproto.refreshCapabilities",
+        "title": "agentproto: Refresh Capabilities",
+        "category": "agentproto",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "agentproto.installHarness",
         "title": "agentproto: Install Harness",
         "category": "agentproto",
@@ -580,6 +590,11 @@
         {
           "command": "agentproto.refreshHarnesses",
           "when": "view == 'agentproto.harnesses'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.refreshCapabilities",
+          "when": "view == 'agentproto.capabilities'",
           "group": "navigation"
         },
         {

@@ -1,13 +1,13 @@
 /**
  * `.agentapp` pack / unpack core (AIP-53 §"The `.agentapp` package format").
  *
- * PACK   walks the entire app dir (including `.agentproto/`, but skipping
- *        any `node_modules/` or `.git/` at any depth — a `ui/` source tree
- *        ships both and neither belongs in the shipped app), writes a
- *        `manifest.json` at the bundle root, and tars the app folder's
- *        CONTENTS (not the folder itself) with system `tar`, so extraction
- *        yields `manifest.json` + `.agentproto/` + loose files at the top
- *        level and relative paths survive round-tripping.
+ * PACK   walks the app dir (skipping `node_modules/` and `.git/` at any
+ *        depth), applies the APP.md `package` include/exclude rules (plus
+ *        RELEASE_DEFAULT_EXCLUDE in release mode), stages ONLY the selected
+ *        files (rewriting APP.md without `ui.build` when stripping), writes a
+ *        `manifest.json` at the bundle root, and tars the staged CONTENTS
+ *        with system `tar`, so extraction yields `manifest.json` +
+ *        `.agentproto/` + loose files at the top level.
  *
  * UNPACK extracts to a fresh temp dir, reads `manifest.json`, validates
  *        `format === "agentapp/v1"`, recomputes the aggregate SHA over the
@@ -23,9 +23,9 @@
  * CLI, the daemon's remote install) map failures without parsing messages.
  */
 
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
-import { basename, dirname, isAbsolute, join, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, posix, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { spawn } from "node:child_process"
 
@@ -70,6 +70,8 @@ export type AgentAppPackErrorCode =
   | "unsupported-format"
   | "unsafe-path"
   | "digest-mismatch"
+  | "invalid-package"
+  | "missing-ui"
 
 export class AgentAppPackError extends Error {
   readonly code: AgentAppPackErrorCode
@@ -230,14 +232,147 @@ function extractMeta(front: Record<string, unknown>): AppMeta {
 }
 
 /**
+ * Release-mode default excludes: dev-only trees and artifacts that must never
+ * ship in a published `.agentapp` (UI sources, docs, runtime data, scripts,
+ * dev harnesses, logs, source maps, env files). APP.md `package.exclude`
+ * ADDS to this list in release mode; it never removes from it.
+ */
+export const RELEASE_DEFAULT_EXCLUDE: readonly string[] = [
+  "ui/**",
+  "docs/**",
+  "data/**",
+  "scripts/**",
+  // Root-level only: `**/dev/**` would also drop a shipped agent named
+  // `dev` (`.agentproto/agents/dev/`); `ui/dev/` is covered by `ui/**`.
+  "dev/**",
+  "**/*.log",
+  "**/*.map",
+  "**/.DS_Store",
+  "**/.env",
+  "**/.env.*",
+]
+
+/** APP.md `package` block — what a `.agentapp` ships. All fields optional. */
+export interface AppPackageRules {
+  /** When set, only files matching one of these globs ship (APP.md and the
+   *  `ui.path` entry + its `assets/` are always kept). */
+  include?: string[]
+  /** Files matching any of these globs are dropped. */
+  exclude?: string[]
+  /** Remove `ui.build` from the packed APP.md. Default: true in release mode,
+   *  false otherwise. */
+  stripBuild?: boolean
+}
+
+/**
+ * Glob → RegExp over a `/`-separated relative path. `**` spans any number of
+ * segments (including none when followed by `/`), `*` stays inside one
+ * segment. No braces, no negation, no `?` — enough for package rules without
+ * a glob dependency.
+ */
+export function globToRegExp(glob: string): RegExp {
+  const g = glob.replace(/^\.\//, "")
+  let re = ""
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i]!
+    if (c === "*") {
+      if (g[i + 1] === "*") {
+        i++
+        if (g[i + 1] === "/") {
+          i++
+          re += "(?:.*/)?"
+        } else {
+          re += ".*"
+        }
+      } else {
+        re += "[^/]*"
+      }
+    } else if ("\\^$+?.()|{}[]".includes(c)) {
+      re += "\\" + c
+    } else {
+      re += c
+    }
+  }
+  return new RegExp(`^${re}$`)
+}
+
+function toPosix(p: string): string {
+  return p.replace(/\\/g, "/")
+}
+
+function matchesAny(path: string, globs: readonly RegExp[]): boolean {
+  const p = toPosix(path)
+  return globs.some((re) => re.test(p))
+}
+
+/** Read + validate the APP.md `package` block. Throws `invalid-package`. */
+export function readPackageRules(front: Record<string, unknown>): AppPackageRules {
+  const raw = front.package
+  if (raw === undefined || raw === null) return {}
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new AgentAppPackError("invalid-package", "APP.md `package` must be an object.")
+  }
+  const r = raw as Record<string, unknown>
+  const list = (key: "include" | "exclude"): string[] | undefined => {
+    const v = r[key]
+    if (v === undefined) return undefined
+    if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || s.trim() === "")) {
+      throw new AgentAppPackError(
+        "invalid-package",
+        `APP.md \`package.${key}\` must be an array of non-empty glob strings.`,
+      )
+    }
+    return v as string[]
+  }
+  if (r.stripBuild !== undefined && typeof r.stripBuild !== "boolean") {
+    throw new AgentAppPackError("invalid-package", "APP.md `package.stripBuild` must be a boolean.")
+  }
+  const include = list("include")
+  const exclude = list("exclude")
+  return {
+    ...(include !== undefined ? { include } : {}),
+    ...(exclude !== undefined ? { exclude } : {}),
+    ...(typeof r.stripBuild === "boolean" ? { stripBuild: r.stripBuild } : {}),
+  }
+}
+
+/** APP.md `ui.path` (string or `{path}`) as a posix path relative to the app
+ *  dir, or undefined when absent / absolute / escaping the app dir. */
+function uiRelPath(front: Record<string, unknown>): string | undefined {
+  const ui = front.ui
+  const raw =
+    typeof ui === "string"
+      ? ui
+      : ui && typeof ui === "object" && !Array.isArray(ui) && typeof (ui as { path?: unknown }).path === "string"
+        ? (ui as { path: string }).path
+        : undefined
+  if (raw === undefined || raw === "" || isAbsolute(raw)) return undefined
+  const rel = posix.normalize(toPosix(raw)).replace(/^\.\//, "")
+  if (rel.startsWith("../") || rel === "..") return undefined
+  return rel
+}
+
+/**
  * Package `appDir` (must hold `.agentproto/APP.md`) into a `.agentapp`.
  * Without `out`, the file is `<safeId>-<version>.agentapp` in the cwd.
+ *
+ * File selection: every file under `appDir` minus `node_modules/`/`.git/`,
+ * then the APP.md `package` rules (`include` restricts, `exclude` drops). In
+ * `release` mode {@link RELEASE_DEFAULT_EXCLUDE} is added to `exclude`, the
+ * built `ui.path` must be in the bundle (`missing-ui` otherwise), and
+ * `ui.build` is stripped from the packed APP.md (override with
+ * `package.stripBuild`). `.agentproto/APP.md`, the `ui.path` entry and the
+ * files under its sibling `assets/` dir always ship. Only the selected files
+ * are staged, and the SHA covers the staged bytes (so a rewritten APP.md is
+ * what gets hashed).
  */
 export async function packApp(input: {
   appDir: string
   out?: string
+  release?: boolean
 }): Promise<{ file: string; manifest: AgentAppManifest }> {
   const appDirAbs = resolve(input.appDir)
+  const release = input.release === true
 
   const appMdPath = join(appDirAbs, ".agentproto", "APP.md")
   if (!(await pathExists(appMdPath))) {
@@ -248,8 +383,10 @@ export async function packApp(input: {
   }
 
   const raw = await readFile(appMdPath, "utf8")
-  const front = matter(raw).data as Record<string, unknown>
+  const parsedAppMd = matter(raw)
+  const front = parsedAppMd.data as Record<string, unknown>
   const meta = extractMeta(front)
+  const rules = readPackageRules(front)
 
   const outAbs =
     input.out !== undefined
@@ -257,45 +394,84 @@ export async function packApp(input: {
       : resolve(process.cwd(), `${safeId(meta.id)}-${meta.version}.agentapp`)
   await mkdir(dirname(outAbs), { recursive: true })
 
-  const files = (await collectFiles(appDirAbs))
+  const appMdRel = ".agentproto/APP.md"
+  const uiRel = uiRelPath(front)
+  const uiAssetsPrefix = uiRel !== undefined ? `${posix.dirname(uiRel)}/assets/`.replace(/^\.\//, "") : undefined
+  const includeRes = rules.include?.map(globToRegExp)
+  const excludeRes = [...(release ? RELEASE_DEFAULT_EXCLUDE : []), ...(rules.exclude ?? [])].map(globToRegExp)
+  const alwaysShip = (p: string): boolean =>
+    p === appMdRel || p === uiRel || (uiAssetsPrefix !== undefined && p.startsWith(uiAssetsPrefix))
+
+  const selected = (await collectFiles(appDirAbs))
     .filter((f) => f.path !== "manifest.json")
     .filter((f) => join(appDirAbs, f.path) !== outAbs)
+    .filter((f) => {
+      const p = toPosix(f.path)
+      if (alwaysShip(p)) return true
+      if (includeRes !== undefined && !matchesAny(p, includeRes)) return false
+      return !matchesAny(p, excludeRes)
+    })
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-  const fileCount = files.length
-  const totalSize = files.reduce((sum, f) => sum + f.size, 0)
 
-  const sha256 = await aggregateSha256(
-    appDirAbs,
-    files.map((f) => f.path),
-  )
-
-  const manifest: AgentAppManifest = {
-    format: AGENTAPP_FORMAT,
-    id: meta.id,
-    ...(meta.name !== undefined ? { name: meta.name } : {}),
-    version: meta.version,
-    ...(meta.description !== undefined ? { description: meta.description } : {}),
-    agents: meta.agents,
-    workflows: meta.workflows,
-    ...(meta.ui !== undefined ? { ui: meta.ui } : {}),
-    files: files.map((f) => f.path),
-    fileCount,
-    totalSize,
-    sha256,
-    createdAt: new Date().toISOString(),
-    agentprotoVersion: ">=0.1.0",
+  if (release && uiRel !== undefined && !selected.some((f) => toPosix(f.path) === uiRel)) {
+    throw new AgentAppPackError(
+      "missing-ui",
+      `ui.path "${uiRel}" does not exist in ${appDirAbs} — build the UI first ` +
+        "(`agentproto app build <appDir>`, or `agentproto app pack --release`, which runs `ui.build`).",
+    )
   }
 
-  // Stage: copy contents into a temp dir, write manifest.json, tar it. The
-  // filter also enforces the node_modules/.git exclusion on the actual bundle
-  // contents (collectFiles above only shaped the manifest's `files` list) —
-  // cp() skips a filtered-out directory's contents entirely.
+  const stripBuild = rules.stripBuild ?? release
+
+  // Stage ONLY the selected files, optionally rewrite APP.md, then hash and
+  // tar what is actually staged — excluded files never reach the archive.
   const staging = await mkdtemp(join(tmpdir(), "agentapp-"))
   try {
-    await cp(appDirAbs, staging, {
-      recursive: true,
-      filter: (source) => !SKIP_DIR_NAMES.has(basename(source)),
-    })
+    for (const f of selected) {
+      const dest = join(staging, f.path)
+      await mkdir(dirname(dest), { recursive: true })
+      await copyFile(join(appDirAbs, f.path), dest)
+    }
+
+    if (stripBuild) {
+      const ui = front.ui
+      if (ui && typeof ui === "object" && !Array.isArray(ui) && "build" in ui) {
+        // Clone: gray-matter caches parse results per input string, so the
+        // cached `data` object must not be mutated.
+        const data = structuredClone(front)
+        delete (data.ui as Record<string, unknown>).build
+        await writeFile(join(staging, appMdRel), matter.stringify(parsedAppMd.content, data), "utf8")
+      }
+    }
+
+    const files: BundleFile[] = []
+    for (const f of selected) {
+      files.push({ path: f.path, size: (await stat(join(staging, f.path))).size })
+    }
+    const fileCount = files.length
+    const totalSize = files.reduce((sum, f) => sum + f.size, 0)
+    const sha256 = await aggregateSha256(
+      staging,
+      files.map((f) => f.path),
+    )
+
+    const manifest: AgentAppManifest = {
+      format: AGENTAPP_FORMAT,
+      id: meta.id,
+      ...(meta.name !== undefined ? { name: meta.name } : {}),
+      version: meta.version,
+      ...(meta.description !== undefined ? { description: meta.description } : {}),
+      agents: meta.agents,
+      workflows: meta.workflows,
+      ...(meta.ui !== undefined ? { ui: meta.ui } : {}),
+      files: files.map((f) => f.path),
+      fileCount,
+      totalSize,
+      sha256,
+      createdAt: new Date().toISOString(),
+      agentprotoVersion: ">=0.1.0",
+    }
+
     await writeFile(join(staging, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8")
     // Offline-deterministic archive: pass the entry list explicitly (sorted) so
     // the archive order is reproducible without GNU-only `--sort=name`, which
@@ -305,11 +481,10 @@ export async function packApp(input: {
     if (packCode !== 0) {
       throw new AgentAppPackError("tar-failed", `tar failed with exit code ${packCode}`)
     }
+    return { file: outAbs, manifest }
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
-
-  return { file: outAbs, manifest }
 }
 
 /** A manifest `files` entry that could read or write outside the bundle root. */

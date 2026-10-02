@@ -35,6 +35,9 @@ import type {
   ActivityListFilter,
   ActivityRecord,
   AdapterInfo,
+  CapabilitiesInventoryView,
+  CapabilityBundle,
+  SessionCapabilitiesView,
   AdapterInstallResult,
   AuthProfileSummary,
   CatalogModelsResponse,
@@ -933,6 +936,23 @@ export class DaemonClient {
     )
     if (Array.isArray(result)) return result
     return result.capabilities ?? []
+  }
+
+  /** `capabilities_inventory` — imported/discovered MCPs and installed skills per harness. Read-only. */
+  async capabilitiesInventory(): Promise<CapabilitiesInventoryView> {
+    return this.mcpCall<CapabilitiesInventoryView>("capabilities_inventory")
+  }
+
+  /** `bundle_list` — capability bundles, each with its computed `dangling` import ids. */
+  async listBundles(): Promise<CapabilityBundle[]> {
+    const result = await this.mcpCall<{ bundles?: CapabilityBundle[] } | CapabilityBundle[]>("bundle_list")
+    if (Array.isArray(result)) return result
+    return result.bundles ?? []
+  }
+
+  /** `session_capabilities` — the MCP servers and skills one session actually received. */
+  async sessionCapabilities(sessionId: string): Promise<SessionCapabilitiesView> {
+    return this.mcpCall<SessionCapabilitiesView>("session_capabilities", { sessionId })
   }
 
   /**

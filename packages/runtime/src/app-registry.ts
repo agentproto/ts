@@ -237,6 +237,18 @@ export function defaultAppStateDir(stateRoot: string, appId: string): string {
   return join(stateRoot, encodeURIComponent(appId))
 }
 
+/** Sub-directory (next to the registry's `apps.json` and `apps/`) holding the
+ *  durable data of apps installed from a remote source (git / `.agentapp`):
+ *  their code dir is replaced on every reinstall, so their data must not
+ *  live in it. */
+export const APP_DATA_ROOT_SUBDIR = "app-data"
+
+/** Default `dataDir` for a remote-installed `appId` under `dataRoot` —
+ *  URI-encoded like {@link defaultAppStateDir}. */
+export function defaultRemoteAppDataDir(dataRoot: string, appId: string): string {
+  return join(dataRoot, encodeURIComponent(appId))
+}
+
 function loadState(persistPath: string): AppRegistryState {
   const empty: AppRegistryState = { apps: [], runs: [], applied: [] }
   if (!existsSync(persistPath)) return empty

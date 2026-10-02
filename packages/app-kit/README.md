@@ -140,7 +140,7 @@ runtime app registry:
   /apps/:appId/ui`, the MCP panel cache, and `agentproto app serve` all call
   the same `ensureAppUiBuilt` (`@agentproto/runtime/app-ui-build`) before
   serving, single-flight per bundle path so concurrent first requests only
-  build once. Output is captured to `<appDir>/.agentproto/ui-build.log`; a
+  build once. Output is captured to `~/.agentproto/logs/app-ui-build/<app>-<hash>.log`; a
   failing build surfaces that log's tail as the tool/route error instead of
   a bare 404. No `ui.build` declared ⇒ today's behavior: the bundle must
   already exist on disk.
@@ -394,7 +394,7 @@ ui:
 `agentproto app serve` all resolve this the same way (`peekAppUi` +
 `ensureAppUiBuilt` from `@agentproto/runtime/app-ui-build`): missing or
 older than the newest matching source → run `command` once (single-flight
-per bundle path, output captured to `.agentproto/ui-build.log`) → serve.
+per bundle path, output captured to `~/.agentproto/logs/app-ui-build/`) → serve.
 Omit `build` to keep committing the bundle, unchanged from before this
 existed.
 

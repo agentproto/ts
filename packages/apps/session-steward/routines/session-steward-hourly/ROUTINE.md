@@ -21,6 +21,12 @@ target:
   inputs:
     apply: true
     askSessions: false
+    # Origin policy (the committed default): never close a human's session.
+    # `chat-starter`/`vscode` (and any root with no origin and no parent) are
+    # FLAG-ONLY; `cron:*` jobs, `gate` sessions, and executors (a session with
+    # a parentSessionId) stay closeable. A trailing `*` is a prefix wildcard.
+    userOrigins: ["chat-starter", "vscode"]
+    closableOrigins: ["cron:*", "gate"]
 retry:
   max_attempts: 1
   backoff: fixed
@@ -42,7 +48,9 @@ Runs every hour on the hour (UTC), firing the `session-steward` workflow
 
 1. Plans with `session_wrapup_plan` (idle ≥ 30 min by default).
 2. Closes `close`-class sessions as `done` and `stuck`-class ones as
-   `abandoned` — resumable, with a recorded outcome.
+   `abandoned` — resumable, with a recorded outcome — **unless the session is
+   user-origin** (`chat-starter`, `vscode`, or a root with no origin and no
+   parent), which is flagged instead.
 3. Judges up to 15 `judge`-class sessions, most RAM first, and closes
    (`done`/`abandoned`) or flags (`blocked`/`needs-input`) only verdicts at
    confidence ≥ 0.8. Everything else is left alone and reported.
@@ -50,6 +58,21 @@ Runs every hour on the hour (UTC), firing the `session-steward` workflow
 `keep`-class sessions, the caller's own session, and anything busy or
 awaiting input are never touched (`session_wrapup_apply` re-checks every id
 right before acting).
+
+## Origin policy
+
+The steward bounds every action by the candidate's `origin` (pure
+`decideAction`, `workflows/session-steward/origin-policy.mjs`):
+
+- **Flag only, never close:** `chat-starter`, `vscode`, and any root with no
+  `origin` and no `parentSessionId` (a human launched it). A would-be close —
+  even a rule-certain `close`/`stuck`, even a confident `done` — becomes a
+  `needs-input` flag with reason `flag (origine utilisateur)`.
+- **Close allowed:** `cron:*` (any cron job), `gate`, and executors (a
+  session with a `parentSessionId`).
+
+Both lists are workflow inputs (`userOrigins`, `closableOrigins`); the values
+above are the committed default. A trailing `*` is a prefix wildcard.
 
 ## Enabling
 

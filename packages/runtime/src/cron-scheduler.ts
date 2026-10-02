@@ -24,9 +24,19 @@
  * completed fires per job. `nextRunAt` is recomputed from now on load when
  * a past fire time is detected.
  *
- * EVENTS: `cron:fired`, `cron:succeeded`, `cron:failed` emitted on the
- * shared SessionEventBus so outcomes are visible via session_events_poll
- * / session_monitor — no separate notification path.
+ * OUTCOME + HEALTH: an agent-spawning action is no longer judged at spawn.
+ * After the spawn, the scheduler follows the session's FIRST turn via the
+ * injected `observeTurn` (production: `cron-turn-observer.ts`, over
+ * `monitorSessionWait`) and records a real `outcome` (`produced` / `empty` /
+ * `errored` / `timeout`) with output tokens and duration. N consecutive
+ * non-productive runs (default 2, per-job `maxConsecutiveFailures`) pause the
+ * job with a `pausedReason`. The spawn lease is released before the
+ * observation; a separate `observing` lease stops a re-fire while a previous
+ * run is still being followed.
+ *
+ * EVENTS: `cron:fired`, `cron:succeeded`, `cron:failed`, `cron:unhealthy`
+ * emitted on the shared SessionEventBus so outcomes are visible via
+ * session_events_poll / session_monitor — no separate notification path.
  */
 
 import { randomUUID } from "node:crypto"
@@ -179,7 +189,37 @@ export interface CronJob {
   nextRunAt?: string
   lastRunAt?: string
   lastResult?: { ok: boolean; summary: string }
+  /**
+   * Real outcome of the LAST completed run (see {@link CronRunOutcome}),
+   * maintained alongside the ledger so `cron_list` can report health without
+   * reading run history. Absent on jobs created before this field existed.
+   */
+  lastOutcome?: CronRunOutcome
+  /**
+   * Consecutive non-productive runs since the last `produced` one. Reset to 0
+   * by a produced run (and on an explicit resume). Absent means 0.
+   */
+  consecutiveFailures?: number
+  /**
+   * Set when the health check auto-paused the job; cleared when an operator
+   * resumes it. Free-text so the reason survives a daemon restart.
+   */
+  pausedReason?: string
+  /**
+   * Health threshold: pause after this many consecutive non-productive runs.
+   * Defaults to {@link DEFAULT_MAX_CONSECUTIVE_FAILURES} (2).
+   */
+  maxConsecutiveFailures?: number
+  /**
+   * Per-job bound (ms) on how long to follow a spawned session's first turn
+   * before recording `timeout`. Defaults to the scheduler's
+   * `observeTimeoutMs` (30 min).
+   */
+  runTimeoutMs?: number
 }
+
+/** Real outcome of a single cron run, as recorded in the ledger. */
+export type CronRunOutcome = "produced" | "empty" | "errored" | "timeout"
 
 export interface CronRun {
   runId: string
@@ -190,6 +230,16 @@ export interface CronRun {
   sessionId?: string
   result: string
   error?: string
+  /**
+   * Real outcome, when the run was observed to completion (or classified from
+   * a known action status). Optional so ledger entries written before this
+   * field existed still parse.
+   */
+  outcome?: CronRunOutcome
+  /** Output tokens the spawned session produced, when reported. */
+  tokensOut?: number
+  /** Wall-clock duration of the observed run, when known. */
+  durationMs?: number
 }
 
 export interface CronUpdate {
@@ -199,11 +249,67 @@ export interface CronUpdate {
   recurring?: boolean
   active?: boolean
   action?: CronAction
+  maxConsecutiveFailures?: number
+  runTimeoutMs?: number
 }
 
 export interface CronRunsPage {
   runs: CronRun[]
   nextCursor?: string
+}
+
+/**
+ * What an observed session's first turn produced. Mirrors the values stored
+ * in `CronRun.outcome` / `CronJob.lastOutcome`.
+ */
+export interface CronTurnObservation {
+  outcome: CronRunOutcome
+  /** Output tokens the session reported for the turn, when known. */
+  tokensOut?: number
+  /** The adapter's turn-end `reason` (e.g. `"error"`), when reported. */
+  reason?: string
+  /** Captured in-band error text, when the turn errored. */
+  error?: string
+  /** Wall-clock duration of the observed turn, when known. */
+  durationMs?: number
+}
+
+/**
+ * Follows a cron-spawned session until its FIRST turn ends (or a bound
+ * elapses) and reports the real outcome. Injected into the scheduler so the
+ * turn-end / token-usage observation is unit-testable: production wires a
+ * `monitorSessionWait`-backed implementation (`cron-turn-observer.ts`),
+ * tests pass a stub.
+ */
+export type CronTurnObserver = (input: {
+  sessionId: string
+  jobId: string
+  /** Hard bound on the wait — the run records `timeout` past it. */
+  timeoutMs: number
+}) => Promise<CronTurnObservation>
+
+/** Health view surfaced by `cron_list`. */
+export interface CronJobHealth {
+  lastOutcome?: CronRunOutcome
+  consecutiveFailures: number
+  pausedReason?: string
+  maxConsecutiveFailures: number
+}
+
+/** Pause after this many consecutive non-productive runs unless a job overrides it. */
+export const DEFAULT_MAX_CONSECUTIVE_FAILURES = 2
+
+/** Default bound on following a spawned session's first turn (30 min). */
+export const DEFAULT_OBSERVE_TIMEOUT_MS = 30 * 60_000
+
+/** Project a job's health for `cron_list` / callers that don't read the ledger. */
+export function cronJobHealth(job: CronJob): CronJobHealth {
+  return {
+    ...(job.lastOutcome ? { lastOutcome: job.lastOutcome } : {}),
+    consecutiveFailures: job.consecutiveFailures ?? 0,
+    ...(job.pausedReason ? { pausedReason: job.pausedReason } : {}),
+    maxConsecutiveFailures: job.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES,
+  }
 }
 
 export interface CronScheduler {
@@ -220,6 +326,8 @@ export interface CronScheduler {
     timezone?: string
     recurring?: boolean
     action: CronAction
+    maxConsecutiveFailures?: number
+    runTimeoutMs?: number
   }): Promise<CronJob>
 
   list(): CronJob[]
@@ -255,6 +363,15 @@ interface JobState {
    * rehydration advances `nextRunAt` to the next scheduled occurrence.
    */
   running?: boolean
+  /**
+   * Set while a spawned session's first turn is being followed. Distinct from
+   * `running`: the spawn lease is released as soon as the action returns so
+   * the tick/`update()` aren't blocked for the (up to 30 min) observation —
+   * but a job must not re-fire while its previous run is still being
+   * observed, so the tick checks this too. Not persisted: an in-flight
+   * observation dies with the daemon.
+   */
+  observing?: boolean
 }
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -412,8 +529,19 @@ export function createCronScheduler(opts: {
    * explicitly supplied, `false` otherwise. Production code passes persist:true.
    */
   persist?: boolean
+  /**
+   * Follow a spawned session's first turn to a real outcome. Omitted → a
+   * successful spawn is recorded as `produced` (the pre-health-check
+   * behaviour), which keeps unit tests and any caller that doesn't wire the
+   * daemon's turn observer working unchanged.
+   */
+  observeTurn?: CronTurnObserver
+  /** Default bound (ms) on the turn observation. Defaults to 30 min. */
+  observeTimeoutMs?: number
 }): CronScheduler {
   const { sessionEvents, registry, resolveAgentAdapter, dispatchTool, workspace } = opts
+  const observeTurn = opts.observeTurn
+  const observeTimeoutMs = opts.observeTimeoutMs ?? DEFAULT_OBSERVE_TIMEOUT_MS
   const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
   const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
 
@@ -623,58 +751,172 @@ export function createCronScheduler(opts: {
 
   // ── Fire a job ────────────────────────────────────────────────────
 
-  const fireJob = async (state: JobState): Promise<void> => {
-    // `tick()` intentionally does not await fireJob. Without this lease, a
-    // slow agent start leaves nextRunAt in the past and every subsequent tick
-    // starts another identical agent before the first one completes.
-    if (state.running) return
-    state.running = true
+  /** Metrics suffix for a run summary, e.g. " (120 output tokens, 4210ms)". */
+  const metricsSuffix = (obs: CronTurnObservation, includeTokens: boolean): string => {
+    const parts: string[] = []
+    if (includeTokens && obs.tokensOut !== undefined) parts.push(`${obs.tokensOut} output tokens`)
+    if (obs.durationMs !== undefined) parts.push(`${obs.durationMs}ms`)
+    return parts.length > 0 ? ` (${parts.join(", ")})` : ""
+  }
 
-    try {
-      const { job } = state
-      const startedAt = new Date().toISOString()
-      job.lastRunAt = startedAt
-      sessionEvents.emit({ type: "cron:fired", jobId: job.id, label: job.label, ts: startedAt })
+  /** Human-readable summary for a completed run's real outcome. */
+  const summarizeOutcome = (
+    outcome: CronRunOutcome,
+    obs: CronTurnObservation,
+    sessionId: string | undefined,
+    fallback?: string,
+  ): string => {
+    const who = sessionId ? `session ${sessionId}` : "run"
+    switch (outcome) {
+      case "produced":
+        return fallback ?? `${who} produced output${metricsSuffix(obs, true)}`
+      case "empty":
+        return `empty: ${who} produced no output${metricsSuffix(obs, true)}`
+      case "timeout":
+        return `timeout: ${who} did not finish its first turn within ${obs.durationMs ?? observeTimeoutMs}ms`
+      case "errored":
+        return `errored: ${who} ${obs.error ?? obs.reason ?? "turn failed"}`
+    }
+  }
 
-      let result: { ok: boolean; summary: string; sessionId?: string }
-      let error: string | undefined
-      try {
-        result = await executeAction(job)
-      } catch (err) {
-        error = err instanceof Error ? err.message : String(err)
-        result = { ok: false, summary: error }
-      }
-      const endedAt = new Date().toISOString()
-      appendRun({
-        runId: `run_${randomUUID()}`,
-        jobId: job.id,
-        startedAt,
-        endedAt,
-        ok: result.ok,
-        ...(result.sessionId ? { sessionId: result.sessionId } : {}),
-        result: result.summary,
-        ...(error ? { error } : {}),
-      })
-      if (error) {
-        sessionEvents.emit({ type: "cron:failed", jobId: job.id, label: job.label, error, ts: endedAt })
-      } else {
-        sessionEvents.emit({ type: "cron:succeeded", jobId: job.id, label: job.label, summary: result.summary, ts: endedAt })
-      }
-      job.lastResult = { ok: result.ok, summary: result.summary }
-      if (!job.recurring) {
+  /**
+   * Record a finished run in the ledger, emit its outcome event, and apply the
+   * health check (consecutive-failure counter → auto-pause + `cron:unhealthy`).
+   * One place for both the observed and unobserved paths.
+   */
+  const finalizeRun = (
+    state: JobState,
+    startedAt: string,
+    endedAt: string,
+    obs: CronTurnObservation,
+    sessionId: string | undefined,
+    spawnError: string | undefined,
+    fallbackSummary?: string,
+  ): void => {
+    const { job } = state
+    const outcome = obs.outcome
+    const productive = outcome === "produced"
+    const summary = summarizeOutcome(outcome, obs, sessionId, productive ? fallbackSummary : undefined)
+    const runError = outcome === "errored" ? (obs.error ?? spawnError ?? summary) : undefined
+    appendRun({
+      runId: `run_${randomUUID()}`,
+      jobId: job.id,
+      startedAt,
+      endedAt,
+      ok: productive,
+      ...(sessionId ? { sessionId } : {}),
+      result: summary,
+      outcome,
+      ...(obs.tokensOut !== undefined ? { tokensOut: obs.tokensOut } : {}),
+      ...(obs.durationMs !== undefined ? { durationMs: obs.durationMs } : {}),
+      ...(runError ? { error: runError } : {}),
+    })
+    if (productive) {
+      sessionEvents.emit({ type: "cron:succeeded", jobId: job.id, label: job.label, summary, ts: endedAt })
+    } else {
+      sessionEvents.emit({ type: "cron:failed", jobId: job.id, label: job.label, error: runError ?? summary, ts: endedAt })
+    }
+    job.lastResult = { ok: productive, summary }
+    job.lastOutcome = outcome
+
+    const max = job.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES
+    if (productive) {
+      job.consecutiveFailures = 0
+    } else {
+      job.consecutiveFailures = (job.consecutiveFailures ?? 0) + 1
+      if (job.active && job.consecutiveFailures >= max) {
         job.active = false
-        job.finished = true
-        job.nextRunAt = undefined
+        job.pausedReason = `auto-paused after ${job.consecutiveFailures} consecutive non-productive runs (last outcome: ${outcome})`
         state.cronInstance?.stop()
         state.cronInstance = undefined
-      } else if (state.cronInstance) {
-        const next = nextFireDate(state.cronInstance)
-        job.nextRunAt = next?.toISOString()
+        sessionEvents.emit({
+          type: "cron:unhealthy",
+          jobId: job.id,
+          label: job.label,
+          consecutiveFailures: job.consecutiveFailures,
+          lastOutcome: outcome,
+          reason: job.pausedReason,
+          ts: endedAt,
+        })
       }
-      persistNow()
+    }
+    persistNow()
+  }
+
+  const fireJob = async (state: JobState): Promise<void> => {
+    // `tick()` intentionally does not await fireJob. Without the spawn lease, a
+    // slow agent start leaves nextRunAt in the past and every subsequent tick
+    // starts another identical agent before the first one completes. The
+    // `observing` lease additionally holds off a re-fire while a previous run
+    // is still being followed to its first turn-end.
+    if (state.running || state.observing) return
+    state.running = true
+
+    const { job } = state
+    const startedAt = new Date().toISOString()
+    job.lastRunAt = startedAt
+    sessionEvents.emit({ type: "cron:fired", jobId: job.id, label: job.label, ts: startedAt })
+
+    let result: { ok: boolean; summary: string; sessionId?: string }
+    let error: string | undefined
+    try {
+      result = await executeAction(job)
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+      result = { ok: false, summary: error }
     } finally {
+      // The spawn is done — release the execution lease so neither the tick
+      // nor `update()` is held for the (potentially long) observation below.
       state.running = false
     }
+
+    // Advance the schedule / deactivate a one-shot right after the spawn, not
+    // after the observation: a 30-min observation must not postpone the next
+    // scheduled slot. The `observing` lease is what prevents a re-fire.
+    if (!job.recurring) {
+      job.active = false
+      job.finished = true
+      job.nextRunAt = undefined
+      state.cronInstance?.stop()
+      state.cronInstance = undefined
+    } else if (state.cronInstance) {
+      const next = nextFireDate(state.cronInstance)
+      job.nextRunAt = next?.toISOString()
+    }
+    persistNow()
+
+    const sessionId = result.sessionId
+    if (!error && sessionId && observeTurn) {
+      state.observing = true
+      let obs: CronTurnObservation
+      try {
+        obs = await observeTurn({
+          sessionId,
+          jobId: job.id,
+          timeoutMs: job.runTimeoutMs ?? observeTimeoutMs,
+        })
+      } catch (err) {
+        obs = { outcome: "errored", error: err instanceof Error ? err.message : String(err) }
+      } finally {
+        state.observing = false
+      }
+      finalizeRun(state, startedAt, new Date().toISOString(), obs, sessionId, error)
+      return
+    }
+
+    // No observer wired (or nothing to follow): the action's own success or
+    // failure is the outcome. A known `failed` status (command non-zero exit,
+    // a tool that reported an error) therefore counts as non-productive too.
+    const outcome: CronRunOutcome = error ? "errored" : "produced"
+    finalizeRun(
+      state,
+      startedAt,
+      new Date().toISOString(),
+      { outcome, ...(error ? { error } : {}) },
+      sessionId,
+      error,
+      result.summary,
+    )
   }
 
   // ── Tick loop ─────────────────────────────────────────────────────
@@ -701,7 +943,7 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    async create({ label, schedule, timezone, recurring = true, action }) {
+    async create({ label, schedule, timezone, recurring = true, action, maxConsecutiveFailures, runTimeoutMs }) {
       assertCronActionAllowed(action)
       // Validate schedule — throws SyntaxError if invalid.
       const cronInstance = parseCron(schedule, timezone)
@@ -723,6 +965,8 @@ export function createCronScheduler(opts: {
         active: true,
         finished: false,
         nextRunAt: next?.toISOString(),
+        ...(maxConsecutiveFailures !== undefined ? { maxConsecutiveFailures } : {}),
+        ...(runTimeoutMs !== undefined ? { runTimeoutMs } : {}),
       }
       jobs.set(id, { job, cronInstance })
       persistNow()
@@ -762,8 +1006,18 @@ export function createCronScheduler(opts: {
       job.action = action
       job.recurring = patch.recurring ?? job.recurring
       if (patch.label !== undefined) job.label = patch.label === null ? undefined : patch.label
+      if (patch.maxConsecutiveFailures !== undefined) job.maxConsecutiveFailures = patch.maxConsecutiveFailures
+      if (patch.runTimeoutMs !== undefined) job.runTimeoutMs = patch.runTimeoutMs
       job.active = active
-      if (active) job.finished = false
+      if (active) {
+        job.finished = false
+        if (patch.active === true) {
+          // An explicit resume clears the auto-pause state so a stale failure
+          // counter from before the pause can't immediately re-pause the job.
+          job.pausedReason = undefined
+          job.consecutiveFailures = 0
+        }
+      }
       job.nextRunAt = next?.toISOString()
       persistNow()
       return job

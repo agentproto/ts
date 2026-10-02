@@ -17,6 +17,7 @@ import { resolveWindowsBatchSpawn, windowsBatchShellOption } from "./win32-spawn
 import {
   applyModelCommand,
   createArmSessionControls,
+  parseStderrStreamError,
   promptTurn,
 } from "./session-controls.js"
 import type {
@@ -511,6 +512,11 @@ export function createAgentCliRuntime(
       // for `proprietary` so an in-process arm pays no subprocess cost.
       let child: ChildProcess | undefined
       const stderrBuf: string[] = []
+      // Live subscribers to the child's stderr lines — `promptTurn` attaches
+      // one for the duration of a turn to surface provider errors that exist
+      // only on stderr (opencode's silent `stream error` retry loop). Set
+      // below; empty for arms that spawn no child.
+      const stderrLineListeners = new Set<(line: string) => void>()
       if (definition.protocol !== "proprietary") {
         // OS-level confinement (`AgentCliStartOptions.commandSandbox`):
         // wraps THIS spawn's argv through the same Seatbelt/bwrap backends
@@ -608,6 +614,7 @@ export function createAgentCliRuntime(
             if (!line) continue
             stderrBuf.push(line)
             if (stderrBuf.length > STDERR_KEEP_LINES) stderrBuf.shift()
+            for (const listener of stderrLineListeners) listener(line)
           }
         })
       }
@@ -620,6 +627,10 @@ export function createAgentCliRuntime(
         opts?.permissionHold ?? false,
       )
       arm._stderrTail = () => stderrBuf.join("\n")
+      arm._onStderrLine = listener => {
+        stderrLineListeners.add(listener)
+        return () => stderrLineListeners.delete(listener)
+      }
 
       const abortController = new AbortController()
       if (opts?.signal) {
@@ -761,7 +772,14 @@ export function createAgentCliRuntime(
         send(message): AsyncIterable<StreamEvent> {
           const turnId = randomUUID()
           currentTurnId = turnId
-          return promptTurn(arm, turnId, message)
+          // opencode's ACP server swallows provider 429/usage-cap errors
+          // into an internal retry loop and never resolves `prompt`; its
+          // structured `stream error` stderr line is the only signal. Arm
+          // the parser for opencode only — other adapters keep the prior
+          // behavior untouched.
+          const stderrTurnError =
+            definition.id === "opencode" ? parseStderrStreamError : undefined
+          return promptTurn(arm, turnId, message, stderrTurnError)
         },
         /**
          * Cancel the in-flight turn — the wire equivalent of Ctrl-C at the

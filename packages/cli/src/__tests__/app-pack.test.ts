@@ -269,6 +269,46 @@ describe("app pack", () => {
     expect(manifest.files).toContain("ui/src/main.tsx")
     expect(manifest.files).toContain("vendored/keep.txt")
   })
+
+  it("--release runs ui.build first, ships only the built bundle and strips ui.build", async () => {
+    const root = await mktmp()
+    const appDir = join(root, "rel-app")
+    await mkdir(join(appDir, ".agentproto"), { recursive: true })
+    await mkdir(join(appDir, "ui", "src"), { recursive: true })
+    await writeFile(
+      join(appDir, ".agentproto", "APP.md"),
+      "---\nid: rel-app\nversion: 0.2.0\nui:\n  path: .agentproto/ui/index.html\n  build:\n    command: sh build.sh\n---\n# Rel\n",
+    )
+    await writeFile(
+      join(appDir, "build.sh"),
+      "mkdir -p .agentproto/ui\nprintf '<html>built</html>' > .agentproto/ui/index.html\n",
+    )
+    await writeFile(join(appDir, "ui", "src", "main.tsx"), "export {}\n")
+    const out = join(root, "rel.agentapp")
+
+    const writes: string[] = []
+    const spy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk: unknown) => {
+        writes.push(String(chunk))
+        return true
+      })
+    const code = await runAppPack([appDir, "--out", out, "--release", "--json"])
+    spy.mockRestore()
+
+    expect(code).toBe(0)
+    const manifest = JSON.parse(writes.join(""))
+    expect(manifest.files).toContain(".agentproto/ui/index.html")
+    expect(manifest.files).not.toContain("ui/src/main.tsx")
+    expect(manifest.files.some((f: string) => f.endsWith(".log"))).toBe(false)
+
+    const extractTo = join(root, "x")
+    await mkdir(extractTo, { recursive: true })
+    expect(spawnSync("tar", ["-xzf", out, "-C", extractTo]).status).toBe(0)
+    const appMd = await readFile(join(extractTo, ".agentproto", "APP.md"), "utf8")
+    expect(appMd).not.toContain("build.sh")
+    expect(appMd).toContain(".agentproto/ui/index.html")
+  })
 })
 
 // ── unpack ───────────────────────────────────────────────────────────────
