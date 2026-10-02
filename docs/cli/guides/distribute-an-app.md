@@ -130,42 +130,73 @@ an app that does not set `accepts.tasks` has no ingress at all.
 
 ## 5. Publish a remote catalog
 
-A catalog is a **static JSON file** on any HTTP host:
+A catalog is a **static JSON file** on any HTTP host, in the
+`app-catalog/v1` format:
 
 ```json
 {
+  "schema": "app-catalog/v1",
+  "generatedAt": "2026-10-02T00:00:00Z",
   "entries": [
     {
       "appId": "weather-app",
       "name": "Weather App",
       "description": "Forecasts and alerts",
+      "category": "app",
       "version": "1.2.0",
-      "url": "https://static.example.com/apps/weather-app.agentapp",
-      "source": { "kind": "agentapp", "url": "https://static.example.com/apps/weather-app.agentapp" }
+      "tier": "bundle",
+      "publisher": "example",
+      "license": { "kind": "free" },
+      "source": {
+        "kind": "agentapp",
+        "url": "https://static.example.com/apps/weather-app-1.2.0.agentapp",
+        "sha256": "3f5a0c9e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f",
+        "version": "1.2.0"
+      }
     }
   ]
 }
 ```
 
-Point the daemon at it, two ways (config wins when both are set):
+Only `appId` and `source` are required. A `.agentapp` source needs `url`,
+`sha256` (the bundle's `manifest.json` digest, printed by
+`agentproto app pack --release --json`) and `version`; a git source needs
+`url` and the pinned commit `sha` (plus optional `ref` / `subdir`). The
+other fields (`name`, `description`, `category`, `icon`, `version`, `tier`
+— `git` | `bundle` | `hosted`, `placement`, `publisher`, `license`,
+`requires`, `minAgentprotoVersion`, `featured`) are optional metadata for a
+store UI. Unknown fields are ignored; an entry that fails validation is
+skipped with a warning, the rest of the catalog still loads.
+
+`app_catalog` always queries the **default public catalog** first, then
+the sources you add. Add yours in either place (config wins over the
+catalog file when both list sources; both ADD to the default one):
 
 ```jsonc
-// app-catalog.json next to your apps, or
-// daemon config:
+// ~/.agentproto/app-catalog.json:
+{ "apps": [], "sources": [{ "url": "https://static.example.com/catalog.json" }] }
+// or daemon config:
 { "catalog": { "sources": [{ "url": "https://static.example.com/catalog.json" }] } }
+// turn the default catalog off, or point it elsewhere:
+{ "catalog": { "defaultSource": false } }
 ```
 
-`app_catalog` then merges remote entries after local ones (dedupe by
-`appId`, first wins), caches them for 5 minutes, and
-`app_catalog {refresh: true}` bypasses the cache. A failing source — bad
-JSON, timeout,
-5xx — never fails the tool: it is reported in the response's `warnings[]`.
+`app_catalog` merges remote entries after local ones (dedupe by `appId`,
+first wins — the default catalog before yours), caches each source for 5
+minutes in memory and keeps its last good copy under
+`~/.agentproto/cache/catalog/`, and `app_catalog {refresh: true}` bypasses
+the in-memory cache. A failing source — bad JSON, timeout, 5xx — never
+fails the tool: it is reported in the response's `warnings[]` and its
+cached copy is served with `stale: true`. When the default catalog has
+never been reachable, a small first-party list embedded in the daemon
+stands in for it (`origin: "embedded"`).
 
 Each remote entry carries its `source`, so a store UI can call
-`app_install {url, ref, subdir}` (git) or `app_install {url}` (`.agentapp`)
-straight from the listing. That is the whole registry story: a static JSON
-file next to static `.agentapp` files on any HTTP host, no server logic
-required.
+`app_install {url, ref, subdir, sha}` (git) or `app_install {url, sha256}`
+(`.agentapp`) straight from the listing — passing the entry's digest makes
+the install refuse anything that doesn't match it. That is the whole
+registry story: a static JSON file next to static `.agentapp` files on any
+HTTP host, no server logic required.
 
 ---
 

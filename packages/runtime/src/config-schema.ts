@@ -179,6 +179,7 @@ const titlerConfigSchema: z.ZodType<TitlerConfig> = z
 const catalogConfigSchema: z.ZodType<CatalogConfig> = z
   .object({
     sources: z.array(z.object({ url: z.string() }).passthrough()).optional(),
+    defaultSource: z.union([z.string(), z.literal(false)]).optional(),
   })
   .passthrough()
 
@@ -735,7 +736,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "daemon",
     label: "App catalog sources",
-    help: "Remote catalogs merged into `app_catalog`: an array of `{ url }`, each returning `{ entries: AppCatalogEntry[] }`. Wins over `sources` in ~/.agentproto/app-catalog.json when both are set.",
+    help: "Remote catalogs merged into `app_catalog` in addition to the default catalog (`catalog.defaultSource`): an array of `{ url }`, each returning an `app-catalog/v1` document (`{ entries: AppCatalogEntry[] }`). Wins over `sources` in ~/.agentproto/app-catalog.json when both are set.",
+  },
+  {
+    path: "catalog.defaultSource",
+    schema: z.union([str, z.literal(false)]),
+    apply: "hot",
+    writable: true,
+    section: "daemon",
+    label: "Default app catalog",
+    help: "The built-in public catalog `app_catalog` queries before `catalog.sources`. `false` turns it off; a URL replaces it. When unreachable, the last copy cached under ~/.agentproto/cache/catalog is used, then the embedded first-party list.",
   },
 
   // ── defaults: spawn ──

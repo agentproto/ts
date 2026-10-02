@@ -23,7 +23,7 @@ export interface InstalledAppRef {
 export type AppSource =
   | { kind: "local" }
   | { kind: "git"; url: string; ref?: string; sha: string; subdir?: string }
-  | { kind: "agentapp"; url: string; sha256: string; version: string }
+  | { kind: "agentapp"; url: string; sha256: string; version: string; size?: number }
 
 export interface InstalledApp {
   readonly appId: string
