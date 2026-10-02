@@ -255,15 +255,19 @@ export async function ssrfFetch(
     throw new SsrfFetchError("connect", `request body exceeds the ${MAX_REQUEST_BODY_BYTES}-byte clamp`)
   }
 
+  const port = parsed.port ? Number(parsed.port) : 443
+
   if (testDispatcher) {
     // Test seam: the dispatcher replaces the WIRE only. Literal-IP hosts still
     // pass the predicate; named hosts need no DNS policy in tests (the suites
     // that exercise the policy call the real path with injected resolvers).
+    // It receives the FINAL wire headers (Host defaulted, below) so the seam
+    // mirrors what a real socket would emit.
     const literal = parseIpv4(parsed.hostname)
     if (literal && !ipv4Public(literal[0], literal[1], literal[2], literal[3])) {
       throw new SsrfFetchError("private_target", `literal non-public address ${parsed.hostname}`)
     }
-    return await testDispatcher({ url, headers: init.headers ?? {}, body: init.body, timeoutMs: init.timeoutMs })
+    return await testDispatcher({ url, headers: finalHeaders(init.headers ?? {}, parsed.hostname, port), body: init.body, timeoutMs: init.timeoutMs })
   }
 
   const candidates = await resolveHost(parsed.hostname, io.resolvers ?? {})
@@ -277,17 +281,31 @@ export async function ssrfFetch(
   const connectIp = candidates[0] ?? candidates[candidates.length - 1]
   if (connectIp === undefined) throw new SsrfFetchError("connect", "no address available for connect")
 
-  const port = parsed.port ? Number(parsed.port) : 443
   return await rawPost({
     connectIp,
     servername: parsed.hostname,
     port,
     path: `${parsed.pathname}${parsed.search}`,
-    headers: init.headers ?? {},
+    // HTTP Host header must stay the ORIGINAL hostname — `request({host})`
+    // below only picks the TCP destination; a literal-IP Host is answered
+    // 403/421 by name-based vhosts (tested live against cloudflared+CF edge),
+    // which would falsely categorise every virtual-hosted subscriber as
+    // non_2xx. An explicit caller Host header wins (finalHeaders keeps it).
+    headers: finalHeaders(init.headers ?? {}, parsed.hostname, port),
     body: init.body,
     timeoutMs: init.timeoutMs,
   })
 }
+
+/** Final wire headers: default an absent Host header to the ORIGINAL hostname
+ *  (with :port only on non-default ports) — never turn Host into the connect
+ *  IP. Canonical casing `Host` for optionality with node's casing rules. */
+function finalHeaders(headers: Record<string, string>, hostname: string, port: number): Record<string, string> {
+  const hasHost = "Host" in headers || "host" in headers
+  if (hasHost) return headers
+  return { ...headers, Host: port === 443 ? hostname : `${hostname}:${port}` }
+}
+
 
 interface RawPostArgs {
   connectIp: string
@@ -309,6 +327,8 @@ function rawPost(args: RawPostArgs): Promise<SsrfFetchResult> {
       path: args.path,
       method: "POST",
       servername: args.servername,
+      // Host already defaulted to the ORIGINAL hostname by finalHeaders —
+      // the socket only carries `args.connectIp` as its TCP destination.
       headers: args.headers,
       rejectUnauthorized: true,
     })
