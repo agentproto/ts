@@ -52,6 +52,10 @@ agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
 agentproto sessions inbox    <id-or-name> [--ack <msgId,...|all>] [--json]
 agentproto sessions message  <id-or-name> "<text>" [--kind <kind>]
                                            [--urgency <tier>] [--json]
+agentproto sessions checkpoint <id-or-name> [--note "<text>"] [--json]
+agentproto sessions handoff  <id-or-name> --to <harness> [--model <id>]
+                                           [--profile <ref>] [--note "<text>"]
+                                           [--dry-run] [--json]
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -833,6 +837,73 @@ tag, and routed by `--urgency` like any other message (see the tier
 table below). A human sender keeps `interrupt`. `--kind` is one of
 `report` (default), `question`, `blocker`, `done`, `notice`.
 
+### `checkpoint <id-or-name>`
+
+```bash
+agentproto sessions checkpoint ses_abc12
+agentproto sessions checkpoint ses_abc12 --note "decision: keep the zod schema, drop yup"
+agentproto sessions checkpoint ses_abc12 --json
+```
+
+Writes a structured **context-continuity checkpoint** for an agent-cli session
+and prints the path of the JSON file:
+
+```text
+agentproto sessions checkpoint: ckpt_ses_abc12_1788371280000
+  /Users/you/.agentproto/sessions/ses_abc12/checkpoints/ckpt_ses_abc12_1788371280000.json
+```
+
+The session keeps running and its transcript is untouched; the checkpoint is a
+bounded summary saved next to its `events.jsonl`. `--note` records operator
+notes (decisions, constraints) in the checkpoint. `--json` prints the daemon's
+full response, `{ checkpointId, path, checkpoint }`. The field-by-field layout
+is in the [handoff guide](../guides/handoff.md#reading-the-checkpoint).
+
+HTTP twin: `POST /sessions/:id/checkpoint` with body `{ notes? }` (bearer
+token required, like every mutating `/sessions` route). `404` for an unknown
+session, `400` when it isn't an agent-cli session.
+
+### `handoff <id-or-name> --to <harness>`
+
+```bash
+agentproto sessions handoff ses_abc12 --to codex --dry-run
+agentproto sessions handoff ses_abc12 --to codex
+agentproto sessions handoff ses_abc12 --to opencode --model anthropic/claude-sonnet-5 \
+  --profile work-anthropic --note "tests in packages/api are the bar"
+```
+
+Hands a session's work to **another harness**: writes a checkpoint (as above),
+then starts a NEW session on `--to` whose first prompt is that checkpoint. The
+source session is left untouched except for a `continuedTo` link; the new
+session carries `continuedFrom`, the `checkpointId`, and
+`handoff: { fromHarness, toHarness, at }`.
+
+| Flag | Meaning |
+|------|---------|
+| `--to <harness>` | Target harness slug (`codex`, `opencode`, `claude-code`, …). Required. |
+| `--model <id>` | Model for the new session. Default: carried from the source. |
+| `--profile <ref>` | Auth profile (billing wallet) for the new session. Rejected `400` if it isn't eligible for the resolved harness × route. |
+| `--note "<text>"` | Operator notes carried in the checkpoint and the resume prompt. |
+| `--dry-run` | Print the checkpoint prompt that **would** be handed over. Nothing is written, nothing is spawned, the source session is not modified. |
+| `--json` | Print the daemon's full response. |
+
+Normal output: the new session id, its harness, and the checkpoint path.
+
+```text
+agentproto sessions handoff: ses_abc12 (claude-code) → ses_def34 (codex)
+  checkpoint: /Users/you/.agentproto/sessions/ses_abc12/checkpoints/ckpt_ses_abc12_1788371280000.json
+```
+
+Handoff is something you trigger — it is **not** automatic by default (see
+[contextContinuity mode](../guides/handoff.md#when-does-a-handoff-happen)).
+Step-by-step walkthrough: [Hand off from Claude Code to Codex](../guides/handoff.md).
+
+HTTP twin: `POST /sessions/:id/handoff` with body
+`{ to, model?, access?: { profileRef }, notes?, dryRun? }` → `201`
+`{ continuedFrom, continuedTo, checkpointId, path, handoff, session }`, or
+`200 { dryRun: true, checkpoint, prompt }` for a dry run. `400 to_required`
+when `to` is missing, `404` for an unknown session or unresolvable harness.
+
 ## Messages between sessions
 
 Sessions in the same tree talk through **typed messages**, separate from
@@ -999,6 +1070,8 @@ agentproto sessions export ses_abc12 -o transcript.md
 - [Session transcripts](../concepts/session-transcripts.md) — what's
   captured in `events.jsonl`, event kinds, native vs daemon export
   sources, the PTY exception
+- [Hand off from Claude Code to Codex](../guides/handoff.md) — `checkpoint` /
+  `handoff` end to end, the checkpoint file, `--dry-run`
 - [`chat.md`](./chat.md) — sending follow-up prompts to a live
   session, incl. what happens when the target is dead or mid-turn
 - [Roles](../concepts/roles.md) — the spawn-time delegation gate

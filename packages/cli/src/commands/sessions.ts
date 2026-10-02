@@ -220,6 +220,21 @@ Usage:
                                operator — recorded as a session-message from
                                "human", distinct from a prompt. kind: report
                                (default) | question | blocker | done | notice.)
+  agentproto sessions checkpoint <id-or-name> [--note "<text>"] [--json]
+                              (write a structured context-continuity checkpoint
+                               for the session — goal, changed files, git
+                               status, config, recent turns — and print the
+                               file's path. The transcript is never touched.)
+  agentproto sessions handoff <id-or-name> --to <harness> [--model <id>]
+                              [--profile <ref>] [--note "<text>"] [--dry-run]
+                              [--json]
+                              (checkpoint the session and start a NEW one on
+                               another harness (e.g. claude-code → codex) whose
+                               first prompt is that checkpoint. The source
+                               session is left running and linked via
+                               continuedTo. --dry-run prints the checkpoint
+                               that WOULD be handed over: nothing is written,
+                               nothing is spawned.)
   agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
                               [--prefer-native-terminal]
                               (respawn from history — clones the old
@@ -374,7 +389,7 @@ While attached:
 
 export async function runSessions(args: readonly string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
-    process.stdout.write(USAGE)
+    process.stdout.write(args[0] === "checkpoint" ? CHECKPOINT_USAGE : args[0] === "handoff" ? HANDOFF_USAGE : USAGE)
     return 0
   }
 
@@ -400,6 +415,8 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "queue") return runQueue(args.slice(1))
   if (sub === "inbox") return runInbox(args.slice(1))
   if (sub === "message") return runMessage(args.slice(1))
+  if (sub === "checkpoint") return runCheckpoint(args.slice(1))
+  if (sub === "handoff") return runHandoff(args.slice(1))
   if (sub === "board") {
     const { runBoard } = await import("./sessions-board.js")
     return runBoard(args.slice(1))
@@ -1830,6 +1847,192 @@ async function runQueue(args: readonly string[]): Promise<number> {
     printQueueTable(id, queue)
   }
   return 0
+}
+
+const CHECKPOINT_USAGE = `Usage:
+  agentproto sessions checkpoint <id-or-name> [--note "<text>"] [--json]
+
+Build and persist a structured context-continuity checkpoint for an agent
+session, and print the path of the file it was written to
+(~/.agentproto/sessions/<session-id>/checkpoints/<checkpoint-id>.json).
+The session itself is not modified and its transcript is preserved.
+
+Options:
+  --note "<text>"   operator notes recorded in the checkpoint (decisions,
+                    constraints) — they travel with it to the next agent
+  --json            print the full daemon response ({checkpointId, path,
+                    checkpoint})
+`
+
+const HANDOFF_USAGE = `Usage:
+  agentproto sessions handoff <id-or-name> --to <harness> [--model <id>]
+                              [--profile <ref>] [--note "<text>"] [--dry-run] [--json]
+
+Hand a session's work to another harness without losing state: write a
+checkpoint of the source session, then start a NEW session on <harness> whose
+first prompt is that checkpoint. The source session is left as-is, linked to
+the new one via continuedTo (and the new one carries continuedFrom + handoff).
+
+Options:
+  --to <harness>    target harness slug, e.g. codex, opencode, claude-code (required)
+  --model <id>      model for the new session (default: carried from the source)
+  --profile <ref>   auth profile (billing wallet) for the new session
+  --note "<text>"   operator notes appended to the checkpoint
+  --dry-run         print the checkpoint that would be handed over; nothing is
+                    written, nothing is spawned
+  --json            print the full daemon response
+`
+
+/** Pretty-print a daemon error from a checkpoint/handoff POST. */
+function reportHandoffError(verb: string, id: string, err: unknown): number {
+  const msg = err instanceof Error ? err.message : String(err)
+  if (/HTTP 404/.test(msg) && /no_such_session/.test(msg)) {
+    process.stderr.write(`agentproto sessions ${verb}: no session "${id}".\n`)
+    return 2
+  }
+  process.stderr.write(`agentproto sessions ${verb}: ${msg}\n`)
+  return 1
+}
+
+function parseCheckpointArgs(args: readonly string[]) {
+  return parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { note: { type: "string" }, json: { type: "boolean" } },
+  })
+}
+
+function parseHandoffArgs(args: readonly string[]) {
+  return parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      to: { type: "string" },
+      model: { type: "string" },
+      profile: { type: "string" },
+      note: { type: "string" },
+      "dry-run": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+}
+
+/**
+ * `agentproto sessions checkpoint <id-or-name> [--note] [--json]` —
+ * `POST /sessions/:id/checkpoint`.
+ */
+async function runCheckpoint(args: readonly string[]): Promise<number> {
+  let parsed: ReturnType<typeof parseCheckpointArgs>
+  try {
+    parsed = parseCheckpointArgs(args)
+  } catch (err) {
+    process.stderr.write(`agentproto sessions checkpoint: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 2
+  }
+  const { values, positionals } = parsed
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write(
+      "agentproto sessions checkpoint: expected exactly one session id.\n" +
+        '  Try: agentproto sessions checkpoint <id-or-name> [--note "<text>"]\n',
+    )
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions checkpoint")
+    return 2
+  }
+  const endpoint = report.found
+  try {
+    const r = await httpPostJson<{ checkpointId: string; path: string }>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/checkpoint`,
+      values.note !== undefined ? { notes: values.note } : {},
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(r, null, 2) + "\n")
+    } else {
+      process.stdout.write(`agentproto sessions checkpoint: ${r.checkpointId}\n  ${r.path}\n`)
+    }
+    return 0
+  } catch (err) {
+    return reportHandoffError("checkpoint", id, err)
+  }
+}
+
+/**
+ * `agentproto sessions handoff <id-or-name> --to <harness> [...]` —
+ * `POST /sessions/:id/handoff`.
+ */
+async function runHandoff(args: readonly string[]): Promise<number> {
+  let parsed: ReturnType<typeof parseHandoffArgs>
+  try {
+    parsed = parseHandoffArgs(args)
+  } catch (err) {
+    process.stderr.write(`agentproto sessions handoff: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 2
+  }
+  const { values, positionals } = parsed
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write(
+      "agentproto sessions handoff: expected exactly one session id.\n" +
+        "  Try: agentproto sessions handoff <id-or-name> --to codex [--dry-run]\n",
+    )
+    return 2
+  }
+  if (!values.to) {
+    process.stderr.write(
+      "agentproto sessions handoff: --to <harness> is required.\n" +
+        "  Try: agentproto sessions handoff " + id + " --to codex\n",
+    )
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions handoff")
+    return 2
+  }
+  const endpoint = report.found
+  const body = {
+    to: values.to,
+    ...(values.model ? { model: values.model } : {}),
+    ...(values.profile ? { access: { profileRef: values.profile } } : {}),
+    ...(values.note !== undefined ? { notes: values.note } : {}),
+    ...(values["dry-run"] ? { dryRun: true } : {}),
+  }
+  try {
+    const r = await httpPostJson<Record<string, unknown>>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/handoff`,
+      body,
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(r, null, 2) + "\n")
+      return 0
+    }
+    if (r.dryRun === true) {
+      const ckpt = r.checkpoint as { checkpointId?: string; checkpointPath?: string }
+      process.stdout.write(
+        `agentproto sessions handoff (dry run): ${id} → ${values.to}\n` +
+          `  nothing written, nothing spawned. Would write: ${ckpt.checkpointPath ?? "(unknown)"}\n\n` +
+          `${String(r.prompt)}\n`,
+      )
+      return 0
+    }
+    const handoff = r.handoff as { fromHarness?: string; toHarness?: string } | undefined
+    process.stdout.write(
+      `agentproto sessions handoff: ${String(r.continuedFrom)} (${handoff?.fromHarness ?? "?"}) → ` +
+        `${String(r.continuedTo)} (${handoff?.toHarness ?? values.to})\n` +
+        `  checkpoint: ${String(r.path)}\n`,
+    )
+    return 0
+  } catch (err) {
+    return reportHandoffError("handoff", id, err)
+  }
 }
 
 /** One message in `GET /sessions/:id/inbox` (a `SessionMessage`). */
