@@ -40,7 +40,38 @@ export interface ContinueAgentSessionFreshResult {
   continuedFrom: string
 }
 
+/** Thrown when the fresh session's spawn is refused; `code` is the
+ *  `spawnAgentSession` failure code so HTTP callers can map it to a status. */
+export class ContinueFreshSpawnError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message)
+    this.name = "ContinueFreshSpawnError"
+  }
+}
+
+/** Stamp operator `notes` onto a checkpoint. Tolerant on purpose: the
+ *  `notes` field is owned by the checkpoint builder; this only fills it in. */
+export function applyCheckpointNotes(checkpoint: ContextCheckpoint, notes: string | undefined): void {
+  const text = notes?.trim()
+  if (text) (checkpoint as ContextCheckpoint & { notes?: string }).notes = text
+}
+
+/** The resume prompt for `checkpoint`, with operator notes appended unless
+ *  the checkpoint renderer already included them. */
+export function renderHandoffPrompt(checkpoint: ContextCheckpoint): string {
+  const prompt = renderCheckpointPrompt(checkpoint)
+  const notes = (checkpoint as ContextCheckpoint & { notes?: string }).notes
+  if (!notes || prompt.includes(notes)) return prompt
+  return `${prompt}\n\n## Operator notes\n${notes}`
+}
+
 export interface ContinueAgentSessionFreshOptions {
+  /** Operator notes carried into the checkpoint and the resume prompt. */
+  notes?: string
   /** Optional policy override for the fresh session. */
   contextContinuity?: import("./context-continuity.js").ContextContinuityPolicy
   /** Optional base directory for checkpoint storage (tests). */
@@ -132,6 +163,7 @@ export async function continueAgentSessionFresh(
 
   const contextPct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
   const checkpoint = await buildContextCheckpoint(prev, { contextPct, baseDir: opts.baseDir })
+  applyCheckpointNotes(checkpoint, opts.notes)
   await persistCheckpoint(checkpoint)
 
   // Cross-harness handoff (SPEC gap #5): each axis below is independently
@@ -171,7 +203,7 @@ export async function continueAgentSessionFresh(
     label: prev.label ? `${prev.label} (continued)` : undefined,
     title: prev.title ? `${prev.title} (continued)` : undefined,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,
-    prompt: renderCheckpointPrompt(checkpoint),
+    prompt: renderHandoffPrompt(checkpoint),
     // Preserve lineage so the fresh session nests under the same parent
     // rather than becoming a detached root.
     ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
@@ -185,8 +217,10 @@ export async function continueAgentSessionFresh(
 
   const result: SpawnAgentSessionResult = await spawnAgentSession(deps, spawnInput)
   if (!result.ok) {
-    throw new Error(
+    throw new ContinueFreshSpawnError(
+      result.code,
       `Failed to continue session ${prev.id} fresh: ${result.code} — ${result.message}`,
+      result.details,
     )
   }
 

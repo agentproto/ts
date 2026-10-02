@@ -251,6 +251,20 @@ describe("continueAgentSessionFresh", () => {
     ).rejects.toThrow("agent_spawn_failed")
   })
 
+  it("carries operator notes into the resume prompt", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints", notes: "  we chose sqlite  " },
+    )
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.prompt).toContain("we chose sqlite")
+  })
+
   it("throws when no adapter resolver is configured", async () => {
     const prev = makePrev()
     await expect(
