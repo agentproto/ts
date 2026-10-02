@@ -386,10 +386,15 @@ anyway' via this field still has no delegation tools).
 Override deferred/lazy MCP tool loading for this spawn's daemon self-mount:
 `true` hides every tool outside a small always-on set from `tools/list`
 (still fully callable — use `tool_search` to look up a hidden tool's schema
-by keyword before calling it), `false` keeps the full eager surface. Omit
-to use the resolved role's own default ('executor' defaults ON, since it
-can't delegate anyway and rarely needs the full ~190-tool surface); omit
-AND spawn a role with no opinion to fall through to the daemon's own
+by keyword before calling it), `false` keeps the full eager surface. Only the
+loading strategy changes; no tool is removed.
+
+Resolution order (first with an opinion wins): this field > the mount's own
+`?deferred=1|0` (caller-supplied `mcpServers` entries) > a harness that
+defers MCP tools natively (manifest `capabilities.nativeToolSearch`, today
+claude-code ⇒ eager, so the daemon doesn't stack a second deferral layer on
+top of the harness's own `ToolSearch`) > the resolved role's default
+('executor' defaults ON, 'supervisor' has no opinion) > the daemon's
 boot-time `defaults.mcp.deferredTools` config.
 
 ## browser
