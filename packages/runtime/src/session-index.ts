@@ -90,8 +90,11 @@ export function sessionIndexPath(sessionId: string, baseDir?: string): string {
 
 function capText(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim()
-  if (flat.length <= max) return flat
-  return flat.slice(0, max - 1) + "…"
+  // Slice by CODE POINT, not UTF-16 code unit, so an astral char at the
+  // boundary is never split into a lone surrogate.
+  const points = Array.from(flat)
+  if (points.length <= max) return flat
+  return points.slice(0, max - 1).join("") + "…"
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -241,14 +244,19 @@ export function deriveIndexFromTranscript(sessionId: string, baseDir?: string): 
   const eventsPath = sessionEventsPath(sessionId, baseDir)
   if (!existsSync(eventsPath)) return undefined
   const tail = readTranscriptTail(eventsPath)
-  let startedAt = tail.firstTs
-  if (!startedAt) {
-    try {
-      startedAt = statSync(eventsPath).mtime.toISOString()
-    } catch {
-      startedAt = new Date(0).toISOString()
-    }
+  // `tail.firstTs` is the first record WITHIN the 256KB window, which for a
+  // long-lived session is nowhere near its start — prefer the transcript
+  // file's birthtime (created when the session's first record landed) and
+  // only fall back to the window/mtime when the FS reports no birthtime.
+  let startedAt: string | undefined
+  try {
+    const stat = statSync(eventsPath)
+    if (stat.birthtimeMs > 0) startedAt = stat.birthtime.toISOString()
+    else startedAt = stat.mtime.toISOString()
+  } catch {
+    // unreadable stat — fall through to the window ts
   }
+  startedAt = startedAt ?? tail.firstTs ?? new Date(0).toISOString()
   const lastPrompt = tail.prompts[tail.prompts.length - 1]
   return {
     id: sessionId,
