@@ -28,19 +28,27 @@ const GIT_TIMEOUT_MS = 5 * 60_000
 
 const dataDirField = z.string().optional()
 
-/** `app_install` input: exactly one of `{dir}` | `{url, ref?, subdir?}` | `{file}`. */
+/** `app_install` input: exactly one of `{dir}` | `{url, ref?, subdir?, sha?, sha256?, allowBuild?}` | `{file, sha256?}`. */
 export const appInstallInputSchema = z.union([
   z.object({ dir: z.string(), dataDir: dataDirField }).strict(),
   z
-    .object({ url: z.string(), ref: z.string().optional(), subdir: z.string().optional(), dataDir: dataDirField })
+    .object({
+      url: z.string(),
+      ref: z.string().optional(),
+      subdir: z.string().optional(),
+      sha: z.string().optional(),
+      sha256: z.string().optional(),
+      allowBuild: z.boolean().optional(),
+      dataDir: dataDirField,
+    })
     .strict(),
-  z.object({ file: z.string(), dataDir: dataDirField }).strict(),
+  z.object({ file: z.string(), sha256: z.string().optional(), dataDir: dataDirField }).strict(),
 ])
 export type AppInstallInput = z.infer<typeof appInstallInputSchema>
 
 export const APP_INSTALL_EXCLUSIVE_ERROR =
-  "pass exactly one source: {dir} (local app dir), {url, ref?, subdir?} (git repo, or a .agentapp URL), " +
-  "or {file} (local .agentapp path); only `dataDir` may accompany it (and ref/subdir with a git url)."
+  "pass exactly one source: {dir} (local app dir), {url, ref?, subdir?, sha?, allowBuild?} (git repo), " +
+  "{url, sha256?} (a .agentapp URL), or {file, sha256?} (local .agentapp path); `dataDir` may accompany any of them."
 
 /** A `{url}` ending in `.agentapp` (ignoring query/fragment) is a bundle, anything else is git. */
 export function isAgentappUrl(url: string): boolean {
@@ -125,6 +133,7 @@ export async function stageGitApp(input: {
   url: string
   ref?: string
   subdir?: string
+  expectedSha?: string
 }): Promise<StagedApp> {
   assertGitUrl(input.url)
   const subdir = normalizeSubdir(input.subdir)
@@ -143,6 +152,11 @@ export async function stageGitApp(input: {
       tmpDir,
     ])
     const sha = (await git(["rev-parse", "HEAD"], tmpDir)).trim()
+    if (input.expectedSha !== undefined && sha.toLowerCase() !== input.expectedSha.trim().toLowerCase()) {
+      throw new Error(
+        `git commit mismatch for ${input.url}: expected ${input.expectedSha.trim()}, got ${sha}. Nothing was installed.`,
+      )
+    }
     if (subdir !== "") {
       let real: string
       try {
@@ -219,6 +233,7 @@ export async function stageAgentApp(input: {
   appsDir: string
   url?: string
   file?: string
+  expectedSha256?: string
 }): Promise<StagedApp> {
   await mkdir(input.appsDir, { recursive: true })
   const scratch = await mkdtemp(join(tmpdir(), "agentapp-dl-"))
@@ -241,6 +256,15 @@ export async function stageAgentApp(input: {
       throw new Error("stageAgentApp needs a url or a file.")
     }
     const { manifest } = await unpackApp({ file: bundle, dest: tmpDir })
+    if (
+      input.expectedSha256 !== undefined &&
+      manifest.sha256.toLowerCase() !== input.expectedSha256.trim().toLowerCase()
+    ) {
+      throw new Error(
+        `.agentapp digest mismatch for ${url}: expected sha256 ${input.expectedSha256.trim()}, ` +
+          `bundle declares ${manifest.sha256}. Nothing was installed.`,
+      )
+    }
     return {
       slug: sanitizeSlug(safeId(manifest.id)),
       tmpDir,

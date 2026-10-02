@@ -679,6 +679,14 @@ export interface PerformInstallOptions {
   readonly dataDir?: string
   /** Provenance recorded on the installed-app record (remote installs). */
   readonly source?: AppSource
+  /** May `performInstall` run the APP.md `ui.build` command (and persist it
+   *  so later UI requests may re-run it)? Default true — a local `{dir}`
+   *  install is the user's own code. Remote installs pass false unless the
+   *  caller opted in (`app_install {url, allowBuild: true}` for git; never
+   *  for a `.agentapp`): the bundle must then already be on disk, and
+   *  `ui.build` is dropped from the persisted record so no later request
+   *  (`GET /apps/:id/ui`, the MCP panel cache) runs it either. */
+  readonly allowUiBuild?: boolean
 }
 
 /**
@@ -728,9 +736,30 @@ export async function performInstall(
   } catch (err) {
     return { ok: false, error: `${err instanceof Error ? err.message : String(err)}` }
   }
+  const allowUiBuild = opts?.allowUiBuild !== false
   if (uiPeek) {
-    const ensured = await ensureAppUiBuilt({ dir, uiPath: uiPeek.path, build: uiPeek.build })
-    if (!ensured.ok) return { ok: false, error: `app_install: ${ensured.error}` }
+    if (uiPeek.build !== undefined && !allowUiBuild) {
+      let present = false
+      try {
+        present = (await stat(uiPeek.path)).isFile()
+      } catch {
+        present = false
+      }
+      if (!present) {
+        return {
+          ok: false,
+          error:
+            `app_install: this app's UI bundle "${uiPeek.path}" is missing and would have to be built by ` +
+            `running \`${uiPeek.build.command}\` from the downloaded sources. The daemon does not run build ` +
+            "commands from remote sources by default: re-run with allowBuild: true (CLI: --allow-build) " +
+            "for a git URL you trust. A .agentapp never runs ui.build — ship it with the UI prebuilt " +
+            "(`agentproto app pack --release`).",
+        }
+      }
+    } else {
+      const ensured = await ensureAppUiBuilt({ dir, uiPath: uiPeek.path, build: uiPeek.build })
+      if (!ensured.ok) return { ok: false, error: `app_install: ${ensured.error}` }
+    }
   }
 
   let handle: Awaited<ReturnType<typeof loadAppHandle>>
@@ -786,7 +815,7 @@ export async function performInstall(
         ...(handle.ui?.description !== undefined ? { description: handle.ui.description } : {}),
         ...(handle.ui?.tools !== undefined ? { tools: handle.ui.tools } : {}),
         ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
-        ...(handle.ui?.build !== undefined ? { build: handle.ui.build } : {}),
+        ...(handle.ui?.build !== undefined && allowUiBuild ? { build: handle.ui.build } : {}),
         // OpenAI MCP-extensions carrier (plan W-B): the normalized,
         // app-kit-validated `ui.extensions` block persists verbatim on the
         // installed record — `makeInstalledAppUiApps` (W-C) is the only
@@ -888,6 +917,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const installStaged = async (
     staged: StagedApp,
     dataDir?: string,
+    allowBuild?: boolean,
   ): Promise<Awaited<ReturnType<typeof performInstall>>> => {
     const target = join(appsDir, staged.slug)
     const appDir = staged.subdir === "" ? target : join(target, staged.subdir)
@@ -908,6 +938,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       result = await performInstall(appDir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
         ...(dataDir !== undefined ? { dataDir } : {}),
         source: staged.source,
+        // Only a git source may build, and only with explicit consent.
+        allowUiBuild: staged.source.kind === "git" && allowBuild === true,
       })
     } catch (err) {
       await swap.rollback()
@@ -921,14 +953,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     return result
   }
 
-  const stageFromUrl = (input: { url: string; ref?: string; subdir?: string }): Promise<StagedApp> =>
+  const stageFromUrl = (input: { url: string; ref?: string; subdir?: string; sha?: string; sha256?: string }): Promise<StagedApp> =>
     isAgentappUrl(input.url)
-      ? stageAgentApp({ appsDir, url: input.url })
+      ? stageAgentApp({ appsDir, url: input.url, ...(input.sha256 !== undefined ? { expectedSha256: input.sha256 } : {}) })
       : stageGitApp({
           appsDir,
           url: input.url,
           ...(input.ref !== undefined ? { ref: input.ref } : {}),
           ...(input.subdir !== undefined ? { subdir: input.subdir } : {}),
+          ...(input.sha !== undefined ? { expectedSha: input.sha } : {}),
         })
 
   server.tool(
@@ -938,7 +971,12 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "`{url, ref?, subdir?}` — a git repo (shallow-cloned into `<daemon state dir>/apps/<slug>`, " +
       "the installed commit pinned in `source.sha`); `{url}` ending in `.agentapp` — a packed " +
       "bundle fetched over https/file (digest-verified, pinned in `source.sha256`); `{file}` — a " +
-      "local `.agentapp` path. Remote installs are kept current with `app_resync`. Validates every " +
+      "local `.agentapp` path. " +
+      "Integrity: pass the expected `sha` (git commit) or `sha256` (bundle digest, as in a catalog entry) " +
+      "and any mismatch is refused before anything is installed. A remote app's `ui.build` command is NOT " +
+      "run unless `allowBuild: true` (git only; a `.agentapp` never builds) — without it the UI bundle must " +
+      "already be in the source. " +
+      "Remote installs are kept current with `app_resync`. Validates every " +
       "WORKFLOW.md `tool` step's id against the daemon's dispatchable tools (missing " +
       "ids are reported ALL at once, instead of failing one at a time at " +
       "STEP-DISPATCH time) and checks the `mastra-agent` adapter resolves. Agent-" +
@@ -956,6 +994,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       ref: z.string().optional().describe("Git branch or tag to install (with a git `url`). Default: the remote HEAD."),
       subdir: z.string().optional().describe("Path of the app inside the git repo (with a git `url`). Default: the repo root."),
       file: z.string().optional().describe("Absolute path to a local .agentapp bundle."),
+      sha: z.string().optional().describe("Expected git commit (full sha) for a git `url`. Install is refused on mismatch."),
+      sha256: z
+        .string()
+        .optional()
+        .describe("Expected `.agentapp` digest (manifest sha256, as in a catalog entry) for a bundle `url`/`file`. Refused on mismatch."),
+      allowBuild: z
+        .boolean()
+        .optional()
+        .describe("Git `url` only: allow running the app's APP.md `ui.build` shell command from the cloned repo. Default false."),
       dataDir: z
         .string()
         .optional()
@@ -977,19 +1024,31 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         if (!result.ok) return errorResult(`app_install: ${result.error}`)
         return textResult(result.record)
       }
-      if ("url" in input && isAgentappUrl(input.url) && (input.ref !== undefined || input.subdir !== undefined)) {
-        return errorResult("app_install: `ref`/`subdir` only apply to git URLs, not a .agentapp.")
+      if ("url" in input && isAgentappUrl(input.url)) {
+        if (input.ref !== undefined || input.subdir !== undefined || input.sha !== undefined) {
+          return errorResult("app_install: `ref`/`subdir`/`sha` only apply to git URLs, not a .agentapp (use `sha256`).")
+        }
+        if (input.allowBuild !== undefined) {
+          return errorResult("app_install: `allowBuild` only applies to git URLs — a .agentapp never runs ui.build.")
+        }
+      }
+      if ("url" in input && !isAgentappUrl(input.url) && input.sha256 !== undefined) {
+        return errorResult("app_install: `sha256` only applies to a .agentapp; pin a git URL with `sha`.")
       }
       let staged: StagedApp
       try {
         staged =
           "file" in input
-            ? await stageAgentApp({ appsDir, file: input.file })
+            ? await stageAgentApp({
+                appsDir,
+                file: input.file,
+                ...(input.sha256 !== undefined ? { expectedSha256: input.sha256 } : {}),
+              })
             : await stageFromUrl(input)
       } catch (err) {
         return errorResult(`app_install: ${err instanceof Error ? err.message : String(err)}`)
       }
-      const result = await installStaged(staged, input.dataDir)
+      const result = await installStaged(staged, input.dataDir, "url" in input ? input.allowBuild : undefined)
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
       return textResult(result.record)
     },
@@ -1033,7 +1092,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             return textResult({ appId: input.appId, changed: false })
           }
         }
-        const result = await installStaged(staged)
+        // A git app keeps building only if it was installed with consent —
+        // recorded as `ui.build` surviving on the record (performInstall drops
+        // it otherwise). A bundle never builds.
+        const result = await installStaged(staged, undefined, source.kind === "git" && app.ui?.build !== undefined)
         if (!result.ok) return errorResult(`app_resync: ${result.error}`)
         const next = result.record.source
         const to = next?.kind === "git" ? next.sha : next?.kind === "agentapp" ? next.sha256 : from

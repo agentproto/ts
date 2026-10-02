@@ -1,7 +1,7 @@
 /**
  * `agentproto app pack <appDir> [--out <path.agentapp>] [--json]`
  * `agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]`
- * `agentproto app install <dir|url|file.agentapp> [--ref] [--subdir] [--data-dir]`
+ * `agentproto app install <dir|url|file.agentapp> [--ref] [--subdir] [--sha] [--sha256] [--allow-build] [--data-dir]`
  * `agentproto app resync <appId>`
  *
  * Package an agentproto app folder (one holding a valid `.agentproto/APP.md`)
@@ -41,7 +41,8 @@ const USAGE = `agentproto app — package, unpack, install, serve, build, or dev
 Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
-  agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--data-dir <path>]
+  agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--sha <commit>]
+                         [--sha256 <digest>] [--allow-build] [--data-dir <path>]
   agentproto app resync <appId>
   agentproto app list
   agentproto app serve [appDir] [--port <n>] [--app <appId>] [--json]
@@ -74,6 +75,11 @@ install:
   distinct from its source dir. Absolute, ~-relative, or relative to
   <appDir>. Without it: the entry's existing data dir is kept, else the
   APP.md \`data.dir\` hint (relative to <appDir>), else <appDir>/data.
+  --sha <commit> (git) / --sha256 <digest> (.agentapp) pin the expected
+  source: a mismatch is refused before anything is installed.
+  --allow-build (git only) lets the daemon run the app's APP.md \`ui.build\`
+  shell command from the cloned repo. Without it a remote app must ship its
+  UI prebuilt; a .agentapp never runs ui.build.
 
 resync:
   Ask the running daemon to re-check an app installed from git or a
@@ -155,6 +161,9 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
       "data-dir": { type: "string" },
       ref: { type: "string" },
       subdir: { type: "string" },
+      sha: { type: "string" },
+      sha256: { type: "string" },
+      "allow-build": { type: "boolean" },
     },
   })
 
@@ -178,22 +187,36 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
 
   const refArg = typeof values.ref === "string" ? values.ref : undefined
   const subdirArg = typeof values.subdir === "string" ? values.subdir : undefined
+  const shaArg = typeof values.sha === "string" ? values.sha : undefined
+  const sha256Arg = typeof values.sha256 === "string" ? values.sha256 : undefined
+  const allowBuild = values["allow-build"] === true
 
   if (isRemoteInstallUrl(appDirArg)) {
     const kind = /\.agentapp(\?.*)?$/.test(appDirArg) ? "agentapp" : "git"
-    if (kind === "agentapp" && (refArg !== undefined || subdirArg !== undefined)) {
-      process.stderr.write(`agentproto app install: --ref/--subdir only apply to git URLs.\n`)
+    if (kind === "agentapp" && (refArg !== undefined || subdirArg !== undefined || shaArg !== undefined)) {
+      process.stderr.write(`agentproto app install: --ref/--subdir/--sha only apply to git URLs (use --sha256 for a .agentapp).\n`)
+      return 2
+    }
+    if (kind === "agentapp" && allowBuild) {
+      process.stderr.write(`agentproto app install: --allow-build only applies to git URLs; a .agentapp never runs ui.build.\n`)
+      return 2
+    }
+    if (kind === "git" && sha256Arg !== undefined) {
+      process.stderr.write(`agentproto app install: --sha256 only applies to a .agentapp; pin a git URL with --sha.\n`)
       return 2
     }
     return callDaemonAppTool("install", "app_install", {
       url: appDirArg,
       ...(refArg !== undefined ? { ref: refArg } : {}),
       ...(subdirArg !== undefined ? { subdir: subdirArg } : {}),
+      ...(shaArg !== undefined ? { sha: shaArg } : {}),
+      ...(sha256Arg !== undefined ? { sha256: sha256Arg } : {}),
+      ...(allowBuild ? { allowBuild: true } : {}),
       ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
     })
   }
-  if (refArg !== undefined || subdirArg !== undefined) {
-    process.stderr.write(`agentproto app install: --ref/--subdir only apply to git URLs.\n`)
+  if (refArg !== undefined || subdirArg !== undefined || shaArg !== undefined || allowBuild) {
+    process.stderr.write(`agentproto app install: --ref/--subdir/--sha/--allow-build only apply to git URLs.\n`)
     return 2
   }
   if (appDirArg.endsWith(".agentapp")) {
@@ -204,8 +227,13 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     }
     return callDaemonAppTool("install", "app_install", {
       file,
+      ...(sha256Arg !== undefined ? { sha256: sha256Arg } : {}),
       ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
     })
+  }
+  if (sha256Arg !== undefined) {
+    process.stderr.write(`agentproto app install: --sha256 only applies to a .agentapp.\n`)
+    return 2
   }
 
   const appDir = resolve(process.cwd(), expandHome(appDirArg))
