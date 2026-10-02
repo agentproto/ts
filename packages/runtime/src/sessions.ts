@@ -1789,8 +1789,8 @@ export interface SessionDescriptor {
   /**
    * Deterministic billing-auth mode + a non-secret credential fingerprint,
    * recorded at spawn time for adapters that resolved an explicit
-   * credential (today: claude-code — see `AgentCliAuth.modes` in
-   * `@agentproto/driver-agent-cli`). The "verifiability" answer to "what
+   * credential (adapters declaring `authSubscription` and/or an API-key
+   * `provider`). The "verifiability" answer to "what
    * was used": `mode` is the resolved `"subscription" | "api-key"`;
    * `fingerprint` is `credentialFingerprint(mode, credential)` — e.g.
    * `"subscription · sk-ant-oat…3f9c"` — NEVER the raw credential. Absent

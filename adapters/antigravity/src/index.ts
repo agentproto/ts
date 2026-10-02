@@ -79,6 +79,11 @@ export const antigravity: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
   },
+  // The Google Sign-In login (OS keyring, set by an interactive `agy` run) IS
+  // the subscription. `external: true` declares that: the runtime injects NO
+  // bearer — there is no env var to inject into — and `agy` reads its own
+  // cached login. No api-key route exists, so there is nothing to scrub.
+  authSubscription: { external: true },
   sandbox: "./SANDBOX.md",
   protocol: "print",
   print: {

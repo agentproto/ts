@@ -4,11 +4,15 @@
  * report, and the onboarding preflight step.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   cliInstallSource,
   describeNodeInstall,
   renderServiceTarget,
+  resolveCliEntry,
 } from "../registry/install-source.js"
 
 describe("cliInstallSource", () => {
@@ -50,6 +54,55 @@ describe("cliInstallSource", () => {
 
   it("a win32 workspace/monorepo dist is a workspace build", () => {
     expect(cliInstallSource("C:\\code\\agentproto\\packages\\cli\\dist\\cli.mjs")).toBe("workspace")
+  })
+})
+
+describe("resolveCliEntry", () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "agentproto-install-source-"))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it("resolves a bin symlink so a published install classifies as published", () => {
+    // The global `agentproto` bin symlink points into the package's dist under
+    // node_modules; the symlink itself must not read as a workspace build.
+    const target = join(dir, "node_modules", "@agentproto", "cli", "dist", "cli.mjs")
+    mkdirSync(join(dir, "node_modules", "@agentproto", "cli", "dist"), { recursive: true })
+    writeFileSync(target, "// fake published CLI\n")
+    const binDir = join(dir, "bin")
+    mkdirSync(binDir, { recursive: true })
+    const link = join(binDir, "agentproto")
+    symlinkSync(target, link)
+
+    expect(resolveCliEntry(link)).toBe(realpathSync(target))
+    expect(cliInstallSource(resolveCliEntry(link))).toBe("published")
+  })
+
+  it("resolves a symlinked workspace entry to its real dist", () => {
+    const target = join(dir, "agentproto", "packages", "cli", "dist", "cli.mjs")
+    mkdirSync(join(dir, "agentproto", "packages", "cli", "dist"), { recursive: true })
+    writeFileSync(target, "// fake workspace CLI\n")
+    const link = join(dir, "agentproto-cli")
+    symlinkSync(target, link)
+
+    expect(cliInstallSource(resolveCliEntry(link))).toBe("workspace")
+  })
+
+  it("falls back to the raw path when the entry is broken", () => {
+    const missing = join(dir, "no", "such", "entry", "agentproto")
+    expect(resolveCliEntry(missing)).toBe(missing)
+    expect(() => cliInstallSource(resolveCliEntry(missing))).not.toThrow()
+  })
+
+  it("passes nullish entries through as null", () => {
+    expect(resolveCliEntry(null)).toBeNull()
+    expect(resolveCliEntry(undefined)).toBeNull()
+    expect(resolveCliEntry("")).toBeNull()
   })
 })
 

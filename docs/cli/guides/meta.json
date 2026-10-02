@@ -8,6 +8,9 @@
     "app-agent-tools",
     "no-admin-install",
     "fleets",
-    "handoff"
+    "handoff",
+    "gates",
+    "cron",
+    "workflows"
   ]
 }

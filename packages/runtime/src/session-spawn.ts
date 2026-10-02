@@ -90,7 +90,7 @@ import {
 } from "./browser-mount.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { DelegationReach, RoleProfile } from "./role.js"
-import { resolveDeferredToolsGatewayOption } from "./deferred-tools.js"
+import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
   resolveAgentsMd as realResolveAgentsMd,
@@ -1239,8 +1239,8 @@ export interface SpawnAgentSessionInput {
   preset?: UserPreset
   /**
    * Deterministic billing-auth mode + EXPLICIT credential for adapters that
-   * declare an env-var vocabulary for it (today: claude-code — see
-   * `AgentCliAuth.modes` in `@agentproto/driver-agent-cli`). `mode` wins over
+   * declare it (an `authSubscription` login and/or an API-key `provider`
+   * in their manifest — see `AdapterAuthDescriptor`). `mode` wins over
    * `~/.agentproto/config.json`'s `defaults.adapters.<slug>.auth.mode`
    * (default `"subscription"`); the credential (`token` for `"subscription"`,
    * `apiKey` for `"api-key"`) wins over the config field matching the
@@ -1283,9 +1283,10 @@ export interface SpawnAgentSessionInput {
   promptAppend?: string
   /** Per-spawn override for the daemon self-mount's deferred/lazy
    *  `tools/list` loading (harness-parity item 3 — see `deferred-tools.ts`).
-   *  Wins over the resolved role's own default (`RoleProfile.deferredTools`
-   *  — on for `executor`), which in turn only applies when this is
-   *  omitted. Threaded onto the injected `mcpServers` self-mount ref as
+   *  Wins over a harness with native tool search (manifest
+   *  `capabilities.nativeToolSearch` ⇒ eager) and the resolved role's own
+   *  default (`RoleProfile.deferredTools` — on for `executor`), which only
+   *  apply when this is omitted (`resolveSpawnDeferredTools`). Threaded onto the injected `mcpServers` self-mount ref as
    *  `?deferred=1|0` (`shouldInjectDaemonSelfMount` path below); has no
    *  effect on a caller-supplied `mcpServers` (that URL is the caller's to
    *  compose). Omitted entirely ⇒ no override at all — the gateway's own
@@ -2312,12 +2313,22 @@ export async function spawnAgentSession(
   }
   const delegationDenied = role.toolPolicy.delegation === "deny"
   // Deferred/lazy tool loading override for the self-mount (harness-parity
-  // item 3): explicit per-spawn `input.deferredTools` wins over the
-  // resolved role's own default (`RoleProfile.deferredTools` — on for
-  // `executor`); `undefined` here means neither said anything, so the
-  // self-mount ref carries no `?deferred=` override at all and the
-  // gateway's own boot-time default applies.
-  const deferredToolsOverride = input.deferredTools ?? role.deferredTools
+  // item 3): per-spawn `input.deferredTools` > harness with native MCP tool
+  // search (manifest `capabilities.nativeToolSearch` ⇒ eager, so the daemon
+  // doesn't stack a second deferral layer) > the resolved role's default
+  // (`RoleProfile.deferredTools`, on for `executor`). `undefined` means none
+  // had an opinion: the self-mount ref carries no `?deferred=` and the
+  // gateway's boot-time `defaults.mcp.deferredTools` applies. Skip the
+  // adapter lookup when the spawn already decided or the box is remote.
+  const nativeToolSearch =
+    input.deferredTools === undefined && input.sandbox === undefined
+      ? (await resolveAgentAdapter(input.adapter))?.nativeToolSearch === true
+      : false
+  const deferredToolsOverride = resolveSpawnDeferredTools({
+    spawnOverride: input.deferredTools,
+    nativeToolSearch,
+    roleDefault: role.deferredTools,
+  })
   // Orchestrator role (WP3): when requested, mint a scoped
   // sub-gateway token and MERGE its `mcpServers` entry with any
   // caller-provided ones (WP1) — both coexist on the child's

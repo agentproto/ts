@@ -121,6 +121,34 @@ export function resolveDeferredToolsGatewayOption(
   return { alwaysOn: config.alwaysOn }
 }
 
+/**
+ * Resolve the `?deferred=` override the daemon stamps on a default-injected
+ * self-mount, from everything the SPAWN knows. Precedence (first with an
+ * opinion wins):
+ *
+ *  1. `agent_start.deferredTools` (`spawnOverride`)
+ *  2. a caller-supplied mount's own `?deferred=` — never reaches this
+ *     function: such a ref is used verbatim, and the gateway honours the
+ *     query over its own default
+ *  3. the harness defers MCP tools natively (manifest
+ *     `capabilities.nativeToolSearch`) ⇒ `false` (eager): a second layer
+ *     would hide tools from the harness's own search
+ *  4. the resolved role's default (`RoleProfile.deferredTools`)
+ *  5. `undefined` ⇒ no `?deferred=` on the ref, so the gateway's boot-time
+ *     `defaults.mcp.deferredTools` applies
+ *
+ * Only the loading strategy changes — no tool is ever removed. Pure.
+ */
+export function resolveSpawnDeferredTools(input: {
+  spawnOverride?: boolean
+  nativeToolSearch?: boolean
+  roleDefault?: boolean
+}): boolean | undefined {
+  if (input.spawnOverride !== undefined) return input.spawnOverride
+  if (input.nativeToolSearch === true) return false
+  return input.roleDefault
+}
+
 /** Best-effort JSON Schema for a tool's Zod input object — `undefined`
  *  when the tool takes no arguments, or on any conversion failure (a
  *  malformed/incompatible schema shouldn't break the response, just omit

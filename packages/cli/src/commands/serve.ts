@@ -139,7 +139,7 @@ import {
 import { installAdapter } from "../registry/install-driver.js"
 import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
 import { CATALOG } from "../registry/catalog.js"
-import { cliInstallSource } from "../registry/install-source.js"
+import { cliInstallSource, resolveCliEntry } from "../registry/install-source.js"
 import WebSocket from "ws"
 
 interface ServeOpts {
@@ -556,6 +556,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.nativeTerminalResume === true
           ? { nativeTerminalResume: true }
           : {}),
+        ...(adapter.handle.capabilities?.nativeToolSearch === true
+          ? { nativeToolSearch: true }
+          : {}),
       }
     } catch (err) {
       console.warn(
@@ -772,7 +775,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         build: {
           sha: __CLI_BUILD_SHA__,
           builtAt: __CLI_BUILT_AT__,
-          source: cliInstallSource(process.argv[1]),
+          source: cliInstallSource(resolveCliEntry(process.argv[1])),
         },
         // BOOT.md is silly for a tunnel daemon — skip it.
         boot: false,

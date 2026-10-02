@@ -275,6 +275,12 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // `claude --resume <conversation-id>`. Governs provider-native
     // terminal restart, distinct from ACP-level `resumable`.
     nativeTerminalResume: true,
+    // Claude Code defers MCP tool schemas behind its own `ToolSearch`
+    // tool (docs: code.claude.com/docs/en/mcp "MCP Tool Search"; modes
+    // standard/tst/tst-auto in the pinned binary, see the `lean` mode below).
+    // The daemon therefore mounts itself eager here — see
+    // `resolveSpawnDeferredTools` (packages/runtime/src/deferred-tools.ts).
+    nativeToolSearch: true,
   },
   // Only the `lean` context mode remains a manifest `modes[]` entry (SPEC
   // §3.4a). Posture (plan / accept-edits / bypass-permissions) and the gateway

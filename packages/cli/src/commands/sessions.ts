@@ -266,10 +266,13 @@ came from — AGENTPROTO_DAEMON_TOKEN is the manual override.
 
 sessions start flags:
   --auth subscription|api-key   deterministic billing-auth mode for adapters that
-                                 declare it (today: claude-code). subscription
-                                 (default) scrubs API-key/gateway env vars so the
-                                 child uses its stored OAuth login; api-key requires
-                                 ANTHROPIC_API_KEY and fails the spawn without it.
+                                 declare a subscription login (authSubscription) and/or
+                                 an API-key provider in their manifest; any other
+                                 adapter fails the spawn (unsupported_auth_mode).
+                                 subscription (default) scrubs API-key/gateway env
+                                 vars so the child uses its stored OAuth login;
+                                 api-key requires the adapter's API key (e.g.
+                                 ANTHROPIC_API_KEY) and fails without it.
   --base-url <url>              manifest 'base_url' option (claude-code/claude-sdk) —
                                  injected as ANTHROPIC_BASE_URL, fronts a custom
                                  Anthropic-compatible gateway (proxy, LiteLLM, …).

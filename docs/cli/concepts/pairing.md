@@ -6,14 +6,14 @@ Its goal is to let a client reach a daemon that only ever dials **outbound**,
 through a broker that **cannot read or forge the traffic** — bootstrapped by a
 single offer URL / QR code, with no accounts, no DNS, no inbound ports, and no
 trusted middlebox.
-
-This page describes what exists **after Phase 2**: the cryptographic library
-layer (Phase 1), plus the rendezvous broker, the `pair` CLI/MCP verbs, on-disk
-persistence, reconnect epochs, and autoconnect on boot. Pairing also works with
-no config — `pair offer` defaults to the **hosted broker**
-`wss://rdv.agentproto.sh/v1`, which relays only ciphertext (see [The hosted
-default](#the-hosted-default)). The mobile deep-link page and the pairing spec
-(AIP-59 (draft, agentproto/agentproto#41)) remain Phase 3 — see *Status* at the bottom.
+This page describes what ships today: the cryptographic library layer, the
+rendezvous broker, the `pair` CLI/MCP verbs, on-disk persistence, reconnect
+epochs, and autoconnect on boot. Pairing also works with no config — `pair
+offer` defaults to the **hosted broker** `wss://rdv.agentproto.sh/v1`, which
+relays only ciphertext (see [The hosted
+default](#the-hosted-default)). Still to come: the mobile deep-link page and
+the pairing spec, AIP-59 (draft, agentproto/agentproto#41) — see *Status* at
+the bottom.
 
 Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / ls / revoke /
 exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
@@ -48,7 +48,7 @@ authenticates nothing (see [Route and auth tokens](#route-and-auth-tokens)).
 Out of scope for v1: post-compromise security (no ratchet — rekey on reconnect
 only), multi-device sync, and broker federation.
 
-## What Phase 1 ships (the library layer)
+## The library layer
 
 Three pieces, all built on X25519, Ed25519, HKDF-SHA256 and AES-256-GCM with
 zero native dependencies. The primitives sit behind a small async crypto
@@ -142,7 +142,7 @@ Bearer interaction is unchanged: pairing authenticates the *peer*; spawn
 authorization (`authorize(spawn)`) stays a separate decision, and the pairing
 layer never learns or transports the user's daemon bearer.
 
-## What Phase 2 adds (broker, ceremony, persistence)
+## Broker, ceremony, persistence
 
 ### The rendezvous broker — `@agentproto/rendezvous`
 
@@ -370,13 +370,13 @@ is covered end to end in
 
 ## Status
 
-- **Phase 1:** identity module, `pair/v1` handshake, `wrapE2E` channel, and the
-  adversarial test suite (tampered-broker vectors: flip / drop / reorder /
-  replay / downgrade). Proven end-to-end over an in-process socket pair.
-- **Phase 2:** the `@agentproto/rendezvous` broker package, the `pair`
-  CLI/MCP verbs (`offer` / `accept` / `ls` / `revoke` / `exec`), pairing
-  persistence, reconnect epochs, and autoconnect on boot.
-- **Phase 3 (in progress):** the hosted broker is deployed and is now the
-  default meeting point for `pair offer` (see [The hosted
-  default](#the-hosted-default)). Still to come: the mobile deep-link page and
-  the pairing spec, AIP-59 (draft, agentproto/agentproto#41).
+- **Shipped:** the daemon identity module, the `pair/v2` handshake, the
+  `wrapE2E` channel, and the adversarial test suite (tampered-broker vectors:
+  flip / drop / reorder / replay / downgrade), proven end-to-end over an
+  in-process socket pair; the `@agentproto/rendezvous` broker package; the
+  `pair` CLI/MCP verbs (`offer` / `accept` / `ls` / `revoke` / `exec`); pairing
+  persistence, reconnect epochs, and autoconnect on boot; and the hosted broker
+  `wss://rdv.agentproto.sh/v1`, deployed and now the default meeting point for
+  `pair offer` (see [The hosted default](#the-hosted-default)).
+- **Still to come:** the mobile deep-link page and the pairing spec, AIP-59
+  (draft, agentproto/agentproto#41).

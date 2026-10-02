@@ -8,7 +8,7 @@ one's work — with your tests or a reviewer model — before anything is
 committed. No more babysitting terminal windows.
 
 - **Run them all the same way.** Start, message, watch, and stop any agent
-  with the same commands. Fourteen agents under one lifecycle today.
+  with the same commands. Fifteen agents under one lifecycle today.
 - **Work checked before it lands.** Attach a check — your tests, or a stronger
   model reviewing the change — and it runs each time the agent finishes.
   Commits wait for the check and your OK, even after you close your laptop.
@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.20.0.** APIs are stabilising; expect minor breaking changes
+> **Status: 1.10.0.** APIs are stabilising; expect minor breaking changes
 > between releases.
 
 ## Quick start
@@ -62,7 +62,7 @@ for the honest split below.
 
 This repo ships two very different things under one name:
 
-- **Tier 1 — live, verified hands-on:** the daemon, the CLI, fourteen agent
+- **Tier 1 — live, verified hands-on:** the daemon, the CLI, fifteen agent
   adapters (Claude Code, Claude SDK, Codex, Gemini, Grok CLI, Hermes, jcode, opencode, Mastra Code +
   in-process, Mastra Agent, OpenClaw, browser-as-agent, Antigravity, pi), durable policy gates,
   nested orchestration with role gating, fan-in monitoring, workflows/cron,

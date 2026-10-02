@@ -618,6 +618,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    * restart even when a native resume id is available.
    */
   nativeTerminalResume?: boolean
+  /**
+   * Manifest-declared `capabilities.nativeToolSearch` (AIP-45) — the
+   * harness defers mounted MCP tools behind its own search tool, so the
+   * daemon's self-mount defaults to EAGER for it rather than double-deferring
+   * (see `resolveSpawnDeferredTools`). Omitted/`false` ⇒ role/daemon default.
+   */
+  nativeToolSearch?: boolean
 } | null>
 
 /**

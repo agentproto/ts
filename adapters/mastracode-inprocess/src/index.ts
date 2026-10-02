@@ -62,6 +62,16 @@ export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
       ],
     },
   },
+  // Same two native OAuth logins as @agentproto/adapter-mastracode (Claude
+  // Pro/Max and ChatGPT, both via mastracode's own `/login`) — keep the two
+  // declarations in lockstep. EXTERNAL: no bearer is injected; the login's
+  // presence is verified (fail-loud) through the `mastracode-inprocess`
+  // provision recipe, which reads mastracode's own app-data `auth.json`, and
+  // the matching api-key var is scrubbed.
+  authSubscription: [
+    { external: true, provider: "anthropic" },
+    { external: true, provider: "openai" },
+  ],
   sandbox: {
     model: "in-process",
     note:

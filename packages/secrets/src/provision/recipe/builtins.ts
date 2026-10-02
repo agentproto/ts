@@ -179,6 +179,18 @@ export const jcodeRecipe = defineProvisionRecipe({
   ],
 })
 
+/** mastracode-inprocess — the in-process arm of the same Mastra Code CLI. The
+ *  `external` login check resolves a recipe by ADAPTER id, so the in-process
+ *  adapter needs its own id; it reads the very same mastracode `/login` auth
+ *  store (and the same two methods), so the methods are shared, not copied. */
+export const mastracodeInprocessRecipe = defineProvisionRecipe({
+  id: "mastracode-inprocess",
+  description:
+    "mastracode's Claude Pro/Max and ChatGPT subscription OAuth access tokens, read from the CLI's own auth store, for the in-process mastracode adapter.",
+  label: "mastracode in-process (Claude/ChatGPT subscription)",
+  methods: mastracodeRecipe.methods,
+})
+
 /** Gemini CLI OAuth token written by the local CLI. */
 export const geminiRecipe = defineProvisionRecipe({
   id: "gemini",
@@ -203,4 +215,5 @@ export const BUILTIN_RECIPES: readonly ProvisionRecipe[] = [
   opencodeRecipe,
   mastracodeRecipe,
   jcodeRecipe,
+  mastracodeInprocessRecipe,
 ]
