@@ -156,8 +156,9 @@ Point the daemon at it, two ways (config wins when both are set):
 ```
 
 `app_catalog` then merges remote entries after local ones (dedupe by
-`appId`, first wins), caches them for 5 minutes, and `app_catalog
-{refresh: true}` bypasses the cache. A failing source — bad JSON, timeout,
+`appId`, first wins), caches them for 5 minutes, and
+`app_catalog {refresh: true}` bypasses the cache. A failing source — bad
+JSON, timeout,
 5xx — never fails the tool: it is reported in the response's `warnings[]`.
 
 Each remote entry carries its `source`, so a store UI can call

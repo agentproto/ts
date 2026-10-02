@@ -187,7 +187,7 @@ gateway → delete the daemon's `runtime.json`. The exit banner is
 Stale `runtime.json` files (dead PID) in registered workspaces are
 swept at boot — they confuse discovery otherwise.
 
-## `AGENTPROTO_JOIN` — auto-register as a host at boot {#agentproto_join}
+## `AGENTPROTO_JOIN` — auto-register as a host at boot
 
 A box daemon (e.g. a CI reviewer sandbox or a cloud computer) can
 auto-register itself as a host on a controlling daemon without relaying an
