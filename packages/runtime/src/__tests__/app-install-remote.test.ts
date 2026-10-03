@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { createServer, type Server } from "node:http"
+import type { AddressInfo } from "node:net"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -99,11 +100,13 @@ describe("app_install remote sources + app_resync", { timeout: 60_000 }, () => {
   let root: string
   let appsDir: string
   let client: Client
+  let catalogConfig: { defaultSource?: string | false; sources?: { url: string }[] }
   const servers: Server[] = []
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "app-remote-"))
     appsDir = join(root, "state", "apps")
+    catalogConfig = { defaultSource: false }
     const server = new McpServer({ name: "t", version: "0.0.0" })
     registerAppTools(server, {
       registry: createSessionsRegistry({ persist: false }),
@@ -114,6 +117,8 @@ describe("app_install remote sources + app_resync", { timeout: 60_000 }, () => {
         slug === "mastra-agent"
           ? { startSession: async () => ({ sessionId: "x", send: async function* () {}, cancel: async () => {}, close: async () => {} }), commandPreview: "mock" }
           : null,
+      loadCatalogConfig: async () => ({ catalog: catalogConfig }),
+      catalogCacheDir: join(root, "state", "cache", "catalog"),
     } as Parameters<typeof registerAppTools>[1])
     const [ct, st] = InMemoryTransport.createLinkedPair()
     await server.connect(st)
@@ -126,6 +131,45 @@ describe("app_install remote sources + app_resync", { timeout: 60_000 }, () => {
   })
 
   const call = (name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args })
+
+  /** Loopback http server serving `files` (path → body); mutate the map to republish. */
+  async function serveFiles(files: Map<string, Buffer | string>): Promise<string> {
+    const srv = createServer((req, res) => {
+      const body = files.get(req.url ?? "")
+      if (body === undefined) {
+        res.statusCode = 404
+        res.end()
+        return
+      }
+      res.end(body)
+    })
+    await new Promise<void>(r => srv.listen(0, "127.0.0.1", r))
+    servers.push(srv)
+    return `http://127.0.0.1:${(srv.address() as AddressInfo).port}`
+  }
+
+  /** Pack the fixture app at `version`, serve it, and return its catalog source. */
+  async function publishBundle(
+    files: Map<string, Buffer | string>,
+    base: string,
+    version: string,
+  ): Promise<{ kind: "agentapp"; url: string; sha256: string; version: string }> {
+    const src = join(root, `pub-${version}`)
+    await emitFixture(src)
+    const appMd = join(src, ".agentproto", "APP.md")
+    const parsed = matter(await readFile(appMd, "utf8"))
+    await writeFile(appMd, matter.stringify(parsed.content, { ...parsed.data, version }))
+    const out = join(root, `remote-app-${version}.agentapp`)
+    const { manifest } = await packApp({ appDir: src, out })
+    files.set(`/remote-app-${version}.agentapp`, await readFile(out))
+    return { kind: "agentapp", url: `${base}/remote-app-${version}.agentapp`, sha256: manifest.sha256, version }
+  }
+
+  const catalogDoc = (...sources: { kind: "agentapp"; url: string; sha256: string; version: string }[]) =>
+    JSON.stringify({
+      schema: "app-catalog/v1",
+      entries: sources.map(s => ({ appId: "@test/remote-app", version: s.version, source: s })),
+    })
 
   /** Bare repo `<name>.git` seeded from a work tree whose `appPath` holds the app. */
   async function makeGitRemote(name: string, appPath = ""): Promise<{ url: string; work: string; push: () => void }> {
@@ -413,5 +457,75 @@ describe("app_install remote sources + app_resync", { timeout: 60_000 }, () => {
     expect(isError(again), errText(again)).toBe(false)
     expect(parse(again).dataDir).toBe(expected)
     expect(await readFile(join(expected, "keep.txt"), "utf8")).toBe("mine")
+  })
+
+  it("catalog-tracked bundle: app_updates reports 0.3.0 over 0.2.0 and app_resync follows the catalog", async () => {
+    const files = new Map<string, Buffer | string>()
+    const base = await serveFiles(files)
+    const catalogUrl = `${base}/catalog.json`
+    catalogConfig = { defaultSource: false, sources: [{ url: catalogUrl }] }
+
+    const v2 = await publishBundle(files, base, "0.2.0")
+    files.set("/catalog.json", catalogDoc(v2))
+    const res = await call("app_install", { url: v2.url, sha256: v2.sha256, catalogUrl })
+    expect(isError(res), errText(res)).toBe(false)
+    const rec = parse(res)
+    expect(rec.version).toBe("0.2.0")
+    expect(rec.source.catalogId).toEqual({ url: catalogUrl, appId: "@test/remote-app" })
+
+    expect(parse(await call("app_updates", { refresh: true }))).toMatchObject({
+      updates: [],
+      upToDate: ["@test/remote-app"],
+    })
+    expect(parse(await call("app_resync", { appId: "@test/remote-app" }))).toMatchObject({ changed: false })
+
+    const v3 = await publishBundle(files, base, "0.3.0")
+    files.set("/catalog.json", catalogDoc(v3))
+    const upd = parse(await call("app_updates", { refresh: true }))
+    expect(upd.updates).toHaveLength(1)
+    expect(upd.updates[0]).toMatchObject({
+      appId: "@test/remote-app",
+      from: { version: "0.2.0", sha256: v2.sha256 },
+      to: { version: "0.3.0", sha256: v3.sha256, url: v3.url },
+      catalogUrl,
+    })
+    const listing = parse(await call("app_catalog", { refresh: true }))
+    expect(listing.find((e: any) => e.appId === "@test/remote-app")).toMatchObject({
+      installed: true,
+      updateAvailable: true,
+      installedVersion: "0.2.0",
+    })
+
+    const resync = parse(await call("app_resync", { appId: "@test/remote-app" }))
+    expect(resync).toMatchObject({ changed: true, from: v2.sha256, to: v3.sha256, version: "0.3.0" })
+    expect(parse(await call("app_updates", { refresh: true }))).toMatchObject({
+      updates: [],
+      upToDate: ["@test/remote-app"],
+    })
+  })
+
+  it("a lower catalog version is not an update; another catalog's entry is ignored; untracked installs are listed", async () => {
+    const files = new Map<string, Buffer | string>()
+    const base = await serveFiles(files)
+    const catalogUrl = `${base}/catalog.json`
+    const otherUrl = `${base}/other.json`
+    catalogConfig = { defaultSource: false, sources: [{ url: catalogUrl }, { url: otherUrl }] }
+    const v1 = await publishBundle(files, base, "0.1.0")
+    const v2 = await publishBundle(files, base, "0.2.0")
+    const v9 = await publishBundle(files, base, "0.9.0")
+    files.set("/catalog.json", catalogDoc(v1))
+    files.set("/other.json", catalogDoc(v9))
+
+    expect(isError(await call("app_install", { url: v2.url }))).toBe(false)
+    expect(parse(await call("app_updates", { refresh: true }))).toMatchObject({
+      updates: [],
+      untracked: ["@test/remote-app"],
+    })
+
+    expect(isError(await call("app_install", { url: v2.url, catalogUrl }))).toBe(false)
+    const upd = parse(await call("app_updates", { refresh: true }))
+    expect(upd.updates).toEqual([])
+    expect(upd.upToDate).toEqual(["@test/remote-app"])
+    expect(parse(await call("app_resync", { appId: "@test/remote-app" }))).toMatchObject({ changed: false })
   })
 })

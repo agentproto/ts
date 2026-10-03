@@ -39,16 +39,17 @@ export const appInstallInputSchema = z.union([
       sha: z.string().optional(),
       sha256: z.string().optional(),
       allowBuild: z.boolean().optional(),
+      catalogUrl: z.string().optional(),
       dataDir: dataDirField,
     })
     .strict(),
-  z.object({ file: z.string(), sha256: z.string().optional(), dataDir: dataDirField }).strict(),
+  z.object({ file: z.string(), sha256: z.string().optional(), catalogUrl: z.string().optional(), dataDir: dataDirField }).strict(),
 ])
 export type AppInstallInput = z.infer<typeof appInstallInputSchema>
 
 export const APP_INSTALL_EXCLUSIVE_ERROR =
   "pass exactly one source: {dir} (local app dir), {url, ref?, subdir?, sha?, allowBuild?} (git repo), " +
-  "{url, sha256?} (a .agentapp URL), or {file, sha256?} (local .agentapp path); `dataDir` may accompany any of them."
+  "{url, sha256?} (a .agentapp URL), or {file, sha256?} (local .agentapp path); `dataDir` may accompany any of them, `catalogUrl` any remote one."
 
 /** A `{url}` ending in `.agentapp` (ignoring query/fragment) is a bundle, anything else is git. */
 export function isAgentappUrl(url: string): boolean {

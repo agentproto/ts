@@ -198,6 +198,22 @@ the install refuse anything that doesn't match it. That is the whole
 registry story: a static JSON file next to static `.agentapp` files on any
 HTTP host, no server logic required.
 
+### Updates
+
+Pass the entry's `catalogUrl` when installing from a listing —
+`app_install {url, sha256, catalogUrl}` — and the record keeps
+`source.catalogId`. From then on:
+
+- `app_updates` compares each catalog-tracked app with its catalog's current
+  entry (without installing anything): an entry is an update when its digest
+  / commit differs and its version is not lower than the installed one.
+- `app_resync {appId}` installs that entry — from the entry's own URL,
+  verified against its digest — so a new release published under a new,
+  versioned URL (`my-app-0.3.0.agentapp`) is picked up. Only the catalog the
+  app was installed from is followed, never another source listing the same
+  `appId`.
+- `app_catalog` marks such an entry `updateAvailable: true`.
+
 ---
 
 ## The full loop

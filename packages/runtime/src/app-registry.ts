@@ -18,12 +18,20 @@ export interface InstalledAppRef {
   readonly path: string
 }
 
+/** The catalog an app was installed from (`app_install {catalogUrl}`):
+ *  `app_updates` / `app_resync` follow THAT catalog's entry for `appId`,
+ *  never another source's. */
+export interface AppCatalogRef {
+  url: string
+  appId: string
+}
+
 /** Where an installed app came from — the pin `app_resync` compares against.
  *  Absent on a record (legacy / `{dir}` install) means `{ kind: "local" }`. */
 export type AppSource =
   | { kind: "local" }
-  | { kind: "git"; url: string; ref?: string; sha: string; subdir?: string }
-  | { kind: "agentapp"; url: string; sha256: string; version: string; size?: number }
+  | { kind: "git"; url: string; ref?: string; sha: string; subdir?: string; catalogId?: AppCatalogRef }
+  | { kind: "agentapp"; url: string; sha256: string; version: string; size?: number; catalogId?: AppCatalogRef }
 
 export interface InstalledApp {
   readonly appId: string

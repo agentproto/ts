@@ -58,6 +58,7 @@ import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import {
   loadAppCatalogFile,
   createRemoteCatalogClient,
+  isCatalogUpdate,
   resolveCatalogSources,
   type AppCatalogEntry,
   type RemoteCatalogClient,
@@ -700,6 +701,10 @@ export interface PerformInstallOptions {
    *  `dataDir` applies — remote installs pass `<state dir>/app-data/<id>` so
    *  data never lands in their replaceable code dir. Absent = `<dir>/data`. */
   readonly defaultDataDir?: (appId: string) => string
+  /** Catalog this remote install comes from (`app_install {catalogUrl}`):
+   *  recorded as `source.catalogId = {url, appId}` so `app_updates` /
+   *  `app_resync` follow that catalog's entry. Ignored for a local source. */
+  readonly catalogUrl?: string
 }
 
 /**
@@ -913,7 +918,14 @@ export async function performInstall(
     ...(handle.dev ? { dev: handle.dev } : {}),
     ...(externalReadRoots ? { externalReadRoots } : {}),
     ...(handle.boundaries ? { boundaries: { ...handle.boundaries } } : {}),
-    ...(opts?.source !== undefined ? { source: opts.source } : {}),
+    ...(opts?.source !== undefined
+      ? {
+          source:
+            opts.catalogUrl !== undefined && opts.source.kind !== "local"
+              ? { ...opts.source, catalogId: { url: opts.catalogUrl, appId: handle.id } }
+              : opts.source,
+        }
+      : {}),
   })
 
   return { ok: true, record }
@@ -930,12 +942,65 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const appsDir =
     opts.appsDir ?? join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "apps")
 
+  const catalogCacheDir =
+    opts.catalogCacheDir ??
+    join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "cache", "catalog")
+  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient({ cacheDir: catalogCacheDir })
+  const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
+  const fallbackCatalogEntries = opts.fallbackCatalogEntries ?? FIRST_PARTY_CATALOG_ENTRIES
+
+  interface RemoteCatalogEntryRef {
+    entry: AppCatalogEntry
+    origin: string
+    catalogUrl: string
+    stale: boolean
+  }
+
+  /** Every remote catalog entry (default source, then config/file sources),
+   *  in precedence order, tagged with where it came from. Never throws: a
+   *  failing source becomes a warning (and its disk-cached copy, or for the
+   *  default source the embedded first-party list). */
+  const loadRemoteCatalogEntries = async (
+    refresh: boolean,
+    fileSources: readonly { url: string }[] | undefined,
+  ): Promise<{ remoteEntries: RemoteCatalogEntryRef[]; warnings: string[] }> => {
+    let catalogConfig: { sources?: unknown; defaultSource?: unknown } | undefined
+    try {
+      catalogConfig = (await loadCatalogConfig()).catalog
+    } catch {
+      // unreadable config → default source + the catalog file's sources
+    }
+    const sources = resolveCatalogSources(fileSources, catalogConfig)
+    const remote =
+      sources.length > 0
+        ? await remoteCatalog.fetchSources(sources, { refresh })
+        : { entries: [], warnings: [], bySource: [] }
+    const remoteEntries: RemoteCatalogEntryRef[] = []
+    ;(remote.bySource ?? []).forEach((result, i) => {
+      const src = sources[i]
+      if (src === undefined) return
+      if (src.origin === "default" && !result.ok) {
+        // Default catalog unreachable and never cached: fall back to the
+        // embedded first-party list so the listing is never empty of them.
+        for (const entry of fallbackCatalogEntries) {
+          remoteEntries.push({ entry, origin: "embedded", catalogUrl: src.url, stale: true })
+        }
+        return
+      }
+      for (const entry of result.entries) {
+        remoteEntries.push({ entry, origin: src.origin, catalogUrl: src.url, stale: result.stale })
+      }
+    })
+    return { remoteEntries, warnings: remote.warnings }
+  }
+
   /** Swap a staged remote tree in at `<appsDir>/<slug>` and run the normal
    *  `performInstall` on it; a failed install puts the previous tree back. */
   const installStaged = async (
     staged: StagedApp,
     dataDir?: string,
     allowBuild?: boolean,
+    catalogUrl?: string,
   ): Promise<Awaited<ReturnType<typeof performInstall>>> => {
     const target = join(appsDir, staged.slug)
     const appDir = staged.subdir === "" ? target : join(target, staged.subdir)
@@ -960,6 +1025,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         allowUiBuild: staged.source.kind === "git" && allowBuild === true,
         defaultDataDir: (appId: string) =>
           defaultRemoteAppDataDir(join(dirname(appsDir), APP_DATA_ROOT_SUBDIR), appId),
+        ...(catalogUrl !== undefined ? { catalogUrl } : {}),
       })
     } catch (err) {
       await swap.rollback()
@@ -1023,6 +1089,13 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         .boolean()
         .optional()
         .describe("Git `url` only: allow running the app's APP.md `ui.build` shell command from the cloned repo. Default false."),
+      catalogUrl: z
+        .string()
+        .optional()
+        .describe(
+          "Remote installs only: URL of the catalog this install comes from (the entry's `catalogUrl` in " +
+            "`app_catalog`). Recorded as `source.catalogId` so `app_updates` / `app_resync` follow that catalog's entry.",
+        ),
       dataDir: z
         .string()
         .optional()
@@ -1069,7 +1142,12 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       } catch (err) {
         return errorResult(`app_install: ${err instanceof Error ? err.message : String(err)}`)
       }
-      const result = await installStaged(staged, input.dataDir, "url" in input ? input.allowBuild : undefined)
+      const result = await installStaged(
+        staged,
+        input.dataDir,
+        "url" in input ? input.allowBuild : undefined,
+        input.catalogUrl,
+      )
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
       return textResult(result.record)
     },
@@ -1077,7 +1155,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
   server.tool(
     "app_resync",
-    "Re-check an app installed from git or a `.agentapp` against its source and reinstall it if " +
+    "An app installed from a catalog (`source.catalogId`) follows that catalog's current entry: a newer release (different digest/commit, version not lower) is staged from the entry's own URL and verified against its digest. " +
+      "Re-check an app installed from git or a `.agentapp` against its source and reinstall it if " +
       "the source moved. Git: `git ls-remote` for the installed `ref` vs the pinned `source.sha`. " +
       "`.agentapp`: re-download and compare the bundle's verified `sha256` with the pinned one. " +
       "Returns `{changed:false}` when current, `{changed:true, from, to}` after a reinstall " +
@@ -1093,6 +1172,52 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         )
       }
       try {
+        // Catalog-tracked apps follow their catalog's entry: a versioned bundle
+        // URL never changes content, so re-downloading the pinned URL alone
+        // would never see a new release.
+        const catalogRef = source.catalogId
+        if (catalogRef !== undefined) {
+          const { remoteEntries } = await loadRemoteCatalogEntries(true, (await loadAppCatalogFile(opts.catalogPath)).sources)
+          const tracked = remoteEntries.find(r => r.catalogUrl === catalogRef.url && r.entry.appId === catalogRef.appId)
+          if (tracked !== undefined && !tracked.stale) {
+            if (!isCatalogUpdate(app, tracked.entry)) {
+              return textResult({ appId: input.appId, changed: false, catalogUrl: tracked.catalogUrl })
+            }
+            const fromPin = source.kind === "git" ? source.sha : source.sha256
+            const es = tracked.entry.source
+            let catalogStaged: StagedApp
+            if (es.kind === "agentapp") {
+              catalogStaged = await stageAgentApp({ appsDir, url: es.url, expectedSha256: es.sha256 })
+            } else if (es.kind === "git") {
+              catalogStaged = await stageGitApp({
+                appsDir,
+                url: es.url,
+                ...(es.ref !== undefined ? { ref: es.ref } : {}),
+                ...(es.subdir !== undefined ? { subdir: es.subdir } : {}),
+                expectedSha: es.sha,
+              })
+            } else {
+              return errorResult(`app_resync: catalog entry for "${input.appId}" has no remote source.`)
+            }
+            const updated = await installStaged(
+              catalogStaged,
+              undefined,
+              source.kind === "git" && app.ui?.build !== undefined,
+              catalogRef.url,
+            )
+            if (!updated.ok) return errorResult(`app_resync: ${updated.error}`)
+            const nextPin = updated.record.source
+            return textResult({
+              appId: updated.record.appId,
+              changed: true,
+              from: fromPin,
+              to: nextPin?.kind === "git" ? nextPin.sha : nextPin?.kind === "agentapp" ? nextPin.sha256 : fromPin,
+              catalogUrl: tracked.catalogUrl,
+              ...(updated.record.version !== undefined ? { version: updated.record.version } : {}),
+            })
+          }
+          // Catalog unreachable/stale or entry gone: fall back to the pinned source below.
+        }
         let staged: StagedApp
         let from: string
         if (source.kind === "git") {
@@ -1116,7 +1241,12 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         // A git app keeps building only if it was installed with consent —
         // recorded as `ui.build` surviving on the record (performInstall drops
         // it otherwise). A bundle never builds.
-        const result = await installStaged(staged, undefined, source.kind === "git" && app.ui?.build !== undefined)
+        const result = await installStaged(
+          staged,
+          undefined,
+          source.kind === "git" && app.ui?.build !== undefined,
+          source.catalogId?.url,
+        )
         if (!result.ok) return errorResult(`app_resync: ${result.error}`)
         const next = result.record.source
         const to = next?.kind === "git" ? next.sha : next?.kind === "agentapp" ? next.sha256 : from
@@ -1124,6 +1254,74 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       } catch (err) {
         return errorResult(`app_resync: ${err instanceof Error ? err.message : String(err)}`)
       }
+    },
+  )
+
+  server.tool(
+    "app_updates",
+    "Check installed apps that came from a catalog (`app_install {catalogUrl}`, recorded as " +
+      "`source.catalogId`) against that catalog's current entry, without installing anything. " +
+      "Returns `{ updates: [{appId, from, to, catalogUrl, stale?}], upToDate, notListed, untracked }`: " +
+      "an entry is an update when its pin (bundle sha256 / git commit) differs and its version is " +
+      "not lower than the installed one; `notListed` = the catalog no longer lists the app (or is " +
+      "unreachable); `untracked` = remote installs not tied to a catalog (check those with " +
+      "`app_resync`). Apply an update with `app_resync {appId}`.",
+    {
+      appId: z.string().optional().describe("Only check this app."),
+      refresh: z.boolean().optional().describe("Bypass the 5-minute in-memory catalog cache."),
+    },
+    async input => {
+      const apps = appRegistry
+        .listApps()
+        .filter(a => a.source !== undefined && a.source.kind !== "local")
+        .filter(a => input.appId === undefined || a.appId === input.appId)
+      if (input.appId !== undefined && apps.length === 0) {
+        return errorResult(`app_updates: no app "${input.appId}" installed from git or a .agentapp.`)
+      }
+      const tracked = apps.filter(a => a.source !== undefined && a.source.kind !== "local" && a.source.catalogId !== undefined)
+      const { remoteEntries, warnings } =
+        tracked.length > 0
+          ? await loadRemoteCatalogEntries(input.refresh === true, (await loadAppCatalogFile(opts.catalogPath)).sources)
+          : { remoteEntries: [], warnings: [] as string[] }
+      const updates: Array<Record<string, unknown>> = []
+      const upToDate: string[] = []
+      const notListed: string[] = []
+      for (const app of tracked) {
+        const src = app.source
+        if (src === undefined || src.kind === "local" || src.catalogId === undefined) continue
+        const ref = src.catalogId
+        const hit = remoteEntries.find(r => r.catalogUrl === ref.url && r.entry.appId === ref.appId)
+        if (hit === undefined) {
+          notListed.push(app.appId)
+          continue
+        }
+        if (!isCatalogUpdate(app, hit.entry)) {
+          upToDate.push(app.appId)
+          continue
+        }
+        const es = hit.entry.source
+        updates.push({
+          appId: app.appId,
+          from:
+            src.kind === "agentapp"
+              ? { version: src.version, sha256: src.sha256 }
+              : { ...(app.version !== undefined ? { version: app.version } : {}), sha: src.sha },
+          to:
+            es.kind === "agentapp"
+              ? { version: es.version, sha256: es.sha256, url: es.url }
+              : es.kind === "git"
+                ? { ...(hit.entry.version !== undefined ? { version: hit.entry.version } : {}), sha: es.sha, url: es.url }
+                : {},
+          catalogUrl: hit.catalogUrl,
+          ...(hit.stale ? { stale: true } : {}),
+        })
+      }
+      const untracked = apps.filter(a => !tracked.includes(a)).map(a => a.appId)
+      const result = textResult({ updates, upToDate, notListed, untracked }) as {
+        content: { type: "text"; text: string }[]
+      }
+      if (warnings.length > 0) result.content.push({ type: "text", text: JSON.stringify({ warnings }) })
+      return result
     },
   )
 
@@ -1826,13 +2024,6 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     },
   )
 
-  const catalogCacheDir =
-    opts.catalogCacheDir ??
-    join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "cache", "catalog")
-  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient({ cacheDir: catalogCacheDir })
-  const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
-  const fallbackCatalogEntries = opts.fallbackCatalogEntries ?? FIRST_PARTY_CATALOG_ENTRIES
-
   server.tool(
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
@@ -1882,34 +2073,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         }
       })
 
-      let catalogConfig: { sources?: unknown; defaultSource?: unknown } | undefined
-      try {
-        catalogConfig = (await loadCatalogConfig()).catalog
-      } catch {
-        // unreadable config → default source + the catalog file's sources
-      }
-      const sources = resolveCatalogSources(catalog.sources, catalogConfig)
-      const remote =
-        sources.length > 0
-          ? await remoteCatalog.fetchSources(sources, { refresh: input.refresh === true })
-          : { entries: [], warnings: [], bySource: [] }
-
-      const remoteEntries: Array<{ entry: AppCatalogEntry; origin: string; catalogUrl: string; stale: boolean }> = []
-      ;(remote.bySource ?? []).forEach((result, i) => {
-        const src = sources[i]
-        if (src === undefined) return
-        if (src.origin === "default" && !result.ok) {
-          // Default catalog unreachable and never cached: fall back to the
-          // embedded first-party list so the listing is never empty of them.
-          for (const entry of fallbackCatalogEntries) {
-            remoteEntries.push({ entry, origin: "embedded", catalogUrl: src.url, stale: true })
-          }
-          return
-        }
-        for (const entry of result.entries) {
-          remoteEntries.push({ entry, origin: src.origin, catalogUrl: src.url, stale: result.stale })
-        }
-      })
+      const { remoteEntries, warnings: remoteWarnings } = await loadRemoteCatalogEntries(
+        input.refresh === true,
+        catalog.sources,
+      )
 
       for (const { entry, origin, catalogUrl, stale } of remoteEntries) {
         if (seen.has(entry.appId)) continue
@@ -1917,6 +2084,13 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         const installed = installedById.get(entry.appId)
         const name = entry.name ?? installed?.name
         const description = entry.description ?? installed?.description
+        const installedCatalog =
+          installed?.source !== undefined && installed.source.kind !== "local" ? installed.source.catalogId : undefined
+        const updateAvailable =
+          installed !== undefined &&
+          installedCatalog !== undefined &&
+          installedCatalog.url === catalogUrl &&
+          isCatalogUpdate(installed, entry)
         entries.push({
           appId: entry.appId,
           ...(name ? { name } : {}),
@@ -1936,6 +2110,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           catalogUrl,
           ...(stale ? { stale: true } : {}),
           installed: installed !== undefined,
+          ...(updateAvailable ? { updateAvailable: true, installedVersion: installed?.version } : {}),
           hasUi: installed?.ui !== undefined,
           hasArtifact: installed?.artifact !== undefined,
           hasSkill: installed?.skill !== undefined,
@@ -1964,8 +2139,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // Entries stay the first content block (a bare JSON array) so existing
       // clients keep parsing; warnings ride in a second block only when present.
       const result = textResult(entries) as { content: { type: "text"; text: string }[] }
-      if (remote.warnings.length > 0) {
-        result.content.push({ type: "text", text: JSON.stringify({ warnings: remote.warnings }) })
+      if (remoteWarnings.length > 0) {
+        result.content.push({ type: "text", text: JSON.stringify({ warnings: remoteWarnings }) })
       }
       return result
     },
