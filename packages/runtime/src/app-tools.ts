@@ -59,8 +59,10 @@ import {
   loadAppCatalogFile,
   createRemoteCatalogClient,
   resolveCatalogSources,
+  type AppCatalogEntry,
   type RemoteCatalogClient,
 } from "./app-catalog.js"
+import { FIRST_PARTY_CATALOG_ENTRIES } from "./first-party-catalog.js"
 import { loadConfig, type CatalogConfig } from "./config.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
@@ -621,11 +623,18 @@ export interface RegisterAppToolsOptions {
    *  Defaults to `~/.agentproto/app-catalog.json`. Missing file → empty
    *  catalog (never an error). */
   catalogPath?: string
-  /** Remote-catalog fetcher (5 min in-memory cache). Defaults to a fresh
-   *  client per `registerAppTools` call; tests inject one. */
+  /** Remote-catalog fetcher (5 min in-memory cache + disk cache under
+   *  `catalogCacheDir`). Defaults to a fresh client per `registerAppTools`
+   *  call; tests inject one. */
   remoteCatalog?: RemoteCatalogClient
   /** Loads the daemon config for `catalog.sources`. Defaults to `loadConfig`. */
   loadCatalogConfig?: () => Promise<{ catalog?: CatalogConfig }>
+  /** Disk cache for remote catalogs (last good copy per source). Defaults to
+   *  `<dir of apps.json>/cache/catalog` (`~/.agentproto/cache/catalog`). */
+  catalogCacheDir?: string
+  /** Offline fallback for the default catalog source. Defaults to the
+   *  embedded `FIRST_PARTY_CATALOG_ENTRIES`; tests inject their own. */
+  fallbackCatalogEntries?: readonly AppCatalogEntry[]
 }
 
 /** Expand a leading `~` (bare or `~/…`) against `os.homedir()`. Any other
@@ -1817,19 +1826,28 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     },
   )
 
-  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient()
+  const catalogCacheDir =
+    opts.catalogCacheDir ??
+    join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "cache", "catalog")
+  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient({ cacheDir: catalogCacheDir })
   const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
+  const fallbackCatalogEntries = opts.fallbackCatalogEntries ?? FIRST_PARTY_CATALOG_ENTRIES
 
   server.tool(
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
       "tolerates a missing file), merged with installed-app status — every entry reports " +
-      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Remote catalog `sources` (config " +
-      "`catalog.sources`, else `sources` in the catalog file) are fetched and appended after " +
-      "local entries, deduped by `appId` (first wins); their entries carry `source` for " +
-      "`app_install`. A failing source is reported in a trailing `{ warnings: [...] }` content " +
-      "block, never as an error. Installed apps absent from the catalog are included too, " +
-      "as are the always-on builtin panels (category `builtin`) — they need no `app_install`.",
+      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Remote catalogs (`app-catalog/v1`) " +
+      "are appended after local entries, deduped by `appId` (first wins): the default public " +
+      "catalog first (config `catalog.defaultSource`, `false` turns it off), then config " +
+      "`catalog.sources` (else `sources` in the catalog file) — extra sources ADD to the default " +
+      "one. Remote entries carry `source` (for `app_install`), `origin` (default|config|file|" +
+      "embedded), `catalogUrl`, the optional v1 fields (version, tier, icon, publisher, license, " +
+      "requires, minAgentprotoVersion, featured), and `stale: true` when served from the disk " +
+      "cache (or, for the default catalog when it was never reachable, from the embedded " +
+      "first-party list). A failing source is reported in a trailing `{ warnings: [...] }` " +
+      "content block, never as an error. Installed apps absent from the catalog are included " +
+      "too, as are the always-on builtin panels (category `builtin`).",
     {
       scopeId: z
         .string()
@@ -1864,19 +1882,36 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         }
       })
 
-      let configSources: unknown
+      let catalogConfig: { sources?: unknown; defaultSource?: unknown } | undefined
       try {
-        configSources = (await loadCatalogConfig()).catalog?.sources
+        catalogConfig = (await loadCatalogConfig()).catalog
       } catch {
-        // unreadable config → fall back to the catalog file's sources
+        // unreadable config → default source + the catalog file's sources
       }
-      const sources = resolveCatalogSources(catalog.sources, configSources)
+      const sources = resolveCatalogSources(catalog.sources, catalogConfig)
       const remote =
         sources.length > 0
           ? await remoteCatalog.fetchSources(sources, { refresh: input.refresh === true })
-          : { entries: [], warnings: [] }
+          : { entries: [], warnings: [], bySource: [] }
 
-      for (const entry of remote.entries) {
+      const remoteEntries: Array<{ entry: AppCatalogEntry; origin: string; catalogUrl: string; stale: boolean }> = []
+      ;(remote.bySource ?? []).forEach((result, i) => {
+        const src = sources[i]
+        if (src === undefined) return
+        if (src.origin === "default" && !result.ok) {
+          // Default catalog unreachable and never cached: fall back to the
+          // embedded first-party list so the listing is never empty of them.
+          for (const entry of fallbackCatalogEntries) {
+            remoteEntries.push({ entry, origin: "embedded", catalogUrl: src.url, stale: true })
+          }
+          return
+        }
+        for (const entry of result.entries) {
+          remoteEntries.push({ entry, origin: src.origin, catalogUrl: src.url, stale: result.stale })
+        }
+      })
+
+      for (const { entry, origin, catalogUrl, stale } of remoteEntries) {
         if (seen.has(entry.appId)) continue
         seen.add(entry.appId)
         const installed = installedById.get(entry.appId)
@@ -1889,6 +1924,17 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           ...(entry.category ? { category: entry.category } : {}),
           source: entry.source,
           ...(entry.placement ? { placement: entry.placement } : {}),
+          ...(entry.version ? { version: entry.version } : {}),
+          ...(entry.tier ? { tier: entry.tier } : {}),
+          ...(entry.icon ? { icon: entry.icon } : {}),
+          ...(entry.publisher ? { publisher: entry.publisher } : {}),
+          ...(entry.license ? { license: entry.license } : {}),
+          ...(entry.requires ? { requires: entry.requires } : {}),
+          ...(entry.minAgentprotoVersion ? { minAgentprotoVersion: entry.minAgentprotoVersion } : {}),
+          ...(entry.featured ? { featured: true } : {}),
+          origin,
+          catalogUrl,
+          ...(stale ? { stale: true } : {}),
           installed: installed !== undefined,
           hasUi: installed?.ui !== undefined,
           hasArtifact: installed?.artifact !== undefined,

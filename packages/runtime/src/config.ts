@@ -173,9 +173,13 @@ export interface CatalogSourceConfig {
 }
 
 export interface CatalogConfig {
-  /** Remote app-catalog sources merged into `app_catalog`. When set, these
-   *  win over `sources` in `~/.agentproto/app-catalog.json`. */
+  /** Remote app-catalog sources merged into `app_catalog`, IN ADDITION to the
+   *  default catalog (`defaultSource`). When set, these win over (replace)
+   *  `sources` in `~/.agentproto/app-catalog.json`. */
   sources?: CatalogSourceConfig[]
+  /** The default public catalog (`DEFAULT_CATALOG_SOURCE_URL` in
+   *  app-catalog.ts): `false` turns it off, a URL replaces it. Absent = on. */
+  defaultSource?: string | false
 }
 
 export interface TunnelConfig {

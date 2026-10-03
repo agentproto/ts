@@ -1,10 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import {
+  AppCatalogEntrySchema,
+  DEFAULT_CATALOG_SOURCE_URL,
+  catalogCachePath,
   createRemoteCatalogClient,
   loadAppCatalogFile,
   resolveCatalogSources,
@@ -101,6 +106,56 @@ describe("remote app catalog client", () => {
     const again = await client.fetchSources([{ url: `${base}/slow` }])
     expect(again.entries.map(e => e.appId)).toEqual(["s"])
   })
+
+  it("writes a disk cache on success and serves it, marked stale, when the source later fails", async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), "catalog-cache-"))
+    try {
+      route("/c", [gitEntry("c1")])
+      const first = await createRemoteCatalogClient({ cacheDir }).fetchSources([{ url: `${base}/c` }])
+      expect(first.bySource[0]).toMatchObject({ url: `${base}/c`, ok: true, stale: false })
+      expect(existsSync(catalogCachePath(cacheDir, `${base}/c`))).toBe(true)
+
+      routes["/c"] = { status: 500, hits: 0 }
+      const second = await createRemoteCatalogClient({ cacheDir }).fetchSources([{ url: `${base}/c` }])
+      expect(second.entries.map(e => e.appId)).toEqual(["c1"])
+      expect(second.bySource[0]).toMatchObject({ ok: true, stale: true })
+      expect(second.warnings[0]).toContain("using the copy cached at")
+
+      const never = await createRemoteCatalogClient({ cacheDir }).fetchSources([{ url: `${base}/never` }])
+      expect(never.bySource[0]).toMatchObject({ ok: false, stale: false })
+      expect(never.entries).toEqual([])
+    } finally {
+      await rm(cacheDir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps app-catalog/v1 fields and warns (but still reads) an unknown schema", async () => {
+    const v1Entry = {
+      appId: "@agentik/demo",
+      name: "Demo",
+      version: "0.2.0",
+      tier: "bundle",
+      icon: "https://example.com/demo.svg",
+      publisher: "agentik",
+      license: { kind: "free" },
+      minAgentprotoVersion: "0.40.0",
+      requires: { browser: false, fs: false, secrets: [] },
+      featured: true,
+      source: { kind: "agentapp", url: "https://example.com/demo-0.2.0.agentapp", sha256: "a".repeat(64), version: "0.2.0", size: 1800000 },
+    }
+    routes["/v1"] = {
+      body: JSON.stringify({ schema: "app-catalog/v1", generatedAt: "2026-10-02T00:00:00Z", entries: [v1Entry] }),
+      hits: 0,
+    }
+    routes["/v9"] = { body: JSON.stringify({ schema: "app-catalog/v9", entries: [gitEntry("x")] }), hits: 0 }
+    const client = createRemoteCatalogClient()
+    const v1 = await client.fetchSources([{ url: `${base}/v1` }])
+    expect(v1.warnings).toEqual([])
+    expect(v1.entries[0]).toEqual(v1Entry)
+    const v9 = await client.fetchSources([{ url: `${base}/v9` }])
+    expect(v9.entries.map(e => e.appId)).toEqual(["x"])
+    expect(v9.warnings[0]).toContain('unknown schema "app-catalog/v9"')
+  })
 })
 
 describe("catalog file sources + precedence", () => {
@@ -120,10 +175,34 @@ describe("catalog file sources + precedence", () => {
     expect(cat.sources).toEqual([{ url: "https://a" }])
   })
 
-  it("config sources win over file sources when set", () => {
+  it("default source first; config sources add to it and win over file sources", () => {
     const file = [{ url: "https://file" }]
-    expect(resolveCatalogSources(file, [{ url: "https://cfg" }])).toEqual([{ url: "https://cfg" }])
-    expect(resolveCatalogSources(file, undefined)).toEqual(file)
-    expect(resolveCatalogSources(undefined, undefined)).toEqual([])
+    expect(resolveCatalogSources(file, { sources: [{ url: "https://cfg" }] })).toEqual([
+      { url: DEFAULT_CATALOG_SOURCE_URL, origin: "default" },
+      { url: "https://cfg", origin: "config" },
+    ])
+    expect(resolveCatalogSources(file, undefined)).toEqual([
+      { url: DEFAULT_CATALOG_SOURCE_URL, origin: "default" },
+      { url: "https://file", origin: "file" },
+    ])
+    expect(resolveCatalogSources(file, { defaultSource: false })).toEqual([{ url: "https://file", origin: "file" }])
+    expect(resolveCatalogSources(undefined, { defaultSource: false })).toEqual([])
+    expect(
+      resolveCatalogSources(undefined, { defaultSource: "https://mine", sources: [{ url: "https://mine" }] }),
+    ).toEqual([{ url: "https://mine", origin: "default" }])
+  })
+
+  it("the catalog example in docs/cli/guides/distribute-an-app.md §5 validates", async () => {
+    const doc = await readFile(
+      fileURLToPath(new URL("../../../../docs/cli/guides/distribute-an-app.md", import.meta.url)),
+      "utf8",
+    )
+    const section = doc.slice(doc.indexOf("## 5."))
+    const block = /```json\n([\s\S]*?)\n```/.exec(section)
+    expect(block).not.toBeNull()
+    const parsed = JSON.parse(block![1]!) as { schema?: string; entries: unknown[] }
+    expect(parsed.schema).toBe("app-catalog/v1")
+    expect(parsed.entries.length).toBeGreaterThan(0)
+    for (const e of parsed.entries) expect(AppCatalogEntrySchema.safeParse(e).success).toBe(true)
   })
 })
