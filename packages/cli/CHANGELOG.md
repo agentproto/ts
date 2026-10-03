@@ -1,5 +1,40 @@
 # @agentproto/cli
 
+## 1.11.0
+
+### Minor Changes
+
+- 1487de1: `.agentapp` packing honors an APP.md `package` block (`include` / `exclude` globs, `stripBuild`) and stages only the selected files. New `agentproto app pack --release` builds the UI first, drops dev-only files (UI sources, docs, data, scripts, logs, source maps, env files), fails when the built `ui.path` is missing, and strips `ui.build` from the packed APP.md.
+- f4ac811: The daemon's default self-mount `deferredTools` now depends on the harness: an adapter declaring the new manifest capability `nativeToolSearch` (claude-code, which defers MCP tools behind its own `ToolSearch`) gets the eager `/mcp` surface instead of a second deferral layer. Precedence: `agent_start.deferredTools` > `?deferred=` > native tool search ⇒ eager > role default > `defaults.mcp.deferredTools`. No tool is removed.
+- 5cd6c9b: Verify expected sha on app_install and gate remote ui.build behind allowBuild
+- be03ed4: Add sessions checkpoint/handoff HTTP routes and CLI verbs
+
+### Patch Changes
+
+- 11dee43: `agentproto doctor` (and the daemon's `build.source`) no longer report an `npm i -g` install as a "workspace build". The CLI entry is now resolved through `realpathSync` (falling back to the raw path on error) before it is classified, so the global bin symlink (`/usr/local/bin/agentproto`) is classified by its real target under `node_modules/@agentproto/cli`.
+- 0dd095d: Fix daemon crash when a rendezvous/tunnel/terminal-input WebSocket dial is aborted or times out while still connecting: keep a permanent `error` listener on the socket and use `terminate()` for a CONNECTING socket, so the late "closed before the connection was established" error becomes a normal dial failure instead of an unhandled `error` event that crashes the process.
+- 2c212d3: `agentproto policy ls` no longer crashes with `TypeError: Cannot read properties of undefined (reading 'length')` on policies that carry only `sessionId` (no `sessionIds`). The SESSIONS column counts the fan-in group when present, else 1 for a single `sessionId`, else 0.
+- 5787677: Declare own-login auth for copilot-cli, antigravity, mastracode-inprocess
+- b657acc: Fix `agentproto sentinel ...` failing with `unrecognised argument(s): sentinel`: the verb was implemented and help-documented but never registered in the CLI's dispatch table.
+- Updated dependencies [1487de1]
+- Updated dependencies [0dd095d]
+- Updated dependencies [f4ac811]
+- Updated dependencies [2049adb]
+- Updated dependencies [58d5a41]
+- Updated dependencies [2049adb]
+- Updated dependencies [530c3ec]
+- Updated dependencies [38b5538]
+- Updated dependencies [5787677]
+- Updated dependencies [ef89993]
+  - @agentproto/app-kit@1.6.0
+  - @agentproto/pairing-host@0.2.4
+  - @agentproto/driver-agent-cli@2.8.0
+  - @agentproto/apps@0.19.0
+  - @agentproto/secrets@1.3.0
+  - @agentproto/acp@0.10.0
+  - @agentproto/sandbox-box@0.2.24
+  - @agentproto/sandbox-e2b@0.5.14
+
 ## 1.10.0
 
 ### Minor Changes

@@ -1,5 +1,14 @@
 # @agentproto/pair-client
 
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [38b5538]
+- Updated dependencies [5787677]
+  - @agentproto/secrets@1.3.0
+  - @agentproto/acp@0.10.0
+
 ## 0.2.6
 
 ### Patch Changes

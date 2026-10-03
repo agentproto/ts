@@ -1,5 +1,16 @@
 # @agentproto/driver-agent-cli
 
+## 2.8.0
+
+### Minor Changes
+
+- f4ac811: The daemon's default self-mount `deferredTools` now depends on the harness: an adapter declaring the new manifest capability `nativeToolSearch` (claude-code, which defers MCP tools behind its own `ToolSearch`) gets the eager `/mcp` surface instead of a second deferral layer. Precedence: `agent_start.deferredTools` > `?deferred=` > native tool search ⇒ eager > role default > `defaults.mcp.deferredTools`. No tool is removed.
+
+### Patch Changes
+
+- 58d5a41: Surface silent provider stream errors as turn errors. `@agentproto/driver-agent-cli` adds a stderr logfmt parser (`parseStderrStreamError`, `_onStderrLine` push subscription) so opencode's silent 429/usage-cap retry loop surfaces as a turn error instead of a hung session, and the opencode adapter spawns with `--print-logs --log-level ERROR`. `@agentproto/runtime` exports `NO_OUTPUT_STALL_TURN_ERROR` (new export ⇒ minor) and attaches it via the stall watchdog for zero-output turns. `@agentproto/apps` (session-steward) gains the `session-steward` skill, a session snapshot script, and APP.md skill wiring.
+  - @agentproto/acp@0.10.0
+
 ## 2.7.1
 
 ### Patch Changes
