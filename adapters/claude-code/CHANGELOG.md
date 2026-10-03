@@ -1,5 +1,17 @@
 # @agentproto/adapter-claude-code
 
+## 2.5.0
+
+### Minor Changes
+
+- f4ac811: The daemon's default self-mount `deferredTools` now depends on the harness: an adapter declaring the new manifest capability `nativeToolSearch` (claude-code, which defers MCP tools behind its own `ToolSearch`) gets the eager `/mcp` surface instead of a second deferral layer. Precedence: `agent_start.deferredTools` > `?deferred=` > native tool search ⇒ eager > role default > `defaults.mcp.deferredTools`. No tool is removed.
+
+### Patch Changes
+
+- Updated dependencies [f4ac811]
+- Updated dependencies [58d5a41]
+  - @agentproto/driver-agent-cli@2.8.0
+
 ## 2.4.9
 
 ### Patch Changes

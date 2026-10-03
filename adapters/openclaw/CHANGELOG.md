@@ -1,5 +1,14 @@
 # @agentproto/adapter-openclaw
 
+## 0.1.28
+
+### Patch Changes
+
+- 38b5538: Declare jcode own-login subscription auth and add jcode provision recipe
+- Updated dependencies [f4ac811]
+- Updated dependencies [58d5a41]
+  - @agentproto/driver-agent-cli@2.8.0
+
 ## 0.1.27
 
 ### Patch Changes

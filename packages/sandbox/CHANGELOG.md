@@ -1,5 +1,13 @@
 # @agentproto/sandbox
 
+## 0.8.2
+
+### Patch Changes
+
+- Updated dependencies [38b5538]
+- Updated dependencies [5787677]
+  - @agentproto/secrets@1.3.0
+
 ## 0.8.1
 
 ### Patch Changes
