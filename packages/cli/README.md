@@ -161,7 +161,9 @@ busy agent-cli sessions and flags ones that have had no adapter activity for
 longer than this threshold (default 5 minutes, env override
 `AGENTPROTO_TURN_STALL_AFTER_MS`). When tripped, the session descriptor gets a
 `stalledSinceMs` timestamp and the daemon emits a `session:stalled` event —
-surfacing a dead adapter stream without auto-killing or restarting. Set the
+surfacing a dead adapter stream without auto-killing or restarting. If the
+turn produced no output or usage at all since its prompt, the descriptor also
+carries `lastTurnErrorMessage: "no output since prompt — provider retrying?"`. Set the
 threshold to `0` to disable.
 
 **About `strictOrigins`:** by default any browser on `localhost` (any port) is allowed to drive mutating routes — that's what makes Guilde dev / Vite / Storybook all "just work" without per-port config. Set `strictOrigins: true` if you want to lock the daemon down to a literal list (shared host, hardened setup). Note: any local user with shell access can read `runtime.json`'s token regardless of this setting; strict mode only narrows the browser-Origin surface.
