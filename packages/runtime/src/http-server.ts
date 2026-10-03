@@ -220,6 +220,9 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
+import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
+import { computeContextPct } from "./context-continuity.js"
+import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -5367,6 +5370,13 @@ export function buildSpawnSessionHttpArgs(
  *                                    requires sessionEvents + eventRing wired). Query:
  *                                    event=turn-end|awaiting-input|exited|any (default any),
  *                                    since=<cursor>, timeoutMs=<n> (default 25000, cap 55000).
+ *   POST   /sessions/:id/checkpoint → build + persist a context-continuity
+ *                                    checkpoint; body { notes? }; returns
+ *                                    { checkpointId, path, checkpoint }
+ *   POST   /sessions/:id/handoff  → checkpoint + spawn a NEW session on another
+ *                                    harness; body { to, model?, access?,
+ *                                    notes?, dryRun? }; dryRun builds the
+ *                                    checkpoint only (no write, no spawn)
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
  *                                    {pinned: boolean}; returns {ok, sessionId,
@@ -5400,6 +5410,51 @@ export function buildSpawnSessionHttpArgs(
  *                                      location?, baseUrl?, binPath? }
  *                                    (requires `resolveBrowserAdapter` wired)
  */
+/** HTTP status for a `spawnAgentSession` failure code — shared by
+ *  `POST /sessions/agent` and `POST /sessions/:id/handoff`. */
+function spawnFailureStatus(code: string): number {
+  if (code === "adapter_not_found" || code === "no_cwd") return 404
+  if (code === "orchestrator_not_enabled") return 501
+  if (
+    code === "orchestrator_max_depth_exceeded" ||
+    code === "orchestrator_child_quota_exceeded" ||
+    code === "role_spawn_denied"
+  ) {
+    return 409
+  }
+  if (
+    code === "invalid_role" ||
+    code === "browser_unsupported" ||
+    code === "worktree_requires_explicit_repo" ||
+    code === "device_spawn_requires_repo_identity" ||
+    code === "device_bridge_workspace_unknown" ||
+    code === "access_profile_not_found" ||
+    code === "access_profile_ineligible" ||
+    code === "sandbox_cwd_invalid" ||
+    code === "device_spawn_unreachable"
+  ) {
+    return 400
+  }
+  return 500
+}
+
+/** Preconditions shared by `POST /sessions/:id/checkpoint` and `.../handoff`. */
+function checkpointableSession(
+  desc: SessionDescriptor,
+): { status: number; error: string; message: string } | undefined {
+  if (desc.kind !== "agent-cli") {
+    return { status: 400, error: "not_agent_session", message: `session "${desc.id}" is not an agent-cli session` }
+  }
+  if (!desc.contextContinuity) {
+    return {
+      status: 409,
+      error: "no_context_continuity_policy",
+      message: `session "${desc.id}" has no resolved context continuity policy`,
+    }
+  }
+  return undefined
+}
+
 /** Parse the `orchestrator` body field on `POST /sessions/agent` — the
  *  same flexible `boolean | object` shape the MCP `agent_start` tool's
  *  `jsonTolerant` schema accepts, including a JSON-stringified form of
@@ -6097,26 +6152,7 @@ async function handleSessions(
       spawnArgs,
     )
     if (!result.ok) {
-      const status =
-        result.code === "adapter_not_found" || result.code === "no_cwd"
-          ? 404
-          : result.code === "orchestrator_not_enabled"
-            ? 501
-            : result.code === "orchestrator_max_depth_exceeded" ||
-                result.code === "orchestrator_child_quota_exceeded" ||
-                result.code === "role_spawn_denied"
-              ? 409
-              : result.code === "invalid_role" ||
-                result.code === "browser_unsupported" ||
-                result.code === "worktree_requires_explicit_repo" ||
-                result.code === "device_spawn_requires_repo_identity" ||
-                result.code === "device_bridge_workspace_unknown" ||
-                result.code === "access_profile_not_found" ||
-                result.code === "access_profile_ineligible" ||
-                result.code === "sandbox_cwd_invalid" ||
-                result.code === "device_spawn_unreachable"
-                ? 400
-                : 500
+      const status = spawnFailureStatus(result.code)
       json(status, {
         error: result.code,
         message: result.message,
@@ -6729,6 +6765,162 @@ async function handleSessions(
       return true
     }
     json(200, { ok: true, id, ...registry.ackInbox(id, ids) })
+    return true
+  }
+
+  // POST /sessions/:id/checkpoint — build + persist a context-continuity
+  // checkpoint (the REST twin of `session_checkpoint`). Body `{ notes? }`.
+  const checkpointMatch = path.match(/^\/sessions\/([^/]+)\/checkpoint$/)
+  if (checkpointMatch && req.method === "POST") {
+    const id = checkpointMatch[1]
+    if (!id) return false
+    const desc = registry.findByIdOrName(id)
+    if (!desc) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    if (b.notes !== undefined && typeof b.notes !== "string") {
+      json(400, { error: "invalid_notes", message: "notes must be a string" })
+      return true
+    }
+    const gate = checkpointableSession(desc)
+    if (gate) {
+      json(gate.status, { error: gate.error, message: gate.message, id: desc.id })
+      return true
+    }
+    try {
+      const policy = desc.contextContinuity!
+      const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
+      const checkpoint = await buildContextCheckpoint(desc, {
+        contextPct: pct,
+        ...(b.notes ? { notes: b.notes as string } : {}),
+      })
+      await persistCheckpoint(checkpoint)
+      json(200, {
+        ok: true,
+        checkpointId: checkpoint.checkpointId,
+        path: checkpoint.checkpointPath,
+        checkpoint,
+      })
+    } catch (err) {
+      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+  // POST /sessions/:id/handoff — checkpoint :id and spawn a NEW session on
+  // another harness/model/access profile that resumes from it (the REST twin
+  // of `session_continue_fresh`). Body `{ to, model?, access?, notes?,
+  // dryRun? }`. `dryRun: true` builds the checkpoint and the resume prompt
+  // only: nothing is persisted, nothing is spawned, :id is left untouched.
+  const handoffMatch = path.match(/^\/sessions\/([^/]+)\/handoff$/)
+  if (handoffMatch && req.method === "POST") {
+    const id = handoffMatch[1]
+    if (!id) return false
+    const prev = registry.findByIdOrName(id)
+    if (!prev) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    if (typeof b.to !== "string" || b.to.length === 0) {
+      json(400, { error: "to_required", message: "`to` (the target harness slug) is required" })
+      return true
+    }
+    if (b.model !== undefined && (typeof b.model !== "string" || b.model.length === 0)) {
+      json(400, { error: "invalid_model", message: "model must be a non-empty string" })
+      return true
+    }
+    if (b.notes !== undefined && typeof b.notes !== "string") {
+      json(400, { error: "invalid_notes", message: "notes must be a string" })
+      return true
+    }
+    if (b.dryRun !== undefined && typeof b.dryRun !== "boolean") {
+      json(400, { error: "invalid_dry_run", message: "dryRun must be a boolean" })
+      return true
+    }
+    const access = b.access as Record<string, unknown> | undefined
+    if (
+      b.access !== undefined &&
+      (!access || typeof access !== "object" || typeof access.profileRef !== "string" || access.profileRef.length === 0)
+    ) {
+      json(400, { error: "invalid_access", message: "access must be { profileRef: string }" })
+      return true
+    }
+    const gate = checkpointableSession(prev)
+    if (gate) {
+      json(gate.status, { error: gate.error, message: gate.message, id: prev.id })
+      return true
+    }
+    const to = b.to
+    const notes = b.notes as string | undefined
+    if (b.dryRun === true) {
+      try {
+        const policy = prev.contextContinuity!
+        const pct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
+        const checkpoint = await buildContextCheckpoint(prev, {
+          contextPct: pct,
+          ...(notes ? { notes } : {}),
+        })
+        json(200, {
+          ok: true,
+          dryRun: true,
+          continuedFrom: prev.id,
+          to,
+          ...(typeof b.model === "string" ? { model: b.model } : {}),
+          checkpoint,
+          prompt: renderCheckpointPrompt(checkpoint),
+        })
+      } catch (err) {
+        json(500, { error: "handoff_failed", message: err instanceof Error ? err.message : String(err) })
+      }
+      return true
+    }
+    if (!resolveAgentAdapter) {
+      json(501, {
+        error: "handoff_not_enabled",
+        message: "POST /sessions/:id/handoff needs the host to inject `resolveAgentAdapter`.",
+      })
+      return true
+    }
+    try {
+      const result = await continueAgentSessionFresh(
+        {
+          registry,
+          resolveAgentAdapter,
+          buildOrchestratorMcp,
+          daemonMcpUrl,
+          ...(provisionWorktree ? { provisionWorktree } : {}),
+          ...(listCatalogModels ? { listCatalogModels } : {}),
+          ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+          ...(webhookNotifier ? { webhookNotifier } : {}),
+          ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+          ...(listAgentAdapters ? { listAgentAdapters } : {}),
+        },
+        prev,
+        {
+          harness: to,
+          ...(typeof b.model === "string" ? { model: b.model } : {}),
+          ...(access ? { access: { profileRef: access.profileRef as string } } : {}),
+          ...(notes ? { notes } : {}),
+        },
+      )
+      json(201, {
+        ok: true,
+        continuedFrom: result.continuedFrom,
+        continuedTo: result.descriptor.id,
+        checkpointId: result.checkpoint.checkpointId,
+        path: result.checkpoint.checkpointPath,
+        handoff: result.descriptor.handoff,
+        session: sessionDescriptorForHttp(result.descriptor),
+      })
+    } catch (err) {
+      if (err instanceof ContinueFreshSpawnError) {
+        json(spawnFailureStatus(err.code), { error: err.code, message: err.message, ...err.details })
+        return true
+      }
+      json(500, { error: "handoff_failed", message: err instanceof Error ? err.message : String(err) })
+    }
     return true
   }
 

@@ -56,6 +56,7 @@ export type SessionEventType =
   | "workflow:suspended"
   | "workflow:suspend-resumed"
   | "session:harness-warning"
+  | "session:handoff-suggested"
   | "approval:requested"
   | "approval:decided"
   | "approval:consumed"
@@ -936,6 +937,30 @@ export interface SessionHarnessWarningEvent {
   ts: string
 }
 
+/** Why a handoff is being suggested. */
+export type HandoffSuggestionReason = "provider-limit" | "quota-threshold"
+
+/**
+ * Emitted when agentproto SUGGESTS moving a session to another harness:
+ * the provider reported a usage cap (`provider-limit`) or the remaining
+ * quota fell under `contextContinuity.handoffAtQuotaRemaining`
+ * (`quota-threshold`). A suggestion only — nothing is spawned, the user
+ * runs the `command` (`agentproto sessions handoff <id> --to <harness>`)
+ * to switch. `suggestions` lists installed harnesses with usable
+ * credentials (never the source harness); the event is not emitted when
+ * there are none. Same bus distribution as every other lifecycle event
+ * (`session_events_poll`, SSE, webhooks).
+ */
+export interface SessionHandoffSuggestedEvent {
+  type: "session:handoff-suggested"
+  sessionId: string
+  fromHarness: string
+  reason: HandoffSuggestionReason
+  suggestions: Array<{ harness: string; command: string }>
+  label?: string
+  ts: string
+}
+
 /**
  * Emitted by the approvals engine (`approvals/engine.ts`) when an
  * `approval_request` (MCP or `POST /approvals`) raises a new pending
@@ -999,6 +1024,7 @@ export type SessionEvent =
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
+  | SessionHandoffSuggestedEvent
   | SessionWatcherAttachedEvent
   | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent

@@ -57,6 +57,13 @@ export interface ContextContinuityPolicy
   mode?: ContextContinuityMode
   /** Optional display label for UIs. */
   label?: string
+  /** Suggest a cross-harness handoff (`session:handoff-suggested`) once the
+   *  provider-reported remaining quota of the session's auth profile falls to
+   *  or below this number. Same unit as the `remaining` figure
+   *  `usage_rollup` shows per profile (Anthropic's unified rate-limit
+   *  header — a count, not a percentage: the header carries no limit to
+   *  divide by). Unset = disabled. Suggestion only, never a switch. */
+  handoffAtQuotaRemaining?: number
 }
 
 /**
@@ -69,6 +76,8 @@ export interface ResolvedContextContinuityPolicy
   mode: ContextContinuityMode
   /** Effective label (falls back to mode when absent). */
   label: string
+  /** See {@link ContextContinuityPolicy.handoffAtQuotaRemaining}. */
+  handoffAtQuotaRemaining?: number
 }
 
 export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
@@ -138,6 +147,16 @@ function isIntInRange(n: number, min: number, max: number): boolean {
 export function validateContextContinuityPolicy(
   p: Partial<ContextContinuityPolicy>,
 ): ContextContinuityValidationResult {
+  if (
+    p.handoffAtQuotaRemaining !== undefined &&
+    !(Number.isFinite(p.handoffAtQuotaRemaining) && p.handoffAtQuotaRemaining >= 0)
+  ) {
+    return {
+      ok: false,
+      reason: `handoffAtQuotaRemaining must be a number >= 0, got ${p.handoffAtQuotaRemaining}`,
+    }
+  }
+
   const nums: Array<{ key: keyof ContextContinuityThresholds; value: number | undefined }> = [
     { key: "warnAtPct", value: p.warnAtPct },
     { key: "compactAtPct", value: p.compactAtPct },
@@ -191,6 +210,9 @@ function mergePolicyLayer(
     nextStep: override.nextStep ?? base.nextStep,
     config: override.config ?? base.config,
     label: override.label ?? base.label,
+    ...((override.handoffAtQuotaRemaining ?? base.handoffAtQuotaRemaining) !== undefined
+      ? { handoffAtQuotaRemaining: (override.handoffAtQuotaRemaining ?? base.handoffAtQuotaRemaining)! }
+      : {}),
   }
 }
 

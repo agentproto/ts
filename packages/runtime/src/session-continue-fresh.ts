@@ -41,6 +41,19 @@ export interface ContinueAgentSessionFreshResult {
   continuedFrom: string
 }
 
+/** Thrown when the fresh session's spawn is refused; `code` is the
+ *  `spawnAgentSession` failure code so HTTP callers can map it to a status. */
+export class ContinueFreshSpawnError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message)
+    this.name = "ContinueFreshSpawnError"
+  }
+}
+
 export interface ContinueAgentSessionFreshOptions {
   /** Optional policy override for the fresh session. */
   contextContinuity?: import("./context-continuity.js").ContextContinuityPolicy
@@ -208,8 +221,10 @@ export async function continueAgentSessionFresh(
 
   const result: SpawnAgentSessionResult = await spawnAgentSession(deps, spawnInput)
   if (!result.ok) {
-    throw new Error(
+    throw new ContinueFreshSpawnError(
+      result.code,
       `Failed to continue session ${prev.id} fresh: ${result.code} — ${result.message}`,
+      result.details,
     )
   }
 
