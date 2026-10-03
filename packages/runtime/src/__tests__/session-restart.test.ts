@@ -26,6 +26,7 @@ import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type {
   AgentSessionLike,
+  AgentSessionResumer,
   AgentStreamEvent,
   PtyFactory,
   PtyProcess,
@@ -188,6 +189,11 @@ async function buildHarness(
   // exercises directly against `restartAgentSession`). Omitted ⇒ falls
   // through to the real `loadConfig`, unchanged for every other test here.
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>,
+  // The registry's in-place resume hook — the in-place-restart tests below
+  // need it so `triggerResume` actually re-spawns the adapter (every other
+  // test omits it, same as a daemon embedding without the hook: the in-place
+  // attempt then no-ops and the new-id path below is unchanged).
+  resumeAgent?: AgentSessionResumer,
 ): Promise<{
   client: Client
   registry: SessionsRegistry
@@ -200,6 +206,7 @@ async function buildHarness(
     sessionEvents,
     ...(persistPath ? { persistPath } : { persist: false }),
     spawnPty: ptyFactory ?? makeFakePtyFactory(),
+    ...(resumeAgent ? { resumeAgent } : {}),
   })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
 
@@ -1461,6 +1468,396 @@ describe("session_restart — native-resume decline diagnostics", () => {
 
     expect(desc.kind).toBe("agent-cli")
     expect(desc.nativeResumeDecline).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+})
+
+// ── In-place restart (same-id revival) ──────────────────────────────────
+// An ended-but-resumable agent-cli row restarts on the SAME id via the
+// registry's in-place resume primitive (`triggerResume`) — no new row, no
+// continuedFrom/continuedTo chain. The registry's `resumeAgent` hook is
+// wired here (every other describe block omits it, so the in-place attempt
+// no-ops there and the new-id path is unchanged).
+
+describe("session_restart — in-place restart (same-id revival)", () => {
+  function harnessWithResume(
+    resumeAgent: AgentSessionResumer,
+    resolverOpts: Parameters<typeof makeResolver>[0] = {},
+  ) {
+    return buildHarness(resolverOpts, undefined, undefined, undefined, resumeAgent)
+  }
+
+  it("idle-reaped row → same id, sameId:true, no new row in registry.list()", async () => {
+    const resumeCalls: Array<string | undefined> = []
+    const { client, registry, close } = await harnessWithResume(async ({ resumeSessionId }) => {
+      resumeCalls.push(resumeSessionId)
+      return fakeAgentSession("resumed")
+    })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    // reapIdle clears the agentSession binding (unlike kill()) and stamps
+    // the automatic-teardown reason — the row is lazy-resumable again.
+    expect(registry.reapIdle(prev.id)).toBe(true)
+    // Captured BEFORE the restart: a successful in-place resume REFRESHES
+    // `adapterSessionId` onto the new ACP session id.
+    const prevAcpId = prev.adapterSessionId
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).toBe(prev.id)
+    expect(desc.sameId).toBe(true)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.resumeVia).toBe("in-place")
+    expect(desc.status).toBe("running")
+    expect(desc.continuedFrom).toBeUndefined()
+    // The in-place revival re-spawned the adapter off the PRIOR row's
+    // ACP session id — the same id lazy resume-on-prompt would use.
+    expect(resumeCalls).toEqual([prevAcpId])
+    // No new row: the registry still holds exactly the one (revived) row.
+    expect(registry.list()).toHaveLength(1)
+    expect(registry.list()[0]!.id).toBe(prev.id)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("daemon-restart row → same id (a boot-reload ghost: killed + daemon-restart, no binding)", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => fakeAgentSession("resumed"))
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    // A boot reload reclassifies a was-running row to killed +
+    // endedReason:"daemon-restart" and the ghost carries NO binding —
+    // markCrashed reproduces the binding-cleared half, the relabel the
+    // reason half.
+    expect(registry.markCrashed(prev.id)).toBe(true)
+    prev.endedReason = "daemon-restart"
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).toBe(prev.id)
+    expect(desc.sameId).toBe(true)
+    expect(desc.resumeVia).toBe("in-place")
+    expect(registry.list()).toHaveLength(1)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("crashed row → same id", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => fakeAgentSession("resumed"))
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    expect(registry.markCrashed(prev.id)).toBe(true)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).toBe(prev.id)
+    expect(desc.sameId).toBe(true)
+    expect(desc.resumeVia).toBe("in-place")
+    expect(registry.list()).toHaveLength(1)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("in-place resume fails (adapter returns null) → falls back to new id with continuedFrom", async () => {
+    const { client, registry, calls, close } = await harnessWithResume(async () => null)
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.reapIdle(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.continuedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
+    expect(desc.resumeVia).toBe("resumed via ACP")
+    // The fallback re-spawned via the adapter's own session id, as today.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.resumeSessionId).toBe(prev.adapterSessionId)
+    expect(registry.list()).toHaveLength(2)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("in-place resume throws → falls back to new id with continuedFrom", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => {
+      throw new Error("ACP connection closed")
+    })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.reapIdle(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.continuedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("a killed row (stale binding) is NOT falsely revived in place — new-id path unchanged", async () => {
+    // kill() closes the session but deliberately KEEPS the binding, so a
+    // killed row is not lazy-resumable in the same daemon lifetime. The
+    // in-place attempt must not mistake that stale binding for a revival.
+    const { client, registry, close } = await harnessWithResume(async () => {
+      throw new Error("resumeAgent must not be reached for a stale-binding row")
+    })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("override request → new-id path untouched (in-place never attempted)", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => {
+      throw new Error("resumeAgent must not be reached for an override restart")
+    })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.reapIdle(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id, model: "gpt-5" },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
+    expect(desc.model).toBe("gpt-5")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("PTY session → new-id path untouched (never in-place resumable)", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => {
+      throw new Error("resumeAgent must not be reached for a PTY row")
+    })
+
+    const prev = registry.spawnPty({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      argv: ["bash"],
+      cols: 80,
+      rows: 24,
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
+    expect(desc.kind).toBe("terminal")
+    expect(desc.argv).toEqual(["bash"])
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("archived row → new-id path untouched (never in-place resumable)", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => {
+      throw new Error("resumeAgent must not be reached for an archived row")
+    })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.reapIdle(prev.id)
+    expect(registry.archiveSession(prev.id).archived).toBe(true)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("still-alive row → new-id path untouched (in-place is for ended rows only)", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => {
+      throw new Error("resumeAgent must not be reached for a live row")
+    })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("deliberate end (operator-completed) → still restarted IN PLACE — session_restart is an explicit operator action", async () => {
+    // Policy choice (documented in session-restart-core.ts): the
+    // never-revive-deliberate-end guard protects the AUTOMATIC paths
+    // (sentinel + inbound). session_restart is a human asking for THIS
+    // session back, so a deliberate end may still be revived in place when
+    // the row is resumable. (The binding-cleared half is simulated via
+    // reapIdle + relabel — kill() would leave a stale binding, which the
+    // in-place attempt correctly rejects.)
+    const { client, registry, close } = await harnessWithResume(async () => fakeAgentSession("resumed"))
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.reapIdle(prev.id)
+    prev.endedReason = "operator-completed"
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).toBe(prev.id)
+    expect(desc.sameId).toBe(true)
+    expect(desc.resumeVia).toBe("in-place")
+    expect(registry.list()).toHaveLength(1)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("resume-capped row (MAX_RESUME_ATTEMPTS burned) → new-id path untouched", async () => {
+    const { client, registry, close } = await harnessWithResume(async () => null)
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.reapIdle(prev.id)
+    // Burn the resume budget the way three failed in-place attempts would.
+    prev.resumeAttempts = 3
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.resumedFrom).toBe(prev.id)
+    expect(desc.sameId).toBeUndefined()
 
     await close()
     registry.shutdown()

@@ -41,7 +41,8 @@ export interface McpDefaultsConfig {
    *  3 — see `deferred-tools.ts`). Default false/absent: every daemon boot
    *  stays eager, byte-identical to pre-existing behaviour — turning this
    *  on is a deliberate operator opt-in. Independent of the per-role
-   *  default (`RoleProfile.deferredTools`, on for `executor`) and the
+   *  default (`RoleProfile.deferredTools`, on for `executor`), the
+   *  harness default (`nativeToolSearch` ⇒ eager) and the
    *  per-spawn `agent_start.deferredTools` override, and independent of
    *  the per-mount `?deferred=1|0` query override on `/mcp` — this is only
    *  the BOOT-TIME default for connections that specify neither. */

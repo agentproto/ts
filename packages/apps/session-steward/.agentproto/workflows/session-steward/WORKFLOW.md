@@ -53,6 +53,22 @@ inputs:
   callerSessionId:
     type: string
     description: The calling session's id — never a candidate.
+  callerOrigin:
+    type: string
+    description: >-
+      The calling session's origin (`cron:<jobId>`) — an older run of the
+      SAME cron job is never judged as user work.
+  appId:
+    type: string
+    description: >-
+      Installed app whose `app_state` ledger holds the verdict memory.
+      Default `session-steward`.
+  stableVerdictPasses:
+    type: number
+    description: >-
+      Consecutive passes on an unchanged evidence fingerprint before the
+      judge cache stops re-judging a session.
+    default: 2
   userOrigins:
     type: array
     description: >-
@@ -102,6 +118,29 @@ steps:
       Entry-based — splitCandidates. `judge` is ordered most RAM first and
       capped at `maxJudged`.
 
+  - id: hostLoad
+    kind: tool
+    name: Host saturation report (report only)
+    tool: host_load
+    inputs: {}
+
+  - id: liveSessions
+    kind: tool
+    name: List live sessions for the mechanical scan
+    tool: session_list
+    inputs:
+      full: true
+
+  - id: scan
+    kind: transform
+    name: Scan live sessions (busy / idle / terminal / never-ran / excluded)
+    description: Entry-based — scanLive.
+
+  - id: candidatesPlus
+    kind: transform
+    name: Merge never-ran 0/0 sessions into stuck
+    description: Entry-based — mergeNeverRan (never-ran is stuck, never judged).
+
   - id: ruleApplyQueue
     kind: transform
     name: Rule verdicts to apply
@@ -125,10 +164,70 @@ steps:
           verdict: $item.verdict
           note: $item.note
 
+  - id: memoryQueue
+    kind: transform
+    name: Memory read queue
+    description: Entry-based. Empty when no `appId` is configured.
+
+  - id: memoryRead
+    kind: map
+    name: Read the verdict memory ledger (best-effort)
+    over: $steps.memoryQueue
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: memoryReadOne
+        kind: tool
+        tool: app_state_list
+        inputs:
+          appId: $item.appId
+          stage: session-steward
+          kinds: [note]
+          limit: 500
+
+  - id: memory
+    kind: transform
+    name: Fold verdict memory
+    description: Entry-based — foldMemory.
+
+  - id: loopScan
+    kind: map
+    name: Loop sanity per busy session
+    over: $steps.scan.loopQueue
+    parallelism: 4
+    onError: collect
+    steps:
+      - id: loopCallsOne
+        kind: tool
+        tool: tool_calls_list
+        inputs:
+          sessionId: $item.sessionId
+          lastN: 60
+      - id: loopFold
+        kind: transform
+        name: Loop verdict for one session
+
+  - id: loopResults
+    kind: transform
+    name: Loop verdicts
+    description: Entry-based.
+
+  - id: proposals
+    kind: transform
+    name: Nudge proposals (report only — never executed here)
+    description: >-
+      Entry-based — buildProposalsStep: loop → interrupt, stall → continue, at
+      most one per session per pass; a user-origin session is observed only.
+
+  - id: relabelQueue
+    kind: transform
+    name: Terminal sessions missing an outcome (relabel candidates)
+    description: Entry-based — buildRelabelQueue.
+
   - id: evidence
     kind: map
     name: Collect compact evidence per judge candidate
-    over: $steps.candidates.judge
+    over: $steps.candidatesPlus.judge
     parallelism: 4
     onError: collect
     steps:
@@ -140,8 +239,8 @@ steps:
 
   - id: judgeQueue
     kind: transform
-    name: Candidates with evidence
-    description: Entry-based.
+    name: Candidates with evidence minus the stable-verdict cache
+    description: Entry-based — buildJudgeQueueFiltered.
 
   - id: jevQueue
     kind: transform
@@ -247,6 +346,25 @@ steps:
           judgedBy: $item.judgedBy
           note: $item.note
 
+  - id: memoryWriteQueue
+    kind: transform
+    name: Verdict memory events to append
+    description: Entry-based — buildMemoryWriteQueue (a ledger write, never a session action).
+
+  - id: memoryWrite
+    kind: map
+    name: Append verdict memory to app_state (best-effort)
+    over: $steps.memoryWriteQueue
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: memoryWriteOne
+        kind: tool
+        tool: app_state_append
+        inputs:
+          appId: $item.appId
+          event: $item.event
+
   - id: report
     kind: transform
     name: Build the markdown report
@@ -255,23 +373,67 @@ steps:
 result:
   report: $steps.report
   apply: $steps.settings.apply
-  candidates: $steps.candidates
+  candidates: $steps.candidatesPlus
   verdicts: $steps.finalVerdicts
   autoApply: $steps.autoApply
   judgedApply: $steps.judgedApply
+  proposals: $steps.proposals
+  relabel: $steps.relabelQueue
+  scan: $steps.scan
 ---
 
 # Session Steward — `session-steward` workflow
 
-`session_wrapup_plan` → rules pass over `close`/`stuck` → compact evidence per
-`judge` session → one cheap judge turn each → (opt-in) ask the session itself →
-close or flag confident verdicts through `session_wrapup_apply` → markdown
-report with RAM freed / still held.
+`session_wrapup_plan` → deterministic mechanical pass (host saturation, loop /
+stall / never-ran / terminal-relabel scan, verdict memory) → rules pass over
+`close`/`stuck` → compact evidence per `judge` session → one cheap judge turn
+each (cached when the evidence is unchanged) → (opt-in) ask the session itself
+→ close or flag confident verdicts through `session_wrapup_apply` → markdown
+report with proposals, relabel candidates, and RAM freed / still held.
+
+## Mechanical rules (ported from the `kill-idle-sessions` cron prototype)
+
+Every rule below is a pure function in `cron-rules.mjs`, pinned by
+`session-steward-cron-rules.test.ts`:
+
+- **Loop (1).** `tool_calls_list` per busy session: the same argv verbatim ≥3
+  in 10 min, distinct/total < 0.2, or the same file read ≥4 → `looping`, a
+  sub-case of `active`. The proposed action is an **interrupt nudge**, never a
+  close. Useful loops (watch, test/type-check re-runs, `git status`, `gh pr`
+  polling) are excluded.
+- **Stall (2).** Busy > 20 min with no new activity, or a recent
+  `lastTurnErroredAt` on an idle process → a proposed **"continue" nudge**.
+- **Never-ran (3).** `tokensIn === 0 && tokensOut === 0` → `stuck`
+  immediately, without a judge, whatever the idle.
+- **Fast-path done (4).** Last tool call is `message_parent(kind:done)` plus a
+  commit/PR → `done` without a judge (used by the criteria, see below).
+- **Terminal without outcome (5).** Terminal sessions missing an outcome are
+  surfaced as relabel candidates instead of staying invisible.
+- **Re-check at apply (6).** A candidate that became busy before the apply is
+  skipped (the apply tool also re-classifies).
+- **Self-exclusion (7).** An older run of the caller's own `cron:<job>` is
+  never judged as user work.
+- **Explicit 0-candidate report (8).** When nothing is idle, the report says
+  why (`n live, m busy, k terminal, j excluded`).
+- **Host saturation (9).** If `host_load` is critical, the report lists
+  orphans and big non-session processes FIRST — report only, no action.
+- **Verdict memory (10).** Each verdict is written to the app's `app_state`
+  ledger; a session judged the same verdict on an unchanged evidence
+  fingerprint for `stableVerdictPasses` passes is served from cache and not
+  re-judged. Operator disagreements are recorded as examples.
+
+The proposed nudges (interrupt / continue) are **reported only** — this
+workflow never sends a prompt and never closes a `looping` session. At most
+one nudge is proposed per session per pass; a user-origin session is reported
+as observed, never nudged.
 
 ## Safety
 
-- `apply: false` (the default) mutates nothing: every mutating map runs over
-  an empty list.
+- `apply: false` (the default) mutates no SESSION: every session-mutating map
+  runs over an empty list. The one write a dry run performs is the append-only
+  verdict-memory ledger (`app_state_append`) — it never touches a session and
+  is what lets the cache accumulate across passes. Set `appId: ""` to disable
+  it entirely.
 - `session_wrapup_apply` re-classifies each id right before acting and always
   refuses `keep`-class ids; this workflow never feeds it one.
 - Rules only ever close `close`/`stuck` ids; a `keepAlive` session is never

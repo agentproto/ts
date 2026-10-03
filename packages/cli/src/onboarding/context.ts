@@ -17,7 +17,7 @@ import { discoverCredentials } from "@agentproto/runtime/credential-discovery"
 import { readPairingsSnapshot, readHostsSnapshot } from "@agentproto/runtime"
 import { listAuthProfiles } from "@agentproto/auth"
 import { globalNodeModulesDir, probeLoginShellPath } from "../commands/daemon.js"
-import { cliInstallSource } from "../registry/install-source.js"
+import { cliInstallSource, resolveCliEntry } from "../registry/install-source.js"
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
 import { resolveSkillFanOutTargets } from "../commands/install-skill.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
@@ -109,6 +109,7 @@ function realDialWebSocket(url: string, opts: { timeoutMs?: number } = {}): Prom
     const timer = setTimeout(() => finish({ ok: false, via, error: `timed out after ${timeoutMs}ms` }), timeoutMs)
     ws.once("open", onOpen)
     ws.once("error", onError)
+    ws.on("error", () => {})
   })
 }
 
@@ -135,7 +136,7 @@ export function createStepContext(cliVersion: string): StepContext {
       resolveAdapterHandle: async (slug) => (await resolveAdapter(slug)).handle,
       nodeExecPath: () => process.execPath,
       cliInstallSource: () => {
-        const entry = process.argv[1] ?? null
+        const entry = resolveCliEntry(process.argv[1])
         return { source: cliInstallSource(entry), entry }
       },
       resolveAdapterPackage: (slug, fromNode) => {

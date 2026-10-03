@@ -155,7 +155,7 @@ export async function enrichWithRemainingQuota(
 
 /** Project a stored `AuthProfile` down to the minimal shape a quota reader
  *  needs. */
-function toQuotaReadableProfile(profile: AuthProfile): QuotaReadableProfile {
+export function toQuotaReadableProfile(profile: AuthProfile): QuotaReadableProfile {
   return {
     profileRef: profile.id,
     endpoint: profile.endpoint,

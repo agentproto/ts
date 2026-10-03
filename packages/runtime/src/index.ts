@@ -115,7 +115,7 @@ import { loadConfig } from "./config.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { backfillSessionIndexes } from "./session-index.js"
-import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
+import { resolveResumeAuth, restartAgentSession, restartPreferInPlace } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
@@ -185,6 +185,8 @@ import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
 import { createSessionTurnObserver } from "./cron-turn-observer.js"
 import { getAuthProfile } from "@agentproto/auth"
+import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
+import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
@@ -1152,6 +1154,39 @@ function bootResumeConcurrency(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 4
 }
 
+/** Build the dead-session restart hook the routing paths share (PR C).
+ *  An ended-but-resumable agent-cli row is revived IN PLACE (same id) via
+ *  the registry's resume primitive instead of minting a new row — the
+ *  sentinel's re-target then no-ops. The flag splits the callers by INTENT:
+ *   - the SENTINEL is an AUTOMATIC path — a deliberate end
+ *     (operator-completed / steward-*) is never revived in place; it
+ *     falls back to today's new-id restart (and the sentinel's own
+ *     sessionInfo guard routes deliberate ends to the parent / parking
+ *     before this is ever reached).
+ *   - INBOUND (watcher + push router) is a HUMAN writing to the session —
+ *     explicit intent, so a deliberate end may still be revived in place. */
+export function makeRestartForRouting(
+  deps: { sessions: SessionsRegistry; resolveAgentAdapter: AgentAdapterResolver | undefined },
+  config: { name: string; allowDeliberateEnd: boolean },
+): (id: string) => Promise<string> {
+  return async (id: string): Promise<string> => {
+    const desc = deps.sessions.get(id)
+    if (!desc) {
+      throw new Error(`${config.name}: no session "${id}"`)
+    }
+    if (!deps.resolveAgentAdapter) {
+      throw new Error(
+        `${config.name}: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
+      )
+    }
+    const restarted = await restartPreferInPlace(deps.sessions, deps.resolveAgentAdapter, desc, {
+      forceAgentResume: true,
+      allowDeliberateEnd: config.allowDeliberateEnd,
+    })
+    return restarted.desc.id
+  }
+}
+
 export interface CreateGatewayOptions {
   /** Absolute path to the workspace dir. */
   workspace: string
@@ -1995,6 +2030,19 @@ export async function createGateway(
       ? { transcriptDir: defaultTranscriptBaseDir() }
       : {}),
     ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+    ...(opts.listHarnessCapabilities
+      ? { listHarnessCapabilities: opts.listHarnessCapabilities }
+      : {}),
+    // Inert unless a session's `contextContinuity.handoffAtQuotaRemaining`
+    // is set; only then does the live probe (one 1-token call, throttled)
+    // ever run.
+    quotaWatch: {
+      reader: new AnthropicRemainingQuotaReader({ liveProbe: true }),
+      resolveProfile: async ref => {
+        const profile = await getAuthProfile(ref)
+        return profile ? toQuotaReadableProfile(profile) : undefined
+      },
+    },
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
@@ -2517,32 +2565,39 @@ export async function createGateway(
     if (!desc) return false
     return desc.processAlive !== false
   }
-  const restartInboundSession = async (id: string): Promise<string> => {
-    const desc = sessions.get(id)
-    if (!desc) {
-      throw new Error(`restartInboundSession: no session "${id}"`)
-    }
-    if (!opts.resolveAgentAdapter) {
-      throw new Error(
-        `restartInboundSession: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
-      )
-    }
-    const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter, desc, {
-      forceAgentResume: true,
-    })
-    return restarted.desc.id
-  }
+  // Shared restart core (PR C): an ended-but-resumable agent-cli row is
+  // revived IN PLACE (same id) via the registry's resume primitive instead
+  // of minting a new row — the sentinel's re-target below then no-ops.
+  // The flag splits the two callers by INTENT:
+  //   - the SENTINEL is an AUTOMATIC path — a deliberate end
+  //     (operator-completed / steward-*) is never revived in place; it
+  //     falls back to today's new-id restart (and the sentinel's own
+  //     sessionInfo guard routes deliberate ends to the parent / parking
+  //     before this is ever reached).
+  //   - INBOUND (watcher + push router) is a HUMAN writing to the session —
+  //     explicit intent, so a deliberate end may still be revived in place.
+  const restartSentinelSession = makeRestartForRouting(
+    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter },
+    { name: "restartSentinelSession", allowDeliberateEnd: false },
+  )
+  const restartInboundSession = makeRestartForRouting(
+    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter },
+    { name: "restartInboundSession", allowDeliberateEnd: true },
+  )
 
   // Sentinel primitive (AIP-60) — poll/delivery engine over the store +
   // resolver already built above (hoisted so the auto-link hook could use
-  // them before `sessions` existed). Landing reuses the exact same
-  // dead-session hooks the inbound router uses, above.
+  // them before `sessions` existed). Landing reuses the same dead-session
+  // restart hook shape the inbound router uses, above — but with
+  // allowDeliberateEnd:false: the sentinel is an AUTOMATIC path and never
+  // revives a deliberate end in place (its own sessionInfo guard routes
+  // those to the parent / parking first anyway).
   const sentinelRuntime = createSentinelRuntime({
     store: sentinelStore,
     registry: { sendMessage: sessions.sendMessage },
     resolveProvider: resolveSentinelProviderResolved,
     isSessionAlive,
-    restartSession: restartInboundSession,
+    restartSession: restartSentinelSession,
     sessionInfo: id => {
       const desc = sessions.get(id)
       return desc ? { endedReason: desc.endedReason, parentSessionId: desc.parentSessionId } : undefined
@@ -2857,6 +2912,7 @@ export async function createGateway(
       // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a
       // windowed cost-budget governance policy on the spawned session.
       supervisor,
+      taskLedger,
       buildOrchestratorMcp: orchestratorInjector,
       // Same `?callerSessionId=` query that attributes `command_execute` back
       // to the calling session (above) — here it's the implicit auto-parent so

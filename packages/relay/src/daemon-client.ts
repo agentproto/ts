@@ -235,7 +235,7 @@ export async function sendTerminalInput(
         message: `terminal_input: daemon rejected the WebSocket upgrade with HTTP ${res.statusCode}`,
       })
     })
-    ws.once("error", err => {
+    ws.on("error", err => {
       settle({ ok: false, message: err instanceof Error ? err.message : String(err) })
     })
   })

@@ -360,6 +360,8 @@ export function createOrchestratorMcpServerFactory(
       messagingAllowSiblings: deps.messagingAllowSiblings ?? messagingDefaults.allowSiblings,
       messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
       daemonMcpUrl: deps.daemonMcpUrl,
+      ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),
+      ...(deps.taskLedger ? { taskLedger: deps.taskLedger } : {}),
     })
     registerOrchestrationTools(server, {
       registry: deps.registry,

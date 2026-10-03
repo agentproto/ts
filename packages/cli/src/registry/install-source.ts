@@ -12,6 +12,7 @@
  * report — so all of them agree on what "published" vs "workspace" means.
  */
 
+import { realpathSync } from "node:fs"
 import { posix as pathPosix, win32 as pathWin32 } from "node:path"
 
 /** An `npm i -g` install (under a `node_modules`/`.npm` tree) vs a local
@@ -30,6 +31,23 @@ export function cliInstallSource(entry: string | null | undefined): CliInstallSo
   // POSIX and win32-style paths — see describeNodeInstall for the same trick.
   const norm = entry.split("\\").join("/")
   return norm.includes("/node_modules/") || norm.includes("/.npm/") ? "published" : "workspace"
+}
+
+/**
+ * Resolve a CLI entry to its real path before classifying it. A global
+ * `npm i -g` exposes the CLI through a bin symlink (`/usr/local/bin/agentproto`)
+ * that points into `…/node_modules/@agentproto/cli/dist/cli.mjs`; classifying
+ * the symlink itself calls a published install a workspace build. Guarded: a
+ * broken or missing entry falls back to the raw path, so classification still
+ * runs (as "unknown"/"workspace") instead of throwing.
+ */
+export function resolveCliEntry(entry: string | null | undefined): string | null {
+  if (!entry) return null
+  try {
+    return realpathSync(entry)
+  } catch {
+    return entry
+  }
 }
 
 /** Which Node a binary belongs to — enough to tell the user "nvm vs system". */

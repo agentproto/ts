@@ -33,10 +33,9 @@ function wrapped(text: string): string {
   return JSON.stringify({ type: "text", text })
 }
 
-/** The redirect prompt as the model receives it: prefixed with the
- *  "interrupted to deliver this, not a stop" system line. */
-function delivered(text: string, from = "user"): string {
-  return wrapped(`${interruptDeliveryNotice(from)}\n\n${text}`)
+/** A prompt delivered by cutting a turn opens with the "not a stop" notice. */
+function delivered(text: string): string {
+  return wrapped(`${interruptDeliveryNotice("user")}\n\n${text}`)
 }
 
 /** A fake agent-cli session whose first turn hangs until `cancel()`

@@ -9,7 +9,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 
 const resolveSourceSpec = vi.fn()
 const resolveRecipeMethod = vi.fn()
+const getRecipe = vi.fn()
 vi.mock("@agentproto/secrets/provision/recipe", () => ({
+  getRecipe: (...args: unknown[]) => getRecipe(...args),
   resolveSourceSpec: (...args: unknown[]) => resolveSourceSpec(...args),
   resolveRecipeMethod: (...args: unknown[]) => resolveRecipeMethod(...args),
 }))
@@ -52,6 +54,17 @@ describe("verifyLocalLoginPresent (file-based / external login)", () => {
   beforeEach(() => {
     resolveSourceSpec.mockReset()
     resolveRecipeMethod.mockReset()
+    getRecipe.mockReset()
+    getRecipe.mockReturnValue({ id: "recipe" })
+  })
+
+  it("returns without checking when the adapter has no provision recipe (CLI-owned login)", async () => {
+    getRecipe.mockReturnValue(undefined)
+
+    await expect(verifyLocalLoginPresent("copilot-cli", "copilot-cli")).resolves.toBeUndefined()
+    expect(getRecipe).toHaveBeenCalledWith("copilot-cli")
+    expect(resolveRecipeMethod).not.toHaveBeenCalled()
+    expect(resolveSourceSpec).not.toHaveBeenCalled()
   })
 
   it("resolves the recipe and returns void when a login token is present (value discarded)", async () => {

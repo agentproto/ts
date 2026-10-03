@@ -43,6 +43,7 @@ import {
 } from "./resume-strategies.js"
 import {
   restartAgentSession,
+  tryRestartInPlace,
   resolveResumeAuth,
   RestartOverrideError,
   type RestartOverrides,
@@ -76,6 +77,8 @@ import {
 import { buildSessionCapabilities } from "./session-capabilities.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { createCheckpointSources } from "./checkpoint-extract.js"
+import type { TaskLedger } from "./task-ledger.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   compactOutcome,
@@ -107,7 +110,13 @@ import {
   type SessionWrapupEntry,
   type SessionWrapupSignals,
 } from "./session-wrapup.js"
-import { buildSessionEvidence, readRecentTurnsSync } from "./session-evidence.js"
+import {
+  buildSessionEvidence,
+  readLastMessageTimesSync,
+  readRecentToolCallRecordsSync,
+  readRecentTurnsSync,
+  summarizeToolCalls,
+} from "./session-evidence.js"
 import { judgeSessionWithJev, resolveJevApiKey, resolveJevConfig } from "./jev-client.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
@@ -508,6 +517,11 @@ export interface RegisterSessionToolsOptions {
    *  to auto-attach a windowed cost-budget policy for an `agent_start` carrying
    *  `costBudget` (phase 4). See `RegisterAgentToolsOptions.supervisor`. */
   supervisor?: RegisterAgentToolsOptions["supervisor"]
+  /** Task ledger — lets `session_checkpoint` / `session_continue_fresh` fill
+   *  the checkpoint's `nextStep` from the session's open tasks. Optional:
+   *  without it (and without `supervisor` for the last gate result) the
+   *  checkpoint falls back to the transcript alone. */
+  taskLedger?: TaskLedger
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.agentPromptInterrupt`, the unset-default for `interrupt` on
    *  `agent_prompt` / `message_parent`. See
@@ -1043,6 +1057,10 @@ export function registerSessionTools(
     reviewRunner,
     listAgentAdapters,
   } = opts
+  const checkpointSources = createCheckpointSources({
+    ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
+    ...(opts.taskLedger ? { taskLedger: opts.taskLedger } : {}),
+  })
   const ptyEnabled = opts.ptyEnabled === true
   // Point the module-level branch_gc job registry at the injected dir (tests
   // use this to avoid writing into the real home directory). Last write wins.
@@ -1741,6 +1759,24 @@ export function registerSessionTools(
         .string()
         .min(1)
         .describe("Session id or name — from `session_list`."),
+      notes: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe(
+          "Operator notes to carry over verbatim in the checkpoint's `notes` " +
+            "section — decisions, constraints, anything the next session must know."
+        ),
+      askSource: z
+        .boolean()
+        .optional()
+        .describe(
+          "Ask the live source session to summarise itself (goal, decisions, " +
+            "tests, risks, next step) as a short handoff turn before the " +
+            "checkpoint is built. Default true; ignored (falls back to " +
+            "transcript extraction) when the session is dead, busy or doesn't " +
+            "answer within ~60s. Set false to avoid sending the session a prompt."
+        ),
     },
     async input => {
       const desc = registry.findByIdOrName(input.idOrName)
@@ -1783,7 +1819,13 @@ export function registerSessionTools(
         }
       }
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
-      const checkpoint = await buildContextCheckpoint(desc, { contextPct: pct })
+      const checkpoint = await buildContextCheckpoint(desc, {
+        contextPct: pct,
+        registry,
+        sources: checkpointSources,
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.askSource !== undefined ? { askSource: input.askSource } : {}),
+      })
       await persistCheckpoint(checkpoint)
       return {
         content: [
@@ -1794,8 +1836,10 @@ export function registerSessionTools(
                 sessionId: desc.id,
                 checkpointId: checkpoint.checkpointId,
                 checkpointPath: checkpoint.checkpointPath,
+                schemaVersion: checkpoint.schemaVersion,
                 contextPct: checkpoint.contextPct,
                 nextAction: checkpoint.nextAction,
+                handoffTurn: checkpoint.handoffTurn,
               },
               null,
               2,
@@ -1863,6 +1907,24 @@ export function registerSessionTools(
         })
         .optional()
         .describe("Switch the fresh session's billing wallet to a named auth profile."),
+      notes: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe(
+          "Operator notes to carry over verbatim in the checkpoint's `notes` " +
+            "section — decisions, constraints, anything the next session must know."
+        ),
+      askSource: z
+        .boolean()
+        .optional()
+        .describe(
+          "Ask the live source session to summarise itself (goal, decisions, " +
+            "tests, risks, next step) as a short handoff turn before the " +
+            "checkpoint is built. Default true; ignored (falls back to " +
+            "transcript extraction) when the session is dead, busy or doesn't " +
+            "answer within ~60s. Set false to avoid sending the session a prompt."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -1924,6 +1986,9 @@ export function registerSessionTools(
           ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...(input.access !== undefined ? { access: input.access } : {}),
+          ...(input.notes !== undefined ? { notes: input.notes } : {}),
+          ...(input.askSource !== undefined ? { askSource: input.askSource } : {}),
+          sources: checkpointSources,
         })
         return {
           content: [
@@ -3134,7 +3199,10 @@ export function registerSessionTools(
       "turn is currently running on the session and delivering this item as " +
       "the new turn (removing it from the queue). The \"I need this NOW\" op — " +
       "distinct from `session_queue_promote`, which only reorders and lets the " +
-      "current turn finish. No-op (error) if the item is not in the queue. " +
+      "current turn finish. The delivered prompt opens with a one-line " +
+      "`[agentproto]` notice telling the agent its turn was cut to deliver " +
+      "it, not stopped; the rest of the queue drains FIFO once that turn " +
+      "ends on its own. No-op (error) if the item is not in the queue. " +
       "The queueId comes from `session_queue_list`.",
     {
       sessionId: z
@@ -4123,6 +4191,41 @@ export function registerSessionTools(
         }
       }
 
+      // ── In-place restart (same-id revival) ────────────────────────
+      // An ended-but-resumable agent-cli row first tries the registry's own
+      // in-place resume (`triggerResume` — the primitive lazy resume-on-
+      // prompt uses): the conversation comes back on the SAME id, no new
+      // row, no continuedFrom/continuedTo chain. Only when that is
+      //  ineligible (alive / PTY / command / archived / overrides / a
+      // resume-capped row) or the resume doesn't take do we fall through
+      // to today's strategy decision below, unchanged. `allowDeliberateEnd`
+      // is true here: session_restart is an EXPLICIT operator action, so a
+      // deliberate end (operator-completed / steward-*) may still be
+      // revived in place — the never-revive guard protects the AUTOMATIC
+      // path (the sentinel), not a human asking for this session back.
+      const inPlace = await tryRestartInPlace(registry, prev, {
+        allowDeliberateEnd: true,
+      })
+      if (inPlace) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ...publicSessionDescriptor(inPlace),
+                  resumedFrom: prev.id,
+                  resumeVia: "in-place",
+                  sameId: true,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        }
+      }
+
       const augmented = await augmentWithFsResume(prev)
       const strategy = decideRestartStrategy(augmented, {
         preferNativeTerminal: input.preferNativeTerminal === true,
@@ -5006,6 +5109,20 @@ export function registerSessionTools(
         }
       }
       const turns = desc.eventsPath ? readRecentTurnsSync(desc.eventsPath) : []
+      const records = desc.eventsPath ? readRecentToolCallRecordsSync(desc.eventsPath) : []
+      const times = desc.eventsPath ? readLastMessageTimesSync(desc.eventsPath) : {}
+      const lastRecord = records.length > 0 ? records[records.length - 1] : undefined
+      const lastToolCall = lastRecord
+        ? {
+            tool: lastRecord.tool ?? "unknown",
+            ...(lastRecord.command ? { command: lastRecord.command } : {}),
+            ...(lastRecord.ts ? { ts: lastRecord.ts } : {}),
+            ...(lastRecord.isError ? { isError: true } : {}),
+          }
+        : undefined
+      const liveChildren = registry
+        .list({ includeArchived: false })
+        .filter(s => s.parentSessionId === desc.id && (s.status === "running" || s.status === "starting")).length
       let worktree: WorktreeStatusView | undefined
       const scope = sessionWorktreeScope(desc)
       if (scope && listWorktreeStatuses) {
@@ -5016,7 +5133,23 @@ export function registerSessionTools(
           // Best-effort — evidence without the worktree view is still evidence.
         }
       }
-      const evidence = buildSessionEvidence({ desc, turns, ...(worktree ? { worktree } : {}), nowMs: Date.now() })
+      const prState = worktree?.pr?.state ?? null
+      const evidence = buildSessionEvidence({
+        desc,
+        turns,
+        ...(worktree ? { worktree } : {}),
+        nowMs: Date.now(),
+        ...(records.length > 0 ? { toolStats: summarizeToolCalls(records) } : {}),
+        ...(lastToolCall ? { lastToolCall } : {}),
+        liveChildren,
+        ...(times.lastUserAt ? { lastUserAt: times.lastUserAt } : {}),
+        ...(times.lastAgentAt ? { lastAgentAt: times.lastAgentAt } : {}),
+        pullRequests: {
+          opened: desc.openedPrs?.length ?? 0,
+          merged: prState === "merged" ? 1 : 0,
+          state: prState,
+        },
+      })
       return { content: [{ type: "text", text: JSON.stringify(evidence) }] }
     },
   )

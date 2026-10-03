@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   defineProvisionRecipe,
   parseRecipeManifest,
@@ -106,6 +109,30 @@ describe("registry + flavor selection", () => {
     expect(ids).toContain("gemini")
     expect(ids).toContain("opencode")
     expect(ids).toContain("mastracode")
+    expect(ids).toContain("jcode")
+    expect(ids).toContain("mastracode-inprocess")
+  })
+
+  it("jcode recipe points at the CLI's own claude and openai OAuth stores", () => {
+    // Backs jcode's `authSubscription` anthropic/openai surfaces — the runtime
+    // resolves `<provider>-oauth`. Both files hold multi-account arrays, so the
+    // path indexes the first account; the API-key routes never appear there.
+    expect(resolveRecipeMethod("jcode", "anthropic-oauth").method.source).toEqual([
+      { file: "~/.jcode/auth.json", jsonPath: "anthropic_accounts.0.access" },
+      { file: "~/.jcode/auth.json", jsonPath: "anthropic.access" },
+    ])
+    expect(resolveRecipeMethod("jcode", "openai-oauth").method.source).toEqual({
+      file: "~/.jcode/openai-auth.json",
+      jsonPath: "openai_accounts.0.access_token",
+    })
+  })
+
+  it("mastracode-inprocess resolves the same login sources as mastracode, for both providers", () => {
+    for (const methodId of ["anthropic-oauth", "openai-oauth"]) {
+      expect(resolveRecipeMethod("mastracode-inprocess", methodId).method.source).toEqual(
+        resolveRecipeMethod("mastracode", methodId).method.source,
+      )
+    }
   })
 
   it("opencode/mastracode recipes point at each CLI's own anthropic OAuth entry", () => {
@@ -226,6 +253,29 @@ describe("resolveSourceSpec", () => {
         { env: "__DEFINITELY_UNSET_VAR__" },
       ]),
     ).rejects.toThrow(/no credential source resolved/)
+  })
+
+  it("jcode recipe resolves the multi-account and legacy auth.json layouts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "jcode-recipe-"))
+    const multi = join(dir, "auth.json")
+    const legacy = join(dir, "legacy.json")
+    const openai = join(dir, "openai-auth.json")
+    writeFileSync(multi, JSON.stringify({ anthropic_accounts: [{ label: "claude-1", access: "sk-ant-oat-multi" }] }))
+    writeFileSync(legacy, JSON.stringify({ anthropic: { access: "sk-ant-oat-legacy" } }))
+    writeFileSync(openai, JSON.stringify({ openai_accounts: [{ label: "openai-1", access_token: "oa-token" }] }))
+    const chain = (file: string, jsonPaths: string[]) =>
+      jsonPaths.map((jsonPath) => ({ file, jsonPath }))
+    const anthropic = resolveRecipeMethod("jcode", "anthropic-oauth").method.source
+    const paths = (Array.isArray(anthropic) ? anthropic : [anthropic]).map((x) =>
+      "jsonPath" in x ? (x.jsonPath as string) : "",
+    )
+    await expect(resolveSourceSpec(chain(multi, paths))).resolves.toBe("sk-ant-oat-multi")
+    await expect(resolveSourceSpec(chain(legacy, paths))).resolves.toBe("sk-ant-oat-legacy")
+    const o = resolveRecipeMethod("jcode", "openai-oauth").method.source
+    const op = (Array.isArray(o) ? o : [o])[0]
+    await expect(
+      resolveSourceSpec({ file: openai, jsonPath: (op as { jsonPath: string }).jsonPath }),
+    ).resolves.toBe("oa-token")
   })
 
   it.runIf(process.platform === "darwin")(

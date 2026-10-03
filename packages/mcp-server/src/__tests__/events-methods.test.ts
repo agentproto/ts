@@ -1,11 +1,12 @@
 /**
  * Native MCP Events transport (W-C of .plans/sentinel-mcp-events).
  *
- * `discover-exposes-events-capability` is the Contract Map §2 row: the
- * `server/discover` response advertises `events:{}` on the SAME authenticated
- * endpoint as tools. The remaining cases prove the three methods dispatch as
- * NATIVE JSON-RPC methods (not `tools/call`) and that an adapter error's
- * `code` + `data.reason` cross the wire verbatim.
+ * `discover-exposes-events-capability` is the Contract Map §2 row: `events:{}`
+ * is advertised at `initialize` on the SAME authenticated endpoint as tools
+ * (`server/discover` is intentionally unregistered, see events-methods.ts).
+ * The remaining cases prove the three methods dispatch as NATIVE JSON-RPC
+ * methods (not `tools/call`) and that an adapter error's `code` + `data.reason`
+ * cross the wire verbatim.
  */
 
 import { describe, expect, it } from "vitest"
@@ -14,16 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
-import { MCP_EVENTS_PROTOCOL_VERSION, registerEventsMethods, type EventsMethodsHandlers } from "../events-methods.js"
-
-const DiscoverResult = z.object({
-  resultType: z.string(),
-  supportedVersions: z.array(z.string()),
-  capabilities: z.object({
-    tools: z.record(z.string(), z.unknown()).optional(),
-    events: z.record(z.string(), z.unknown()).optional(),
-  }),
-})
+import { registerEventsMethods, type EventsMethodsHandlers } from "../events-methods.js"
 
 const okHandlers = (overrides: Partial<EventsMethodsHandlers> = {}): EventsMethodsHandlers => ({
   list: async () => ({ events: [], nextCursor: null }),
@@ -49,12 +41,28 @@ function request(client: Client, method: string, params?: Record<string, unknown
 
 describe("mcp events native methods", () => {
   it("discover-exposes-events-capability", async () => {
+    const server = new McpServer({ name: "events-test", version: "0.0.0" })
+    registerEventsMethods(server, okHandlers())
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    // Raw initialize: the SDK Client's schema strips the unknown `events` key.
+    const reply = new Promise<{ result?: { capabilities?: Record<string, unknown> } }>(resolve => {
+      clientTransport.onmessage = message => resolve(message as never)
+    })
+    await clientTransport.start()
+    await clientTransport.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "raw", version: "0" } },
+    })
+    expect((await reply).result?.capabilities).toMatchObject({ events: {} })
+    await server.close()
+  })
+
+  it("does not answer server/discover (an unserved protocol era must not be advertised)", async () => {
     const client = await connect(okHandlers())
-    const result = await client.request({ method: "server/discover" } as never, DiscoverResult)
-    expect(result.resultType).toBe("complete")
-    expect(result.supportedVersions).toContain(MCP_EVENTS_PROTOCOL_VERSION)
-    expect(result.capabilities.events).toBeDefined()
-    expect(result.capabilities.tools).toBeDefined()
+    await expect(request(client, "server/discover")).rejects.toMatchObject({ code: -32601 })
     await client.close()
   })
 

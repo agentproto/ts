@@ -44,12 +44,6 @@ function wrapped(text: string): string {
   return JSON.stringify({ type: "text", text })
 }
 
-/** A prompt an interrupt cut the previous turn to deliver carries the
- *  "this is a delivery, not a stop" system line ahead of it. */
-function delivered(text: string, from = "user"): string {
-  return wrapped(`${interruptDeliveryNotice(from)}\n\n${text}`)
-}
-
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer()
@@ -293,7 +287,7 @@ describe("interrupt vs. queue precedence", () => {
 
     expect(events).toEqual([
       `turn1-start:${wrapped("first")}`,
-      `turn2-start:${delivered("second")}`,
+      `turn2-start:${wrapped(`${interruptDeliveryNotice("user")}\n\nsecond`)}`,
     ])
     // Dispatched directly — never touched the queue.
     expect(reg.get(desc.id)?.promptQueue ?? []).toEqual([])
@@ -672,7 +666,7 @@ describe("promote vs deliver — two DISTINCT force operations", () => {
     expect(res).toEqual({ delivered: true, interrupted: true })
     expect(cancelSpy).toHaveBeenCalledTimes(1)
     await waitUntil(() => events.length >= 2)
-    expect(events[1]).toBe(`turn2-start:${delivered("third")}`)
+    expect(events[1]).toBe(`turn2-start:${wrapped(`${interruptDeliveryNotice("user")}\n\nthird`)}`)
     // third is gone from the queue (delivered); second is still waiting.
     expect(reg.get(desc.id)?.promptQueue?.map(p => p.message)).toEqual(["second"])
 

@@ -6,6 +6,12 @@
     "create-agentproto-app",
     "distribute-an-app",
     "app-agent-tools",
-    "no-admin-install"
+    "no-admin-install",
+    "fleets",
+    "handoff",
+    "gates",
+    "cron",
+    "workflows",
+    "sentinels"
   ]
 }

@@ -144,6 +144,53 @@ export const mastracodeRecipe = defineProvisionRecipe({
   ],
 })
 
+/** jcode — two independent OAuth logins from `jcode login --provider claude`
+ *  (Claude Max) and `jcode login --provider openai` (ChatGPT/Codex). Both
+ *  files live under `~/.jcode` on every platform (`jcode_dir()`), and are
+ *  multi-account stores — the check only needs the first account to carry a
+ *  token (`jcode auth status` is the authority on which one is active).
+ *  Layouts read from upstream source (`crates/jcode-base/src/auth/claude.rs`,
+ *  `codex.rs`) and `docs/AUTH_CREDENTIAL_SOURCES.md`: `auth.json` is
+ *  `{anthropic_accounts: [{label, access, refresh, expires}]}` (legacy
+ *  single-account `{anthropic: {access}}` still read), `openai-auth.json` is
+ *  `{openai_accounts: [{label, access_token, refresh_token}]}`. NOT verified
+ *  against a live login. The API-key routes (`anthropic-api`, `openai-api`)
+ *  are separate providers and never appear in these files. */
+export const jcodeRecipe = defineProvisionRecipe({
+  id: "jcode",
+  description:
+    "jcode's Claude Max and ChatGPT subscription OAuth access tokens, read from the CLI's own auth stores (written by `jcode login`).",
+  label: "jcode (Claude/ChatGPT subscription)",
+  methods: [
+    {
+      id: "anthropic-oauth",
+      source: [
+        { file: "~/.jcode/auth.json", jsonPath: "anthropic_accounts.0.access" },
+        { file: "~/.jcode/auth.json", jsonPath: "anthropic.access" },
+      ],
+    },
+    {
+      id: "openai-oauth",
+      source: {
+        file: "~/.jcode/openai-auth.json",
+        jsonPath: "openai_accounts.0.access_token",
+      },
+    },
+  ],
+})
+
+/** mastracode-inprocess — the in-process arm of the same Mastra Code CLI. The
+ *  `external` login check resolves a recipe by ADAPTER id, so the in-process
+ *  adapter needs its own id; it reads the very same mastracode `/login` auth
+ *  store (and the same two methods), so the methods are shared, not copied. */
+export const mastracodeInprocessRecipe = defineProvisionRecipe({
+  id: "mastracode-inprocess",
+  description:
+    "mastracode's Claude Pro/Max and ChatGPT subscription OAuth access tokens, read from the CLI's own auth store, for the in-process mastracode adapter.",
+  label: "mastracode in-process (Claude/ChatGPT subscription)",
+  methods: mastracodeRecipe.methods,
+})
+
 /** Gemini CLI OAuth token written by the local CLI. */
 export const geminiRecipe = defineProvisionRecipe({
   id: "gemini",
@@ -167,4 +214,6 @@ export const BUILTIN_RECIPES: readonly ProvisionRecipe[] = [
   geminiRecipe,
   opencodeRecipe,
   mastracodeRecipe,
+  jcodeRecipe,
+  mastracodeInprocessRecipe,
 ]

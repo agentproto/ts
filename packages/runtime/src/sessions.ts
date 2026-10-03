@@ -52,7 +52,16 @@ import type {
   RouteSpec,
 } from "./session-config.js"
 import type { CostBudget } from "@agentproto/auth"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AdapterCapabilitiesLister, AgentAdapterResolver } from "./http-server.js"
+import type { QuotaReadableProfile, RemainingQuotaReader } from "./remaining-quota.js"
+import {
+  HANDOFF_OPTION_PREFIX,
+  buildHandoffSuggestions,
+  handoffSuggestionLines,
+  harnessDisplayName,
+  listHandoffHarnesses,
+  parseHandoffOption,
+} from "./handoff-suggestion.js"
 import type {
   SessionEventBus,
   SessionAwaitingQuestion,
@@ -1780,8 +1789,8 @@ export interface SessionDescriptor {
   /**
    * Deterministic billing-auth mode + a non-secret credential fingerprint,
    * recorded at spawn time for adapters that resolved an explicit
-   * credential (today: claude-code — see `AgentCliAuth.modes` in
-   * `@agentproto/driver-agent-cli`). The "verifiability" answer to "what
+   * credential (adapters declaring `authSubscription` and/or an API-key
+   * `provider`). The "verifiability" answer to "what
    * was used": `mode` is the resolved `"subscription" | "api-key"`;
    * `fingerprint` is `credentialFingerprint(mode, credential)` — e.g.
    * `"subscription · sk-ant-oat…3f9c"` — NEVER the raw credential. Absent
@@ -2588,6 +2597,14 @@ interface SessionRuntime {
    *  delivered only after a turn that ends on its own — except the one item
    *  `deliverQueuedPrompt` interrupted for (`deliverQueueId`). */
   interruptRequested?: { by: string; deliverQueueId?: string }
+  /** Model-facing line explaining that the previous turn was cut to deliver
+   *  a prompt NOW (deliver-now / `interrupt: true`), set by
+   *  `interruptInFlightTurn` and prepended — once — to the next turn's
+   *  string prompt by `runAgentTurn`. Without it the model only sees its
+   *  turn cancelled then a new prompt, which reads exactly like a human
+   *  Esc/stop, and an agent may park itself waiting for a go-ahead.
+   *  Never set for a bare stop (`interruptSession`), which clears it. */
+  pendingInterruptNotice?: string
   /** In-flight resume promise. Deduplicates concurrent prompt
    *  attempts on a dead agent session — only one resume call hits
    *  the adapter, the rest await this promise. Cleared once
@@ -2597,6 +2614,15 @@ interface SessionRuntime {
    *  Called by kill() best-effort — the descriptor is already flipped
    *  to "killed" before this fires. */
   browserStop?: () => Promise<void>
+  /** Reasons a `session:handoff-suggested` was already emitted for this
+   *  session — each reason fires at most once (a quota-threshold suggestion
+   *  is additionally keyed per window, see `quotaSuggestedResetsAt`). */
+  handoffSuggested?: Set<string>
+  /** `resetsAt` of the quota window a threshold suggestion was last made
+   *  for — a window is only suggested once. */
+  quotaSuggestedResetsAt?: string
+  /** Epoch ms of the last quota read, to throttle the poll. */
+  quotaCheckedAt?: number
   /** Guard: true once session:exited has been emitted to sessionEvents.
    *  Prevents duplicate emissions when both kill() and an OS exit event fire. */
   exitedEmitted?: boolean
@@ -2850,17 +2876,13 @@ const INTERRUPT_CALLER_LABELS: Record<string, string> = {
   deliverQueuedPrompt: "a queue deliver-now (session_queue_deliver)",
 }
 
-/** System line prefixed to the prompt that a daemon interrupt cut a turn to
- *  deliver (deliver-now, `interrupt: true`). The model otherwise sees only a
- *  cancelled turn followed by a new prompt, which it cannot tell apart from a
- *  human pressing Stop, and a supervisor that reads it that way parks itself
- *  waiting for a go-ahead nobody is going to give. `from` is a
- *  `promptOriginLabel`. */
-export function interruptDeliveryNotice(from: string): string {
+/** The line `runAgentTurn` prepends to a prompt delivered by interrupting
+ *  the previous turn — tells the MODEL the cancellation was mechanical, not
+ *  a stop. `origin` is a `promptOriginLabel` ("user", "agent <id>", ...). */
+export function interruptDeliveryNotice(origin: string): string {
   return (
-    `[agentproto] Your previous turn was interrupted to deliver this message immediately ` +
-    `(from ${from}). This is NOT a stop request: handle it, then resume the work you were ` +
-    `doing unless it tells you otherwise.`
+    `[agentproto] Your previous turn was interrupted to deliver this message immediately (from ${origin}). ` +
+    "This is NOT a stop request: resume your work after handling it."
   )
 }
 
@@ -4786,6 +4808,22 @@ export function createSessionsRegistry(opts?: {
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Harness capability lister — the "which installed harness has usable
+   *  credentials" signal behind handoff suggestions (the `handoff:<harness>`
+   *  options of the `ask`-mode context question and the
+   *  `session:handoff-suggested` event). Omitted → nothing is suggested. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
+  /** Proactive quota watch for `contextContinuity.handoffAtQuotaRemaining`:
+   *  the reader + the profile resolver for the session's `accessProfile`.
+   *  Omitted → the threshold is inert. */
+  quotaWatch?: {
+    reader: RemainingQuotaReader
+    resolveProfile: (profileRef: string) => Promise<QuotaReadableProfile | undefined>
+    /** Rolling window to read. Default "5h". */
+    window?: string
+    /** Minimum ms between two reads for one session. Default 5 min. */
+    minIntervalMs?: number
+  }
   /** Optional — best-effort exit-time worktree auto-reclaim, called from
    *  `emitExited` for a session whose `worktreeAutoProvisioned` flag is set
    *  (see that field's doc). Injected by the CLI over `@agentproto/worktree`;
@@ -6506,8 +6544,12 @@ export function createSessionsRegistry(opts?: {
     rt: SessionRuntime,
     id: string,
     caller: string,
-    deliverQueueId?: string
+    deliverQueueId?: string,
+    deliveryOrigin?: string
   ): Promise<void> => {
+    // A bare stop means stop: a delivery notice armed by an earlier
+    // interrupt whose prompt never ran must not ride on the next turn.
+    if (deliveryOrigin === undefined) rt.pendingInterruptNotice = undefined
     // An autonomous turn has no `session/prompt` to cancel (cancelling with
     // none in flight would mark the adapter's session cancelled and swallow
     // the NEXT prompt's result). Close the daemon-side turn; the agent folds
@@ -6529,6 +6571,9 @@ export function createSessionsRegistry(opts?: {
     }
     if (rt.busy) {
       rt.interruptRequested = { by: caller, ...(deliverQueueId ? { deliverQueueId } : {}) }
+      if (deliveryOrigin !== undefined) {
+        rt.pendingInterruptNotice = interruptDeliveryNotice(deliveryOrigin)
+      }
       const held = (rt.desc.promptQueue ?? []).filter(p => p.id !== deliverQueueId).length
       const banner =
         `── turn interrupted by ${INTERRUPT_CALLER_LABELS[caller] ?? caller}` +
@@ -6544,6 +6589,7 @@ export function createSessionsRegistry(opts?: {
       // Nothing was cancelled — the turn will end on its own, so its
       // `finally` must drain the queue as usual.
       rt.interruptRequested = undefined
+      rt.pendingInterruptNotice = undefined
       throw new Error(
         `${caller}: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
           err instanceof Error ? err.message : String(err)
@@ -6567,10 +6613,7 @@ export function createSessionsRegistry(opts?: {
    * is a fresh microtask via the `void (async () => ...)()` below, not
    * a direct recursive call).
    *
-   * `onlyId` dispatches that item instead of the head (deliver-now), and
-   * tells the model its previous turn was cut to deliver it
-   * (`interruptDeliveryNotice`) so the cancel never reads as a Stop. The
-   * delivered turn's own `finally` then resumes the normal FIFO drain.
+   * `onlyId` dispatches that item instead of the head (deliver-now).
    * No-op while another turn is already running — a prompt admitted during
    * the ending turn's awaited `finally` took the slot, and ITS `finally`
    * drains next. Slicing the item off here anyway would only have it
@@ -6594,7 +6637,6 @@ export function createSessionsRegistry(opts?: {
     }
     rt.desc.promptQueue = queue.filter(p => !batch.includes(p))
     schedulePersist()
-    const interruptedFor = onlyId ? promptOriginLabel(next) : undefined
     void (async () => {
       try {
         await maybeResumeAgent(rt)
@@ -6603,9 +6645,8 @@ export function createSessionsRegistry(opts?: {
           await runMessageTurn(
             liveRt,
             batch.map(p => p.envelope!),
-            onlyId ? "interrupt" : "turn",
+            "turn",
             next.source,
-            interruptedFor,
           )
           return
         }
@@ -6616,10 +6657,11 @@ export function createSessionsRegistry(opts?: {
           await answerStructuredQuestion(liveRt, answer)
           return
         }
-        await runAgentTurn(liveRt, next.message, {
-          ...(next.source ? { promptSource: next.source } : {}),
-          ...(interruptedFor !== undefined ? { interruptedFor } : {}),
-        })
+        await runAgentTurn(
+          liveRt,
+          next.message,
+          next.source ? { promptSource: next.source } : undefined
+        )
       } catch (err) {
         appendLine(
           rt,
@@ -6938,6 +6980,7 @@ export function createSessionsRegistry(opts?: {
     // via emitExited, which reads desc.endedReason) so existing
     // session:exited consumers see the row leave "running".
     emitExited(rt)
+    if (providerLimitMessage) void suggestHandoff(rt, "provider-limit", "exit")
     return true
   }
 
@@ -7232,6 +7275,110 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /**
+   * Announce — never perform — a cross-harness handoff: a
+   * `session:handoff-suggested` event plus readable transcript lines carrying
+   * the command in clear. Once per `key` per session; silent when no other
+   * harness is eligible. Best-effort: never throws.
+   */
+  async function suggestHandoff(
+    rt: SessionRuntime,
+    reason: "provider-limit" | "quota-threshold",
+    key: string,
+    quota?: { remaining: number; window: string },
+  ): Promise<void> {
+    try {
+      const tag = `${reason}:${key}`
+      if (rt.handoffSuggested?.has(tag)) return
+      ;(rt.handoffSuggested ??= new Set()).add(tag)
+      const fromHarness = rt.desc.harness ?? rt.desc.adapterSlug ?? "claude-code"
+      const harnesses = await listHandoffHarnesses(fromHarness, opts?.listHarnessCapabilities)
+      if (harnesses.length === 0) return
+      const suggestions = buildHandoffSuggestions(rt.desc.id, harnesses)
+      for (const line of handoffSuggestionLines({
+        sessionId: rt.desc.id,
+        fromHarness,
+        reason,
+        suggestions,
+        ...(quota ? { quota } : {}),
+      })) {
+        appendLine(rt, line, "stderr")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+      }
+      sessionEvents?.emit({
+        type: "session:handoff-suggested",
+        sessionId: rt.desc.id,
+        fromHarness,
+        reason,
+        suggestions,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    } catch {
+      // a suggestion is a courtesy — it must never break the exit/turn path
+    }
+  }
+
+  /** Proactive quota threshold (`contextContinuity.handoffAtQuotaRemaining`):
+   *  suggest once per quota window when the session's auth profile is at or
+   *  under the threshold. Throttled; best-effort. */
+  async function evaluateQuotaHandoff(rt: SessionRuntime): Promise<void> {
+    const watch = opts?.quotaWatch
+    const threshold = rt.desc.contextContinuity?.handoffAtQuotaRemaining
+    const profileRef = rt.desc.accessProfile?.profileRef
+    if (!watch || threshold === undefined || !profileRef || rt.desc.kind !== "agent-cli") return
+    const now = Date.now()
+    if (rt.quotaCheckedAt !== undefined && now - rt.quotaCheckedAt < (watch.minIntervalMs ?? 300_000)) return
+    rt.quotaCheckedAt = now
+    try {
+      const profile = await watch.resolveProfile(profileRef)
+      if (!profile) return
+      const window = watch.window ?? "5h"
+      const quota = await watch.reader.readRemainingQuota(profile, window)
+      if (!quota || quota.remaining > threshold) return
+      if (rt.quotaSuggestedResetsAt === quota.resetsAt) return
+      rt.quotaSuggestedResetsAt = quota.resetsAt
+      await suggestHandoff(rt, "quota-threshold", quota.resetsAt, {
+        remaining: quota.remaining,
+        window: quota.window,
+      })
+    } catch {
+      // best-effort — a failing reader must never break the turn boundary
+    }
+  }
+
+  /** The user picked a `handoff:<harness>` option: the same path as
+   *  `POST /sessions/:id/handoff`. The source session is left running, like
+   *  the explicit verb. */
+  async function performContextHandoff(rt: SessionRuntime, harness: string): Promise<void> {
+    rt.desc.awaitingInput = false
+    rt.desc.awaitingQuestion = undefined
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (pct !== null) rt.desc.contextContinuityAckedAtPct = pct
+    schedulePersist()
+    if (!resolveAgentAdapter) {
+      appendLine(rt, "[context] handoff requested but no adapter resolver is configured", "stderr")
+      return
+    }
+    try {
+      const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
+        harness,
+      })
+      appendLine(
+        rt,
+        `[context] handed off to ${harnessDisplayName(harness)} as ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId})`,
+        "stdout",
+      )
+      schedulePersist()
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] handoff to ${harness} failed: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+  }
+
   async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
     appendLine(
       rt,
@@ -7265,6 +7412,9 @@ export function createSessionsRegistry(opts?: {
       const result = await continueAgentSessionFresh(
         { registry, resolveAgentAdapter },
         rt.desc,
+        // The session is at its context limit: don't spend another turn on
+        // a handoff question, extract from the transcript instead.
+        { askSource: false },
       )
       appendLine(
         rt,
@@ -7326,11 +7476,19 @@ export function createSessionsRegistry(opts?: {
         // `contextContinuityStateForPct`), so it's never suppressed by this.
         const ackedAtPct = rt.desc.contextContinuityAckedAtPct
         if (ackedAtPct !== undefined && pct <= ackedAtPct) return
+        const handoffHarnesses = await listHandoffHarnesses(
+          rt.desc.harness ?? rt.desc.adapterSlug ?? "claude-code",
+          opts?.listHarnessCapabilities,
+        )
         rt.desc.awaitingInput = true
         rt.desc.awaitingQuestion = {
           source: "structured",
           text: `Context is at ${pct}%. Continue fresh to avoid losing continuity?`,
-          options: ["continue-fresh", "keep-going"],
+          options: [
+            "continue-fresh",
+            ...handoffHarnesses.map(h => `${HANDOFF_OPTION_PREFIX}${h}`),
+            "keep-going",
+          ],
         }
         appendLine(
           rt,
@@ -7493,7 +7651,6 @@ export function createSessionsRegistry(opts?: {
     envelopes: readonly SessionMessage[],
     via: MessageDeliveryVia,
     promptSource?: string,
-    interruptedFor?: string,
   ): Promise<void> => {
     const at = new Date().toISOString()
     const turnSeq = (rt.desc.turnsCompleted ?? 0) + 1
@@ -7503,7 +7660,6 @@ export function createSessionsRegistry(opts?: {
     removeFromInbox(rt, new Set(delivered.map(m => m.id)))
     await runAgentTurn(rt, renderSessionMessages(delivered), {
       ...(promptSource ? { promptSource } : {}),
-      ...(interruptedFor !== undefined ? { interruptedFor } : {}),
       messages: delivered,
     })
   }
@@ -7517,15 +7673,7 @@ export function createSessionsRegistry(opts?: {
     // a human operator. Recording-only: never alters turn behavior.
     // `messages` marks a typed-message turn (`runMessageTurn`): `message`
     // is then the rendered envelope tags.
-    // `interruptedFor` (a `promptOriginLabel`) marks a turn that a daemon
-    // interrupt cut the previous turn to deliver — see
-    // `interruptDeliveryNotice`.
-    turnOpts?: {
-      promptSource?: string
-      system?: string
-      messages?: readonly SessionMessage[]
-      interruptedFor?: string
-    }
+    turnOpts?: { promptSource?: string; system?: string; messages?: readonly SessionMessage[] }
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
@@ -7545,19 +7693,6 @@ export function createSessionsRegistry(opts?: {
       // outside an `<agentproto-message>` tag is always the human's.
       message = escapeHumanPrompt(message)
     }
-    if (turnOpts?.interruptedFor !== undefined) {
-      // Outermost system slice, ahead of any preamble composed above, so the
-      // "system is a prefix of the prompt" invariant the transcript relies on
-      // still holds. Block prompts carry it as a leading text block (system
-      // slices are string-only, see `recordPrompt`).
-      const notice = interruptDeliveryNotice(turnOpts.interruptedFor)
-      if (typeof message === "string") {
-        message = `${notice}\n\n${message}`
-        turnOpts = { ...turnOpts, system: turnOpts.system ? `${notice}\n\n${turnOpts.system}` : notice }
-      } else {
-        message = [{ type: "text", text: notice }, ...(Array.isArray(message) ? message : [message])]
-      }
-    }
     // `fyi` messages never wake a session; the next turn it runs anyway
     // opens with a one-line typed digest of them (a `system-prompt` slice,
     // never glued into the human's text), once per message.
@@ -7569,6 +7704,16 @@ export function createSessionsRegistry(opts?: {
         message = `${digest}\n\n${message}`
         turnOpts = { ...turnOpts, system: turnOpts?.system ? `${digest}\n\n${turnOpts.system}` : digest }
       }
+    }
+    // This turn was delivered by cutting the previous one — say so first,
+    // as a `system-prompt` slice, so the model doesn't read the cancel as a
+    // human stop and park. String messages only (same rule as the resume
+    // digest below): a raw content block keeps it for the next string turn.
+    if (rt.pendingInterruptNotice && typeof message === "string") {
+      const notice = rt.pendingInterruptNotice
+      rt.pendingInterruptNotice = undefined
+      message = `${notice}\n\n${message}`
+      turnOpts = { ...turnOpts, system: turnOpts?.system ? `${notice}\n\n${turnOpts.system}` : notice }
     }
     // `if (!title)`, not "on turn 1": every session already running when this
     // shipped has already had its first prompt, so a turn-1-only check would
@@ -7815,6 +7960,7 @@ export function createSessionsRegistry(opts?: {
         recordExitUsageSnapshot(rt)
         schedulePersist()
         emitExited(rt)
+        if (rt.desc.endedReason === "provider-limit") void suggestHandoff(rt, "provider-limit", "exit")
       }
     } finally {
       // Captured BEFORE `busy` flips: the awaits further down this block let
@@ -7962,6 +8108,9 @@ export function createSessionsRegistry(opts?: {
 
         // ── Context-continuity policy evaluation ─────────────────────
         await evaluateContextContinuity(rt)
+        if (opts?.quotaWatch && rt.desc.contextContinuity?.handoffAtQuotaRemaining !== undefined) {
+          await evaluateQuotaHandoff(rt)
+        }
 
         // ── Cost cap (best-effort, turn-granular) ────────────────────
         const overBudget =
@@ -8559,7 +8708,10 @@ export function createSessionsRegistry(opts?: {
     const trimmed = message.trim().toLowerCase()
     const matched = question.options.find(o => o.toLowerCase() === trimmed)
     if (!matched) return undefined
-    const handler = STRUCTURED_QUESTION_HANDLERS[matched.toLowerCase()]
+    const handoffHarness = parseHandoffOption(matched)
+    const handler = handoffHarness
+      ? (r: SessionRuntime) => performContextHandoff(r, handoffHarness)
+      : STRUCTURED_QUESTION_HANDLERS[matched.toLowerCase()]
     if (!handler) return undefined
     return { question, matched, handler }
   }
@@ -9595,9 +9747,8 @@ export function createSessionsRegistry(opts?: {
       // of throwing the busy rejection. Without this, `interrupt` was
       // silently dropped on the blocking path — the caller asked to
       // redirect the session and got a 409 (or, worse, nothing).
-      const interrupted = opts?.interrupt === true && rtPre?.busy === true
-      if (interrupted) {
-        await interruptInFlightTurn(rtPre!, id, "sendPrompt")
+      if (opts?.interrupt && rtPre?.busy) {
+        await interruptInFlightTurn(rtPre, id, "sendPrompt", undefined, promptOriginLabel({ source: opts.source }))
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
@@ -9611,7 +9762,6 @@ export function createSessionsRegistry(opts?: {
       await runAgentTurn(rt, message, {
         ...(opts?.source ? { promptSource: opts.source } : {}),
         ...(opts?.system ? { system: opts.system } : {}),
-        ...(interrupted ? { interruptedFor: promptOriginLabel({ source: opts?.source }) } : {}),
       })
     },
     async enqueuePrompt(id, message, opts) {
@@ -9634,7 +9784,13 @@ export function createSessionsRegistry(opts?: {
       // only ever reached once the prior turn is genuinely over.
       const interrupted = opts?.interrupt === true && rtPre.busy
       if (interrupted) {
-        await interruptInFlightTurn(rtPre, id, "enqueuePrompt")
+        await interruptInFlightTurn(
+          rtPre,
+          id,
+          "enqueuePrompt",
+          undefined,
+          promptOriginLabel({ source: opts?.source, origin: opts?.origin })
+        )
       }
       // Queue arm (additive, opt-in — see this method's doc comment):
       // reached only when the caller explicitly asked to queue AND the
@@ -9676,17 +9832,8 @@ export function createSessionsRegistry(opts?: {
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
-      const interruptedFor = interrupted
-        ? promptOriginLabel({ source: opts?.source, origin: opts?.origin })
-        : undefined
       if (envelope) {
-        void runMessageTurn(
-          rt,
-          [envelope],
-          interrupted ? "interrupt" : "turn",
-          opts?.source,
-          interruptedFor,
-        ).catch(err => {
+        void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
           appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
         })
         return { queued: false }
@@ -9708,10 +9855,7 @@ export function createSessionsRegistry(opts?: {
       // the ring buffer as `[error]` lines so the SSE consumer sees
       // them; admission already succeeded so there's nothing else to
       // report back to the original caller.
-      void runAgentTurn(rt, message, {
-        ...(opts?.source ? { promptSource: opts.source } : {}),
-        ...(interruptedFor !== undefined ? { interruptedFor } : {}),
-      }).catch(err => {
+      void runAgentTurn(rt, message, opts?.source ? { promptSource: opts.source } : undefined).catch(err => {
         appendLine(
           rtPre,
           `[error] ${err instanceof Error ? err.message : String(err)}`,
@@ -9916,7 +10060,7 @@ export function createSessionsRegistry(opts?: {
       if (wasBusy) {
         // Await the cancelled turn actually settling — the interruption is
         // real and delivery is imminent (its finally dispatches the target).
-        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId)
+        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId, promptOriginLabel(item))
         return { delivered: true, interrupted: true }
       }
       dispatchQueuedPrompt(rt)

@@ -13,6 +13,7 @@
  */
 
 import {
+  getRecipe,
   resolveRecipeMethod,
   resolveSourceSpec,
 } from "@agentproto/secrets/provision/recipe"
@@ -51,12 +52,20 @@ export async function resolveClaudeCodeOauthToken(id: string): Promise<string> {
  * (via `resolveRecipeMethod`), which this function turns into the same
  * loud `SubscriptionSourceError` as an unresolved source, never a silent
  * fallback to the wrong provider's login.
+ *
+ * An adapter with NO provision recipe (copilot-cli, antigravity: the login
+ * lives in the OS keyring / a store agentproto can't read) has nothing to
+ * verify against, so this returns without checking — the CLI owns the login
+ * and fails loud itself when it is missing. Only adapters whose own CLI has
+ * no per-token api-key route may declare `external` without a recipe; where
+ * one exists, the recipe is what keeps a leftover key from silently billing.
  */
 export async function verifyLocalLoginPresent(
   recipeId: string,
   adapterSlug: string,
   methodId?: string,
 ): Promise<void> {
+  if (getRecipe(recipeId) === undefined) return
   let token: string
   try {
     const { method } = resolveRecipeMethod(recipeId, methodId)

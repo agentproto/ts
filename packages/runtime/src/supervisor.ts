@@ -396,7 +396,15 @@ export interface PolicyRunState {
    * cannot render a verdict blind to an already-known machine result —
    * see that function's doc for the incident this closes.
    */
-  lastGate?: { exitCode: number; at: string; kind?: "shell" | "judge" | "cost"; stdout?: string; stderr?: string }
+  lastGate?: {
+    exitCode: number
+    at: string
+    kind?: "shell" | "judge" | "cost"
+    /** Shell gates only: the command line that ran (command + args). */
+    command?: string
+    stdout?: string
+    stderr?: string
+  }
   /**
    * Structured judge-gate verdict (WP-D). Set when the gate is a judge gate
    * (`JudgeGateSpec`) and the judge's reply parsed — either a structured JSON
@@ -1426,6 +1434,7 @@ export function createCompletionPolicySupervisor(opts: {
         exitCode: outcome.exitCode,
         at: new Date().toISOString(),
         kind: "shell",
+        command: [input.gate.command, ...(input.gate.args ?? [])].join(" "),
         stdout: truncateForContext(outcome.result.stdout),
         stderr: truncateForContext(outcome.result.stderr),
       }

@@ -24,6 +24,7 @@
 import { boundaryFromMeta } from "./app-boundary.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import type { ContextCheckpoint } from "./context-checkpoint.js"
+import type { CheckpointSources, HandoffAsker } from "./checkpoint-extract.js"
 import { computeContextPct } from "./context-continuity.js"
 import {
   spawnAgentSession,
@@ -38,6 +39,19 @@ export interface ContinueAgentSessionFreshResult {
   descriptor: SessionDescriptor
   checkpoint: ContextCheckpoint
   continuedFrom: string
+}
+
+/** Thrown when the fresh session's spawn is refused; `code` is the
+ *  `spawnAgentSession` failure code so HTTP callers can map it to a status. */
+export class ContinueFreshSpawnError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message)
+    this.name = "ContinueFreshSpawnError"
+  }
 }
 
 export interface ContinueAgentSessionFreshOptions {
@@ -63,6 +77,19 @@ export interface ContinueAgentSessionFreshOptions {
    *  profile fails the spawn with `access_profile_ineligible` rather than
    *  silently landing on a wrong wallet. */
   access?: { profileRef: string }
+  /** Operator notes carried into the checkpoint's `notes` section, verbatim. */
+  notes?: string
+  /** Ask the live source session to summarise itself before the checkpoint is
+   *  built (see `BuildContextCheckpointOptions.askSource`). Default `true`;
+   *  falls back to extraction when the session is dead, busy, slow or
+   *  answers badly. Pass `false` when the session is at its context limit. */
+  askSource?: boolean
+  /** Time the source session gets to answer the handoff turn (default 60s). */
+  askTimeoutMs?: number
+  /** Custom handoff asker, overriding the registry-backed one. */
+  handoffAsker?: HandoffAsker
+  /** Last policy gate / open tasks lookups — `createCheckpointSources(...)`. */
+  sources?: CheckpointSources
 }
 
 function formatAccessForSpawn(desc: SessionDescriptor): { profileRef?: string } | undefined {
@@ -131,7 +158,16 @@ export async function continueAgentSessionFresh(
   }
 
   const contextPct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
-  const checkpoint = await buildContextCheckpoint(prev, { contextPct, baseDir: opts.baseDir })
+  const checkpoint = await buildContextCheckpoint(prev, {
+    contextPct,
+    baseDir: opts.baseDir,
+    registry,
+    ...(opts.notes !== undefined ? { notes: opts.notes } : {}),
+    ...(opts.askSource !== undefined ? { askSource: opts.askSource } : {}),
+    ...(opts.askTimeoutMs !== undefined ? { askTimeoutMs: opts.askTimeoutMs } : {}),
+    ...(opts.handoffAsker ? { handoffAsker: opts.handoffAsker } : {}),
+    ...(opts.sources ? { sources: opts.sources } : {}),
+  })
   await persistCheckpoint(checkpoint)
 
   // Cross-harness handoff (SPEC gap #5): each axis below is independently
@@ -185,8 +221,10 @@ export async function continueAgentSessionFresh(
 
   const result: SpawnAgentSessionResult = await spawnAgentSession(deps, spawnInput)
   if (!result.ok) {
-    throw new Error(
+    throw new ContinueFreshSpawnError(
+      result.code,
       `Failed to continue session ${prev.id} fresh: ${result.code} — ${result.message}`,
+      result.details,
     )
   }
 

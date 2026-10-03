@@ -211,13 +211,50 @@ export async function resolveJevConfig(): Promise<{ model?: string; baseUrl?: st
 export const WRAPUP_VERDICTS = ["done", "abandoned", "blocked", "needs-input", "active"] as const
 export type WrapupVerdict = (typeof WRAPUP_VERDICTS)[number]
 
-/** Same definitions as the agent judge's prompt (session-steward entry.mjs). */
+/**
+ * Concrete, evidence-anchored definitions for the five verdicts. Rewritten
+ * (mission PR 3, point 11) from the original one-liners so a judge can decide
+ * from the enriched `session_evidence` signals instead of a vague impression:
+ * `outcome`, `pullRequests`/`worktree.pr`, `lastToolCall`, `toolStats`,
+ * `lastTurnError`, `awaitingInput`, `liveChildren`, and the newest turns.
+ * Kept in sync with the agent judge's prompt (`session-steward/entry.mjs`).
+ *
+ * The bias is unchanged and deliberate: closing a session that still had work
+ * is worse than leaving an idle one open — when the evidence is thin, choose
+ * `active`.
+ */
 export const WRAPUP_VERDICT_CRITERIA: Readonly<Record<WrapupVerdict, string>> = {
-  done: "The task visibly finished: a PR was opened or merged, a final report was given, or the user said thanks/ok with nothing pending.",
-  abandoned: "Superseded or a dead end, with nothing worth keeping.",
-  blocked: "Waiting on something external (CI, another session, a dependency).",
-  "needs-input": "Waiting on a human answer or decision.",
-  active: "Mid-work — keep it. Also the answer when unsure.",
+  done:
+    "The task is finished and nothing is pending. Concrete signals (ANY): " +
+    "`pullRequests.merged` > 0 or `worktree.pr.state` = \"merged\"; or " +
+    "`pullRequests.opened` > 0 and the last assistant turn is a final report " +
+    "with no open question; or the last tool call is a `message_parent` " +
+    "carrying `kind:\"done\"`; or `outcome.verdict` = \"done\"; or the user's " +
+    "last message is an acknowledgement (\"thanks\"/\"ok\") and the last agent " +
+    "message is not a question. NOT done if the last agent message asks a " +
+    "question or `awaitingInput` is true.",
+  abandoned:
+    "Superseded or a dead end, with nothing worth keeping. Concrete signals: " +
+    "`outcome.verdict` = \"abandoned\"/\"failed\"; or the worktree is gone/merged " +
+    "elsewhere with no open PR and no pending question; or the transcript ends " +
+    "mid-error with no commit/PR. Do not choose this merely because the session " +
+    "is idle or long-running.",
+  blocked:
+    "Waiting on something EXTERNAL, not on a human answer. Concrete signals: " +
+    "a PR is open and CI/review is still pending; or `liveChildren` > 0 (it is " +
+    "waiting on sessions it spawned); or `lastTurnError` names a provider/" +
+    "dependency failure that will clear on its own. A question aimed at the " +
+    "user is `needs-input`, not `blocked`.",
+  "needs-input":
+    "Waiting on a HUMAN answer or decision. Concrete signals: `awaitingInput` " +
+    "is true; or the LAST assistant turn ends in a question to the user/" +
+    "operator; or a prior `wrapupFlag`/`outcome.verdict` = \"needs-input\". " +
+    "Distinguish from `blocked`: the blocker here is a person.",
+  active:
+    "Mid-work — keep it. Concrete signals: `busy` is true; or the last turn is " +
+    "a progress update with no conclusion; or `toolStats` show recent distinct " +
+    "calls; or `previousVerdict` was active and the evidence is unchanged. " +
+    "Also the answer when the evidence is thin or ambiguous — the safe default.",
 }
 
 const VERDICT_QUESTION_KEY = "verdict"

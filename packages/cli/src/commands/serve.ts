@@ -139,7 +139,7 @@ import {
 import { installAdapter } from "../registry/install-driver.js"
 import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
 import { CATALOG } from "../registry/catalog.js"
-import { cliInstallSource } from "../registry/install-source.js"
+import { cliInstallSource, resolveCliEntry } from "../registry/install-source.js"
 import WebSocket from "ws"
 
 interface ServeOpts {
@@ -556,6 +556,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.nativeTerminalResume === true
           ? { nativeTerminalResume: true }
           : {}),
+        ...(adapter.handle.capabilities?.nativeToolSearch === true
+          ? { nativeToolSearch: true }
+          : {}),
       }
     } catch (err) {
       console.warn(
@@ -772,7 +775,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         build: {
           sha: __CLI_BUILD_SHA__,
           builtAt: __CLI_BUILT_AT__,
-          source: cliInstallSource(process.argv[1]),
+          source: cliInstallSource(resolveCliEntry(process.argv[1])),
         },
         // BOOT.md is silly for a tunnel daemon — skip it.
         boot: false,
@@ -1287,6 +1290,9 @@ async function runOneTunnel(
   if (opts.token) headers.authorization = `Bearer ${opts.token}`
 
   const ws = new WebSocket(opts.connect, { headers })
+  // Aborting a CONNECTING socket makes `ws` emit an async 'error' after the dial
+  // listeners are gone; unhandled it crashes the daemon.
+  ws.on("error", () => {})
 
   // Wait for OPEN (or fail).
   await new Promise<void>((resolve, reject) => {
@@ -1301,11 +1307,12 @@ async function runOneTunnel(
     ws.once("open", onOpen)
     ws.once("error", onError)
     if (signal.aborted) {
-      ws.close()
+      ws.terminate()
       reject(new Error("Aborted before WS opened."))
     }
     signal.addEventListener("abort", () => {
-      ws.close()
+      if (ws.readyState === WebSocket.CONNECTING) ws.terminate()
+      else ws.close()
       reject(new Error("Aborted while WS connecting."))
     })
   })
