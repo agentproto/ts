@@ -17,9 +17,30 @@ describe("session-steward app", () => {
   it("loads through loadAppHandle with the expected identity and attachment", async () => {
     const app = await loadAppHandle(APP_DIR)
     expect(app.id).toBe("@agentproto/session-steward")
-    expect(app.agents.map(a => a.agent.id)).toEqual(["@agentproto/session-steward-judge"])
-    expect(app.workflows.map(w => w.id)).toEqual(["session-steward"])
+    expect(app.agents.map(a => a.agent.id)).toEqual([
+      "@agentproto/session-steward-judge",
+      "@agentproto/session-attention-judge",
+    ])
+    expect(app.workflows.map(w => w.id)).toEqual(["session-steward", "session-attention"])
     expect(app.agents[0]!.agent.workflows).toContainEqual({ ref: "session-steward" })
+    expect(app.agents[1]!.agent.workflows).toContainEqual({ ref: "session-attention" })
+  })
+
+  it("session-attention is strictly read-only: three read tools, no mutation, no ledger", async () => {
+    const app = await loadAppHandle(APP_DIR)
+    const workflow = app.workflows.find(w => w.id === "session-attention")!
+    const tools = new Set<string>()
+    const walk = (steps: ReadonlyArray<{ kind: string; tool?: unknown; steps?: unknown }>) => {
+      for (const s of steps) {
+        if (s.kind === "tool" && typeof s.tool === "string") tools.add(s.tool)
+        if (Array.isArray(s.steps)) walk(s.steps as never)
+      }
+    }
+    walk(workflow.steps as never)
+    expect([...tools].sort()).toEqual(["model_roles", "session_evidence", "session_list"])
+    const judge = app.agents.find(a => a.agent.id === "@agentproto/session-attention-judge")!.agent
+    expect(judge.tools).toEqual(["session_evidence"])
+    expect(judge.model).toBe("role:judge.session")
   })
 
   it("scopes the judge's gateway to the one read-only evidence tool", async () => {

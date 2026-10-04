@@ -1,14 +1,25 @@
 ---
 name: session-steward
-description: Wrap up idle agentproto agent sessions — classify them, close the safe ones, judge the ambiguous ones. Use when the user says "clean up idle sessions", "run the steward", "close finished sessions", or asks which sessions are still needed. Dry run by default; closing (--apply) mutates daemon state.
+description: Tell which live agentproto sessions need you (read-only attention digest — the default) or wrap up idle ones (legacy --wrapup). Use when the user says "what needs me", "run the steward", "clean up idle sessions", "close finished sessions", or asks which sessions are still needed. The default mode never mutates daemon state; --wrapup --apply closes/flags sessions.
 ---
 
 # Session Steward
 
-The steward wraps up idle agent sessions. It classifies them with
-`session_wrapup_plan`, closes the rule-certain ones, and sends the ambiguous
-ones through a cheap judge (Jev classifier, fallback: a one-shot LLM agent).
-Dry run by default — nothing is closed unless `--apply`.
+`agentproto steward` has two modes:
+
+- **Attention (default, read-only)** — triage every live session and print a
+  prioritized "what needs you" digest: `needs-reply`, `stuck` (looping /
+  errored / unanswered / never ran), `blocked`, `done` (optionally "waiting
+  on you"), `superseded`, `parked`, `active` (counted, not listed). Each
+  entry has a title, a one-line reason, idle time and a last-message excerpt.
+  Rules decide the certain cases; a one-shot judge
+  (`@agentproto/session-attention-judge`) decides what stays under 0.9
+  confidence and is never allowed to answer `active` for an idle session.
+  It never closes, flags, nudges or messages anything.
+- **Wrap-up (`--wrapup`, legacy)** — classify idle sessions with
+  `session_wrapup_plan`, close the rule-certain ones, and send the ambiguous
+  ones through a cheap judge (Jev classifier, fallback: a one-shot LLM
+  agent). Dry run by default — nothing is closed unless `--apply`.
 
 ## Run it
 
@@ -21,23 +32,36 @@ agentproto steward --wait
 Variants:
 
 ```bash
-agentproto steward --wait                          # dry run: plan + verdicts + report
-agentproto steward --apply --wait                  # close/flag confident verdicts
-agentproto steward --apply --wait --idle 60        # stricter idle threshold (minutes)
-agentproto steward --apply --wait --min-confidence 0.9
-agentproto steward --apply --wait --judge agent    # force the LLM judge lane
-agentproto steward --ask-sessions --wait           # ask low-confidence sessions directly
+agentproto steward --wait                          # attention digest (markdown)
+agentproto steward --wait --format text            # plain-text digest (chat/Telegram-ready)
+agentproto steward --wait --judge rules            # rules only, no model
+agentproto steward --wait --include-children       # also triage executors with a live supervisor
+agentproto steward --wrapup --wait                 # legacy dry run: plan + verdicts + report
+agentproto steward --wrapup --apply --wait         # close/flag confident verdicts
+agentproto steward --wrapup --apply --wait --idle 60
+agentproto steward --wrapup --apply --wait --min-confidence 0.9
+agentproto steward --wrapup --apply --wait --judge agent
+agentproto steward --wrapup --ask-sessions --wait  # ask low-confidence sessions directly
 ```
 
 `--wait` blocks until the report is ready (a run takes ~1-3 min depending on
 candidate count). Without it, poll with `workflow_status` on the returned
 runId.
 
-## Read the report
+## Read the digest (attention)
 
-The final step output is a markdown table: class (close/stuck/judge),
-session label + id, idle time, RAM, verdict, confidence, reason, action.
-Key reading rules:
+The workflow outputs are `report` (markdown), `text` (plain digest, capped
+at 3500 chars), `counts`, `items` and `scan`. Verdicts by urgency:
+`needs-reply` (90), `stuck` (85/75), `blocked` (70), `done` + waiting on you
+(60), `parked` (45), `done` (30), `superseded` (25), `active` (0 — counted,
+never listed). An idle session whose last turn finished is never `active` —
+a final guard rewrites it to `parked`.
+
+## Read the wrap-up report
+
+The wrap-up report is a markdown table: class (close/stuck/judge), session
+label + id, idle time, RAM, verdict, confidence, reason, action. Key reading
+rules:
 
 - `close` rows are safe to auto-close; `judge` rows are what the judge saw.
 - Verdicts: `done|abandoned|blocked|needs-input|active`. Only confident
@@ -67,8 +91,10 @@ before running with `--apply`.
 
 ## Rules
 
-- NEVER run with `--apply` without explicit user go-ahead. Dry run first,
+- The attention mode is read-only — safe to run any time; it never closes,
+  flags, nudges or messages a session.
+- NEVER run `--wrapup --apply` without explicit user go-ahead. Dry run first,
   show the report, then apply.
 - Never judge the calling session — the CLI already excludes it.
-- If a session is mid-turn, busy, or has background tasks, the plan skips
-  it; re-running later is fine and idempotent.
+- If a session is mid-turn, busy, or has background tasks, the wrap-up plan
+  skips it; re-running later is fine and idempotent.

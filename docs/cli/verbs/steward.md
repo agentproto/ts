@@ -1,15 +1,50 @@
 # `agentproto steward`
 
 ```text
-agentproto steward [--apply] [--idle <min>] [--min-confidence <x>]
+agentproto steward [--idle <min>] [--judge <agent|rules>] [--include-children]
+                   [--format <markdown|text>] [--wait] [--json]
+agentproto steward --wrapup [--apply] [--idle <min>] [--min-confidence <x>]
                    [--judge <auto|jev|agent>] [--ask-sessions] [--wait] [--json]
 ```
 
 Convenience shortcut over `agentproto workflow run-file` for the built-in
 [`session-steward` app](../../../packages/apps/session-steward/README.md)'s
-workflow: wrap up idle agent sessions. **Needs a running daemon**
-(`agentproto serve`) — the workflow reads live sessions and its agent judge
-spawns real (one-shot) sessions. **A dry run unless `--apply`.**
+workflows. **Needs a running daemon** (`agentproto serve`) — the workflows read
+live sessions and their agent judges spawn real (one-shot) sessions.
+
+## Default: attention (read-only)
+
+Triage every live session and print a prioritized "what needs you" digest —
+most urgent first. Each entry carries a title (the real one, not the auto
+`chat HH:MM:SS` label), a one-line reason, its idle time and a last-message
+excerpt. Verdicts: `needs-reply`, `stuck` (looping / errored / unanswered /
+never ran), `blocked`, `done` (optionally "waiting on you"), `superseded`,
+`parked` (idle, no question, no error, no conclusion), `active` (busy, or
+finished <10 min ago — counted, not listed). Rules decide the certain cases
+(repeated-sentence loops also on idle sessions, errored last turn,
+`awaitingInput`, `continuedTo`, merged PR, unanswered user message,
+question/ask phrases EN/FR, recorded done outcome, blocker phrases, same-title
+newer sibling); a one-shot judge agent (`@agentproto/session-attention-judge`)
+decides what stays under 0.9 confidence and is never allowed to answer
+`active` for an idle session. **It never closes, flags, nudges or messages
+anything.**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--idle <min>` | `10` | Minutes since last activity before a finished turn counts as waiting. |
+| `--judge <backend>` | `agent` | `agent` (one-shot judge) or `rules` (no model). |
+| `--include-children` | `false` | Also triage executors whose supervisor is still live. |
+| `--format <fmt>` | `markdown` | With `--wait`: the markdown report, or the plain-text digest (chat/Telegram-ready, capped at 3500 chars). |
+| `--wait` | `false` | Block until the run ends, then print the report. Exit `0` when done, `1` when it failed or was cancelled. |
+| `--json` | `false` | Print the raw `workflow_run_file` reply (with `--wait`: the finished run record). |
+
+`--apply`, `--min-confidence` and `--ask-sessions` without `--wrapup` are an
+error — the default mode is read-only.
+
+## Wrap-up mode (`--wrapup`, legacy)
+
+The old behaviour — close or flag idle sessions. **A dry run unless
+`--apply`.**
 
 One run:
 
@@ -55,19 +90,25 @@ Or pass `--wait` to block until it finishes and print the report inline.
 ## Examples
 
 ```bash
-# Dry run: plan + verdicts, print the report
+# What needs me — markdown report
 agentproto steward --wait
 
+# The plain-text digest (chat/Telegram-ready)
+agentproto steward --wait --format text
+
+# Legacy dry run: plan + verdicts, print the report
+agentproto steward --wrapup --wait
+
 # Close / flag confident verdicts
-agentproto steward --apply --wait
+agentproto steward --wrapup --apply --wait
 
 # Stricter: only sessions idle an hour, agent judge, 0.9 confidence
-agentproto steward --apply --idle 60 --judge agent --min-confidence 0.9
+agentproto steward --wrapup --apply --idle 60 --judge agent --min-confidence 0.9
 ```
 
 ## Scheduling it
 
 `packages/apps/session-steward/routines/session-steward-hourly` is an AIP-41
-`ROUTINE.md` template — hourly, `apply: true`, `askSessions: false` — shipped
-`enabled: false`, so nothing starts closing sessions on install. Its own doc
-lists the enabling steps.
+`ROUTINE.md` template — hourly, `apply: true`, `askSessions: false` — the
+legacy wrap-up, shipped `enabled: false`, so nothing starts closing sessions
+on install. Its own doc lists the enabling steps.
