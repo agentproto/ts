@@ -1,5 +1,6 @@
 ---
 "@agentproto/cli": minor
+"@agentproto/runtime": patch
 "@agentproto/apps": minor
 ---
 
