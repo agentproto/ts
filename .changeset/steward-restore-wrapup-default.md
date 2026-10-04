@@ -1,6 +1,7 @@
 ---
 "@agentproto/cli": patch
 "@agentproto/apps": patch
+"@agentproto/runtime": patch
 ---
 
 `agentproto steward` goes back to the end-of-session wrap-up as its default:
