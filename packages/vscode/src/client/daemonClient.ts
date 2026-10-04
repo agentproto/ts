@@ -613,6 +613,17 @@ export class DaemonClient {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/pin`, { pinned })
   }
 
+  /**
+   * Persist a new left-to-right order for the pinned sessions —
+   * `POST /sessions/pinned/order`. `ids` is the FULL desired order of pinned
+   * session ids (not a delta); the daemon appends any newly pinned session to
+   * the end. Same quiet sort/display contract as {@link setPinned}: never
+   * touches keepAlive, the idle-reaper, or emits any notification.
+   */
+  async reorderPinned(ids: string[]): Promise<{ ok: boolean; ids: string[] }> {
+    return this.postJson(`/sessions/pinned/order`, { ids })
+  }
+
   /** Cancel the in-flight turn on a live agent session and leave the
    *  session itself alive and idle — unlike `kill()`, which ends it. */
   async interrupt(id: string): Promise<{ ok: boolean; id: string; wasBusy: boolean }> {

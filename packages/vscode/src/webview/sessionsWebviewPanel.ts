@@ -46,17 +46,22 @@ import {
 import {
   buildFocusViewModel,
   buildSessionsWebviewModel,
+  comparePinned,
   defaultExpandedFor,
   isValidColorIndex,
+  movePinnedId,
+  PINNED_GROUP_KEY,
   subtreeRollup,
   summaryTextFor,
   UNASSIGNED_COLOR_CSS,
   workspaceColorFor,
   WORKSPACE_PALETTE,
   WORKSPACE_PALETTE_NAMES,
+  type PinnedMoveDirection,
   type RailEntry,
   type RowAction,
   type SessionLane,
+  type SessionsWebviewModel,
   type WebviewGroup,
   type WebviewRow,
   type WebviewWorkspace,
@@ -217,6 +222,8 @@ type WebviewToHostMessage =
   | { type: "archive"; id: string }
   | { type: "unarchive"; id: string }
   | { type: "pin"; id: string; pinned: boolean }
+  /** Nudge a pinned root row one slot up/down within the Pinned group. */
+  | { type: "movePinned"; id: string; direction: PinnedMoveDirection }
   | { type: "loadMore" }
   | { type: "toggleArchived" }
   /** Enter the mission view: drill into one root session's whole tree. */
@@ -350,6 +357,10 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private focusRootId: string | undefined
 
   private summaries: SessionSummary[] = []
+  /** The model the last `post()` built — the reorder handlers read the Pinned
+   *  group's displayed root order off it (the operator's own arrangement is the
+   *  input to a move, not a stale snapshot). */
+  private lastModel: SessionsWebviewModel | undefined
   private serverTotal = 0
   private loading = false
   private reloadAfterCurrentRequest = false
@@ -476,6 +487,9 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         return
       case "pin":
         void this.togglePin(msg.id, msg.pinned)
+        return
+      case "movePinned":
+        void this.movePinned(msg.id, msg.direction)
         return
       case "loadMore":
         void this.loadMore()
@@ -609,6 +623,45 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Move a pinned root row one slot within the Pinned group
+   * (`POST /sessions/pinned/order`). The id is swapped with its neighbour in
+   * the group AS LAST PAINTED (so a search/project filter hiding some pins
+   * never makes the button jump over rows the operator can't see), but the
+   * order sent to the daemon is the FULL pinned list, so hidden pins keep
+   * their relative slots. A no-op move (first row up / last row down /
+   * unknown id) skips the round trip. `store.refreshAll` re-fetches the
+   * daemon snapshot, which cascades into `refresh()` so the group repaints in
+   * its new order.
+   */
+  private async movePinned(id: string, direction: PinnedMoveDirection): Promise<void> {
+    const visible = this.pinnedRootIds()
+    const moved = movePinnedId(visible, id, direction)
+    if (moved === visible) return
+    const neighbour = moved[visible.indexOf(id)]!
+    const full = visibleRows(this.store.sessions, this.summaries)
+      .filter(s => s.pinned === true)
+      .sort((a, b) => comparePinned({ pinnedOrder: a.pinnedOrder, session: a }, { pinnedOrder: b.pinnedOrder, session: b }))
+      .map(s => s.id)
+    const i = full.indexOf(id)
+    const j = full.indexOf(neighbour)
+    if (i < 0 || j < 0) return
+    full[i] = neighbour
+    full[j] = id
+    try {
+      await this.client.reorderPinned(full)
+      await this.store.refreshAll()
+    } catch (err) {
+      vscode.window.showErrorMessage(`agentproto: reorder pinned failed — ${describeError(err)}`)
+    }
+  }
+
+  /** Depth-0 row ids of the Pinned group, in the order the last paint displayed them. */
+  private pinnedRootIds(): string[] {
+    const group = this.lastModel?.groups.find(g => g.key === PINNED_GROUP_KEY)
+    return group ? group.rows.filter(r => r.depth === 0).map(r => r.id) : []
+  }
+
   private async loadInitial(): Promise<void> {
     this.summaries = []
     this.serverTotal = 0
@@ -711,6 +764,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       watchedIds: this.watched?.watchedIds,
     }
     const model = buildSessionsWebviewModel(pool, this.filter.workspaces, modelOpts)
+    this.lastModel = model
     const activeSessionId = this.transcriptPanels.activeSessionId()
     const filterActive = this.search.trim().length > 0 || this.project !== null
     const hasMore = this.summaries.length < this.serverTotal
@@ -1064,6 +1118,12 @@ export function buildHtml(nonce: string, cspSource: string): string {
        this row is favorited, same ochre register as "needs you" since pin is
        an intentional operator choice, not an alarm. */
     .abtn.pin.on { color: var(--awaiting); }
+    /* Pinned-group reorder — the same hover-revealed .abtn slot as pin, as a
+       text glyph (same convention as the ⌖ mission-view button) rather than
+       an SVG. Only depth-0 rows of the Pinned group render these; the first
+       row omits "up", the last omits "down". */
+    .abtn.move-up, .abtn.move-down { font-size: 11px; line-height: 1; }
+    /* A depth-0 row of the Pinned group — the reorderable kind. */
     .abtn svg { width: 15px; height: 15px; display: block; }
     .spin { width: 12px; height: 12px; border: 1.5px solid var(--faint); border-top-color: var(--fg); border-radius: 50%; animation: agentproto-rot 0.8s linear infinite; }
     @keyframes agentproto-rot { to { transform: rotate(360deg); } }
@@ -1278,8 +1338,29 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return parts.join('');
       }
 
-      function rowHTML(r, hiddenRow, isCollapsedRow) {
-        var depth = typeof r.depth === 'number' && r.depth > 0 ? r.depth : 0;
+      // A rendered row's indent depth — 0 for a root, +1 per nested ancestor.
+      function rowDepth(r) {
+        return typeof r.depth === 'number' && r.depth > 0 ? r.depth : 0;
+      }
+
+      // Pinned-group reorder buttons — rendered only on depth-0 rows of the
+      // Pinned group, next to the pin button. pos/count are the row's
+      // position among the pinned ROOTS (children inherit their parent's slot
+      // and get no buttons of their own); the first root omits "up", the last
+      // omits "down" so a click can never move a row out of the list.
+      function movePinnedButtons(r, pos, count) {
+        if (pos === undefined) return '';
+        var up = pos > 0
+          ? '<button class="abtn move-up" type="button" title="Move up" aria-label="Move up" data-move-up="' + escapeHtml(r.id) + '" data-action>↑</button>'
+          : '';
+        var down = pos < count - 1
+          ? '<button class="abtn move-down" type="button" title="Move down" aria-label="Move down" data-move-down="' + escapeHtml(r.id) + '" data-action>↓</button>'
+          : '';
+        return up + down;
+      }
+
+      function rowHTML(r, hiddenRow, isCollapsedRow, pinnedPos, pinnedCount) {
+        var depth = rowDepth(r);
         // Inside the mission view a terminated child session (done/stopped/
         // archived) is dimmed but fully legible — reading the dead children is
         // the point of the view. Outside focus mode the section placement
@@ -1315,7 +1396,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           (r.status === 'starting' ? '<span class="chip-starting" title="Starting — the process is up but no agent is attached yet">starting</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + '</span>' : '');
-        var acts = (lastFocus ? '' : focusButton(r, depth)) + pinButton(r) + actionButton(r);
+        var acts = (lastFocus ? '' : focusButton(r, depth)) + pinButton(r) + movePinnedButtons(r, pinnedPos, pinnedCount) + actionButton(r);
         // Indent nested subagents; base padding-left is 12px (see .row CSS).
         var indent = depth > 0 ? ' style="padding-left:' + (12 + depth * 16) + 'px"' : '';
         var wsStyle = r.workspace ? ' style="--ws:' + escapeHtml(r.workspace.css) + '"' : '';
@@ -1342,27 +1423,43 @@ export function buildHtml(nonce: string, cspSource: string): string {
       // can report what the operator can actually SEE. Counting g.rows.length
       // there instead printed "Running 4" over two painted rows — the two
       // missing ones being live sub-agents folded under a collapsed parent.
-      function rowsHTML(rows) {
+      // pinnedRoots is null outside the Pinned group; inside it, a map of
+      // depth-0 row id → its position among the group's roots, plus the root
+      // count — the inputs to movePinnedButtons (which buttons render).
+      function rowsHTML(rows, pinnedRoots) {
         var html = '';
         var shown = 0;
         var hidden = 0;
         var hideFromDepth = null;
         for (var i = 0; i < rows.length; i++) {
           var r = rows[i];
-          var depth = typeof r.depth === 'number' ? r.depth : 0;
+          var depth = rowDepth(r);
           if (hideFromDepth !== null && depth < hideFromDepth) hideFromDepth = null;
           var hiddenRow = hideFromDepth !== null;
           var isCollapsedRow = r.hasChildren && !isRowExpanded(r);
           if (isCollapsedRow && hideFromDepth === null) hideFromDepth = depth + 1;
           if (hiddenRow) hidden += 1; else shown += 1;
-          html += rowHTML(r, hiddenRow, isCollapsedRow);
+          var pos = pinnedRoots && depth === 0 ? pinnedRoots.index[r.id] : undefined;
+          html += rowHTML(r, hiddenRow, isCollapsedRow, pos, pinnedRoots ? pinnedRoots.count : 0);
         }
         return { html: html, shown: shown, hidden: hidden };
       }
 
       function groupHTML(g) {
         var isClosed = collapsed[g.key] === true;
-        var painted = rowsHTML(g.rows);
+        // Only the Pinned group's depth-0 rows are reorderable — number them
+        // here so each knows its slot (and whether it is first/last).
+        var pinnedRoots = null;
+        if (g.key === 'pinned') {
+          var rootIndex = {};
+          var rootCount = 0;
+          for (var i = 0; i < g.rows.length; i++) {
+            var rr = g.rows[i];
+            if (rowDepth(rr) === 0) { rootIndex[rr.id] = rootCount; rootCount++; }
+          }
+          pinnedRoots = { index: rootIndex, count: rootCount };
+        }
+        var painted = rowsHTML(g.rows, pinnedRoots);
         // The headline number never exceeds what is on screen; rows folded
         // under a collapsed parent ride along as a dimmer "+N".
         var countTitle = painted.hidden > 0
@@ -1640,6 +1737,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
             vscode.postMessage({ type: 'pin', id: action.getAttribute('data-pin'), pinned: true });
           } else if (action.hasAttribute('data-unpin')) {
             vscode.postMessage({ type: 'pin', id: action.getAttribute('data-unpin'), pinned: false });
+          } else if (action.hasAttribute('data-move-up')) {
+            vscode.postMessage({ type: 'movePinned', id: action.getAttribute('data-move-up'), direction: 'up' });
+          } else if (action.hasAttribute('data-move-down')) {
+            vscode.postMessage({ type: 'movePinned', id: action.getAttribute('data-move-down'), direction: 'down' });
           } else if (action.hasAttribute('data-focus')) {
             vscode.postMessage({ type: 'focus', id: action.getAttribute('data-focus') });
           }

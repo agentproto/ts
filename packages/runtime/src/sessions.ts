@@ -1573,6 +1573,15 @@ export interface SessionDescriptor {
    *  effects on reaping, notifications, or anything else. Absent (not
    *  `false`) for every session that hasn't been pinned. */
   pinned?: boolean
+  /** Ascending position among pinned sessions — the stored order behind
+   *  the pinned group of the CLI table / VS Code webview list. Set by
+   *  `registry.setPinned` (append-at-end) and `registry.reorderPinned`
+   *  (manual reorder); deleted when the session is unpinned. Absent on
+   *  legacy pinned rows persisted before this field existed — those sort
+   *  after every ordered pinned session (by `startedAt` asc, then id).
+   *  Pure sort/display state, same as `pinned` — never touches the live
+   *  agent, keepAlive, or the idle-reaper. */
+  pinnedOrder?: number
   /** True when the session was spawned under a real PTY (node-pty)
    *  instead of `child_process.spawn`. PTY sessions carry raw ANSI
    *  bytes (alt-screen, key bindings, colors); attach goes through
@@ -2292,6 +2301,9 @@ export interface SessionSummary {
    *  left the session running; see `SessionDescriptor.wrapupFlag`. */
   wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
   pinned?: boolean
+  /** Ascending position among pinned sessions — see
+   *  `SessionDescriptor.pinnedOrder`. */
+  pinnedOrder?: number
   pty?: boolean
   name?: string
   argv?: readonly string[]
@@ -2418,6 +2430,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     archived: desc.archived,
     keepAlive: desc.keepAlive,
     pinned: desc.pinned,
+    pinnedOrder: desc.pinnedOrder,
     pty: desc.pty,
     name: desc.name,
     argv: desc.argv,
@@ -3932,12 +3945,26 @@ export interface SessionsRegistry {
    *  MCP verb / `POST /sessions/:id/pin`). `true` flips
    *  `SessionDescriptor.pinned` on — pure sort/display state for the CLI
    *  table and the VS Code webview's list, which sort a pinned session to
-   *  the top. `false` clears it. Persists via the same `schedulePersist`
-   *  every descriptor mutation uses and emits `session:pinned-changed` so a
+   *  the top. Pinning a session that isn't pinned yet APPENDS it to the
+   *  end of the pinned group (`pinnedOrder` = max pinned order over the
+   *  currently pinned + 1, missing treated as -1); re-pinning an already
+   *  pinned session keeps its order. `false` clears the pin and deletes
+   *  `pinnedOrder`. Persists via the same `schedulePersist` every
+   *  descriptor mutation uses and emits `session:pinned-changed` so a
    *  live UI resorts without waiting for its next snapshot poll. NEVER
    *  touches `keepAlive`, reaper eligibility, or any notification path —
    *  pin is quiet, structural state only. Throws when the id is unknown. */
   setPinned(id: string, pinned: boolean): SessionDescriptor
+  /** Manually reorder the pinned group (the `session_reorder_pinned` MCP
+   *  verb / `POST /sessions/pinned/order`). Every id must exist and be
+   *  pinned — throws `reorderPinned: ...` otherwise (duplicates rejected
+   *  too). Listed ids get `pinnedOrder` 0..n-1 in the given order; every
+   *  other pinned session keeps its relative order and is placed after
+   *  (legacy pinned rows with no `pinnedOrder` sort by `startedAt` asc,
+   *  then id). Persists via `schedulePersist`, emits
+   *  `session:pinned-reordered` on the session event bus, and returns the
+   *  pinned descriptors in their new order. */
+  reorderPinned(ids: string[]): SessionDescriptor[]
   /** Materialize a new artifact (or version of one) into the session's
    *  durable artifact store (`session_artifact_add` MCP verb / `POST
    *  /sessions/:id/artifacts`) — see `session-artifacts.ts`. Emits
@@ -4736,6 +4763,34 @@ export type AgentSessionResumer = (input: {
    *  the original spawn did. */
   onActivity?: () => void
 }) => Promise<AgentSessionLike | null>
+
+/** Pure pinned-order assignment behind `registry.reorderPinned` — split out
+ *  so the ordering is unit-testable without a registry. `pinned` is every
+ *  currently-pinned descriptor (any order); `ids` is the requested new
+ *  order. Listed ids get positions 0..n-1 in the given order; unlisted
+ *  pinned sessions keep their relative order and are placed after, with
+ *  legacy rows (no `pinnedOrder`) sorting by `startedAt` asc then id after
+ *  every ordered row. The caller validates existence/pinnedness/duplicates
+ *  and applies the returned map to the descriptors. */
+export function computePinnedOrder(
+  pinned: readonly SessionDescriptor[],
+  ids: readonly string[],
+): Map<string, number> {
+  const order = new Map<string, number>()
+  ids.forEach((id, i) => order.set(id, i))
+  const unlisted = pinned
+    .filter(s => !order.has(s.id))
+    .sort((a, b) => {
+      const ao = a.pinnedOrder ?? Number.POSITIVE_INFINITY
+      const bo = b.pinnedOrder ?? Number.POSITIVE_INFINITY
+      if (ao !== bo) return ao - bo
+      if (Number.isFinite(ao)) return 0 // both ordered — stable sort keeps their relative order
+      const byStart = a.startedAt.localeCompare(b.startedAt)
+      return byStart !== 0 ? byStart : a.id.localeCompare(b.id)
+    })
+  unlisted.forEach((s, i) => order.set(s.id, ids.length + i))
+  return order
+}
 
 export function createSessionsRegistry(opts?: {
   /** Fires exactly once per NEWLY-recorded opened PR (AIP-60 §6/step 4
@@ -11041,7 +11096,30 @@ export function createSessionsRegistry(opts?: {
     setPinned(id, pinned) {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`setPinned: no session "${id}"`)
-      rt.desc.pinned = pinned
+      if (pinned) {
+        if (rt.desc.pinned !== true) {
+          // Append at the end of the pinned group: one past the max order over
+          // the currently pinned. Legacy pins (no order yet) are numbered first,
+          // in their startedAt order, so the new pin can't land ahead of them.
+          let max = -1
+          const legacy: SessionDescriptor[] = []
+          for (const other of sessions.values()) {
+            if (other.desc.pinned !== true) continue
+            if (other.desc.pinnedOrder === undefined) legacy.push(other.desc)
+            else if (other.desc.pinnedOrder > max) max = other.desc.pinnedOrder
+          }
+          legacy
+            .sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id))
+            .forEach(d => {
+              d.pinnedOrder = ++max
+            })
+          rt.desc.pinnedOrder = max + 1
+        }
+        rt.desc.pinned = true
+      } else {
+        rt.desc.pinned = false
+        delete rt.desc.pinnedOrder
+      }
       schedulePersist()
       sessionEvents?.emit({
         type: "session:pinned-changed",
@@ -11051,6 +11129,34 @@ export function createSessionsRegistry(opts?: {
       })
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    reorderPinned(ids) {
+      const seen = new Set<string>()
+      for (const id of ids) {
+        if (seen.has(id)) throw new Error(`reorderPinned: duplicate session id "${id}"`)
+        seen.add(id)
+        const rt = sessions.get(id)
+        if (!rt) throw new Error(`reorderPinned: no session "${id}"`)
+        if (rt.desc.pinned !== true) {
+          throw new Error(`reorderPinned: session "${id}" is not pinned`)
+        }
+      }
+      const pinned = registry.list({ includeArchived: true }).filter(s => s.pinned === true)
+      const order = computePinnedOrder(pinned, ids)
+      for (const s of pinned) {
+        const rt = sessions.get(s.id)
+        if (rt) rt.desc.pinnedOrder = order.get(s.id)
+      }
+      schedulePersist()
+      sessionEvents?.emit({
+        type: "session:pinned-reordered",
+        ids: [...ids],
+        ts: new Date().toISOString(),
+      })
+      return pinned
+        .slice()
+        .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+        .map(s => sessions.get(s.id)?.desc ?? s)
     },
     addSessionArtifact(id, input) {
       const rt = sessions.get(id)
