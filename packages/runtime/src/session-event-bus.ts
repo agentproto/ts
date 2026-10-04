@@ -39,6 +39,7 @@ export type SessionEventType =
   | "session:config-changed"
   | "session:renamed"
   | "session:pinned-changed"
+  | "session:pinned-reordered"
   | "session:artifact-added"
   | "session:artifact-pinned-changed"
   | "session:message"
@@ -632,6 +633,19 @@ export interface SessionPinnedEvent {
   ts: string
 }
 
+/** Emitted when the pinned group is manually reordered
+ *  (`session_reorder_pinned`, `POST /sessions/pinned/order` →
+ *  `registry.reorderPinned`). `ids` is the requested new order — the full
+ *  pinned order is a `session_list` / `GET /sessions` call away. Rides the
+ *  same bus distribution as every other lifecycle event, which is how a
+ *  live UI learns to resort its pinned group without waiting for its next
+ *  snapshot poll. */
+export interface SessionPinnedReorderedEvent {
+  type: "session:pinned-reordered"
+  ids: string[]
+  ts: string
+}
+
 /**
  * Emitted when a new artifact (or a new version of an existing one) is
  * materialized into the session's artifact store (`session_artifact_add`,
@@ -1038,6 +1052,7 @@ export type SessionEvent =
   | SessionConfigChangedEvent
   | SessionRenamedEvent
   | SessionPinnedEvent
+  | SessionPinnedReorderedEvent
   | SessionArtifactAddedEvent
   | SessionArtifactPinnedEvent
   | SessionMessageEvent

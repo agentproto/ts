@@ -3110,13 +3110,23 @@ function queuedCell(s: SessionDescriptor): string {
   return n > 0 ? `${n} queued` : ""
 }
 
-/** Pinned sessions first, each side keeping its incoming relative order —
- *  a stable sort on a single boolean key (`Array.prototype.sort` is
- *  guaranteed stable since ES2019). Exported for direct unit coverage. */
+/** Pinned sessions first; within the pinned group, the daemon's stored
+ *  `pinnedOrder` asc (missing `pinnedOrder` last — legacy rows keep their
+ *  incoming relative order); the non-pinned group is untouched. A stable
+ *  sort on these keys (`Array.prototype.sort` is guaranteed stable since
+ *  ES2019). Exported for direct unit coverage. */
 export function sortPinnedFirst(rows: readonly SessionDescriptor[]): SessionDescriptor[] {
   return rows
     .slice()
-    .sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0))
+    .sort((a, b) => {
+      const ap = a.pinned === true
+      const bp = b.pinned === true
+      if (ap !== bp) return ap ? -1 : 1
+      if (!ap) return 0
+      const ao = a.pinnedOrder ?? Number.POSITIVE_INFINITY
+      const bo = b.pinnedOrder ?? Number.POSITIVE_INFINITY
+      return ao - bo
+    })
 }
 
 function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void {

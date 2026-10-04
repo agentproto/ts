@@ -5383,6 +5383,14 @@ export function buildSpawnSessionHttpArgs(
  *                                    pinned}. Pure sort/display state — the
  *                                    HTTP twin of the `session_set_pinned`
  *                                    MCP verb, never touches keepAlive/reaper.
+ *   POST   /sessions/pinned/order  → manually reorder the pinned group, body
+ *                                    {ids: string[]}; returns {ok, ids}. Every
+ *                                    id must exist and be pinned (404 unknown,
+ *                                    400 unpinned/duplicate, error
+ *                                    "reorder_pinned_failed"). Unlisted pinned
+ *                                    sessions keep their relative order and
+ *                                    follow. Matched BEFORE the /sessions/:id
+ *                                    routes so "pinned" isn't read as an id.
  *   POST   /sessions/:id/interrupt → cancel the in-flight turn, leave the
  *                                    session alive and idle; returns
  *                                    {ok, id, wasBusy}. No-op (wasBusy:
@@ -7483,6 +7491,31 @@ async function handleSessions(
         error: "spawn_failed",
         message: err instanceof Error ? err.message : String(err),
       })
+    }
+    return true
+  }
+
+  // POST /sessions/pinned/order — manually reorder the pinned group (the
+  // HTTP twin of the `session_reorder_pinned` MCP verb). MUST be matched
+  // before the per-id regex below so "pinned" is not read as a session id.
+  // Body: { ids: string[] } — the desired order; every id must exist and
+  // be pinned. Unlisted pinned sessions keep their relative order and
+  // follow. Pure sort/display state — never touches the live agent,
+  // keepAlive, or the idle-reaper.
+  if (path === "/sessions/pinned/order" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const ids = b.ids
+    if (!Array.isArray(ids) || !ids.every(x => typeof x === "string")) {
+      json(400, { error: "invalid_body", message: "`ids` must be an array of session id strings" })
+      return true
+    }
+    try {
+      registry.reorderPinned(ids)
+      json(200, { ok: true, ids })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 400, { error: "reorder_pinned_failed", message: msg })
     }
     return true
   }
