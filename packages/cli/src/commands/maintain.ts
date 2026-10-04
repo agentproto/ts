@@ -241,7 +241,7 @@ export interface MaintainRunShape {
 	runId: string
 	status: string
 	error?: string
-	output?: { report?: unknown; gaps?: unknown }
+	output?: { report?: unknown; gaps?: unknown; text?: unknown }
 }
 
 /** A run status past which polling is pointless: finished, or parked on a

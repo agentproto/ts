@@ -172,7 +172,7 @@ Usage:
   agentproto workflow  resolve <runId> (--approve|--reject) [--who <name>] [--note <text>]
   agentproto maintain  [--repo <dir>] [--apply-merged] [--json]
                        plan/review (and optionally apply) branch + worktree gc for a repo
-  agentproto steward   [--apply] [--idle <min>] [--min-confidence <x>] [--judge <auto|jev|agent>] [--ask-sessions] [--wait] [--json]
+  agentproto steward   [--wrapup [--apply] [--min-confidence <x>] [--ask-sessions]] [--idle <min>] [--judge <...>] [--include-children] [--format <markdown|text>] [--wait] [--json]
                        judge idle agent sessions, then close or flag them (dry run by default)
   agentproto task      create <title> [--description <text>] [--board-id <id>] [--json]
   agentproto task      list [--board-id <id>] [--status <s>] [--include-closed] [--json]

@@ -42,6 +42,11 @@ tags: [session-steward, sessions, maintenance]
 
 # Session steward — hourly apply
 
+> **Note:** this routine runs the legacy wrap-up — the equivalent of
+> `agentproto steward --wrapup --apply` (workflow `session-steward`). The
+> read-only attention digest is the new default of `agentproto steward`
+> (workflow `session-attention`); it never closes or flags anything.
+
 Runs every hour on the hour (UTC), firing the `session-steward` workflow
 (`../../.agentproto/workflows/session-steward/WORKFLOW.md`) with
 `apply: true` and `askSessions: false`. Every run:
@@ -77,7 +82,8 @@ above are the committed default. A trailing `*` is a prefix wildcard.
 ## Enabling
 
 1. Run it by hand first and read the reports:
-   `agentproto steward --wait` (dry run), then `agentproto steward --apply --wait`.
+   `agentproto steward --wrapup --wait` (dry run), then
+   `agentproto steward --wrapup --apply --wait`.
 2. Copy this directory to `<workspace>/.routines/session-steward-hourly/`.
 3. Set `enabled: true` and point `target.workflow.file` at wherever
    `session-steward/WORKFLOW.md` lives in that environment.
