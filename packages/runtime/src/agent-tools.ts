@@ -520,22 +520,17 @@ export function registerAgentTools(
     "Send a follow-up prompt to a live agent session — multi-turn continuity " +
       "without re-spawning. The session id comes from `agent_start` " +
       "(or `agent_sessions_list`). Returns immediately; tail output via " +
-      "`agent_output` or the SSE /sessions/:id/stream endpoint. If the " +
-      "session is mid-turn: if its adapter supports steering (`steering: true` " +
-      "in `session_list`) the prompt is injected into the running turn " +
-      "(`delivery: \"steered\"`), else queued (FIFO) until the turn ends " +
-      "(`delivery: \"queued-mid-turn\"`, `pending: true`; stale ones show in " +
-      "`session_list`/`session_recap` `pendingPrompts`). `pending: false` means " +
-      "delivered; `true` means NOT yet. `deliverWithin` forces a stuck prompt " +
-      "through. A turn that is " +
-      "interrupted instead leaves the queue parked until the next natural " +
-      "turn-end. Pass `interrupt: true` to " +
-      "cancel the in-flight turn and redirect the SAME session onto this " +
-      "prompt instead, without losing its context (unlike `agent_kill`, " +
-      "which ends the session entirely); the redirected prompt opens with a " +
-      "one-line `[agentproto]` notice telling the agent the cut was a " +
-      "delivery, not a stop, so it resumes its work. `interrupt` is a no-op " +
-      "on an already-idle session.",
+      "`agent_output` or the SSE /sessions/:id/stream endpoint. Mid-turn, " +
+      "the prompt is steered into the running turn when the adapter supports " +
+      "it (`steering: true` in `session_list`; `delivery: \"steered\"`), else " +
+      "queued FIFO until the turn ends (`delivery: \"queued-mid-turn\"`; stale " +
+      "ones show as `pendingPrompts` in `session_list`/`session_recap`). " +
+      "`pending: false` = delivered, `true` = NOT yet; `deliverWithin` forces " +
+      "a stuck one through. An interrupted turn leaves the queue parked until " +
+      "the next natural turn-end. `interrupt: true` cancels the in-flight turn " +
+      "and redirects the SAME session onto this prompt, keeping its context " +
+      "(unlike `agent_kill`); the prompt opens with a one-line `[agentproto]` " +
+      "notice saying the cut was a delivery, not a stop. No-op when idle.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
