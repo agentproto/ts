@@ -15,10 +15,14 @@ overrides:
   postcss: '>=8.5.18'
   nanoid: '>=3.3.18'
   fast-uri: '>=3.1.6'
-  undici: '>=6.28.0 <7.0.0 || >=7.29.0'
+  undici: '>=6.28.0 <7.0.0 || >=7.29.0 || >=8.10.2 <9'
   deepmerge-ts: '>=8.0.0'
   browserslist: '>=4.28.7'
   smol-toml: '>=1.7.1'
+  brace-expansion: '>=2.1.6 || >=5.0.11'
+  basic-ftp: '>=6.2.1'
+
+packageExtensionsChecksum: sha256-y1DXJdllXW+V5PhP3gs8ldfdZE+HBcVETr5ee9fDpNM=
 
 importers:
 
@@ -74,8 +78,8 @@ importers:
         specifier: ^25.9.5
         version: 25.9.5
       ai:
-        specifier: ^6.0.277
-        version: 6.0.277(zod@4.6.5)
+        specifier: ^6.0.300
+        version: 6.0.300(zod@4.6.5)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
@@ -613,7 +617,7 @@ importers:
         version: link:../../packages/tooling
       '@mastra/core':
         specifier: 1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@types/node':
         specifier: ^25.9.5
         version: 25.9.5
@@ -655,13 +659,13 @@ importers:
         version: 3.0.15
       '@mastra/core':
         specifier: ^1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@mastra/libsql':
         specifier: ~1.22.5
-        version: 1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)
+        version: 1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)
       '@mastra/memory':
         specifier: ^1.29.0
-        version: 1.30.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
+        version: 1.30.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.6.5)
@@ -729,10 +733,10 @@ importers:
         version: link:../../packages/provider-kit
       '@mastra/core':
         specifier: 1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       mastracode:
         specifier: 0.39.1
-        version: 0.39.1(@bufbuild/protobuf@2.14.1)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(ws@8.21.3(bufferutil@4.1.0))
+        version: 0.39.1(@bufbuild/protobuf@2.16.0)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(ws@8.21.3(bufferutil@4.1.0))
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -1014,7 +1018,7 @@ importers:
         version: link:../../governance/core
       '@mastra/core':
         specifier: '*'
-        version: 1.64.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.64.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -1229,7 +1233,7 @@ importers:
         version: link:../tooling
       '@mastra/core':
         specifier: 1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@types/node':
         specifier: ^25.9.5
         version: 25.9.5
@@ -1269,7 +1273,7 @@ importers:
         version: link:../tooling
       '@mastra/core':
         specifier: 1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@types/node':
         specifier: ^25.9.5
         version: 25.9.5
@@ -2781,7 +2785,7 @@ importers:
         version: link:../tooling
       '@mastra/core':
         specifier: 1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@types/node':
         specifier: ^25.9.5
         version: 25.9.5
@@ -3833,8 +3837,8 @@ importers:
         specifier: workspace:*
         version: link:../sandbox
       e2b:
-        specifier: ^2.51.0
-        version: 2.51.0
+        specifier: ^2.52.1
+        version: 2.52.1
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -4335,7 +4339,7 @@ importers:
         version: link:../tooling
       '@mastra/core':
         specifier: 1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@types/node':
         specifier: ^25.9.5
         version: 25.9.5
@@ -4604,6 +4608,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/gateway@3.0.209':
+    resolution: {integrity: sha512-CjCBzC35lRZ0LnUYLDfTB92p0Fr1Fu9Wrivc+LI0u3ox/DyZ0wPOHjt8DKBKHD/R4aZ86+JCFFuD9f8MFjAQFg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/google-vertex@3.0.173':
     resolution: {integrity: sha512-K+1ameqlkub4tCZRJLBPJtgyzSsFCIqxW1glvu6YfAHgLyzrGDXK6aFj2YTCbsICbh7pPq6b49FP4qeU65KCqA==}
     engines: {node: '>=18'}
@@ -4676,6 +4686,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@4.0.57':
+    resolution: {integrity: sha512-89a7sPvZqXsP3PigcAQLWntu/duIVEcN/RyChAB+j6p3C7NwW767sVttvL8r0+BetTg63uAXQoYHCZZueQKBSw==}
+    engines: {node: '>=18.17'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider-utils@5.0.13':
     resolution: {integrity: sha512-fScDJMDnTbx32kLDQqp0MvPjvwkgiwvlBxlmIg7XW5PbS91LG6JjH3PQG+34oMFglqfpQA355e24OdGj5PPoDw==}
     engines: {node: '>=22'}
@@ -4692,6 +4708,10 @@ packages:
 
   '@ai-sdk/provider@3.0.15':
     resolution: {integrity: sha512-XeZW1CcDF2GMbH4wejW6xBRI2QCOgnkVYUnxoeDadB1mf85riL2bMUeDoh+6gJ/r4mjNfzUPW8OjLjvwTP0u1Q==}
+    engines: {node: '>=18'}
+
+  '@ai-sdk/provider@3.0.18':
+    resolution: {integrity: sha512-IpefF5ssZVOZCD4Wu7zxt6PwZoGT2HLVjxpJ10Bjx6EAmRfLYJPjyrfxb0RYDlwvXnDb9nkQ7Do/oJVDuRFzew==}
     engines: {node: '>=18'}
 
   '@ai-sdk/provider@4.0.4':
@@ -5121,8 +5141,8 @@ packages:
       puppeteer-core:
         optional: true
 
-  '@bufbuild/protobuf@2.14.1':
-    resolution: {integrity: sha512-agRJn3+EJDUe8AvxTx/LnHA/GErvLE62pSaSk7+MwFOtOv8eWBu/qCq2qoZjBjVZ3C2aiFJCveuSs17KMkYGOw==}
+  '@bufbuild/protobuf@2.16.0':
+    resolution: {integrity: sha512-FWa0sPlqYGJgpTs6OxBRcL/AW4JT0OIO+W1ajerluoTVh8CV0B7XM1qsNCRgnkSCkRCgOICKHRQlY17jrsm0+Q==}
 
   '@changesets/apply-release-plan@7.1.1':
     resolution: {integrity: sha512-9qPCm/rLx/xoOFXIHGB229+4GOL76S4MC+7tyOuTsR6+1jYlfFDQORdvwR5hDA6y4FL2BPt3qpbcQIS+dW85LA==}
@@ -6684,6 +6704,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  ai@6.0.300:
+    resolution: {integrity: sha512-ZBT30eQTy6exP+EWJJxm3DMb34m9td8STy+hfnvKdjhyEQoM8vQN5YfFLTRVVTCONHoM+y5K+Tudb6PTFrpikA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   ajv-formats@3.0.1:
     resolution: {integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==}
     peerDependencies:
@@ -6792,9 +6818,6 @@ packages:
   bail@2.0.2:
     resolution: {integrity: sha512-0xO6mYd7JB2YesxDKplafRpsiOzPt9V02ddPCLbY1xYGPOX24NTyN50qnUxgCPcSoYMhKpAuBTjQoRZCAkUDRw==}
 
-  balanced-match@1.0.2:
-    resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
-
   balanced-match@4.0.4:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
@@ -6844,8 +6867,8 @@ packages:
     engines: {node: '>=6.0.0'}
     hasBin: true
 
-  basic-ftp@5.3.1:
-    resolution: {integrity: sha512-bopVNp6ugyA150DDuZfPFdt1KZ5a94ZDiwX4hMgZDzF+GttD80lEy8kj98kbyhLXnPvhtIo93mdnLIjpCAeeOw==}
+  basic-ftp@6.2.2:
+    resolution: {integrity: sha512-LIkJcf/F6bTTfvE3k2YcTxrJsLKKVXiEpHZYkQP6JoqTb7khng7c13ckRTDQbqRh5IkehVH3F00sSlAa2F6DwA==}
     engines: {node: '>=10.0.0'}
 
   before-after-hook@4.0.0:
@@ -6873,9 +6896,6 @@ packages:
 
   bowser@2.14.1:
     resolution: {integrity: sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==}
-
-  brace-expansion@2.1.4:
-    resolution: {integrity: sha512-hGfVzPxthbf3+2yjg/RBs60cB0FhqBS/zvdV/4wn4/BmN0bNMMHPc4V/BbFieqf1TKAGGAHnY4eSjajCl0f2Xg==}
 
   brace-expansion@5.0.9:
     resolution: {integrity: sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==}
@@ -7274,8 +7294,8 @@ packages:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
     engines: {node: '>= 0.4'}
 
-  e2b@2.51.0:
-    resolution: {integrity: sha512-P+50lx1nOYpgCFyE1xuz6JVN/TqJivMUiH7v+RW0CUSfb4+NCu8IkC5KruT2sNPgp6aexddQQ77+OZKGpZZJ+Q==}
+  e2b@2.52.1:
+    resolution: {integrity: sha512-qbX0s6qV2gfN4/+NBTIli1hkztfH/1kL4AEAYTaP4wjx7dp2m2wnXcN35iz+8Gug0q4TPN9w4xbdw/TGJr/Bpw==}
     engines: {node: '>=20.18.1 <21 || >=22'}
 
   eastasianwidth@0.2.0:
@@ -8424,11 +8444,11 @@ packages:
       zod:
         optional: true
 
-  openapi-fetch@0.14.1:
-    resolution: {integrity: sha512-l7RarRHxlEZYjMLd/PR0slfMVse2/vvIAGm75/F7J6MlQ8/b9uUQmUF2kCPrQhJqMXSxmYWObVgeYXbFYzZR+A==}
+  openapi-fetch@0.17.0:
+    resolution: {integrity: sha512-PsbZR1wAPcG91eEthKhN+Zn92FMHxv+/faECIwjXdxfTODGSGegYv0sc1Olz+HYPvKOuoXfp+0pA2XVt2cI0Ig==}
 
-  openapi-typescript-helpers@0.0.15:
-    resolution: {integrity: sha512-opyTPaunsklCBpTK8JGef6mfPhLSnyy5a0IN9vKtx3+4aExf+KxEqYwIy3hqkedXIB97u357uLMJsOnm3GVjsw==}
+  openapi-typescript-helpers@0.1.0:
+    resolution: {integrity: sha512-OKTGPthhivLw/fHz6c3OPtg72vi86qaMlqbJuVJ23qOvQ+53uw1n7HdmkJFibloF7QEjDrDkzJiOJuockM/ljw==}
 
   outdent@0.5.0:
     resolution: {integrity: sha512-/jHxFIzoMXdqPzTaCpFzAAWhpkSjZPF4Vsn6jAfNpmbH/ymsmd7Qc6VE9BGn0L6YMj6uwpQLxCECpus4ukKS9Q==}
@@ -9284,12 +9304,12 @@ packages:
     resolution: {integrity: sha512-HvltHd7avK13QIw/oLe4qoOLyoVSoafqJ2jYOrtMRBkbYT31eiBQ8O0ehRKZiEZCMEyLFQNIADpgCWC5fALvYQ==}
     engines: {node: '>=22.19.0'}
 
-  undici@8.10.1:
-    resolution: {integrity: sha512-YQ3WlbqjYMmNpdvDH64jAgLjxuAR9+649calDWhbshYaeQGO2bR4nI94ORJmwI3J9YhoKQnpyGOK+0zlWS5N5Q==}
-    engines: {node: '>=22.19.0'}
-
   undici@8.10.2:
     resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
+    engines: {node: '>=22.19.0'}
+
+  undici@8.11.2:
+    resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
     engines: {node: '>=22.19.0'}
 
   unicorn-magic@0.3.0:
@@ -9645,19 +9665,19 @@ packages:
 
 snapshots:
 
-  '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.14.1)(express@5.2.1)':
+  '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.16.0)(express@5.2.1)':
     dependencies:
       uuid: 11.1.1
     optionalDependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.16.0
       express: 5.2.1
 
-  '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.14.1)(express@5.2.1)':
+  '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.16.0)(express@5.2.1)':
     dependencies:
       jose: 6.2.12
       uuid: 11.1.1
     optionalDependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.16.0
       express: 5.2.1
 
   '@agentclientprotocol/sdk@0.21.1(zod@4.6.5)':
@@ -9721,6 +9741,13 @@ snapshots:
     dependencies:
       '@ai-sdk/provider': 3.0.15
       '@ai-sdk/provider-utils': 4.0.50(zod@4.6.5)
+      '@vercel/oidc': 3.2.0
+      zod: 4.6.5
+
+  '@ai-sdk/gateway@3.0.209(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.18
+      '@ai-sdk/provider-utils': 4.0.57(zod@4.6.5)
       '@vercel/oidc': 3.2.0
       zod: 4.6.5
 
@@ -9814,6 +9841,14 @@ snapshots:
       undici: 8.10.0
       zod: 4.6.5
 
+  '@ai-sdk/provider-utils@4.0.57(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.18
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.1.1
+      undici: 8.10.2
+      zod: 4.6.5
+
   '@ai-sdk/provider-utils@5.0.13(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.4
@@ -9831,6 +9866,10 @@ snapshots:
       json-schema: 0.4.0
 
   '@ai-sdk/provider@3.0.15':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@3.0.18':
     dependencies:
       json-schema: 0.4.0
 
@@ -10377,7 +10416,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@bufbuild/protobuf@2.14.1': {}
+  '@bufbuild/protobuf@2.16.0': {}
 
   '@changesets/apply-release-plan@7.1.1':
     dependencies:
@@ -10534,14 +10573,14 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@connectrpc/connect-web@2.2.0(@bufbuild/protobuf@2.14.1)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.14.1))':
+  '@connectrpc/connect-web@2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))':
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
-      '@connectrpc/connect': 2.2.0(@bufbuild/protobuf@2.14.1)
+      '@bufbuild/protobuf': 2.16.0
+      '@connectrpc/connect': 2.2.0(@bufbuild/protobuf@2.16.0)
 
-  '@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.14.1)':
+  '@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0)':
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.16.0
 
   '@csstools/color-helpers@6.1.1': {}
 
@@ -10953,9 +10992,9 @@ snapshots:
       globby: 11.1.0
       read-yaml-file: 1.1.0
 
-  '@mastra/agent-browser@0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)':
+  '@mastra/agent-browser@0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       agent-browser: 0.19.0(bufferutil@4.1.0)
       zod: 4.6.5
     transitivePeerDependencies:
@@ -10967,9 +11006,9 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/agent-browser@0.5.3(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)':
+  '@mastra/agent-browser@0.5.3(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       agent-browser: 0.19.0(bufferutil@4.1.0)
       zod: 4.6.5
     transitivePeerDependencies:
@@ -10981,7 +11020,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/code-sdk@1.7.2(@bufbuild/protobuf@2.14.1)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+  '@mastra/code-sdk@1.7.2(@bufbuild/protobuf@2.16.0)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
     dependencies:
       '@agentclientprotocol/sdk': 0.21.1(zod@4.6.5)
       '@ai-sdk/amazon-bedrock': 3.0.129(zod@4.6.5)
@@ -10990,21 +11029,21 @@ snapshots:
       '@ai-sdk/openai-compatible': 2.0.74(zod@4.6.5)
       '@ast-grep/napi': 0.42.3
       '@aws-sdk/credential-providers': 3.1127.0
-      '@mastra/agent-browser': 0.5.3(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
-      '@mastra/duckdb': 1.9.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
+      '@mastra/agent-browser': 0.5.3(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/duckdb': 1.9.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
       '@mastra/fastembed': 1.3.1
-      '@mastra/github-signals': 0.4.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
-      '@mastra/libsql': 1.23.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)
-      '@mastra/mcp': 1.18.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
-      '@mastra/memory': 1.30.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
-      '@mastra/observability': 1.17.8(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
-      '@mastra/parallel': 0.1.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
-      '@mastra/pg': 1.25.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
+      '@mastra/github-signals': 0.4.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
+      '@mastra/libsql': 1.23.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)
+      '@mastra/mcp': 1.18.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
+      '@mastra/memory': 1.30.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
+      '@mastra/observability': 1.17.8(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
+      '@mastra/parallel': 0.1.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
+      '@mastra/pg': 1.25.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
       '@mastra/schema-compat': 1.3.10(zod@4.6.5)
-      '@mastra/stagehand': 0.3.5(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)
-      '@mastra/tavily': 1.1.2(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
-      ai: 6.0.277(zod@4.6.5)
+      '@mastra/stagehand': 0.3.5(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)
+      '@mastra/tavily': 1.1.2(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
+      ai: 6.0.300(zod@4.6.5)
       execa: 9.6.1
       libsql: 0.5.29
       posthog-node: 5.51.6
@@ -11037,10 +11076,10 @@ snapshots:
       - utf-8-validate
       - workflow
 
-  '@mastra/core@1.64.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)':
+  '@mastra/core@1.64.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)':
     dependencies:
-      '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.14.1)(express@5.2.1)'
-      '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.14.1)(express@5.2.1)'
+      '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.16.0)(express@5.2.1)'
+      '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.16.0)(express@5.2.1)'
       '@ai-sdk/provider-utils-v6': '@ai-sdk/provider-utils@4.0.40(zod@4.6.5)'
       '@ai-sdk/provider-utils-v7': '@ai-sdk/provider-utils@5.0.13(zod@4.6.5)'
       '@ai-sdk/provider-v5': '@ai-sdk/provider@2.0.3'
@@ -11053,7 +11092,7 @@ snapshots:
       '@sindresorhus/slugify': 2.2.1
       '@standard-schema/spec': 1.1.0
       ajv: 8.20.0
-      chat: 4.40.0(ai@6.0.277(zod@4.6.5))(zod@4.6.5)
+      chat: 4.40.0(ai@6.0.300(zod@4.6.5))(zod@4.6.5)
       croner: 10.0.1
       dotenv: 17.4.2
       execa: 9.6.1
@@ -11082,10 +11121,10 @@ snapshots:
       - utf-8-validate
       - workflow
 
-  '@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)':
+  '@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)':
     dependencies:
-      '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.14.1)(express@5.2.1)'
-      '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.14.1)(express@5.2.1)'
+      '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.16.0)(express@5.2.1)'
+      '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.16.0)(express@5.2.1)'
       '@ai-sdk/provider-utils-v6': '@ai-sdk/provider-utils@4.0.40(zod@4.6.5)'
       '@ai-sdk/provider-utils-v7': '@ai-sdk/provider-utils@5.0.13(zod@4.6.5)'
       '@ai-sdk/provider-v5': '@ai-sdk/provider@2.0.3'
@@ -11098,7 +11137,7 @@ snapshots:
       '@sindresorhus/slugify': 2.2.1
       '@standard-schema/spec': 1.1.0
       ajv: 8.20.0
-      chat: 4.40.0(ai@6.0.277(zod@4.6.5))(zod@4.6.5)
+      chat: 4.40.0(ai@6.0.300(zod@4.6.5))(zod@4.6.5)
       croner: 10.0.1
       dotenv: 17.4.2
       execa: 9.6.1
@@ -11127,10 +11166,10 @@ snapshots:
       - utf-8-validate
       - workflow
 
-  '@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)':
+  '@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)':
     dependencies:
-      '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.14.1)(express@5.2.1)'
-      '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.14.1)(express@5.2.1)'
+      '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.16.0)(express@5.2.1)'
+      '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.16.0)(express@5.2.1)'
       '@ai-sdk/provider-utils-v6': '@ai-sdk/provider-utils@4.0.40(zod@4.6.5)'
       '@ai-sdk/provider-utils-v7': '@ai-sdk/provider-utils@5.0.13(zod@4.6.5)'
       '@ai-sdk/provider-v5': '@ai-sdk/provider@2.0.3'
@@ -11143,7 +11182,7 @@ snapshots:
       '@sindresorhus/slugify': 2.2.1
       '@standard-schema/spec': 1.1.0
       ajv: 8.20.0
-      chat: 4.40.0(ai@6.0.277(zod@4.6.5))(zod@4.6.5)
+      chat: 4.40.0(ai@6.0.300(zod@4.6.5))(zod@4.6.5)
       croner: 10.0.1
       dotenv: 17.4.2
       execa: 9.6.1
@@ -11172,15 +11211,15 @@ snapshots:
       - utf-8-validate
       - workflow
 
-  '@mastra/duckdb@1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
+  '@mastra/duckdb@1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
     dependencies:
       '@duckdb/node-api': 1.5.2-r.2
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
 
-  '@mastra/duckdb@1.9.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
+  '@mastra/duckdb@1.9.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
     dependencies:
       '@duckdb/node-api': 1.5.2-r.2
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
 
   '@mastra/fastembed@1.3.1':
     dependencies:
@@ -11190,35 +11229,35 @@ snapshots:
       progress: 2.0.3
       tar: 7.5.22
 
-  '@mastra/github-signals@0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
+  '@mastra/github-signals@0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       zod: 4.6.5
 
-  '@mastra/github-signals@0.4.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
+  '@mastra/github-signals@0.4.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       zod: 4.6.5
 
-  '@mastra/libsql@1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)':
+  '@mastra/libsql@1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)':
     dependencies:
       '@libsql/client': 0.18.0(bufferutil@4.1.0)
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@mastra/libsql@1.23.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)':
+  '@mastra/libsql@1.23.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)':
     dependencies:
       '@libsql/client': 0.18.0(bufferutil@4.1.0)
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@mastra/mcp@1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)':
+  '@mastra/mcp@1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@modelcontextprotocol/client': 2.0.0
       '@modelcontextprotocol/core': 2.0.0
       '@modelcontextprotocol/ext-apps': 1.7.5(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
@@ -11237,9 +11276,9 @@ snapshots:
       - supports-color
       - zod
 
-  '@mastra/mcp@1.18.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)':
+  '@mastra/mcp@1.18.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@modelcontextprotocol/client': 2.0.0
       '@modelcontextprotocol/core': 2.0.0
       '@modelcontextprotocol/ext-apps': 1.7.5(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
@@ -11258,9 +11297,9 @@ snapshots:
       - supports-color
       - zod
 
-  '@mastra/memory@1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
+  '@mastra/memory@1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@mastra/schema-compat': 1.3.9(zod@4.6.5)
       async-mutex: 0.5.0
       diff: 8.0.4
@@ -11273,9 +11312,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mastra/memory@1.30.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
+  '@mastra/memory@1.30.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@mastra/schema-compat': 1.3.10(zod@4.6.5)
       async-mutex: 0.5.0
       diff: 8.0.4
@@ -11288,9 +11327,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mastra/memory@1.30.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
+  '@mastra/memory@1.30.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@mastra/schema-compat': 1.3.10(zod@4.6.5)
       async-mutex: 0.5.0
       diff: 8.0.4
@@ -11303,25 +11342,25 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mastra/observability@1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
+  '@mastra/observability@1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       zod: 4.6.5
 
-  '@mastra/observability@1.17.8(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
+  '@mastra/observability@1.17.8(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       zod: 4.6.5
 
-  '@mastra/parallel@0.1.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
+  '@mastra/parallel@0.1.1(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       parallel-web: 1.3.3
       zod: 4.6.5
 
-  '@mastra/pg@1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
+  '@mastra/pg@1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       async-mutex: 0.5.0
       pg: 8.23.0
       pg-connection-string: 2.14.0
@@ -11329,9 +11368,9 @@ snapshots:
     transitivePeerDependencies:
       - pg-native
 
-  '@mastra/pg@1.25.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
+  '@mastra/pg@1.25.0(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       async-mutex: 0.5.0
       pg: 8.23.0
       pg-connection-string: 2.14.0
@@ -11357,10 +11396,10 @@ snapshots:
       zod: 4.6.5
       zod-from-json-schema: 0.5.6
 
-  '@mastra/stagehand@0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)':
+  '@mastra/stagehand@0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)':
     dependencies:
       '@browserbasehq/stagehand': 3.7.3(playwright-core@1.63.0)(zod@4.6.5)
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       zod: 4.6.5
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -11371,10 +11410,10 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/stagehand@0.3.5(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)':
+  '@mastra/stagehand@0.3.5(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)':
     dependencies:
       '@browserbasehq/stagehand': 3.7.3(playwright-core@1.63.0)(zod@4.6.5)
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       zod: 4.6.5
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -11385,18 +11424,18 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/tavily@1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
+  '@mastra/tavily@1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@tavily/core': 0.7.9
       zod: 4.6.5
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  '@mastra/tavily@1.1.2(@mastra/core@1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
+  '@mastra/tavily@1.1.2(@mastra/core@1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)':
     dependencies:
-      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/core': 1.67.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
       '@tavily/core': 0.7.9
       zod: 4.6.5
     transitivePeerDependencies:
@@ -12173,6 +12212,14 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       zod: 4.6.5
 
+  ai@6.0.300(zod@4.6.5):
+    dependencies:
+      '@ai-sdk/gateway': 3.0.209(zod@4.6.5)
+      '@ai-sdk/provider': 3.0.18
+      '@ai-sdk/provider-utils': 4.0.57(zod@4.6.5)
+      '@opentelemetry/api': 1.9.1
+      zod: 4.6.5
+
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:
       ajv: 8.20.0
@@ -12278,8 +12325,6 @@ snapshots:
 
   bail@2.0.2: {}
 
-  balanced-match@1.0.2: {}
-
   balanced-match@4.0.4: {}
 
   bare-events@2.9.2: {}
@@ -12315,7 +12360,7 @@ snapshots:
 
   baseline-browser-mapping@2.11.21: {}
 
-  basic-ftp@5.3.1: {}
+  basic-ftp@6.2.2: {}
 
   before-after-hook@4.0.0: {}
 
@@ -12348,10 +12393,6 @@ snapshots:
   boolbase@1.0.0: {}
 
   bowser@2.14.1: {}
-
-  brace-expansion@2.1.4:
-    dependencies:
-      balanced-match: 1.0.2
 
   brace-expansion@5.0.9:
     dependencies:
@@ -12433,7 +12474,7 @@ snapshots:
 
   chardet@2.2.0: {}
 
-  chat@4.40.0(ai@6.0.277(zod@4.6.5))(zod@4.6.5):
+  chat@4.40.0(ai@6.0.300(zod@4.6.5))(zod@4.6.5):
     dependencies:
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0
@@ -12443,7 +12484,7 @@ snapshots:
       remend: 1.3.1
       unified: 11.0.5
     optionalDependencies:
-      ai: 6.0.277(zod@4.6.5)
+      ai: 6.0.300(zod@4.6.5)
       zod: 4.6.5
     transitivePeerDependencies:
       - supports-color
@@ -12470,7 +12511,7 @@ snapshots:
       parse5: 7.3.0
       parse5-htmlparser2-tree-adapter: 7.1.0
       parse5-parser-stream: 7.1.2
-      undici: 8.10.0
+      undici: 8.10.2
       whatwg-mimetype: 4.0.0
 
   chokidar@4.0.3:
@@ -12728,21 +12769,21 @@ snapshots:
       es-errors: 1.3.0
       gopd: 1.2.0
 
-  e2b@2.51.0:
+  e2b@2.52.1:
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
-      '@connectrpc/connect': 2.2.0(@bufbuild/protobuf@2.14.1)
-      '@connectrpc/connect-web': 2.2.0(@bufbuild/protobuf@2.14.1)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.14.1))
+      '@bufbuild/protobuf': 2.16.0
+      '@connectrpc/connect': 2.2.0(@bufbuild/protobuf@2.16.0)
+      '@connectrpc/connect-web': 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
       chalk: 5.6.2
       compare-versions: 6.1.1
       dockerfile-ast: 0.7.1
       glob: 13.0.6
-      openapi-fetch: 0.14.1
+      openapi-fetch: 0.17.0
       platform: 1.3.6
       tar: 7.5.22
-      undici: 8.10.1
+      undici: 8.10.2
     optionalDependencies:
-      undici8: undici@8.10.2
+      undici8: undici@8.11.2
 
   eastasianwidth@0.2.0: {}
 
@@ -13208,7 +13249,7 @@ snapshots:
 
   get-uri@6.0.5:
     dependencies:
-      basic-ftp: 5.3.1
+      basic-ftp: 6.2.2
       data-uri-to-buffer: 6.0.2
       debug: 4.4.3
     transitivePeerDependencies:
@@ -13654,7 +13695,7 @@ snapshots:
   marky@1.3.0:
     optional: true
 
-  mastracode@0.39.1(@bufbuild/protobuf@2.14.1)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(ws@8.21.3(bufferutil@4.1.0)):
+  mastracode@0.39.1(@bufbuild/protobuf@2.16.0)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(ws@8.21.3(bufferutil@4.1.0)):
     dependencies:
       '@agentclientprotocol/sdk': 0.21.1(zod@4.6.5)
       '@ai-sdk/amazon-bedrock': 3.0.129(zod@4.6.5)
@@ -13664,23 +13705,23 @@ snapshots:
       '@ast-grep/napi': 0.42.3
       '@aws-sdk/credential-providers': 3.1127.0
       '@earendil-works/pi-tui': 0.80.6
-      '@mastra/agent-browser': 0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)
-      '@mastra/code-sdk': 1.7.2(@bufbuild/protobuf@2.14.1)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
-      '@mastra/duckdb': 1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
+      '@mastra/agent-browser': 0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)(zod@4.6.5)
+      '@mastra/code-sdk': 1.7.2(@bufbuild/protobuf@2.16.0)(bufferutil@4.1.0)(express@5.2.1)(hono@4.13.7)(playwright-core@1.63.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5)
+      '@mastra/duckdb': 1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
       '@mastra/fastembed': 1.3.1
-      '@mastra/github-signals': 0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
-      '@mastra/libsql': 1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)
-      '@mastra/mcp': 1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
-      '@mastra/memory': 1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
-      '@mastra/observability': 1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
-      '@mastra/pg': 1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
+      '@mastra/github-signals': 0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
+      '@mastra/libsql': 1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(bufferutil@4.1.0)
+      '@mastra/mcp': 1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(express@5.2.1)(hono@4.13.7)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
+      '@mastra/memory': 1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
+      '@mastra/observability': 1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
+      '@mastra/pg': 1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))
       '@mastra/schema-compat': 1.3.9(zod@4.6.5)
-      '@mastra/stagehand': 0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)
-      '@mastra/tavily': 1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.14.1)(ai@6.0.277(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
+      '@mastra/stagehand': 0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(playwright-core@1.63.0)(zod@4.6.5)
+      '@mastra/tavily': 1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.16.0)(ai@6.0.300(zod@4.6.5))(bufferutil@4.1.0)(express@5.2.1)(zod@4.6.5))(zod@4.6.5)
       '@mastra/voice-deepgram': 0.13.1(bufferutil@4.1.0)(zod@4.6.5)
       '@mastra/voice-openai': 0.13.1(ws@8.21.3(bufferutil@4.1.0))(zod@4.6.5)
-      ai: 6.0.277(zod@4.6.5)
+      ai: 6.0.300(zod@4.6.5)
       chalk: 5.6.2
       cli-highlight: 2.1.11
       execa: 9.6.1
@@ -14047,11 +14088,11 @@ snapshots:
 
   minimatch@5.1.9:
     dependencies:
-      brace-expansion: 2.1.4
+      brace-expansion: 5.0.9
 
   minimatch@9.0.9:
     dependencies:
-      brace-expansion: 2.1.4
+      brace-expansion: 5.0.9
 
   minimist@1.2.8: {}
 
@@ -14200,11 +14241,11 @@ snapshots:
       ws: 8.21.3(bufferutil@4.1.0)
       zod: 4.6.5
 
-  openapi-fetch@0.14.1:
+  openapi-fetch@0.17.0:
     dependencies:
-      openapi-typescript-helpers: 0.0.15
+      openapi-typescript-helpers: 0.1.0
 
-  openapi-typescript-helpers@0.0.15: {}
+  openapi-typescript-helpers@0.1.0: {}
 
   outdent@0.5.0: {}
 
@@ -15110,9 +15151,9 @@ snapshots:
 
   undici@8.10.0: {}
 
-  undici@8.10.1: {}
+  undici@8.10.2: {}
 
-  undici@8.10.2:
+  undici@8.11.2:
     optional: true
 
   unicorn-magic@0.3.0: {}
@@ -15307,7 +15348,7 @@ snapshots:
       '@wdio/utils': 9.31.6
       deepmerge-ts: 8.0.2
       https-proxy-agent: 7.0.6
-      undici: 8.10.0
+      undici: 8.10.2
       ws: 8.21.3(bufferutil@4.1.0)
     transitivePeerDependencies:
       - bare-abort-controller
