@@ -26,7 +26,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle, loadAppBundledTools, peekAppUi, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app-kit"
+import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app-kit"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
@@ -486,6 +486,218 @@ export async function performBuiltinPanelToolCall(
   return dispatchAllowlistedAppTool(tools, input, deps)
 }
 
+/**
+ * App→app calls (`app_call`) — a consumer app invokes a workflow that one of
+ * its `requires.apps` entries both declares AND allowlists, on a provider
+ * app that exposes that workflow.
+ *
+ * TRUST MODEL: the daemon is local-trust. `callerAppId` is a DECLARATION
+ * check — it answers "may this consumer call that provider's workflow", not
+ * "is this caller really who it says it is". Any local process that can
+ * reach the daemon can name any installed callerAppId; there is no
+ * isolation between apps and no authentication of the caller. The check
+ * exists to enforce declared dependencies (an app can't call providers it
+ * never declared, or workflows its dependency didn't allowlist), not to
+ * sandbox untrusted code.
+ *
+ * Check order (each failure gets a distinct `errorCode`):
+ *   1. caller app installed            → `caller-not-installed`
+ *   2. caller declares a dependency on `appId` (requires.apps) → `not-declared`
+ *   3. workflow ∈ the caller's declared `workflows` for that dependency
+ *                                      → `workflow-not-allowed`
+ *   4. provider app installed           → `provider-not-installed`
+ *   5. workflow ∈ provider `exposes.workflows` → `workflow-not-exposed`
+ *   6. provider's installed version satisfies the declared `version` range,
+ *      when both are present         → `version-mismatch`
+ *   7. dispatch through the SAME `workflowRunner` path `workflow_run_file`
+ *      uses for a bundled WORKFLOW.md (`startFromFile` + bounded status
+ *      poll) and await the result:
+ *      run ended failed/cancelled      → `workflow-failed`
+ *      bounded wait elapsed            → `timeout`
+ */
+export type AppCallErrorCode =
+  | "caller-not-installed"
+  | "not-declared"
+  | "workflow-not-allowed"
+  | "provider-not-installed"
+  | "workflow-not-exposed"
+  | "version-mismatch"
+  | "workflow-failed"
+  | "timeout"
+  | "not-enabled"
+
+export type AppCallResult =
+  | { readonly ok: true; readonly output: unknown; readonly runId: string; readonly durationMs: number }
+  | { readonly ok: false; readonly error: string; readonly errorCode: AppCallErrorCode }
+
+export interface PerformAppCallDeps {
+  /** The daemon's workflow runner — the same dispatch `workflow_run_file`
+   *  uses for a bundled WORKFLOW.md. Omitted → `app_call` reports
+   *  `not-enabled` (mirrors `app_run`'s adapter-resolver posture). */
+  workflowRunner?: WorkflowRunner
+}
+
+/** Default bounded wait for a dispatched workflow run to reach a terminal
+ *  status. */
+export const DEFAULT_APP_CALL_TIMEOUT_MS = 60_000
+/** Hard cap on `timeoutMs` — a caller cannot wait forever. */
+export const MAX_APP_CALL_TIMEOUT_MS = 300_000
+/** Poll interval while awaiting a run's terminal status. */
+const APP_CALL_POLL_INTERVAL_MS = 500
+
+/** `versionSatisfies` throws on a malformed version or range; a refusal is a
+ *  result, never an exception. A missing provider version fails closed. */
+function checkVersion(providerVersion: string | undefined, range: string): string | undefined {
+  if (providerVersion === undefined) return "has no recorded version"
+  try {
+    return versionSatisfies(providerVersion, range) ? undefined : `is installed at version ${providerVersion}`
+  } catch (err) {
+    return `has an unusable version (${err instanceof Error ? err.message : String(err)})`
+  }
+}
+
+function appCallLog(input: { callerAppId: string; appId: string; workflow: string }, durationMs: number, ok: boolean): void {
+  console.error(
+    `app_call: caller=${input.callerAppId} provider=${input.appId} workflow=${input.workflow} durationMs=${durationMs} ok=${ok}`,
+  )
+}
+
+export async function performAppCall(
+  appRegistry: AppRegistry,
+  input: { callerAppId: string; appId: string; workflow: string; input?: unknown; timeoutMs?: number },
+  deps: PerformAppCallDeps,
+): Promise<AppCallResult> {
+  // 1. The caller must be an installed app.
+  const caller = appRegistry.getApp(input.callerAppId)
+  if (!caller) {
+    return {
+      ok: false,
+      errorCode: "caller-not-installed",
+      error: `app_call: caller app "${input.callerAppId}" is not installed.`,
+    }
+  }
+  // 2. The caller must declare a dependency on the provider (requires.apps,
+  //    either entry form — both normalize onto `requiresApps`).
+  const declared = caller.requiresApps?.find(e => e.id === input.appId)
+  if (!declared) {
+    return {
+      ok: false,
+      errorCode: "not-declared",
+      error:
+        `app_call: app "${input.callerAppId}" does not declare a dependency on "${input.appId}" ` +
+        `(requires.apps).`,
+    }
+  }
+  // 3. The workflow must be in the caller's declared allowlist for that
+  //    dependency. Omitted/empty `workflows` = dependency only, no calls.
+  if (declared.workflows === undefined || !declared.workflows.includes(input.workflow)) {
+    return {
+      ok: false,
+      errorCode: "workflow-not-allowed",
+      error:
+        `app_call: app "${input.callerAppId}"'s dependency on "${input.appId}" does not allow ` +
+        `calling workflow "${input.workflow}"${declared.workflows !== undefined ? ` (allowed: ${declared.workflows.join(", ") || "none"})` : ""}.`,
+    }
+  }
+  // 4. The provider must be installed.
+  const provider = appRegistry.getApp(input.appId)
+  if (!provider) {
+    return {
+      ok: false,
+      errorCode: "provider-not-installed",
+      error: `app_call: provider app "${input.appId}" is not installed.`,
+    }
+  }
+  // 5. The provider must expose the workflow.
+  if (!provider.exposes?.workflows.includes(input.workflow)) {
+    return {
+      ok: false,
+      errorCode: "workflow-not-exposed",
+      error:
+        `app_call: app "${input.appId}" does not expose workflow "${input.workflow}" ` +
+        `(exposes.workflows: ${provider.exposes?.workflows.join(", ") || "none"}).`,
+    }
+  }
+  // 6. The provider's installed version must satisfy the declared range.
+  if (declared.version !== undefined) {
+    const problem = checkVersion(provider.version, declared.version)
+    if (problem !== undefined) {
+      return {
+        ok: false,
+        errorCode: "version-mismatch",
+        error:
+          `app_call: app "${input.appId}" ${problem}, which does not ` +
+          `satisfy the range "${declared.version}" app "${input.callerAppId}" declared.`,
+      }
+    }
+  }
+
+  const runner = deps.workflowRunner
+  if (!runner) {
+    return {
+      ok: false,
+      errorCode: "not-enabled",
+      error:
+        "app_call is not enabled — the daemon was started without a workflow runner. " +
+        "Re-run the daemon with the `@agentproto/cli` shim wired (see playground/scripts/gateway.ts).",
+    }
+  }
+
+  // 7. Dispatch through the same runner path `workflow_run_file` uses for a
+  //    bundled WORKFLOW.md, then await the run's terminal status under a
+  //    bounded timeout.
+  const startedAt = Date.now()
+  const ref = provider.workflows.find(w => w.id === input.workflow)
+  if (!ref) {
+    return {
+      ok: false,
+      errorCode: "workflow-not-exposed",
+      error: `app_call: app "${input.appId}" exposes workflow "${input.workflow}" but does not bundle it.`,
+    }
+  }
+  let run: Awaited<ReturnType<typeof runner.startFromFile>>
+  try {
+    run = await runner.startFromFile({ path: ref.path, input: input.input, appId: provider.appId })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    appCallLog(input, Date.now() - startedAt, false)
+    return {
+      ok: false,
+      errorCode: "workflow-failed",
+      error: `app_call: could not start workflow "${input.workflow}" on "${input.appId}": ${message}`,
+    }
+  }
+  const timeoutMs = Math.min(Math.max(1, input.timeoutMs ?? DEFAULT_APP_CALL_TIMEOUT_MS), MAX_APP_CALL_TIMEOUT_MS)
+  for (;;) {
+    const status = runner.status(run.runId)
+    if (status !== undefined && (status.status === "done" || status.status === "failed" || status.status === "cancelled")) {
+      const durationMs = Date.now() - startedAt
+      if (status.status !== "done") {
+        appCallLog(input, durationMs, false)
+        return {
+          ok: false,
+          errorCode: "workflow-failed",
+          error:
+            `app_call: workflow "${input.workflow}" on "${input.appId}" ended ${status.status}` +
+            `${status.error !== undefined ? `: ${status.error}` : ""}.`,
+        }
+      }
+      appCallLog(input, durationMs, true)
+      return { ok: true, output: status.output, runId: run.runId, durationMs }
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      const durationMs = Date.now() - startedAt
+      appCallLog(input, durationMs, false)
+      return {
+        ok: false,
+        errorCode: "timeout",
+        error: `app_call: workflow "${input.workflow}" on "${input.appId}" did not finish within ${timeoutMs}ms (run ${run.runId} still ${status?.status ?? "unknown"}).`,
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, APP_CALL_POLL_INTERVAL_MS))
+  }
+}
+
 function refIdOf(ref: AnyRef): string {
   if (typeof ref === "string") return ref
   return ref.ref ?? ref.file ?? "inline"
@@ -911,6 +1123,10 @@ export async function performInstall(
     workflows: refs.workflows,
     unvalidatedAgentTools,
     ...(handle.requires ? { requires: handle.requires } : {}),
+    ...(handle.appRequirements.length > 0 ? { requiresApps: handle.appRequirements } : {}),
+    ...(handle.exposes.agents.length > 0 || handle.exposes.workflows.length > 0
+      ? { exposes: handle.exposes }
+      : {}),
     ...(ui ? { ui } : {}),
     ...(artifact ? { artifact } : {}),
     ...(skill ? { skill } : {}),
@@ -1855,6 +2071,18 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         }
       }
 
+      for (const dep of installed.requiresApps ?? []) {
+        if (dep.version === undefined) continue
+        const provider = appRegistry.getApp(dep.id)
+        if (!provider) continue
+        const problem = checkVersion(provider.version, dep.version)
+        if (problem !== undefined) {
+          return errorResult(
+            `app_apply: app "${input.appId}" requires "${dep.id}" ${dep.version}, but "${dep.id}" ${problem}.`,
+          )
+        }
+      }
+
       const mount = appRegistry.applyApp({ scopeId, appId: input.appId })
       return textResult({
         scopeId: mount.scopeId,
@@ -1990,6 +2218,47 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         ...(dispatchTool ? { dispatchTool } : {}),
         ...(callImportedTool ? { callImportedTool } : {}),
       }),
+  )
+
+  server.tool(
+    "app_call",
+    "Call a workflow an installed provider app exposes, on behalf of an installed consumer app — " +
+      "the app→app call mechanism. The caller must declare the provider in `requires.apps`, and the " +
+      "dependency entry's `workflows` allowlist must name the workflow; the provider must list it in " +
+      "`exposes.workflows`, and its installed version must satisfy the dependency's `version` range " +
+      "when both are set. The workflow then runs through the same runner path as `workflow_run_file` " +
+      "and the call awaits its result under a bounded timeout. " +
+      "TRUST MODEL: the daemon is local-trust — `callerAppId` is a declaration check, NOT a security " +
+      "boundary; any local process can name any installed caller, and apps are not isolated from " +
+      "each other. Errors carry a distinct errorCode (caller-not-installed / not-declared / " +
+      "workflow-not-allowed / provider-not-installed / workflow-not-exposed / version-mismatch / " +
+      "workflow-failed / timeout).",
+    {
+      callerAppId: z.string().describe("The installed consumer app making the call."),
+      appId: z.string().describe("The provider app id — must be in the caller's requires.apps."),
+      workflow: z
+        .string()
+        .describe("Workflow id — must be in the provider's exposes.workflows AND the caller's dependency allowlist."),
+      input: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Workflow input, bound to `$input` in the compiled workflow."),
+      timeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Bounded wait for the workflow to finish, in milliseconds. Default 60000, capped at 300000.",
+        ),
+    },
+    async input => {
+      const result = await performAppCall(appRegistry, input, {
+        ...(workflowRunner ? { workflowRunner } : {}),
+      })
+      if (!result.ok) return errorResult(result.error)
+      return textResult({ ok: true, output: result.output, runId: result.runId, durationMs: result.durationMs })
+    },
   )
 
   server.tool(

@@ -28,6 +28,7 @@ import type {
   AgentEntry,
   AppDefinition,
   AppHandle,
+  AppRequirement,
   DoctypeHandle,
   OpenAIAppUiExtension,
   OpenAIEntrypoint,
@@ -108,6 +109,9 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     secrets: Object.freeze([...fields.requirements.secrets]),
     apps: Object.freeze([...fields.requirements.apps]),
   })
+  const appRequirements = Object.freeze(
+    fields.appRequirements.map(e => Object.freeze({ ...e, ...(e.workflows !== undefined ? { workflows: Object.freeze([...e.workflows]) } : {}) })),
+  )
   const placement = fields.placement
   const exposes = Object.freeze({
     agents: Object.freeze([...fields.exposes.agents]),
@@ -166,6 +170,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(description !== undefined ? { description } : {}),
     ...(requires !== undefined ? { requires } : {}),
     requirements,
+    appRequirements,
     placement,
     exposes,
     accepts,
@@ -213,6 +218,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(description !== undefined ? { description } : {}),
           ...(requires !== undefined ? { requires } : {}),
           requirements,
+          appRequirements,
           placement,
           exposes,
           accepts,
