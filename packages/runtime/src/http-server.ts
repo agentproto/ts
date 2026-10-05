@@ -5059,6 +5059,7 @@ export function buildSpawnSessionHttpArgs(
   const attach =
     b.attach !== undefined ? parseWithJsonTolerance(attachFieldSchema, b.attach) : undefined
   const notifyUrl = parseNotifyUrlField(b.notifyUrl)
+  const notifySecret = parseNotifySecretField(b.notifySecret)
   const agentStartParity: Pick<
     SpawnAgentSessionInput,
     | "commandSandbox"
@@ -5069,6 +5070,7 @@ export function buildSpawnSessionHttpArgs(
     | "deferredTools"
     | "attach"
     | "notifyUrl"
+    | "notifySecret"
   > = {
     ...(commandSandbox !== undefined ? { commandSandbox } : {}),
     ...(skills !== undefined ? { skills } : {}),
@@ -5078,6 +5080,7 @@ export function buildSpawnSessionHttpArgs(
     ...(deferredTools !== undefined ? { deferredTools } : {}),
     ...(attach !== undefined ? { attach } : {}),
     ...(notifyUrl !== undefined ? { notifyUrl } : {}),
+    ...(notifySecret !== undefined ? { notifySecret } : {}),
   }
   // Per-session headless browser — the HTTP twin of the MCP `agent_start`
   // tool's `browser` field (`true` is sugar for "headless"). Hoisted into a
@@ -5794,6 +5797,14 @@ function parseNotifyUrlField(raw: unknown): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/** The `notifySecret` body field — a `whsec_...` Standard Webhooks secret,
+ *  as `agent_start`'s schema requires. Anything else ⇒ undefined (dropped;
+ *  `notifyUrl` still fires, unauthenticated, same as when no secret is set). */
+function parseNotifySecretField(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined
+  return decodeWhsecSecret(raw) !== null ? raw : undefined
 }
 
 /**
