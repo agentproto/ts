@@ -70,10 +70,10 @@ describe("localGhSentinelProvider", () => {
     const provider = localGhSentinelProvider({ gh: makeFakeGh({ number: 1, state: "open", merged: false, headSha: "s", reviews: [], checks: [] }) })
     await expect(
       provider.create(
-        { match: singleMatch("github:acme/widgets"), until: { kind: "never" }, target: { kind: "session", sessionId: "s1", urgency: "next-turn" } },
+        { match: singleMatch("linear:ACME-1"), until: { kind: "never" }, target: { kind: "session", sessionId: "s1", urgency: "next-turn" } },
         { mode: "poll", intervalMs: 15_000 },
       ),
-    ).rejects.toThrow(/not a "github:owner\/repo#number" PR subject/)
+    ).rejects.toThrow(/not a "github:owner\/repo#number" PR subject or a "github:owner\/repo" repo/)
   })
 
   it("rejects create() with more than one match clause", async () => {
