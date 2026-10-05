@@ -368,13 +368,7 @@ export const agentStartInputShape = {
       message: "must be a whsec_<base64> Standard Webhooks secret (24-64 decoded bytes)",
     })
     .optional()
-    .describe(
-      "Optional Standard Webhooks secret (`whsec_...`) for `notifyUrl`. When " +
-        "set, each POST carries `webhook-id` / `webhook-timestamp` / " +
-        "`webhook-signature` headers (HMAC-SHA256 over `id.timestamp.body`); " +
-        "the receiver verifies them to confirm the daemon sent it. Omit for " +
-        "the unauthenticated (legacy) behavior — ignored without `notifyUrl`."
-    ),
+    .describe(`Standard Webhooks secret (\`whsec_...\`) signing \`notifyUrl\` POSTs. ${help("notifySecret")}`),
   wait: mcpBool
     .optional()
     .describe(
