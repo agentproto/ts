@@ -27,6 +27,7 @@ import { monitorSessionWait } from "./orchestration-tools.js"
 import { getHarnessPreset, type HarnessPreset } from "./harness-preset-store.js"
 import { getUserPreset, type UserPreset } from "./user-presets.js"
 import type { ReviewerRunResult, ReviewerSessionHost } from "./review-runner.js"
+import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
 
 export interface DaemonReviewerHostDeps {
   registry: SessionsRegistry
@@ -43,6 +44,8 @@ export interface DaemonReviewerHostDeps {
    *  closed, 5xx, overloaded). Default {@link DEFAULT_LANE_RETRIES}; `0`
    *  disables. Mirrors `config.review.laneRetries`. */
   laneRetries?: number
+  /** Auth-profile lookup for the OpenRouter guard — injectable for tests. */
+  getAuthProfile?: (id: string) => Promise<AuthProfile | undefined>
 }
 
 /** Retries (after the first attempt) for a lane whose reviewer turn ends in a
@@ -70,6 +73,38 @@ interface AttemptOutcome {
   result: ReviewerRunResult
   /** The reviewer's turn ended in a transient error — another attempt may succeed. */
   retryable: boolean
+}
+
+const OPENROUTER_RE = /openrouter/i
+
+/** Fail closed: a review lane must never bill OpenRouter (pay-per-token
+ *  credit). Returns a human-readable refusal when the resolved lane would
+ *  route there — via the model id, the preset, or the auth profile's billing
+ *  endpoint — else `undefined`. */
+export async function reviewerOpenRouterViolation(
+  presetId: string,
+  spawnFields: Pick<SpawnAgentSessionInput, "adapter" | "model" | "access" | "preset">,
+  lookup: (id: string) => Promise<AuthProfile | undefined> = getAuthProfile,
+): Promise<string | undefined> {
+  const userPreset = spawnFields.preset as UserPreset | undefined
+  const model = spawnFields.model ?? userPreset?.model
+  const profileRef = spawnFields.access?.profileRef ?? userPreset?.access?.profileRef
+  let profile: AuthProfile | undefined
+  if (profileRef) {
+    try {
+      profile = await lookup(profileRef)
+    } catch (err) {
+      // Can't prove the billing endpoint: refuse rather than guess.
+      return `review lane refused: could not read auth profile '${profileRef}' to verify it does not bill OpenRouter (${err instanceof Error ? err.message : String(err)}).`
+    }
+  }
+  const hits: string[] = []
+  if (OPENROUTER_RE.test(presetId)) hits.push(`preset '${presetId}'`)
+  if (model && OPENROUTER_RE.test(model)) hits.push(`model '${model}'`)
+  if (profileRef && OPENROUTER_RE.test(profileRef)) hits.push(`auth profile '${profileRef}'`)
+  if (profile && OPENROUTER_RE.test(profile.endpoint)) hits.push(`auth profile '${profile.id}' (billing endpoint '${profile.endpoint}')`)
+  if (hits.length === 0) return undefined
+  return `review lane refused: ${hits.join(", ")} would bill OpenRouter, which is disabled for code reviews. Use a different preset (e.g. opencode-default-go, or a Claude-subscription preset such as claude-subs-agentik).`
 }
 
 /** Resolve a lane's `preset` to spawn fields — harness preset first, then a
@@ -105,6 +140,8 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         error: `preset '${input.preset}' not found — neither a harness preset (harness_preset_list) nor a user preset`,
       })
     }
+    const blocked = await reviewerOpenRouterViolation(input.preset, spawnFields, deps.getAuthProfile)
+    if (blocked) return once({ status: "failed", preset: input.preset, error: blocked })
     if (input.signal?.aborted) {
       return once({ status: "failed", preset: input.preset, error: "review cancelled before the reviewer spawned" })
     }

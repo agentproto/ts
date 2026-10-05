@@ -19,7 +19,12 @@ import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } 
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createEventRing } from "../event-ring.js"
 import type { AgentAdapterResolver } from "../http-server.js"
-import { createDaemonReviewerHost, isRetryableTurnError, resolveReviewerPreset } from "../review-reviewer-host.js"
+import {
+  createDaemonReviewerHost,
+  isRetryableTurnError,
+  resolveReviewerPreset,
+  reviewerOpenRouterViolation,
+} from "../review-reviewer-host.js"
 import type { HarnessPreset } from "../harness-preset-store.js"
 import type { UserPreset } from "../user-presets.js"
 
@@ -318,6 +323,71 @@ describe("resolveReviewerPreset", () => {
         getHarnessPreset: async () => undefined,
         getUserPreset: async () => ({ id: "kimi", label: "no adapter" }),
       }),
+    ).toBeUndefined()
+  })
+})
+
+describe("review lanes never bill OpenRouter (fail closed)", () => {
+  const noProfile = async () => undefined
+
+  it("refuses a harness preset whose auth profile bills the openrouter endpoint, without spawning", async () => {
+    const registry = createSessionsRegistry()
+    const spawnedWith: unknown[] = []
+    const host = createDaemonReviewerHost({
+      registry,
+      sessionEvents: createSessionEventBus(),
+      eventRing: createEventRing(),
+      resolveAgentAdapter: (async () => {
+        spawnedWith.push(1)
+        throw new Error("must not spawn")
+      }) as AgentAdapterResolver,
+      getHarnessPreset: async () => ({
+        id: "rev-or",
+        harnessSlug: "opencode",
+        name: "rev",
+        profileRef: "some-profile",
+        defaultModel: "glm-5.3-flash",
+        isDefault: false,
+      }),
+      getUserPreset: async () => undefined,
+      getAuthProfile: async (id) => ({ id, endpoint: "openrouter", method: { kind: "api-key" } }) as never,
+    })
+    const res = await host.run({ preset: "rev-or", cwd: "/tmp", prompt: "x", label: "review:x:y", timeoutMs: 1_000 })
+    expect(res.status).toBe("failed")
+    expect(res.status === "failed" && res.error).toMatch(/would bill OpenRouter/)
+    expect(spawnedWith).toHaveLength(0)
+    registry.shutdown()
+  })
+
+  it("flags an openrouter/* model, an openrouter profile id, and an openrouter preset id", async () => {
+    expect(await reviewerOpenRouterViolation("p", { adapter: "opencode", model: "openrouter/z-ai/glm-5.3-flash" }, noProfile)).toMatch(/model/)
+    expect(await reviewerOpenRouterViolation("p", { adapter: "opencode", access: { profileRef: "openrouter-env" } }, noProfile)).toMatch(/auth profile/)
+    expect(await reviewerOpenRouterViolation("opencode-default-openrouter", { adapter: "opencode" }, noProfile)).toMatch(/preset/)
+  })
+
+  it("fails closed when the auth profile lookup throws", async () => {
+    const boom = async () => {
+      throw new Error("disk error")
+    }
+    expect(await reviewerOpenRouterViolation("p", { adapter: "opencode", access: { profileRef: "x" } }, boom)).toMatch(/could not read auth profile/)
+  })
+
+  it("checks a user preset's own model + profile", async () => {
+    const preset: UserPreset = { id: "u", label: "u", adapter: "opencode", model: "openrouter/x/y" }
+    expect(await reviewerOpenRouterViolation("u", { adapter: "opencode", preset }, noProfile)).toMatch(/model/)
+  })
+
+  it("lets opencode-go and Claude-subscription lanes through", async () => {
+    const lookup = async (id: string) => ({ id, endpoint: id === "claude-subs-agentik" ? "anthropic" : "opencode-go" }) as never
+    expect(
+      await reviewerOpenRouterViolation(
+        "opencode-default-go",
+        { adapter: "opencode", model: "opencode-go/longcat-2.5-preview-free", access: { profileRef: "opencode-go-local" } },
+        lookup,
+      ),
+    ).toBeUndefined()
+    expect(
+      await reviewerOpenRouterViolation("claude-sub", { adapter: "claude-code", access: { profileRef: "claude-subs-agentik" } }, lookup),
     ).toBeUndefined()
   })
 })

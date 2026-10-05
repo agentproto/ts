@@ -5,7 +5,7 @@
  *
  * Triggers a verb, or interprets free-text after the bot mention:
  *
- *   /review                    review the PR (delegates to review-pr.mjs)
+ *   /review                    review the PR (sandboxed subscription lane only)
  *   /fix [--pr]                apply the latest review's changes (apply-review.mjs)
  *   /pr <request>              implement <request> on a new branch and open a PR
  *   /implement                 (on an issue) implement the issue and open a PR
@@ -187,7 +187,9 @@ switch (parsed.verb) {
 
   case 'review': {
     if (!PR_NUMBER) { postComment('`/review` only works on a pull request.'); break }
-    execScript('review-pr.mjs', ['--pr', PR_NUMBER])
+    // Fail closed: review-pr.mjs bills ANTHROPIC_API_KEY (pay-per-token). Reviews
+    // run only through the sandboxed subscription lane (ci-reviewer / agent-command.yml).
+    postComment('`/review` runs on the Claude-subscription sandbox lane only; it is unavailable here (no metered-key fallback). Check that `reviewerSandbox` is configured in `.github/agentic-review.json`.')
     break
   }
 

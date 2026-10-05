@@ -127,6 +127,13 @@ jobs:
               cfg.commands = cfg.commands || {}
               cfg.commands.fix = { ...(cfg.commands.fix || {}), fixDelivery: "pr" }
             }
+            // Fail closed: the sandboxed lane bills the Claude subscription,
+            // never a metered key / OpenRouter (reviews must not spend credit).
+            const meter = `${cfg.reviewerModel || ""} ${JSON.stringify(cfg.reviewerSandboxEnv || [])}`
+            if ((cfg.reviewerAuthMode || "subscription") !== "subscription" || /openrouter/i.test(meter)) {
+              console.error("::error::.github/agentic-review.json routes the sandbox lane to a metered provider (reviewerAuthMode / OpenRouter). Reviews must use reviewerAuthMode=subscription on the Claude subscription.")
+              process.exit(1)
+            }
             const isPr = process.env.IS_PR === "true"
             const num = Number(process.env.NUMBER || 0)
             const request = Buffer.from(process.env.REQUEST_B64 || "", "base64").toString("utf8")
@@ -157,7 +164,7 @@ jobs:
               `workflow_path=${path}`,
               `workflow_input=${JSON.stringify(input)}`,
               `adapter=${String(cfg.reviewerAdapter || "claude-code")}`,
-              `auth_mode=${String(cfg.reviewerAuthMode || "api-key")}`,
+              `auth_mode=${String(cfg.reviewerAuthMode || "subscription")}`,
               `cli_source=${String(cfg.cliSource || "npm")}`,
               `cli_version=${String(cfg.cliVersion || "0.8.0")}`,
               `model=${String(cfg.reviewerModel || "")}`,
@@ -187,15 +194,10 @@ jobs:
         with:
           adapter: ${{ steps.compose.outputs.adapter }}
           auth-mode: ${{ steps.compose.outputs.auth_mode }}
-          # Non-Anthropic reviewer lane (reviewerAdapter=opencode): bill via
-          # OPENROUTER_API_KEY on the daemon env (provider-key-env) — the
-          # sandbox passthrough and the adapter's provider-env auth resolve it.
-          # api-key is switched to the same key so write-config.mjs always has
-          # a credential for auth-mode=api-key and never hard-errors.
-          provider-key: ${{ steps.compose.outputs.adapter == 'opencode' && secrets.OPENROUTER_API_KEY || '' }}
-          provider-key-env: ${{ steps.compose.outputs.adapter == 'opencode' && 'OPENROUTER_API_KEY' || '' }}
+          # Claude subscription only: no api-key / provider-key is passed, so
+          # neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY can fund the lane.
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api-key: ${{ steps.compose.outputs.adapter == 'opencode' && secrets.OPENROUTER_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          model: ${{ steps.compose.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -212,8 +214,11 @@ jobs:
       # unconfigured or failed.
       - name: Run agent command
         id: run
+        # `/review` never falls back to this loop (it bills ANTHROPIC_API_KEY,
+        # pay-per-token): a failed sandbox review stays failed.
         if: |
           always() &&
+          steps.parse.outputs.verb != 'review' &&
           (steps.parse.outputs.sandboxable != 'true' ||
            steps.sandbox-verb.outcome == 'failure' ||
            steps.sandbox-verb.outputs.status == 'failed')
