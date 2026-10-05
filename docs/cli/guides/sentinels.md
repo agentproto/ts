@@ -139,3 +139,7 @@ With neither configured, `--provider` omitted always resolves to `local-gh`.
 - **No cross-repo or non-GitHub coverage today.** Every built-in provider
   watches GitHub subjects; there's no sentinel for, say, a CI system that
   isn't GitHub Actions reporting through GitHub's check-run API.
+
+To wake a session on what *other sessions* do (turn ends, exits, crashes, PRs
+opened/merged) rather than on GitHub events, see
+[session-follow](./session-follow.md).

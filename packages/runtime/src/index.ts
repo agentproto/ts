@@ -127,6 +127,9 @@ import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
 import { registerSentinelTools } from "./sentinel-tools.js"
+import { createSessionFollowStore } from "./session-follow-store.js"
+import { wireSessionFollow } from "./session-follow.js"
+import { registerSessionFollowTools } from "./session-follow-tools.js"
 import {
   eventsList,
   eventsSubscribe,
@@ -796,6 +799,15 @@ export type {
   SentinelTarget,
 } from "./sentinel-providers/types.js"
 export type { SentinelView } from "./sentinel-tools.js"
+// Session-follow (wake a session on other sessions' events).
+export {
+  createSessionFollowStore,
+  FOLLOW_EVENTS,
+  type FollowEvent,
+  type SessionFollow,
+  type SessionFollowStore,
+} from "./session-follow-store.js"
+export { wireSessionFollow, type SessionFollowHandle } from "./session-follow.js"
 // MCP Events adapter (W-C of .plans/sentinel-mcp-events): deterministic
 // subscription ids, the per-scheme event registry, and the three native
 // methods' logic (`eventsList`/`eventsSubscribe`/`eventsUnsubscribe`). The
@@ -1980,6 +1992,9 @@ export async function createGateway(
   // below) needs both and neither depends on `sessions` itself (only
   // `sentinelRuntime`, built later, needs `sessions.sendMessage`).
   const sentinelStore = createSentinelStore({ persist })
+  // Session-follow store (`~/.agentproto/follows.json`) — the engine that
+  // reads it is wired below, once `sessions` exists.
+  const sessionFollowStore = createSessionFollowStore({ persist })
   const sentinelCredsStore = makeSentinelCredsStore()
   const resolveSentinelProviderResolved = async (slug: string) =>
     resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) })
@@ -2603,6 +2618,18 @@ export async function createGateway(
       const desc = sessions.get(id)
       return desc ? { endedReason: desc.endedReason, parentSessionId: desc.parentSessionId } : undefined
     },
+  })
+
+  // Session-follow — wakes a follower session (no polling) when sessions
+  // matching a selector end a turn / await input / exit / get a PR opened or
+  // merged. Delivery never interrupts; a dead follower is resumed through the
+  // same automatic-path restart core the sentinel uses (never a deliberate
+  // end). See session-follow.ts.
+  const sessionFollow = wireSessionFollow({
+    registry: sessions,
+    sessionEvents,
+    store: sessionFollowStore,
+    restartSession: restartSentinelSession,
   })
 
   // Inbound watcher — polls an agentpush source on a timer and spawns
@@ -3240,6 +3267,13 @@ export async function createGateway(
       isSessionAlive,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
+    // session_follow / session_unfollow / session_follows — `follower`
+    // defaults to the connecting client's `?callerSessionId=`.
+    registerSessionFollowTools(server, {
+      store: sessionFollowStore,
+      hasSession: id => sessions.get(id) !== undefined,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
     // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_sandbox_providers + setup_sandbox_provider) — same resolver
     // `agent_start.sandbox` resolves slugs through above.
@@ -3403,6 +3437,10 @@ export async function createGateway(
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
       runtime: sentinelRuntime,
+    },
+    follows: {
+      store: sessionFollowStore,
+      hasSession: id => sessions.get(id) !== undefined,
     },
     ...(llmEndpoint ? { llmEndpoint } : {}),
     ...(opts.deviceInferenceShare ? { deviceInferenceShare: true } : {}),
@@ -3798,6 +3836,10 @@ export async function createGateway(
       // `sessions`).
       sentinelRuntime.stop()
       sentinelStore.flushSync()
+      // Drop pending follow batches (sessions are going away) and persist
+      // the follow records.
+      sessionFollow.dispose()
+      sessionFollowStore.flushSync()
       // Flush inbound-endpoint state synchronously -- persistence is a
       // debounced async write, so an endpoint registered via
       // inbound_endpoint_create just before a restart would otherwise be

@@ -84,6 +84,12 @@ import {
   sentinelView,
   type SentinelWatchInput,
 } from "./sentinel-tools.js"
+import {
+  followView,
+  removeSessionFollow,
+  upsertSessionFollow,
+  type SessionFollowDeps,
+} from "./session-follow-tools.js"
 
 /** Deps for the `/sentinels/*` HTTP routes — the same shape
  *  `registerSentinelTools` closes over, minus `defaultSessionId` (an HTTP
@@ -1038,6 +1044,10 @@ export interface RuntimeHttpServerOptions {
    *  sentinel watch|list|rm|status` (the CLI has no in-process registry to
    *  call, unlike the MCP `sentinel_*` tools). Without it the routes 404. */
   sentinels?: SentinelHttpDeps
+  /** Optional — when wired, exposes `POST|GET /follows` and
+   *  `DELETE /follows/:idOrKey` (session-follow: wake a session on other
+   *  sessions' events). Without it the routes 404. */
+  follows?: Pick<SessionFollowDeps, "store" | "hasSession">
   /** Optional — when wired (i.e. `features.llmEndpoint` is on), exposes
    *  `GET /llm-endpoint/status` + `POST /llm-endpoint/restart` for
    *  `agentproto llm gateway status|restart` and the "LLM gateway" doctor
@@ -4119,6 +4129,12 @@ export async function startHttpServer(
         // /sentinels/:id.
         if (opts.sentinels && path.startsWith("/sentinels")) {
           const handled = await handleSentinels(req, res, path, opts.sentinels)
+          if (handled) return
+        }
+
+        // Session-follow routes — /follows, /follows/:idOrKey.
+        if (opts.follows && (path === "/follows" || path.startsWith("/follows/"))) {
+          const handled = await handleFollows(req, res, path, opts.follows)
           if (handled) return
         }
 
@@ -8348,6 +8364,68 @@ async function handleSentinels(
       return true
     }
     json(200, { ok: true, id })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /follows routes — session-follow (wake a session on OTHER sessions'
+ * turn-end / awaiting-input / exit / PR events). The daemon-HTTP twin of
+ * `session_follow` / `session_unfollow` / `session_follows`, sharing their
+ * validation. Returns `true` when it handled the request.
+ *
+ *   POST   /follows            → 201 follow (created) | 200 follow (upserted by `key`)
+ *   GET    /follows[?follower=] → { follows: SessionFollow[] }
+ *   DELETE /follows/:idOrKey   → { ok: true, id }
+ *
+ * Errors: 400 `invalid_input` | `invalid_selector` | `no_follower`,
+ * 404 `session_not_found` (unknown follower on POST), 404 `follow_not_found`.
+ */
+async function handleFollows(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  deps: Pick<SessionFollowDeps, "store" | "hasSession">,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/follows" && req.method === "GET") {
+    const follower = new URL(req.url ?? "/", "http://localhost").searchParams.get("follower") ?? undefined
+    json(200, { follows: deps.store.list(follower ? { follower } : undefined).map(followView) })
+    return true
+  }
+
+  if (path === "/follows" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const result = upsertSessionFollow(deps, body)
+    if (!result.ok) {
+      json(result.status, { error: result.error, message: result.message })
+      return true
+    }
+    json(result.created ? 201 : 200, followView(result.follow))
+    return true
+  }
+
+  const match = path.match(/^\/follows\/([^/]+)$/)
+  if (!match) return false
+  const idOrKey = decodeURIComponent(match[1] ?? "")
+
+  if (req.method === "DELETE") {
+    const removed = removeSessionFollow(deps, idOrKey)
+    if (!removed) {
+      json(404, { error: "follow_not_found", id: idOrKey })
+      return true
+    }
+    json(200, { ok: true, id: removed.id })
     return true
   }
 
