@@ -205,6 +205,45 @@ describe("resolvePacks", () => {
     expect(correctness.blockOn).toBe("low")
   })
 
+  it("resolves fallbackPresets: override beats uses, which beats none", async () => {
+    const resolve = async (uses: string) => {
+      const m = parseReviewManifest(
+        md(
+          "uses:",
+          `  - ${uses}`,
+          "checks: [{id: types, kind: command, run: tsc}]",
+          "bindings:",
+          "  local: {checks: [types, core/correctness, core/security]}",
+        ),
+      )
+      const r = await resolvePacks(m, loader)
+      const get = (id: string) => (r.manifest.checks.find((c) => c.id === id) as { fallbackPresets?: string[] }).fallbackPresets
+      return { correctness: get("core/correctness"), security: get("core/security") }
+    }
+    expect(await resolve("{pack: ./core-pack, as: core, preset: kimi, checks: [correctness, security]}")).toEqual({
+      correctness: [],
+      security: [],
+    })
+    expect(
+      await resolve(
+        "{pack: ./core-pack, as: core, preset: kimi, fallbackPresets: [glm], checks: [correctness, security], overrides: {security: {fallbackPresets: [claude, glm]}}}",
+      ),
+    ).toEqual({ correctness: ["glm"], security: ["claude", "glm"] })
+  })
+
+  it("rejects a resolved chain that repeats the final preset (override preset equal to a uses fallback)", async () => {
+    const m = parseReviewManifest(
+      md(
+        "uses:",
+        "  - {pack: ./core-pack, as: core, preset: kimi, fallbackPresets: [glm], checks: [correctness], overrides: {correctness: {preset: glm}}}",
+        "checks: [{id: types, kind: command, run: tsc}]",
+        "bindings:",
+        "  local: {checks: [types, core/correctness]}",
+      ),
+    )
+    await expect(resolvePacks(m, loader)).rejects.toThrow(/agent check 'correctness'.*fallbackPresets lists 'glm', which is already the primary preset/)
+  })
+
   it("the pack digest changes when a selected rubric's content changes", async () => {
     const m = parseReviewManifest(
       md(

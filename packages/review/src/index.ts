@@ -103,6 +103,7 @@ export {
   type Attestor,
   type CheckKind,
   type Finding,
+  type LaneFallback,
   type LaneResult,
   type LaneStatus,
   type PackDigest,

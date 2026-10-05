@@ -559,6 +559,11 @@ export interface WebviewRow {
    *  `locallyWatched` (the VS Code-only eye) — pin has no operational
    *  side effects, it's purely sort/display. */
   pinned: boolean
+  /** The session's ascending position among the pinned sessions
+   *  (`SessionSummary.pinnedOrder`, persisted via `POST /sessions/pinned/order`)
+   *  — the Pinned group's sort key. Absent on legacy pins, which sort after
+   *  every ordered pin (see {@link comparePinned}). */
+  pinnedOrder: number | undefined
   /** True when the operator pinned the LOCAL watch eye on this session
    *  (WatchedSessions service) — renders the plain 👁 (no count), with the
    *  "you get a notification" tooltip. Same glyph as the tree's watched prefix. */
@@ -827,6 +832,7 @@ function toRow(
     approved: gateApproved(session),
     watched: session.keepAlive === true,
     pinned: session.pinned === true,
+    pinnedOrder: typeof session.pinnedOrder === "number" ? session.pinnedOrder : undefined,
     locallyWatched: watchedIds?.has(session.id) === true,
     watcherCount: session.watchers ?? 0,
     pendingBgTasks: session.pendingBgTasks ?? 0,
@@ -923,6 +929,75 @@ function buildRowPool(
   return rows.map(r => (parentIds.has(r.id) ? { ...r, focusable: true } : r))
 }
 
+/** The minimal shape {@link comparePinned} reads — a row (or anything carrying
+ *  a session) with an optional daemon-assigned pinned position. */
+export interface PinnedOrderSubject {
+  pinnedOrder?: number
+  session: Pick<SessionSummary, "id" | "startedAt">
+}
+
+/**
+ * Deterministic tie-break for two pinned rows that carry the SAME ordering
+ * signal (both ordered with an equal `pinnedOrder`, or both legacy pins with
+ * none): `startedAt` ascending, then id ascending. Deliberately reads NOTHING
+ * about activity or running state — the Pinned group's whole contract is that
+ * a session getting a new message never moves it.
+ */
+function pinnedOrderTieBreak(a: PinnedOrderSubject, b: PinnedOrderSubject): number {
+  const sa = Date.parse(a.session.startedAt)
+  const sb = Date.parse(b.session.startedAt)
+  if (!Number.isNaN(sa) && !Number.isNaN(sb) && sa !== sb) return sa - sb
+  return a.session.id.localeCompare(b.session.id)
+}
+
+/**
+ * The Pinned group's sort — ascending `pinnedOrder`, with every row that has
+ * one ahead of every legacy pin that doesn't. This is what makes the group's
+ * order STABLE: it reads only the daemon-persisted position, never
+ * `lastActivityAt`/`lastOutputAt`/running state, so a pinned session receiving
+ * a new message keeps its slot (the bug this replaces — the group inherited
+ * `compareSessions`' running-first-then-recency order, so any update reshuffled
+ * it). Ties and legacy pins fall back to {@link pinnedOrderTieBreak}, so the
+ * order is total and reproducible.
+ */
+export function comparePinned(a: PinnedOrderSubject, b: PinnedOrderSubject): number {
+  const ao = typeof a.pinnedOrder === "number" ? a.pinnedOrder : undefined
+  const bo = typeof b.pinnedOrder === "number" ? b.pinnedOrder : undefined
+  if (ao === undefined || bo === undefined) {
+    if (ao === undefined && bo === undefined) return pinnedOrderTieBreak(a, b)
+    // Legacy pins sink below every ordered pin.
+    return ao === undefined ? 1 : -1
+  }
+  if (ao !== bo) return ao - bo
+  return pinnedOrderTieBreak(a, b)
+}
+
+/** Which way a pinned root row moves within the Pinned group. */
+export type PinnedMoveDirection = "up" | "down"
+
+/**
+ * The list-move behind the Pinned group's up/down buttons: swap `id` one slot
+ * toward the top (`"up"`) or bottom (`"down"`) of `ids`, the full ordered list
+ * of pinned root ids. Returns the SAME array reference when the move is a
+ * no-op — unknown id, first row up, last row down — so a caller can skip the
+ * daemon round trip with `===` instead of comparing contents.
+ */
+export function movePinnedId(
+  ids: readonly string[],
+  id: string,
+  direction: PinnedMoveDirection,
+): readonly string[] {
+  const from = ids.indexOf(id)
+  if (from < 0) return ids
+  const to = direction === "up" ? from - 1 : from + 1
+  if (to < 0 || to >= ids.length) return ids
+  const next = ids.slice()
+  const moved = next[from]!
+  next[from] = next[to]!
+  next[to] = moved
+  return next
+}
+
 /**
  * The webview's single entry point. Filtering (archived-hidden, resume-chain
  * collapse, search, project) is applied first; the survivors are split into
@@ -973,7 +1048,11 @@ export function buildSessionsWebviewModel(
   // is REMOVED from its normal group so it never renders twice; its own
   // status dot/section membership is otherwise unaffected — pin is purely
   // where it's grouped, not what it is.
-  const pinnedRows = rows.filter(r => r.pinned)
+  //
+  // The group's order is the daemon-persisted `pinnedOrder` (see
+  // comparePinned), NOT the recency/running order the rest of the pool still
+  // sorts by — a pinned session getting a new message must never move.
+  const pinnedRows = rows.filter(r => r.pinned).sort((a, b) => comparePinned(a, b))
   const restRows = rows.filter(r => !r.pinned)
   const baseGroups = opts.lane === "agents" ? buildSections(restRows) : buildAutoGroups(restRows)
   const groups =

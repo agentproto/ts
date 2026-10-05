@@ -5673,6 +5673,89 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_reorder_pinned ─────────────────────────────────────────
+  // Manually reorder the pinned group — the MCP twin of `POST
+  // /sessions/pinned/order`. Modeled on session_set_pinned: resolve each id,
+  // subtree-scope ALL of them, then delegate to the registry, which assigns
+  // positions 0..n-1 in the given order, persists, and emits
+  // `session:pinned-reordered`. Pure sort/display state — never touches the
+  // live agent, keepAlive, or the idle-reaper.
+  server.tool(
+    "session_reorder_pinned",
+    "Manually reorder pinned sessions. `ids` is the desired order — each " +
+      "listed session is assigned its position (0..n-1) in that order; every " +
+      "other pinned session keeps its relative order and follows. Every id " +
+      "must exist and be pinned. Persists across daemon restarts. Pure " +
+      "sort/display state — does NOT touch the running agent, keepAlive, " +
+      "or the idle-reaper.",
+    {
+      ids: z
+        .array(z.string().min(1))
+        .min(1)
+        .describe("Session ids in the desired pinned order — from `session_list`."),
+    },
+    async input => {
+      const resolved = input.ids.map(idOrName => registry.findByIdOrName(idOrName))
+      for (let i = 0; i < input.ids.length; i++) {
+        if (!resolved[i]) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: `no session "${input.ids[i]}" found` }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const descs = resolved as SessionDescriptor[]
+      // Subtree scoping (WP4): a scoped orchestrator may only reorder when
+      // ALL the listed sessions are in its (transitive) subtree.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        const outOfScope = descs.find(desc => !subtree.has(desc.id))
+        if (outOfScope) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_reorder_pinned: session "${outOfScope.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only reorder sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: outOfScope.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const reordered = registry.reorderPinned(descs.map(desc => desc.id))
+        return {
+          content: [{ type: "text", text: JSON.stringify(reordered.map(publicSessionDescriptor)) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_reorder_pinned: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
   server.tool(
     "session_artifact_add",
     "Materialize a durable artifact (document, image, pdf, html, presentation, " +

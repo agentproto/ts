@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
-import type { OpenAIAppUiExtension } from "@agentproto/app-kit"
+import type { AppExposes, AppRequirement, OpenAIAppUiExtension } from "@agentproto/app-kit"
 
 /** A ref pair as materialized by `@agentproto/app-kit`'s `emit` — an
  *  agent/workflow id plus the absolute path to its manifest on disk. */
@@ -66,7 +66,20 @@ export interface InstalledApp {
   /** Agent-declared (AIP-14) tool refs — the adapter's business, never
    *  validated at install time. Surfaced for visibility only. */
   readonly unvalidatedAgentTools: readonly string[]
+  /** Flat app-id dependency list (both `requires` forms) — the field existing
+   *  registry files on disk already carry. `app_apply`/`app_unapply`'s
+   *  depended-on check reads it. */
   readonly requires?: readonly string[]
+  /** Per-dependency declarations in normalized object form (bare ids become
+   *  `{ id }`) — the consumer's `version` range and callable-`workflows`
+   *  allowlist that `app_call` and `app_apply`'s version check enforce.
+   *  Absent on records written before the field existed; those keep working
+   *  via `requires` alone (dependency checks) but declare no call surface. */
+  readonly requiresApps?: readonly AppRequirement[]
+  /** The app's `exposes` block — the surface OTHER apps may consume:
+   *  `workflows` ids are what a consumer's `requires.apps[].workflows` may
+   *  name and what `app_call` checks against. Absent = exposes nothing. */
+  readonly exposes?: AppExposes
   readonly ui?: {
     readonly path: string
     readonly title?: string

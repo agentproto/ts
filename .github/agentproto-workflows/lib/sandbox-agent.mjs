@@ -95,7 +95,7 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
  *     `{ provider: "e2b", config?: {...}, env?: { passthrough?: [...] },
  *     lifecycle?: {...}, reuse?: … }`. Defaults are merged under it, never
  *     over it: if the object's `env.passthrough` is absent it falls back to
- *     `reviewerSandboxEnv`, then to `["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]`
+ *     `reviewerSandboxEnv`, then to `["ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"]`
  *     (plus `"AGENTPROTO_JOIN"` when this process actually has one to offer —
  *     see the comment below `sandboxRefFor` reads it from); the setup hook +
  *     `cliVersion` pin are merged into
@@ -167,10 +167,10 @@ export const sandboxRefFor = (config, verb) => {
     nativePassthrough ??
     (Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
       ? cfg.reviewerSandboxEnv
-      : ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"])
+      : ["ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"])
   // Applied to WHICHEVER list won above (native `env.passthrough`, a
-  // configured `reviewerSandboxEnv` — e.g. this repo's own opencode lane
-  // pins `["OPENROUTER_API_KEY", "GITHUB_TOKEN"]` — or the bare built-in
+  // configured `reviewerSandboxEnv` — e.g. this repo's claude-sdk lane
+  // pins `["ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"]` — or the bare built-in
   // default): the join token is a daemon-wide capability, not specific to
   // one reviewer lane's env list, so gating it only on the unconfigured
   // default would silently disable auto-join the moment anyone (including

@@ -62,10 +62,72 @@
       "description": "Optional home workspace id (AIP-34). When set, a sibling WORKSPACE.md exists at the app dir root."
     },
     "requires": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 },
-      "uniqueItems": true,
-      "description": "APP ids this app depends on. Bare ids — no version constraints in v1."
+      "description": "What the app needs from its host. Either a flat array of APP ids this app depends on (legacy form), or an object { browser?, fs?, gpu?, secrets?, apps? }. Each `apps` entry is a bare id (dependency only) or an object { id, version?, workflows? }: `version` is a semver range (exact \"1.2.3\", caret \"^1\"/\"^1.2\"/\"^1.2.3\", or tilde \"~1\"/\"~1.2\"/\"~1.2.3\") the provider's installed version must satisfy; `workflows` lists which of the provider's `exposes.workflows` this consumer may call via the app_call tool — omitted/empty means the dependency carries no call permission.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "browser": { "type": "boolean", "description": "Needs the user's real browser." },
+            "fs": { "type": "boolean", "description": "Needs the user's local filesystem beyond app data." },
+            "gpu": { "type": "boolean", "description": "Needs a GPU." },
+            "secrets": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Env/secret names the app needs."
+            },
+            "apps": {
+              "type": "array",
+              "description": "Other app ids this app depends on — bare ids or { id, version?, workflows? } objects.",
+              "items": {
+                "anyOf": [
+                  { "type": "string", "minLength": 1 },
+                  {
+                    "type": "object",
+                    "required": ["id"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": { "type": "string", "minLength": 1, "description": "The depended-on app id." },
+                      "version": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Optional semver range the provider's installed version must satisfy: exact (\"1.2.3\"), caret (\"^1\", \"^1.2\", \"^1.2.3\"), or tilde (\"~1\", \"~1.2\", \"~1.2.3\")."
+                      },
+                      "workflows": {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 1 },
+                        "description": "Provider workflows (ids from its exposes.workflows) this consumer may call via app_call. Omitted/empty = dependency only, no call permission."
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "exposes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Agent ids this app exposes. Every id must name one of the app's own agents."
+        },
+        "workflows": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Workflow ids this app exposes — the callable surface other apps' requires.apps[].workflows entries may name (consumed via the app_call tool). Every id must name one of the app's own workflows."
+        }
+      },
+      "description": "A2A-visible agents/workflows. Ids must exist in the app's agents / workflows."
     },
     "ui": {
       "type": "object",

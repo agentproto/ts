@@ -94,6 +94,8 @@ export interface DetailLane {
   error?: string
   sessionId?: string
   preset?: string
+  /** Reviewers that were unavailable before `preset` produced this lane. */
+  fallbacks?: { preset: string; error: string }[]
   summary?: string
   exitCode?: number
   model?: string

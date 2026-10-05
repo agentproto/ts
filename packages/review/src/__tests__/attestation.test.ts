@@ -120,6 +120,7 @@ describe("provenance fields (requester, pr, lane model)", () => {
       id: "correctness",
       kind: "agent" as const,
       preset: "kimi",
+      fallbackPresets: [],
       rubric: "r.md",
       blockOn: "high" as const,
       blocking: true,

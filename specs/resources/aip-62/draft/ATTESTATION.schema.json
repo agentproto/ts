@@ -152,6 +152,19 @@
         "summary": { "type": "string" },
         "exitCode": { "type": "integer" },
         "model": { "type": "string" },
+        "fallbacks": {
+          "type": "array",
+          "description": "Agent lanes only. Reviewers tried BEFORE the one in `preset` that were unavailable, in order, each with the error that made it so. Absent when the primary reviewer ran.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["preset", "error"],
+            "properties": {
+              "preset": { "type": "string" },
+              "error": { "type": "string" }
+            }
+          }
+        },
         "composedFrom": {
           "type": "object",
           "additionalProperties": false,

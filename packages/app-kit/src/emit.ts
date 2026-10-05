@@ -36,7 +36,7 @@ import { join, relative } from "node:path"
 import matter from "gray-matter"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
-import type { AgentEntry, AppAccepts, AppArtifactDecl, AppArtifactSurface, AppBoundariesDefinition, AppDataDefinition, AppDevDefinition, AppExposes, AppPlacement, AppRequirements, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
+import type { AgentEntry, AppAccepts, AppArtifactDecl, AppArtifactSurface, AppBoundariesDefinition, AppDataDefinition, AppDevDefinition, AppExposes, AppPlacement, AppRequirement, AppRequirements, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
 import { stripOwner } from "./refs.js"
 
 interface EmitInput {
@@ -49,6 +49,7 @@ interface EmitInput {
   readonly description?: string
   readonly requires?: readonly string[]
   readonly requirements?: AppRequirements
+  readonly appRequirements?: readonly AppRequirement[]
   readonly placement?: AppPlacement
   readonly exposes?: AppExposes
   readonly accepts?: AppAccepts
@@ -185,16 +186,35 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
   }
 }
 
-/** Legacy flat array while only app ids are declared; object form once any
- *  host requirement (browser/fs/gpu/secrets) is set. Defaults are omitted. */
+/** Legacy flat array while only bare app ids are declared; object form once
+ *  any host requirement (browser/fs/gpu/secrets) OR any per-dependency detail
+ *  (a version range / workflow allowlist) is set. Defaults are omitted.
+ *  `apps` entries carrying no extra fields emit as bare ids (byte-stable with
+ *  pre-object-form APP.md files). */
 function requiresFrontmatter(app: EmitInput): Record<string, unknown> {
   const r = app.requirements
+  const apps = appsFrontmatter(app)
+  const hasAppDetail = (app.appRequirements ?? []).some(
+    e => e.version !== undefined || (e.workflows !== undefined && e.workflows.length > 0),
+  )
   if (r && (r.browser || r.fs || r.gpu || r.secrets.length > 0)) {
     return {
-      requires: { browser: r.browser, fs: r.fs, gpu: r.gpu, secrets: r.secrets, apps: r.apps },
+      requires: { browser: r.browser, fs: r.fs, gpu: r.gpu, secrets: r.secrets, apps },
     }
   }
+  if (hasAppDetail) {
+    return { requires: { apps } }
+  }
   return app.requires !== undefined ? { requires: app.requires } : {}
+}
+
+function appsFrontmatter(app: EmitInput): unknown[] {
+  const entries = app.appRequirements ?? app.requires ?? []
+  return entries.map(e => {
+    if (typeof e === "string") return e
+    if (e.version === undefined && (e.workflows === undefined || e.workflows.length === 0)) return e.id
+    return e
+  })
 }
 
 function toManifest(handle: object, body: string): string {

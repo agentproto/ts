@@ -142,6 +142,34 @@ describe("foldUsageFrameWindow", () => {
     expect(foldUsageFrameWindow(state, { size, sizeInferred: true }, "claude-opus-5")).toBe(size)
   })
 
+  it("a frame whose used exceeds its size does not shrink a larger known window", () => {
+    // An isolated 200k frame carrying 250k tokens: the window can't be 200k.
+    const sticky: ContextWindowState = { contextSize: REAL, contextSizeSource: "adapter" }
+    expect(foldUsageFrameWindow(sticky, { size: INFERRED, used: 250_000, cost: cost(1) })).toBe(REAL)
+    expect(sticky).toEqual({ contextSize: REAL, contextSizeSource: "adapter" })
+
+    const fromCatalog: ContextWindowState = {}
+    expect(
+      foldUsageFrameWindow(fromCatalog, { size: INFERRED, used: 250_000, cost: cost(1) }, "claude-opus-5-5"),
+    ).toBe(REAL)
+    expect(fromCatalog).toEqual({ contextSize: REAL, contextSizeSource: "catalog" })
+  })
+
+  it("keeps the frame's size when used exceeds it and nothing larger is known", () => {
+    const state: ContextWindowState = {}
+    expect(foldUsageFrameWindow(state, { size: INFERRED, used: 250_000, cost: cost(1) })).toBe(INFERRED)
+    expect(state.contextSizeSource).toBe("adapter")
+    // A known window that is itself too small to hold `used` is no help either.
+    const small: ContextWindowState = { contextSize: 128_000, contextSizeSource: "reported" }
+    expect(foldUsageFrameWindow(small, { size: INFERRED, used: 250_000 }, "claude-haiku-4-5")).toBe(INFERRED)
+  })
+
+  it("a consistent frame (used <= size) is untouched by the guard", () => {
+    const state: ContextWindowState = { contextSize: REAL, contextSizeSource: "adapter" }
+    expect(foldUsageFrameWindow(state, { size: INFERRED, used: 150_000, cost: cost(1) })).toBe(INFERRED)
+    expect(state.contextSizeSource).toBe("adapter")
+  })
+
   it("falls back to the reported size for a model the catalog doesn't know", () => {
     const state: ContextWindowState = {}
     expect(foldUsageFrameWindow(state, { size: 128_000, sizeInferred: true }, "totally-unknown-model-zzz")).toBe(128_000)
@@ -291,6 +319,104 @@ describe("registry replay of recorded claude-code usage_update frames", () => {
     await registry.sendPrompt(id, "turn 1")
     expect(seen).toEqual(Array(6).fill(REAL))
 
+    registry.shutdown()
+  })
+})
+
+describe("context hard-stop on inconsistent usage frames", () => {
+  let transcriptDir: string
+  beforeEach(() => {
+    transcriptDir = mkdtempSync(join(tmpdir(), "ctx-hardstop-"))
+  })
+  afterEach(() => {
+    rmSync(transcriptDir, { recursive: true, force: true })
+  })
+
+  const spawn = (turns: AgentStreamEvent[][], model?: string) => {
+    const registry = createSessionsRegistry({
+      persist: false,
+      transcriptDir,
+      sessionEvents: createSessionEventBus(),
+    })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: replayAgent(turns, () => undefined, []),
+      adapterSlug: "claude-code",
+      ...(model ? { model } : {}),
+      contextContinuity: CONTEXT_CONTINUITY_DEFAULTS,
+    })
+    return { registry, id: desc.id }
+  }
+
+  it("an isolated 200k frame with used > size does not override the catalog 1M window", async () => {
+    const { registry, id } = spawn(
+      [
+        [
+          { kind: "usage_update", size: INFERRED, used: 250_000, cost: cost(1) },
+          { kind: "turn-end" },
+        ],
+      ],
+      "claude-opus-5-5",
+    )
+    await registry.sendPrompt(id, "go")
+    const after = registry.get(id)!
+    expect(after.contextSize).toBe(REAL)
+    expect(after.contextUsed).toBe(250_000)
+    expect(after.status).not.toBe("killed")
+    expect(after.contextContinuityHardStopped).toBeFalsy()
+    registry.shutdown()
+  })
+
+  it("never hard-stops on a reading the window contradicts (used > size, no larger window known)", async () => {
+    const { registry, id } = spawn([
+      [
+        { kind: "usage_update", size: INFERRED, used: 185_000 },
+        { kind: "usage_update", size: INFERRED, used: 250_000, cost: cost(1) },
+        { kind: "turn-end" },
+      ],
+    ])
+    await registry.sendPrompt(id, "go")
+    const after = registry.get(id)!
+    // The 250k frame is dropped at ingestion, leaving the stale 185k (92%).
+    expect(after.contextUsed).toBe(185_000)
+    expect(after.status).not.toBe("killed")
+    expect(after.endedReason).toBeUndefined()
+    expect(after.contextContinuityHardStopped).toBeFalsy()
+    registry.shutdown()
+  })
+
+  it("a consistent reading past hardStopAtPct still hard-stops, with endedReason 'context-hard-stop'", async () => {
+    const { registry, id } = spawn([
+      [
+        { kind: "usage_update", size: INFERRED, used: 185_000, cost: cost(1) },
+        { kind: "turn-end" },
+      ],
+    ])
+    await registry.sendPrompt(id, "go")
+    const after = registry.get(id)!
+    expect(after.status).toBe("killed")
+    expect(after.contextContinuityHardStopped).toBe(true)
+    expect(after.endedReason).toBe("context-hard-stop")
+    registry.shutdown()
+  })
+
+  it("a consistent frame after an inconsistent one re-arms the hard-stop", async () => {
+    const { registry, id } = spawn([
+      [
+        { kind: "usage_update", size: INFERRED, used: 185_000 },
+        { kind: "usage_update", size: INFERRED, used: 250_000, cost: cost(1) },
+        { kind: "turn-end" },
+      ],
+      [
+        { kind: "usage_update", size: INFERRED, used: 186_000, cost: cost(1) },
+        { kind: "turn-end" },
+      ],
+    ])
+    await registry.sendPrompt(id, "turn 1")
+    expect(registry.get(id)!.status).not.toBe("killed")
+    await registry.sendPrompt(id, "turn 2")
+    expect(registry.get(id)!.endedReason).toBe("context-hard-stop")
     registry.shutdown()
   })
 })

@@ -334,6 +334,11 @@ export interface SessionDescriptor {
    *  notifications, never persisted on the descriptor), and `watchers` (live
    *  supervisor wait count) — pin has no operational side effects. */
   pinned?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.pinnedOrder — the
+   *  session's ascending position among the pinned sessions, persisted via
+   *  `POST /sessions/pinned/order`. Absent on legacy pins (persisted before
+   *  the daemon recorded an order); those sort after every ordered pin. */
+  pinnedOrder?: number
   pty?: boolean
   name?: string
   argv?: readonly string[]
@@ -539,6 +544,9 @@ export interface SessionSummary {
   /** Mirrors `@agentproto/runtime` SessionSummary.pinned — see the
    *  SessionDescriptor field above for the full doc. */
   pinned?: boolean
+  /** Mirrors `@agentproto/runtime` SessionSummary.pinnedOrder — see the
+   *  SessionDescriptor field above for the full doc. */
+  pinnedOrder?: number
   pty?: boolean
   name?: string
   argv?: readonly string[]
