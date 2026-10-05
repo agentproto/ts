@@ -31,6 +31,12 @@ export type LaneStatus = "pass" | "fail" | "skipped" | "timeout"
 
 export type CheckKind = "command" | "agent"
 
+/** An agent-lane reviewer that was unavailable, and why. */
+export interface LaneFallback {
+  preset: string
+  error: string
+}
+
 /** One lane of a review run — one attesting check. */
 export interface LaneResult {
   id: string
@@ -46,8 +52,15 @@ export interface LaneResult {
   error?: string
   /** Agent lanes: the reviewer session that produced this lane. */
   sessionId?: string
-  /** Agent lanes: the harness preset the reviewer ran under. */
+  /** Agent lanes: the harness preset the reviewer ran under — the one that
+   *  actually produced this lane's result (a fallback, when the primary was
+   *  unavailable). */
   preset?: string
+  /** Agent lanes: reviewers tried BEFORE `preset` that were unavailable
+   *  (spawn/transport failure, errored or empty turn, session exited), in
+   *  order, each with the error that made it so. Omitted when the primary
+   *  reviewer ran, or when the check declares no `fallbackPresets`. */
+  fallbacks?: LaneFallback[]
   /** Agent lanes: the reviewer's one-line summary, when it wrote one. */
   summary?: string
   /** Command lanes: the process exit code, when the process exited. */

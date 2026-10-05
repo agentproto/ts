@@ -33,6 +33,7 @@ describe("parseReviewManifest — the example manifest", () => {
       id: "correctness",
       kind: "agent",
       preset: "kimi",
+      fallbackPresets: ["opencode-default-go"],
       rubric: "./rubrics/correctness.md",
       blockOn: "high",
       blocking: true,
@@ -166,5 +167,45 @@ describe("parseReviewManifest — references and shape", () => {
   it("accepts the bare `target: git-range` form with the default base", () => {
     const m = parseReviewManifest(md("checks:", "  - {id: a, kind: command, run: x}"))
     expect(m.target).toEqual({ kind: "git-range", base: "origin/main" })
+  })
+})
+
+describe("fallbackPresets", () => {
+  const agent = (extra: string) => `  - {id: c, kind: agent, preset: kimi, rubric: r.md${extra}}`
+
+  it("parses an ordered chain on an agent check; defaults to none", () => {
+    const m = parseReviewManifest(md("checks:", agent(", fallbackPresets: [glm, claude]"), agent("").replace("id: c", "id: d")))
+    expect(m.checks[0]).toMatchObject({ preset: "kimi", fallbackPresets: ["glm", "claude"] })
+    expect(m.checks[1]).toMatchObject({ preset: "kimi", fallbackPresets: [] })
+  })
+
+  it("rejects a fallback equal to the primary, a repeated fallback, and an empty entry", () => {
+    expect(() => parseReviewManifest(md("checks:", agent(", fallbackPresets: [kimi]")))).toThrow(
+      /check 'c': fallbackPresets lists 'kimi', which is already the primary preset/,
+    )
+    expect(() => parseReviewManifest(md("checks:", agent(", fallbackPresets: [glm, glm]")))).toThrow(
+      /check 'c': fallbackPresets lists 'glm' more than once/,
+    )
+    expect(() => parseReviewManifest(md("checks:", agent(", fallbackPresets: ['']")))).toThrow(ReviewManifestError)
+    expect(() => parseReviewManifest(md("checks:", agent(", fallbackPresets: glm")))).toThrow(ReviewManifestError)
+  })
+
+  it("is an unknown key on a command check", () => {
+    expect(() =>
+      parseReviewManifest(md("checks:", "  - {id: t, kind: command, run: tsc, fallbackPresets: [glm]}")),
+    ).toThrow(ReviewManifestError)
+  })
+
+  it("is accepted on a uses[] entry and in its overrides", () => {
+    const m = parseReviewManifest(
+      md(
+        "uses:",
+        "  - {pack: ./p, as: core, preset: kimi, fallbackPresets: [glm], overrides: {c: {fallbackPresets: [claude]}}}",
+        "checks: [{id: t, kind: command, run: tsc}]",
+        "bindings:",
+        "  local: {checks: [t, core/c]}",
+      ),
+    )
+    expect(m.uses[0]).toMatchObject({ fallbackPresets: ["glm"], overrides: { c: { fallbackPresets: ["claude"] } } })
   })
 })

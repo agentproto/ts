@@ -74,6 +74,7 @@ checks:
   - id: correctness
     kind: agent
     preset: kimi                 # harness preset id (or a user preset id)
+    fallbackPresets: [glm]       # optional; tried in order if the reviewer is UNAVAILABLE
     rubric: ./rubrics/correctness.md   # relative to this REVIEW.md
     blockOn: high                # high | medium | low, default high
     blocking: true               # default true
@@ -96,6 +97,9 @@ misleading verdict never runs:
   check, and agent checks can't set `effects`.
 - Every binding must select at least one blocking check. A binding that can
   never block would attest nothing.
+- `fallbackPresets` may not repeat a preset or name the check's own `preset`.
+  On a `uses[]` entry (or `overrides.<id>`) it sets the chain for imported
+  agent checks, checked when `resolvePacks` resolves the final `preset`.
 
 ### Placeholders
 
@@ -146,6 +150,7 @@ uses:
     as: core                               # namespace — the pack's checks become core/<id>
     checks: [correctness, security]        # optional subset; default all
     preset: cc-subs-agentik                # default preset for the pack's agent checks
+    fallbackPresets: [opencode-default-go] # optional: reviewers tried if the preset's is unavailable
     overrides:                             # optional per-check field overrides (by the pack's own id)
       security: {blockOn: medium, timeoutMs: 600000}
     allowCommands: false                   # see Security, below
@@ -307,7 +312,8 @@ verdict:
   rangeSha,                       // sha256("<baseSha>..<headSha>")
   lanes: [{ id, kind, status: "pass"|"fail"|"skipped"|"timeout", blocking,
             findings: [{ severity, title, detail, file?, line? }], durationMs,
-            error?, sessionId?, preset?, summary?, model?, exitCode?,
+            error?, sessionId?, preset?, fallbacks?: [{ preset, error }],
+            summary?, model?, exitCode?,
             composedFrom?: { rangeSha, headSha, attestationSha256 } }],  // delta-composed agent lane
   verdict: "pass" | "block" | "incomplete",
   attestor: { daemon, presets, signature?: { alg: "ssh-ed25519", keyFingerprint,
@@ -366,6 +372,14 @@ never composed; `nocache` implies `compose: false`.
 
 - The lane's `preset` is looked up as a harness preset first, then as a user
   preset.
+- If the reviewer is unavailable — spawn failure, a turn that ends in an
+  error, an empty turn, or a session that exits early — the lane moves on to
+  the next entry of the check's `fallbackPresets` (per-preset retries first;
+  one shared `timeoutMs` deadline). It never falls back after a verdict
+  (a `block` is final), a timeout, a cancel, or an OpenRouter refusal. The
+  lane's `preset`/`model`/`sessionId` name the reviewer that ran, and
+  `fallbacks` records each unavailable one with its error. An exhausted chain
+  settles the lane `skipped`, listing every error.
 - The reviewer spawns with role `executor`, under the calling session.
 - It gets a pointer-style prompt: the range plus the rubric path. There's no
   serialized diff, so there's no diff cap.

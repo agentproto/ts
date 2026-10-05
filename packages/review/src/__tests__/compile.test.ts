@@ -316,6 +316,19 @@ describe("toLaneResult", () => {
     expect(toLaneResult(correctness, { outcome: "exited", exitCode: 0 }, 1).status).toBe("skipped")
   })
 
+  it("carries the fallback record on reported, timeout and skipped agent lanes — and omits it when empty", () => {
+    const fallbacks = [{ preset: "kimi", error: "reviewer produced an empty turn" }]
+    const reported = toLaneResult(
+      correctness,
+      { outcome: "reported", report: { findings: [] }, sessionId: "s", preset: "glm", fallbacks },
+      1,
+    )
+    expect(reported).toMatchObject({ status: "pass", preset: "glm", fallbacks })
+    expect(toLaneResult(correctness, { outcome: "timeout", error: "t", preset: "glm", fallbacks }, 1)).toMatchObject({ fallbacks })
+    expect(toLaneResult(correctness, { outcome: "skipped", error: "x", preset: "glm", fallbacks }, 1)).toMatchObject({ fallbacks })
+    expect("fallbacks" in toLaneResult(correctness, { outcome: "skipped", error: "x", fallbacks: [] }, 1)).toBe(false)
+  })
+
   it("carries the reviewer summary", () => {
     const r = toLaneResult(correctness, { outcome: "reported", report: { summary: "lgtm", findings: [] } }, 1)
     expect(r).toMatchObject({ status: "pass", summary: "lgtm", blocking: true, kind: "agent" })

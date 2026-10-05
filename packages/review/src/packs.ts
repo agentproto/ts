@@ -20,6 +20,7 @@
 
 import matter from "gray-matter"
 import {
+  assertReviewerChain,
   assertUnique,
   finalizeBindings,
   ReviewManifestError,
@@ -277,16 +278,19 @@ export async function resolvePacks(manifest: ReviewManifest, loader: PackLoader)
       }
 
       const preset = override.preset ?? use.preset ?? check.preset
+      const fallbackPresets = override.fallbackPresets ?? use.fallbackPresets ?? []
       if (!preset) {
         throw new ReviewManifestError(
           `uses '${use.as}' (${use.pack}): agent check '${id}' has no preset — set 'preset' on the uses ` +
             `entry, 'overrides.${id}.preset', or a preset directly on the pack's check`,
         )
       }
+      assertReviewerChain(`uses '${use.as}' (${use.pack}): agent check '${id}'`, preset, fallbackPresets)
       const merged: AgentCheck = {
         id: namespacedId,
         kind: "agent",
         preset,
+        fallbackPresets,
         rubric: check.rubric,
         blockOn: override.blockOn ?? check.blockOn,
         blocking: override.blocking ?? check.blocking,

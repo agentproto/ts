@@ -103,6 +103,11 @@
         "kind": { "const": "agent" },
         "description": { "type": "string" },
         "preset": { "type": "string", "minLength": 1 },
+        "fallbackPresets": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Ordered fallback reviewers. When `preset`'s reviewer is unavailable (spawn/transport error, errored or empty turn, session exited), the lane runs on the next one. Never consulted after a verdict, a timeout, or a cancel. Must not repeat `preset` or itself."
+        },
         "rubric": {
           "type": "string",
           "minLength": 1,
@@ -160,6 +165,11 @@
           "description": "Subset of the pack's check ids to import. Default: all."
         },
         "preset": { "type": "string", "minLength": 1 },
+        "fallbackPresets": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Ordered fallback reviewers for every imported agent check (see agentCheck.fallbackPresets)."
+        },
         "overrides": {
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/id" },
@@ -170,7 +180,8 @@
               "blockOn": { "$ref": "#/$defs/severity" },
               "blocking": { "type": "boolean" },
               "timeoutMs": { "type": "integer", "exclusiveMinimum": 0 },
-              "preset": { "type": "string", "minLength": 1 }
+              "preset": { "type": "string", "minLength": 1 },
+              "fallbackPresets": { "type": "array", "items": { "type": "string", "minLength": 1 } }
             }
           }
         },

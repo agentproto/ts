@@ -54,6 +54,7 @@ import {
   sha256Hex,
   type AgentCheck,
   type Attestation,
+  type LaneFallback,
   type LaneOutcome,
   type LaneResult,
   type PackDigest,
@@ -203,10 +204,17 @@ export function runShellLane(input: {
 }
 
 /** Outcome of one reviewer session's run. */
-export type ReviewerRunResult =
+export type ReviewerRunResult = (
   | { status: "ended"; sessionId: string; preset: string; model?: string }
   | { status: "timeout"; sessionId: string; preset: string; model?: string }
   | { status: "failed"; error: string; sessionId?: string; preset?: string; model?: string }
+) & {
+  /** Reviewers that were unavailable BEFORE the one in `preset`, in order, each
+   *  with its error. Set only when a `fallbackPresets` chain advanced past at
+   *  least one reviewer; `preset`/`model`/`sessionId` always name the reviewer
+   *  that produced this result. */
+  fallbacks?: LaneFallback[]
+}
 
 /**
  * The agent-lane executor seam: spawn a reviewer session under a harness
@@ -217,6 +225,9 @@ export type ReviewerRunResult =
 export interface ReviewerSessionHost {
   run(input: {
     preset: string
+    /** Tried in order, after `preset`, only when the preceding reviewer was
+     *  unavailable (never after a verdict, timeout, or cancel). */
+    fallbackPresets?: string[]
     cwd: string
     prompt: string
     label: string
@@ -313,6 +324,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
     await rm(verdictPath, { force: true })
     const result = await ctx.reviewers.run({
       preset: check.preset,
+      ...(check.fallbackPresets.length > 0 ? { fallbackPresets: check.fallbackPresets } : {}),
       cwd: ctx.repoRoot,
       prompt: buildAgentLanePrompt({
         reviewId: ctx.reviewId,
@@ -327,14 +339,17 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
       ...(ctx.parentSessionId ? { parentSessionId: ctx.parentSessionId } : {}),
       ...(signal ? { signal } : {}),
     })
-    const model = result.model ? { model: result.model } : {}
+    const extras = {
+      ...(result.model ? { model: result.model } : {}),
+      ...(result.fallbacks?.length ? { fallbacks: result.fallbacks } : {}),
+    }
     if (result.status === "failed") {
       return {
         outcome: "skipped",
         error: result.error,
         ...(result.sessionId ? { sessionId: result.sessionId } : {}),
         preset: result.preset ?? check.preset,
-        ...model,
+        ...extras,
       }
     }
     if (result.status === "timeout") {
@@ -343,7 +358,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         error: `reviewer exceeded ${check.timeoutMs}ms and was killed`,
         sessionId: result.sessionId,
         preset: result.preset,
-        ...model,
+        ...extras,
       }
     }
     let raw: string
@@ -355,7 +370,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         error: `reviewer ended its turn without writing ${verdictPath}`,
         sessionId: result.sessionId,
         preset: result.preset,
-        ...model,
+        ...extras,
       }
     }
     try {
@@ -364,7 +379,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         report: parseAgentLaneReport(raw),
         sessionId: result.sessionId,
         preset: result.preset,
-        ...model,
+        ...extras,
         ...(composedFrom ? { composedFrom } : {}),
       }
     } catch (err) {
@@ -373,7 +388,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         error: err instanceof Error ? err.message : String(err),
         sessionId: result.sessionId,
         preset: result.preset,
-        ...model,
+        ...extras,
       }
     }
   }

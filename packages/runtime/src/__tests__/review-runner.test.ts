@@ -369,6 +369,79 @@ describe("review runner — verdicts over a real repo", () => {
     expect(again.attestation!.requester!.sessionId).toBe("gate-7")
   })
 
+  it("hands a lane's fallbackPresets to the host and records the reviewer that actually ran", async () => {
+    const repo = await makeRepo(
+      manifest([
+        "{id: correctness, kind: agent, preset: kimi, fallbackPresets: [glm, claude], rubric: ./rubrics/correctness.md}",
+        "{id: plain, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}",
+      ]),
+    )
+    cleanup.push(repo.dir)
+    const seen: Array<{ preset: string; fallbackPresets?: string[] }> = []
+    const host: ReviewerSessionHost = {
+      async run(input) {
+        seen.push({ preset: input.preset, ...(input.fallbackPresets ? { fallbackPresets: input.fallbackPresets } : {}) })
+        const path = input.prompt.match(/write EXACTLY ONE file — (\S+) —/)![1]!
+        // A `block` verdict from the fallback reviewer is final.
+        await writeFile(
+          path,
+          JSON.stringify({ findings: [{ severity: "high", title: "bug", detail: "d" }] }),
+        )
+        return input.fallbackPresets
+          ? {
+              status: "ended",
+              sessionId: "rev-glm",
+              preset: "glm",
+              model: "glm-5",
+              fallbacks: [{ preset: "kimi", error: "reviewer produced an empty turn" }],
+            }
+          : { status: "ended", sessionId: "rev-kimi", preset: input.preset }
+      },
+    }
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const run = await runToEnd(runner, { cwd: repo.dir })
+    expect(seen).toContainEqual({ preset: "kimi", fallbackPresets: ["glm", "claude"] })
+    expect(seen).toContainEqual({ preset: "kimi" })
+    const att = run.attestation!
+    expect(att.verdict).toBe("block")
+    const lane = att.lanes.find((l) => l.id === "correctness")!
+    expect(lane).toMatchObject({
+      status: "fail",
+      sessionId: "rev-glm",
+      preset: "glm",
+      model: "glm-5",
+      fallbacks: [{ preset: "kimi", error: "reviewer produced an empty turn" }],
+    })
+    expect(att.lanes.find((l) => l.id === "plain")!.fallbacks).toBeUndefined()
+    expect([...att.attestor.presets].sort()).toEqual(["glm", "kimi"])
+    // The fallback record is part of the signed-able attestation payload and still verifies.
+    expect(verifyAttestation(att)).toMatchObject({ ok: true })
+  })
+
+  it("an exhausted reviewer chain skips the lane (incomplete) and keeps every error", async () => {
+    const repo = await makeRepo(
+      manifest(["{id: correctness, kind: agent, preset: kimi, fallbackPresets: [glm], rubric: ./rubrics/correctness.md}"]),
+    )
+    cleanup.push(repo.dir)
+    const host: ReviewerSessionHost = {
+      run: async () => ({
+        status: "failed",
+        preset: "glm",
+        error: "every reviewer in the chain was unavailable — 'kimi': boom; 'glm': bang",
+        fallbacks: [{ preset: "kimi", error: "boom" }],
+      }),
+    }
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const run = await runToEnd(runner, { cwd: repo.dir })
+    expect(run.attestation!.verdict).toBe("incomplete")
+    expect(run.attestation!.lanes[0]).toMatchObject({
+      status: "skipped",
+      preset: "glm",
+      error: expect.stringContaining("'kimi': boom; 'glm': bang"),
+      fallbacks: [{ preset: "kimi", error: "boom" }],
+    })
+  })
+
   it("records a passed-through pr in the attestation AND as the ledger annotation link", async () => {
     const repo = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
     cleanup.push(repo.dir)
