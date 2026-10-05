@@ -13,7 +13,9 @@
  * occupancy looked 5x too high and context-continuity compacted / continued
  * fresh far too early.
  *
- * Precedence, highest first:
+ * Precedence, highest first (a frame whose own `used` exceeds its `size`
+ * is first checked against the known window and the catalog — see
+ * {@link foldUsageFrameWindow}):
  *   1. `"adapter"` — a frame with a `cost` block (the adapter's authoritative
  *      turn result). Sticky: no later non-authoritative frame downgrades it.
  *      A newer authoritative frame still replaces it (the window can change
@@ -47,6 +49,9 @@ export interface ContextWindowState {
 /** The slice of a `usage_update` event this fold reads. */
 export interface UsageFrameWindow {
   size?: number
+  /** Tokens the frame says are in context — a window narrower than this is
+   *  provably wrong, whatever claims it. */
+  used?: number
   cost?: { amount: number; currency: string }
   /** The model the adapter says this usage belongs to, when it reports one. */
   model?: string
@@ -94,6 +99,30 @@ export function foldUsageFrameWindow(
 ): number | undefined {
   const size = typeof frame.size === "number" && frame.size > 0 ? frame.size : undefined
   if (size === undefined) return state.contextSize
+  const catalogFor = (): number | undefined =>
+    // An explicit lane hint on the session's model ("…[1m]") is the caller's
+    // own statement of the window — the wrapper's `_claude/model` is the bare
+    // id and would lose it. Otherwise `frame.model` first: it's the model that
+    // actually answered, which matters when the session runs on an alias
+    // ("default", "opus") or was switched by a typed `/model`.
+    (sessionModel ? splitContextWindowHint(stripRouteSuffix(sessionModel)).contextWindow : undefined) ??
+    catalogContextWindow(frame.model) ??
+    catalogContextWindow(sessionModel)
+  // A frame claiming more tokens in context than its own window holds is
+  // self-contradictory, so its `size` can't be trusted — even a cost-bearing
+  // one (claude-agent-acp reports 200k for models that run on 1M). Keep the
+  // wider known window, else the catalog's when it can actually hold `used`.
+  // With no consistent alternative the frame falls through unchanged.
+  if (typeof frame.used === "number" && frame.used > size) {
+    const known = state.contextSize
+    if (known !== undefined && known >= frame.used) return known
+    const catalog = catalogFor()
+    if (catalog !== undefined && catalog >= frame.used) {
+      state.contextSize = catalog
+      state.contextSizeSource = "catalog"
+      return catalog
+    }
+  }
   if (isAuthoritativeUsageFrame(frame)) {
     state.contextSize = size
     state.contextSizeSource = "adapter"
@@ -107,15 +136,7 @@ export function foldUsageFrameWindow(
     state.contextSizeSource = "reported"
     return size
   }
-  // An explicit lane hint on the session's model ("…[1m]") is the caller's
-  // own statement of the window — the wrapper's `_claude/model` is the bare
-  // id and would lose it. Otherwise `frame.model` first: it's the model that
-  // actually answered, which matters when the session runs on an alias
-  // ("default", "opus") or was switched by a typed `/model`.
-  const catalog =
-    (sessionModel ? splitContextWindowHint(stripRouteSuffix(sessionModel)).contextWindow : undefined) ??
-    catalogContextWindow(frame.model) ??
-    catalogContextWindow(sessionModel)
+  const catalog = catalogFor()
   if (catalog !== undefined) {
     state.contextSize = catalog
     state.contextSizeSource = "catalog"

@@ -28,6 +28,9 @@ export const SESSION_END_REASONS = [
   "operator-stopped",
   // Internal/automatic teardown reasons.
   "cost-cap-exceeded",
+  // Context-continuity hard-stop: the window filled past `hardStopAtPct`
+  // and the session was closed to avoid running on a truncated context.
+  "context-hard-stop",
   "policy-cleanup",
   "parent-exited",
   "provider-limit",
