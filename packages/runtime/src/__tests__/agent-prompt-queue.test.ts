@@ -297,7 +297,9 @@ describe("agent_prompt (MCP): queued-mid-turn hint", () => {
     })) as { content?: { text: string }[] }
     const firstBody = JSON.parse(String(first.content?.[0]?.text))
     expect(firstBody.hint).toBeUndefined()
-    expect(firstBody.delivery).toBeUndefined()
+    expect(firstBody.delivery).toBe("delivered")
+    expect(firstBody.pending).toBe(false)
+    expect(typeof firstBody.deliveredAt).toBe("string")
     expect(registry.get(desc.id)?.busy).toBe(true)
 
     // Second prompt lands mid-turn with no interrupt → parked → hint present.
@@ -307,6 +309,9 @@ describe("agent_prompt (MCP): queued-mid-turn hint", () => {
     })) as { content?: { text: string }[] }
     const secondBody = JSON.parse(String(second.content?.[0]?.text))
     expect(secondBody.delivery).toBe("queued-mid-turn")
+    expect(secondBody.pending).toBe(true)
+    expect(secondBody.deliveredAt).toBeUndefined()
+    expect(Object.keys(secondBody)[1]).toBe("pending")
     expect(secondBody.hint).toContain("interrupt: true")
 
     release()
@@ -341,7 +346,8 @@ describe("agent_prompt (MCP): queued-mid-turn hint", () => {
     const body = JSON.parse(String(second.content?.[0]?.text))
     expect(body.queued).toBe(true)
     expect(body.hint).toBeUndefined()
-    expect(body.delivery).toBeUndefined()
+    expect(body.delivery).toBe("queued-mid-turn")
+    expect(body.pending).toBe(true)
 
     release()
     await vi.waitFor(() => expect(registry.get(desc.id)?.busy).toBe(false))
@@ -385,7 +391,8 @@ describe("agent_prompt (MCP): configurable interrupt default", () => {
     expect(registry.get(desc.id)?.promptQueue ?? []).toHaveLength(0)
     const body = JSON.parse(String(second.content?.[0]?.text))
     expect(body.hint).toBeUndefined()
-    expect(body.delivery).toBeUndefined()
+    expect(body.delivery).toBe("delivered")
+    expect(body.pending).toBe(false)
 
     await vi.waitFor(() => expect(registry.get(desc.id)?.busy).toBe(false))
     client.close()

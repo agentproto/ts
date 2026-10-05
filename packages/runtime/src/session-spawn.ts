@@ -1253,6 +1253,7 @@ export interface SpawnAgentSessionInput {
   mcpServers?: AcpMcpServer[]
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   notifyUrl?: string
+  notifySecret?: string
   wait?: boolean
   maxCostUsd?: number
   /** Windowed cost-budget cap (phase 4). DISTINCT from the scalar `maxCostUsd`
@@ -3557,7 +3558,7 @@ export async function spawnAgentSession(
       try {
         bindOrchestratorLifecycle?.(pendingDesc.id)
         if (input.notifyUrl && webhookNotifier) {
-          webhookNotifier.register(pendingDesc.id, input.notifyUrl)
+          webhookNotifier.register(pendingDesc.id, input.notifyUrl, input.notifySecret)
         }
       } catch (err) {
         registry.settlePendingAgent(pendingDesc.id, {
@@ -4177,7 +4178,7 @@ export async function spawnAgentSession(
     // the notifier is wired. Unregistered on session:exited by the
     // gateway's session-event bus handler.
     if (input.notifyUrl && webhookNotifier) {
-      webhookNotifier.register(desc.id, input.notifyUrl)
+      webhookNotifier.register(desc.id, input.notifyUrl, input.notifySecret)
     }
     // wait mode: block until the first turn completes, then return
     // the descriptor with cleaned output appended.

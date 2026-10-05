@@ -3647,6 +3647,32 @@ export async function createGateway(
     restartSweepTimer.unref?.()
   }
 
+  // Pending-prompt sweep: force-delivers prompts past their `deliverWithin`
+  // deadline and tells the sender once when a prompt has sat queued behind a
+  // running turn past `defaults.messaging.pendingPromptStaleMinutes` (hot —
+  // re-read each tick). Cheap and non-destructive unless the caller opted into
+  // `deliverWithin`, so default-on. `.unref()` like the sweeps above.
+  const pendingPromptSweepMs = (() => {
+    const parsed = Number.parseInt(process.env.AGENTPROTO_PENDING_PROMPT_SWEEP_INTERVAL_MS ?? "", 10)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000
+  })()
+  let pendingPromptTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
+    void (async () => {
+      try {
+        const { pendingPromptStaleMinutes } = await resolveMessagingDefaults()
+        const summary = await sessions.sweepPendingPrompts({ staleMs: pendingPromptStaleMinutes * 60_000 })
+        if (summary.stale > 0 || summary.forced > 0) {
+          console.log(
+            `[pending-prompts] ${summary.stale} stale, ${summary.forced} force-delivered: ${summary.ids.join(", ")}`,
+          )
+        }
+      } catch (err) {
+        console.warn(`[pending-prompts] sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })()
+  }, pendingPromptSweepMs)
+  pendingPromptTimer.unref?.()
+
   // AIP-58 §2 owner-liveness sweep (P3b): catches the case the boot-time
   // `loadRuns` restart check doesn't — an owner that died WITHOUT the
   // daemon itself restarting (`workflowRunner.sweep()`, `WorkflowRun.lease`)
@@ -3760,6 +3786,7 @@ export async function createGateway(
       if (turnStallTimer) clearInterval(turnStallTimer)
       // Stop the restart-sweep tick before sessions shut down (restart-scheduler PR-2).
       if (restartSweepTimer) clearInterval(restartSweepTimer)
+      if (pendingPromptTimer) clearInterval(pendingPromptTimer)
       // Stop the AIP-58 liveness sweep before sessions shut down (P3b).
       clearInterval(livenessSweepTimer)
       // Detach the restart-scheduler's session:exited subscription.

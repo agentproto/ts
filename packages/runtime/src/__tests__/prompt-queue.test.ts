@@ -525,7 +525,8 @@ describe("HTTP POST /sessions/:id/prompt?wait=false — queue/force wiring", () 
       })
       expect(res.status).toBe(202)
       const body = (await res.json()) as Record<string, unknown>
-      expect(body).toEqual({ ok: true, id: desc.id, queued: true })
+      expect(body).toMatchObject({ ok: true, id: desc.id, queued: true, delivery: "delivered", pending: false })
+      expect(body).not.toHaveProperty("queueId")
     } finally {
       await http.stop()
     }

@@ -159,6 +159,10 @@ export interface SpawnDefaultsConfig {
      *  recipient's in-flight turn). Default "deny": downgraded to `steer`
      *  and reported as such. Human (HTTP/CLI) senders always may. */
     agentInterrupt?: "allow" | "deny"
+    /** Minutes a prompt may sit queued behind a running turn before the
+     *  sender is told it is stuck (typed notice) and it is flagged `stale`
+     *  in `pendingPrompts`. Default 5. */
+    pendingPromptStaleMinutes?: number
   }
   /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
   mcp?: McpDefaultsConfig

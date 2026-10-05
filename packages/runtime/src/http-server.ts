@@ -5059,6 +5059,7 @@ export function buildSpawnSessionHttpArgs(
   const attach =
     b.attach !== undefined ? parseWithJsonTolerance(attachFieldSchema, b.attach) : undefined
   const notifyUrl = parseNotifyUrlField(b.notifyUrl)
+  const notifySecret = parseNotifySecretField(b.notifySecret)
   const agentStartParity: Pick<
     SpawnAgentSessionInput,
     | "commandSandbox"
@@ -5069,6 +5070,7 @@ export function buildSpawnSessionHttpArgs(
     | "deferredTools"
     | "attach"
     | "notifyUrl"
+    | "notifySecret"
   > = {
     ...(commandSandbox !== undefined ? { commandSandbox } : {}),
     ...(skills !== undefined ? { skills } : {}),
@@ -5078,6 +5080,7 @@ export function buildSpawnSessionHttpArgs(
     ...(deferredTools !== undefined ? { deferredTools } : {}),
     ...(attach !== undefined ? { attach } : {}),
     ...(notifyUrl !== undefined ? { notifyUrl } : {}),
+    ...(notifySecret !== undefined ? { notifySecret } : {}),
   }
   // Per-session headless browser — the HTTP twin of the MCP `agent_start`
   // tool's `browser` field (`true` is sugar for "headless"). Hoisted into a
@@ -5802,6 +5805,14 @@ function parseNotifyUrlField(raw: unknown): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/** The `notifySecret` body field — a `whsec_...` Standard Webhooks secret,
+ *  as `agent_start`'s schema requires. Anything else ⇒ undefined (dropped;
+ *  `notifyUrl` still fires, unauthenticated, same as when no secret is set). */
+function parseNotifySecretField(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined
+  return decodeWhsecSecret(raw) !== null ? raw : undefined
 }
 
 /**
@@ -6562,19 +6573,32 @@ async function handleSessions(
         // operator surface (POST /sessions/:id/prompt — the CLI, the VS Code
         // panel, curl). It only affects the after-the-fact queue origin
         // badge; transcript provenance is untouched (`source` is not set).
-        await registry.enqueuePrompt(id, prompt, { interrupt, queue, force, queueId, origin: "user" })
+        // `steer: true`: a human instruction to a mid-turn steering-capable
+        // agent is injected into the running turn instead of waiting for it to
+        // end (a plain non-steering target still queues).
+        const enq = await registry.enqueuePrompt(id, prompt, {
+          interrupt,
+          queue,
+          force,
+          queueId,
+          origin: "user",
+          ...(queue && !force ? { steer: true } : {}),
+        })
         const promptQueue = queueId ? registry.get(id)?.promptQueue : undefined
         const queuePosition = promptQueue?.findIndex(p => p.id === queueId) ?? -1
         json(202, {
           ok: true,
           id,
           queued: true,
+          pending: enq.pending ?? enq.queued,
+          delivery: enq.delivery ?? (enq.queued ? "queued-mid-turn" : "delivered"),
+          ...(enq.deliveredAt ? { deliveredAt: enq.deliveredAt } : {}),
           // Present only when this prompt actually landed in the FIFO
           // (busy + `queue: true`) rather than dispatching immediately —
           // an idle session's `queueId` never appears in `promptQueue`,
           // so `queuePosition` stays -1 and this is omitted.
           ...(queuePosition >= 0
-            ? { pending: true, queueId, queuePosition: queuePosition + 1 }
+            ? { queueId, queuePosition: queuePosition + 1 }
             : {}),
         })
       } else {

@@ -520,18 +520,17 @@ export function registerAgentTools(
     "Send a follow-up prompt to a live agent session — multi-turn continuity " +
       "without re-spawning. The session id comes from `agent_start` " +
       "(or `agent_sessions_list`). Returns immediately; tail output via " +
-      "`agent_output` or the SSE /sessions/:id/stream endpoint. If the " +
-      "session is mid-turn, the prompt is queued (FIFO) and dispatched " +
-      "automatically when the current turn ends on its own — so fan-in " +
-      "bursts are delivered in order instead of rejected. A turn that is " +
-      "interrupted instead leaves the queue parked until the next natural " +
-      "turn-end. Pass `interrupt: true` to " +
-      "cancel the in-flight turn and redirect the SAME session onto this " +
-      "prompt instead, without losing its context (unlike `agent_kill`, " +
-      "which ends the session entirely); the redirected prompt opens with a " +
-      "one-line `[agentproto]` notice telling the agent the cut was a " +
-      "delivery, not a stop, so it resumes its work. `interrupt` is a no-op " +
-      "on an already-idle session.",
+      "`agent_output` or the SSE /sessions/:id/stream endpoint. Mid-turn, " +
+      "the prompt is steered into the running turn when the adapter supports " +
+      "it (`steering: true` in `session_list`; `delivery: \"steered\"`), else " +
+      "queued FIFO until the turn ends (`delivery: \"queued-mid-turn\"`; stale " +
+      "ones show as `pendingPrompts` in `session_list`/`session_recap`). " +
+      "`pending: false` = delivered, `true` = NOT yet; `deliverWithin` forces " +
+      "a stuck one through. An interrupted turn leaves the queue parked until " +
+      "the next natural turn-end. `interrupt: true` cancels the in-flight turn " +
+      "and redirects the SAME session onto this prompt, keeping its context " +
+      "(unlike `agent_kill`); the prompt opens with a one-line `[agentproto]` " +
+      "notice saying the cut was a delivery, not a stop. No-op when idle.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
@@ -563,6 +562,19 @@ export function registerAgentTools(
             "of rejecting. Default true. Explicit false restores the old " +
             "reject-when-busy behavior."
         ),
+      steer: z
+        .boolean()
+        .optional()
+        .describe("Steer into a running turn when supported (default true); false = queue."),
+      deliverWithin: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Seconds; force a still-queued prompt through after this long."),
+      deliverWithinVia: z
+        .enum(["auto", "steer", "interrupt"])
+        .optional()
+        .describe("Forcing mode; auto (default) = steer, else interrupt."),
     },
     async input => {
       const sessionId = resolveSessionIdArg(input)
@@ -588,13 +600,20 @@ export function registerAgentTools(
         // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
         // configurable daemon default.
         const effectiveInterrupt = input.interrupt ?? interruptDefault
-        const { queued } = await registry.enqueuePrompt(sessionId, input.prompt, {
+        const result = await registry.enqueuePrompt(sessionId, input.prompt, {
           interrupt: effectiveInterrupt,
           // Queue by default: a mid-turn session holds the prompt in its
           // FIFO queue and dispatches it at turn end, so callers never
           // lose a prompt to the busy rejection. Explicit `queue: false`
           // restores the old reject-when-busy behavior.
           queue: input.queue ?? true,
+          steer: input.steer ?? true,
+          ...(input.deliverWithin !== undefined
+            ? {
+                deliverWithinMs: Math.round(input.deliverWithin * 1000),
+                deliverVia: input.deliverWithinVia ?? "auto",
+              }
+            : {}),
           ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
         // Self-documenting loop: the prompt actually parked behind an
@@ -602,24 +621,33 @@ export function registerAgentTools(
         // said anything about `interrupt` — surface the option at the exact
         // moment it's missing, so it won't be delivered until the current
         // turn ends.
-        const hintQueued = queued && input.interrupt === undefined
+        const pending = result.pending ?? result.queued
+        const delivery = result.delivery ?? (result.queued ? "queued-mid-turn" : "delivered")
+        const hintQueued = pending && input.interrupt === undefined
         return {
           content: [
             {
               type: "text",
+              // `pending` leads so a truncated read still shows it. `queued`
+              // is legacy ("accepted") and stays true for compatibility —
+              // `pending` / `delivery` are the unambiguous signals.
               text: JSON.stringify(
                 {
                   ok: true,
+                  pending,
+                  delivery,
+                  ...(result.deliveredAt ? { deliveredAt: result.deliveredAt } : {}),
                   sessionId,
                   queued: true,
+                  ...(result.queueId ? { queueId: result.queueId } : {}),
                   ...(hintQueued
                     ? {
-                        delivery: "queued-mid-turn",
                         hint:
-                          "Message queued — it will only be delivered when " +
+                          "NOT delivered yet — it will only be delivered when " +
                           "the target's CURRENT turn ends. If it's urgent, " +
                           "re-send with interrupt: true (cancels the in-flight " +
-                          "turn and redirects the session onto this prompt now).",
+                          "turn and redirects the session onto this prompt now), " +
+                          "or set deliverWithin.",
                       }
                     : {}),
                 },

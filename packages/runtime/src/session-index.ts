@@ -27,7 +27,7 @@
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync, type Dirent } from "node:fs"
 import { join } from "node:path"
 import { defaultTranscriptBaseDir, sessionEventsPath, sessionTranscriptDir } from "./transcript-writer.js"
-import type { SessionDescriptor } from "./sessions.js"
+import type { PendingPromptView, SessionDescriptor } from "./sessions.js"
 
 /** Hard cap on `lastUserPrompt.text`, in characters. */
 export const INDEX_MAX_PROMPT = 500
@@ -351,6 +351,8 @@ export interface SessionRecap {
   /** Final assistant text/thought of the last turn (trimmed). */
   lastOutputText?: string
   queuedPrompts?: number
+  /** The queued prompts with age — see `SessionDescriptor.pendingPrompts`. */
+  pendingPrompts?: readonly PendingPromptView[]
 }
 
 /**
@@ -365,6 +367,7 @@ export function buildSessionRecap(input: {
   last?: number
   children?: readonly string[]
   queuedPrompts?: number
+  pendingPrompts?: readonly PendingPromptView[]
 }): SessionRecap {
   const { entry } = input
   const last = input.last ?? 8
@@ -395,6 +398,7 @@ export function buildSessionRecap(input: {
     prompts,
     ...(lastOutputText ? { lastOutputText: capText(lastOutputText, INDEX_MAX_OUTPUT) } : {}),
     ...(input.queuedPrompts !== undefined ? { queuedPrompts: input.queuedPrompts } : {}),
+    ...(input.pendingPrompts?.length ? { pendingPrompts: input.pendingPrompts } : {}),
   }
 }
 

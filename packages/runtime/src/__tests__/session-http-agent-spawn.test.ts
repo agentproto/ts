@@ -18,6 +18,7 @@ import type { SpawnAgentSessionInput } from "../session-spawn.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent, SessionDescriptor } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { encodeWhsecSecret } from "../webhook-egress/signing.js"
 import { createOrchestratorInjector, createScopeTokenRegistry } from "../orchestrator-gateway.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
@@ -529,7 +530,8 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     }
   })
 
-  it("maps commandSandbox, skills, contextContinuity, deferredTools, attach and notifyUrl like agent_start", () => {
+  it("maps commandSandbox, skills, contextContinuity, deferredTools, attach, notifyUrl and notifySecret like agent_start", () => {
+    const secret = encodeWhsecSecret(Buffer.alloc(32, 0xab))
     const args = buildSpawnSessionHttpArgs(
       {
         commandSandbox: "strict",
@@ -538,6 +540,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
         deferredTools: false,
         attach: { parent: "sess_parent" },
         notifyUrl: "https://example.test/hook",
+        notifySecret: secret,
       },
       "claude-code",
     )
@@ -548,7 +551,17 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       deferredTools: false,
       attach: { parent: "sess_parent" },
       notifyUrl: "https://example.test/hook",
+      notifySecret: secret,
     })
+  })
+
+  it("drops a malformed notifySecret but keeps notifyUrl (fires unauthenticated, same as no secret)", () => {
+    const args = buildSpawnSessionHttpArgs(
+      { notifyUrl: "https://example.test/hook", notifySecret: "not-a-whsec-secret" },
+      "claude-code",
+    )
+    expect(args.notifyUrl).toBe("https://example.test/hook")
+    expect("notifySecret" in args).toBe(false)
   })
 
   it("tolerates JSON-stringified / string-boolean forms, as the route's other fields do", () => {
@@ -575,6 +588,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
         deferredTools: "yes",
         attach: { parent: "" },
         notifyUrl: "file:///etc/passwd",
+        notifySecret: "not-a-whsec-secret",
         wait: true,
         appId: "app_x",
         autoParentSessionId: "sess_forged",
@@ -587,6 +601,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       "deferredTools",
       "attach",
       "notifyUrl",
+      "notifySecret",
       "wait",
       "appId",
       "autoParentSessionId",

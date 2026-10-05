@@ -21,13 +21,14 @@ describe("resolveMessagingDefaults", () => {
     const result = await resolveMessagingDefaults(async () => ({
       defaults: {
         agentPromptInterrupt: true,
-        messaging: { allowSiblings: true, agentInterrupt: "allow" },
+        messaging: { allowSiblings: true, agentInterrupt: "allow", pendingPromptStaleMinutes: 12 },
       },
     }))
     expect(result).toEqual({
       agentPromptInterrupt: true,
       allowSiblings: true,
       agentInterrupt: "allow",
+      pendingPromptStaleMinutes: 12,
     })
   })
 

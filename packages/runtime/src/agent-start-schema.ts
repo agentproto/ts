@@ -21,6 +21,7 @@ import {
   contextContinuityInputSchema,
   promptInputSchema,
 } from "./spawn-field-schemas.js"
+import { decodeWhsecSecret } from "./webhook-egress/signing.js"
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
  *  These coercers let a flag work whether the client sends a real JSON
@@ -361,6 +362,13 @@ export const agentStartInputShape = {
         "session's turn-end / awaiting-input / exited events, in addition to " +
         "any global notify URL."
     ),
+  notifySecret: z
+    .string()
+    .refine(s => decodeWhsecSecret(s) !== null, {
+      message: "must be a whsec_<base64> Standard Webhooks secret (24-64 decoded bytes)",
+    })
+    .optional()
+    .describe(`Standard Webhooks secret (\`whsec_...\`) signing \`notifyUrl\` POSTs. ${help("notifySecret")}`),
   wait: mcpBool
     .optional()
     .describe(
