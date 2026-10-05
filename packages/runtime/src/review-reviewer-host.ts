@@ -226,15 +226,17 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     async run(input): Promise<ReviewerRunResult> {
       const deadline = Date.now() + input.timeoutMs
       let last: AttemptOutcome | undefined
+      let attempts = 0
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const remainingMs = deadline - Date.now()
         if (attempt > 0 && remainingMs <= 0) break
         last = await runAttempt({ ...input, timeoutMs: Math.max(1, remainingMs) }, attempt)
+        attempts++
         if (!last.retryable || input.signal?.aborted) break
       }
       const final = last!
-      if (final.result.status === "failed" && final.retryable && maxRetries > 0) {
-        return { ...final.result, error: `${final.result.error} (after ${maxRetries + 1} attempts)` }
+      if (final.result.status === "failed" && final.retryable && attempts > 1) {
+        return { ...final.result, error: `${final.result.error} (after ${attempts} attempts)` }
       }
       return final.result
     },

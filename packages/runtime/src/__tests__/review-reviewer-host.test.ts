@@ -216,6 +216,12 @@ describe("createDaemonReviewerHost — child reviewer sessions", () => {
     expect(three.spawnedWith).toHaveLength(3)
     expect(threeRes.status).toBe("ended")
     three.registry.shutdown()
+
+    const spent = setup("error:socket hang up", 2)
+    const spentRes = await spent.host.run({ preset: "rev", cwd: home, prompt: "review", label: "review:demo:spent", timeoutMs: 10_000 })
+    expect(spent.spawnedWith).toHaveLength(3)
+    expect(spentRes.status === "failed" && spentRes.error).toContain("after 3 attempts")
+    spent.registry.shutdown()
   })
 
   it("never retries a permanent error (auth, quota, unknown model)", async () => {
@@ -224,6 +230,7 @@ describe("createDaemonReviewerHost — child reviewer sessions", () => {
       const res = await host.run({ preset: "rev", cwd: home, prompt: "review", label: "review:demo:perm", timeoutMs: 10_000 })
       expect(spawnedWith).toHaveLength(1)
       expect(res.status === "failed" && res.error).toContain(message)
+      expect(res.status === "failed" && res.error).not.toMatch(/attempts/)
       registry.shutdown()
     }
   })
