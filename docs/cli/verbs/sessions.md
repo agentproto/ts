@@ -990,6 +990,25 @@ actually settle, then delivers the new prompt on the **same** live
 session — same process, same conversation history, no re-spawn.
 `interrupt` is a no-op when the session is already idle.
 
+A target whose adapter advertises mid-turn steering (`capabilities.steering`,
+e.g. claude-code over ACP) does not wait for turn end: a prompt sent without
+`interrupt` is **steered** into the running turn at its next safe point (FIFO,
+turn undisturbed). `agent_prompt` / the prompt route say exactly what happened:
+
+| `delivery` | `pending` | Meaning |
+|------------|-----------|---------|
+| `delivered` | `false` | Target was idle (or `interrupt` cut the turn) — the prompt is running now. |
+| `steered` | `false` | Injected into the running turn. `deliveredAt` is set. |
+| `queued-mid-turn` | `true` | **Not delivered yet** — parked until the turn ends. `queueId` identifies it. |
+
+Pass `steer: false` to force plain queueing. A prompt that stays queued shows
+up as `pendingPrompts` (with `ageMs`, `stale` past
+`defaults.messaging.pendingPromptStaleMinutes`, default 5) in `session_list`
+and `session_recap`, and its sender gets a `notice` message once it goes
+stale. `deliverWithin: <seconds>` (with `deliverWithinVia: auto | steer |
+interrupt`, default `auto` = steer, else interrupt) makes the daemon force
+delivery if the prompt is still queued after that long.
+
 This is deliberately narrower than `restart` or `stop`:
 
 | Action | Effect |

@@ -161,6 +161,7 @@ import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import {
+  createSessionMessage,
   escapeHumanPrompt,
   matchesMessageFilter,
   MESSAGE_PREAMBLE,
@@ -905,6 +906,20 @@ export interface QueuedPrompt {
    *  as a `session-message` transcript record, and coalesced with any
    *  envelope items queued right behind it (never with a plain prompt). */
   envelope?: SessionMessage
+  /** Opt-in (`enqueuePrompt` `opts.steer`): this item may be injected into
+   *  the target's RUNNING turn at the next safe point instead of waiting for
+   *  the turn to end — only when the agent advertises steering. Plain
+   *  (non-envelope), non-child prompts only. */
+  steer?: boolean
+  /** ISO 8601 deadline (`deliverWithin`): past it, the pending-prompt sweep
+   *  force-delivers this item per {@link deliverVia}. */
+  deliverBy?: string
+  /** How the sweep forces delivery at {@link deliverBy}: `steer` (inject,
+   *  else stay queued), `interrupt` (cancel the turn and run it now), or
+   *  `auto` (steer when the agent can, else interrupt). Default `auto`. */
+  deliverVia?: "auto" | "steer" | "interrupt"
+  /** ISO 8601 — when the staleness notice for this item was sent (once). */
+  staleNotifiedAt?: string
 }
 
 /** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
@@ -915,8 +930,24 @@ export interface QueuedPrompt {
  *  idle dispatch, an interrupt that redirected the live turn, a structured-
  *  question answer — resolves `queued: false`. */
 export interface EnqueuePromptResult {
+  /** Legacy: true ONLY when the prompt is parked in `promptQueue` (not yet
+   *  delivered). Prefer `delivery` / `pending`. */
   queued: boolean
+  /** `delivered` — started as a turn (idle target, or an interrupt);
+   *  `steered` — injected into the running turn; `queued-mid-turn` — parked
+   *  until the current turn ends (or a steer / `deliverWithin` fires).
+   *  `delivery` / `pending` are always set by the registry; optional here so
+   *  structural stand-ins that only know `queued` still type-check. */
+  delivery?: PromptDelivery
+  /** ISO 8601 delivery time, when already delivered. */
+  deliveredAt?: string
+  /** True while the prompt has NOT reached the target yet. */
+  pending?: boolean
+  /** Id of the parked item (`delivery: "queued-mid-turn"`). */
+  queueId?: string
 }
+
+export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn"
 
 /**
  * Short text preview of a queued `QueuedPrompt.message` (raw string OR an
@@ -1054,6 +1085,56 @@ export interface QueuedPromptView {
   /** ISO 8601 timestamp the item was queued. */
   queuedAt: string
   position: number
+}
+
+/** One prompt still waiting to reach a session, with its age — the
+ *  `pendingPrompts` field on `session_list` / `session_recap` so a sender (or
+ *  a supervisor reading a truncated list) sees a stuck delivery. `stale` is
+ *  set once it has waited past the staleness threshold. */
+export interface PendingPromptView {
+  id: string
+  /** Same label as `QueuedPromptView.origin`. */
+  origin: string
+  preview: string
+  queuedAt: string
+  /** Milliseconds since `queuedAt` at read time. */
+  ageMs: number
+  stale?: true
+  /** ISO 8601 `deliverWithin` deadline, when one was set. */
+  deliverBy?: string
+}
+
+/** Tally of one `sweepPendingPrompts` pass. */
+export interface PendingPromptSweepSummary {
+  /** Prompts newly reported stale (sender notified). */
+  stale: number
+  /** Prompts force-delivered because their `deliverWithin` deadline passed. */
+  forced: number
+  ids: string[]
+}
+
+/** Daemon default for how long a prompt may sit queued before it is
+ *  reported stuck (`defaults.messaging.pendingPromptStaleMinutes`). */
+export const DEFAULT_PENDING_PROMPT_STALE_MS = 5 * 60_000
+
+/** Project a prompt queue into age-stamped {@link PendingPromptView}s. */
+export function pendingPromptViews(
+  queue: readonly QueuedPrompt[] | undefined,
+  now: number = Date.now(),
+  staleMs: number = DEFAULT_PENDING_PROMPT_STALE_MS,
+): PendingPromptView[] {
+  return (queue ?? []).map(p => {
+    const ageMs = Math.max(0, now - Date.parse(p.queuedAt))
+    return {
+      id: p.id,
+      origin: promptOriginLabel(p),
+      preview: previewPrompt(p.message),
+      queuedAt: p.queuedAt,
+      ageMs,
+      ...(ageMs >= staleMs ? { stale: true as const } : {}),
+      ...(p.deliverBy ? { deliverBy: p.deliverBy } : {}),
+    }
+  })
 }
 
 /** Provenance stamped onto a `session_continue_fresh` target by
@@ -1284,6 +1365,10 @@ export interface SessionDescriptor {
    *  preview, queuedAt, position) lives behind the `session_queue_list`
    *  verb / `GET /sessions/:id/queue` — this is just the scalar badge. */
   queuedPrompts?: number
+  /** The queued prompts themselves, with age (`PendingPromptView`) — derived
+   *  at read time from {@link promptQueue}, never persisted. Absent when
+   *  nothing is waiting. */
+  pendingPrompts?: PendingPromptView[]
   /** Short human-readable string describing the most recent automatic
    *  failure — currently only stamped by `markCrashed` (e.g. "adapter
    *  process gone (pid 1234) — session crashed"). Not a stack trace or raw
@@ -2528,6 +2613,15 @@ interface SessionRuntime {
   /** When this session last had a message steered into it — the R3 rate
    *  limit (`STEER_MIN_INTERVAL_MS`). In-memory only. */
   lastSteerAt?: number
+  /** Queue id of the prompt whose steer RPC is in flight — while set,
+   *  `dispatchQueuedPrompt` holds off so a turn ending mid-RPC can't also
+   *  dispatch it (double delivery). In-memory only. */
+  steerInFlight?: string
+  /** Serializes `flushSteerableQueue` runs per session (FIFO steering). */
+  steerChain?: Promise<void>
+  /** Queue id → ISO time for prompts steered into the running turn, read once
+   *  by the `enqueuePrompt` call that queued them. Bounded. In-memory only. */
+  steeredPromptAt?: Map<string, string>
   /** Messages this session received that have since left its inbox (acked
    *  by a wait, a turn, `inbox_ack`, or steered in), newest last, bounded
    *  by `INBOX_CAP`. `findReceivedMessage` reads this before the transcript:
@@ -3630,8 +3724,25 @@ export interface SessionsRegistry {
        *  structured-question answer, and noted in the SENDER's transcript
        *  as `session-message-sent`. */
       envelope?: SessionMessage
+      /** On the queue arm, inject this prompt into the target's RUNNING turn
+       *  at the next safe point (ACP steering) instead of waiting for the
+       *  turn to end — when the agent advertises steering. FIFO among steered
+       *  prompts. Ignored for envelopes and child-sourced prompts; absent ⇒
+       *  today's park-until-turn-end. A refused steer leaves it queued. */
+      steer?: boolean
+      /** Deadline in ms: a prompt still queued past it is force-delivered by
+       *  the pending-prompt sweep per `deliverVia`. */
+      deliverWithinMs?: number
+      /** `steer` — inject only (stay queued if it can't); `interrupt` —
+       *  cancel the turn and run it; `auto` (default) — steer, else interrupt. */
+      deliverVia?: "auto" | "steer" | "interrupt"
     }
   ): Promise<EnqueuePromptResult>
+  /** One pass over every prompt queue: force-deliver items past their
+   *  `deliverWithin` deadline, and notify the sender (typed `notice` into the
+   *  caller's — else the target's parent's — inbox) once per item that has
+   *  waited past `staleMs`. Driven on a timer by the daemon; callable directly. */
+  sweepPendingPrompts(opts?: { now?: number; staleMs?: number }): Promise<PendingPromptSweepSummary>
   /** Cancel one not-yet-dispatched item in `SessionDescriptor.promptQueue`
    *  by id — the composer's per-item "remove" action. Idempotent: an
    *  unknown session or an id that's already gone (dispatched, already
@@ -4800,6 +4911,11 @@ export function computePinnedOrder(
 }
 
 export function createSessionsRegistry(opts?: {
+  /** How long a queued prompt may wait before it is reported stuck
+   *  (`pendingPrompts[].stale`, sender notice). Default
+   *  {@link DEFAULT_PENDING_PROMPT_STALE_MS}; `sweepPendingPrompts({staleMs})`
+   *  overrides it live (the daemon passes the hot `config.json` value). */
+  pendingPromptStaleMs?: number
   /** Fires exactly once per NEWLY-recorded opened PR (AIP-60 §6/step 4
    *  sentinel auto-link) — every lane that calls `recordOpenedPr`
    *  (`command_execute`'s stamper, both `pr-provenance-reconciler.ts` lanes)
@@ -5011,6 +5127,15 @@ export function createSessionsRegistry(opts?: {
    *  (mirrors `stampProcessAlive`). 0/empty when nothing is waiting — both
    *  fields are always set so a reader can tell "no watchers" from "field
    *  unsupported". A shallow copy so a caller can't mutate the live list. */
+  let pendingPromptStaleMs = opts?.pendingPromptStaleMs ?? DEFAULT_PENDING_PROMPT_STALE_MS
+  /** Read-time `pendingPrompts` projection (age + stale flag) of the queue. */
+  const stampPendingPrompts = (desc: SessionDescriptor): void => {
+    if (desc.promptQueue?.length) {
+      desc.pendingPrompts = pendingPromptViews(desc.promptQueue, Date.now(), pendingPromptStaleMs)
+    } else {
+      delete desc.pendingPrompts
+    }
+  }
   const stampWatchers = (desc: SessionDescriptor): void => {
     desc.watchers = watchersById.get(desc.id) ?? 0
     desc.watcherDetails = [...(watcherDetailsById.get(desc.id) ?? [])]
@@ -6688,7 +6813,7 @@ export function createSessionsRegistry(opts?: {
    */
   const dispatchQueuedPrompt = (rt: SessionRuntime, onlyId?: string): void => {
     const queue = rt.desc.promptQueue
-    if (!queue?.length || rt.busy) return
+    if (!queue?.length || rt.busy || rt.steerInFlight) return
     const next = onlyId ? queue.find(p => p.id === onlyId) : queue[0]
     if (!next) return
     // A typed message at the head drains together with every envelope item
@@ -7693,6 +7818,145 @@ export function createSessionsRegistry(opts?: {
     emitSessionMessage(stamped)
     appendLine(rt, `[message] ${stamped.id} from ${stamped.from.relation} steered into the running turn`, "stdout")
     return true
+  }
+
+  const canSteerPrompt = (rt: SessionRuntime): boolean => {
+    const agent = rt.agentSession
+    return !!agent?.steer && agent.steeringSupported === true && rt.busy && !rt.autonomousTurn
+  }
+
+  /** Inject one queued prompt into the running turn (ACP steering). Records it
+   *  as a user prompt in the transcript, like a turn it would have become. */
+  const steerQueuedPrompt = async (rt: SessionRuntime, item: QueuedPrompt): Promise<boolean> => {
+    const agent = rt.agentSession
+    if (!agent?.steer) return false
+    let outcome: "steered" | "promptRequired" | "unsupported"
+    try {
+      const content = typeof item.message === "string" ? escapeHumanPrompt(item.message) : item.message
+      outcome = await agent.steer(content)
+    } catch {
+      return false
+    }
+    if (outcome !== "steered") return false
+    const at = new Date().toISOString()
+    transcriptWriter.recordPrompt(
+      rt.desc.id,
+      item.message,
+      item.source ? { source: item.source } : undefined,
+    )
+    rt.lastUserPrompt = { ts: at, text: promptTextForIndex(item.message, undefined) }
+    appendLine(rt, `[prompt] ${item.id} from ${promptOriginLabel(item)} steered into the running turn`, "stdout")
+    const seen = (rt.steeredPromptAt ??= new Map())
+    seen.set(item.id, at)
+    if (seen.size > 100) seen.delete(seen.keys().next().value as string)
+    return true
+  }
+
+  /** Steer every `steer`-flagged queued prompt into the running turn, in queue
+   *  (FIFO) order, as soon as the agent can take it. Non-steer items are
+   *  skipped (they keep waiting for turn end); a refused steer stops the run so
+   *  later items never overtake an earlier one. Serialized per session. */
+  const flushSteerableQueue = (rt: SessionRuntime): Promise<void> => {
+    const run = async (): Promise<void> => {
+      try {
+        while (canSteerPrompt(rt)) {
+          const head = rt.desc.promptQueue?.find(p => p.steer && !p.envelope)
+          if (!head) break
+          rt.steerInFlight = head.id
+          let ok = false
+          try {
+            ok = await steerQueuedPrompt(rt, head)
+          } finally {
+            rt.steerInFlight = undefined
+          }
+          if (!ok) break
+          rt.desc.promptQueue = (rt.desc.promptQueue ?? []).filter(p => p.id !== head.id)
+          schedulePersist()
+        }
+      } finally {
+        // The turn may have ended while a steer RPC was in flight and
+        // `dispatchQueuedPrompt` held off — drain now.
+        if (!rt.busy) dispatchQueuedPrompt(rt)
+      }
+    }
+    rt.steerChain = (rt.steerChain ?? Promise.resolve()).then(run, run)
+    return rt.steerChain
+  }
+
+  /** One pass over every session's prompt queue: force-deliver items past
+   *  their `deliverWithin` deadline, and tell the sender once about items that
+   *  have waited past the staleness threshold. */
+  const sweepPendingPrompts = async (
+    sweepOpts?: { now?: number; staleMs?: number },
+  ): Promise<PendingPromptSweepSummary> => {
+    const now = sweepOpts?.now ?? Date.now()
+    if (sweepOpts?.staleMs !== undefined && sweepOpts.staleMs > 0) {
+      pendingPromptStaleMs = sweepOpts.staleMs
+    }
+    const summary: PendingPromptSweepSummary = { stale: 0, forced: 0, ids: [] }
+    for (const rt of Array.from(sessions.values())) {
+      for (const item of [...(rt.desc.promptQueue ?? [])]) {
+        if (!rt.desc.promptQueue?.some(p => p.id === item.id)) continue
+        if (item.deliverBy && Date.parse(item.deliverBy) <= now) {
+          const via = item.deliverVia ?? "auto"
+          if (via !== "interrupt" && canSteerPrompt(rt)) {
+            rt.desc.promptQueue = rt.desc.promptQueue.map(p => (p.id === item.id ? { ...p, steer: true } : p))
+            await flushSteerableQueue(rt)
+          }
+          if (rt.desc.promptQueue?.some(p => p.id === item.id) && via !== "steer") {
+            try {
+              await registry.deliverQueuedPrompt(rt.desc.id, item.id)
+            } catch (err) {
+              appendLine(rt, `[error] deliverWithin: ${err instanceof Error ? err.message : String(err)}`, "stderr")
+            }
+          }
+          if (!rt.desc.promptQueue?.some(p => p.id === item.id)) {
+            summary.forced++
+            summary.ids.push(item.id)
+            continue
+          }
+        }
+        const age = now - Date.parse(item.queuedAt)
+        // Typed-message envelopes are skipped: a notice about a notice would loop.
+        if (!item.envelope && !item.staleNotifiedAt && age >= pendingPromptStaleMs) {
+          rt.desc.promptQueue = (rt.desc.promptQueue ?? []).map(p =>
+            p.id === item.id ? { ...p, staleNotifiedAt: new Date(now).toISOString() } : p,
+          )
+          schedulePersist()
+          summary.stale++
+          summary.ids.push(item.id)
+          await notifyStalePrompt(rt, item, age)
+        }
+      }
+    }
+    return summary
+  }
+
+  /** Tell the sender (the `agent:<id>` session that queued it, else the
+   *  target's parent) that a prompt is still undelivered — as a typed `notice`
+   *  into its inbox. A human sender has no inbox; they see `pendingPrompts`. */
+  const notifyStalePrompt = async (rt: SessionRuntime, item: QueuedPrompt, ageMs: number): Promise<void> => {
+    const caller = item.source?.startsWith("agent:") ? item.source.slice("agent:".length) : undefined
+    const recipientId = caller && sessions.has(caller) ? caller : rt.desc.parentSessionId
+    if (!recipientId || recipientId === rt.desc.id || !sessions.has(recipientId)) return
+    const minutes = Math.round(ageMs / 60_000)
+    try {
+      await registry.sendMessage(
+        createSessionMessage({
+          to: recipientId,
+          from: { relation: "system" },
+          kind: "notice",
+          urgency: "steer",
+          text:
+            `Prompt ${item.id} to session ${rt.desc.id} ("${previewPrompt(item.message, 60)}") has been ` +
+            `queued for ${minutes} min and has NOT been delivered: the target is mid-turn. ` +
+            `Re-send with agent_prompt interrupt:true to redirect it now, or deliverWithin to force it.`,
+          data: { kind: "prompt-stale", sessionId: rt.desc.id, queueId: item.id, ageMs },
+        }),
+      )
+    } catch {
+      // Best-effort: the recipient may have exited — pendingPrompts still shows it.
+    }
   }
 
   const recordSent = (msg: SessionMessage): void => {
@@ -9844,6 +10108,12 @@ export function createSessionsRegistry(opts?: {
       })
     },
     async enqueuePrompt(id, message, opts) {
+      const deliveredNow = (): EnqueuePromptResult => ({
+        queued: false,
+        delivery: "delivered",
+        deliveredAt: new Date().toISOString(),
+        pending: false,
+      })
       // Admission phase — AWAITED, unlike the turn itself below. This
       // is what makes `{queued: true}` truthful: a dead (exited/
       // killed/error) session gets one resume attempt, then
@@ -9892,6 +10162,7 @@ export function createSessionsRegistry(opts?: {
         }
       }
       if (opts?.queue && rtPre.busy) {
+        const steerable = opts.steer === true && !envelope && !isChildPromptSource(opts.source)
         const item: QueuedPrompt = {
           id: opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
           message: envelope ? envelope.text : message,
@@ -9899,15 +10170,34 @@ export function createSessionsRegistry(opts?: {
           ...(opts.source ? { source: opts.source } : {}),
           ...(opts.origin ? { origin: opts.origin } : {}),
           ...(envelope ? { envelope } : {}),
+          ...(steerable ? { steer: true } : {}),
+          ...(opts.deliverWithinMs !== undefined && opts.deliverWithinMs > 0
+            ? {
+                deliverBy: new Date(Date.now() + opts.deliverWithinMs).toISOString(),
+                deliverVia: opts.deliverVia ?? "auto",
+              }
+            : {}),
         }
         if (envelope) emitSessionMessage(envelope)
         rtPre.desc.promptQueue = opts.force
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
           : [...(rtPre.desc.promptQueue ?? []), item]
         schedulePersist()
+        if (steerable) {
+          await flushSteerableQueue(rtPre)
+          const steeredAt = rtPre.steeredPromptAt?.get(item.id)
+          if (steeredAt) {
+            rtPre.steeredPromptAt?.delete(item.id)
+            return { queued: false, delivery: "steered", deliveredAt: steeredAt, pending: false, queueId: item.id }
+          }
+          if (!rtPre.desc.promptQueue?.some(p => p.id === item.id)) {
+            // The turn ended while the steer ran and the queue drain took it.
+            return { queued: false, delivery: "delivered", deliveredAt: new Date().toISOString(), pending: false, queueId: item.id }
+          }
+        }
         // The ONLY path that parks the prompt behind a live turn — signal it
         // so the caller can surface the "queued, not delivered yet" hint.
-        return { queued: true }
+        return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: item.id }
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
@@ -9915,7 +10205,7 @@ export function createSessionsRegistry(opts?: {
         void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
           appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
         })
-        return { queued: false }
+        return deliveredNow()
       }
       // A structured-question answer is resolved synchronously (it never
       // starts a turn — it's a flag flip, or a hand-off to a fresh session)
@@ -9927,7 +10217,7 @@ export function createSessionsRegistry(opts?: {
         : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
-        return { queued: false }
+        return deliveredNow()
       }
       // Execution phase — fire-and-forget from here on. Errors during
       // the turn itself (network drop, child died mid-turn) land in
@@ -9943,8 +10233,9 @@ export function createSessionsRegistry(opts?: {
       })
       // Admitted + dispatched now (idle session, or an interrupt that already
       // settled the prior turn) — not parked, so no queued hint.
-      return { queued: false }
+      return deliveredNow()
     },
+    sweepPendingPrompts,
     async sendMessage(msg, opts) {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
@@ -10470,6 +10761,7 @@ export function createSessionsRegistry(opts?: {
           stampAdapterConnected(desc, rt)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           desc.queuedPrompts = desc.promptQueue?.length ?? 0
+          stampPendingPrompts(desc)
           return desc
         })
     },
@@ -10546,6 +10838,7 @@ export function createSessionsRegistry(opts?: {
         stampAdapterConnected(desc, rt)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
+        stampPendingPrompts(desc)
       }
       return desc
     },

@@ -632,6 +632,10 @@ export interface SessionListCompactItem {
   /** True when the agent accepts steering (`SessionDescriptor.capabilities`)
    *  — a `steer` message can reach its running turn. Absent when not. */
   steering?: boolean
+  /** Prompts still waiting to reach this session (queued behind a running
+   *  turn), each with its age — `stale` once past the staleness threshold.
+   *  Absent when nothing is pending. */
+  pendingPrompts?: SessionDescriptor["pendingPrompts"]
   /** How many background tasks the agent still has running — the
    *  "idle, but waiting on N background tasks" signal. Absent when none;
    *  the task list itself is on the full record (`backgroundTasks`). */
@@ -733,6 +737,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   awaitingInput: s.awaitingInput,
   blockedOn: s.blockedOn,
   ...(s.capabilities?.steering ? { steering: true } : {}),
+  ...(s.pendingPrompts?.length ? { pendingPrompts: s.pendingPrompts } : {}),
   ...(s.backgroundTasks?.length ? { backgroundTaskCount: s.backgroundTasks.length } : {}),
   lastActivityAt: s.lastActivityAt,
   startedAt: s.startedAt,
@@ -1364,6 +1369,7 @@ export function registerSessionTools(
         last: input.last ?? 8,
         children,
         ...(desc.queuedPrompts !== undefined ? { queuedPrompts: desc.queuedPrompts } : {}),
+        ...(desc.pendingPrompts?.length ? { pendingPrompts: desc.pendingPrompts } : {}),
       })
     },
     transformers: [catchErrors()],

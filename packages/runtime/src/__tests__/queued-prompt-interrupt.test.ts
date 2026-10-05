@@ -156,7 +156,7 @@ describe("queued prompts survive an interrupt of the turn they wait behind", () 
 
     await expect(
       reg.enqueuePrompt(id, "redirect now", { interrupt: true })
-    ).resolves.toEqual({ queued: false })
+    ).resolves.toMatchObject({ queued: false, delivery: "delivered", pending: false })
     await first
     await waitUntil(() => events.length === 3)
 
