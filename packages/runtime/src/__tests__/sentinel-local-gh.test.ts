@@ -155,6 +155,57 @@ describe("localGhSentinelProvider", () => {
     expect(after.events[0]!.data.merged).toBe(true)
   })
 
+  it("a PR already merged on the baseline poll still emits its terminal closed event, once", async () => {
+    const state: FakeGhState = { number: 42, state: "closed", merged: true, headSha: "sha1", reviews: [], checks: [] }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+
+    const first = await provider.poll!(handle, 50)
+    expect(first.events).toHaveLength(1)
+    expect(first.events[0]!.type).toBe("github.pull_request.closed")
+    expect(first.events[0]!.terminal).toBe(true)
+    expect(first.events[0]!.data).toMatchObject({ merged: true, late: true })
+
+    handle = { ...handle, cursor: first.cursor }
+    const second = await provider.poll!(handle, 50)
+    expect(second.events).toEqual([])
+  })
+
+  it("heals a cursor written before closedEmitted existed whose snapshot is already closed", async () => {
+    const state: FakeGhState = { number: 42, state: "closed", merged: true, headSha: "sha1", reviews: [], checks: [] }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    const created = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const legacy = {
+      ...created,
+      cursor: JSON.stringify({
+        snapshot: { fetchedAt: "2026-10-01T00:00:00.000Z", state: "merged", reviews: [], checks: [], headSha: "sha1" },
+        consecutiveFailures: 0,
+      }),
+    }
+
+    const healed = await provider.poll!(legacy, 50)
+    expect(healed.events.map(e => e.type)).toEqual(["github.pull_request.closed"])
+    const again = await provider.poll!({ ...legacy, cursor: healed.cursor }, 50)
+    expect(again.events).toEqual([])
+  })
+
+  it("a reopened PR can emit a fresh closed event after a late one", async () => {
+    const state: FakeGhState = { number: 42, state: "closed", merged: false, headSha: "sha1", reviews: [], checks: [] }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const late = await provider.poll!(handle, 50)
+    expect(late.events).toHaveLength(1)
+    handle = { ...handle, cursor: late.cursor }
+
+    state.state = "open"
+    const reopened = await provider.poll!(handle, 50)
+    handle = { ...handle, cursor: reopened.cursor }
+    state.state = "closed"
+    state.merged = true
+    const closedAgain = await provider.poll!(handle, 50)
+    expect(closedAgain.events.map(e => e.type)).toEqual(["github.pull_request.closed"])
+  })
+
   it("same-conclusion CI on a new head emits a second check_suite.completed event", async () => {
     const state: FakeGhState = {
       number: 42,
@@ -351,6 +402,27 @@ describe("local-gh through SentinelRuntime", () => {
     await runtime.pollOnce()
     expect(registry.calls).toHaveLength(2)
     expect(registry.calls[1]!.correlationId).toBe(`sentinel:${SUBJECT}`)
+    expect(store.get(sentinel.id)?.status).toBe("expired")
+  })
+
+  it("a sentinel created after the PR already merged still delivers it and expires", async () => {
+    const state: FakeGhState = { number: 42, state: "closed", merged: true, headSha: "sha1", reviews: [], checks: [] }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    const store = createSentinelStore({ persist: false })
+    const handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const sentinel = store.create({ provider: LOCAL_GH_SLUG, handle, spec: watchSpec() })
+    const registry = stubRegistry(async () => okResult())
+    const runtime = createSentinelRuntime({
+      store,
+      registry,
+      resolveProvider: async slug => (slug === LOCAL_GH_SLUG ? provider : null),
+      isSessionAlive: () => true,
+      restartSession: async id => id,
+    })
+
+    await runtime.pollOnce()
+    expect(registry.calls).toHaveLength(1)
+    expect(registry.calls[0]!.correlationId).toBe(`sentinel:${SUBJECT}`)
     expect(store.get(sentinel.id)?.status).toBe("expired")
   })
 
