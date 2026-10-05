@@ -5,7 +5,8 @@
  * hand-edited APP.md and a bad `defineApp({...})` call get the same diagnostic.
  */
 
-import type { AppAccepts, AppExposes, AppPlacement, AppRequirements } from "./types.js"
+import type { AppAccepts, AppExposes, AppPlacement, AppRequirement, AppRequirements } from "./types.js"
+import { parseVersionRange } from "./version-range.js"
 
 export const APP_PLACEMENTS: readonly AppPlacement[] = ["local", "box", "any", "split"]
 
@@ -26,6 +27,9 @@ export interface NormalizedManifestFields {
   /** Flat app-id list; undefined when `requires` was absent (or an object with no `apps`). */
   readonly requires: readonly string[] | undefined
   readonly requirements: AppRequirements
+  /** Every `requires.apps` entry in normalized object form (bare ids become
+   *  `{ id }`); empty when no app dependency was declared. */
+  readonly appRequirements: readonly AppRequirement[]
   readonly exposes: AppExposes
   readonly accepts: AppAccepts
 }
@@ -50,6 +54,57 @@ function bool(v: unknown, key: string, fail: Fail): boolean {
   return v
 }
 
+/** Parse one `requires.apps` entry — a bare id or an
+ *  `{ id, version?, workflows? }` object. Shared by the array element check
+ *  and the object form's `apps` list so both accept exactly the same shape. */
+function appRequirementEntry(entry: unknown, key: string, fail: Fail): AppRequirement {
+  if (typeof entry === "string") {
+    if (entry.trim() === "") throw fail(`'${key}' entries must be non-empty strings or objects.`)
+    return { id: entry }
+  }
+  if (!isRecord(entry)) {
+    throw fail(`'${key}' entries must be non-empty strings or objects, got ${JSON.stringify(entry)}.`)
+  }
+  const id = entry.id
+  if (typeof id !== "string" || id.trim() === "") {
+    throw fail(`'${key}.id' must be a non-empty string.`)
+  }
+  const version = entry.version
+  if (version !== undefined) {
+    if (typeof version !== "string" || version.trim() === "") {
+      throw fail(`'${key}.version' must be a non-empty string.`)
+    }
+    try {
+      parseVersionRange(version)
+    } catch (err) {
+      throw fail(`'${key}.version' ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  const workflows = entry.workflows
+  if (workflows !== undefined) {
+    if (!Array.isArray(workflows) || !workflows.every(w => typeof w === "string" && w.trim() !== "")) {
+      throw fail(`'${key}.workflows' must be an array of non-empty strings.`)
+    }
+  }
+  const extra = Object.keys(entry).filter(k => k !== "id" && k !== "version" && k !== "workflows")
+  if (extra.length > 0) {
+    throw fail(`'${key}.${extra[0]}' is not a supported requires.apps entry field (expected id, version, workflows).`)
+  }
+  return {
+    id,
+    ...(version !== undefined ? { version } : {}),
+    ...(workflows !== undefined ? { workflows: [...workflows] as string[] } : {}),
+  }
+}
+
+function appRequirementList(v: unknown, key: string, fail: Fail): readonly AppRequirement[] {
+  if (v === undefined) return []
+  if (!Array.isArray(v)) {
+    throw fail(`'${key}' must be an array of non-empty strings or { id, version?, workflows? } objects.`)
+  }
+  return v.map((e, i) => appRequirementEntry(e, `${key}[${i}]`, fail))
+}
+
 export function normalizeManifestFields(
   input: ManifestFieldsInput,
   declared: DeclaredIds,
@@ -67,6 +122,7 @@ export function normalizeManifestFields(
 
   let requires: readonly string[] | undefined
   let requirements: AppRequirements = { browser: false, fs: false, gpu: false, secrets: [], apps: [] }
+  let appRequirements: readonly AppRequirement[] = []
   const r = input.requires
   if (r !== undefined) {
     if (Array.isArray(r)) {
@@ -75,16 +131,18 @@ export function normalizeManifestFields(
       }
       requires = [...r] as string[]
       requirements = { ...requirements, apps: requires }
+      appRequirements = appRequirementList(r, "requires", fail)
     } else if (isRecord(r)) {
-      const apps = stringList(r.apps, "requires.apps", fail)
+      const apps = appRequirementList(r.apps, "requires.apps", fail)
       requirements = {
         browser: bool(r.browser, "requires.browser", fail),
         fs: bool(r.fs, "requires.fs", fail),
         gpu: bool(r.gpu, "requires.gpu", fail),
         secrets: stringList(r.secrets, "requires.secrets", fail),
-        apps,
+        apps: apps.map(e => e.id),
       }
-      if (apps.length > 0) requires = apps
+      appRequirements = apps
+      if (apps.length > 0) requires = apps.map(e => e.id)
     } else {
       throw fail("'requires' must be an array of strings or an object { browser, fs, gpu, secrets, apps }.")
     }
@@ -118,5 +176,5 @@ export function normalizeManifestFields(
     accepts = { tasks: bool(input.accepts.tasks, "accepts.tasks", fail) }
   }
 
-  return { placement, requires, requirements, exposes, accepts }
+  return { placement, requires, requirements, appRequirements, exposes, accepts }
 }

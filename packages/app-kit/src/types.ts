@@ -239,6 +239,34 @@ export interface AppDataDefinition {
 export type AppPlacement = "local" | "box" | "any" | "split"
 
 /**
+ * One `requires.apps` entry in object form — the per-dependency declaration
+ * the app→app call mechanism (`app_call`) reads. A bare id string means the
+ * same thing with every field omitted: a dependency only, no version
+ * constraint, no callable workflows.
+ */
+export interface AppRequirement {
+  /** The depended-on app id (e.g. `"@acme/provider"`). */
+  readonly id: string
+  /**
+   * Optional semver range the provider's installed version must satisfy
+   * before the consumer may apply to a scope or call its workflows. Supports
+   * an exact version (`"1.2.3"`), caret (`"^1"`, `"^1.2"`, `"^1.2.3"`), and
+   * tilde (`"~1"`, `"~1.2"`, `"~1.2.3"`). Omitted = any version.
+   */
+  readonly version?: string
+  /**
+   * Provider workflows the consumer may call via `app_call` — ids from the
+   * provider's `exposes.workflows`. Omitted or empty = the consumer may not
+   * call anything (dependency only).
+   */
+  readonly workflows?: readonly string[]
+}
+
+/** One entry of `requires.apps` — a bare id (dependency only) or an
+ *  {@link AppRequirement} object. */
+export type AppRequirementEntry = string | AppRequirement
+
+/**
  * What an app needs from its host. All keys optional on input; the resolved
  * form ({@link AppHandle.requirements}) always carries every key.
  */
@@ -251,7 +279,9 @@ export interface AppRequirements {
   readonly gpu: boolean
   /** Env/secret names the app needs. Default `[]`. */
   readonly secrets: readonly string[]
-  /** Other app ids this app depends on. Default `[]`. */
+  /** Other app ids this app depends on. Default `[]`. Flat id list — the
+   *  per-dependency form ({@link AppRequirement}) lives on
+   *  {@link AppHandle.appRequirements}. */
   readonly apps: readonly string[]
 }
 
@@ -328,9 +358,15 @@ export interface AppDefinition {
   /**
    * What the app needs from its host. Either the legacy array of APP ids this
    * app depends on (`["@acme/shared"]`, same as `requires: { apps: [...] }`)
-   * or the object form `{ browser?, fs?, gpu?, secrets?, apps? }`.
+   * or the object form `{ browser?, fs?, gpu?, secrets?, apps? }` — where each
+   * `apps` entry may be a bare id (dependency only) or an
+   * {@link AppRequirement} object (`{ id, version?, workflows? }`) declaring
+   * the version range the provider must satisfy and which of its exposed
+   * workflows this consumer may call via `app_call`.
    */
-  readonly requires?: readonly string[] | Partial<AppRequirements>
+  readonly requires?:
+    | readonly string[]
+    | (Partial<Omit<AppRequirements, "apps">> & { readonly apps?: readonly AppRequirementEntry[] })
   /** Where the app may run. Default `"any"`. Semantics only. */
   readonly placement?: AppPlacement
   /** A2A-visible agents/workflows. Default: nothing exposed. Every id must
@@ -429,6 +465,11 @@ export interface AppHandle {
   readonly requires?: readonly string[]
   /** What the app needs from its host, every key resolved to its default. */
   readonly requirements: AppRequirements
+  /** Every `requires.apps` entry in normalized object form — bare ids become
+   *  `{ id }`. Empty when no app dependency was declared. The runtime's
+   *  `app_call` allowlist check reads the per-entry `workflows`; `app_apply`'s
+   *  version check reads the per-entry `version`. */
+  readonly appRequirements: readonly AppRequirement[]
   /** Where the app may run. Defaults to `"any"`. Semantics only. */
   readonly placement: AppPlacement
   /** A2A-visible agents/workflows. Empty lists when nothing is exposed. */
