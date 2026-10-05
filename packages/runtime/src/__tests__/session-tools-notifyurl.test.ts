@@ -94,7 +94,13 @@ describe("agent_start — notifyUrl register/unregister lifecycle", () => {
     const desc = JSON.parse(text) as { id: string }
 
     expect(notifier.register).toHaveBeenCalledOnce()
-    expect(notifier.register).toHaveBeenCalledWith(desc.id, "https://example.com/hook")
+    // Third arg is `notifySecret` (optional, undefined here — no secret was
+    // in the spawn body).
+    expect(notifier.register).toHaveBeenCalledWith(
+      desc.id,
+      "https://example.com/hook",
+      undefined
+    )
 
     await close()
   })
