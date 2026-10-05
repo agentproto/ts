@@ -137,11 +137,14 @@ export function renderLaneDetail(lane: DetailLane, rubrics: readonly RubricDiges
   if (lane.durationMs !== undefined) parts.push(`<span class="muted">${(lane.durationMs / 1000).toFixed(1)}s</span>`)
   parts.push(`</div>`)
   if (lane.error) parts.push(`<div class="lane-error">${esc(lane.error)}</div>`)
-  if (lane.sessionId || lane.preset || lane.model) {
+  if (lane.sessionId || lane.preset || lane.model || lane.fallbacks?.length) {
     const rubric = rubrics.find(r => r.check === lane.id)
     const bits: string[] = []
     if (lane.model) bits.push(`model: ${esc(lane.model)}`)
     if (lane.preset) bits.push(`preset: ${esc(lane.preset)}`)
+    if (lane.fallbacks?.length) {
+      bits.push(`after unavailable: ${lane.fallbacks.map(f => `${esc(f.preset)} (${esc(f.error)})`).join(", ")}`)
+    }
     if (rubric) bits.push(`rubric: <span class="mono">${esc(rubric.sha256.slice(0, 12))}</span>`)
     if (lane.sessionId) {
       bits.push(

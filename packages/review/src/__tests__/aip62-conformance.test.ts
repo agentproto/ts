@@ -103,6 +103,15 @@ describe("EXAMPLES.md reference blocks", () => {
     expect(bad({ packs: [{ ...att.packs[0], alg: "agentproto-pack-digest/v0" }] })).toBe(false)
   })
 
+  it("an agent lane's fallback record validates; a malformed one does not", () => {
+    const att = JSON.parse(EXAMPLE_ATTESTATION)
+    const lane = { ...att.lanes[0], preset: "glm", fallbacks: [{ preset: "kimi", error: "empty turn" }] }
+    const ok = (l: unknown) => attestationFrontmatterSchema.safeParse({ ...att, lanes: [l, ...att.lanes.slice(1)] }).success
+    expect(ok(lane)).toBe(true)
+    expect(ok({ ...lane, fallbacks: [{ preset: "kimi" }] })).toBe(false)
+    expect(ok({ ...lane, fallbacks: [{ preset: "kimi", error: "x", extra: 1 }] })).toBe(false)
+  })
+
   it("a buildAttestation output validates against the attestation schema", () => {
     const att = buildAttestation({
       runId: "review-6f0b9a52-3f43-4c1c-a4d5-0f3f6c1f5a10",

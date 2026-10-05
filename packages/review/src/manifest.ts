@@ -59,6 +59,10 @@ export interface AgentCheck {
   id: string
   kind: "agent"
   preset: string
+  /** Ordered fallback reviewers, tried only when the reviewer in `preset` (and
+   *  each earlier fallback) is unavailable — never after a verdict. Disjoint
+   *  from `preset` and from itself. */
+  fallbackPresets: string[]
   rubric: string
   blockOn: Severity
   blocking: boolean
@@ -92,6 +96,7 @@ export interface UsesOverride {
   blocking?: boolean
   timeoutMs?: number
   preset?: string
+  fallbackPresets?: string[]
 }
 
 /** A normalized `uses[]` entry — a review pack this manifest consumes. Not
@@ -104,6 +109,7 @@ export interface ReviewUse {
   /** Subset of the pack's checks to import. `undefined` ⇒ all. */
   checks?: string[]
   preset?: string
+  fallbackPresets?: string[]
   overrides: Record<string, UsesOverride>
   allowCommands: boolean
 }
@@ -157,6 +163,7 @@ function normalizeCheck(c: ReviewFrontmatter["checks"][number]): ReviewCheck {
     id: c.id,
     kind: "agent",
     preset: c.preset,
+    fallbackPresets: c.fallbackPresets ?? [],
     rubric: c.rubric,
     blockOn: c.blockOn,
     blocking: c.blocking,
@@ -174,12 +181,30 @@ export function assertUnique(ids: readonly string[], label: string): void {
   }
 }
 
+/** A reviewer chain (`[preset, ...fallbackPresets]`) may name each preset once:
+ *  a fallback equal to the primary, or a repeated fallback, can never add a
+ *  second chance. Throws {@link ReviewManifestError}. */
+export function assertReviewerChain(label: string, preset: string, fallbackPresets: readonly string[]): void {
+  const seen = new Set([preset])
+  for (const fb of fallbackPresets) {
+    if (seen.has(fb)) {
+      throw new ReviewManifestError(
+        fb === preset
+          ? `${label}: fallbackPresets lists '${fb}', which is already the primary preset`
+          : `${label}: fallbackPresets lists '${fb}' more than once`,
+      )
+    }
+    seen.add(fb)
+  }
+}
+
 function normalizeUse(u: NonNullable<ReviewFrontmatter["uses"]>[number]): ReviewUse {
   return {
     pack: u.pack,
     as: u.as,
     ...(u.checks !== undefined ? { checks: u.checks } : {}),
     ...(u.preset !== undefined ? { preset: u.preset } : {}),
+    ...(u.fallbackPresets !== undefined ? { fallbackPresets: u.fallbackPresets } : {}),
     overrides: u.overrides ?? {},
     allowCommands: u.allowCommands,
   }
@@ -318,6 +343,9 @@ export function buildReviewManifest(fm: ReviewFrontmatter, body: string): Review
     checks.map((c) => c.id),
     "checks[]",
   )
+  for (const c of checks) {
+    if (c.kind === "agent") assertReviewerChain(`check '${c.id}'`, c.preset, c.fallbackPresets)
+  }
 
   const uses = (fm.uses ?? []).map(normalizeUse)
   assertUnique(

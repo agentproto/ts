@@ -27,6 +27,7 @@ import { monitorSessionWait } from "./orchestration-tools.js"
 import { getHarnessPreset, type HarnessPreset } from "./harness-preset-store.js"
 import { getUserPreset, type UserPreset } from "./user-presets.js"
 import type { ReviewerRunResult, ReviewerSessionHost } from "./review-runner.js"
+import type { LaneFallback } from "@agentproto/review"
 import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
 
 export interface DaemonReviewerHostDeps {
@@ -73,6 +74,12 @@ interface AttemptOutcome {
   result: ReviewerRunResult
   /** The reviewer's turn ended in a transient error — another attempt may succeed. */
   retryable: boolean
+  /** The reviewer was UNAVAILABLE (spawn failure, errored or empty turn,
+   *  session exited before finishing its turn) — the next `fallbackPresets`
+   *  entry may be tried. False for a verdict, a timeout, a cancel, a preset
+   *  that does not resolve, and the OpenRouter refusal: none of those is a
+   *  transport problem a different reviewer should paper over. */
+  fallbackable: boolean
 }
 
 const OPENROUTER_RE = /openrouter/i
@@ -131,7 +138,8 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     input: Parameters<ReviewerSessionHost["run"]>[0],
     attempt: number,
   ): Promise<AttemptOutcome> {
-    const once = (result: ReviewerRunResult): AttemptOutcome => ({ result, retryable: false })
+    const once = (result: ReviewerRunResult): AttemptOutcome => ({ result, retryable: false, fallbackable: false })
+    const unavailable = (result: ReviewerRunResult): AttemptOutcome => ({ result, retryable: false, fallbackable: true })
     const spawnFields = await resolveReviewerPreset(input.preset, deps)
     if (!spawnFields) {
       return once({
@@ -163,7 +171,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       },
     )
     if (!spawned.ok) {
-      return once({
+      return unavailable({
         status: "failed",
         preset: input.preset,
         error: `reviewer spawn failed (${spawned.code}): ${spawned.message}`,
@@ -214,7 +222,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       }
       if (res.event === "exited") {
         const status = registry.get(sessionId)?.status ?? res.status
-        return once(
+        return unavailable(
           withModel({
             status: "failed",
             sessionId,
@@ -226,6 +234,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       if (res.event === "turn-end" && res.reason === "error") {
         return {
           retryable: isRetryableTurnError(res.error),
+          fallbackable: true,
           result: withModel({
             status: "failed",
             sessionId,
@@ -240,7 +249,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       // first so a connection dropped at turn start is still retried and
       // reported with its own text.
       if (res.event === "turn-end" && res.empty) {
-        return once(
+        return unavailable(
           withModel({
             status: "failed",
             sessionId,
@@ -259,23 +268,56 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     }
   }
 
+  /** One preset's turn, with the per-attempt transient-error retries. */
+  async function runPreset(
+    input: Parameters<ReviewerSessionHost["run"]>[0],
+    deadline: number,
+  ): Promise<AttemptOutcome> {
+    let last: AttemptOutcome | undefined
+    let attempts = 0
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const remainingMs = deadline - Date.now()
+      if (attempt > 0 && remainingMs <= 0) break
+      last = await runAttempt({ ...input, timeoutMs: Math.max(1, remainingMs) }, attempt)
+      attempts++
+      if (!last.retryable || input.signal?.aborted) break
+    }
+    const final = last!
+    if (final.result.status === "failed" && final.retryable && attempts > 1) {
+      return { ...final, result: { ...final.result, error: `${final.result.error} (after ${attempts} attempts)` } }
+    }
+    return final
+  }
+
   return {
     async run(input): Promise<ReviewerRunResult> {
+      // ONE deadline for the whole chain: a fallback gets whatever time the
+      // unavailable reviewers left, never a fresh `timeoutMs`.
       const deadline = Date.now() + input.timeoutMs
-      let last: AttemptOutcome | undefined
-      let attempts = 0
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        const remainingMs = deadline - Date.now()
-        if (attempt > 0 && remainingMs <= 0) break
-        last = await runAttempt({ ...input, timeoutMs: Math.max(1, remainingMs) }, attempt)
-        attempts++
-        if (!last.retryable || input.signal?.aborted) break
+      const chain = [input.preset, ...(input.fallbackPresets ?? [])]
+      const earlier: LaneFallback[] = []
+      const describe = (items: readonly LaneFallback[]) => items.map((t) => `'${t.preset}': ${t.error}`).join("; ")
+      for (let i = 0; i < chain.length; i++) {
+        const preset = chain[i]!
+        const label = i === 0 ? input.label : `${input.label}:fallback${i}`
+        const outcome = await runPreset({ ...input, preset, label }, deadline)
+        const { result } = outcome
+        const withEarlier = <T extends ReviewerRunResult>(r: T): T => (earlier.length > 0 ? { ...r, fallbacks: [...earlier] } : r)
+        if (result.status !== "failed" || !outcome.fallbackable || chain.length === 1) return withEarlier(result)
+        const tried = [...earlier, { preset, error: result.error }]
+        const next = chain[i + 1]
+        if (next === undefined) {
+          return withEarlier({ ...result, error: `every reviewer in the chain was unavailable — ${describe(tried)}` })
+        }
+        if (input.signal?.aborted || deadline - Date.now() <= 0) {
+          return withEarlier({
+            ...result,
+            error: `${input.signal?.aborted ? "review cancelled" : "no time left"} before trying '${next}' — ${describe(tried)}`,
+          })
+        }
+        earlier.push({ preset, error: result.error })
       }
-      const final = last!
-      if (final.result.status === "failed" && final.retryable && attempts > 1) {
-        return { ...final.result, error: `${final.result.error} (after ${attempts} attempts)` }
-      }
-      return final.result
+      throw new Error("unreachable: reviewer chain is never empty")
     },
   }
 }

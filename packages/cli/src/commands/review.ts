@@ -201,7 +201,8 @@ export function renderVerdict(view: ReviewRunView, opts: { annotate?: "github" }
     const tag = l.blocking ? "" : " (advisory)"
     const [errHead] = String(l.error ?? "").split("\n")
     const extra = l.error ? ` — ${errHead}` : l.summary ? ` — ${l.summary}` : ""
-    const who = l.model ? ` [${l.preset ?? "?"}/${l.model}]` : l.preset ? ` [${l.preset}]` : ""
+    const via = l.fallbacks?.length ? ` after ${l.fallbacks.map((f) => f.preset).join(", ")} unavailable` : ""
+    const who = (l.model ? ` [${l.preset ?? "?"}/${l.model}]` : l.preset ? ` [${l.preset}]` : "") + (l.preset ? via : "")
     out.push(`[review]   ${LANE_MARK[l.status] ?? "?"} ${l.id}${tag} ${l.status}${secs(l.durationMs)}${who}${extra}`)
     for (const f of l.findings) {
       const where = f.file ? ` ${f.file}${f.line ? `:${f.line}` : ""}` : ""

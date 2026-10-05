@@ -46,6 +46,32 @@ are never retried. Set `review.laneRetries` in the daemon config (`0`
 disables, max 5; default 1). A lane that still fails settles `skipped` with
 the adapter's own error text and the attempt count.
 
+### Reviewer fallback (`fallbackPresets`)
+
+An agent check may list `fallbackPresets: [<preset>, …]` next to its `preset`
+(also accepted on a `uses[]` entry and in `uses[].overrides.<id>`; an
+override replaces the `uses[]` value). When the reviewer is **unavailable** the
+lane runs on the next preset in `[preset, ...fallbackPresets]`, in order;
+the per-preset retries above run on each one first, and the whole chain shares
+the lane's single `timeoutMs` deadline.
+
+"Unavailable" is transport-class only: a spawn failure, a turn that ended in
+an error (including quota or auth errors), an empty turn, or a reviewer
+session that exited before finishing. It **never** falls back after a
+reviewer produced a verdict (a `block` from any reviewer is final), a
+timeout, a cancel, an unknown preset, or an unreadable verdict file. OpenRouter
+stays refused: a refused preset is not skipped over, and listing an OpenRouter
+preset in `fallbackPresets` fails that step closed — nothing is ever added to
+the chain implicitly.
+
+The lane's `preset`, `model` and `sessionId` name the reviewer that actually
+produced the verdict; each unavailable one before it is recorded with its
+error in the lane's `fallbacks: [{ preset, error }]` and shown in the `review`
+output (`[kimi/…] after glm unavailable`). If every preset in the chain is
+unavailable the lane settles `skipped` (verdict `incomplete`) and its error
+lists each preset tried with its error. A preset may appear only once in
+`[preset, ...fallbackPresets]` — a duplicate is a manifest error.
+
 ## `run`
 
 Runs the binding over `merge-base(<target.base>, HEAD)..HEAD` (or
