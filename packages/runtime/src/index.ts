@@ -2418,6 +2418,7 @@ export async function createGateway(
             sessionEvents,
             eventRing,
             resolveAgentAdapter: opts.resolveAgentAdapter,
+            ...(daemonConfig.review?.laneRetries !== undefined ? { laneRetries: daemonConfig.review.laneRetries } : {}),
             spawnDeps: {
               resolveSandboxProvider: resolveSandboxProviderResolved,
               ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
