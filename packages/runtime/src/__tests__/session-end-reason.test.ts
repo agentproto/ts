@@ -64,6 +64,7 @@ describe("isKnownSessionEndReason", () => {
   it("recognizes every declared reason", () => {
     expect(isKnownSessionEndReason("operator-completed")).toBe(true)
     expect(isKnownSessionEndReason("cost-cap-exceeded")).toBe(true)
+    expect(isKnownSessionEndReason("context-hard-stop")).toBe(true)
     expect(isKnownSessionEndReason("provider-limit")).toBe(true)
   })
 

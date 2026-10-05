@@ -1131,7 +1131,9 @@ export interface SessionDescriptor {
    *     MCP tool (never by an internal automatic teardown), so it reads as
    *     deliberate rather than random;
    *   - other internal/automatic reasons: `"cost-cap-exceeded"` (the
-   *     turn-granular `maxCostUsd` cap tripped), `"policy-cleanup"` (a
+   *     turn-granular `maxCostUsd` cap tripped), `"context-hard-stop"` (the
+   *     context-continuity hard-stop closed a session past `hardStopAtPct`),
+   *     `"policy-cleanup"` (a
    *     supervisor gate tore down its own ephemeral judge session),
    *     `"parent-exited"` (an orchestrator's dying subtree reap),
    *     `"provider-limit"` (a driver-reported subscription/usage-cap error,
@@ -2489,6 +2491,11 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
 
 interface SessionRuntime {
   desc: SessionDescriptor
+  /** True while the latest `usage_update` carrying `used` was dropped by
+   *  `plausibleContextUsed` (more tokens than the window holds). The held
+   *  `desc.contextUsed` is then a stale reading, so context-continuity must
+   *  not act on it with an irreversible hard-stop. */
+  contextUsedInconsistent?: boolean
   /** Active tool calls in announcement order. Multiple calls can overlap;
    *  removing the latest one falls back to the previous still-active call. */
   activeToolCalls?: Map<string, string>
@@ -6401,6 +6408,7 @@ export function createSessionsRegistry(opts?: {
         if (typeof evt.used === "number" && evt.used > 0) {
           const used = plausibleContextUsed(rt.desc.contextSize, evt.used)
           if (used !== undefined) rt.desc.contextUsed = used
+          rt.contextUsedInconsistent = used === undefined
         }
         if (evt.cost) {
           rt.desc.costUsd = evt.cost.amount
@@ -6529,7 +6537,11 @@ export function createSessionsRegistry(opts?: {
       )
     }
     const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
-    if (rt.desc.contextContinuity && isContextContinuityHardStopped(pct, rt.desc.contextContinuity)) {
+    if (
+      !rt.contextUsedInconsistent &&
+      rt.desc.contextContinuity &&
+      isContextContinuityHardStopped(pct, rt.desc.contextContinuity)
+    ) {
       rt.desc.contextContinuityHardStopped = true
       schedulePersist()
       throw new Error(
@@ -7443,6 +7455,7 @@ export function createSessionsRegistry(opts?: {
     rt.desc.contextContinuityHardStopped = true
     rt.desc.status = "killed"
     rt.desc.endedAt = new Date().toISOString()
+    rt.desc.endedReason = "context-hard-stop"
     void rt.agentSession?.close().catch(() => undefined)
     void transcriptWriter.close(rt.desc.id)
     tracedSessions.delete(rt.desc.id)
@@ -7560,6 +7573,17 @@ export function createSessionsRegistry(opts?: {
         await performContextContinueFresh(rt)
         return
       case "hard-stop":
+        // The latest frame's `used` contradicted the window (see
+        // `contextUsedInconsistent`), so `pct` is a stale reading — ending a
+        // session on it is irreversible, a warning is not.
+        if (rt.contextUsedInconsistent) {
+          appendLine(
+            rt,
+            `[context] hard-stop skipped at ${pct}% — the adapter's last usage frame reported more tokens than the window holds, so the reading is unreliable`,
+            "stderr",
+          )
+          return
+        }
         await performContextHardStop(rt, pct)
         return
     }
