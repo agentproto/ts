@@ -37,6 +37,15 @@ that didn't reach a verdict:
 | `6` | signature invalid, or missing when `--require-signed` (`verify` only) |
 | `64` | usage error |
 
+### Transient reviewer errors
+
+An agent lane whose reviewer turn ends in a transient error (a dropped socket,
+a 5xx, an overloaded provider) is retried once, in a fresh reviewer session
+that shares the lane's `timeoutMs`. Credential, quota and unknown-model errors
+are never retried. Set `review.laneRetries` in the daemon config (`0`
+disables, max 5; default 1). A lane that still fails settles `skipped` with
+the adapter's own error text and the attempt count.
+
 ## `run`
 
 Runs the binding over `merge-base(<target.base>, HEAD)..HEAD` (or

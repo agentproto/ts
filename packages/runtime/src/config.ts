@@ -439,6 +439,11 @@ export interface ReviewConfig {
    *  then a host-derived value; this never blocks signing, it only lets an
    *  operator pin one identity across every repo the daemon reviews. */
   principal?: string
+  /** Extra attempts for an agent lane whose reviewer turn ends in a
+   *  transient error (dropped socket, 5xx, overloaded provider). Auth,
+   *  quota and unknown-model errors are never retried. Default 1; `0`
+   *  disables; capped at 5. All attempts share the lane's `timeoutMs`. */
+  laneRetries?: number
 }
 
 /**
