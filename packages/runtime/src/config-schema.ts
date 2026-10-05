@@ -144,6 +144,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .object({
         allowSiblings: z.boolean().optional(),
         agentInterrupt: z.enum(["allow", "deny"]).optional(),
+        pendingPromptStaleMinutes: z.number().positive().optional(),
       })
       .passthrough()
       .optional(),
@@ -1016,6 +1017,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Agent-sender interrupt urgency",
     help: "Whether a SESSION sender may use urgency \"interrupt\" (vs. downgraded to \"steer\"). Takes effect on the next call.",
     default: "deny",
+  },
+  {
+    path: "defaults.messaging.pendingPromptStaleMinutes",
+    schema: z.number().positive(),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Pending prompt staleness (minutes)",
+    help: "How long a prompt may sit queued behind a running turn before its sender is notified it is stuck and it is flagged stale in session_list/session_recap pendingPrompts. Takes effect on the next sweep.",
+    default: 5,
   },
 
   // ── harnesses: per-adapter defaults ──

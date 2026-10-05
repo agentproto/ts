@@ -331,7 +331,7 @@ describe("enqueuePrompt({interrupt: true}) — registry", () => {
       await vi.advanceTimersByTimeAsync(settleDelayMs)
       // enqueuePrompt now resolves an EnqueuePromptResult; an interrupt
       // redirects the live turn (never parks), so queued is false.
-      await expect(interruptPromise).resolves.toEqual({ queued: false })
+      await expect(interruptPromise).resolves.toMatchObject({ queued: false, delivery: "delivered", pending: false })
 
       reg.kill(desc.id)
       reg.shutdown()

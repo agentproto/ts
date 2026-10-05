@@ -1,0 +1,5 @@
+---
+"@agentproto/runtime": minor
+---
+
+`agent_prompt` (and `POST /sessions/:id/prompt?wait=false`) to a mid-turn session no longer just queues until turn end. When the adapter supports steering (`capabilities.steering`, e.g. claude-code over ACP), the prompt is injected into the running turn at the next safe point (FIFO kept; `interrupt: true` unchanged; `steer: false` opts out). The result now says exactly what happened: `delivery` (`delivered` | `steered` | `queued-mid-turn`), `deliveredAt` when known, and a top-level `pending` boolean (`true` = not yet delivered); `queued: true` and `queueId` stay for compatibility. A prompt that stays queued shows up as `pendingPrompts` (id, origin, preview, `ageMs`, `stale`) in `session_list` and `session_recap`, and once it is older than `defaults.messaging.pendingPromptStaleMinutes` (new, hot, default 5) a one-shot `notice` lands in the sender's inbox (else the target's parent). New `deliverWithin` (seconds) + `deliverWithinVia` (`auto` | `steer` | `interrupt`) on `agent_prompt` make the daemon steer or interrupt a still-queued prompt after a timeout.
