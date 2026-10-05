@@ -98,6 +98,7 @@ Pick whichever matches what you're trying to do:
 - [Use agentproto as an MCP server inside coding CLIs](./guides/mcp-in-coding-cli.md) — register the daemon in Claude Code, Codex, and Hermes
 - [Agent tools inside your app's agent](./guides/app-agent-tools.md) — the daemon MCP tools an app's spawned agents get, and how AGENT.md shapes the spawn
 - [Create an agentproto app](./guides/create-agentproto-app.md) — scaffold, build, and serve an app bundle end to end
+- [Build your own agent app](./guides/build-your-own-agent-app.md) — concepts, authoring, UI, data, lifecycle, testing, and packaging, end to end
 - [Sandboxes and rendezvous: boot-and-drive vs. attach](./guides/sandbox-rendezvous.md) — connection models, keeping a box reachable, and the cost tradeoffs
 - [Hand off from Claude Code to Codex](./guides/handoff.md) — checkpoint a session and continue its work on another harness, with `--dry-run`
 
