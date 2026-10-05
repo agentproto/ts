@@ -1,50 +1,15 @@
 # Session Steward
 
-A built-in agentproto app with two workflows:
+A built-in agentproto app that wraps up idle agent sessions. It sits on top
+of the runtime's `session_wrapup_plan` / `session_wrapup_apply` tools
+(FIX-9A) and adds the missing loop: a cheap judge for the ambiguous
+sessions. Hand-authored bundle (`.agentproto/APP.md` + `agents/` +
+`workflows/`), like `repo-maintenance` — the workflow's decisions (candidate
+split, strict verdict parse, confidence threshold, report) are real
+functions in `workflows/session-steward/entry.mjs`, which only the `entry:`
+loader path can carry.
 
-- **`session-attention`** — the default of `agentproto steward`: read-only
-  triage of every live session, most urgent first. Verdicts: `needs-reply`,
-  `stuck` (looping / errored / unanswered / never ran), `blocked`, `done`
-  (optionally "waiting on you"), `superseded`, `parked`, `active` (counted,
-  not listed). Each entry has a title, a one-line reason, idle time and a
-  last-message excerpt. Rules decide the certain cases; a one-shot judge
-  (`@agentproto/session-attention-judge`) decides what stays under 0.9
-  confidence and is never allowed to answer `active` for an idle session.
-  Never closes, flags, nudges or messages anything.
-- **`session-steward`** — the legacy wrap-up, behind `agentproto steward
-  --wrapup`: classify idle sessions, close the rule-certain ones, judge the
-  ambiguous ones and close or flag the confident verdicts (a dry run unless
-  `--apply`).
-
-The wrap-up sits on top of the runtime's `session_wrapup_plan` /
-`session_wrapup_apply` tools (FIX-9A) and adds the missing loop: a cheap
-judge for the ambiguous sessions; the attention workflow only reads
-(`session_list`, `session_evidence`). Hand-authored bundle (`.agentproto/APP.md`
-+ `agents/` + `workflows/`), like `repo-maintenance` — the workflows'
-decisions (candidate split, strict verdict parse, confidence threshold,
-report) are real functions in `workflows/*/entry.mjs`, which only the
-`entry:` loader path can carry.
-
-## What one attention run does
-
-1. `scan` — `session_list` (live only), then drop the caller, archived, PTY
-   and — unless `--include-children` — children of a still-live parent.
-2. `evidence` — per candidate, the read-only `session_evidence` tool, then
-   deterministic rules: repeated-sentence loop detection (also on idle
-   sessions), errored last turn, `awaitingInput`, `continuedTo`, merged PR,
-   unanswered user message, question/ask phrases (EN/FR), a recorded `done`
-   outcome, blocker phrases, same-title newer sibling.
-3. `judge` — anything under 0.9 confidence goes to one turn of
-   `@agentproto/session-attention-judge` (strict JSON; a malformed reply
-   leaves the rules' verdict). The judge is never allowed to answer `active`
-   for an idle session — a final guard rewrites that to `parked`.
-4. `digest` — the prioritized markdown report plus the plain-text digest
-   (capped at 3500 chars), with `counts`, `items` and `scan` outputs.
-
-Read-only throughout: the only tools are `model_roles`, `session_list` and
-`session_evidence`. Safe to run on a schedule.
-
-## What one wrap-up run does
+## What one run does
 
 1. `plan` — `session_wrapup_plan { idleMinutes }` (dry run).
 2. `autoApply` (only with `apply`) — `close` ids →
@@ -97,12 +62,10 @@ origin column and the retained action in dry run as well as apply.
 ## Running it
 
 ```bash
-agentproto steward --wait                     # attention digest (read-only)
-agentproto steward --wait --format text       # the plain-text digest
-agentproto steward --wrapup --wait            # legacy dry run: plan + verdicts, report
-agentproto steward --wrapup --apply --wait    # close / flag confident verdicts
-agentproto steward --wrapup --apply --idle 60 --min-confidence 0.9 --judge agent
-agentproto steward --wrapup --ask-sessions --wait  # also ask low-confidence sessions
+agentproto steward --wait                     # dry run: plan + verdicts, report
+agentproto steward --apply --wait             # close / flag confident verdicts
+agentproto steward --apply --idle 60 --min-confidence 0.9 --judge agent
+agentproto steward --ask-sessions --wait      # also ask low-confidence sessions
 ```
 
 `agentproto steward` installs (upserts) this app and starts the workflow via
@@ -120,6 +83,5 @@ agentproto workflow run-file \
 ## Routine
 
 `routines/session-steward-hourly` is an AIP-41 `ROUTINE.md` template: hourly,
-`apply: true`, `askSessions: false` — the legacy wrap-up (the equivalent of
-`agentproto steward --wrapup --apply`), shipped `enabled: false`, so nothing
+`apply: true`, `askSessions: false`, shipped `enabled: false` — nothing
 starts closing sessions on install. Its own doc lists the enabling steps.
