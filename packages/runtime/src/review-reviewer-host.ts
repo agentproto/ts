@@ -58,7 +58,15 @@ export async function reviewerOpenRouterViolation(
   const userPreset = spawnFields.preset as UserPreset | undefined
   const model = spawnFields.model ?? userPreset?.model
   const profileRef = spawnFields.access?.profileRef ?? userPreset?.access?.profileRef
-  const profile = profileRef ? await lookup(profileRef).catch(() => undefined) : undefined
+  let profile: AuthProfile | undefined
+  if (profileRef) {
+    try {
+      profile = await lookup(profileRef)
+    } catch (err) {
+      // Can't prove the billing endpoint: refuse rather than guess.
+      return `review lane refused: could not read auth profile '${profileRef}' to verify it does not bill OpenRouter (${err instanceof Error ? err.message : String(err)}).`
+    }
+  }
   const hits: string[] = []
   if (OPENROUTER_RE.test(presetId)) hits.push(`preset '${presetId}'`)
   if (model && OPENROUTER_RE.test(model)) hits.push(`model '${model}'`)

@@ -250,6 +250,13 @@ describe("review lanes never bill OpenRouter (fail closed)", () => {
     expect(await reviewerOpenRouterViolation("opencode-default-openrouter", { adapter: "opencode" }, noProfile)).toMatch(/preset/)
   })
 
+  it("fails closed when the auth profile lookup throws", async () => {
+    const boom = async () => {
+      throw new Error("disk error")
+    }
+    expect(await reviewerOpenRouterViolation("p", { adapter: "opencode", access: { profileRef: "x" } }, boom)).toMatch(/could not read auth profile/)
+  })
+
   it("checks a user preset's own model + profile", async () => {
     const preset: UserPreset = { id: "u", label: "u", adapter: "opencode", model: "openrouter/x/y" }
     expect(await reviewerOpenRouterViolation("u", { adapter: "opencode", preset }, noProfile)).toMatch(/model/)
