@@ -18,6 +18,13 @@ describe("versionSatisfies", () => {
     expect(versionSatisfies("1.0.0", "^1")).toBe(true)
   })
 
+  it("caret on 0.x follows npm: it pins the minor, or the patch for 0.0.x", () => {
+    expect(versionSatisfies("0.2.9", "^0.2.3")).toBe(true)
+    expect(versionSatisfies("0.3.0", "^0.2.3")).toBe(false)
+    expect(versionSatisfies("0.0.3", "^0.0.3")).toBe(true)
+    expect(versionSatisfies("0.0.4", "^0.0.3")).toBe(false)
+  })
+
   it("tilde pins the minor when given, else only the major", () => {
     expect(versionSatisfies("1.2.9", "~1.2.3")).toBe(true)
     expect(versionSatisfies("1.3.0", "~1.2.3")).toBe(false)

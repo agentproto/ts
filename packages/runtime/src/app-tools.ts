@@ -545,8 +545,19 @@ export const MAX_APP_CALL_TIMEOUT_MS = 300_000
 /** Poll interval while awaiting a run's terminal status. */
 const APP_CALL_POLL_INTERVAL_MS = 500
 
+/** `versionSatisfies` throws on a malformed version or range; a refusal is a
+ *  result, never an exception. A missing provider version fails closed. */
+function checkVersion(providerVersion: string | undefined, range: string): string | undefined {
+  if (providerVersion === undefined) return "has no recorded version"
+  try {
+    return versionSatisfies(providerVersion, range) ? undefined : `is installed at version ${providerVersion}`
+  } catch (err) {
+    return `has an unusable version (${err instanceof Error ? err.message : String(err)})`
+  }
+}
+
 function appCallLog(input: { callerAppId: string; appId: string; workflow: string }, durationMs: number, ok: boolean): void {
-  console.log(
+  console.error(
     `app_call: caller=${input.callerAppId} provider=${input.appId} workflow=${input.workflow} durationMs=${durationMs} ok=${ok}`,
   )
 }
@@ -608,17 +619,16 @@ export async function performAppCall(
     }
   }
   // 6. The provider's installed version must satisfy the declared range.
-  if (
-    declared.version !== undefined &&
-    provider.version !== undefined &&
-    !versionSatisfies(provider.version, declared.version)
-  ) {
-    return {
-      ok: false,
-      errorCode: "version-mismatch",
-      error:
-        `app_call: app "${input.appId}" is installed at version ${provider.version}, which does not ` +
-        `satisfy the range "${declared.version}" app "${input.callerAppId}" declared.`,
+  if (declared.version !== undefined) {
+    const problem = checkVersion(provider.version, declared.version)
+    if (problem !== undefined) {
+      return {
+        ok: false,
+        errorCode: "version-mismatch",
+        error:
+          `app_call: app "${input.appId}" ${problem}, which does not ` +
+          `satisfy the range "${declared.version}" app "${input.callerAppId}" declared.`,
+      }
     }
   }
 
@@ -2064,9 +2074,11 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       for (const dep of installed.requiresApps ?? []) {
         if (dep.version === undefined) continue
         const provider = appRegistry.getApp(dep.id)
-        if (provider?.version !== undefined && !versionSatisfies(provider.version, dep.version)) {
+        if (!provider) continue
+        const problem = checkVersion(provider.version, dep.version)
+        if (problem !== undefined) {
           return errorResult(
-            `app_apply: app "${input.appId}" requires "${dep.id}" ${dep.version}, but version ${provider.version} is installed.`,
+            `app_apply: app "${input.appId}" requires "${dep.id}" ${dep.version}, but "${dep.id}" ${problem}.`,
           )
         }
       }

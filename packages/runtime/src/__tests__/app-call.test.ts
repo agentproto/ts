@@ -108,6 +108,19 @@ describe("performAppCall", () => {
     expect(res).toMatchObject({ ok: false, errorCode: "version-mismatch" })
   })
 
+  it("version-mismatch (fail closed) when the provider has no recorded version", async () => {
+    const reg = setup({ callerVersion: "^1" })
+    reg.upsertApp(
+      app({
+        appId: "@t/provider",
+        workflows: [{ id: "do-it", path: "/tmp/p/do-it/WORKFLOW.md" }],
+        exposes: { agents: [], workflows: ["do-it"] },
+      }),
+    )
+    const res = await performAppCall(reg, call, { workflowRunner: runner([]) })
+    expect(res).toMatchObject({ ok: false, errorCode: "version-mismatch" })
+  })
+
   it("accepts a provider inside the declared range", async () => {
     const r = runner([{ status: "done", output: "ok" }])
     const res = await performAppCall(setup({ callerVersion: "^1.1", providerVersion: "1.2.0" }), call, {

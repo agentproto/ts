@@ -1,7 +1,8 @@
 /**
  * Tiny pure semver-range checker for `requires.apps[].version` — the only
  * version constraint the app→app call mechanism supports. Deliberately small:
- * an exact version, a caret on the major (`^1`, `^1.2`, `^1.2.3`), or a
+ * an exact version, a caret (`^1`, `^1.2`, `^1.2.3`; npm semantics: it pins
+ * the leftmost non-zero component, so `^0.2.3` stays on the 0.2 line), or a
  * tilde on the major[.minor] (`~1`, `~1.2`, `~1.2.3`). No dependency on a
  * semver package — the surface is three comparison shapes, not a grammar.
  *
@@ -66,6 +67,10 @@ export function versionSatisfies(version: string, range: string): boolean {
   const r = parseVersionRange(range)
   if (r.kind === "exact") return compare(v, r.version) === 0
   if (compare(v, r.version) < 0) return false
-  if (r.kind === "caret") return v[0] === r.version[0]
+  if (r.kind === "caret") {
+    if (r.version[0] > 0) return v[0] === r.version[0]
+    if (r.version[1] > 0) return v[0] === 0 && v[1] === r.version[1]
+    return v[0] === 0 && v[1] === 0 && v[2] === r.version[2]
+  }
   return v[0] === r.version[0] && (!r.minorGiven || v[1] === r.version[1])
 }

@@ -57,8 +57,7 @@ export {
 } from "./pack.js"
 export type { AgentAppManifest, BundleFile, AgentAppPackErrorCode, AppPackageRules } from "./pack.js"
 export { refKey, stripOwner } from "./refs.js"
-export { versionSatisfies, parseVersionRange } from "./version-range.js"
-export type { VersionRange } from "./version-range.js"
+export { versionSatisfies } from "./version-range.js"
 export type {
   AppDefinition,
   AppHandle,
