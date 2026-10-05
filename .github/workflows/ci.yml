@@ -1017,25 +1017,18 @@ jobs:
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
         run: |
-          # The agentproto lane can bill either way (reviewerAuthMode in
-          # .github/agentic-review.json): subscription rides the OAuth token,
-          # api-key rides ANTHROPIC_API_KEY (also what the e2b sandbox
-          # passthrough injects). Either credential qualifies the lane;
-          # legacy only when BOTH are absent. When the lane's adapter is a
-          # non-Anthropic provider (e.g. reviewerAdapter=opencode billed by
-          # OPENROUTER_API_KEY), that provider's key qualifies the lane too —
-          # the adapter resolves its own provider env var, so the Anthropic
-          # credentials are irrelevant to it.
-          ADAPTER_CFG=$(node -p "String((require('./.github/agentic-review.json').reviewerAdapter) || 'claude-code')" 2>/dev/null || echo "claude-code")
-          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ] || [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+          # The reviewer bills the Claude SUBSCRIPTION only (flat rate):
+          # CLAUDE_CODE_OAUTH_TOKEN, with CLAUDE_CODE_OAUTH_TOKEN_FALLBACK as
+          # the second account (below). Neither pay-per-token ANTHROPIC_API_KEY
+          # nor OPENROUTER_API_KEY may fund a review — with no subscription
+          # token the mode is `none` and the gate goes honestly red instead of
+          # silently spending on a metered key.
+          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ] || [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
-            echo "Using agentproto lane"
-          elif [ "$ADAPTER_CFG" = "opencode" ] && [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then
-            echo "mode=agentproto" >> "$GITHUB_OUTPUT"
-            echo "Using agentproto lane (opencode reviewer, OPENROUTER_API_KEY credential)"
+            echo "Using agentproto lane (Claude subscription)"
           else
-            echo "mode=legacy" >> "$GITHUB_OUTPUT"
-            echo "No reviewer credential — falling back to legacy API-key reviewer"
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::error::No Claude subscription token (CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN_FALLBACK) — reviews never fall back to ANTHROPIC_API_KEY or OPENROUTER_API_KEY."
           fi
 
           # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
@@ -1043,7 +1036,7 @@ jobs:
           # `claude setup-token`-minted OAuth token from a SEPARATE Anthropic
           # subscription account, kept for the case where the PRIMARY
           # account's token is dead/expired/rate-limited rather than simply
-          # absent (absent is already handled by mode=legacy above). Computed
+          # absent (absent is already handled by mode=none above). Computed
           # once here as a step output — rather than testing the secret's
           # non-emptiness inline in each downstream step's `if:` — so every
           # gate below reads a plain boolean and a still-unset secret degrades
@@ -1076,6 +1069,14 @@ jobs:
           # the workflow step's `model` selector and (for opencode-style
           # adapters that route by model id) the provider key env.
           REVIEWER_MODEL=$(node -p "String((require('./.github/agentic-review.json').reviewerModel) || '')" 2>/dev/null || echo "")
+          # Fail closed: reviews bill the Claude subscription, never a metered
+          # key. Refuse a config that would route to OpenRouter or to
+          # api-key billing, rather than silently honouring it.
+          REVIEWER_SANDBOX_ENV=$(node -p "JSON.stringify((require('./.github/agentic-review.json').reviewerSandboxEnv) || [])" 2>/dev/null || echo "[]")
+          if [ "$AUTH_MODE" != "subscription" ] || echo "$REVIEWER_MODEL $REVIEWER_SANDBOX_ENV" | grep -qiE 'openrouter'; then
+            echo "::error::.github/agentic-review.json routes the reviewer to a metered provider (reviewerAuthMode=$AUTH_MODE, reviewerModel=$REVIEWER_MODEL, reviewerSandboxEnv=$REVIEWER_SANDBOX_ENV). Reviews must use reviewerAuthMode=subscription on the Claude subscription — OpenRouter and api-key billing are disabled for reviews."
+            exit 1
+          fi
           echo "cli-source=$CLI_SOURCE" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$AUTH_MODE" >> "$GITHUB_OUTPUT"
@@ -1119,7 +1120,8 @@ jobs:
           '
 
       # OAuth path: agentproto-run lane (subscription billing, flat rate).
-      # Falls back to legacy on any failure so a token expiry doesn't block merges.
+      # A dead primary token falls through to the fallback-account tier below;
+      # there is no metered-key tier — if both subscriptions fail the gate is red.
       - name: Run agentic PR reviewer (agentproto lane)
         id: reviewer-agentproto
         if: |
@@ -1152,22 +1154,13 @@ jobs:
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
-          # auth-mode from .github/agentic-review.json (reviewerAuthMode).
-          # Both credentials are passed; the action's write-config uses only
-          # the one matching auth-mode. api-key authenticates headless in CI
-          # (subscription/OAuth silently no-ops without an interactive login).
+          # auth-mode is pinned to `subscription` (the "Resolve agentproto CLI
+          # source/version" step refuses anything else): the reviewer rides
+          # CLAUDE_CODE_OAUTH_TOKEN only. No api-key / provider-key is passed,
+          # so neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY can fund it.
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
-          # Non-Anthropic reviewer lane (reviewerAdapter=opencode): bill via
-          # OPENROUTER_API_KEY, injected onto the daemon process env under its
-          # own name (provider-key-env) so the e2b sandbox passthrough
-          # (reviewerSandboxEnv) and the adapter's provider-env auth state both
-          # resolve it. api-key below is switched to the same key so
-          # write-config.mjs always has a credential for auth-mode=api-key and
-          # never hard-errors on an opencode lane.
-          provider-key: ${{ steps.cliver.outputs.adapter == 'opencode' && secrets.OPENROUTER_API_KEY || '' }}
-          provider-key-env: ${{ steps.cliver.outputs.adapter == 'opencode' && 'OPENROUTER_API_KEY' || '' }}
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api-key: ${{ steps.cliver.outputs.adapter == 'opencode' && secrets.OPENROUTER_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          model: ${{ steps.cliver.outputs.model }}
           # e2b microVM sandbox for the reviewer session (reviewerSandbox in
           # .github/agentic-review.json) — the daemon-internal spawn failure on
           # the runner does not reproduce inside a sandbox, whose own daemon
@@ -1386,7 +1379,7 @@ jobs:
           # that succeeds here is indistinguishable in substance from one the
           # primary account would have posted.
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
-          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: ${{ steps.cliver.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -1522,43 +1515,6 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run agentic PR reviewer (legacy API-key fallback)
-        id: reviewer-legacy
-        # Legacy is now the LAST resort in a three-tier ladder (primary
-        # account → fallback account → legacy API key). Both postcheck
-        # steps are the sole arming signal — no reliance on any tier's
-        # self-reported outcome/status (see the fallback-account step's
-        # comment for why that self-report can't be trusted: a real 429 on
-        # PR #951's own primary-account attempt still reported outcome:
-        # success / status: done). `postcheck.outputs.posted` covers
-        # mode=='legacy' for free — that step only runs under
-        # mode=='agentproto', so under mode=='legacy' its output is empty and
-        # `!= 'true'` holds trivially. `postcheck-fallback.outputs.posted`
-        # is equally empty (and so equally `!= 'true'`) whenever the fallback
-        # tier never ran — no fallback secret configured, auth-mode isn't
-        # subscription, or mode=='legacy' — so no extra disjunct is needed to
-        # cover those cases either. `!= 'unknown'` (both tiers): a postcheck
-        # that couldn't reach GitHub can't prove nothing was posted — never
-        # arm another POSTING tier blind (duplicate risk); an empty output
-        # still passes, keeping the mode=='legacy' free-pass above intact.
-        if: |
-          steps.prstate.outputs.skip != 'true' &&
-          steps.bypass.outputs.skip != 'true' &&
-          steps.postcheck.outputs.posted != 'true' &&
-          steps.postcheck.outputs.posted != 'unknown' &&
-          steps.postcheck-fallback.outputs.posted != 'true' &&
-          steps.postcheck-fallback.outputs.posted != 'unknown'
-        # Don't abort the job on a non-posting reviewer — capture the outcome so
-        # the gate can turn it into an honest red instead of a false green.
-        continue-on-error: true
-        run: node scripts/review-pr.mjs
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Use the App token so the review + comments are authored by the
-          # bot identity (mentionable) instead of github-actions[bot].
-          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-
       - name: Propagate reviewer outcome for gate
         id: reviewer
         if: |
@@ -1591,9 +1547,6 @@ jobs:
             || [ "${{ steps.postcheck-fallback.outputs.posted }}" = "true" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
-          elif [ "${{ steps.reviewer-legacy.outcome }}" = "success" ]; then
-            echo "outcome=success" >> "$GITHUB_OUTPUT"
-            echo "mode=legacy" >> "$GITHUB_OUTPUT"
           else
             echo "outcome=failure" >> "$GITHUB_OUTPUT"
             echo "mode=none" >> "$GITHUB_OUTPUT"
