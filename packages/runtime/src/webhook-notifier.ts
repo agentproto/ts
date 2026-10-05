@@ -33,7 +33,7 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { SessionEvent, SessionAwaitingQuestion } from "./session-event-bus.js"
-import { signWebhook } from "./webhook-egress/signing.js"
+import { decodeWhsecSecret, signWebhook } from "./webhook-egress/signing.js"
 
 export interface WebhookNotifier {
   /** Register a per-session URL (called from agent_start), with an optional
@@ -87,30 +87,44 @@ export function createWebhookNotifier(opts?: {
 }): WebhookNotifier {
   const perSession = new Map<string, Target>()
 
+  // Global secrets are operator-supplied and not validated upstream. An
+  // invalid one must NOT fall back to an unsigned post (the receiver expects
+  // signatures) and must not throw: skip the target and warn.
+  const buildGlobalTarget = (url: string, secret: string | undefined): Target | undefined => {
+    if (!secret) return { url }
+    if (decodeWhsecSecret(secret) === null) {
+      console.warn(
+        `[webhook-notifier] global notify secret is not a valid whsec_ secret — skipping global webhook ${url}`
+      )
+      return undefined
+    }
+    return { url, secret }
+  }
+
   const resolveGlobalTarget = (): Target | undefined => {
     if (process.env.AGENTPROTO_NOTIFY_URL) {
-      return {
-        url: process.env.AGENTPROTO_NOTIFY_URL,
-        ...(process.env.AGENTPROTO_NOTIFY_SECRET
-          ? { secret: process.env.AGENTPROTO_NOTIFY_SECRET }
-          : {}),
-      }
+      return buildGlobalTarget(
+        process.env.AGENTPROTO_NOTIFY_URL,
+        process.env.AGENTPROTO_NOTIFY_SECRET || undefined
+      )
     }
+    let fileUrl: string | undefined
+    let fileSecret: string | undefined
     try {
       const path = join(homedir(), ".agentproto", "notify.json")
       const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown
       if (parsed && typeof parsed === "object" && "url" in parsed) {
         const { url, secret } = parsed as { url: unknown; secret?: unknown }
         if (typeof url === "string" && url) {
-          return { url, ...(typeof secret === "string" && secret ? { secret } : {}) }
+          fileUrl = url
+          fileSecret = typeof secret === "string" && secret ? secret : undefined
         }
       }
     } catch {
       // file absent or malformed — not an error
     }
-    return opts?.globalUrl
-      ? { url: opts.globalUrl, ...(opts.globalSecret ? { secret: opts.globalSecret } : {}) }
-      : undefined
+    if (fileUrl) return buildGlobalTarget(fileUrl, fileSecret)
+    return opts?.globalUrl ? buildGlobalTarget(opts.globalUrl, opts.globalSecret || undefined) : undefined
   }
 
   const post = async (target: Target, payload: NotifyPayload): Promise<void> => {
@@ -121,15 +135,20 @@ export function createWebhookNotifier(opts?: {
     const body = JSON.stringify(payload)
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     if (target.secret) {
-      Object.assign(
-        headers,
-        signWebhook({
-          msgId: `evt_${randomUUID()}`,
-          timestamp: Math.floor(Date.now() / 1000),
-          payload: new TextEncoder().encode(body),
-          secrets: [target.secret],
-        })
-      )
+      try {
+        Object.assign(
+          headers,
+          signWebhook({
+            msgId: `evt_${randomUUID()}`,
+            timestamp: Math.floor(Date.now() / 1000),
+            payload: new TextEncoder().encode(body),
+            secrets: [target.secret],
+          })
+        )
+      } catch {
+        // Invalid secret — never fall back to an unsigned post, never throw.
+        return
+      }
     }
     try {
       const resp = await fetch(target.url, {

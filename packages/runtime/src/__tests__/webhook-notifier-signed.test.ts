@@ -159,6 +159,58 @@ describe("webhook-notifier — opt-in signing", () => {
     expect(verifySignature(calls[0]!.headers, calls[0]!.body, SECRET_A)).toBe(true)
   })
 
+  it("an invalid global secret skips the global post (no unsigned fallback, no throw)", async () => {
+    const { calls } = captureFetch()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    process.env.AGENTPROTO_NOTIFY_URL = "http://env.invalid/hook"
+    process.env.AGENTPROTO_NOTIFY_SECRET = "not-a-whsec-secret"
+    const unhandled = vi.fn()
+    process.on("unhandledRejection", unhandled)
+    try {
+      const notifier = createWebhookNotifier()
+      notifier.onSessionEvent({
+        type: "session:exited",
+        sessionId: "sess_1",
+        ts: "t",
+        exitCode: 0,
+        status: "exited",
+      })
+      await new Promise(res => setTimeout(res, 10))
+
+      expect(calls).toHaveLength(0)
+      expect(warn).toHaveBeenCalled()
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off("unhandledRejection", unhandled)
+      warn.mockRestore()
+    }
+  })
+
+  it("an invalid globalSecret option skips the global target but still posts the session target", async () => {
+    const { calls } = captureFetch()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const notifier = createWebhookNotifier({
+        globalUrl: "http://global.invalid/hook",
+        globalSecret: "bogus",
+      })
+      notifier.register("sess_1", "http://session.invalid/hook", SECRET_A)
+      notifier.onSessionEvent({
+        type: "session:exited",
+        sessionId: "sess_1",
+        ts: "t",
+        exitCode: 0,
+        status: "exited",
+      })
+      await new Promise(res => setTimeout(res, 10))
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0]!.url).toBe("http://session.invalid/hook")
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it("two posts to two different signed targets get independent, both-valid signatures", async () => {
     const { calls } = captureFetch()
     const notifier = createWebhookNotifier({
