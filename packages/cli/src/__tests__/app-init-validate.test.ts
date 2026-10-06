@@ -235,6 +235,62 @@ describe("agentproto app validate", () => {
     ).toBe(true)
   })
 
+  it("rejects a runtime-internal kind (transform) in a manifest-only workflow", async () => {
+    const appDir = await scaffoldTrame("manifest-transform")
+    const wfPath = join(appDir, ".agentproto", "workflows", "manifest-transform-flow", "WORKFLOW.md")
+    const wf = await readFile(wfPath, "utf8")
+    await writeFile(wfPath, wf.replace("kind: agent", "kind: transform"), "utf8")
+
+    const { code, stdout } = await captureJson(() => runAppValidate([appDir, "--json"]))
+    expect(code).toBe(1)
+    expect(
+      parseReport(stdout).findings.some(
+        (f) => f.level === "error" && f.message.includes("unknown step kind 'transform'"),
+      ),
+    ).toBe(true)
+  })
+
+  it("accepts transform steps in an entry-based workflow the loader reconciles", async () => {
+    const appDir = await scaffoldTrame("entry-transform")
+    const wfDir = join(appDir, ".agentproto", "workflows", "entry-transform-flow")
+    const wfPath = join(wfDir, "WORKFLOW.md")
+    const id = /^id:\s*(\S+)/m.exec(await readFile(wfPath, "utf8"))?.[1]
+    expect(id).toBeDefined()
+    // AIP-15 legacy `entry:` shape: the code graph is the source of truth and
+    // the manifest mirrors it kind for kind (reconcileEntry), transform included.
+    await writeFile(
+      wfPath,
+      [
+        "---",
+        "name: Entry transform",
+        `id: ${id}`,
+        "description: Entry-backed workflow with a pure computation step.",
+        "version: 0.1.0",
+        "entry: ./entry.mjs",
+        "inputs: {}",
+        "outputs: {}",
+        "steps:",
+        "  - id: settings",
+        "    kind: transform",
+        "    name: Resolve settings",
+        "---",
+        "",
+      ].join("\n"),
+      "utf8",
+    )
+    await writeFile(
+      join(wfDir, "entry.mjs"),
+      `export default { id: ${JSON.stringify(id)}, name: "Entry transform", version: "0.1.0", ` +
+        `inputs: {}, outputs: {}, steps: [{ id: "settings", kind: "transform", fn: (x) => x }] }\n`,
+      "utf8",
+    )
+
+    const { code, stdout } = await captureJson(() => runAppValidate([appDir, "--json"]))
+    const report = parseReport(stdout)
+    expect(report.findings.filter((f) => f.level === "error")).toEqual([])
+    expect(code).toBe(0)
+  })
+
   it("accepts the stage-board approval tools in ui.tools", async () => {
     const appDir = await scaffoldTrame("stageboard-tools")
     const appMdPath = join(appDir, ".agentproto", "APP.md")
