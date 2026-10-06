@@ -130,7 +130,18 @@ an app that does not set `accepts.tasks` has no ingress at all.
 
 ## 5. Publish a remote catalog
 
-A catalog is a **static JSON file** on any HTTP host, in the
+The default public catalog is a static JSON file served at
+`https://agentproto.sh/catalog/v1/apps.json` (the `apps.json` file lives in
+the `agentproto/site` repo, under `public/catalog/v1/apps.json`). The
+`.agentapp` bundles it references are assets of GitHub Releases on the
+public `agentproto/apps` repo: one release per app version, tagged
+`<slug>@<version>` (the `slug` is the last segment of the appId without its
+scope: `@agentik/session-chat` -> `session-chat`), with the bundle attached
+as `<slug>-<version>.agentapp`. Its asset URL is therefore
+`https://github.com/agentproto/apps/releases/download/<slug>%40<version>/<slug>-<version>.agentapp`
+(the `@` of the tag is encoded `%40`).
+
+Any catalog is still just a **static JSON file** on any HTTP host, in the
 `app-catalog/v1` format:
 
 ```json
@@ -163,10 +174,51 @@ Only `appId` and `source` are required. A `.agentapp` source needs `url`,
 `agentproto app pack --release --json`) and `version`; a git source needs
 `url` and the pinned commit `sha` (plus optional `ref` / `subdir`). The
 other fields (`name`, `description`, `category`, `icon`, `version`, `tier`
-— `git` | `bundle` | `hosted`, `placement`, `publisher`, `license`,
+-- `git` | `bundle` | `hosted`, `placement`, `publisher`, `license`,
 `requires`, `minAgentprotoVersion`, `featured`) are optional metadata for a
 store UI. Unknown fields are ignored; an entry that fails validation is
 skipped with a warning, the rest of the catalog still loads.
+
+### Publishing with the CLI: pack --release --entry, then catalog build
+
+You do not have to hand-write those entries. Two CLI verbs cover the
+publishing path:
+
+```sh
+# 1. Pack a release bundle AND write a catalog entry next to it:
+agentproto app pack <appDir> --release --entry [--out <dir|file.agentapp>] \
+  [--asset-url <url>] [--publisher <name>]
+```
+
+`--entry` (which requires `--release`) writes the bundle as
+`<slug>-<version>.agentapp` and a validated `<slug>-<version>.entry.json`
+catalog entry beside it: `appId`, `name`, `description`, `category`, `icon`
+and `placement` come from the APP.md frontmatter, `version` must be
+declared there (packing fails without it), `tier` is `bundle`, `license`
+defaults to `{kind: "free"}`, and `source` carries the bundle's own
+`sha256` (the exact digest `app_install {sha256}` verifies at install
+time), its byte `size`, and the asset `url`: `--asset-url` if given, else
+the GitHub Releases URL of the `agentproto/apps` repo described above.
+
+```sh
+# 2. Merge the entries into the published apps.json:
+agentproto catalog build <entry.json|dir>... --out <apps.json> \
+  [--base <apps.json>] [--check] [--emit-ts <first-party-catalog.ts>]
+```
+
+`catalog build` validates every `*.entry.json` (a directory is scanned
+non-recursively), merges them over `--base` by `appId` (an incoming entry
+replaces the existing one when its version is >=; an older version is
+warned about and ignored) and writes a deterministic document: entries
+sorted by `appId`, 2-space indent, trailing newline. `generatedAt` is kept
+from `--base` when nothing changed, so a no-op build produces no diff.
+`--check` writes nothing and exits 1 when `--out` is out of date
+(ignoring `generatedAt`) -- the CI guard against drift. `--emit-ts` also
+renders the daemon's embedded first-party fallback
+(`packages/runtime/src/first-party-catalog.ts`); the same file is
+regenerated from the live published catalog by
+`pnpm --filter @agentproto/runtime catalog:first-party`, which the
+`catalog-sync.yml` workflow runs before opening its sync PR.
 
 `app_catalog` always queries the **default public catalog** first, then
 the sources you add. Add yours in either place (config wins over the
