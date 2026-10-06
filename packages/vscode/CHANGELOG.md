@@ -1,5 +1,18 @@
 # agentproto-vscode
 
+## 0.22.1
+
+### Patch Changes
+
+- 1130a2d: App Store empty states and catalog verbs. `agentproto app install @scope/name` installs the daemon catalog entry's pinned source (an existing path still wins). New `agentproto app catalog`, `app uninstall`, `app update` and `app store` verbs, and `app list` points at the store when nothing is installed. The VS Code apps view offers "Browse the App Store" instead of a dead end, the session-chat launcher shows a working install command plus an absolute App Store deep link, and onboarding proposes featured catalog apps (opt-in, skipped offline).
+- 1130a2d: App Store empty states and catalog verbs: `app install @scope/name`, `app catalog`, `app uninstall`, `app update`, `app store`; session-chat App Store deep link; VS Code apps view welcome state.
+- Updated dependencies [1130a2d]
+- Updated dependencies [d147f9f]
+- Updated dependencies [1130a2d]
+- Updated dependencies [9018b92]
+  - @agentproto/apps@0.20.1
+  - @agentproto/runtime@5.11.1
+
 ## 0.22.0
 
 ### Minor Changes

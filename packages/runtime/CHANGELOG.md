@@ -1,5 +1,16 @@
 # @agentproto/runtime
 
+## 5.11.1
+
+### Patch Changes
+
+- d147f9f: `session_capabilities`'s `mcpServers[].error` no longer reports a false positive for the daemon's own `/mcp` mount: a harness probing the deregistered `server/discover` method (removed in #1684) and falling back to `initialize`/`tools/list` is normal negotiation, not a failed mount, and a successful `tools/list` now clears any earlier handshake error instead of leaving it stuck in the response.
+- 9018b92: session-steward: a 0-token session is only "never ran" (stuck) when it is not busy, not starting/provisioning, has no queued first prompt, and is both older and idler than `idleMinutes` (a just-started busy session used to be flagged), and the "terminal sessions missing an outcome" section now lists only sessions that ended within the new `relabelWindowHours` input (default 24), at most 20 newest first, with a per-label count and an "… and N more" line instead of hundreds of lines.
+- Updated dependencies [1130a2d]
+- Updated dependencies [1130a2d]
+- Updated dependencies [9018b92]
+  - @agentproto/apps@0.20.1
+
 ## 5.11.0
 
 ### Minor Changes

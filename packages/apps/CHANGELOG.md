@@ -1,5 +1,13 @@
 # @agentproto/apps
 
+## 0.20.1
+
+### Patch Changes
+
+- 1130a2d: App Store empty states and catalog verbs. `agentproto app install @scope/name` installs the daemon catalog entry's pinned source (an existing path still wins). New `agentproto app catalog`, `app uninstall`, `app update` and `app store` verbs, and `app list` points at the store when nothing is installed. The VS Code apps view offers "Browse the App Store" instead of a dead end, the session-chat launcher shows a working install command plus an absolute App Store deep link, and onboarding proposes featured catalog apps (opt-in, skipped offline).
+- 1130a2d: App Store empty states and catalog verbs: `app install @scope/name`, `app catalog`, `app uninstall`, `app update`, `app store`; session-chat App Store deep link; VS Code apps view welcome state.
+- 9018b92: session-steward: a 0-token session is only "never ran" (stuck) when it is not busy, not starting/provisioning, has no queued first prompt, and is both older and idler than `idleMinutes` (a just-started busy session used to be flagged), and the "terminal sessions missing an outcome" section now lists only sessions that ended within the new `relabelWindowHours` input (default 24), at most 20 newest first, with a per-label count and an "… and N more" line instead of hundreds of lines.
+
 ## 0.20.0
 
 ### Minor Changes
