@@ -1,5 +1,12 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.16
+
+### Patch Changes
+
+- Updated dependencies [5f4f30d]
+  - @agentproto/model-catalog@0.11.4
+
 ## 0.7.15
 
 ### Patch Changes

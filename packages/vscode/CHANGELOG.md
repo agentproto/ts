@@ -1,5 +1,22 @@
 # agentproto-vscode
 
+## 0.22.0
+
+### Minor Changes
+
+- f3e06dc: Add the App Store builtin panel (`@agentproto/store`, tool `agentproto_store`): the browse/install surface over `app_catalog` / `app_list` / `app_updates`, with confirmed installs (`app_install` issued from an app panel's tool-call surface now answers a `{needsConfirmation}` preview first and installs only on a second call echoing the preview's `confirm` token; direct MCP/CLI calls are unchanged), `app_resync` / `app_uninstall` actions, install-from-URL, catalog sources warnings, builtin panels, and `GET /store` redirecting to `/apps/@agentproto/store/ui` with the query preserved. VS Code: `agentproto.openStore` command.
+
+### Patch Changes
+
+- Updated dependencies [6c6cbd3]
+- Updated dependencies [ce27b0d]
+- Updated dependencies [a55c647]
+- Updated dependencies [3ea7d79]
+- Updated dependencies [f3e06dc]
+- Updated dependencies [2ed619f]
+  - @agentproto/runtime@5.11.0
+  - @agentproto/apps@0.20.0
+
 ## 0.21.0
 
 ### Minor Changes
