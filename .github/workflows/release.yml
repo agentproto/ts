@@ -147,6 +147,42 @@ jobs:
           done
           echo "::warning::failed to post 'Agentic review' on PR #$PR_NUMBER after 3 attempts — merge it with the ruleset bypass"
 
+      # changesets/action publishes ONLY when no changeset is pending. A
+      # changeset that lands on main between the "Version Packages" PR being
+      # opened and merged (the automated catalog sync does this constantly:
+      # #1731 at 15:45:33, version PR #1730 merged 15:46:43 on 2026-10-06;
+      # same shape the night before with #1688/#1687) makes the post-merge run
+      # open a NEW version PR instead — and the already-versioned packages
+      # never reach npm (cli stuck at 1.10.0 while main was at 1.11.0). So when
+      # the action did not publish, publish whatever main carries that npm
+      # doesn't have. Safe because `changeset publish` skips versions already
+      # on npm, and because the comparison is main's own package.json versions:
+      # the action leaves the checkout on its `changeset-release/main` branch
+      # (bumped, unmerged versions), so we first return to the pushed commit.
+      # The pre-check makes the usual run (nothing unpublished) a no-op without
+      # a build. Tags and GitHub releases for what this publishes are created by
+      # the reconcile step below (changeset publish only tags locally here);
+      # its `recovered=true` and this step's success both open the post-
+      # release steps.
+      - name: Check for versions on main missing from npm
+        id: unpublished
+        if: ${{ !cancelled() && steps.changesets.outcome == 'success' && steps.changesets.outputs.published != 'true' }}
+        run: |
+          git checkout --force --detach "$GITHUB_SHA"
+          node scripts/list-unpublished-packages.mjs
+
+      - name: Publish versions the changesets action skipped
+        id: publish-missed
+        if: ${{ !cancelled() && steps.unpublished.outputs.pending == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/publish-with-retry.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+
       # changesets/action pushes one git tag per published package,
       # sequentially, in a single burst — pushing ~100 tags back-to-back in
       # a few seconds has hit GitHub's ref-write path hard enough to reject
@@ -181,7 +217,7 @@ jobs:
       # release batch that doesn't touch the extension doesn't produce a
       # duplicate, identical vsix.
       - name: Package + publish VS Code extension
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
@@ -245,7 +281,7 @@ jobs:
       # existing, since a given run may not have published either — or only
       # one — of them.
       - name: Attach skill-pack bundles to their GitHub releases
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -269,8 +305,9 @@ jobs:
             echo "Attached $zip to release $tag"
           done
 
-      # Only runs when changesets/action actually published packages (not when
-      # it just opened the "Version Packages" PR). The agent reads every
+      # Only runs when packages were actually published — by changesets/action
+      # or by the missed-versions step above (not when it just opened the
+      # "Version Packages" PR). The agent reads every
       # per-package CHANGELOG, greps the codebase for context, and posts a
       # consolidated human-readable release to GitHub Releases.
       #
@@ -289,7 +326,7 @@ jobs:
       # the final gate below is the one honest red.
       - name: Generate agentic release notes (subscription)
         id: notes-1
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         run: node scripts/release-notes.mjs
         env:
@@ -299,7 +336,7 @@ jobs:
 
       - name: Release notes posted? (after subscription)
         id: notes-check-1
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -312,7 +349,7 @@ jobs:
 
       - name: Generate agentic release notes (fallback subscription)
         id: notes-2
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.notes-check-1.outputs.posted != 'true'
         continue-on-error: true
         run: node scripts/release-notes.mjs
@@ -323,7 +360,7 @@ jobs:
 
       - name: Release notes posted? (after fallback subscription)
         id: notes-check-2
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.notes-check-1.outputs.posted != 'true'
         continue-on-error: true
         env:
@@ -337,7 +374,7 @@ jobs:
 
       - name: Generate agentic release notes (openrouter)
         id: notes-3
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.notes-check-2.outputs.posted != 'true'
         continue-on-error: true
         run: node scripts/release-notes.mjs
@@ -348,7 +385,7 @@ jobs:
 
       - name: Release notes posted? (after openrouter)
         id: notes-check-3
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.notes-check-2.outputs.posted != 'true'
         continue-on-error: true
         env:
@@ -362,7 +399,7 @@ jobs:
 
       - name: Generate agentic release notes (api-key)
         id: notes-4
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.notes-check-3.outputs.posted != 'true'
         continue-on-error: true
         run: node scripts/release-notes.mjs
@@ -373,7 +410,7 @@ jobs:
 
       - name: Release notes posted? (after api-key)
         id: notes-check-4
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.notes-check-3.outputs.posted != 'true'
         continue-on-error: true
         env:
@@ -386,7 +423,7 @@ jobs:
           fi
 
       - name: Release notes posted? (final gate)
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -407,7 +444,7 @@ jobs:
       # best-effort bonus on top of an already-published release.
       - name: Check docs for release drift (subscription)
         id: docs-1
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         run: node scripts/docs-check.mjs
         env:
@@ -415,7 +452,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       - name: Check docs for release drift (fallback subscription)
         id: docs-2
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.docs-1.outputs.status != 'ok'
         continue-on-error: true
         run: node scripts/docs-check.mjs
@@ -424,7 +461,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
       - name: Check docs for release drift (openrouter)
         id: docs-3
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.docs-1.outputs.status != 'ok' &&
           steps.docs-2.outputs.status != 'ok'
         continue-on-error: true
@@ -434,7 +471,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       - name: Detect docs drift
         id: docs-drift
-        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         run: |
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
