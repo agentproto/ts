@@ -22,8 +22,6 @@ overrides:
   brace-expansion: '>=2.1.6 || >=5.0.11'
   basic-ftp: '>=6.2.1'
 
-packageExtensionsChecksum: sha256-y1DXJdllXW+V5PhP3gs8ldfdZE+HBcVETr5ee9fDpNM=
-
 importers:
 
   .:
