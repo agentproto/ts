@@ -120,6 +120,29 @@ describe("agentproto sessions checkpoint / handoff", () => {
     expect(text).toContain("[continued session")
   })
 
+  it("handoff --dry-run says the content is approximate (daemon note, or a fallback for older daemons)", async () => {
+    httpPostJson.mockResolvedValueOnce({
+      ok: true,
+      dryRun: true,
+      approximateNote: "Approximate content from the daemon.",
+      checkpoint: { checkpointPath: "/would/write.json" },
+      prompt: "[continued session — handoff]",
+    })
+    expect(await runSessions(["handoff", "sess_a", "--to", "codex", "--dry-run"])).toBe(0)
+    expect(out.join("")).toContain("Approximate content from the daemon.")
+
+    out.length = 0
+    httpPostJson.mockResolvedValueOnce({
+      ok: true,
+      dryRun: true,
+      checkpoint: { checkpointPath: "/would/write.json" },
+      prompt: "[continued session — handoff]",
+    })
+    expect(await runSessions(["handoff", "sess_a", "--to", "codex", "--dry-run"])).toBe(0)
+    expect(out.join("")).toContain("approximate content")
+    expect(out.join("")).toContain("asks it to summarise itself first")
+  })
+
   it("handoff without --to exits 2 without calling the daemon", async () => {
     expect(await runSessions(["handoff", "sess_a"])).toBe(2)
     expect(err.join("")).toContain("--to <harness> is required")

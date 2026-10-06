@@ -198,11 +198,16 @@ describe("POST /sessions/:id/checkpoint + /handoff", () => {
       expect(res.status).toBe(200)
       const body = (await res.json()) as {
         dryRun: boolean
+        approximate: boolean
+        approximateNote: string
         to: string
         prompt: string
         checkpoint: { checkpointPath: string; sourceSessionId: string }
       }
       expect(body.dryRun).toBe(true)
+      expect(body.approximate).toBe(true)
+      expect(body.approximateNote).toContain("never prompts the source session")
+      expect(body.approximateNote).toContain("The real handoff asks the source session")
       expect(body.to).toBe("codex")
       expect(body.checkpoint.sourceSessionId).toBe(h.source.id)
       expect(body.prompt).toContain("[continued session")
