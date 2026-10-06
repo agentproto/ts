@@ -177,6 +177,55 @@ describe("packApp / unpackApp", () => {
     expect(await readFile(join(appDir, ".agentproto", "APP.md"), "utf8")).toContain("command: pnpm run build")
   })
 
+  it("release pack drops tests, repo docs and tooling config but keeps runtime files and LICENSE", async () => {
+    const root = await mktmp()
+    const appDir = await releaseFixture(root, { built: true })
+    const wf = join(appDir, ".agentproto", "workflows", "attention")
+    await mkdir(join(wf, "__tests__"), { recursive: true })
+    await mkdir(join(appDir, ".agentproto", "agents", "test"), { recursive: true })
+    await mkdir(join(appDir, "test"), { recursive: true })
+    await mkdir(join(appDir, "tests"), { recursive: true })
+    await mkdir(join(appDir, ".github", "workflows"), { recursive: true })
+    const files: Record<string, string> = {
+      // runtime: must ship
+      ".agentproto/workflows/attention/WORKFLOW.md": "---\nid: attention\n---\n",
+      ".agentproto/workflows/attention/entry.mjs": "export default 1\n",
+      ".agentproto/workflows/attention/rules.mjs": "export const r = 1\n",
+      ".agentproto/agents/test/AGENT.md": "---\nid: test\n---\n",
+      "LICENSE": "MIT\n",
+      // dev only: must not ship
+      ".agentproto/workflows/attention/rules.test.mjs": "test\n",
+      ".agentproto/workflows/attention/rules.spec.ts": "spec\n",
+      ".agentproto/workflows/attention/__tests__/a.mjs": "test\n",
+      "test/attention.test.mjs": "test\n",
+      "tests/fixture.json": "{}\n",
+      "README.md": "# app\n",
+      "CHANGELOG.md": "# changes\n",
+      ".github/workflows/ci.yml": "on: push\n",
+      ".gitignore": "node_modules\n",
+      "tsconfig.json": "{}\n",
+      "vitest.config.ts": "export default {}\n",
+      "eslint.config.mjs": "export default []\n",
+    }
+    for (const [rel, body] of Object.entries(files)) await writeFile(join(appDir, rel), body)
+
+    const { manifest } = await packApp({ appDir, out: join(root, "clean.agentapp"), release: true })
+    expect(manifest.files).toEqual([
+      ".agentproto/APP.md",
+      ".agentproto/agents/test/AGENT.md",
+      ".agentproto/ui/index.html",
+      ".agentproto/workflows/attention/WORKFLOW.md",
+      ".agentproto/workflows/attention/entry.mjs",
+      ".agentproto/workflows/attention/rules.mjs",
+      "LICENSE",
+    ])
+
+    // A non-release pack still ships everything (the defaults are release-only).
+    const { manifest: debug } = await packApp({ appDir, out: join(root, "debug.agentapp") })
+    expect(debug.files).toContain("README.md")
+    expect(debug.files).toContain("test/attention.test.mjs")
+  })
+
   it("release pack fails with missing-ui when ui.path was never built", async () => {
     const root = await mktmp()
     const appDir = await releaseFixture(root, { built: false })

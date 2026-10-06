@@ -327,7 +327,8 @@ $ agentproto app validate notes-digest-unpacked --json
 ```
 
 `pack --release` additionally runs any declared `ui.build`, excludes
-dev-only paths (`ui/**`, `docs/**`, `data/**`, `scripts/**`, `**/.env*`, …),
+dev-only paths (`ui/**`, `docs/**`, `data/**`, `scripts/**`, tests, the root
+`README.md`, tooling config, `**/.env*`, …),
 and strips `ui.build` from the packed `APP.md` so an install never runs a
 build command from an untrusted source.
 

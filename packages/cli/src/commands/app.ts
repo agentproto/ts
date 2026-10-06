@@ -75,7 +75,8 @@ pack:
   APP.md \`package\` block (\`include\` / \`exclude\` globs, \`stripBuild\`).
   --release builds the publishable bundle: runs \`ui.build\` first when the UI
   is missing or stale, drops dev-only files (ui/, docs/, data/, scripts/,
-  dev/, *.log, *.map, .env*), fails if the built ui.path is missing, and
+  dev/, test(s)/, tests anywhere, root README/CHANGELOG, tooling config,
+  *.log, *.map, .env*), fails if the built ui.path is missing, and
   strips \`ui.build\` from the packed APP.md so installs never run it.
   --entry (requires --release) also writes a catalog entry next to the
   bundle: <slug>-<version>.entry.json, a validated AppCatalogEntry with
