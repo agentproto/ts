@@ -4,7 +4,6 @@ import {
   encodeOfferWebUrl,
   parseOfferUrl,
   DEFAULT_PAIR_PAGE,
-  PAIR_WEB_URL,
   PAIR_WEB_URL_TEMPLATE_CLOUD,
   resolvePairPageUrl,
   expectedPairHost,
@@ -12,6 +11,9 @@ import {
 } from "../offer-url.js"
 import { PairingError, type PairingErrorCode } from "../handshake.js"
 import { generateIdentity, identityFingerprint } from "../../identity/index.js"
+
+/** A self-hosted, single shared-origin pair page (`pairing.pairPage`). */
+const SHARED_PAIR_PAGE = "https://pair.example.com/pair"
 
 async function makeOffer(overrides: Partial<PairingOffer> = {}): Promise<PairingOffer> {
   const identity = await generateIdentity()
@@ -167,13 +169,13 @@ describe("offer URL codec", async () => {
   it("wraps the offer in the fragment of the web pair page, and parses it back", async () => {
     const offer = await makeOffer()
     const url = encodeOfferUrl(offer)
-    const web = encodeOfferWebUrl(url, PAIR_WEB_URL)
-    expect(web.startsWith(`${PAIR_WEB_URL}#v=2&`)).toBe(true)
+    const web = encodeOfferWebUrl(url, SHARED_PAIR_PAGE)
+    expect(web.startsWith(`${SHARED_PAIR_PAGE}#v=2&`)).toBe(true)
     expect(new URLSearchParams(web.slice(web.indexOf("#") + 1)).get("s")).toBe(offer.secret)
     // Nothing of the offer is in the part a browser sends to the server.
     const asUrl = new URL(web)
     expect(asUrl.search).toBe("")
-    expect(`${asUrl.origin}${asUrl.pathname}`).toBe(PAIR_WEB_URL)
+    expect(`${asUrl.origin}${asUrl.pathname}`).toBe(SHARED_PAIR_PAGE)
     expect(asUrl.hash.slice(1)).toBe(url.slice(url.indexOf("?") + 1))
     expect(await parseOfferUrl(web)).toEqual(offer)
     // A custom page (self-hosted / dev) round-trips too.
@@ -185,8 +187,8 @@ describe("offer URL codec", async () => {
     const other = await generateIdentity()
     const tampered = encodeOfferWebUrl(encodeOfferUrl({ ...offer, daemonX25519Pub: other.x25519.pub }))
     await expectPairingError(() => parseOfferUrl(tampered), "malformed_offer")
-    await expectPairingError(() => parseOfferUrl(`${PAIR_WEB_URL}`), "malformed_offer")
-    await expectPairingError(() => parseOfferUrl(`${PAIR_WEB_URL}#`), "malformed_offer")
+    await expectPairingError(() => parseOfferUrl(`${SHARED_PAIR_PAGE}`), "malformed_offer")
+    await expectPairingError(() => parseOfferUrl(`${SHARED_PAIR_PAGE}#`), "malformed_offer")
     // A pre-v2 offer in the fragment is refused as outdated, like the plain form.
     const v1 = encodeOfferWebUrl(encodeOfferUrl(offer).replace("v=2", "v=1").replace("&s=", "&t="))
     await expectPairingError(() => parseOfferUrl(v1), "pairing_protocol_outdated")
@@ -227,9 +229,8 @@ describe("offer URL codec", async () => {
       expect(DEFAULT_PAIR_PAGE).toBe(PAIR_WEB_URL_TEMPLATE_CLOUD)
       expect(PAIR_WEB_URL_TEMPLATE_CLOUD).toBe("https://{fp}.agentproto.cloud/pair")
       expect(resolvePairPageUrl("https://pair.example.com/p/pair", FP)).toBe("https://pair.example.com/p/pair")
-      // The shared-origin page stays selectable as a plain URL.
-      expect(PAIR_WEB_URL).toBe("https://cli.agentproto.sh/pair")
-      expect(expectedPairHost(PAIR_WEB_URL, FP)).toBe("cli.agentproto.sh")
+      // A single shared-origin page stays selectable as a plain URL.
+      expect(expectedPairHost(SHARED_PAIR_PAGE, FP)).toBe("pair.example.com")
       const offer = await makeOffer()
       const url = encodeOfferUrl(offer)
       expect(encodeOfferWebUrl(url).startsWith(`https://${offer.fingerprint}.agentproto.cloud/pair#v=2&`)).toBe(true)

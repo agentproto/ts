@@ -89,13 +89,15 @@ describe.each(Object.entries(PANELS))("panel %s", (_name, html) => {
       expect(js).not.toMatch(/'<div class="d-text">'\+esc\(it\.text\)/)
     })
 
-    it("wires the full-panel deep-link to the current session on open, opening in a new tab", () => {
+    it("wires the full-panel deep-link to the daemon's live-session panel on open, opening in a new tab", () => {
       expect(html).toContain('id="fullPanelLink"')
       expect(html).toContain('target="_blank"')
       expect(html).toContain('rel="noopener"')
-      expect(js).toContain(
-        "$('fullPanelLink').href='https://cli.agentproto.sh/panel?session='+encodeURIComponent(id);",
-      )
+      expect(js).toContain("daemonOrigin+'/apps/@agentproto/live-session/ui?sessionId='+encodeURIComponent(id)")
+      // Hidden unless served standalone by the daemon (no dead link in an MCP host).
+      expect(html).toContain('class="sim hidden" id="fullPanelLink"')
+      expect(js).toContain("$('fullPanelLink').classList.toggle('hidden',!daemonOrigin);")
+      expect(html).not.toContain("cli.agentproto.sh")
     })
   }
 })

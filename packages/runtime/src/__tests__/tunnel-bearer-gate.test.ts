@@ -7,7 +7,8 @@
  * for it. Before this fix:
  *   - `GET /sessions` and its SSE stream had no gate at all.
  *   - Mutating `/sessions/*` routes (and the PTY WS upgrade) accepted a
- *     forged `Origin: https://cli.agentproto.sh` with no token whatsoever
+ *     forged allowlisted `Origin` (then `https://cli.agentproto.sh`, today
+ *     a localhost dev origin) with no token whatsoever
  *     (`checkSessionsToken`'s Origin-allowlist branch, which is a browser-
  *     CSRF proof, not a bearer substitute over the network).
  *
@@ -90,10 +91,10 @@ function fakePtyFactory(): PtyFactory {
 }
 
 const BEARER = "tunnel-bearer-secret"
-// The default allowlist entry a real attacker would forge — see
+// A default allowlist entry a real attacker would forge — see
 // DEFAULT_ALLOWED_ORIGINS in http-server.ts and PHONE-PLAN.md's P0 note
-// ("spawn agents or PTYs by sending Origin: https://cli.agentproto.sh").
-const FORGED_ORIGIN = "https://cli.agentproto.sh"
+// ("spawn agents or PTYs by sending an allowlisted Origin").
+const FORGED_ORIGIN = "http://localhost:3000"
 const FORWARDED = { "x-forwarded-for": "203.0.113.7" }
 
 const INBOUND_SLUG = "wh1"

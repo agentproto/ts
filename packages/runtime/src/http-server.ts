@@ -343,15 +343,6 @@ const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
   "http://localhost:*",
   "http://127.0.0.1:*",
   "https://localhost:*",
-  // The canonical hosted agentproto panel (github.com/agentproto/cli-site,
-  // deployed at cli.agentproto.sh). It drives the user's OWN local daemon
-  // from the browser: read-only GETs (session list, SSE stream) are ungated
-  // and already work, but the /sessions/:id/pty WebSocket upgrade IS gated —
-  // so a PTY terminal in the panel 401s unless this first-party origin is
-  // trusted like localhost. A malicious page can't forge this Origin (the
-  // browser sets it), so the trust is scoped to agentproto's own panel,
-  // matching how guilde.work is trusted. Drop it via `strictOrigins`.
-  "https://cli.agentproto.sh",
 ]
 
 /**
@@ -1478,7 +1469,7 @@ export async function startHttpServer(
    *     loopback bypass. Missing/invalid ⇒ 403. This branch is what blocks
    *     the drive-by that `authorize()` would otherwise wave through.
    *   - `Origin` absent, or an allowlisted Origin (localhost dev origins,
-   *     the hosted panel) → fall through to `authorize()`, so today's
+   *     any `--allow-origin`) → fall through to `authorize()`, so today's
    *     native-local-client path and trusted browser pages keep working
    *     unchanged.
    */
@@ -2249,11 +2240,11 @@ export async function startHttpServer(
   }
 
   // CORS for the loopback gateway. The Guilde web app (localhost:3041) and
-  // the hosted panel probe /health + read-only routes from the browser;
+  // other local dev pages probe /health + read-only routes from the browser;
   // without these headers the browser blocks the response. But a credentialed
   // response reflected back to an ARBITRARY origin lets an untrusted page read
   // it (data exfil) — so we only reflect + allow credentials for allowlisted
-  // origins (localhost dev, cli.agentproto.sh). Everything else gets a bare
+  // origins (localhost dev, plus any `--allow-origin`). Everything else gets a bare
   // `*` with NO credentials: enough for a public /health probe, useless for
   // reading a credentialed/sensitive response (which the route gate also 403s).
   //
