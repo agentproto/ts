@@ -4,7 +4,7 @@ id: opencode
 description: sst/opencode — open-source coding agent with first-party ACP mode. Spawned as `npx -y opencode-ai acp`, drives the agent over stdio JSON-RPC. Multi-provider (Anthropic, OpenAI, Groq, OpenRouter, OpenCode-hosted, …) — operator picks the underlying model via env-keyed provider auth.
 version: 0.1.0
 bin: npx
-bin_args: ["-y", "opencode-ai", "acp"]
+bin_args: ["-y", "opencode-ai", "acp", "--print-logs", "--log-level", "ERROR"]
 install:
   - method: npm
     package: opencode-ai
