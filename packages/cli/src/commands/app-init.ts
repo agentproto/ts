@@ -82,6 +82,18 @@ function isKnownUiTool(name: string): boolean {
   return name.startsWith("app_") || KNOWN_NON_APP_TOOLS.includes(name)
 }
 
+/**
+ * Runtime node kinds an ENTRY-based workflow (`entry: ./entry.mjs`, the legacy
+ * shape AIP-15 § Compatibility says hosts SHOULD keep accepting) may carry.
+ * Its graph is code (`defineWorkflow`), compiled straight to
+ * `@agentproto/workflow-runtime` nodes, and the loader's `reconcileEntry`
+ * REQUIRES the manifest to mirror that graph kind for kind, so a pure
+ * computation step is `transform` on both sides. A manifest-only workflow
+ * may not use them (AIP-15: runtime-internal node types are not
+ * authorable).
+ */
+const ENTRY_GRAPH_STEP_KINDS: readonly string[] = ["transform", "pipeline", "group"]
+
 const KNOWN_STEP_KINDS: readonly string[] = [
   "agent",
   "gate",
@@ -105,6 +117,7 @@ const KNOWN_STEP_KINDS: readonly string[] = [
 function findUnknownStepKind(
   steps: readonly unknown[],
   path: string,
+  known: readonly string[] = KNOWN_STEP_KINDS,
 ): { kind: string; path: string } | undefined {
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]
@@ -116,12 +129,12 @@ function findUnknownStepKind(
       typeof step.kind === "string"
         ? step.kind
         : undefined
-    if (kind === undefined || !KNOWN_STEP_KINDS.includes(kind)) {
+    if (kind === undefined || !known.includes(kind)) {
       return { kind: kind ?? "(missing)", path: at }
     }
     if (typeof step !== "object" || step === null) continue
     if ("steps" in step && Array.isArray(step.steps)) {
-      const nested = findUnknownStepKind(step.steps, `${at}.steps`)
+      const nested = findUnknownStepKind(step.steps, `${at}.steps`, known)
       if (nested !== undefined) return nested
     }
     if ("branches" in step && Array.isArray(step.branches)) {
@@ -136,6 +149,7 @@ function findUnknownStepKind(
           const nested = findUnknownStepKind(
             branch.steps,
             `${at}.branches[${b}].steps`,
+            known,
           )
           if (nested !== undefined) return nested
         }
@@ -323,7 +337,13 @@ export async function collectAppFindings(appDir: string): Promise<{
       const wfPath = isAbsolute(ref.path) ? ref.path : join(appDir, ref.path)
       try {
         const handle = await loadWorkflowHandle(wfPath)
-        const badKind = findUnknownStepKind(handle.steps, "steps")
+        const entryBased =
+          typeof matter(await readFile(wfPath, "utf8")).data.entry === "string"
+        const badKind = findUnknownStepKind(
+          handle.steps,
+          "steps",
+          entryBased ? [...KNOWN_STEP_KINDS, ...ENTRY_GRAPH_STEP_KINDS] : KNOWN_STEP_KINDS,
+        )
         if (badKind !== undefined) {
           findings.push({
             scope: `workflow:${ref.id}`,
