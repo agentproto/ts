@@ -186,13 +186,31 @@ export function detectStall(input = {}) {
 
 // ── never-ran (mission item 3) ───────────────────────────────────────────
 
+const minutesSince = (ts, nowMs) => {
+  const ms = ts ? Date.parse(ts) : Number.NaN
+  return Number.isFinite(ms) ? (nowMs - ms) / 60_000 : undefined
+}
+
 /**
  * A session that never actually ran: explicit 0 in AND 0 out. `undefined`
- * tokens (not reported) is NOT "never ran" — only a hard 0/0 is. Such a
- * session is `stuck` immediately, without a judge, whatever its idle.
+ * tokens (not reported) is NOT "never ran" — only a hard 0/0 is. A session
+ * that is busy, still starting/provisioning, or has a prompt queued for its
+ * first turn is merely young, not stuck. With `opts.nowMs`, the session must
+ * also be at least `opts.idleMinutes` old (`startedAt`) AND idle
+ * (`lastActivityAt`, else `startedAt`); an absent timestamp does not block.
  */
-export function isNeverRan(session) {
-  return session?.tokensIn === 0 && session?.tokensOut === 0
+export function isNeverRan(session, opts = {}) {
+  if (!(session?.tokensIn === 0 && session?.tokensOut === 0)) return false
+  if (session.busy === true || session.status === "starting" || session.provisioning) return false
+  if (Array.isArray(session.pendingPrompts) && session.pendingPrompts.length > 0) return false
+  if (typeof opts.nowMs === "number") {
+    const threshold = opts.idleMinutes ?? 0
+    const age = minutesSince(session.startedAt, opts.nowMs)
+    const idle = minutesSince(session.lastActivityAt ?? session.startedAt, opts.nowMs)
+    if (age !== undefined && age < threshold) return false
+    if (idle !== undefined && idle < threshold) return false
+  }
+  return true
 }
 
 // ── fast-path done (mission item 4) ──────────────────────────────────────

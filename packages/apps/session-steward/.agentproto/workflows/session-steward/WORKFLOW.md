@@ -20,6 +20,12 @@ inputs:
     type: boolean
     description: Close/flag sessions. False = dry run (plan + verdicts, no mutation).
     default: false
+  relabelWindowHours:
+    type: number
+    description: >-
+      Only terminal sessions that ended within this many hours are listed as
+      relabel candidates (at most 20, newest first).
+    default: 24
   minConfidence:
     type: number
     description: Judge confidence needed to act on a verdict.

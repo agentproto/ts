@@ -55,6 +55,11 @@ import {
 
 const DEFAULT_IDLE_MINUTES = 30
 const DEFAULT_MIN_CONFIDENCE = 0.8
+/** Terminal sessions older than this (hours since they ended) are not listed
+ *  as relabel candidates. */
+const DEFAULT_RELABEL_WINDOW_HOURS = 24
+/** Most relabel candidates printed in the report (newest first). */
+export const RELABEL_MAX_LINES = 20
 /** How many consecutive passes on an unchanged fingerprint before the judge
  *  cache stops re-judging a session. */
 const DEFAULT_STABLE_VERDICT_PASSES = 2
@@ -104,6 +109,7 @@ export function resolveSettings(input, modelRoles) {
   return {
     idleMinutes: Math.floor(num(i.idleMinutes, DEFAULT_IDLE_MINUTES, { min: 1 })),
     apply: i.apply === true,
+    relabelWindowHours: num(i.relabelWindowHours, DEFAULT_RELABEL_WINDOW_HOURS, { min: 0 }),
     minConfidence: num(i.minConfidence, DEFAULT_MIN_CONFIDENCE, { max: 1 }),
     judgeModel: explicitOrRole(i.judgeModel, modelRoles, ROLE_JUDGE_SESSION),
     judge: JUDGE_BACKENDS.includes(i.judge) ? i.judge : "auto",
@@ -637,8 +643,15 @@ export function buildReport(b) {
   // Terminal sessions with no outcome (mission item 5).
   const relabel = b.steps.relabelQueue ?? []
   if (relabel.length > 0) {
+    const total = b.steps.scan?.counts?.relabelTotal ?? relabel.length
+    const byVerdict = new Map()
+    for (const r of relabel) byVerdict.set(r.proposedVerdict, (byVerdict.get(r.proposedVerdict) ?? 0) + 1)
+    const perLabel = [...byVerdict].map(([v, n]) => `${v}: ${n}`).join(", ")
     lines.push("", "## Terminal sessions missing an outcome (relabel candidates)")
-    for (const r of relabel) lines.push(`- ${r.sessionId} → ${r.proposedVerdict} — ${r.reason}`)
+    lines.push(`- ${relabel.length} ended in the last ${s.relabelWindowHours}h (${total} without an outcome in all) — ${perLabel}`)
+    for (const r of relabel.slice(0, RELABEL_MAX_LINES)) lines.push(`- ${r.sessionId} → ${r.proposedVerdict} — ${r.reason}`)
+    const hidden = total - Math.min(relabel.length, RELABEL_MAX_LINES)
+    if (hidden > 0) lines.push(`- … and ${hidden} more (older/omitted)`)
   }
 
   // Verdict memory / cache (mission item 10).
@@ -685,6 +698,8 @@ export function scanLive(liveSessions, settings, nowMs) {
   const policy = policyOf(settings)
   const self = settings?.callerSessionId ?? null
   const idleThreshold = settings?.idleMinutes ?? DEFAULT_IDLE_MINUTES
+  const relabelWindowMs = (settings?.relabelWindowHours ?? DEFAULT_RELABEL_WINDOW_HOURS) * 3_600_000
+  let relabelTotal = 0
   const busy = []
   const idle = []
   const terminal = []
@@ -724,7 +739,12 @@ export function scanLive(liveSessions, settings, nowMs) {
       terminal.push({ sessionId: id, origin: s.origin, originClass, label })
       const cand = terminalRelabelCandidate(s)
       if (cand.candidate) {
-        terminalRelabel.push({ sessionId: id, origin: s.origin, originClass, label, proposedVerdict: cand.proposedVerdict, reason: cand.reason })
+        relabelTotal++
+        const endedAt = s.endedAt ?? s.lastActivityAt ?? s.startedAt
+        const endedMs = endedAt ? Date.parse(endedAt) : Number.NaN
+        if (Number.isFinite(endedMs) && nowMs - endedMs <= relabelWindowMs) {
+          terminalRelabel.push({ sessionId: id, origin: s.origin, originClass, label, proposedVerdict: cand.proposedVerdict, reason: cand.reason, endedAt, endedMs })
+        }
       }
       continue
     }
@@ -735,7 +755,7 @@ export function scanLive(liveSessions, settings, nowMs) {
       continue
     }
     const row = { sessionId: id, origin: s.origin, originClass, label, idleMinutes, lastTurnErroredAt: s.lastTurnErroredAt ?? null }
-    if (isNeverRan(s)) neverRan.push(row)
+    if (isNeverRan(s, { nowMs, idleMinutes: idleThreshold })) neverRan.push(row)
     if (s.busy === true) {
       busy.push(row)
       loopQueue.push({ sessionId: id, originClass, label })
@@ -750,6 +770,7 @@ export function scanLive(liveSessions, settings, nowMs) {
     idle: idle.length,
     terminal: terminal.length,
     terminalRelabel: terminalRelabel.length,
+    relabelTotal,
     neverRan: neverRan.length,
     excluded: excluded.length,
   }
@@ -871,9 +892,10 @@ export function buildProposalsStep(scan, loopResults, settings, nowMs) {
   return { proposals, observed, stalls }
 }
 
-/** Terminal sessions missing an outcome, as relabel candidates. */
+/** Terminal sessions missing an outcome that ended within the relabel
+ *  window, newest first (the report caps how many it prints). */
 export function buildRelabelQueue(scan) {
-  return (scan?.terminalRelabel ?? []).map(t => ({ ...t }))
+  return (scan?.terminalRelabel ?? []).map(t => ({ ...t })).sort((a, b) => b.endedMs - a.endedMs)
 }
 
 /** The `app_state` events to append for this pass's verdicts. The memory is
@@ -917,6 +939,7 @@ export default {
   inputs: {
     idleMinutes: { type: "number", description: `Idle threshold in minutes. Default ${DEFAULT_IDLE_MINUTES}.`, default: DEFAULT_IDLE_MINUTES },
     apply: { type: "boolean", description: "Close/flag sessions. Default false = dry run (plan + verdicts, no mutation).", default: false },
+    relabelWindowHours: { type: "number", description: `Only terminal sessions that ended within this many hours are listed as relabel candidates (at most ${RELABEL_MAX_LINES}, newest first). Default ${DEFAULT_RELABEL_WINDOW_HOURS}.`, default: DEFAULT_RELABEL_WINDOW_HOURS },
     minConfidence: { type: "number", description: `Judge confidence needed to act. Default ${DEFAULT_MIN_CONFIDENCE}.`, default: DEFAULT_MIN_CONFIDENCE },
     judge: { type: "string", description: "Judge backend: `auto` (Jev when JEV_API_KEY resolves, else the agent judge), `jev`, or `agent`. A Jev failure always falls back to the agent judge. Default auto.", default: "auto" },
     jevModel: { type: "string", description: `Jev model. Default ${DEFAULT_JEV_MODEL}.`, default: DEFAULT_JEV_MODEL },
