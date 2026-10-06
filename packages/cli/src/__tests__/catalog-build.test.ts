@@ -49,8 +49,8 @@ function entry(overrides: Partial<AppCatalogEntry> & { appId: string; version: s
 }
 
 async function writeEntry(dir: string, name: string, entry: unknown): Promise<string> {
-  await mkdir(dir, { recursive: true })
   const p = join(dir, name)
+  await mkdir(dirname(p), { recursive: true })
   await writeFile(p, JSON.stringify(entry, null, 2) + "\n", "utf8")
   return p
 }
@@ -143,16 +143,35 @@ describe("catalog build", () => {
     expect(res.stderr).toContain("bad.entry.json")
   })
 
-  it("reads *.entry.json from a directory non-recursively", async () => {
+  it("reads *.json from a directory recursively and accepts explicit files of any name", async () => {
     const root = await mktmp()
     await mkdir(join(root, "nested", "deeper"), { recursive: true })
-    await writeEntry(join(root, "entries"), "one.entry.json", entry({ appId: "one", version: "1.0.0" }))
-    await writeFile(join(root, "nested", "two.entry.json"), JSON.stringify(entry({ appId: "two", version: "1.0.0" })), "utf8")
+    // any file name is accepted, not only *.entry.json (the agentproto/apps
+    // repo holds entries/<appId>.json)
+    await writeEntry(join(root, "entries"), "@agentik/one.json", entry({ appId: "one", version: "1.0.0" }))
+    await writeFile(join(root, "nested", "deeper", "two.json"), JSON.stringify(entry({ appId: "two", version: "1.0.0" })), "utf8")
     const out = join(root, "apps.json")
-    const res = await runBuild([join(root, "entries"), "--out", out, "--generated-at", "2026-04-04T00:00:00.000Z"])
+    const res = await runBuild([join(root, "entries"), join(root, "nested"), "--out", out, "--generated-at", "2026-04-04T00:00:00.000Z"])
     expect(res.code).toBe(0)
     const doc = JSON.parse(await readFile(out, "utf8"))
-    expect(doc.entries.map((e: AppCatalogEntry) => e.appId)).toEqual(["one"])
+    expect(doc.entries.map((e: AppCatalogEntry) => e.appId)).toEqual(["one", "two"])
+  })
+
+  it("errors (exit 1) on a duplicate appId among the given entries", async () => {
+    const root = await mktmp()
+    const e1 = await writeEntry(root, "a/alpha.json", entry({ appId: "alpha", version: "1.0.0" }))
+    const e2 = await writeEntry(root, "b/alpha.json", entry({ appId: "alpha", version: "1.1.0" }))
+    const res = await runBuild([e1, e2, "--out", join(root, "apps.json")])
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain("duplicate appId 'alpha'")
+  })
+
+  it("without --base, the catalog is exactly the given entries (deletions propagate)", async () => {
+    const root = await mktmp()
+    const e = await writeEntry(root, "alpha.json", entry({ appId: "alpha", version: "1.0.0" }))
+    const out = join(root, "apps.json")
+    expect((await runBuild([e, "--out", out, "--generated-at", "2026-04-04T00:00:00.000Z"])).code).toBe(0)
+    expect(JSON.parse(await readFile(out, "utf8")).entries).toHaveLength(1)
   })
 
   it("keeps --base generatedAt when nothing changed", async () => {

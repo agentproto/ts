@@ -190,8 +190,10 @@ export async function stageGitApp(input: {
   }
 }
 
-/** Stream `url` (http(s):// or file://) to `destFile` under the timeout + size cap. */
-async function downloadTo(url: string, destFile: string): Promise<void> {
+/** Stream `url` (http(s):// or file://) to `destFile` under the timeout + size
+ *  cap. Exported for `agentproto catalog verify`, which applies the same
+ *  download caps as `app_install`. */
+export async function downloadTo(url: string, destFile: string): Promise<void> {
   if (url.startsWith("file:")) {
     const src = fileURLToPath(url)
     if ((await stat(src)).size > DOWNLOAD_MAX_BYTES) {

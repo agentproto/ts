@@ -32,6 +32,7 @@ export default createTsupConfig({
     "app-ui-placeholder": "src/app-ui-placeholder.ts",
     "app-catalog": "src/app-catalog.ts",
     "first-party-catalog-gen": "src/first-party-catalog-gen.ts",
+    "app-remote-install": "src/app-remote-install.ts",
   },
   format: ["esm"],
   splitting: false,

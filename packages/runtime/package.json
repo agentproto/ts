@@ -153,6 +153,11 @@
       "types": "./dist/first-party-catalog-gen.d.ts",
       "import": "./dist/first-party-catalog-gen.mjs",
       "default": "./dist/first-party-catalog-gen.mjs"
+    },
+    "./app-remote-install": {
+      "types": "./dist/app-remote-install.d.ts",
+      "import": "./dist/app-remote-install.mjs",
+      "default": "./dist/app-remote-install.mjs"
     }
   },
   "files": [

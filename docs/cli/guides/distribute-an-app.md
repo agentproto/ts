@@ -206,19 +206,54 @@ agentproto catalog build <entry.json|dir>... --out <apps.json> \
   [--base <apps.json>] [--check] [--emit-ts <first-party-catalog.ts>]
 ```
 
-`catalog build` validates every `*.entry.json` (a directory is scanned
-non-recursively), merges them over `--base` by `appId` (an incoming entry
-replaces the existing one when its version is >=; an older version is
-warned about and ignored) and writes a deterministic document: entries
-sorted by `appId`, 2-space indent, trailing newline. `generatedAt` is kept
+`catalog build` validates every entry file (a directory is walked
+recursively for `*.json`, so it can take the `agentproto/apps` repo's
+`entries/` tree directly), merges them over `--base` by `appId` (an
+incoming entry replaces the existing one when its version is >=; an older
+version is warned about and ignored) and writes a deterministic document:
+entries sorted by `appId`, 2-space indent, trailing newline. Without
+`--base`, the result contains exactly the given entries, so a deleted
+`entries/<appId>.json` makes the app disappear from the catalog; the same
+`appId` twice among the inputs is an error. `generatedAt` is kept
 from `--base` when nothing changed, so a no-op build produces no diff.
 `--check` writes nothing and exits 1 when `--out` is out of date
-(ignoring `generatedAt`) -- the CI guard against drift. `--emit-ts` also
+(ignoring `generatedAt`), the CI drift guard. `--emit-ts` also
 renders the daemon's embedded first-party fallback
 (`packages/runtime/src/first-party-catalog.ts`); the same file is
 regenerated from the live published catalog by
 `pnpm --filter @agentproto/runtime catalog:first-party`, which the
 `catalog-sync.yml` workflow runs before opening its sync PR.
+
+### The public catalog flow
+
+The public catalog's SOURCE is the `agentproto/apps` repo, not a hand-held
+JSON blob:
+
+- `entries/<appId>.json` holds one `AppCatalogEntry` per app (the file an
+  `app pack --release --entry` writes, committed under its appId).
+- The repo's CI regenerates `catalog/v1/apps.json` with
+  `agentproto catalog build entries --out catalog/v1/apps.json --check`.
+- The site serves that generated file at
+  `https://agentproto.sh/catalog/v1/apps.json` (the URL
+  `DEFAULT_CATALOG_SOURCE_URL` points at), by relaying it. Bundles are
+  still GitHub Release assets: first-party ones on `agentproto/apps`,
+  third-party ones wherever the publisher hosts them.
+
+To publish a third-party app:
+
+1. Host the `.agentapp` somewhere https-reachable (e.g. a GitHub Release
+   on your own repo).
+2. `agentproto app pack <appDir> --release --entry --asset-url <url>`:
+   the entry's `source.url` points at your hosting.
+3. Check it locally before anyone else sees it:
+   `agentproto catalog verify <entry.json>` (add
+   `--offline-file <appId>=<local>.agentapp` to skip the download). This
+   downloads/substitutes the bundle, checks size and digest, unpacks it,
+   and confirms the APP.md matches and passes `app validate`.
+4. Open a PR on `agentproto/apps` adding `entries/<appId>.json`. Ids under
+   the `@agentproto/*` scope are reserved for the maintainers (that rule
+   is enforced by the repo's CI, which knows the PR author, not by the
+   CLI).
 
 `app_catalog` always queries the **default public catalog** first, then
 the sources you add. Add yours in either place (config wins over the
