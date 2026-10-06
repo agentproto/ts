@@ -30,6 +30,8 @@ export default createTsupConfig({
     "app-ui-delivery": "src/app-ui-delivery.ts",
     "app-ui-build": "src/app-ui-build.ts",
     "app-ui-placeholder": "src/app-ui-placeholder.ts",
+    "app-catalog": "src/app-catalog.ts",
+    "first-party-catalog-gen": "src/first-party-catalog-gen.ts",
   },
   format: ["esm"],
   splitting: false,

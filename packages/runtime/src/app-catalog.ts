@@ -131,14 +131,14 @@ const RemoteCatalogSchema = z.object({
 
 /**
  * Default public catalog, queried by `app_catalog` unless config
- * `catalog.defaultSource` is `false` (a URL string replaces it).
- * PLACEHOLDER: where catalogs and bundles are hosted is not decided yet
- * (store plan §6, question 1) — this URL may not serve a catalog today. A
- * failing default source is never fatal: `app_catalog` falls back to the
- * last good copy cached on disk, then to the embedded first-party list
- * (`first-party-catalog.ts`).
+ * `catalog.defaultSource` is `false` (a URL string replaces it). The file is
+ * a static `apps.json` served by the agentproto/site repo
+ * (`public/catalog/v1/apps.json`). Bundles it references are GitHub Release
+ * assets of the public `agentproto/apps` repo. A failing default source is
+ * never fatal: `app_catalog` falls back to the last good copy cached on
+ * disk, then to the embedded first-party list (`first-party-catalog.ts`).
  */
-export const DEFAULT_CATALOG_SOURCE_URL = "https://cli.agentproto.sh/catalog/v1/apps.json"
+export const DEFAULT_CATALOG_SOURCE_URL = "https://agentproto.sh/catalog/v1/apps.json"
 
 const EMPTY_CATALOG: AppCatalogFile = { apps: [] }
 
