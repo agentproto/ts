@@ -143,6 +143,21 @@
       "types": "./dist/app-ui-placeholder.d.ts",
       "import": "./dist/app-ui-placeholder.mjs",
       "default": "./dist/app-ui-placeholder.mjs"
+    },
+    "./app-catalog": {
+      "types": "./dist/app-catalog.d.ts",
+      "import": "./dist/app-catalog.mjs",
+      "default": "./dist/app-catalog.mjs"
+    },
+    "./first-party-catalog-gen": {
+      "types": "./dist/first-party-catalog-gen.d.ts",
+      "import": "./dist/first-party-catalog-gen.mjs",
+      "default": "./dist/first-party-catalog-gen.mjs"
+    },
+    "./app-remote-install": {
+      "types": "./dist/app-remote-install.d.ts",
+      "import": "./dist/app-remote-install.mjs",
+      "default": "./dist/app-remote-install.mjs"
     }
   },
   "files": [
@@ -165,7 +180,8 @@
     "gen:checkpoint-schema": "vite-node scripts/gen-checkpoint-schema.mjs",
     "sim:inbound": "vite-node scripts/simulate-inbound.mjs",
     "telegram:proxy": "vite-node scripts/telegram-proxy.mjs",
-    "bench:review-ledger": "vite-node scripts/bench-review-ledger.mjs"
+    "bench:review-ledger": "vite-node scripts/bench-review-ledger.mjs",
+    "catalog:first-party": "node scripts/sync-first-party-catalog.mjs"
   },
   "dependencies": {
     "@agentproto/a2a": "workspace:*",

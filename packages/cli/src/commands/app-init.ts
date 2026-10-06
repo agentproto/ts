@@ -288,25 +288,15 @@ interface Finding {
 }
 
 /** Dispatcher for `agentproto app validate [dir] [--json]`. */
-export async function runAppValidate(args: readonly string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: false,
-    options: {
-      json: { type: "boolean" },
-      help: { type: "boolean", short: "h" },
-    },
-  })
-
-  if (values.help) {
-    process.stdout.write(`${USAGE}\n`)
-    return 0
-  }
-
-  const dirArg = positionals[0] ?? "."
-  const appDir = resolve(process.cwd(), expandHome(dirArg))
-
+/** The checks behind `app validate`, minus output/exit codes: load the app,
+ *  validate workflows, ui.tools, data dir, and run the verify umbrella.
+ *  Reused by `catalog verify` ("does the unpacked app pass app validate?"). */
+export async function collectAppFindings(appDir: string): Promise<{
+  ok: boolean
+  findings: Finding[]
+  verifyExit: number | null
+  appLoaded: boolean
+}> {
   const findings: Finding[] = []
 
   // 1. The app loader is authoritative for APP.md + agents + workflows +
@@ -407,6 +397,29 @@ export async function runAppValidate(args: readonly string[]): Promise<number> {
   }
 
   const ok = findings.every((f) => f.level !== "error")
+  return { ok, findings, verifyExit, appLoaded }
+}
+
+export async function runAppValidate(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      json: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  })
+
+  if (values.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return 0
+  }
+
+  const dirArg = positionals[0] ?? "."
+  const appDir = resolve(process.cwd(), expandHome(dirArg))
+
+  const { ok, findings, verifyExit } = await collectAppFindings(appDir)
 
   if (values.json) {
     process.stdout.write(JSON.stringify({ ok, findings }, null, 2) + "\n")

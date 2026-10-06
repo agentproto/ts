@@ -190,9 +190,12 @@ app folder's *contents* (not a wrapping folder). Extraction therefore yields
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--out <path>` | `<safeId>-<version>.agentapp` in cwd | The output `.agentapp` path. When omitted, derives a filesystem-safe filename from the app `id` and `version` (e.g. `@agentproto/job-application-kit` v`0.1.0` → `agentproto-job-application-kit-0.1.0.agentapp`). |
+| `--out <path>` | `<safeId>-<version>.agentapp` in cwd | The output `.agentapp` path. When omitted, derives a filesystem-safe filename from the app `id` and `version` (e.g. `@agentproto/job-application-kit` v`0.1.0` → `agentproto-job-application-kit-0.1.0.agentapp`). With `--entry`, a directory means "into this dir", and a path ending in `.agentapp` is used as the bundle path itself. |
 | `--release` | `false` | Build the publishable bundle (see below). |
-| `--json` | `false` | Print the generated `manifest.json` on stdout instead of a human summary. |
+| `--entry` | `false` | Requires `--release`. Also write a validated catalog entry next to the bundle (see below). |
+| `--asset-url <url>` | GitHub Releases URL | With `--entry`: the published bundle URL recorded in the entry's `source.url`. |
+| `--publisher <name>` | none | With `--entry`: the entry's `publisher` field. |
+| `--json` | `false` | Print the generated `manifest.json` on stdout instead of a human summary (with `--entry`: the bundle path, entry file path, and the entry itself). |
 
 Fails with exit code `2` if `<appDir>` has no `.agentproto/APP.md`.
 
@@ -224,6 +227,25 @@ directories, `*` stays inside one segment (no braces, no negation).
 4. Removes `ui.build` from the packed APP.md (unless `package.stripBuild:
    false`), so an install never runs a build command. The SHA-256 covers
    the rewritten APP.md, so always publish the digest of the release pack.
+
+**`--entry`** writes the publishing pipeline's other half, a catalog entry
+for the bundle just packed:
+
+- Written next to the bundle as `<slug>-<version>.entry.json`, where
+  `<slug>` is the last segment of the appId without its scope
+  (`@agentik/session-chat` -> `session-chat`).
+- A validated `AppCatalogEntry` with `tier: "bundle"` and
+  `license: {kind: "free"}`: `appId`/`name`/`description` come from APP.md,
+  as do the optional `category`, `icon`, and `placement`; APP.md must
+  declare a `version` or packing fails. `source` carries the bundle's
+  manifest `sha256` (exactly what `unpack` / `app_install {sha256}`
+  verify), the bundle's byte `size`, `version`, and the `url`:
+  `--asset-url` if given, else the GitHub Releases asset URL of the public
+  `agentproto/apps` repo, tag `<slug>@<version>` (`@` encoded `%40`),
+  asset `<slug>-<version>.agentapp`.
+- Feed the entries to `agentproto catalog build` to produce the published
+  `apps.json`; see
+  [distribute-an-app](../guides/distribute-an-app.md#5-publish-a-remote-catalog).
 
 ### `unpack <file.agentapp> [--dir <outDir>] [--json]`
 

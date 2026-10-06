@@ -47,6 +47,7 @@ import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
 import { runApp } from "./commands/app.js"
+import { runCatalog } from "./commands/catalog.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runBranch } from "./commands/branch.js"
 import { runPolicy } from "./commands/policy.js"
@@ -199,6 +200,8 @@ Usage:
   agentproto app       list
   agentproto app       serve [appDir] [--port <n>] [--app <appId>] [--json]
                      serve an app's .agentproto/ui/ with an MCP bridge
+  agentproto catalog  build <entry.json|dir>... --out <apps.json> [--base <f>] [--check] [--emit-ts <f.ts>]
+                     merge pack --release --entry outputs into the published apps.json
   agentproto llm       endpoints <list|test> [--json]
                      the LLM gateway's named local/LAN model endpoints
                      (~/.agentproto/llm-endpoints.json)
@@ -283,6 +286,7 @@ const VERBS = new Set([
   "task",
   "permissions",
   "app",
+  "catalog",
   "acp",
   "pair",
   "devices",
@@ -407,6 +411,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runPack(rest)
     case "app":
       return runApp(rest)
+    case "catalog":
+      return runCatalog(rest)
     case "worktree":
       return runWorktree(rest)
     case "branch":

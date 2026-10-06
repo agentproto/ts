@@ -17,8 +17,8 @@
  * directory keeps the local id→dir registration.
  */
 
-import { readFile } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { readFile, stat, writeFile } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
@@ -36,11 +36,13 @@ import {
 import { runAppBuild } from "../app-build.js"
 import { runAppDev } from "../app-dev.js"
 import { runAppInit, runAppValidate } from "./app-init.js"
+import { buildCatalogEntry, bundleReleaseAssetUrl, catalogSlug } from "../app-catalog-entry.js"
 
 const USAGE = `agentproto app — package, unpack, install, serve, build, or dev an agentproto app
 
 Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--release] [--json]
+                 pack --release --entry [--asset-url <url>] [--publisher <p>]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--sha <commit>]
                          [--sha256 <digest>] [--allow-build] [--data-dir <path>]
@@ -62,6 +64,13 @@ pack:
   is missing or stale, drops dev-only files (ui/, docs/, data/, scripts/,
   dev/, *.log, *.map, .env*), fails if the built ui.path is missing, and
   strips \`ui.build\` from the packed APP.md so installs never run it.
+  --entry (requires --release) also writes a catalog entry next to the
+  bundle: <slug>-<version>.entry.json, a validated AppCatalogEntry with
+  tier "bundle" whose source.url defaults to the GitHub Releases asset of
+  the public agentproto/apps repo (tag <slug>@<version>, asset
+  <slug>-<version>.agentapp; override with --asset-url) and whose
+  sha256/size are the bundle's own manifest digest and file size. Feed the
+  entries to \`agentproto catalog build\`.
 
 unpack:
   Extract a .agentapp, verify format agentapp/v1 and the sha256 aggregate,
@@ -384,6 +393,9 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
     options: {
       out: { type: "string" },
       release: { type: "boolean" },
+      entry: { type: "boolean" },
+      "asset-url": { type: "string" },
+      publisher: { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -401,6 +413,59 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
   }
   const appDirAbs = resolve(process.cwd(), expandHome(appDir))
   const release = values.release === true
+  const withEntry = values.entry === true
+  if (withEntry && !release) {
+    process.stderr.write(
+      `agentproto app pack: --entry requires --release (catalog entries describe published release bundles).\n`,
+    )
+    return 2
+  }
+
+  // Catalog-entry metadata comes straight from APP.md frontmatter.
+  let entryMeta: {
+    appId: string
+    version?: string
+    category?: string
+    icon?: string
+    placement?: string
+  } | undefined
+  if (withEntry) {
+    let front: Record<string, unknown>
+    try {
+      const raw = await readFile(join(appDirAbs, ".agentproto", "APP.md"), "utf8")
+      front = matter(raw).data as Record<string, unknown>
+    } catch {
+      process.stderr.write(`agentproto app pack: could not parse ${join(appDirAbs, ".agentproto", "APP.md")}.\n`)
+      return 1
+    }
+    const appId =
+      typeof front.id === "string" && front.id.trim() !== ""
+        ? front.id.trim()
+        : typeof front.slug === "string" && front.slug.trim() !== ""
+          ? front.slug.trim()
+          : ""
+    if (appId === "") {
+      process.stderr.write(
+        `agentproto app pack: APP.md must declare a non-empty 'id' to write a catalog entry (--entry).\n`,
+      )
+      return 1
+    }
+    entryMeta = {
+      appId,
+      ...(typeof front.version === "string" && front.version.trim() !== "" ? { version: front.version.trim() } : {}),
+      ...(typeof front.category === "string" && front.category.trim() !== "" ? { category: front.category.trim() } : {}),
+      ...(typeof front.icon === "string" && front.icon.trim() !== "" ? { icon: front.icon.trim() } : {}),
+      ...(typeof front.placement === "string" && front.placement.trim() !== "" ? { placement: front.placement.trim() } : {}),
+    }
+    if (entryMeta.version === undefined) {
+      process.stderr.write(
+        `agentproto app pack: APP.md must declare a 'version' to write a catalog entry (--entry) — ` +
+          `none found in ${appDirAbs}.\n`,
+      )
+      return 1
+    }
+  }
+  const outArg = typeof values.out === "string" ? resolve(process.cwd(), expandHome(values.out)) : undefined
 
   try {
     // A release bundle ships the BUILT UI and no build step: build it here,
@@ -415,13 +480,52 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
         }
       }
     }
+    const slug = withEntry && entryMeta?.appId !== undefined ? catalogSlug(entryMeta.appId) : undefined
+    const bundleFile =
+      withEntry && slug !== undefined && entryMeta?.version !== undefined
+        ? outArg !== undefined && outArg.endsWith(".agentapp")
+          ? outArg
+          : join(outArg ?? process.cwd(), `${slug}-${entryMeta.version}.agentapp`)
+        : outArg
     const { file, manifest } = await packApp({
       appDir: appDirAbs,
       ...(release ? { release: true } : {}),
-      ...(typeof values.out === "string"
-        ? { out: resolve(process.cwd(), expandHome(values.out)) }
-        : {}),
+      ...(bundleFile !== undefined ? { out: bundleFile } : {}),
     })
+    if (withEntry) {
+      const version = manifest.version
+      const assetUrl =
+        typeof values["asset-url"] === "string" && values["asset-url"] !== ""
+          ? values["asset-url"]
+          : bundleReleaseAssetUrl(catalogSlug(manifest.id), version)
+      const size = (await stat(file)).size
+      const entry = buildCatalogEntry({
+        appId: manifest.id,
+        ...(manifest.name !== undefined ? { name: manifest.name } : {}),
+        ...(manifest.description !== undefined ? { description: manifest.description } : {}),
+        ...(entryMeta?.category !== undefined ? { category: entryMeta.category } : {}),
+        ...(entryMeta?.icon !== undefined ? { icon: entryMeta.icon } : {}),
+        ...(entryMeta?.placement !== undefined && ["local", "box", "any", "split"].includes(entryMeta.placement)
+          ? { placement: entryMeta.placement as "local" | "box" | "any" | "split" }
+          : {}),
+        version,
+        ...(typeof values.publisher === "string" && values.publisher !== "" ? { publisher: values.publisher } : {}),
+        url: assetUrl,
+        sha256: manifest.sha256,
+        size,
+      })
+      const entryFile = join(dirname(file), `${catalogSlug(manifest.id)}-${version}.entry.json`)
+      await writeFile(entryFile, JSON.stringify(entry, null, 2) + "\n", "utf8")
+      if (values.json) {
+        process.stdout.write(JSON.stringify({ bundle: file, entry, entryFile }, null, 2) + "\n")
+      } else {
+        process.stdout.write(
+          `agentproto: packed ${manifest.totalSize} bytes -> ${file}\n` +
+            `  catalog entry: ${entryFile}\n  asset url: ${assetUrl}\n`,
+        )
+      }
+      return 0
+    }
     if (values.json) {
       process.stdout.write(JSON.stringify(manifest, null, 2) + "\n")
     } else {
