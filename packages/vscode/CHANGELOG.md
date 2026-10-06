@@ -1,5 +1,48 @@
 # agentproto-vscode
 
+## 0.21.0
+
+### Minor Changes
+
+- 2346c07: Pinned-group ordering in the sessions webview: rows sort by the daemon-persisted `pinnedOrder` (legacy pins last), with hover-revealed ↑/↓ buttons on pinned root rows that call the new `POST /sessions/pinned/order` via `DaemonClient.reorderPinned`. A pinned session receiving a message no longer moves within the Pinned group.
+
+### Patch Changes
+
+- Updated dependencies [702899a]
+- Updated dependencies [9455c0e]
+- Updated dependencies [530c3ec]
+- Updated dependencies [c72bbd4]
+- Updated dependencies [9391218]
+- Updated dependencies [5983ec5]
+- Updated dependencies [7d5a6c6]
+- Updated dependencies [d7986c9]
+- Updated dependencies [f4ac811]
+- Updated dependencies [2049adb]
+- Updated dependencies [2346c07]
+- Updated dependencies [58d5a41]
+- Updated dependencies [2049adb]
+- Updated dependencies [5cd6c9b]
+- Updated dependencies [cf17fd2]
+- Updated dependencies [be03ed4]
+- Updated dependencies [5787677]
+- Updated dependencies [7ff4ece]
+- Updated dependencies [7ff4ece]
+- Updated dependencies [ed6c48b]
+- Updated dependencies [ef89993]
+- Updated dependencies [42de70d]
+- Updated dependencies [15d4c6f]
+- Updated dependencies [41917fd]
+- Updated dependencies [ef4523f]
+- Updated dependencies [603aad9]
+- Updated dependencies [c8d918f]
+- Updated dependencies [7677a5c]
+- Updated dependencies [9c7f686]
+- Updated dependencies [205bade]
+- Updated dependencies [be03ed4]
+- Updated dependencies [953ce06]
+  - @agentproto/runtime@5.10.0
+  - @agentproto/apps@0.19.0
+
 ## 0.20.7
 
 ### Patch Changes

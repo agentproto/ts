@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/pairing-host",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "@agentproto/pairing-host — the host side of AIP-59 pairing as a library: offer store, pair/v2 handshake over an untrusted rendezvous, persisted pairings with reconnect and revocation, a default ws rendezvous dialer, a loopback HTTP forwarder for the paired channel, and an optional local-device bearer credential. Lets a non-daemon host embed pairing without depending on @agentproto/runtime.",
   "keywords": [
     "agentproto",

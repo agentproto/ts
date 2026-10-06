@@ -1,5 +1,24 @@
 # @agentproto/app-kit
 
+## 1.6.0
+
+### Minor Changes
+
+- 1487de1: `.agentapp` packing honors an APP.md `package` block (`include` / `exclude` globs, `stripBuild`) and stages only the selected files. New `agentproto app pack --release` builds the UI first, drops dev-only files (UI sources, docs, data, scripts, logs, source maps, env files), fails when the built `ui.path` is missing, and strips `ui.build` from the packed APP.md.
+- c72bbd4: Apps can call each other. `requires.apps` entries may now be objects
+  (`{ id, version?, workflows? }`) next to bare ids, and `exposes.workflows`
+  declares which workflows an app lets other apps run. A new `app_call` MCP verb
+  runs an exposed workflow on behalf of an installed consumer app, checking the
+  declared dependency, the workflow allowlist, the provider's exposed workflows
+  and its installed version range, and returns the workflow's output with a
+  distinct error code per refusal. `app_apply` also refuses an app whose declared
+  dependency version range is not satisfied. The daemon is local-trust:
+  `callerAppId` is a declaration check, not an authentication boundary.
+
+### Patch Changes
+
+- 530c3ec: Docs-only correction in the README: the `ui.build` captured-output path is now `~/.agentproto/logs/app-ui-build/<app>-<hash>.log` instead of `<appDir>/.agentproto/ui-build.log`, matching the runtime change in this PR.
+
 ## 1.5.0
 
 ### Minor Changes

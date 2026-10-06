@@ -1,5 +1,15 @@
 # @agentproto/pairing-host
 
+## 0.2.4
+
+### Patch Changes
+
+- 0dd095d: Fix daemon crash when a rendezvous/tunnel/terminal-input WebSocket dial is aborted or times out while still connecting: keep a permanent `error` listener on the socket and use `terminate()` for a CONNECTING socket, so the late "closed before the connection was established" error becomes a normal dial failure instead of an unhandled `error` event that crashes the process.
+- Updated dependencies [38b5538]
+- Updated dependencies [5787677]
+  - @agentproto/secrets@1.3.0
+  - @agentproto/acp@0.10.0
+
 ## 0.2.3
 
 ### Patch Changes
