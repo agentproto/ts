@@ -128,6 +128,9 @@ export function healthySources(): StepSources {
       return `/builtin-apps/${slug}`
     },
     appInstalled: (appId: string) => appId === "@agentproto/ops-panel",
+    // Healthy machine: the daemon answers the catalog probe. Tests that
+    // exercise the featured branch override this.
+    appCatalog: async () => null,
   }
 }
 

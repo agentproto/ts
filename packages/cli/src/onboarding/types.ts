@@ -166,6 +166,21 @@ export interface SetupVerbs {
   appInstalled(appId: string): boolean
   /** `agentproto app install <dir>` — register an app id→dir mapping. */
   appInstall(dir: string): Promise<number>
+  /** `agentproto app install <appId>` — resolve the catalog entry and let
+   *  the daemon install its pinned source. */
+  appInstallFromCatalog(appId: string): Promise<number>
+}
+
+/** The slice of a daemon `app_catalog` row the apps onboarding step reads. */
+export interface StepCatalogEntry {
+  appId: string
+  name?: string
+  description?: string
+  version?: string
+  featured?: boolean
+  installed?: boolean
+  source?: { kind?: string; url?: string }
+  catalogUrl?: string
 }
 
 export interface SetupIO {
@@ -264,6 +279,9 @@ export interface StepSources {
   resolveBuiltinAppDir(appId: string): Promise<string | null>
   /** Is an app with this id installed (`~/.agentproto/apps.json`)? */
   appInstalled(appId: string): boolean
+  /** The daemon's `app_catalog` rows, or `null` when the daemon is
+   *  unreachable (not running, offline) — callers must degrade silently. */
+  appCatalog(): Promise<StepCatalogEntry[] | null>
 }
 
 export interface StepContext {

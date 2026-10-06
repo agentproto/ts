@@ -66,6 +66,10 @@ export interface SessionChatOutput {
    *  Desktop) otherwise replay a dead token and 403 forever after a daemon
    *  restart. Absent when the deep link is unavailable anyway. */
   embedToken?: string
+  /** When NOT installed: the daemon's App Store deep link with the entry
+   *  pre-selected (absolute, so it works from an MCP host iframe whose own
+   *  origin is not the daemon's). */
+  storeUrl?: string
 }
 
 export interface SessionChatOps {
@@ -94,6 +98,12 @@ export function sessionChatAppUrl(httpBaseUrl: string, sessionId?: string): stri
   if (sessionId) params.set("session", sessionId)
   params.set("embed", "1")
   return `${base}?${params.toString()}`
+}
+
+/** The daemon's App Store (`GET /store`, store plan S6) with this app
+ *  pre-selected for install. */
+export function sessionChatStoreUrl(httpBaseUrl: string): string {
+  return `${httpBaseUrl.replace(/\/+$/, "")}/store?install=${encodeURIComponent(SESSION_CHAT_APP_ID)}`
 }
 
 /** The daemon origin the widget's host-iframe CSP must allow both as a
@@ -126,7 +136,7 @@ export function makeSessionChatApp(
       "into a known session.",
     inputSchema: sessionChatInputSchema,
     execute: async input => {
-      if (!installed) return { installed, url: null }
+      if (!installed) return { installed, url: null, storeUrl: sessionChatStoreUrl(ops.httpBaseUrl) }
       const token = ops.mintEmbedToken?.()
       return {
         installed,

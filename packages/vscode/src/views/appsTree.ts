@@ -21,6 +21,8 @@ import {
   appTooltip,
   categoryDescription,
   categoryLabel,
+  EMPTY_APPS_COMMAND_ID,
+  EMPTY_APPS_ICON,
   EMPTY_APPS_LABEL,
   groupAppsByCategory,
   withCatalogCategories,
@@ -68,8 +70,15 @@ export class AppsTreeProvider implements vscode.TreeDataProvider<AppsTreeNode>, 
 
   getTreeItem(element: AppsTreeNode): vscode.TreeItem {
     switch (element.kind) {
-      case "empty":
-        return new vscode.TreeItem(EMPTY_APPS_LABEL)
+      case "empty": {
+        const item = new vscode.TreeItem(EMPTY_APPS_LABEL)
+        item.iconPath = new vscode.ThemeIcon(EMPTY_APPS_ICON)
+        item.command = {
+          command: EMPTY_APPS_COMMAND_ID,
+          title: "Browse the App Store",
+        }
+        return item
+      }
 
       case "category": {
         const item = new vscode.TreeItem(

@@ -178,6 +178,10 @@ function realVerbs(cwd: string): SetupVerbs {
       const { runAppInstall } = await import("../commands/app.js")
       return runAppInstall([dir])
     },
+    appInstallFromCatalog: async (appId) => {
+      const { runAppInstall } = await import("../commands/app.js")
+      return runAppInstall([appId])
+    },
   }
 }
 

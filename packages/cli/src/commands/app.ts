@@ -1,8 +1,12 @@
 /**
  * `agentproto app pack <appDir> [--out <path.agentapp>] [--release] [--json]`
  * `agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]`
- * `agentproto app install <dir|url|file.agentapp> [--ref] [--subdir] [--sha] [--sha256] [--allow-build] [--data-dir]`
+ * `agentproto app install <dir|url|file.agentapp|appId> [--ref] [--subdir] [--sha] [--sha256] [--allow-build] [--data-dir]`
  * `agentproto app resync <appId>`
+ * `agentproto app catalog [--refresh] [--json]`
+ * `agentproto app uninstall <appId> [--json]`
+ * `agentproto app update [<appId>] [--dry-run] [--json]`
+ * `agentproto app store [--print]`
  *
  * Package an agentproto app folder (one holding a valid `.agentproto/APP.md`)
  * into a single self-contained `.agentapp` tar.gz bundle — the "APK for
@@ -14,7 +18,11 @@
  *
  * `install` of a git URL or `.agentapp` (URL or local file) is executed by the
  * running daemon (`app_install`), which owns the remote-install state; a plain
- * directory keeps the local id→dir registration.
+ * directory keeps the local id→dir registration. An `@scope/name` argument
+ * that is not an existing path resolves through the daemon's `app_catalog`
+ * and installs that entry's pinned source. The catalog-facing verbs
+ * (`catalog`, `uninstall`, `update`, `store`) are thin wrappers over the
+ * daemon's `app_*` tools.
  */
 
 import { readFile, stat, writeFile } from "node:fs/promises"
@@ -37,6 +45,7 @@ import { runAppBuild } from "../app-build.js"
 import { runAppDev } from "../app-dev.js"
 import { runAppInit, runAppValidate } from "./app-init.js"
 import { buildCatalogEntry, bundleReleaseAssetUrl, catalogSlug } from "../app-catalog-entry.js"
+import { openInBrowser } from "../lib/open-browser.js"
 
 const USAGE = `agentproto app — package, unpack, install, serve, build, or dev an agentproto app
 
@@ -44,9 +53,13 @@ Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--release] [--json]
                  pack --release --entry [--asset-url <url>] [--publisher <p>]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
-  agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--sha <commit>]
+  agentproto app install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--sha <commit>]
                          [--sha256 <digest>] [--allow-build] [--data-dir <path>]
   agentproto app resync <appId>
+  agentproto app catalog [--refresh] [--json]
+  agentproto app uninstall <appId> [--json]
+  agentproto app update [<appId>] [--dry-run] [--json]
+  agentproto app store [--print]
   agentproto app list
   agentproto app serve [appDir] [--port <n>] [--app <appId>] [--json]
   agentproto app build <appDir> [--json]
@@ -86,6 +99,9 @@ install:
   (~/.agentproto/apps/<slug>), pinned to the installed commit / bundle digest.
   Start the daemon first for those. Re-installing replaces the app dir and
   keeps its data dir.
+  An \`@scope/name\` argument that is NOT an existing path resolves through
+  the daemon's \`app_catalog\` and installs that entry's pinned source (a
+  real path always wins). Unknown id: run \`agentproto app catalog\`.
   --data-dir <path> sets where the app's durable data (app_data_*) lives,
   distinct from its source dir. Absolute, ~-relative, or relative to
   <appDir>. Without it: the entry's existing data dir is kept, else the
@@ -103,6 +119,22 @@ resync:
 
 list:
   List every registered app (id → dir, data dir) from ~/.agentproto/apps.json.
+
+catalog:
+  List the daemon's \`app_catalog\` — appId, version, tier, installed or not,
+  update available, origin — plus any catalog-source warnings. --refresh
+  bypasses the daemon's 5-minute remote-source cache.
+
+uninstall:
+  Remove an installed app's record from the running daemon (\`app_uninstall\`).
+
+update:
+  Without <appId>: \`app_updates\` lists what's updatable. With <appId> (or
+  --all): \`app_resync\` applies the update(s). --dry-run lists only.
+
+store:
+  Open the daemon's App Store panel (\`<daemon base url>/store\`) in the
+  browser. --print just prints the URL.
 
 serve:
   Serve <appDir>'s .agentproto/ui/ as a standalone webapp with a window.McpApp
@@ -141,6 +173,18 @@ export async function runApp(args: readonly string[]): Promise<number> {
   }
   if (subVerb === "resync") {
     return runAppResync(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "catalog") {
+    return runAppCatalog(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "uninstall") {
+    return runAppUninstall(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "update") {
+    return runAppUpdate(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "store") {
+    return runAppStore(args.filter((a) => a !== subVerb))
   }
   if (subVerb === "list") {
     return runAppList()
@@ -230,6 +274,19 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
       ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
     })
   }
+  // An @scope/name that isn't an existing path is an appId: resolve it
+  // through the daemon's catalog (a real path always wins) — do this BEFORE
+  // the git-only-flags guard, which only speaks to the local-dir flow.
+  if (looksLikeAppId(appDirArg) && !(await pathExists(resolve(process.cwd(), expandHome(appDirArg))))) {
+    if (refArg !== undefined || subdirArg !== undefined || shaArg !== undefined || sha256Arg !== undefined) {
+      process.stderr.write(
+        `agentproto app install: --ref/--subdir/--sha/--sha256 don't apply to a catalog appId ` +
+          `(the entry's own pins are used; --allow-build is the only flag accepted, and only for a git entry).\n`,
+      )
+      return 2
+    }
+    return installFromCatalog(appDirArg, { allowBuild, dataDirArg })
+  }
   if (refArg !== undefined || subdirArg !== undefined || shaArg !== undefined || allowBuild) {
     process.stderr.write(`agentproto app install: --ref/--subdir/--sha/--allow-build only apply to git URLs.\n`)
     return 2
@@ -309,7 +366,7 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
 export async function runAppList(): Promise<number> {
   const apps = listInstalledApps()
   if (apps.length === 0) {
-    process.stdout.write("agentproto: no installed apps.\n")
+    process.stdout.write("No apps installed. Browse: agentproto app store  (or: agentproto app catalog)\n")
     return 0
   }
 
@@ -382,6 +439,360 @@ export async function runAppResync(args: readonly string[]): Promise<number> {
     return 2
   }
   return callDaemonAppTool("resync", "app_resync", { appId })
+}
+
+/** True for `@scope/name` — the appId shape a catalog entry is listed under. */
+export function looksLikeAppId(arg: string): boolean {
+  return /^@[\w.-]+\/[\w.-]+$/.test(arg)
+}
+
+/** Structural view of a daemon `app_catalog` entry row (the tool emits
+ *  plain JSON; the CLI keeps its own minimal shape). */
+interface CatalogRow {
+  appId: string
+  name?: string
+  version?: string
+  tier?: string
+  origin?: string
+  catalogUrl?: string
+  installed?: boolean
+  updateAvailable?: boolean
+  /** `app_updates` row fields. */
+  from?: string
+  to?: string
+  installedVersion?: string
+  source?: {
+    kind?: string
+    url?: string
+    sha?: string
+    sha256?: string
+    ref?: string
+    subdir?: string
+  }
+}
+
+/** One daemon `app_*` tool call returning EVERY text content block —
+ *  `app_catalog` appends its source warnings in a second block. Errors print
+ *  the same way {@link callDaemonAppTool} does and come back as a non-zero
+ *  code, so callers can just propagate. */
+async function callDaemonAppToolRaw(
+  verb: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<{ code: number; texts: string[] }> {
+  let content: { type: string; text?: string }[] = []
+  let isError = false
+  try {
+    const client = await createDaemonMcpClientGetter(await resolveDaemonMcpUrl(), "agentproto-app")()
+    const res = (await client.callTool({ name: tool, arguments: args })) as {
+      isError?: boolean
+      content?: { type: string; text?: string }[]
+    }
+    isError = res.isError === true
+    content = res.content ?? []
+  } catch (err) {
+    process.stderr.write(
+      `agentproto app ${verb}: could not reach the daemon (${err instanceof Error ? err.message : String(err)}). ` +
+        `Start it first.\n`,
+    )
+    return { code: 1, texts: [] }
+  }
+  const texts = content.filter(c => c.type === "text" && typeof c.text === "string").map(c => c.text as string)
+  if (isError) {
+    let message = texts[0] ?? "daemon returned an error"
+    try {
+      const parsed = JSON.parse(message) as { error?: unknown }
+      if (typeof parsed.error === "string") message = parsed.error
+    } catch {
+      // not JSON — print as-is
+    }
+    process.stderr.write(`agentproto app ${verb}: ${message}\n`)
+    return { code: 1, texts: [] }
+  }
+  return { code: 0, texts }
+}
+
+/** Parse `app_catalog`'s content blocks: a JSON array of entries, then an
+ *  optional `{ warnings: [...] }` block. */
+function parseCatalogBlocks(texts: string[]): { entries: CatalogRow[]; warnings: string[] } {
+  let entries: CatalogRow[] = []
+  const warnings: string[] = []
+  for (const text of texts) {
+    try {
+      const parsed = JSON.parse(text) as unknown
+      if (Array.isArray(parsed)) entries = parsed as CatalogRow[]
+      else if (parsed && typeof parsed === "object" && Array.isArray((parsed as { warnings?: unknown }).warnings)) {
+        warnings.push(...((parsed as { warnings: unknown[] }).warnings.map(String)))
+      }
+    } catch {
+      // not JSON — ignore
+    }
+  }
+  return { entries, warnings }
+}
+
+/** `app install @scope/name` with no matching path: resolve the catalog
+ *  entry and hand its pinned source to the daemon's `app_install` —
+ *  `{url, sha256}` for a bundle, `{url, ref?, subdir?, sha}` for git (never
+ *  with `allowBuild` unless `--allow-build`), plus `catalogUrl` when the
+ *  entry carries one (same as the store panel does). */
+async function installFromCatalog(
+  appId: string,
+  opts: { allowBuild: boolean; dataDirArg?: string },
+): Promise<number> {
+  const { code, texts } = await callDaemonAppToolRaw("install", "app_catalog", {})
+  if (code !== 0) return code
+  const { entries, warnings } = parseCatalogBlocks(texts)
+  const entry = entries.find(e => e.appId === appId)
+  if (!entry) {
+    process.stderr.write(
+      `agentproto app install: no catalog entry named '${appId}'.\n` +
+        `Browse what's available: agentproto app catalog\n`,
+    )
+    return 1
+  }
+  const source = entry.source
+  if (!source || typeof source !== "object" || source.kind !== "git" && source.kind !== "agentapp") {
+    process.stderr.write(
+      `agentproto app install: catalog entry '${appId}' has no remote source to install from ` +
+        `(kind: ${source?.kind ?? "none"}).\n`,
+    )
+    return 1
+  }
+  if (source.url === undefined) {
+    process.stderr.write(`agentproto app install: catalog entry '${appId}' has no source URL.\n`)
+    return 1
+  }
+  // Never install a catalog entry unpinned: the digest / commit is what makes
+  // the catalog's integrity effective (the schema requires it; a malformed
+  // source must not degrade into an unverified install).
+  const pin = source.kind === "agentapp" ? source.sha256 : source.sha
+  if (typeof pin !== "string" || pin.length === 0) {
+    process.stderr.write(
+      `agentproto app install: catalog entry '${appId}' has no ${source.kind === "agentapp" ? "sha256" : "sha"} pin; refusing an unverified install.\n`,
+    )
+    return 1
+  }
+  const payload: Record<string, unknown> = { url: source.url }
+  if (source.kind === "agentapp") {
+    payload.sha256 = source.sha256
+  } else {
+    if (source.ref !== undefined) payload.ref = source.ref
+    if (source.subdir !== undefined) payload.subdir = source.subdir
+    if (source.sha !== undefined) payload.sha = source.sha
+    if (opts.allowBuild) payload.allowBuild = true
+  }
+  if (entry.catalogUrl !== undefined) payload.catalogUrl = entry.catalogUrl
+  if (opts.dataDirArg !== undefined) payload.dataDir = opts.dataDirArg
+  return callDaemonAppTool("install", "app_install", payload)
+}
+
+/** `agentproto app catalog [--refresh] [--json]` — list the daemon's
+ *  `app_catalog`, warnings included. */
+export async function runAppCatalog(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      refresh: { type: "boolean" },
+      json: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  })
+  if (values.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return 0
+  }
+  const { code, texts } = await callDaemonAppToolRaw("catalog", "app_catalog", {
+    ...(values.refresh === true ? { refresh: true } : {}),
+  })
+  if (code !== 0) return code
+  const { entries, warnings } = parseCatalogBlocks(texts)
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ entries, warnings }, null, 2) + "\n")
+    return 0
+  }
+  for (const warning of warnings) {
+    process.stderr.write(`agentproto app catalog: warning: ${warning}\n`)
+  }
+  if (entries.length === 0) {
+    process.stdout.write("agentproto app catalog: no catalog entries.\n")
+    return 0
+  }
+  for (const entry of entries) {
+    const bits = [
+      entry.appId,
+      entry.version !== undefined ? `v${entry.version}` : undefined,
+      entry.tier,
+      entry.installed ? "installed" : "not installed",
+      entry.updateAvailable ? "update available" : undefined,
+      entry.origin ?? "local",
+    ].filter((b): b is string => b !== undefined)
+    process.stdout.write(bits.join("  ") + "\n")
+  }
+  return 0
+}
+
+/** `agentproto app uninstall <appId> [--json]` — remove an installed app. */
+export async function runAppUninstall(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      json: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  })
+  if (values.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return 0
+  }
+  const appId = positionals[0]
+  if (!appId) {
+    process.stderr.write(`agentproto app uninstall: <appId> is required.\n${USAGE}\n`)
+    return 2
+  }
+  const { code, texts } = await callDaemonAppToolRaw("uninstall", "app_uninstall", { appId })
+  if (code !== 0) return code
+  if (values.json) {
+    process.stdout.write((texts[0] ?? "{}") + "\n")
+  } else {
+    process.stdout.write(`agentproto: uninstalled ${appId}\n`)
+  }
+  return 0
+}
+
+/** `agentproto app update [<appId>] [--dry-run] [--json]` — `app_updates`
+ *  lists what's updatable; with <appId> or --all, `app_resync` applies. */
+export async function runAppUpdate(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      all: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      json: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  })
+  if (values.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return 0
+  }
+  const appId = positionals[0]
+  const all = values.all === true
+  const dryRun = values["dry-run"] === true
+  const json = values.json === true
+
+  const callUpdates = async (): Promise<{ code: number; updates: CatalogRow[]; raw: string }> => {
+    const res = await callDaemonAppToolRaw(
+      "update",
+      "app_updates",
+      appId !== undefined && !all ? { appId } : {},
+    )
+    if (res.code !== 0) return { code: res.code, updates: [], raw: "" }
+    let parsed: { updates?: CatalogRow[] } = {}
+    try {
+      parsed = JSON.parse(res.texts[0] ?? "{}") as { updates?: CatalogRow[] }
+    } catch {
+      parsed = {}
+    }
+    return { code: 0, updates: parsed.updates ?? [], raw: res.texts[0] ?? "{}" }
+  }
+
+  const printRows = (updates: CatalogRow[], suffix = ""): void => {
+    if (updates.length === 0) {
+      process.stdout.write(`agentproto app update: no update available${appId !== undefined ? ` for ${appId}` : ""}.\n`)
+      return
+    }
+    for (const u of updates) {
+      process.stdout.write(`${u.appId}  ${u.from ?? "?"} -> ${u.to ?? "?"}${suffix}\n`)
+    }
+    if (!all && suffix === "") {
+      process.stdout.write("Apply with: agentproto app update <appId>  (or: agentproto app update --all)\n")
+    }
+  }
+
+  // --dry-run: list only, whatever the target was — never a resync call.
+  if (dryRun) {
+    const { code, updates, raw } = await callUpdates()
+    if (code !== 0) return code
+    const listed = all ? updates : updates.filter(u => u.appId === appId)
+    if (json) {
+      process.stdout.write(raw + "\n")
+      return 0
+    }
+    printRows(listed, "  (dry run)")
+    return 0
+  }
+
+  if (appId === undefined && !all) {
+    const { code, updates, raw } = await callUpdates()
+    if (code !== 0) return code
+    if (json) {
+      process.stdout.write(raw + "\n")
+      return 0
+    }
+    if (updates.length === 0) {
+      process.stdout.write("agentproto app update: everything is up to date.\n")
+      return 0
+    }
+    printRows(updates)
+    return 0
+  }
+
+  let targets: string[]
+  if (all) {
+    const listed = await callUpdates()
+    if (listed.code !== 0) return listed.code
+    targets = listed.updates.map(u => u.appId)
+  } else {
+    targets = [appId as string]
+  }
+
+  let failed = 0
+  for (const target of targets) {
+    const { code, texts } = await callDaemonAppToolRaw("update", "app_resync", { appId: target })
+    if (code !== 0) {
+      failed++
+      continue
+    }
+    if (json) {
+      process.stdout.write((texts[0] ?? "{}") + "\n")
+    } else {
+      const line = texts[0] ?? "{}"
+      process.stdout.write(`agentproto app update ${target}: ${line.replace(/\s+$/, "")}\n`)
+    }
+  }
+  return failed > 0 ? 1 : 0
+}
+
+/** `agentproto app store [--print]` — open the daemon's App Store panel. */
+export async function runAppStore(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      print: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  })
+  if (values.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return 0
+  }
+  const storeUrl = `${(await resolveDaemonMcpUrl()).replace(/\/mcp$/, "")}/store`
+  if (values.print === true) {
+    process.stdout.write(storeUrl + "\n")
+    return 0
+  }
+  openInBrowser(storeUrl)
+  process.stdout.write(`agentproto: opening ${storeUrl}\n`)
+  return 0
 }
 
 /** `agentproto app pack <appDir> [--out ...] [--json]`. */
