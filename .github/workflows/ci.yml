@@ -323,6 +323,14 @@ jobs:
       - name: Check review panel UI drift
         run: pnpm --filter @agentproto/apps run build:ui:reviews:check
 
+      # Same drift guard as work-board's, for the App Store panel
+      # (packages/apps/src/store/ui/**) — see scripts/build-store-ui.mjs and
+      # the "Check work-board UI drift" step's comment above for the full
+      # rationale (a live rebuild + diff, not an enumerated file list, so it
+      # also catches drift from ../panel-bridge.ts).
+      - name: Check store UI drift
+        run: pnpm --filter @agentproto/apps run build:ui:store:check
+
       - name: Run sync-templates tests
         run: node --test scripts/sync-templates.test.mjs
 

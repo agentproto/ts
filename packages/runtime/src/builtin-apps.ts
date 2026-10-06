@@ -52,6 +52,8 @@ import {
   makeWorkBoardApp,
   reviewPanelApp,
   makeReviewPanelApp,
+  storeApp,
+  makeStoreApp,
   type AgnoMcpApp,
   type WorkBoardOutput,
   type ReviewPanelInput,
@@ -61,6 +63,12 @@ import type { AppHandle } from "@agentproto/app-kit"
 import { stableAppEmbedToken } from "./embed-tokens.js"
 import type { SessionDescriptor } from "./sessions.js"
 import type { TaskRecord } from "./task-ledger.js"
+import { STORE_UI_TOOLS } from "./store-panel-allowlist.js"
+
+/** The store panel's catalog appId — http-server.ts's `GET /store` redirect
+ *  target. The panel is self-served (never installed, never persisted to
+ *  the daemon state), so no other identity is reachable. */
+export const STORE_PANEL_APP_ID = storeApp.id ?? "@agentproto/store"
 
 export interface BuiltinPanelAppsOps {
   listSessions(filter?: "running" | "all"): SessionDescriptor[]
@@ -89,6 +97,16 @@ export interface BuiltinPanelAppsOps {
    *  implementations. Omitted (no review runner wired) ⇒ the panel isn't
    *  mounted at all — see `makeBuiltinPanelApps`. */
   listReviews?: (input: ReviewPanelInput) => Promise<ReviewPanelOutput>
+  /** reads of the app store's read paths — `app_catalog`'s list, the
+   *  installed-app list (`app_list`-shaped), and the `app_updates` check —
+   *  so the store widget's execute() answer and the widget's OWN poll
+   *  responses over the shared mechanism mean exactly the same names. The
+   *  store panel's apply paths (app_install/app_resync/app_uninstall) do NOT
+   *  close over these — the widget routes them through the SAME MCP verbs
+   *  every other caller uses (see the panel's ui.tools below). */
+  listCatalog?: () => Promise<ReadonlyArray<Record<string, unknown>>>
+  listInstalled?: () => ReadonlyArray<Record<string, unknown>>
+  listUpdates?: () => ReadonlyArray<Record<string, unknown>>
 }
 
 /**
@@ -144,6 +162,19 @@ export function makeBuiltinPanelApps(
     // `builtinPanelCatalogEntries`'s stub ops below — still gets a
     // deterministic, small app list).
     ...(ops.listReviews ? [makeReviewPanelApp({ listReviews: ops.listReviews })] : []),
+    // App Store widget — the browser/launcher over app_catalog + installed
+    // apps (see apps/src/store). Initial snapshot only when the ops are
+    // wired; writes (install/update/uninstall) always go through the SAME
+    // MCP verbs every other caller uses — no second install path.
+    ...(ops.listCatalog && ops.listInstalled && ops.listUpdates
+      ? [
+          makeStoreApp({
+            listCatalog: ops.listCatalog,
+            listInstalled: ops.listInstalled,
+            listUpdates: ops.listUpdates,
+          }),
+        ]
+      : []),
   ]
 }
 
@@ -160,6 +191,7 @@ const PANEL_APP_HANDLES: readonly AppHandle[] = [
   sessionChatApp,
   workBoardApp,
   reviewPanelApp,
+  storeApp,
 ]
 
 export interface BuiltinPanelCatalogEntry {
@@ -265,6 +297,9 @@ export function resolveBuiltinPanelUi(
       typeof app.html === "function" ? app.html({ httpBaseUrl, sessionId: pinnedSessionId }) : app.html
     return { html, tools: liveSessionApp.ui?.tools ?? [] }
   }
+  if (appId === storeApp.id) {
+    return { html: storeApp.ui?.html ?? "", tools: STORE_UI_TOOLS }
+  }
   const handle = [sessionsPanelApp, agentsOverviewApp, bureauSessionsApp, sessionStoryApp, workBoardApp, reviewPanelApp].find(
     h => h.id === appId,
   )
@@ -280,10 +315,14 @@ export function builtinPanelCatalogEntries(): BuiltinPanelCatalogEntry[] {
     listTasks: (boardId) => ({ boardId: boardId ?? "ws:default", tasks: [] }),
     // Always provided (never omitted) here, same reasoning as
     // `isSessionChatInstalled: () => false` above: `PANEL_APP_HANDLES` is
-    // zipped against this call's output BY INDEX, so the review panel must
-    // always be present in this specific call regardless of whether the
-    // real daemon happens to have a review runner wired.
+    // zipped against this call's output BY INDEX, so the review panel and
+    // the store must always be present in this specific call regardless of
+    // whether the real daemon happens to have a review runner wired or any
+    // store ops at all.
     listReviews: async () => ({ total: 0, attestations: [] }),
+    listCatalog: async () => [],
+    listInstalled: () => [],
+    listUpdates: () => [],
   })
   return apps.map((app, i) => {
     const handle = PANEL_APP_HANDLES[i]!

@@ -88,6 +88,7 @@ import type { AppCatalogEntry } from "./client/types.js"
 // refuses to bundle ("No loader is configured for '.node' files"). Same
 // reason storyPanel.ts imports `/session-story/panel`.
 import { WORK_BOARD_APP_ID, WORK_BOARD_UI_TOOLS } from "@agentproto/apps/work-board/panel"
+import { STORE_APP_ID, STORE_UI_TOOLS } from "@agentproto/apps/store/panel"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -383,6 +384,31 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       appPanels.open(
         { appId: entry.appId, name: entry.name, description: entry.description },
         { resourceUri, builtinTools: WORK_BOARD_UI_TOOLS },
+      )
+    }),
+    // agentproto.openStore — the App Store panel's launcher. Same builtin
+    // resolution as the work board above (`app_catalog`'s builtin entry,
+    // never an installed record) with the store's OWN tool allowlist.
+    vscode.commands.registerCommand("agentproto.openStore", async () => {
+      let entry: AppCatalogEntry | undefined
+      let listed = true
+      try {
+        entry = (await client.appCatalog()).find(a => a.appId === STORE_APP_ID)
+      } catch {
+        listed = false
+      }
+      const resourceUri = entry ? builtinViewResourceUri(entry) : undefined
+      if (!entry || !resourceUri) {
+        void vscode.window.showInformationMessage(
+          listed
+            ? "This daemon doesn't serve the App Store panel (@agentproto/store). It ships with the daemon rather than being installed, so this means the daemon is older than the panel - upgrade it."
+            : "Couldn't read the daemon's app catalog - the App Store panel (@agentproto/store) can't be opened.",
+        )
+        return
+      }
+      appPanels.open(
+        { appId: entry.appId, name: entry.name, description: entry.description },
+        { resourceUri, builtinTools: STORE_UI_TOOLS },
       )
     }),
   )

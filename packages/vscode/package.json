@@ -344,6 +344,12 @@
         "icon": "$(checklist)"
       },
       {
+        "command": "agentproto.openStore",
+        "title": "agentproto: Open App Store",
+        "category": "agentproto",
+        "icon": "$(home)"
+      },
+      {
         "command": "agentproto.openBrowser",
         "title": "agentproto: Open Browser View",
         "category": "agentproto",

@@ -139,6 +139,16 @@
       "import": "./dist/work-board/panel.mjs",
       "default": "./dist/work-board/panel.mjs"
     },
+    "./store": {
+      "types": "./dist/store/index.d.ts",
+      "import": "./dist/store.mjs",
+      "default": "./dist/store.mjs"
+    },
+    "./store/panel": {
+      "types": "./dist/store/panel.d.ts",
+      "import": "./dist/store/panel.mjs",
+      "default": "./dist/store/panel.mjs"
+    },
     "./review-panel": {
       "types": "./dist/review-panel/index.d.ts",
       "import": "./dist/review-panel.mjs",
@@ -170,6 +180,8 @@
     "test:watch": "vitest",
     "build:ui": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs",
     "build:ui:check": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs --check",
+    "build:ui:store": "tsc --noEmit -p src/store/ui/tsconfig.json && node scripts/build-store-ui.mjs",
+    "build:ui:store:check": "tsc --noEmit -p src/store/ui/tsconfig.json && node scripts/build-store-ui.mjs --check",
     "build:ui:reviews": "tsc --noEmit -p src/review-panel/ui/tsconfig.json && node scripts/build-review-panel-ui.mjs",
     "build:ui:reviews:check": "tsc --noEmit -p src/review-panel/ui/tsconfig.json && node scripts/build-review-panel-ui.mjs --check"
   },

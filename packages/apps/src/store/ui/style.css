@@ -1,0 +1,198 @@
+/* ═══════════════════════════════════════════════════════════════════
+   The store panel's stylesheet — same two-sheet token mapping as
+   work-board's (--vscode-* wins when a host injects them, the agentproto
+   brand fallbacks otherwise; light/dark split via prefers-color-scheme
+   for a standalone tab). See that file's header for the full rationale
+   — the --st-* names here are this panel's own namespace.
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --st-bg: var(--vscode-editor-background, #f5f6f3);
+  --st-surface: var(--vscode-sideBar-background, #ffffff);
+  --st-ink: var(--vscode-editor-foreground, #171a1e);
+  --st-ink-muted: var(--vscode-descriptionForeground, #5c6470);
+  --st-border: var(--vscode-panel-border, #dde0da);
+  --st-accent: var(--vscode-button-background, #0f62fe);
+  --st-ink-on-accent: var(--vscode-button-foreground, #ffffff);
+  --st-warn: var(--vscode-charts-yellow, #f0b429);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --st-bg: var(--vscode-editor-background, #101214);
+    --st-surface: var(--vscode-sideBar-background, #16191d);
+    --st-ink: var(--vscode-editor-foreground, #e8eaed);
+    --st-ink-muted: var(--vscode-descriptionForeground, #99a2ad);
+    --st-border: var(--vscode-panel-border, #272c33);
+    --st-accent: var(--vscode-button-background, #4589ff);
+    --st-ink-on-accent: var(--vscode-button-foreground, #ffffff);
+    --st-warn: var(--vscode-charts-yellow, #f0b429);
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  background: var(--st-bg);
+  color: var(--st-ink);
+  overflow: hidden;
+}
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+#store-head {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--st-border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--st-surface);
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+#content { flex: 1; overflow-y: auto; padding: 12px; }
+
+.store-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--st-ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 14px 0 8px;
+}
+.store-section-title:first-child { margin-top: 0; }
+
+.store-category-title { font-size: 12px; font-weight: 600; margin: 12px 0 6px; }
+
+.card {
+  background: var(--st-surface);
+  border: 1px solid var(--st-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.card-title { font-size: 12px; font-weight: 500; margin-bottom: 4px; word-break: break-word; }
+.card-desc { font-size: 11px; color: var(--st-ink-muted); margin-bottom: 6px; }
+.card-version, .card-source {
+  font-size: 10px;
+  color: var(--st-ink-muted);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+  margin-right: 6px;
+}
+.card-chips { margin-bottom: 6px; }
+.card-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--st-ink-muted) 15%, transparent);
+  color: var(--st-ink-muted);
+  margin-right: 4px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--st-warn) 18%, transparent);
+  color: var(--st-warn);
+  margin-right: 4px;
+}
+
+.sbtn {
+  background: var(--st-bg);
+  border: 1px solid var(--st-border);
+  color: var(--st-ink);
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.sbtn:hover { background: var(--st-border); }
+.sbtn.primary { background: var(--st-accent); color: var(--st-ink-on-accent); border-color: var(--st-accent); }
+.sbtn.danger { border-color: var(--st-warn); color: var(--st-warn); }
+
+.store-url-install { display: flex; gap: 8px; margin: 6px 0 12px; }
+.store-url-install input {
+  flex: 1;
+  min-width: 120px;
+  background: var(--st-bg);
+  border: 1px solid var(--st-border);
+  color: var(--st-ink);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+#confirm-panel {
+  border: 1px solid var(--st-accent);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 12px;
+  background: var(--st-surface);
+}
+#confirm-panel h2 { font-size: 13px; margin-bottom: 8px; }
+#confirm-meta { font-size: 11px; color: var(--st-ink-muted); margin-bottom: 8px; }
+#confirm-meta .mono, .mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+}
+.build-flag { color: var(--st-warn); font-weight: 600; }
+
+.store-warnings { margin-bottom: 10px; }
+.store-warning {
+  font-size: 11px;
+  color: var(--st-warn);
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--st-warn) 40%, transparent);
+  border-radius: 4px;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.store-empty {
+  border: 1px dashed var(--st-border);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.store-empty-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.store-empty-hint { font-size: 11px; color: var(--st-ink-muted); margin-bottom: 10px; line-height: 1.5; }
+.store-empty code {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+  background: color-mix(in srgb, var(--st-ink-muted) 12%, transparent);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.store-builtins { border-top: 1px solid var(--st-border); padding-top: 8px; margin-top: 12px; }
+.store-builtins summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--st-ink-muted);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.store-builtin-list { margin: 8px 0 0 16px; font-size: 11px; color: var(--st-ink-muted); }
+
+#statusbar {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--st-ink-muted);
+  border-top: 1px solid var(--st-border);
+  background: var(--st-surface);
+  flex-shrink: 0;
+}

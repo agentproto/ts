@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>agentproto app store</title>
+<!-- PANEL_BRIDGE: replaced with the inline panelBridgeScript() output by
+     vite.config.ts's injectPanelBridge plugin — a classic (non-module)
+     script so its `initBridge`/`callTool` land as globals before the
+     deferred module script below runs. -->
+<!--PANEL_BRIDGE-->
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div id="app">
+  <div id="store-head"><span>App Store</span></div>
+  <div id="confirm-panel" hidden></div>
+  <div id="content"></div>
+  <div id="url-install-static">
+    <div class="store-url-install">
+    <input id="store-url" type="text" placeholder="https://example.com/my-app.agentapp or https://github.com/user/repo" />
+    <input id="store-sha256" type="text" placeholder="sha256 (.agentapp, optional)" />
+    <input id="store-ref" type="text" placeholder="git ref (optional)" />
+    <input id="store-subdir" type="text" placeholder="git subdir (optional)" />
+    <button class="sbtn" id="store-install-from-url-btn">Install from URL</button>
+    </div>
+  </div>
+  <div id="statusbar">Connecting to bridge&#8230;</div>
+</div>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>

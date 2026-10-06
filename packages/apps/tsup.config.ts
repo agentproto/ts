@@ -22,6 +22,7 @@ export default createTsupConfig({
     "session-chat": "src/session-chat/index.ts",
     "work-board": "src/work-board/index.ts",
     "review-panel": "src/review-panel/index.ts",
+    "store": "src/store/index.ts",
     // HTML-only entries — no `@agentproto/app-kit` (and therefore
     // `@mastra/core`) reachable from these, unlike the entries above. A
     // consumer that only needs the panel HTML (packages/vscode's
@@ -35,6 +36,7 @@ export default createTsupConfig({
     "session-chat/panel": "src/session-chat/panel.ts",
     "work-board/panel": "src/work-board/panel.ts",
     "review-panel/panel": "src/review-panel/panel.ts",
+    "store/panel": "src/store/panel.ts",
     "bin/sync": "src/bin/sync.ts",
   },
   format: ["esm"],

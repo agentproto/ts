@@ -69,6 +69,7 @@ import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
+import { createHash, randomBytes } from "node:crypto"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
@@ -406,6 +407,186 @@ export interface AppToolCallDeps {
  * of an `AppRegistry` record's — the allowlist source differs, the
  * enforcement and dispatch must not.
  */
+/**
+ * App-UI install confirmation (S6): `app_install` called from a panel's
+ * `window.McpApp` bridge (the `tool-call` path — `dispatchAllowlistedAppTool`
+ * above, shared by the `POST /apps/:appId/tool-call` REST twin and the
+ * builtin panels' bridge, NOT the MCP verb itself) requires an explicit
+ * two-step confirmation:
+ *
+ *   1st call (no `confirm`) → `{ needsConfirmation: true, confirm: <token>,
+ *   kind, url, sha256|sha, ref?, subdir?, runsBuildCommand }` — an
+ *   actionable install preview; NOTHING is installed, nothing is staged.
+ *   2nd call with the SAME payload PLUS `confirm: <that token>` → the
+ *   normal install path, verbatim.
+ *
+ * The guard classifies by URL suffix ONLY (`isAgentappUrl`): a `.agentapp`
+ * bundle never runs the app's ui.build (app-tools's `allowUiBuild`
+ * contract), a git URL would only with `allowBuild: true` — which a
+ * first-class reinstall stays free to pass, so the preview's
+ * `runsBuildCommand = kind === "git" && allowBuild === true`.
+ *
+ * The token binds the caller to THE EXACT payload it previewed and to a
+ * SERVER-ISSUED nonce, not a hash the caller could compute. Why a nonce
+ * and not the sha256 of the payload: the payload is fully predictable
+ * (it's the catalog entry's url/sha fields, or whatever a CSRF-forged POST
+ * picks), so a deterministic token is computable by ANY caller — a blind
+ * cross-site POST that never reads the preview could forge
+ * `confirm: sha256(payload)` and the guard would pass, protecting
+ * nothing. The confirm value is therefore `randomBytes(16)` hex, issued
+ * ONLY by the preview call and stored server-side (nonce ->
+ * { fingerprint of the payload, 5-minute expiry }), single-use: it is
+ * deleted the moment a call carries it, successful or not, and a second
+ * call with a different payload (or a stale/expired/unknown token) shows
+ * a preview again — never proceeds. Issuance also purges expired entries
+ * and caps the store (oldest evicted past 256 outstanding confirmations).
+ *
+ * Direct MCP/CLI callers enter through the registered `server.tool
+ * ("app_install")` handler (below — the parsed `appInstallInputSchema`
+ * code path), which this guard never touches; their behaviour is
+ * byte-identical to before this change. Only the panel bridge's
+ * `allowlist + dispatch` route (an app's OWN ui html, the most exposed
+ * tool surface) pays the extra round trip.
+ */
+export interface AppInstallPreview {
+  needsConfirmation: true
+  /** The token the SECOND call must echo back (`confirm: <token>`). */
+  confirm: string
+  kind: "agentapp" | "git"
+  url: string
+  sha256?: string
+  sha?: string
+  ref?: string
+  subdir?: string
+  runsBuildCommand?: boolean
+}
+
+/** Canonical-JSON sha256 of the previewed fields — the payload's
+ *  fingerprint, stored server-side against the nonce issued for it.
+ *  `kind` is derived here (`isAgentappUrl`), taken from the URL; the
+ *  fingerprint must be recomputed with the SAME derivation on the
+ *  confirming call, so both call sites pass the SAME args surface. */
+function confirmTokenOf(args: {
+  url: string
+  sha256?: string
+  sha?: string
+  ref?: string
+  subdir?: string
+  [k: string]: unknown
+}): string {
+  const digest = createHash("sha256")
+  digest.update(
+    JSON.stringify([
+      "agentproto-app-install-confirm-v1",
+      args.url,
+      isAgentappUrl(args.url) ? "agentapp" : "git",
+      args.sha256 ?? null,
+      args.sha ?? null,
+      args.ref ?? null,
+      args.subdir ?? null,
+      args.allowBuild === true,
+    ]),
+  )
+  return digest.digest("hex").slice(0, 32)
+}
+
+/** Server-side nonce store for the app-UI install confirmation — module
+ *  level because the guard must be shared by EVERY panel-facing
+ *  dispatcher in the process (`dispatchAllowlistedAppTool` runs under
+ *  both the builtin-panels route and the installed-apps route). Not a
+ *  deterministic hash of the payload (a blind CSRF POST could compute
+ *  that without ever seeing the preview — see the docblock above): the
+ *  nonce exists only after a preview, in THIS process's memory. */
+const appInstallNonces = new Map<string, { fingerprint: string; expiresAt: number }>()
+
+/** Cap on outstanding (issued-but-unconfirmed) confirmations. Issuance
+ *  purges expired entries first; past this cap the OLDEST entry is
+ *  evicted (Map iteration order = insertion order), so the store can't
+ *  grow without bound under preview spam. */
+const APP_INSTALL_NONCE_MAX = 256
+
+const APP_INSTALL_NONCE_TTL_MS = 5 * 60 * 1000
+
+/** Issue a fresh single-use nonce for THIS payload: `randomBytes` hex,
+ *  bound server-side to the payload's fingerprint + a 5-minute expiry.
+ *  Purges expired entries and enforces the cap on every issuance. */
+function issueInstallNonce(args: Record<string, unknown>): string {
+  const now = Date.now()
+  for (const [nonce, entry] of appInstallNonces) {
+    if (entry.expiresAt <= now) appInstallNonces.delete(nonce)
+  }
+  if (appInstallNonces.size >= APP_INSTALL_NONCE_MAX) {
+    const oldest = appInstallNonces.keys().next().value
+    if (oldest !== undefined) appInstallNonces.delete(oldest)
+  }
+  const nonce = randomBytes(16).toString("hex")
+  appInstallNonces.set(nonce, {
+    fingerprint: confirmTokenOf({
+      url: typeof args.url === "string" ? args.url : "",
+      sha256: typeof args.sha256 === "string" ? args.sha256 : undefined,
+      sha: typeof args.sha === "string" ? args.sha : undefined,
+      ref: typeof args.ref === "string" ? args.ref : undefined,
+      subdir: typeof args.subdir === "string" ? args.subdir : undefined,
+      allowBuild: args.allowBuild === true,
+    }),
+    expiresAt: now + APP_INSTALL_NONCE_TTL_MS,
+  })
+  return nonce
+}
+
+/**
+ * Whether an app-UI-path `app_install` call carries the confirmation it
+ * needs: `undefined` when the payload isn't a recognisable remote install
+ * (the guard lets it through to the tool's own validation error), `false`
+ * when it's a fresh remote install with no (valid) confirm, `true` only
+ * when the echoed token is a live server-issued nonce whose fingerprint
+ * matches THIS payload. Consumptive: ANY call carrying a string `confirm`
+ * deletes that nonce (single use, success or not); a caller presenting a
+ * non-nonce string (a self-computed hash, a replay, an expired nonce) or
+ * a modified payload gets `{confirmed: false}` and, with it, a fresh
+ * preview from the dispatcher.
+ */
+export function appInstallConfirmationClass(args: Record<string, unknown>):
+  | { confirmed: true }
+  | { confirmed: false }
+  | undefined {
+  const url = args.url
+  if (typeof url !== "string" || url.trim() === "" || args.dir !== undefined || args.file !== undefined) {
+    return undefined
+  }
+  if (typeof args.confirm !== "string") return { confirmed: false }
+  const nonce = appInstallNonces.get(args.confirm)
+  appInstallNonces.delete(args.confirm)
+  const fingerprint = confirmTokenOf({
+    url,
+    sha256: typeof args.sha256 === "string" ? args.sha256 : undefined,
+    sha: typeof args.sha === "string" ? args.sha : undefined,
+    ref: typeof args.ref === "string" ? args.ref : undefined,
+    subdir: typeof args.subdir === "string" ? args.subdir : undefined,
+    allowBuild: args.allowBuild === true,
+  })
+  const valid = nonce !== undefined && nonce.fingerprint === fingerprint && Date.now() < nonce.expiresAt
+  return valid ? { confirmed: true } : { confirmed: false }
+}
+
+/** The preview the FIRST call sees. Never stages or installs — it ISSUES
+ *  the single-use nonce the second call must echo back. */
+export function buildAppInstallPreview(args: Record<string, unknown>): AppInstallPreview {
+  const url = typeof args.url === "string" ? args.url : ""
+  const isAgentapp = isAgentappUrl(url)
+  return {
+    needsConfirmation: true,
+    confirm: issueInstallNonce(args),
+    kind: isAgentapp ? "agentapp" : "git",
+    url,
+    ...(typeof args.sha256 === "string" ? { sha256: args.sha256 } : {}),
+    ...(typeof args.sha === "string" ? { sha: args.sha } : {}),
+    ...(typeof args.ref === "string" ? { ref: args.ref } : {}),
+    ...(typeof args.subdir === "string" ? { subdir: args.subdir } : {}),
+    runsBuildCommand: !isAgentapp && args.allowBuild === true,
+  }
+}
+
 async function dispatchAllowlistedAppTool(
   declaredAllowlist: readonly string[],
   input: { appId: string; tool: string; args?: Record<string, unknown> },
@@ -420,6 +601,16 @@ async function dispatchAllowlistedAppTool(
   }
 
   const args = input.args ?? {}
+  // App-UI install guard: an `app_install` routed through an app panel's
+  // tool-call surface (`window.McpApp` bridge → this dispatcher) needs an
+  // EXPLICIT confirmation — first call (no `confirm`) answers a preview
+  // and installs nothing; only a second call echoing the preview's
+  // `confirm` token proceeds. Direct MCP/CLI callers enter through the
+  // registered `server.tool("app_install")` handler, never this
+  // dispatcher, and are unaffected.
+  if (input.tool === "app_install" && appInstallConfirmationClass(args)?.confirmed === false) {
+    return textResult(buildAppInstallPreview(args))
+  }
   try {
     if (input.tool.startsWith("imported:")) {
       if (!deps.callImportedTool) return notEnabled("app_tool_call")

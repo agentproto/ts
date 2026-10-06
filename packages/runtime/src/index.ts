@@ -3106,6 +3106,25 @@ export async function createGateway(
     registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
+    const listCatalogRows = async (): Promise<ReadonlyArray<Record<string, unknown>>> => {
+      const rows = (await dispatchTool("app_catalog", {})) as unknown
+      if (typeof rows !== "string") return []
+      try {
+        const parsed: unknown = JSON.parse(rows)
+        return Array.isArray(parsed) ? (parsed as Record<string, unknown>[]) : []
+      } catch {
+        return []
+      }
+    }
+    const listInstalledRows = (): ReadonlyArray<Record<string, unknown>> => {
+      const apps: ReadonlyArray<unknown> = appRegistry.listApps()
+      return apps as ReadonlyArray<Record<string, unknown>>
+    }
+    const listUpdateRows = (): ReadonlyArray<Record<string, unknown>> =>
+      appRegistry
+        .listApps()
+        .filter(a => a.source !== undefined && a.source.kind !== "local" && a.source.catalogId !== undefined)
+        .map(a => ({ appId: a.appId, updateAvailable: true, ...(a.version !== undefined ? { version: a.version } : {}) }))
     const listSessionsFiltered = (filter?: "running" | "all") => {
       // `kind:"command"` rows are a shell-execution log, not a resumable
       // session — every consumer of this (sessions/agents-overview/bureau/
@@ -3162,6 +3181,13 @@ export async function createGateway(
             { ...input, includeRunning: true },
             { resolveSubtree: (sessionId) => [...collectSubtree(sessionId, sessions.list({ includeArchived: true }))] },
           ),
+        // Store widget's read paths — app_catalog's rows (via the SAME
+        // `dispatchTool` the panel's own apply verbs will route through, so
+        // its snapshot can never disagree with what the tool call returns),
+        // and the registry's installed apps.
+        listCatalog: listCatalogRows,
+        listInstalled: listInstalledRows,
+        listUpdates: listUpdateRows,
       }),
       // Same ptyEnabled gate as terminal_start/terminal_input/… in
       // session-tools.ts — the panel would be able to open the WS but
