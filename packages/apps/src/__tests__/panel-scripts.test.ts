@@ -22,6 +22,7 @@ import { SESSION_STORY_PANEL_HTML } from "../session-story/panel.js"
 import { BUREAU_SESSIONS_HTML } from "../bureau-sessions/panel.js"
 import { AGENTS_OVERVIEW_HTML } from "../agents-overview/panel.js"
 import { WORK_BOARD_HTML } from "../work-board/panel.js"
+import { STORE_HTML } from "../store/panel.js"
 import { makeLiveSessionApp } from "../live-session/index.js"
 
 const liveSessionApp = makeLiveSessionApp()

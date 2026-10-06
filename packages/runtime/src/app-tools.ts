@@ -69,6 +69,7 @@ import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
+import { createHash } from "node:crypto"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
@@ -406,6 +407,132 @@ export interface AppToolCallDeps {
  * of an `AppRegistry` record's — the allowlist source differs, the
  * enforcement and dispatch must not.
  */
+/**
+ * App-UI install confirmation (S6): `app_install` called from a panel's
+ * `window.McpApp` bridge (the `tool-call` path — `dispatchAllowlistedAppTool`
+ * above, shared by the `POST /apps/:appId/tool-call` REST twin and the
+ * builtin panels' bridge, NOT the MCP verb itself) requires an explicit
+ * two-step confirmation:
+ *
+ *   1st call (no `confirm`) → `{ needsConfirmation: true, confirm: <token>,
+ *   kind, url, sha256|sha, ref?, subdir?, runsBuildCommand }` — an
+ *   actionable install preview; NOTHING is installed, nothing is staged.
+ *   2nd call with the SAME payload PLUS `confirm: <that token>` → the
+ *   normal install path, verbatim.
+ *
+ * The guard classifies by URL suffix ONLY (`isAgentappUrl`): a `.agentapp`
+ * bundle never runs the app's ui.build (app-tools's `allowUiBuild`
+ * contract), a git URL would only with `allowBuild: true` — which a
+ * first-class reinstall stays free to pass, so the preview's
+ * `runsBuildCommand = kind === "git" && allowBuild === true`.
+ *
+ * The token binds the caller to THE EXACT payload it previewed: it's the
+ * sha256 of the canonical JSON of the previewed fields. A second call with
+ * a different payload (or a replayed token against a different install)
+ * shows a preview again — never proceeds.
+ *
+ * Direct MCP/CLI callers enter through the registered `server.tool
+ * ("app_install")` handler (below — the parsed `appInstallInputSchema`
+ * code path), which this guard never touches; their behaviour is
+ * byte-identical to before this change. Only the panel bridge's
+ * `allowlist + dispatch` route (an app's OWN ui html, the most exposed
+ * tool surface) pays the extra round trip.
+ */
+export interface AppInstallPreview {
+  needsConfirmation: true
+  /** The token the SECOND call must echo back (`confirm: <token>`). */
+  confirm: string
+  kind: "agentapp" | "git"
+  url: string
+  sha256?: string
+  sha?: string
+  ref?: string
+  subdir?: string
+  runsBuildCommand?: boolean
+}
+
+/** Canonical-JSON sha256 of the previewed fields — the confirm token.
+ *  `kind` is derived here (`isAgentappUrl`), taken from the URL; the
+ *  fingerprint must match what `appInstallConfirmationClass` hashed, so
+ *  both call sites pass the SAME derived kind. */
+function confirmTokenOf(args: {
+  url: string
+  sha256?: string
+  sha?: string
+  ref?: string
+  subdir?: string
+  [k: string]: unknown
+}): string {
+  const digest = createHash("sha256")
+  digest.update(
+    JSON.stringify([
+      "agentproto-app-install-confirm-v1",
+      args.url,
+      isAgentappUrl(args.url) ? "agentapp" : "git",
+      args.sha256 ?? null,
+      args.sha ?? null,
+      args.ref ?? null,
+      args.subdir ?? null,
+      args.allowBuild === true,
+    ]),
+  )
+  return digest.digest("hex").slice(0, 32)
+}
+
+/**
+ * Whether an app-UI-path `app_install` call carries the confirmation it
+ * needs: `undefined` when the payload isn't a recognisable remote install
+ * (the guard lets it through to the tool's own validation error), `false`
+ * when it's a fresh remote install with no confirm, `true` only when the
+ * echoed token matches THE payload's own fingerprint (a mismatched /
+ * replayed token shows a fresh preview, never proceeds).
+ */
+export function appInstallConfirmationClass(args: Record<string, unknown>):
+  | { confirmed: true }
+  | { confirmed: false }
+  | undefined {
+  const url = args.url
+  if (typeof url !== "string" || url.trim() === "" || args.dir !== undefined || args.file !== undefined) {
+    return undefined
+  }
+  const token = confirmTokenOf({
+    url,
+    sha256: typeof args.sha256 === "string" ? args.sha256 : undefined,
+    sha: typeof args.sha === "string" ? args.sha : undefined,
+    ref: typeof args.ref === "string" ? args.ref : undefined,
+    subdir: typeof args.subdir === "string" ? args.subdir : undefined,
+    allowBuild: args.allowBuild === true,
+  })
+  return typeof args.confirm === "string" && args.confirm === token
+    ? { confirmed: true }
+    : { confirmed: false }
+}
+
+/** The preview the FIRST call sees. Never stages or installs. */
+export function buildAppInstallPreview(args: Record<string, unknown>): AppInstallPreview {
+  const url = typeof args.url === "string" ? args.url : ""
+  const isAgentapp = isAgentappUrl(url)
+  const confirm = confirmTokenOf({
+    url,
+    sha256: typeof args.sha256 === "string" ? args.sha256 : undefined,
+    sha: typeof args.sha === "string" ? args.sha : undefined,
+    ref: typeof args.ref === "string" ? args.ref : undefined,
+    subdir: typeof args.subdir === "string" ? args.subdir : undefined,
+    allowBuild: args.allowBuild === true,
+  })
+  return {
+    needsConfirmation: true,
+    confirm,
+    kind: isAgentapp ? "agentapp" : "git",
+    url,
+    ...(typeof args.sha256 === "string" ? { sha256: args.sha256 } : {}),
+    ...(typeof args.sha === "string" ? { sha: args.sha } : {}),
+    ...(typeof args.ref === "string" ? { ref: args.ref } : {}),
+    ...(typeof args.subdir === "string" ? { subdir: args.subdir } : {}),
+    runsBuildCommand: !isAgentapp && args.allowBuild === true,
+  }
+}
+
 async function dispatchAllowlistedAppTool(
   declaredAllowlist: readonly string[],
   input: { appId: string; tool: string; args?: Record<string, unknown> },
@@ -420,6 +547,16 @@ async function dispatchAllowlistedAppTool(
   }
 
   const args = input.args ?? {}
+  // App-UI install guard: an `app_install` routed through an app panel's
+  // tool-call surface (`window.McpApp` bridge → this dispatcher) needs an
+  // EXPLICIT confirmation — first call (no `confirm`) answers a preview
+  // and installs nothing; only a second call echoing the preview's
+  // `confirm` token proceeds. Direct MCP/CLI callers enter through the
+  // registered `server.tool("app_install")` handler, never this
+  // dispatcher, and are unaffected.
+  if (input.tool === "app_install" && appInstallConfirmationClass(args)?.confirmed === false) {
+    return textResult(buildAppInstallPreview(args))
+  }
   try {
     if (input.tool.startsWith("imported:")) {
       if (!deps.callImportedTool) return notEnabled("app_tool_call")

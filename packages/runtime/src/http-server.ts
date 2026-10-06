@@ -130,7 +130,7 @@ import {
   strongEtag,
   type EncodedRepresentation,
 } from "./app-ui-delivery.js"
-import { resolveBuiltinPanelUi } from "./builtin-apps.js"
+import { resolveBuiltinPanelUi, STORE_PANEL_APP_ID } from "./builtin-apps.js"
 import { resolveRequestHttpBaseUrl } from "./public-origins.js"
 import { handleA2aCardRoute, matchA2aCardRoute } from "./a2a-card-http.js"
 import {
@@ -4432,6 +4432,19 @@ export async function startHttpServer(
             appRegistry: opts.appRegistry!,
             baseUrl: requestHttpBaseUrl(req),
           })
+          return
+        }
+
+        // GET /store — the App Store panel's short url, redirecting to the
+        // builtin panel's standalone `GET /apps/:appId/ui` shell at the same
+        // encoded spelling appStandaloneUrl (packages/vscode) emits, with the
+        // query string preserved (?install=<appId> deep-links a catalog
+        // entry's confirmation). Checked ahead of the `/apps/` block below so
+        // it can never be swallowed by an appId's greedy match.
+        if (path === "/store" && req.method === "GET") {
+          const target = normalizeStoreRedirectUrl(req.url ?? "/store")
+          res.writeHead(302, { location: target })
+          res.end()
           return
         }
 
@@ -10902,6 +10915,17 @@ async function handleAppUiPage(
  *  `@scope/name`, so both the literal-slash and the %2F-encoded spelling
  *  route; optional trailing slash for a basepath-mounted SPA's reload. */
 const APP_UI_PAGE_RE = /^\/apps\/(.+)\/ui\/?$/
+
+/** `GET /store`'s redirect target: `/apps/@agentproto/store/ui` (the @ kept
+ *  literal, the `/`s kept — the standalone route's `(.+)` appId group accepts
+ *  either the literal-slash or the %2F-encoded spelling, and the literal one
+ *  is what a browser's location bar shows for appStandaloneUrl links),
+ *  preserving this request's query string verbatim. */
+export function normalizeStoreRedirectUrl(rawUrl: string): string {
+  const queryIndex = rawUrl.indexOf("?")
+  const query = queryIndex >= 0 ? rawUrl.slice(queryIndex) : ""
+  return `/apps/${STORE_PANEL_APP_ID.split("/")[0]}/${STORE_PANEL_APP_ID.split("/")[1]}/ui${query}`
+}
 /** `GET /apps/:appId/ui/assets/:file` — `:file` is captured raw and
  *  validated by `isValidAppUiAssetName` (a bad name is a 404, never a path). */
 const APP_UI_ASSET_RE = /^\/apps\/(.+?)\/ui\/assets\/([^/]*)$/
