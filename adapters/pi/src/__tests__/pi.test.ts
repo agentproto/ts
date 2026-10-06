@@ -5,6 +5,7 @@ import {
   createPiMapperState,
   mapPiEvent,
   mapStopReason,
+  resetPiMapperState,
   type PiSessionEvent,
 } from "../pi-events.js"
 
@@ -307,6 +308,91 @@ describe("mapPiEvent", () => {
     ])
   })
 
+  it("surfaces turn_end.message.errorMessage as an error event before turn-end when no message_update error fired (OpenRouter 402)", () => {
+    const state = createPiMapperState()
+    const msg = '402: {"message":"This request requires more credits"}'
+    expect(
+      mapPiEvent(
+        { type: "turn_end", message: { role: "assistant", stopReason: "error", errorMessage: msg } },
+        SID,
+        state,
+        undefined,
+      ),
+    ).toEqual([])
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
+      { kind: "error", sessionId: SID, error: { message: msg } },
+      { kind: "turn-end", sessionId: SID, reason: "error" },
+    ])
+  })
+
+  it("falls back to agent_end.messages for the error text", () => {
+    const state = createPiMapperState()
+    mapPiEvent({ type: "turn_end", message: { role: "assistant", stopReason: "error" } }, SID, state, undefined)
+    expect(
+      mapPiEvent(
+        {
+          type: "agent_end",
+          willRetry: false,
+          messages: [
+            { role: "user" },
+            { role: "assistant", stopReason: "error", errorMessage: "402: out of credits" },
+          ],
+        },
+        SID,
+        state,
+        undefined,
+      ),
+    ).toEqual([
+      { kind: "error", sessionId: SID, error: { message: "402: out of credits" } },
+      { kind: "turn-end", sessionId: SID, reason: "error" },
+    ])
+  })
+
+  it("never repeats the error already emitted from message_update", () => {
+    const state = createPiMapperState()
+    mapPiEvent(
+      { type: "message_update", assistantMessageEvent: { type: "error", reason: "error", errorMessage: "boom" } },
+      SID,
+      state,
+      undefined,
+    )
+    mapPiEvent(
+      { type: "turn_end", message: { role: "assistant", stopReason: "error", errorMessage: "boom" } },
+      SID,
+      state,
+      undefined,
+    )
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
+      { kind: "turn-end", sessionId: SID, reason: "error" },
+    ])
+  })
+
+  it("gives a silent stopReason=error a diagnostic message instead of an empty turn error", () => {
+    const state = createPiMapperState()
+    mapPiEvent({ type: "turn_end", message: { role: "assistant", stopReason: "error" } }, SID, state, undefined)
+    const out = mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)
+    expect(out).toHaveLength(2)
+    expect(out[0]).toMatchObject({ kind: "error", error: { message: expect.stringContaining("stopReason=error") } })
+    expect(out[1]).toEqual({ kind: "turn-end", sessionId: SID, reason: "error" })
+  })
+
+  it("does not emit the error on a willRetry agent_end, and a fresh turn starts clean", () => {
+    const state = createPiMapperState()
+    mapPiEvent(
+      { type: "turn_end", message: { role: "assistant", stopReason: "error", errorMessage: "transient 429" } },
+      SID,
+      state,
+      undefined,
+    )
+    expect(mapPiEvent({ type: "agent_end", willRetry: true }, SID, state, undefined)).toEqual([])
+    mapPiEvent({ type: "turn_end", message: { role: "assistant", stopReason: "stop" } }, SID, state, undefined)
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
+      { kind: "turn-end", sessionId: SID, reason: "completed" },
+    ])
+    resetPiMapperState(state)
+    expect(state).toEqual({ lastStopReason: undefined, lastErrorMessage: undefined, errorEmitted: false })
+  })
+
   it("defaults an unknown/absent stop reason to completed", () => {
     expect(mapStopReason(undefined)).toBe("completed")
     expect(mapStopReason("toolUse")).toBe("completed")
@@ -353,6 +439,14 @@ describe("classifyPiLine", () => {
     if (out.kind === "event") {
       expect(out.event.type).toBe("message_update")
     }
+  })
+
+  it("keeps the errored assistant message (stopReason + errorMessage) off turn_end and agent_end.messages", () => {
+    const err = { role: "assistant", stopReason: "error", errorMessage: "402: out of credits" }
+    const turnEnd = classifyPiLine(JSON.stringify({ type: "turn_end", message: err }))
+    expect(turnEnd.kind === "event" && turnEnd.event.type === "turn_end" && turnEnd.event.message).toMatchObject(err)
+    const agentEnd = classifyPiLine(JSON.stringify({ type: "agent_end", willRetry: false, messages: [{ role: "user" }, err] }))
+    expect(agentEnd.kind === "event" && agentEnd.event.type === "agent_end" && agentEnd.event.messages?.[1]).toMatchObject(err)
   })
 
   it("treats malformed JSON, unknown types and extension-UI lines as other", () => {
