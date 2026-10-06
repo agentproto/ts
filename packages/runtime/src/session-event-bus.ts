@@ -57,6 +57,7 @@ export type SessionEventType =
   | "workflow:suspended"
   | "workflow:suspend-resumed"
   | "session:harness-warning"
+  | "mcp:degraded"
   | "session:handoff-suggested"
   | "approval:requested"
   | "approval:decided"
@@ -951,6 +952,24 @@ export interface SessionHarnessWarningEvent {
   ts: string
 }
 
+/**
+ * Emitted when a session finished a turn while the harness never loaded the
+ * daemon's own `/mcp` tools: `never-listed` (no `tools/list` ever reached the
+ * mount), `zero-tools` (it listed an empty set), or `error` (the handshake or
+ * `tools/list` failed; `detail` carries the JSON-RPC/HTTP error). `server` is
+ * the mount's name in the descriptor's `mcpServers`. Re-emitted only when the
+ * (reason, detail) pair changes. Same bus distribution as every other event.
+ */
+export interface McpDegradedEvent {
+  type: "mcp:degraded"
+  sessionId: string
+  server: string
+  reason: "never-listed" | "zero-tools" | "error"
+  detail?: string
+  label?: string
+  ts: string
+}
+
 /** Why a handoff is being suggested. */
 export type HandoffSuggestionReason = "provider-limit" | "quota-threshold"
 
@@ -1072,6 +1091,7 @@ export type SessionEvent =
   | WorkflowSuspendedEvent
   | WorkflowSuspendResumedEvent
   | SessionHarnessWarningEvent
+  | McpDegradedEvent
   | ApprovalRequestedEvent
   | ApprovalDecidedEvent
   | ApprovalConsumedEvent

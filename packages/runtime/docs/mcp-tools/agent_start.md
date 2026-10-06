@@ -270,8 +270,11 @@ A `mcpServers` entry in the descriptor (or the daemon self-mount) only
 means the mount was *requested*: it does not guarantee the child actually
 loaded any tools. A client can connect yet end up with 0 tools if the
 server's MCP handshake is not one it can use (e.g. a protocol-era mismatch
-on `server/discover` / `tools/list`). Verify from inside the session (list
-its tools) before relying on a mount.
+on `server/discover` / `tools/list`). The daemon watches its own `/mcp` mount
+per session: read `session_capabilities` (`mcpServers[].status`, `toolCount`,
+`tools`) to see what the harness actually listed, and watch `session_events_poll`
+for `mcp:degraded` (a turn ended with the mount never listed, listing zero
+tools, or failing).
 
 Each entry's `headers` are static HTTP headers sent with every request to
 an `http`/`sse` server (ignored for `stdio`). `credentialRef` resolves a

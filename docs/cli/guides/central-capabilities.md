@@ -158,6 +158,24 @@ curl -s $DAEMON/sessions/<session-id>/capabilities
 MCP tool is `session_capabilities`. It never returns headers, env or
 credentials, only name, transport and URL.
 
+`mcpServers[]` reports what the harness actually did with the mount, not only
+what was declared. Every entry has an optional `status`: `declared` (requested,
+nothing to observe yet), `connected` (the harness handshook), `listed` (it ran
+`tools/list`), `error` (the handshake or `tools/list` failed) or
+`never-contacted` (a turn already ran and the harness never reached the
+server). For the daemon's own `/mcp` mount, the daemon also fills `toolCount`,
+`tools` (name and a short description, as the harness saw them, so a deferred
+mount shows its small always-on set plus `tool_search`), `deferred`,
+`protocolVersion`, `lastSeenAt` and `error`. Other servers (imported, user)
+stay `declared`: the daemon cannot see their handshake. The observation is in
+memory and resets on a daemon restart.
+
+When a session finishes a turn with its daemon mount never listed, listed with
+zero tools, or failing, the daemon emits one `mcp:degraded` event
+(`sessionId`, `server`, `reason` = `never-listed` | `zero-tools` | `error`,
+optional `detail`) on the session event stream (`session_events_poll`,
+`types: ["mcp:degraded"]`). It repeats only when the reason changes.
+
 Read `skillsApplied` carefully. `skills` records what was requested.
 `skillsApplied` is `true` only when the harness takes a skills list at spawn,
 which today is `hermes` alone. For the others the list is informational, and

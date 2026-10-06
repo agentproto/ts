@@ -278,7 +278,10 @@ wins):
    `defaults.mcp.deferredTools` (`false` | `true` | `{ "alwaysOn": [...] }`).
    Read once at boot; **off by default**.
 
-Only the loading strategy changes — no tool is removed. Imported MCP servers
+Only the loading strategy changes — no tool is removed. To check what a
+session actually received, read `session_capabilities` (`mcpServers[].status`,
+`toolCount`, `tools`); an `mcp:degraded` event on `session_events_poll` flags a
+session whose mount was never listed or listed nothing. Imported MCP servers
 stay reachable exactly as before (mounted natively via `bundles`, or through
 `mcp_imported_*` on the daemon's `/mcp`).
 

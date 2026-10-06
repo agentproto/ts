@@ -205,7 +205,7 @@ describe("session_capabilities", () => {
       expect(text).not.toContain(CANARY)
       const body = JSON.parse(text)
       expect(body.mcpServers).toEqual([
-        { name: "gh", transport: "http", ref: "https://example.invalid/mcp" },
+        { name: "gh", transport: "http", ref: "https://example.invalid/mcp", status: "declared" },
       ])
     } finally {
       await close()

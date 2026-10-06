@@ -16,6 +16,13 @@ import type { SessionDescriptor } from "./sessions.js"
 import { CANONICAL_POSTURES } from "./canonical-posture.js"
 import type { CanonicalPosture } from "./session-config.js"
 import { conversationTerminalSlugFor } from "./conversation-store.js"
+import {
+  daemonMountStatus,
+  isDaemonMountFor,
+  type McpMountStatus,
+  type McpObservedTool,
+  type McpSessionObservation,
+} from "./mcp-session-observer.js"
 
 export type SessionArm = "acp" | "print" | "pty" | "other"
 
@@ -35,6 +42,27 @@ export interface SessionCapabilityMcpServer {
   name: string
   transport: string
   ref?: string
+  /**
+   * What the daemon knows about the server actually being loaded. Only the
+   * daemon's own `/mcp` mount is observable (its handshake passes through the
+   * daemon); every other server (imported natives, user-configured) is
+   * `"declared"` until a harness reports better. Optional for older readers.
+   */
+  status?: McpMountStatus
+  /** Daemon mount only: tools in the latest `tools/list` the harness made. */
+  toolCount?: number
+  /** Daemon mount only: that `tools/list` projection (deferred or not). */
+  tools?: McpObservedTool[]
+  /** Daemon mount only: `true` when the list was the lazy projection
+   *  (only always-on tools + `tool_search`). */
+  deferred?: boolean
+  /** Daemon mount only: era the harness negotiated (`initialize` answer, else
+   *  the `mcp-protocol-version` header it sent). */
+  protocolVersion?: string
+  /** Daemon mount only: last time the harness hit the mount (ISO). */
+  lastSeenAt?: string
+  /** Daemon mount only: JSON-RPC/HTTP error of the failing call. */
+  error?: string
 }
 
 export interface SessionCapabilities {
@@ -95,6 +123,7 @@ export function sessionArm(desc: Pick<SessionDescriptor, "kind" | "capabilities"
 export function buildSessionCapabilities(
   desc: SessionDescriptor,
   pendingPermissions: number,
+  mcpObservation?: McpSessionObservation,
 ): SessionCapabilities {
   return {
     sessionId: desc.id,
@@ -119,10 +148,31 @@ export function buildSessionCapabilities(
       name: s.name,
       transport: s.transport,
       ...(s.ref ? { ref: s.ref } : {}),
+      ...(isDaemonMountFor(desc.id, s)
+        ? daemonMountFields(mcpObservation, desc.turnsCompleted)
+        : { status: "declared" as const }),
     })),
     skills: desc.skills ?? [],
     skillsApplied: desc.adapterSlug !== undefined && SKILLS_APPLYING_ADAPTERS.has(desc.adapterSlug),
     permissionHold: desc.permissionHold === true,
     pendingPermissions,
+  }
+}
+
+function daemonMountFields(
+  obs: McpSessionObservation | undefined,
+  turnsCompleted: number | undefined,
+): Partial<SessionCapabilityMcpServer> {
+  const status = daemonMountStatus(obs, turnsCompleted)
+  const tl = obs?.toolsList
+  const failing = tl && !tl.ok ? tl : [obs?.initialize, obs?.discover].find(c => c && !c.ok)
+  const error = failing?.error ?? (obs?.httpError ? `HTTP ${obs.httpError.status}` : undefined)
+  const protocolVersion = tl?.protocolVersion ?? obs?.initialize?.protocolVersion ?? obs?.discover?.protocolVersion
+  return {
+    status,
+    ...(tl?.ok ? { toolCount: tl.toolCount, tools: tl.tools, deferred: tl.deferred } : {}),
+    ...(protocolVersion ? { protocolVersion } : {}),
+    ...(obs ? { lastSeenAt: obs.lastSeenAt } : {}),
+    ...(error ? { error } : {}),
   }
 }
