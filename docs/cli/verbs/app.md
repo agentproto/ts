@@ -262,10 +262,19 @@ directories, `*` stays inside one segment (no braces, no negation).
 
 1. Runs `ui.build` first when the UI bundle is missing or stale (same check
    as `app build` / the daemon).
-2. Adds the default excludes `ui/**`, `docs/**`, `data/**`, `scripts/**`,
-   `dev/**`, `**/*.log`, `**/*.map`, `**/.DS_Store`, `**/.env`, `**/.env.*`
-   to `package.exclude` (a declared `exclude` adds to these, it never removes
-   them).
+2. Adds the default excludes to `package.exclude` (a declared `exclude`
+   adds to these, it never removes them):
+   - dev trees: `ui/**`, `docs/**`, `data/**`, `scripts/**`, and at the app
+     root only `dev/**`, `test/**`, `tests/**` (so an agent named `dev` or
+     `test` under `.agentproto/agents/` still ships);
+   - tests anywhere: `**/__tests__/**`, `**/*.test.*`, `**/*.spec.*`;
+   - repo docs at the root: `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`
+     (`LICENSE` and `NOTICE` ship);
+   - tooling: `.github/**`, `.vscode/**`, `.idea/**`, `.gitignore`,
+     `.editorconfig`, `tsconfig*.json`, `vitest.config.*`, `jest.config.*`,
+     `eslint.config.*`, `.eslintrc*`, `.prettierrc*`;
+   - artifacts: `**/*.log`, `**/*.map`, `**/.DS_Store`, `**/.env`,
+     `**/.env.*`.
 3. Fails (`missing-ui`, exit `1`) if the declared `ui.path` is not in the
    bundle after the build.
 4. Removes `ui.build` from the packed APP.md (unless `package.stripBuild:

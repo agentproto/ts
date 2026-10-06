@@ -234,8 +234,11 @@ function extractMeta(front: Record<string, unknown>): AppMeta {
 /**
  * Release-mode default excludes: dev-only trees and artifacts that must never
  * ship in a published `.agentapp` (UI sources, docs, runtime data, scripts,
- * dev harnesses, logs, source maps, env files). APP.md `package.exclude`
- * ADDS to this list in release mode; it never removes from it.
+ * dev harnesses, tests, repo docs and tooling config, logs, source maps, env
+ * files). Nothing the runtime reads: an installed app is its
+ * `.agentproto/` tree plus the files its workflows import. APP.md
+ * `package.exclude` ADDS to this list in release mode; it never removes
+ * from it. `LICENSE` / `NOTICE` are deliberately NOT excluded.
  */
 export const RELEASE_DEFAULT_EXCLUDE: readonly string[] = [
   "ui/**",
@@ -244,7 +247,31 @@ export const RELEASE_DEFAULT_EXCLUDE: readonly string[] = [
   "scripts/**",
   // Root-level only: `**/dev/**` would also drop a shipped agent named
   // `dev` (`.agentproto/agents/dev/`); `ui/dev/` is covered by `ui/**`.
+  // Same for `test/` and `tests/`.
   "dev/**",
+  "test/**",
+  "tests/**",
+  // Test files and folders anywhere (a workflow's `foo.test.mjs` next to
+  // its `entry.mjs`); these names are never a runtime import.
+  "**/__tests__/**",
+  "**/*.test.*",
+  "**/*.spec.*",
+  // Repo docs at the app root (the catalog entry carries the description).
+  "README.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  // Repo and editor tooling.
+  ".github/**",
+  ".vscode/**",
+  ".idea/**",
+  ".gitignore",
+  ".editorconfig",
+  "tsconfig*.json",
+  "vitest.config.*",
+  "jest.config.*",
+  "eslint.config.*",
+  ".eslintrc*",
+  ".prettierrc*",
   "**/*.log",
   "**/*.map",
   "**/.DS_Store",
