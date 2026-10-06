@@ -78,6 +78,11 @@ function parseIdentity(state: Record<string, unknown> | undefined): LocalGhIdent
 interface LocalGhCursorState {
   snapshot?: PrStatusSnapshot
   consecutiveFailures: number
+  /** A terminal `pull_request.closed` event has been emitted for the current
+   *  closed episode. Reset when the PR is seen open again. Absent on cursors
+   *  written before this field existed, which is what lets the poll heal a
+   *  sentinel that baselined an already-closed PR and so never fired. */
+  closedEmitted?: boolean
   lastError?: string
   /** ms epoch; `poll()` skips calling `gh` at all until this passes
    *  (design §5: "Backoff on gh errors/rate limit, surfaced via status()"). */
@@ -91,6 +96,7 @@ function parseCursorState(cursor: string | undefined): LocalGhCursorState {
     return {
       consecutiveFailures: typeof parsed.consecutiveFailures === "number" ? parsed.consecutiveFailures : 0,
       ...(parsed.snapshot ? { snapshot: parsed.snapshot } : {}),
+      ...(parsed.closedEmitted !== undefined ? { closedEmitted: parsed.closedEmitted } : {}),
       ...(parsed.lastError ? { lastError: parsed.lastError } : {}),
       ...(parsed.nextRetryAtMs !== undefined ? { nextRetryAtMs: parsed.nextRetryAtMs } : {}),
     }
@@ -150,6 +156,27 @@ function makeEvent(input: {
   }
 }
 
+function closedEvent(
+  current: PrStatusSnapshot,
+  ctx: { repo: string; number: number; subject: string },
+  late: boolean,
+): SentinelEvent {
+  const prTag = `${ctx.repo}#${ctx.number}`
+  const merged = current.state === "merged"
+  return makeEvent({
+    // `fetchedAt` (not just prTag+state) so a reopen-then-close within
+    // one watch produces two distinct ids instead of deduping the second.
+    idParts: [prTag, "closed", current.state, current.fetchedAt],
+    type: "github.pull_request.closed",
+    subject: ctx.subject,
+    subjects: subjectsForPr(ctx.repo, ctx.number),
+    terminal: true,
+    time: current.fetchedAt,
+    data: { action: "closed", merged, repo: ctx.repo, number: ctx.number, ...(late ? { late: true } : {}) },
+    summary: merged ? `PR ${prTag} merged` : `PR ${prTag} closed`,
+  })
+}
+
 /** `undefined` previous ⇒ this IS the baseline poll — no historical events. */
 function diffSnapshots(
   previous: PrStatusSnapshot | undefined,
@@ -162,21 +189,7 @@ function diffSnapshots(
   const prTag = `${ctx.repo}#${ctx.number}`
 
   if (previous.state !== current.state && current.state !== "open") {
-    const merged = current.state === "merged"
-    events.push(
-      makeEvent({
-        // `fetchedAt` (not just prTag+state) so a reopen-then-close within
-        // one watch produces two distinct ids instead of deduping the second.
-        idParts: [prTag, "closed", current.state, current.fetchedAt],
-        type: "github.pull_request.closed",
-        subject: ctx.subject,
-        subjects,
-        terminal: true,
-        time: current.fetchedAt,
-        data: { action: "closed", merged, repo: ctx.repo, number: ctx.number },
-        summary: merged ? `PR ${prTag} merged` : `PR ${prTag} closed`,
-      }),
-    )
+    events.push(closedEvent(current, ctx, false))
   }
 
   // GitHub's reviews endpoint returns the full, append-only history — a
@@ -361,15 +374,24 @@ export function localGhSentinelProvider(opts?: LocalGhProviderOptions): Sentinel
         }
       }
 
-      const events = diffSnapshots(cursorState.snapshot, snapshot, {
-        repo: identity.repo,
-        number: identity.number,
-        subject,
-      })
+      const ctx = { repo: identity.repo, number: identity.number, subject }
+      const events = diffSnapshots(cursorState.snapshot, snapshot, ctx)
+
+      // A PR already merged/closed on the baseline poll (the sentinel was
+      // created after it closed, or the PR closed before the first tick) has
+      // no open->closed transition to diff, so the terminal event would never
+      // fire and `until: subject_terminal` would never expire. Emit it once.
+      let closedEmitted = cursorState.closedEmitted ?? false
+      if (snapshot.state === "open") closedEmitted = false
+      else if (events.some(e => e.terminal)) closedEmitted = true
+      else if (!closedEmitted) {
+        events.push(closedEvent(snapshot, ctx, true))
+        closedEmitted = true
+      }
 
       return {
         events,
-        cursor: serializeCursorState({ snapshot, consecutiveFailures: 0 }),
+        cursor: serializeCursorState({ snapshot, consecutiveFailures: 0, closedEmitted }),
       }
     },
 
