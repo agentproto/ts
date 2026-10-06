@@ -21,12 +21,12 @@ import { cliInstallSource, resolveCliEntry } from "../registry/install-source.js
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
 import { resolveSkillFanOutTargets } from "../commands/install-skill.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
-import { findInstalledAppDir } from "../app-serve.js"
+import { findInstalledAppDir, resolveDaemonMcpUrl, createDaemonMcpClientGetter } from "../app-serve.js"
 import { resolveAdapter } from "../registry/resolve.js"
 import { npmLatestVersion } from "../registry/freshness.js"
 import { resolveProxyDialOptions } from "../util/proxy-dial.js"
 import { pathExists } from "../commands/skill-install/shared.js"
-import type { ExecFn, StepContext, StepFs, WebSocketProbeResult } from "./types.js"
+import type { ExecFn, StepCatalogEntry, StepContext, StepFs, WebSocketProbeResult } from "./types.js"
 
 async function collectNodeModulesRoots(start: string): Promise<string[]> {
   const seen = new Set<string>()
@@ -198,6 +198,32 @@ export function createStepContext(cliVersion: string): StepContext {
         return null
       },
       appInstalled: (appId: string) => findInstalledAppDir(appId) !== undefined,
+      // The daemon's `app_catalog`, short-circuited: onboarding must never
+      // hang on a slow/unreachable daemon, so anything but a prompt reply
+      // (timeout, connect failure, odd shape) degrades to `null`.
+      appCatalog: async () => {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let client: Awaited<ReturnType<ReturnType<typeof createDaemonMcpClientGetter>>> | undefined
+        try {
+          const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("app_catalog timed out")), NETWORK_TIMEOUT_MS)
+          })
+          const getClient = createDaemonMcpClientGetter(await resolveDaemonMcpUrl(), "agentproto-onboarding")
+          client = await Promise.race([getClient(), timeout])
+          const res = (await Promise.race([
+            client.callTool({ name: "app_catalog", arguments: {} }),
+            timeout,
+          ])) as { content?: { type: string; text?: string }[] }
+          const text = res.content?.find((c) => c.type === "text")?.text ?? "[]"
+          const parsed: unknown = JSON.parse(text)
+          return Array.isArray(parsed) ? (parsed as StepCatalogEntry[]) : null
+        } catch {
+          return null
+        } finally {
+          if (timer !== undefined) clearTimeout(timer)
+          await client?.close().catch(() => {})
+        }
+      },
     },
   }
 }

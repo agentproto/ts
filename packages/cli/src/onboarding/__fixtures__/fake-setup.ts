@@ -57,6 +57,7 @@ export function createFakeSetup(ctx: StepContext, opts: FakeSetupOptions = {}): 
     },
     appInstalled: () => false,
     appInstall: async (dir) => code(`appInstall ${dir}`),
+    appInstallFromCatalog: async (appId) => code(`appInstallFromCatalog ${appId}`),
   }
   type Answer = string[] | boolean | string | null
   /** Next scripted answer if it has the right shape, else the default. */

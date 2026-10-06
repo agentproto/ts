@@ -71,6 +71,10 @@ function escapeAttr(text: string): string {
 export function sessionChatEmbedHtml(initData: Partial<SessionChatOutput>): string {
   const url = typeof initData.url === "string" && initData.url ? initData.url : null
   const notInstalled = initData.installed === false
+  const storeUrl =
+    typeof initData.storeUrl === "string" && initData.storeUrl
+      ? initData.storeUrl
+      : "/store?install=%40agentik%2Fsession-chat"
   const link =
     url != null
       ? `<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer">open in a tab</a>`
@@ -125,6 +129,8 @@ html,body{height:100%;font-family:system-ui,-apple-system,sans-serif;background:
   it does not bundle the chat UI itself.</p>
   <p>To use it, install the app into this daemon:</p>
   <p><code>agentproto app install @agentik/session-chat</code></p>
+  <p>or open <a href="${escapeAttr(storeUrl)}" target="_blank" rel="noreferrer">the App Store</a>
+  (the daemon's <code>/store</code> panel, with the entry pre-selected).</p>
 </div></div>
 <script>
 window.__APP_INIT__ = ${JSON.stringify(initData)};
@@ -470,6 +476,8 @@ p{margin:8px 0;color:#8b949e;font-size:13px}
   it does not bundle the chat UI itself.</p>
   <p>To use it, install the app into this daemon:</p>
   <p><code>agentproto app install @agentik/session-chat</code></p>
+  <p>or open <a href="/store?install=%40agentik%2Fsession-chat">the App Store</a>
+  (the daemon's <code>/store</code> panel, with the entry pre-selected).</p>
   <p>Once installed, call <code>agentproto_session_chat</code> again (optionally with a
   <code>sessionId</code>) and the panel will embed the app's chat UI deep-linked to that
   session.</p>

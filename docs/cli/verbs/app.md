@@ -1,9 +1,13 @@
 # `agentproto app`
 
 ```text
-agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--data-dir <path>]
+agentproto app install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--data-dir <path>]
 agentproto app resync <appId>
 agentproto app list
+agentproto app catalog [--refresh] [--json]
+agentproto app uninstall <appId> [--json]
+agentproto app update [<appId>|--all] [--dry-run] [--json]
+agentproto app store [--print]
 agentproto app pack   <appDir> [--out <path.agentapp>] [--release] [--json]
 agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
 agentproto app serve  [appDir] [--port <n>] [--app <appId>] [--json]
@@ -44,7 +48,7 @@ survive the round-trip. The APP.md `package` block narrows what ships, and
 
 ## Subverbs
 
-### `install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--data-dir <path>]`
+### `install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--data-dir <path>]`
 
 Register the app (its `id` from `.agentproto/APP.md`) → `<appDir>` mapping in
 `~/.agentproto/apps.json`, the same file the daemon's `app_install` writes, so
@@ -100,6 +104,20 @@ A git URL (`https://…`, `git@…`, `file://…`) or a `.agentapp` (an `https:/
 Re-installing replaces the app dir atomically and keeps the app's data dir.
 `app_list` / `app_status` show `source`.
 
+#### Installing by app id from the catalog
+
+An `@scope/name` argument that is **not** an existing path is looked up in
+the daemon's `app_catalog` (the default catalog is
+https://agentproto.sh/catalog/v1/apps.json). The entry's pinned source is
+installed: `{url, sha256}` for a bundle, `{url, ref, subdir, sha}` for git,
+plus the catalog URL so `update` follows that catalog. A git entry still
+never runs `ui.build` without `--allow-build`. An existing path always wins;
+an unknown id fails and points at `agentproto app catalog`.
+
+```bash
+agentproto app install @agentik/session-chat
+```
+
 ### `resync <appId>`
 
 Ask the daemon to re-check a git / `.agentapp` install against its source
@@ -111,7 +129,33 @@ directory have no source and error.
 ### `list`
 
 Print every registered app as `id -> dir`, each followed by its data dir
-(entries written before the field existed show `<dir>/data`).
+(entries written before the field existed show `<dir>/data`). With nothing
+installed it prints `No apps installed. Browse: agentproto app store  (or:
+agentproto app catalog)`.
+
+### `catalog [--refresh] [--json]`
+
+List the daemon's `app_catalog`: app id, version, tier, installed or not,
+update available, and which catalog source it came from, followed by any
+source warnings (unreachable source, stale cache). `--refresh` bypasses the
+daemon's 5-minute cache of remote sources. Needs the daemon.
+
+### `uninstall <appId> [--json]`
+
+Remove an installed app's record from the daemon (`app_uninstall`). Its data
+dir is kept.
+
+### `update [<appId>|--all] [--dry-run] [--json]`
+
+Without an app id, list the available updates (`app_updates`). With an app id
+(or `--all`), apply them (`app_resync`, which installs the current catalog
+entry with its digest verified). `--dry-run` only lists.
+
+### `store [--print]`
+
+Open the daemon's App Store panel (`<daemon url>/store`) in the default
+browser; `--print` only prints the URL. See the
+[App Store guide](../guides/app-store.md).
 
 ### `serve [appDir] [--port <n>] [--app <appId>] [--json]`
 

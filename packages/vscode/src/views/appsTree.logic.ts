@@ -207,4 +207,11 @@ export function manifestDocumentName(node: AppsTreeNode): string {
   }
 }
 
-export const EMPTY_APPS_LABEL = "No apps installed"
+export const EMPTY_APPS_LABEL = "Browse the App Store"
+
+/** Command the empty row (and the viewsWelcome link) runs: the App Store
+ *  panel's launcher. */
+export const EMPTY_APPS_COMMAND_ID = "agentproto.openStore"
+
+/** Codicon of the empty row, coherent with the tree's other rows. */
+export const EMPTY_APPS_ICON = "store"

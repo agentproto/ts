@@ -14,6 +14,9 @@ import {
   categoryDescription,
   categoryLabel,
   DEFAULT_APP_CATEGORY,
+  EMPTY_APPS_COMMAND_ID,
+  EMPTY_APPS_ICON,
+  EMPTY_APPS_LABEL,
   groupAppsByCategory,
   manifestDocumentName,
   nodeManifestPath,
@@ -227,5 +230,13 @@ describe("manifest paths", () => {
     expect(manifestDocumentName({ kind: "workflow", app: a, ref: { id: "wf", path: "/p" } })).toBe(
       "@a/x/workflows/wf/WORKFLOW.md",
     )
+  })
+})
+
+describe("empty apps row", () => {
+  it("is a Browse the App Store item wired to the store command", () => {
+    expect(EMPTY_APPS_LABEL).toBe("Browse the App Store")
+    expect(EMPTY_APPS_COMMAND_ID).toBe("agentproto.openStore")
+    expect(EMPTY_APPS_ICON).toBe("store")
   })
 })

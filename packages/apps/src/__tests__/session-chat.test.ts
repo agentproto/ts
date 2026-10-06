@@ -69,12 +69,12 @@ describe("makeSessionChatApp", () => {
       isSessionChatInstalled: () => false,
     })
     const out = await app.execute!({})
-    expect(out).toEqual({ installed: false, url: null })
+    expect(out).toEqual({ installed: false, url: null, storeUrl: expect.stringContaining("/store?install=%40agentik%2Fsession-chat") })
   })
 
   it("treats a missing installed-check as not installed", async () => {
     const app = makeSessionChatApp({ httpBaseUrl: "http://127.0.0.1:18790" })
-    expect(await app.execute!({})).toEqual({ installed: false, url: null })
+    expect(await app.execute!({})).toEqual({ installed: false, url: null, storeUrl: expect.stringContaining("/store?install=%40agentik%2Fsession-chat") })
   })
 
   // A host-cached widget (Claude Desktop keeps a conversation's srcdoc)
@@ -100,7 +100,7 @@ describe("makeSessionChatApp", () => {
       isSessionChatInstalled: () => false,
       mintEmbedToken,
     })
-    expect(await app.execute!({})).toEqual({ installed: false, url: null })
+    expect(await app.execute!({})).toEqual({ installed: false, url: null, storeUrl: expect.stringContaining("/store?install=%40agentik%2Fsession-chat") })
     expect(mintEmbedToken).not.toHaveBeenCalled()
   })
 
@@ -131,6 +131,17 @@ describe("makeSessionChatApp", () => {
     expect(html).not.toContain("conversation_read")
   })
 
+  it("not installed: execute returns an absolute App Store deep link the notice uses", async () => {
+    const app = makeSessionChatApp({
+      httpBaseUrl: "http://127.0.0.1:18790/",
+      isSessionChatInstalled: () => false,
+    })
+    const out = (await app.execute!({})) as { storeUrl?: string }
+    expect(out.storeUrl).toBe("http://127.0.0.1:18790/store?install=%40agentik%2Fsession-chat")
+    const html = sessionChatEmbedHtml({ installed: false, url: null, storeUrl: out.storeUrl })
+    expect(html).toContain('href="http://127.0.0.1:18790/store?install=%40agentik%2Fsession-chat" target="_blank"')
+  })
+
   it("renders no iframe when not installed", () => {
     const app = makeSessionChatApp({
       httpBaseUrl: "http://127.0.0.1:18790",
@@ -144,8 +155,10 @@ describe("makeSessionChatApp", () => {
     expect(html).toContain("app not installed")
   })
 
-  it("the fallback notice points at the install command, not a reimplemented UI", () => {
+  it("the fallback notice points at the install command (valid since catalog-resolved install) and the store deep link, not a reimplemented UI", () => {
     expect(SESSION_CHAT_FALLBACK_HTML).toContain("agentproto app install @agentik/session-chat")
+    // Same deep-link spelling the store panel itself consumes (?install=<appId>).
+    expect(SESSION_CHAT_FALLBACK_HTML).toContain('href="/store?install=%40agentik%2Fsession-chat"')
     expect(SESSION_CHAT_FALLBACK_HTML).not.toContain("<iframe")
   })
 
@@ -265,6 +278,7 @@ describe("makeSessionChatApp", () => {
     const html = sessionChatEmbedHtml({ installed: false, url: null })
     expect(html).toContain('id="notice" class="show"')
     expect(html).toContain("agentproto app install @agentik/session-chat")
+    expect(html).toContain('href="/store?install=%40agentik%2Fsession-chat"')
     expect(html).toContain("ui/notifications/tool-result")
   })
 })

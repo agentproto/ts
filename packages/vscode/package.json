@@ -586,6 +586,12 @@
         "icon": "$(link)"
       }
     ],
+    "viewsWelcome": [
+      {
+        "view": "agentproto.apps",
+        "contents": "No apps installed.\n[Browse the App Store](command:agentproto.openStore)"
+      }
+    ],
     "menus": {
       "view/title": [
         {
