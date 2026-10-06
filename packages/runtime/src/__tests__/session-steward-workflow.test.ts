@@ -65,6 +65,7 @@ interface PlanEntry {
   busy?: boolean
   tokensIn?: number
   tokensOut?: number
+  startedAt?: string
   worktree?: { pr?: { state: string; number?: number } }
   outcome?: { verdict?: string }
 }
@@ -150,6 +151,7 @@ function fakeTools(opts: {
         ...(e.tokensOut !== undefined ? { tokensOut: e.tokensOut } : {}),
         ...(e.worktree ? { worktree: e.worktree } : {}),
         ...(e.outcome ? { outcome: e.outcome } : {}),
+        ...(e.startedAt ? { startedAt: e.startedAt } : {}),
         lastActivityAt: new Date(Date.now() - e.idleMinutes * 60_000).toISOString(),
       }))
       return mcpResult({ [opts.listShape ?? "sessions"]: [...rows, ...(opts.liveExtra ?? [])] })
@@ -691,12 +693,75 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(apply?.inputs).toMatchObject({ verdict: "abandoned" })
   })
 
+  it("does not call a busy, just-started 0/0 session stuck (never ran)", async () => {
+    const justStarted = new Date(Date.now() - 20_000).toISOString()
+    const f = fakeTools({
+      entries: [entry("young", "judge", 100, { tokensIn: 0, tokensOut: 0, busy: true, idleMinutes: 0, startedAt: justStarted })],
+    })
+    const j = judgeHost({})
+    const out = await run(f.dispatchTool, j.host, { apply: true })
+    expect(out.scan.counts.neverRan).toBe(0)
+    expect(out.candidates.stuck.map(e => e.sessionId)).not.toContain("young")
+    expect(out.report).not.toContain("never ran")
+    expect(f.calls.some(c => c.name === "session_wrapup_apply" && (c.inputs.sessionIds as string[]).includes("young"))).toBe(false)
+  })
+
+  it("does not call a young idle 0/0 session stuck, but an old one is", async () => {
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+    const f = fakeTools({
+      entries: [
+        entry("young_idle", "judge", 100, { tokensIn: 0, tokensOut: 0, idleMinutes: 45, startedAt: minutesAgo(5) }),
+        entry("old_idle", "judge", 100, { tokensIn: 0, tokensOut: 0, idleMinutes: 45, startedAt: minutesAgo(60) }),
+      ],
+    })
+    const out = await run(f.dispatchTool, judgeHost({ young_idle: verdict("young_idle", "active", 0.2) }).host, {})
+    expect(out.candidates.stuck.map(e => e.sessionId)).toContain("old_idle")
+    expect(out.candidates.stuck.map(e => e.sessionId)).not.toContain("young_idle")
+  })
+
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
+  const terminalRow = (id: string, endedAt: string | undefined, over: Record<string, unknown> = {}) => ({
+    id,
+    status: "killed",
+    origin: "cron:job",
+    ...(endedAt ? { endedAt } : {}),
+    ...over,
+  })
+
   it("surfaces terminal sessions with no outcome as relabel candidates", async () => {
-    const term = { id: "sess_term", status: "killed", origin: "cron:job", worktree: { pr: { state: "merged" } } }
+    const term = terminalRow("sess_term", hoursAgo(1), { worktree: { pr: { state: "merged" } } })
     const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: [term] })
     const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
     expect(out.relabel).toEqual([expect.objectContaining({ sessionId: "sess_term", proposedVerdict: "done" })])
     expect(out.report).toContain("Terminal sessions missing an outcome")
+  })
+
+  it("lists only relabel candidates inside the window, capped at 20 newest first, with counts", async () => {
+    const recent = Array.from({ length: 30 }, (_, i) => terminalRow(`new_${i}`, hoursAgo(1 + i * 0.5)))
+    const old = Array.from({ length: 50 }, (_, i) => terminalRow(`old_${i}`, hoursAgo(48 + i)))
+    const noTime = terminalRow("no_time", undefined)
+    const merged = terminalRow("new_merged", hoursAgo(0.5), { worktree: { pr: { state: "merged" } } })
+    const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: [...old, ...recent, noTime, merged] })
+    const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
+    const ids = out.relabel.map(r => r.sessionId)
+    expect(ids).toHaveLength(31)
+    expect(ids.every(id => id.startsWith("new_"))).toBe(true)
+    expect(ids[0]).toBe("new_merged")
+    expect(ids[1]).toBe("new_0")
+    const lines = out.report.split("\n").filter(l => /^- sess|^- (new|old)_/.test(l) && l.includes("→"))
+    expect(lines).toHaveLength(20)
+    expect(lines[0]).toContain("new_merged → done")
+    expect(out.report).toContain("31 ended in the last 24h (82 without an outcome in all) — done: 1, abandoned: 30")
+    expect(out.report).toContain("… and 62 more (older/omitted)")
+    expect(out.report).not.toContain("old_0")
+  })
+
+  it("honours relabelWindowHours", async () => {
+    const rows = [terminalRow("t_1h", hoursAgo(1)), terminalRow("t_30h", hoursAgo(30))]
+    const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: rows })
+    const j = judgeHost({ idle_1: verdict("idle_1", "active", 0.2) })
+    expect((await run(f.dispatchTool, j.host, {})).relabel.map(r => r.sessionId)).toEqual(["t_1h"])
+    expect((await run(f.dispatchTool, j.host, { relabelWindowHours: 48 })).relabel.map(r => r.sessionId)).toEqual(["t_1h", "t_30h"])
   })
 
   it("puts a saturated-host header first, listing orphans and non-session processes", async () => {

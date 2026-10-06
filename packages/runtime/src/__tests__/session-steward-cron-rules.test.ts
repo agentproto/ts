@@ -201,6 +201,33 @@ describe("cron rules — isNeverRan", () => {
     expect(mod.isNeverRan({ tokensIn: 0, tokensOut: 12 })).toBe(false)
     expect(mod.isNeverRan({})).toBe(false)
   })
+
+  const NOW = Date.parse("2026-10-06T16:00:00.000Z")
+  const ago = (min: number) => new Date(NOW - min * 60_000).toISOString()
+  const zero = { tokensIn: 0, tokensOut: 0 }
+  const opts = { nowMs: NOW, idleMinutes: 30 }
+
+  it("is false for a busy just-started session", () => {
+    expect(mod.isNeverRan({ ...zero, busy: true, startedAt: ago(0.3), lastActivityAt: ago(0.3) }, opts)).toBe(false)
+  })
+
+  it("is false while starting, provisioning, or a first prompt is queued", () => {
+    const old = { ...zero, startedAt: ago(120), lastActivityAt: ago(120) }
+    expect(mod.isNeverRan({ ...old, status: "starting" }, opts)).toBe(false)
+    expect(mod.isNeverRan({ ...old, provisioning: { step: "x" } }, opts)).toBe(false)
+    expect(mod.isNeverRan({ ...old, pendingPrompts: [{ id: "p" }] }, opts)).toBe(false)
+  })
+
+  it("needs both age and idle to reach the threshold", () => {
+    expect(mod.isNeverRan({ ...zero, startedAt: ago(10), lastActivityAt: ago(10) }, opts)).toBe(false)
+    expect(mod.isNeverRan({ ...zero, startedAt: ago(120), lastActivityAt: ago(5) }, opts)).toBe(false)
+    expect(mod.isNeverRan({ ...zero, startedAt: ago(5), lastActivityAt: ago(120) }, opts)).toBe(false)
+  })
+
+  it("is true for an idle 0/0 session older than the threshold", () => {
+    expect(mod.isNeverRan({ ...zero, startedAt: ago(45), lastActivityAt: ago(45) }, opts)).toBe(true)
+    expect(mod.isNeverRan({ ...zero, startedAt: ago(45) }, opts)).toBe(true)
+  })
 })
 
 // ── fast-path done (mission item 4) ──────────────────────────────────────
