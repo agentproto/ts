@@ -11,6 +11,7 @@
  * the MCP registration.
  */
 
+import { createHash } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 import {
   appInstallConfirmationClass,
@@ -64,16 +65,60 @@ describe("appInstallConfirmationClass / buildAppInstallPreview", () => {
     expect(git.runsBuildCommand).toBe(true)
   })
 
-  it("the token binds the payload — echoing it proceeds, replaying it on a DIFFERENT payload re-previews", () => {
+  it("the confirm value is a server-issued nonce — a payload hash computed OFF the server is refused", () => {
+    const payload = { url: "https://x.test/repo.git", sha: "deadbeef" }
+    // What a blind CSRF caller could derive: the OLD deterministic token was
+    // exactly sha256(canonicalJson(payload)); forge it without any preview
+    // call and try to confirm with it.
+    const forged = createHash("sha256")
+      .update(JSON.stringify(["agentproto-app-install-confirm-v1", payload.url, "git", null, payload.sha, null, null, false]))
+      .digest("hex")
+      .slice(0, 32)
+    expect(appInstallConfirmationClass({ ...payload, confirm: forged })).toEqual({ confirmed: false })
+    // A preview's nonce is not derivable from the payload at all.
+    const preview = buildAppInstallPreview({ ...payload, confirm: undefined } as Record<string, unknown>)
+    expect(preview.confirm).not.toBe(forged)
+    expect(appInstallConfirmationClass({ ...payload, confirm: preview.confirm })).toEqual({ confirmed: true })
+  })
+
+  it("the nonce binds the payload — echoing it proceeds, replaying it on a DIFFERENT payload re-previews", () => {
     const payload = { url: "https://x.test/repo.git", sha: "deadbeef" }
     const preview = buildAppInstallPreview(payload)
     expect(appInstallConfirmationClass({ ...payload, confirm: preview.confirm })).toEqual({
       confirmed: true,
     })
-    // Same token, different sha — the fingerprint no longer matches.
+    // Same token re-presented (or against any other payload) — the nonce is
+    // single-use, it was consumed by the confirming call.
+    expect(appInstallConfirmationClass({ ...payload, confirm: preview.confirm })).toEqual({ confirmed: false })
     expect(appInstallConfirmationClass({ url: "https://x.test/other.git", sha: "fedcba", confirm: preview.confirm })).toEqual(
       { confirmed: false },
     )
+  })
+
+  it("a MODIFIED payload presenting a live nonce is refused (and the nonce burned)", () => {
+    const payload = { url: "https://x.test/repo.git", sha: "deadbeef" }
+    const preview = buildAppInstallPreview(payload)
+    expect(appInstallConfirmationClass({ ...payload, sha: "fedcba", confirm: preview.confirm })).toEqual({
+      confirmed: false,
+    })
+    // The mismatching attempt still consumed the nonce — the unmodified
+    // payload confirming right after shows a preview again, never installs.
+    expect(appInstallConfirmationClass({ ...payload, confirm: preview.confirm })).toEqual({ confirmed: false })
+  })
+
+  it("an expired nonce is refused (5-minute TTL, injectable clock via fake timers)", () => {
+    vi.useFakeTimers()
+    try {
+      const payload = { url: "https://x.test/repo.git", sha: "deadbeef" }
+      const preview = buildAppInstallPreview(payload)
+      expect(appInstallConfirmationClass({ ...payload, confirm: preview.confirm })).toEqual({ confirmed: true })
+      vi.advanceTimersByTime(5 * 60 * 1000 + 1)
+      const preview2 = buildAppInstallPreview(payload)
+      vi.advanceTimersByTime(5 * 60 * 1000 + 1)
+      expect(appInstallConfirmationClass({ ...payload, confirm: preview2.confirm })).toEqual({ confirmed: false })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -93,26 +138,43 @@ function storeRegistry(): AppRegistry {
 
 describe("panel-path install guard (dispatchAllowlistedAppTool)", () => {
   const payload = { url: "https://x.test/repo.git", sha: "deadbeef" }
-  const preview = buildAppInstallPreview(payload)
 
-  it("first call returns a needsConfirmation preview and dispatches NOTHING", async () => {
+  it("first call returns a needsConfirmation preview with a FRESH server nonce and dispatches NOTHING", async () => {
     const dispatchTool = vi.fn(async () => [])
-    const result = await performBuiltinPanelToolCall(
+    const first = await performBuiltinPanelToolCall(
       STORE_UI_TOOLS,
       { appId: "@agentproto/store", tool: "app_install", args: payload },
       { dispatchTool },
     )
-    const body = JSON.parse((result as { content: { text: string }[] }).content[0]!.text)
+    const body = JSON.parse((first as { content: { text: string }[] }).content[0]!.text)
     expect(body.needsConfirmation).toBe(true)
-    expect(body.confirm).toBe(preview.confirm)
+    expect(typeof body.confirm).toBe("string")
+    expect(body.confirm).toMatch(/^[a-f0-9]{32}$/)
     expect(body.url).toBe("https://x.test/repo.git")
     expect(body.sha).toBe("deadbeef")
     expect(body.runsBuildCommand).toBe(false)
     expect(dispatchTool).not.toHaveBeenCalled()
+
+    // A nonce issued for a DIFFERENT payload can't confirm THIS one (blind
+    // substitute) — fresh preview again, and this preview's nonce is burned.
+    const foreign = buildAppInstallPreview({ url: "https://x.test/other.git", sha: "fedcba" })
+    const rejected = await performBuiltinPanelToolCall(
+      STORE_UI_TOOLS,
+      { appId: "@agentproto/store", tool: "app_install", args: { ...payload, confirm: foreign.confirm } },
+      { dispatchTool },
+    )
+    expect(dispatchTool).not.toHaveBeenCalled()
+    expect(JSON.parse((rejected as { content: { text: string }[] }).content[0]!.text).needsConfirmation).toBe(true)
   })
 
   it("second call with the preview's confirm token dispatches app_install verbatim", async () => {
     const dispatchTool = vi.fn(async () => ({ installed: true }))
+    const first = await performBuiltinPanelToolCall(
+      STORE_UI_TOOLS,
+      { appId: "@agentproto/store", tool: "app_install", args: payload },
+      { dispatchTool },
+    )
+    const preview = JSON.parse((first as { content: { text: string }[] }).content[0]!.text)
     const result = await performBuiltinPanelToolCall(
       STORE_UI_TOOLS,
       { appId: "@agentproto/store", tool: "app_install", args: { ...payload, confirm: preview.confirm } },

@@ -69,7 +69,7 @@ import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
@@ -426,10 +426,20 @@ export interface AppToolCallDeps {
  * first-class reinstall stays free to pass, so the preview's
  * `runsBuildCommand = kind === "git" && allowBuild === true`.
  *
- * The token binds the caller to THE EXACT payload it previewed: it's the
- * sha256 of the canonical JSON of the previewed fields. A second call with
- * a different payload (or a replayed token against a different install)
- * shows a preview again — never proceeds.
+ * The token binds the caller to THE EXACT payload it previewed and to a
+ * SERVER-ISSUED nonce, not a hash the caller could compute. Why a nonce
+ * and not the sha256 of the payload: the payload is fully predictable
+ * (it's the catalog entry's url/sha fields, or whatever a CSRF-forged POST
+ * picks), so a deterministic token is computable by ANY caller — a blind
+ * cross-site POST that never reads the preview could forge
+ * `confirm: sha256(payload)` and the guard would pass, protecting
+ * nothing. The confirm value is therefore `randomBytes(16)` hex, issued
+ * ONLY by the preview call and stored server-side (nonce ->
+ * { fingerprint of the payload, 5-minute expiry }), single-use: it is
+ * deleted the moment a call carries it, successful or not, and a second
+ * call with a different payload (or a stale/expired/unknown token) shows
+ * a preview again — never proceeds. Issuance also purges expired entries
+ * and caps the store (oldest evicted past 256 outstanding confirmations).
  *
  * Direct MCP/CLI callers enter through the registered `server.tool
  * ("app_install")` handler (below — the parsed `appInstallInputSchema`
@@ -451,10 +461,11 @@ export interface AppInstallPreview {
   runsBuildCommand?: boolean
 }
 
-/** Canonical-JSON sha256 of the previewed fields — the confirm token.
+/** Canonical-JSON sha256 of the previewed fields — the payload's
+ *  fingerprint, stored server-side against the nonce issued for it.
  *  `kind` is derived here (`isAgentappUrl`), taken from the URL; the
- *  fingerprint must match what `appInstallConfirmationClass` hashed, so
- *  both call sites pass the SAME derived kind. */
+ *  fingerprint must be recomputed with the SAME derivation on the
+ *  confirming call, so both call sites pass the SAME args surface. */
 function confirmTokenOf(args: {
   url: string
   sha256?: string
@@ -479,13 +490,61 @@ function confirmTokenOf(args: {
   return digest.digest("hex").slice(0, 32)
 }
 
+/** Server-side nonce store for the app-UI install confirmation — module
+ *  level because the guard must be shared by EVERY panel-facing
+ *  dispatcher in the process (`dispatchAllowlistedAppTool` runs under
+ *  both the builtin-panels route and the installed-apps route). Not a
+ *  deterministic hash of the payload (a blind CSRF POST could compute
+ *  that without ever seeing the preview — see the docblock above): the
+ *  nonce exists only after a preview, in THIS process's memory. */
+const appInstallNonces = new Map<string, { fingerprint: string; expiresAt: number }>()
+
+/** Cap on outstanding (issued-but-unconfirmed) confirmations. Issuance
+ *  purges expired entries first; past this cap the OLDEST entry is
+ *  evicted (Map iteration order = insertion order), so the store can't
+ *  grow without bound under preview spam. */
+const APP_INSTALL_NONCE_MAX = 256
+
+const APP_INSTALL_NONCE_TTL_MS = 5 * 60 * 1000
+
+/** Issue a fresh single-use nonce for THIS payload: `randomBytes` hex,
+ *  bound server-side to the payload's fingerprint + a 5-minute expiry.
+ *  Purges expired entries and enforces the cap on every issuance. */
+function issueInstallNonce(args: Record<string, unknown>): string {
+  const now = Date.now()
+  for (const [nonce, entry] of appInstallNonces) {
+    if (entry.expiresAt <= now) appInstallNonces.delete(nonce)
+  }
+  if (appInstallNonces.size >= APP_INSTALL_NONCE_MAX) {
+    const oldest = appInstallNonces.keys().next().value
+    if (oldest !== undefined) appInstallNonces.delete(oldest)
+  }
+  const nonce = randomBytes(16).toString("hex")
+  appInstallNonces.set(nonce, {
+    fingerprint: confirmTokenOf({
+      url: typeof args.url === "string" ? args.url : "",
+      sha256: typeof args.sha256 === "string" ? args.sha256 : undefined,
+      sha: typeof args.sha === "string" ? args.sha : undefined,
+      ref: typeof args.ref === "string" ? args.ref : undefined,
+      subdir: typeof args.subdir === "string" ? args.subdir : undefined,
+      allowBuild: args.allowBuild === true,
+    }),
+    expiresAt: now + APP_INSTALL_NONCE_TTL_MS,
+  })
+  return nonce
+}
+
 /**
  * Whether an app-UI-path `app_install` call carries the confirmation it
  * needs: `undefined` when the payload isn't a recognisable remote install
  * (the guard lets it through to the tool's own validation error), `false`
- * when it's a fresh remote install with no confirm, `true` only when the
- * echoed token matches THE payload's own fingerprint (a mismatched /
- * replayed token shows a fresh preview, never proceeds).
+ * when it's a fresh remote install with no (valid) confirm, `true` only
+ * when the echoed token is a live server-issued nonce whose fingerprint
+ * matches THIS payload. Consumptive: ANY call carrying a string `confirm`
+ * deletes that nonce (single use, success or not); a caller presenting a
+ * non-nonce string (a self-computed hash, a replay, an expired nonce) or
+ * a modified payload gets `{confirmed: false}` and, with it, a fresh
+ * preview from the dispatcher.
  */
 export function appInstallConfirmationClass(args: Record<string, unknown>):
   | { confirmed: true }
@@ -495,7 +554,10 @@ export function appInstallConfirmationClass(args: Record<string, unknown>):
   if (typeof url !== "string" || url.trim() === "" || args.dir !== undefined || args.file !== undefined) {
     return undefined
   }
-  const token = confirmTokenOf({
+  if (typeof args.confirm !== "string") return { confirmed: false }
+  const nonce = appInstallNonces.get(args.confirm)
+  appInstallNonces.delete(args.confirm)
+  const fingerprint = confirmTokenOf({
     url,
     sha256: typeof args.sha256 === "string" ? args.sha256 : undefined,
     sha: typeof args.sha === "string" ? args.sha : undefined,
@@ -503,26 +565,18 @@ export function appInstallConfirmationClass(args: Record<string, unknown>):
     subdir: typeof args.subdir === "string" ? args.subdir : undefined,
     allowBuild: args.allowBuild === true,
   })
-  return typeof args.confirm === "string" && args.confirm === token
-    ? { confirmed: true }
-    : { confirmed: false }
+  const valid = nonce !== undefined && nonce.fingerprint === fingerprint && Date.now() < nonce.expiresAt
+  return valid ? { confirmed: true } : { confirmed: false }
 }
 
-/** The preview the FIRST call sees. Never stages or installs. */
+/** The preview the FIRST call sees. Never stages or installs — it ISSUES
+ *  the single-use nonce the second call must echo back. */
 export function buildAppInstallPreview(args: Record<string, unknown>): AppInstallPreview {
   const url = typeof args.url === "string" ? args.url : ""
   const isAgentapp = isAgentappUrl(url)
-  const confirm = confirmTokenOf({
-    url,
-    sha256: typeof args.sha256 === "string" ? args.sha256 : undefined,
-    sha: typeof args.sha === "string" ? args.sha : undefined,
-    ref: typeof args.ref === "string" ? args.ref : undefined,
-    subdir: typeof args.subdir === "string" ? args.subdir : undefined,
-    allowBuild: args.allowBuild === true,
-  })
   return {
     needsConfirmation: true,
-    confirm,
+    confirm: issueInstallNonce(args),
     kind: isAgentapp ? "agentapp" : "git",
     url,
     ...(typeof args.sha256 === "string" ? { sha256: args.sha256 } : {}),
