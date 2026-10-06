@@ -28,6 +28,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { HANDOFF_PROMPT_OPENER, HANDOFF_PROMPT_SOURCE } from "./handoff-markers.js"
 import { formatToolCall } from "./tool-presenter.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { claudeCodeProjectDir } from "./conversation-store.js"
@@ -52,6 +53,11 @@ export interface ExportedMessage {
   toolName?: string
   toolCalls?: { name: string; args: string }[]
   ts?: number
+  /** Daemon plumbing rather than the work itself: `handoff` marks the handoff
+   *  question and the source session's reply to it; `preamble` marks the
+   *  daemon-composed system slice (role, AGENTS.md contract, lineage) of a
+   *  spawned session's initial prompt. Checkpoints leave these out. */
+  internal?: "handoff" | "preamble"
 }
 
 export interface ExportedSessionMeta {
@@ -820,6 +826,8 @@ interface TranscriptRecord {
   ts: string
   kind: string
   text?: string
+  /** `user-prompt` records: turn provenance (e.g. `daemon:handoff`). */
+  source?: string
   partial?: boolean
   toolCallId?: string
   toolName?: string
@@ -906,6 +914,18 @@ export async function exportDaemonEventsSession(
     asmTs = undefined
   }
 
+  // A handoff turn spans the handoff question up to the next prompt: its
+  // messages (question, reply, anything in between) are tagged `internal`.
+  let handoffStart: number | undefined
+  const closeHandoffTurn = (): void => {
+    if (handoffStart === undefined) return
+    for (let i = handoffStart; i < messages.length; i++) {
+      const m = messages[i]
+      if (m) m.internal = "handoff"
+    }
+    handoffStart = undefined
+  }
+
   const rl = createInterface({ input: stream, crlfDelay: Infinity })
   for await (const line of rl) {
     const trimmed = line.trim()
@@ -961,6 +981,10 @@ export async function exportDaemonEventsSession(
     switch (rec.kind) {
       case "user-prompt":
         flushAssistant()
+        closeHandoffTurn()
+        if (rec.source === HANDOFF_PROMPT_SOURCE || rec.text?.startsWith(HANDOFF_PROMPT_OPENER)) {
+          handoffStart = messages.length
+        }
         messages.push({ role: "user", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
         break
       case "session-message": {
@@ -968,6 +992,7 @@ export async function exportDaemonEventsSession(
         // what the model received), but tagged with its attested sender so
         // a reader never attributes it to the human.
         flushAssistant()
+        closeHandoffTurn()
         const m = rec.message
         if (!m) break
         const relation = (m.from?.relation ?? "system") as NonNullable<ExportedMessage["from"]>["relation"]
@@ -991,7 +1016,13 @@ export async function exportDaemonEventsSession(
         // from the caller's ask so viewers fold it; rendered as a system
         // message (never a user bubble).
         flushAssistant()
-        messages.push({ role: "system", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
+        closeHandoffTurn()
+        messages.push({
+          role: "system",
+          text: rec.text ?? "",
+          internal: "preamble",
+          ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+        })
         break
       case "text-delta":
         // Terminated lines already carry their own trailing "\n" (see
@@ -1068,6 +1099,7 @@ export async function exportDaemonEventsSession(
     }
   }
   flushAssistant()
+  closeHandoffTurn()
 
   const meta: ExportedSessionMeta = { source: "daemon-events" }
   // Title chain: spawner label, else the command itself (a command session

@@ -1882,9 +1882,15 @@ Options:
   --profile <ref>   auth profile (billing wallet) for the new session
   --note "<text>"   operator notes appended to the checkpoint
   --dry-run         print the checkpoint that would be handed over; nothing is
-                    written, nothing is spawned
+                    written, nothing is spawned. The content is an approximate
+                    extraction from the transcript: the source session is only
+                    asked to summarise itself on the real handoff
   --json            print the full daemon response
 `
+
+/** Shown when an older daemon's dry-run response carries no `approximateNote`. */
+const HANDOFF_DRY_RUN_FALLBACK_NOTE =
+  "approximate content: a dry run does not prompt the source session; the real handoff asks it to summarise itself first."
 
 /** Pretty-print a daemon error from a checkpoint/handoff POST. */
 function reportHandoffError(verb: string, id: string, err: unknown): number {
@@ -2021,7 +2027,8 @@ async function runHandoff(args: readonly string[]): Promise<number> {
       const ckpt = r.checkpoint as { checkpointId?: string; checkpointPath?: string }
       process.stdout.write(
         `agentproto sessions handoff (dry run): ${id} → ${values.to}\n` +
-          `  nothing written, nothing spawned. Would write: ${ckpt.checkpointPath ?? "(unknown)"}\n\n` +
+          `  nothing written, nothing spawned. Would write: ${ckpt.checkpointPath ?? "(unknown)"}\n` +
+          `  ${String(r.approximateNote ?? HANDOFF_DRY_RUN_FALLBACK_NOTE)}\n\n` +
           `${String(r.prompt)}\n`,
       )
       return 0
@@ -5393,7 +5400,10 @@ async function explain401(
   } else {
     lines.push(
       `  daemon /health is reachable — token mismatch is the cause.`,
-      `  unable to identify which file the token came from (env override?).`,
+      `  no runtime.json was read for this call (the token came from the environment, or none was found).`,
+      `  the daemon's token lives in <workspace>/.agentproto/runtime.json (field "token").`,
+      `  this CLI reads it on its own; to override, set AGENTPROTO_DAEMON_TOKEN to that value.`,
+      `  a plain HTTP client must send it as: Authorization: Bearer <token>.`,
     )
   }
   return lines.join("\n")

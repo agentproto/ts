@@ -25,9 +25,15 @@ agentproto sessions handoff ses_abc12 --to codex --dry-run
 ```
 
 Prints the checkpoint prompt Codex **would** receive. Nothing is written to
-disk, nothing is spawned, and `ses_abc12` is not modified — safe to run as
-often as you like. Add `--json` for the structured response
-(`{ dryRun, checkpoint, prompt }`).
+disk, nothing is spawned, and `ses_abc12` is not modified, so it is safe to run
+as often as you like. Add `--json` for the structured response
+(`{ dryRun, approximate, approximateNote, checkpoint, prompt }`).
+
+The preview is an **approximation**. To stay read-only, a dry run never asks the
+source session to summarise itself; it extracts what it can from the transcript
+alone, so `goal`, `decisions`, `tests` and `nextStep` may be thinner than in the
+real handoff. The output says so (`approximate content: ...`). The real handoff
+(step 3) interrogates the session first.
 
 ## 3. Hand off
 
@@ -82,10 +88,10 @@ The checkpoint is a JSON file at
 | `schemaVersion`, `checkpointId`, `sourceSessionId`, `createdAt` | Format version, identity and timestamp. |
 | `contextPct` | How full the source session's context window was. |
 | `sections` | The handoff content: `goal`, `plan`, `decisions`, `changedFiles`, `gitStatus`, `tests`, `errors`, `risks`, `nextStep`, `notes`, `config`. Which sections are captured follows the session's context-continuity policy. |
-| `recentDigest` | Bounded digest of the most recent turns. |
+| `recentDigest` | Bounded digest of the most recent turns. The daemon's own plumbing is left out: the handoff question and its JSON reply, and the role/AGENTS.md preamble injected at spawn. |
 | `originalTranscriptPath` | The source session's full `events.jsonl` — preserved; the checkpoint is a summary, never a replacement. |
 | `checkpointPath` | Where this file lives. |
-| `policy`, `nextAction` | The effective context-continuity policy and the suggested next action. |
+| `policy`, `nextAction` | The effective context-continuity policy and the suggested next action. `compact_then_continue` only appears while the context is in the compact band (`compactAtPct` up to `continueFreshAtPct`, 65 to 75 % by default); anywhere else it is `continue`. |
 
 `--note` text is stored verbatim in `sections.notes` and rendered in the resume
 prompt under "notes (from the operator)". When the source session is idle, a real
@@ -94,7 +100,8 @@ summarise itself; sections the extraction can't fill may read `(… captured in 
 digest)`, in which case the content is in `recentDigest`.
 
 The prompt the new agent receives is this checkpoint rendered as text:
-`--dry-run` prints exactly that.
+`--dry-run` prints the same rendering, built from the approximate extraction
+described in step 2.
 
 ## When does a handoff happen?
 

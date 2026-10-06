@@ -38,10 +38,11 @@ import {
 import type { SessionDescriptor } from "./sessions.js"
 import { exportDaemonEventsSession, renderMarkdown, type ExportedMessage } from "./transcript-export.js"
 import { sessionEventsPath, sessionTranscriptDir } from "./transcript-writer.js"
-import type {
-  ContextContinuityCheckpointSections,
-  ContextContinuityPolicy,
-  ResolvedContextContinuityPolicy,
+import {
+  contextContinuityStateForPct,
+  type ContextContinuityCheckpointSections,
+  type ContextContinuityPolicy,
+  type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
 
 /** A persisted structured checkpoint. */
@@ -70,7 +71,9 @@ export interface ContextCheckpoint {
   originalTranscriptPath: string
   /** Absolute path where this checkpoint JSON was persisted. */
   checkpointPath: string
-  /** Suggested next action at the time the checkpoint was taken. */
+  /** Suggested next action at the time the checkpoint was taken:
+   *  `compact_then_continue` only inside the compact band
+   *  (`compactAtPct` up to `continueFreshAtPct`), `continue` everywhere else. */
   nextAction: "continue" | "compact_then_continue" | "ask"
 }
 
@@ -124,6 +127,12 @@ export interface BuildContextCheckpointOptions {
   sources?: CheckpointSources
 }
 
+/** Shown with every handoff dry run: the preview skips the question put to the source session. */
+export const HANDOFF_DRY_RUN_NOTE =
+  "Approximate content: a dry run never prompts the source session, so this preview is extracted from " +
+  "the transcript alone (goal, decisions, tests and next step may be thinner than the real handoff). " +
+  "The real handoff asks the source session to summarise itself first."
+
 /** Character budget for the rendered recent-turn digest. */
 const DIGEST_CHAR_BUDGET = 7000
 /** Character cap for each individual section. */
@@ -153,7 +162,10 @@ interface TranscriptView {
 async function readTranscript(sessionId: string): Promise<TranscriptView> {
   let messages: ExportedMessage[]
   try {
-    messages = (await exportDaemonEventsSession(sessionId)).messages
+    // The handoff exchange and the daemon-composed preamble are plumbing,
+    // not work: leave them out of the digest, the extraction and the
+    // resume prompt.
+    messages = (await exportDaemonEventsSession(sessionId)).messages.filter(m => !m.internal)
   } catch {
     return { messages: [], digest: "(no daemon transcript available)" }
   }
@@ -319,6 +331,13 @@ function buildNextStepSection(
   return last ? formatLastAgentMessage(last) : undefined
 }
 
+function suggestNextAction(
+  pct: number,
+  policy: ResolvedContextContinuityPolicy,
+): ContextCheckpoint["nextAction"] {
+  return contextContinuityStateForPct(pct, policy) === "compact" ? "compact_then_continue" : "continue"
+}
+
 /**
  * Build a bounded structured checkpoint for `desc`.
  *
@@ -384,7 +403,7 @@ export async function buildContextCheckpoint(
     recentDigest,
     originalTranscriptPath: sessionEventsPath(desc.id, opts.baseDir),
     checkpointPath,
-    nextAction: opts.contextPct >= policy.continueFreshAtPct ? "continue" : "compact_then_continue",
+    nextAction: suggestNextAction(opts.contextPct, policy),
   }
 }
 

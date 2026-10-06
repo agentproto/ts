@@ -18,6 +18,7 @@ import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import type { CompletionPolicySupervisor } from "./supervisor.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { TaskLedger, TaskRecord } from "./task-ledger.js"
+import { HANDOFF_PROMPT_OPENER, HANDOFF_PROMPT_SOURCE } from "./handoff-markers.js"
 import type { ExportedMessage } from "./transcript-export.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 
@@ -271,7 +272,7 @@ export const handoffReplySchema = z
 export type HandoffReply = z.infer<typeof handoffReplySchema>
 
 export const HANDOFF_PROMPT = [
-  "[handoff request from the agentproto daemon]",
+  HANDOFF_PROMPT_OPENER,
   "This session is about to be continued by a fresh session (possibly on a different harness).",
   "Do NOT use any tools and do NOT continue the task. Reply with ONLY one JSON object, no prose, in exactly this shape:",
   "{",
@@ -331,7 +332,7 @@ export type HandoffAsker = (prompt: string, opts: { timeoutMs: number }) => Prom
 export type HandoffRegistry = Pick<SessionsRegistry, "get" | "sendPrompt"> &
   Partial<Pick<SessionsRegistry, "interruptSession">>
 
-export const HANDOFF_PROMPT_SOURCE = "daemon:handoff"
+export { HANDOFF_PROMPT_SOURCE }
 
 /** The source session cannot take a handoff turn right now (dead / busy) — not a failure. */
 export class HandoffUnavailableError extends Error {

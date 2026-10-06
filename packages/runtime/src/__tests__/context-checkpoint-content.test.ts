@@ -224,6 +224,51 @@ describe("deterministic extraction", () => {
   })
 })
 
+describe("daemon plumbing is kept out of the checkpoint", () => {
+  const SECOND_RUN: ExportedMessage[] = [
+    { role: "system", text: "You are the executor. Read the AGENTS.md contract first.", internal: "preamble" },
+    ...FIXTURE_MESSAGES,
+    { role: "user", text: "[handoff request from the agentproto daemon]\nReply with ONLY one JSON object", internal: "handoff" },
+    { role: "assistant", text: HANDOFF_JSON, internal: "handoff" },
+  ]
+
+  it("leaves the handoff question, its JSON reply and the preamble out of digest and fallback next step", async () => {
+    vi.mocked(exportDaemonEventsSession).mockResolvedValue({ meta: {}, messages: SECOND_RUN })
+    const cp = await buildContextCheckpoint(baseDesc(), { contextPct: 40, askSource: false })
+    expect(cp.recentDigest).not.toContain("handoff request")
+    expect(cp.recentDigest).not.toContain("ONLY one JSON object")
+    expect(cp.recentDigest).not.toContain("Ship retries for the uploader")
+    expect(cp.recentDigest).not.toContain("You are the executor")
+    expect(cp.sections.nextStep).toContain("Backoff is in; the retry test still fails on jitter.")
+    expect(cp.sections.nextStep).not.toContain('"goal"')
+    const prompt = renderCheckpointPrompt(cp)
+    expect(prompt).not.toContain("handoff request")
+    expect(prompt).not.toContain("You are the executor")
+    expect(prompt).not.toContain('"openRisks"')
+  })
+
+  it("still takes the goal from the first real user message, not the preamble", async () => {
+    vi.mocked(exportDaemonEventsSession).mockResolvedValue({ meta: {}, messages: SECOND_RUN })
+    const cp = await buildContextCheckpoint(baseDesc(), { contextPct: 40, askSource: false })
+    expect(cp.sections.goal).toContain("Add exponential-backoff retries")
+  })
+})
+
+describe("nextAction follows the continuity thresholds", () => {
+  it.each([
+    [6, "continue"],
+    [54, "continue"],
+    [64, "continue"],
+    [65, "compact_then_continue"],
+    [74, "compact_then_continue"],
+    [75, "continue"],
+    [95, "continue"],
+  ] as const)("at %i%% context it is %s", async (pct, expected) => {
+    const cp = await buildContextCheckpoint(baseDesc(), { contextPct: pct, askSource: false })
+    expect(cp.nextAction).toBe(expected)
+  })
+})
+
 describe("handoff turn", () => {
   it("uses the source session's answer for decisions, risks, tests and next step", async () => {
     const asker = vi.fn(async () => `Here you go:\n\`\`\`json\n${HANDOFF_JSON}\n\`\`\``)

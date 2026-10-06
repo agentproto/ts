@@ -751,7 +751,7 @@ describe("daemon-events exporter", () => {
     const parsed = JSON.parse(result.content) as ExportedSession
     const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
     expect(parsed.messages).toEqual([
-      { role: "system", text: "You are the executor. Do the task yourself.", ts: FIXTURE_TS },
+      { role: "system", text: "You are the executor. Do the task yourself.", internal: "preamble", ts: FIXTURE_TS },
       { role: "user", text: "fix the bug", ts: FIXTURE_TS },
     ])
   })

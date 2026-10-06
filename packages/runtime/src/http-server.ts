@@ -226,7 +226,12 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
-import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
+import {
+  HANDOFF_DRY_RUN_NOTE,
+  buildContextCheckpoint,
+  persistCheckpoint,
+  renderCheckpointPrompt,
+} from "./context-checkpoint.js"
 import { computeContextPct } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
@@ -1589,6 +1594,12 @@ export async function startHttpServer(
     return false
   }
 
+  const SESSIONS_TOKEN_HINT =
+    `The expected token is the "token" field of <workspace>/.agentproto/runtime.json ` +
+    `(the workspace the daemon was started in; rewritten on every boot). ` +
+    `The agentproto CLI reads it on its own; any other HTTP client must send it as ` +
+    `\`Authorization: Bearer <token>\`.`
+
   function rejectUnauthorizedSession(
     req: IncomingMessage,
     res: ServerResponse,
@@ -1604,12 +1615,10 @@ export async function startHttpServer(
         ? origin
           ? `Origin "${origin}" not in the daemon's allowlist, and no Bearer token sent. ` +
             `Either add it (\`agentproto config set daemon.allowedOrigins ${origin}\` then restart the daemon), ` +
-            `or send Authorization: Bearer <token> read from <workspace>/.agentproto/runtime.json.`
-          : `Authorization: Bearer <token> required on mutating /sessions/* routes. ` +
-            `Read the token from <workspace>/.agentproto/runtime.json. ` +
+            `or send \`Authorization: Bearer <token>\`. ${SESSIONS_TOKEN_HINT}`
+          : `Authorization: Bearer <token> required on mutating /sessions/* routes. ${SESSIONS_TOKEN_HINT} ` +
             `(Browser callers can use an Origin in the allowlist instead.)`
-        : `Invalid bearer token. The daemon regenerated its token on its last boot — ` +
-          `re-read <workspace>/.agentproto/runtime.json.`
+        : `Invalid bearer token. The daemon regenerated its token on its last boot, so re-read it. ${SESSIONS_TOKEN_HINT}`
     res.end(
       JSON.stringify({
         error: "sessions_unauthorized",
@@ -6906,13 +6915,17 @@ async function handleSessions(
       try {
         const policy = prev.contextContinuity!
         const pct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
+        // Read-only: never prompt the source session from a dry run.
         const checkpoint = await buildContextCheckpoint(prev, {
           contextPct: pct,
+          askSource: false,
           ...(notes ? { notes } : {}),
         })
         json(200, {
           ok: true,
           dryRun: true,
+          approximate: true,
+          approximateNote: HANDOFF_DRY_RUN_NOTE,
           continuedFrom: prev.id,
           to,
           ...(typeof b.model === "string" ? { model: b.model } : {}),
