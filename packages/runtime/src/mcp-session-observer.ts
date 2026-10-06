@@ -108,9 +108,15 @@ export function createMcpObservationStore(
     const at = obs.lastSeenAt
     const result =
       message.result && typeof message.result === "object" ? (message.result as Record<string, unknown>) : undefined
-    const error = message.error
-      ? `${String(message.error.code ?? "error")}: ${String(message.error.message ?? "")}`
-      : undefined
+    // This daemon never registers `server/discover` (removed in #1684). A
+    // harness that probes for it and gets JSON-RPC "Method not found" back is
+    // doing normal protocol negotiation before falling back to `initialize` +
+    // `tools/list`, not failing to load the mount.
+    const isExpectedDiscoverMiss = method === "server/discover" && message.error?.code === -32601
+    const error =
+      message.error && !isExpectedDiscoverMiss
+        ? `${String(message.error.code ?? "error")}: ${String(message.error.message ?? "")}`
+        : undefined
     const answeredVersion = typeof result?.["protocolVersion"] === "string" ? (result["protocolVersion"] as string) : undefined
     const protocolVersion = method === "initialize" ? answeredVersion : clientProtocolVersion
     const base: McpObservedCall = {
