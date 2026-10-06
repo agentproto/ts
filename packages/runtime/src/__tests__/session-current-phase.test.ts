@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -36,8 +37,12 @@ describe("computed session activity status", () => {
     dir = mkdtempSync(join(tmpdir(), "session-phase-test-"))
   })
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+  afterEach(async () => {
+    // `registry.shutdown()` is sync and fires `transcriptWriter.closeAll()`
+    // without awaiting it, so the events.jsonl stream can still flush into
+    // `sess_*/` while this removal runs (→ ENOTEMPTY on the rmdir). Retry
+    // instead of racing the stream's async close.
+    await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
   })
 
   it("tracks thinking and in-flight tool phases, de-duplicates updates, and resets on the next turn", async () => {
