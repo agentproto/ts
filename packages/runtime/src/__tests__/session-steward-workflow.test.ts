@@ -115,6 +115,10 @@ function fakeTools(opts: {
   toolCalls?: Record<string, unknown[]>
   /** Prior verdict-memory events returned by `app_state_list`. */
   memoryEvents?: unknown[]
+  /** Installed app ids `app_list` reports; default = the real steward app id. */
+  installedApps?: string[]
+  /** `session_list` result wrapper: the real un-paged `{sessions}` (default) or the paged `{items}`. */
+  listShape?: "sessions" | "items"
   /** `host_load` report; default = a calm host. */
   hostLoad?: Record<string, unknown>
 }) {
@@ -148,12 +152,16 @@ function fakeTools(opts: {
         ...(e.outcome ? { outcome: e.outcome } : {}),
         lastActivityAt: new Date(Date.now() - e.idleMinutes * 60_000).toISOString(),
       }))
-      return mcpResult({ items: [...rows, ...(opts.liveExtra ?? [])] })
+      return mcpResult({ [opts.listShape ?? "sessions"]: [...rows, ...(opts.liveExtra ?? [])] })
     }
     if (name === "tool_calls_list") {
       return mcpResult({ records: opts.toolCalls?.[inputs.sessionId as string] ?? [] })
     }
-    if (name === "app_state_list") return mcpResult({ events: opts.memoryEvents ?? [] })
+    if (name === "app_list") return mcpResult((opts.installedApps ?? ["@agentproto/session-steward"]).map(appId => ({ appId })))
+    if (name === "app_state_list") {
+      if (inputs.appId !== "@agentproto/session-steward") return { content: [{ type: "text" as const, text: `app_state_list: no installed app "${inputs.appId}".` }], isError: true }
+      return mcpResult({ events: opts.memoryEvents ?? [] })
+    }
     if (name === "app_state_append") return mcpResult({ appId: inputs.appId, event: inputs.event })
     if (name === "session_evidence") {
       const id = inputs.sessionId as string
@@ -284,6 +292,8 @@ describe("session-steward workflow — shape", () => {
       "candidatesPlus:transform",
       "ruleApplyQueue:transform",
       "autoApply:map",
+      "installedApps:tool",
+      "memoryApp:transform",
       "memoryQueue:transform",
       "memoryRead:map",
       "memory:transform",
@@ -323,7 +333,7 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     const out = await run(dispatchTool, j.host, { callerSessionId: SELF })
 
     expect(out.apply).toBe(false)
-    expect(calls.find(c => c.name === "session_wrapup_plan")!.inputs).toEqual({ idleMinutes: 30 })
+    expect(calls.find(c => c.name === "session_wrapup_plan")!.inputs).toEqual({ idleMinutes: 30, wait: true })
     // No SESSION is ever mutated in a dry run.
     expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
     expect(calls.some(c => c.name === "agent_prompt")).toBe(false)
@@ -724,6 +734,44 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(out.verdicts.find(v => v.entry.sessionId === "cache_1")?.source).toBe("cache")
     expect(out.report).toContain("served from cache")
     expect(f2.calls.some(c => c.name === "app_state_append")).toBe(true)
+  })
+
+  it("reads the real {sessions} session_list shape (and the paged {items} one) — live counts are not 0", async () => {
+    for (const listShape of ["sessions", "items"] as const) {
+      const f = fakeTools({ entries: [], listShape, liveExtra: [busyRow("sess_a"), busyRow("sess_b"), { id: "sess_t", status: "killed", origin: "cron:job" }] })
+      const out = await run(f.dispatchTool, judgeHost({}).host, {})
+      expect(out.report).toContain("0 candidates:")
+      expect(out.report).toContain("2 busy")
+      expect(out.report).not.toContain("0 live")
+    }
+  })
+
+  it("verdict memory resolves the installed app id by default (read + write use it)", async () => {
+    const f = fakeTools({ entries: [entry("m_1", "judge", 100)] })
+    const out = await run(f.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent" })
+    expect(f.calls.find(c => c.name === "app_state_list")?.inputs.appId).toBe("@agentproto/session-steward")
+    expect(f.calls.find(c => c.name === "app_state_append")?.inputs.appId).toBe("@agentproto/session-steward")
+    expect(out.report).not.toContain("verdict memory: off")
+  })
+
+  it("a bare appId name matches the scoped install", async () => {
+    const f = fakeTools({ entries: [entry("m_1", "judge", 100)] })
+    await run(f.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent", appId: "session-steward" })
+    expect(f.calls.find(c => c.name === "app_state_list")?.inputs.appId).toBe("@agentproto/session-steward")
+  })
+
+  it("a missing memory app degrades to no memory with a report note — no memory call, no failed step", async () => {
+    const f = fakeTools({ entries: [entry("m_1", "judge", 100)], installedApps: ["@someone/else"] })
+    const out = await run(f.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent" })
+    expect(f.calls.some(c => c.name === "app_state_list" || c.name === "app_state_append")).toBe(false)
+    expect(out.report).toContain('verdict memory: off — no installed app "@agentproto/session-steward"')
+  })
+
+  it("appId: \"\" turns memory off explicitly", async () => {
+    const f = fakeTools({ entries: [entry("m_1", "judge", 100)] })
+    const out = await run(f.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent", appId: "" })
+    expect(f.calls.some(c => c.name === "app_state_list" || c.name === "app_state_append")).toBe(false)
+    expect(out.report).toContain("verdict memory: off (appId empty)")
   })
 
   it("reports why there were 0 candidates when nothing is idle", async () => {
