@@ -162,6 +162,21 @@ jobs:
       - name: Refresh catalog test snapshots
         run: pnpm --filter @agentproto/model-catalog exec vitest run -u
 
+      # The OTHER catalog, part two: the embedded first-party APP catalog
+      # (packages/runtime/src/first-party-catalog.ts) — the offline fallback
+      # for https://agentproto.sh/catalog/v1/apps.json. Re-rendered here from
+      # the published doc via `catalog:first-party` so a newly published app
+      # becomes installable offline on the next release. The script exits 1
+      # (touching nothing) when the catalog fetch fails or an entry fails
+      # AppCatalogEntrySchema, and shares renderFirstPartyCatalogTs with
+      # `agentproto catalog build --emit-ts` — the generated TS is the same
+      # code path the CLI verb uses. Drift lands in the same sync PR as the
+      # model-catalog data via the Detect drift step below.
+      - name: Sync first-party app catalog
+        run: |
+          pnpm --filter "@agentproto/runtime..." build
+          pnpm --filter @agentproto/runtime catalog:first-party
+
       - name: Detect drift
         id: drift
         run: |
