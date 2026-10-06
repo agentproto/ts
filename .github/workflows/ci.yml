@@ -236,7 +236,7 @@ jobs:
       # @agentproto/cli@0.5.0 incident (a console trace published as a release
       # body) and the model-invented release date behind it.
       - name: Run release-tooling tests
-        run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs
+        run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/list-unpublished-packages.test.mjs
 
       # Spec↔codegen drift check (see scripts/check-spec-drift.mjs): the
       # sandbox package's GENERATED schema.ts must stay in sync with the
