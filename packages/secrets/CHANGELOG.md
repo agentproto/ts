@@ -1,5 +1,12 @@
 # @agentproto/secrets
 
+## 1.3.0
+
+### Minor Changes
+
+- 38b5538: Declare jcode own-login subscription auth and add jcode provision recipe
+- 5787677: Declare own-login auth for copilot-cli, antigravity, mastracode-inprocess
+
 ## 1.2.1
 
 ### Patch Changes

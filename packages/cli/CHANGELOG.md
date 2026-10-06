@@ -1,5 +1,52 @@
 # @agentproto/cli
 
+## 1.11.0
+
+### Minor Changes
+
+- 1487de1: `.agentapp` packing honors an APP.md `package` block (`include` / `exclude` globs, `stripBuild`) and stages only the selected files. New `agentproto app pack --release` builds the UI first, drops dev-only files (UI sources, docs, data, scripts, logs, source maps, env files), fails when the built `ui.path` is missing, and strips `ui.build` from the packed APP.md.
+- f4ac811: The daemon's default self-mount `deferredTools` now depends on the harness: an adapter declaring the new manifest capability `nativeToolSearch` (claude-code, which defers MCP tools behind its own `ToolSearch`) gets the eager `/mcp` surface instead of a second deferral layer. Precedence: `agent_start.deferredTools` > `?deferred=` > native tool search ⇒ eager > role default > `defaults.mcp.deferredTools`. No tool is removed.
+- 2346c07: Stable, manually reorderable pinned order. Pinned sessions now carry a daemon-persisted `pinnedOrder`: new pins append at the end and a new message or update never reorders them. `POST /sessions/pinned/order` and the `session_reorder_pinned` MCP verb (subtree-scoped) set the order, emitting `session:pinned-reordered`; `agentproto sessions` sorts the pinned group by it. Legacy pins without an order sort after ordered ones, oldest first.
+- 5cd6c9b: Verify expected sha on app_install and gate remote ui.build behind allowBuild
+- be03ed4: Add sessions checkpoint/handoff HTTP routes and CLI verbs
+- 41917fd: feat(review): per-lane reviewer fallback. An agent check may declare `fallbackPresets: [...]` (also on a `uses[]` entry and in `uses[].overrides.<id>`); when the lane's reviewer is unavailable — spawn failure, a turn that ends in an error, an empty turn, or a session that exits early, after the per-preset retries — the lane runs on the next preset instead of settling `skipped`. Never after a verdict (a `block` is final), a timeout, a cancel, or an OpenRouter refusal; the chain shares the lane's single `timeoutMs`. The lane records the reviewer that actually ran (`preset`/`model`/`sessionId`) plus `fallbacks: [{ preset, error }]` for each unavailable one, shown in `agentproto review` output and the review panel; an exhausted chain settles the lane `skipped` listing every error.
+
+### Patch Changes
+
+- 11dee43: `agentproto doctor` (and the daemon's `build.source`) no longer report an `npm i -g` install as a "workspace build". The CLI entry is now resolved through `realpathSync` (falling back to the raw path on error) before it is classified, so the global bin symlink (`/usr/local/bin/agentproto`) is classified by its real target under `node_modules/@agentproto/cli`.
+- 0dd095d: Fix daemon crash when a rendezvous/tunnel/terminal-input WebSocket dial is aborted or times out while still connecting: keep a permanent `error` listener on the socket and use `terminate()` for a CONNECTING socket, so the late "closed before the connection was established" error becomes a normal dial failure instead of an unhandled `error` event that crashes the process.
+- 2c212d3: `agentproto policy ls` no longer crashes with `TypeError: Cannot read properties of undefined (reading 'length')` on policies that carry only `sessionId` (no `sessionIds`). The SESSIONS column counts the fan-in group when present, else 1 for a single `sessionId`, else 0.
+- 5787677: Declare own-login auth for copilot-cli, antigravity, mastracode-inprocess
+- b657acc: Fix `agentproto sentinel ...` failing with `unrecognised argument(s): sentinel`: the verb was implemented and help-documented but never registered in the CLI's dispatch table.
+- 205bade: `agentproto steward` goes back to the end-of-session wrap-up as its default:
+  judge idle agent sessions, then close or flag them (dry run unless `--apply`).
+  The attention-digest workflow (`session-attention`) and its `--wrapup` /
+  `--include-children` / `--format` flags are removed from the open-source
+  steward; the open-source steward keeps the minimal idle / done / errored policy
+  with explicit close.
+- Updated dependencies [1487de1]
+- Updated dependencies [c72bbd4]
+- Updated dependencies [0dd095d]
+- Updated dependencies [f4ac811]
+- Updated dependencies [2049adb]
+- Updated dependencies [58d5a41]
+- Updated dependencies [2049adb]
+- Updated dependencies [530c3ec]
+- Updated dependencies [38b5538]
+- Updated dependencies [5787677]
+- Updated dependencies [ef89993]
+- Updated dependencies [41917fd]
+- Updated dependencies [a18c4d7]
+- Updated dependencies [205bade]
+  - @agentproto/app-kit@1.6.0
+  - @agentproto/pairing-host@0.2.4
+  - @agentproto/driver-agent-cli@2.8.0
+  - @agentproto/apps@0.19.0
+  - @agentproto/secrets@1.3.0
+  - @agentproto/sandbox-e2b@0.5.14
+  - @agentproto/acp@0.10.0
+  - @agentproto/sandbox-box@0.2.24
+
 ## 1.10.0
 
 ### Minor Changes

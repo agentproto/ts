@@ -1,5 +1,17 @@
 # @agentproto/adapter-jcode
 
+## 0.3.0
+
+### Minor Changes
+
+- 38b5538: Declare jcode own-login subscription auth and add jcode provision recipe
+
+### Patch Changes
+
+- Updated dependencies [f4ac811]
+- Updated dependencies [58d5a41]
+  - @agentproto/driver-agent-cli@2.8.0
+
 ## 0.2.24
 
 ### Patch Changes

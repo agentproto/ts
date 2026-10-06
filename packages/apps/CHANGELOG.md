@@ -1,5 +1,35 @@
 # @agentproto/apps
 
+## 0.19.0
+
+### Minor Changes
+
+- 58d5a41: Surface silent provider stream errors as turn errors. `@agentproto/driver-agent-cli` adds a stderr logfmt parser (`parseStderrStreamError`, `_onStderrLine` push subscription) so opencode's silent 429/usage-cap retry loop surfaces as a turn error instead of a hung session, and the opencode adapter spawns with `--print-logs --log-level ERROR`. `@agentproto/runtime` exports `NO_OUTPUT_STALL_TURN_ERROR` (new export ⇒ minor) and attaches it via the stall watchdog for zero-output turns. `@agentproto/apps` (session-steward) gains the `session-steward` skill, a session snapshot script, and APP.md skill wiring.
+- ef89993: Session steward: port the `kill-idle-sessions` cron prototype's mechanical
+  rules into pure, unit-tested functions wired into the workflow — loop
+  detection, stall, never-ran, fast-path done, terminal relabel, self-exclusion,
+  apply-time re-check, explicit 0-candidate reporting, host-saturation header,
+  and verdict memory in `app_state` — and enrich `session_evidence` (origin,
+  outcome, tool stats, last tool call, tokens, live children, previous verdict)
+  with a rewritten concrete-signal wrap-up verdict criteria. Loop/stall nudges
+  are reported only, never sent; user-origin sessions are never nudged or closed.
+- 41917fd: feat(review): per-lane reviewer fallback. An agent check may declare `fallbackPresets: [...]` (also on a `uses[]` entry and in `uses[].overrides.<id>`); when the lane's reviewer is unavailable — spawn failure, a turn that ends in an error, an empty turn, or a session that exits early, after the per-preset retries — the lane runs on the next preset instead of settling `skipped`. Never after a verdict (a `block` is final), a timeout, a cancel, or an OpenRouter refusal; the chain shares the lane's single `timeoutMs`. The lane records the reviewer that actually ran (`preset`/`model`/`sessionId`) plus `fallbacks: [{ preset, error }]` for each unavailable one, shown in `agentproto review` output and the review panel; an exhausted chain settles the lane `skipped` listing every error.
+
+### Patch Changes
+
+- 2049adb: Bound the session-steward's apply by session origin: a pure origin policy (`origin-policy.mjs`) classifies each candidate as user-origin (chat-starter, vscode, or a root with no origin and no parent — flag-only, never closed) or closable (cron:*, gate, executors), configured by new `userOrigins` / `closableOrigins` workflow inputs. `SessionWrapupEntry` carries `origin` / `parentSessionId` through, and the steward report gains an `origin` column with the retained action.
+- 2049adb: Bound the session-steward's apply by session origin: a pure origin policy (`origin-policy.mjs`) classifies each candidate as user-origin (chat-starter, vscode, or a root with no origin and no parent — flag-only, never closed) or closable (cron:*, gate, executors), configured by new `userOrigins` / `closableOrigins` workflow inputs. `SessionWrapupEntry` carries `origin` / `parentSessionId` through, and the steward report gains an `origin` column with the retained action.
+- 205bade: `agentproto steward` goes back to the end-of-session wrap-up as its default:
+  judge idle agent sessions, then close or flag them (dry run unless `--apply`).
+  The attention-digest workflow (`session-attention`) and its `--wrapup` /
+  `--include-children` / `--format` flags are removed from the open-source
+  steward; the open-source steward keeps the minimal idle / done / errored policy
+  with explicit close.
+- Updated dependencies [1487de1]
+- Updated dependencies [c72bbd4]
+- Updated dependencies [530c3ec]
+  - @agentproto/app-kit@1.6.0
+
 ## 0.18.0
 
 ### Minor Changes

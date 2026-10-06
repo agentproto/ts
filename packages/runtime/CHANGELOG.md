@@ -1,5 +1,91 @@
 # @agentproto/runtime
 
+## 5.10.0
+
+### Minor Changes
+
+- 702899a: Catalog-tracked updates: `app_install {catalogUrl}` records `source.catalogId`; the new `app_updates` tool reports catalog entries newer than the installed app (different digest/commit, version not lower); `app_resync` on a catalog-tracked app installs its catalog's current entry from the entry's own URL, verified against its digest; `app_catalog` marks such entries `updateAvailable`.
+- 9455c0e: App catalog v1: remote catalogs follow the `app-catalog/v1` format (optional `version`, `tier`, `icon`, `publisher`, `license`, `requires`, `minAgentprotoVersion`, `featured`, bundle `size`); `app_catalog` always queries a default public catalog (config `catalog.defaultSource`, `false` to turn it off) to which `catalog.sources` are added; each source's last good copy is cached under `~/.agentproto/cache/catalog` and served `stale` when the source fails, with an embedded first-party list as the default catalog's offline fallback. Remote entries now report `origin` and `catalogUrl`.
+- 530c3ec: App runtime output moves out of the app's code dir: `ui.build` logs are written to `~/.agentproto/logs/app-ui-build/<app>-<hash>.log` (honors `AGENTPROTO_HOME`) instead of `<appDir>/.agentproto/ui-build.log`, and apps installed from a git URL or `.agentapp` default their `dataDir` to `~/.agentproto/app-data/<appId>` instead of `<appDir>/data`. Existing installs keep their recorded `dataDir`.
+- c72bbd4: Apps can call each other. `requires.apps` entries may now be objects
+  (`{ id, version?, workflows? }`) next to bare ids, and `exposes.workflows`
+  declares which workflows an app lets other apps run. A new `app_call` MCP verb
+  runs an exposed workflow on behalf of an installed consumer app, checking the
+  declared dependency, the workflow allowlist, the provider's exposed workflows
+  and its installed version range, and returns the workflow's output with a
+  distinct error code per refusal. `app_apply` also refuses an app whose declared
+  dependency version range is not satisfied. The daemon is local-trust:
+  `callerAppId` is a declaration check, not an authentication boundary.
+- 9391218: Restart ended-but-resumable agent-cli sessions in place on the same id. An inbound message (a human writing to the session) also revives a deliberately-ended session (operator-completed / steward-*) in place; the sentinel, as an automatic path, still never does.
+- 5983ec5: Record real cron run outcomes and auto-pause unhealthy jobs
+- f4ac811: The daemon's default self-mount `deferredTools` now depends on the harness: an adapter declaring the new manifest capability `nativeToolSearch` (claude-code, which defers MCP tools behind its own `ToolSearch`) gets the eager `/mcp` surface instead of a second deferral layer. Precedence: `agent_start.deferredTools` > `?deferred=` > native tool search ⇒ eager > role default > `defaults.mcp.deferredTools`. No tool is removed.
+- 2049adb: Bound the session-steward's apply by session origin: a pure origin policy (`origin-policy.mjs`) classifies each candidate as user-origin (chat-starter, vscode, or a root with no origin and no parent — flag-only, never closed) or closable (cron:*, gate, executors), configured by new `userOrigins` / `closableOrigins` workflow inputs. `SessionWrapupEntry` carries `origin` / `parentSessionId` through, and the steward report gains an `origin` column with the retained action.
+- 2346c07: Stable, manually reorderable pinned order. Pinned sessions now carry a daemon-persisted `pinnedOrder`: new pins append at the end and a new message or update never reorders them. `POST /sessions/pinned/order` and the `session_reorder_pinned` MCP verb (subtree-scoped) set the order, emitting `session:pinned-reordered`; `agentproto sessions` sorts the pinned group by it. Legacy pins without an order sort after ordered ones, oldest first.
+- 58d5a41: Surface silent provider stream errors as turn errors. `@agentproto/driver-agent-cli` adds a stderr logfmt parser (`parseStderrStreamError`, `_onStderrLine` push subscription) so opencode's silent 429/usage-cap retry loop surfaces as a turn error instead of a hung session, and the opencode adapter spawns with `--print-logs --log-level ERROR`. `@agentproto/runtime` exports `NO_OUTPUT_STALL_TURN_ERROR` (new export ⇒ minor) and attaches it via the stall watchdog for zero-output turns. `@agentproto/apps` (session-steward) gains the `session-steward` skill, a session snapshot script, and APP.md skill wiring.
+- 2049adb: Bound the session-steward's apply by session origin: a pure origin policy (`origin-policy.mjs`) classifies each candidate as user-origin (chat-starter, vscode, or a root with no origin and no parent — flag-only, never closed) or closable (cron:*, gate, executors), configured by new `userOrigins` / `closableOrigins` workflow inputs. `SessionWrapupEntry` carries `origin` / `parentSessionId` through, and the steward report gains an `origin` column with the retained action.
+- 5cd6c9b: Verify expected sha on app_install and gate remote ui.build behind allowBuild
+- be03ed4: Add sessions checkpoint/handoff HTTP routes and CLI verbs
+- 7ff4ece: Agent review lanes retry once in a fresh reviewer session on transient reviewer errors (configurable via `review.laneRetries`, `0` disables; credential, quota and unknown-model errors are never retried) and report the adapter's own error text. The daemon reviewer host also fails closed on OpenRouter: a lane whose preset, model or auth profile resolves to OpenRouter is refused with a pointer to opencode-go / Claude-subscription presets.
+- 7ff4ece: Retry agent review lanes on transient reviewer errors (review.laneRetries)
+- ed6c48b: Don't hard-stop a session on a self-contradictory usage frame
+- ef89993: Session steward: port the `kill-idle-sessions` cron prototype's mechanical
+  rules into pure, unit-tested functions wired into the workflow — loop
+  detection, stall, never-ran, fast-path done, terminal relabel, self-exclusion,
+  apply-time re-check, explicit 0-candidate reporting, host-saturation header,
+  and verdict memory in `app_state` — and enrich `session_evidence` (origin,
+  outcome, tool stats, last tool call, tokens, live children, previous verdict)
+  with a rewritten concrete-signal wrap-up verdict criteria. Loop/stall nudges
+  are reported only, never sent; user-origin sessions are never nudged or closed.
+- 42de70d: `agent_prompt` (and `POST /sessions/:id/prompt?wait=false`) to a mid-turn session no longer just queues until turn end. When the adapter supports steering (`capabilities.steering`, e.g. claude-code over ACP), the prompt is injected into the running turn at the next safe point (FIFO kept; `interrupt: true` unchanged; `steer: false` opts out). The result now says exactly what happened: `delivery` (`delivered` | `steered` | `queued-mid-turn`), `deliveredAt` when known, and a top-level `pending` boolean (`true` = not yet delivered); `queued: true` and `queueId` stay for compatibility. A prompt that stays queued shows up as `pendingPrompts` (id, origin, preview, `ageMs`, `stale`) in `session_list` and `session_recap`, and once it is older than `defaults.messaging.pendingPromptStaleMinutes` (new, hot, default 5) a one-shot `notice` lands in the sender's inbox (else the target's parent). New `deliverWithin` (seconds) + `deliverWithinVia` (`auto` | `steer` | `interrupt`) on `agent_prompt` make the daemon steer or interrupt a still-queued prompt after a timeout.
+- 15d4c6f: feat(runtime): context checkpoints now carry real content instead of "(… captured in recent digest)" placeholders. `goal` is the session's initial prompt; `tests` comes from the last completion-policy gate (new `lastGate.command`) or the last test-like tool call; `nextStep` from the session's open tasks or last agent message; `errors` from the last `[error]`; `plan` from the last plan notice. `decisions`, `risks` and a better `nextStep` come from an optional handoff turn to the live idle source session (zod-validated JSON, 60s timeout, falls back to extraction; `askSource: false` disables it). `session_checkpoint` and `session_continue_fresh` accept `notes` and `askSource`. Checkpoints gain `schemaVersion: 1`, a `handoffTurn` status, and a published JSON Schema at `@agentproto/runtime/schemas/checkpoint.v1.json`.
+- 41917fd: feat(review): per-lane reviewer fallback. An agent check may declare `fallbackPresets: [...]` (also on a `uses[]` entry and in `uses[].overrides.<id>`); when the lane's reviewer is unavailable — spawn failure, a turn that ends in an error, an empty turn, or a session that exits early, after the per-preset retries — the lane runs on the next preset instead of settling `skipped`. Never after a verdict (a `block` is final), a timeout, a cancel, or an OpenRouter refusal; the chain shares the lane's single `timeoutMs`. The lane records the reviewer that actually ran (`preset`/`model`/`sessionId`) plus `fallbacks: [{ preset, error }]` for each unavailable one, shown in `agentproto review` output and the review panel; an exhausted chain settles the lane `skipped` listing every error.
+- c8d918f: feat(sentinel): `local-gh` can watch a whole repository. A sentinel on the bare subject `github:owner/repo` (`until: never`, e.g. `POST /sentinels {subject, sessionId, provider:"local-gh", until:"never"}` or `sentinel_watch`) delivers, for EVERY PR of the repo and without any LLM polling: `pull_request.opened`, `pull_request.ready_for_review`, one CI verdict per head (`check_suite.completed`, on the first failure or once all checks settle), reviews, and merge/close. One GraphQL call per repo per tick; the first poll only records existing PRs. This gives a supervisor session a second subscription on PRs whose author session is the only target of the per-PR auto-watch.
+- 7677a5c: Session-follow: a session can now follow other sessions it did not spawn and be woken when they end a turn, await input, exit, crash, or get a PR opened/merged. New `session_follow` / `session_unfollow` / `session_follows` MCP tools and `POST|GET /follows`, `DELETE /follows/:idOrKey` routes; follows persist in `~/.agentproto/follows.json`. Events are coalesced per follower (`batchMs`, default 15s) into one `system`/`notice`/`next-turn` digest that never interrupts a busy follower.
+- be03ed4: Suggest a cross-harness handoff at the context or quota limit: `ask`-mode context questions gain `handoff:<harness>` options, a provider usage-limit error and the new `contextContinuity.handoffAtQuotaRemaining` threshold emit a `session:handoff-suggested` event with the `agentproto sessions handoff` command. Suggestions never switch harness on their own.
+- 953ce06: `agent_start` (and `POST /sessions/agent`) accepts an optional `notifySecret` (`whsec_...`) alongside `notifyUrl`: when set, every session-event webhook POST (turn-end/awaiting-input/exited) is signed with Standard Webhooks headers (`webhook-id`/`webhook-timestamp`/`webhook-signature`, HMAC-SHA256), reusing the existing `webhook-egress/signing.ts` contract. The global notify target (`~/.agentproto/notify.json` or `AGENTPROTO_NOTIFY_URL`) gains a matching optional `secret` field / `AGENTPROTO_NOTIFY_SECRET` env var. A target with no secret is posted exactly as before — unauthenticated, `Content-Type` only — so every existing caller sees zero behavior change.
+
+### Patch Changes
+
+- 7d5a6c6: A prompt delivered by interrupting the in-flight turn (`session_queue_deliver` deliver-now, or `agent_prompt`/`sendPrompt` with `interrupt: true`) now opens with a one-line `[agentproto]` notice telling the model its previous turn was cut to deliver this message (naming the origin) and that it is NOT a stop request. Previously the model saw only a cancelled turn followed by a new prompt — indistinguishable from a human Esc — and a supervisor could park itself waiting for a go-ahead. A bare stop (`agent_interrupt`) adds no notice. The events-log `notice` is unchanged.
+- d7986c9: Stop answering `server/discover` with the unserved 2026-07-28 protocol version. Claude Code 2.1.280 switched to the "modern" era on it, got an invalid `tools/list` and mounted 0 tools; the SDK now answers `-32601` so clients stay on 2025-11-25. `events/*` methods and the `events` capability at `initialize` are unchanged.
+
+  `agent_start` docs: a `mcpServers` descriptor does not guarantee the child loaded any tools.
+
+- cf17fd2: Tell the model a deliver-now interrupt is a delivery, not a stop
+- 5787677: Declare own-login auth for copilot-cli, antigravity, mastracode-inprocess
+- ef4523f: Review lanes fail closed on OpenRouter: the daemon reviewer host now refuses to spawn a lane whose preset, model, or auth profile (billing endpoint) resolves to OpenRouter, returning a failed review with a message pointing at opencode-go / Claude-subscription presets instead of silently spending pay-per-token credit.
+- 603aad9: fix(sentinel): `local-gh` now emits the terminal `pull_request.closed` event for a PR that was already merged/closed on its baseline poll (sentinel created after the close, or the PR closed before the first tick). Previously no open-to-closed transition was ever observed, so `until: subject_terminal` sentinels stayed `active` forever; existing stuck sentinels heal on their next poll.
+- 9c7f686: Bring the always-on MCP `tools/list` back under its 60 KB budget: `agent_start`'s `notifySecret` field is now a one-line description pointing at `tool_help {name:"agent_start", topic:"notifySecret"}` (full text moved to the help doc), and `agent_prompt`'s description is tightened without changing its contract.
+- 205bade: `agentproto steward` goes back to the end-of-session wrap-up as its default:
+  judge idle agent sessions, then close or flag them (dry run unless `--apply`).
+  The attention-digest workflow (`session-attention`) and its `--wrapup` /
+  `--include-children` / `--format` flags are removed from the open-source
+  steward; the open-source steward keeps the minimal idle / done / errored policy
+  with explicit close.
+- Updated dependencies [1487de1]
+- Updated dependencies [c72bbd4]
+- Updated dependencies [0dd095d]
+- Updated dependencies [d7986c9]
+- Updated dependencies [f4ac811]
+- Updated dependencies [2049adb]
+- Updated dependencies [58d5a41]
+- Updated dependencies [2049adb]
+- Updated dependencies [530c3ec]
+- Updated dependencies [38b5538]
+- Updated dependencies [5787677]
+- Updated dependencies [ef89993]
+- Updated dependencies [41917fd]
+- Updated dependencies [205bade]
+  - @agentproto/app-kit@1.6.0
+  - @agentproto/pairing-host@0.2.4
+  - @agentproto/mcp-server@0.6.1
+  - @agentproto/driver-agent-cli@2.8.0
+  - @agentproto/apps@0.19.0
+  - @agentproto/secrets@1.3.0
+  - @agentproto/review@0.5.0
+  - @agentproto/acp@0.10.0
+  - @agentproto/sandbox@0.8.2
+
 ## 5.9.0
 
 ### Minor Changes
