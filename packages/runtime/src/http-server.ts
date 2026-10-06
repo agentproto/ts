@@ -179,6 +179,7 @@ import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import { projectSessionUsage } from "./usage.js"
 import { rollupSessionSubtree } from "./usage-subtree.js"
 import { buildSessionCapabilities } from "./session-capabilities.js"
+import type { McpObservationStore } from "./mcp-session-observer.js"
 import {
   collectSessionSnapshots,
   enrichRollupWithAccountCredits,
@@ -871,6 +872,14 @@ export interface RuntimeHttpServerOptions {
     allowTools?: ReadonlySet<string>,
     surface?: string,
   ) => Promise<McpServer>
+  /**
+   * Optional — when wired, every `/mcp` request carrying a
+   * `?callerSessionId=` has its `initialize` / `server/discover` /
+   * `tools/list` outcome recorded per session (see `mcp-session-observer.ts`)
+   * so `session_capabilities` can report what the harness actually loaded.
+   * Absent → `/mcp` behaves exactly as before.
+   */
+  mcpObservations?: McpObservationStore
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -1708,7 +1717,12 @@ export async function startHttpServer(
     req: IncomingMessage,
     res: ServerResponse,
     server: McpServer,
+    observedSessionId?: string,
   ): Promise<void> {
+    // Read BEFORE the coercion below rewrites it: the observer reports the era
+    // the client actually asked for.
+    const rawVersionHeader = req.headers["mcp-protocol-version"]
+    const clientProtocolVersion = Array.isArray(rawVersionHeader) ? rawVersionHeader[0] : rawVersionHeader
     coerceUnsupportedProtocolVersionHeader(req)
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -1731,9 +1745,25 @@ export async function startHttpServer(
       void server.close()
     })
 
+    const observations = observedSessionId ? opts.mcpObservations : undefined
+    let sawMessage = false
     try {
       await server.connect(transport)
+      if (observations && observedSessionId) {
+        observations.observe(transport, {
+          sessionId: observedSessionId,
+          ...(clientProtocolVersion ? { clientProtocolVersion } : {}),
+        })
+        const innerOnMessage = transport.onmessage
+        transport.onmessage = (message, extra) => {
+          sawMessage = true
+          innerOnMessage?.(message, extra)
+        }
+      }
       await transport.handleRequest(req, res)
+      if (observations && observedSessionId && !sawMessage && req.method === "POST" && res.statusCode >= 400) {
+        observations.recordHttpError(observedSessionId, res.statusCode)
+      }
     } catch (err) {
       const line = mcpErrorLogGate.onFailure(
         "mcp:handleRequest",
@@ -1832,7 +1862,7 @@ export async function startHttpServer(
       return
     }
     const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools, surface)
-    await serveMcp(req, res, server)
+    await serveMcp(req, res, server, callerSessionId)
   }
 
   /**
@@ -2727,6 +2757,7 @@ export async function startHttpServer(
             opts.ensureLlmEndpointRunning,
             opts.listAgentAdapters,
             opts.deviceMirrorSync,
+            opts.mcpObservations,
           )
           if (handled) return
         }
@@ -5961,6 +5992,7 @@ async function handleSessions(
   // BOOTSTRAP P7b — the device-mirror read-sync hook. Absent ⇒ no sync
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
+  mcpObservations?: McpObservationStore,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -7398,7 +7430,7 @@ async function handleSessions(
     // `availableModes` from the live agent session — see `stampLiveModes`.
     const fresh = registry.get(desc.id) ?? desc
     const pendingPermissions = registry.listPendingPermissions({ sessionId: fresh.id }).length
-    json(200, buildSessionCapabilities(fresh, pendingPermissions))
+    json(200, buildSessionCapabilities(fresh, pendingPermissions, mcpObservations?.get(fresh.id)))
     return true
   }
 

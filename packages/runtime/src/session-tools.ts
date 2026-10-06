@@ -75,6 +75,7 @@ import {
   computeContextPct,
 } from "./context-continuity.js"
 import { buildSessionCapabilities } from "./session-capabilities.js"
+import type { McpObservationStore } from "./mcp-session-observer.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
@@ -404,6 +405,9 @@ export function buildSessionTree(
 
 export interface RegisterSessionToolsOptions {
   registry: SessionsRegistry
+  /** What each session's harness actually loaded from the daemon's `/mcp`
+   *  mount; folded into `session_capabilities.mcpServers`. */
+  mcpObservations?: McpObservationStore
   /** Absolute path to the workspace root the daemon is bound to — the
    *  SAME workspace `command_execute` gates against. Required (not
    *  optional) on purpose: `terminal_start` resolves its terminal-gate
@@ -1748,7 +1752,7 @@ export function registerSessionTools(
       const pendingPermissions = registry.listPendingPermissions({ sessionId: fresh.id }).length
       return {
         content: [
-          { type: "text", text: JSON.stringify(buildSessionCapabilities(fresh, pendingPermissions)) },
+          { type: "text", text: JSON.stringify(buildSessionCapabilities(fresh, pendingPermissions, opts.mcpObservations?.get(fresh.id))) },
         ],
       }
     },

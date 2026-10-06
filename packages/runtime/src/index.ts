@@ -162,6 +162,7 @@ import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import { createSessionEventBus } from "./session-event-bus.js"
+import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-session-observer.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
@@ -1908,6 +1909,9 @@ export async function createGateway(
   // Declared before the sessions registry so we can pass the bus into it.
   const sessionEvents = createSessionEventBus()
   const eventRing = createEventRing()
+  // What each session's harness actually loaded from this daemon's `/mcp`
+  // mount (fed by `startHttpServer`, read by `session_capabilities`).
+  const mcpObservations = createMcpObservationStore()
   // Wire the ring so every session:* event is buffered for session_events_poll.
   eventRing.wire(sessionEvents)
   // Wire the webhook notifier so per-session and global URLs are
@@ -2486,6 +2490,13 @@ export async function createGateway(
   // crashed child's live parent, without ever interrupting a busy one. See
   // supervisor-notify.ts's header doc for the full contract.
   wireSupervisorNotify({ registry: sessions, sessionEvents })
+  // `mcp:degraded`: a session that ended a turn without its harness ever
+  // loading (or while it failed to load) the daemon's own `/mcp` tools.
+  wireMcpDegradedWarnings({
+    sessionEvents,
+    getSession: id => sessions.get(id),
+    store: mcpObservations,
+  })
 
   // Activity projector — the unified active/pending read-model over
   // completion policies, session turns, workflow steps, and opened PRs
@@ -2930,6 +2941,7 @@ export async function createGateway(
     // singletons on the gateway, same closure-rebind pattern.
     registerSessionTools(server, {
       registry: sessions,
+      mcpObservations,
       workspace,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
@@ -3406,6 +3418,7 @@ export async function createGateway(
   const http = await startHttpServer({
     port,
     bind: opts.bind,
+    mcpObservations,
     // Auth is read on every request via this getter. `opts.auth`
     // (when provided) is the startup default and represents the
     // operator's intent — bearer-only deployments stay bearer-only
