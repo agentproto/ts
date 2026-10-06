@@ -98,9 +98,9 @@ export function findStaleVersions(text, version) {
   return out
 }
 
-/** HTML comments (`<!-- … -->`) — legal Markdown, fatal in MDX. cli.agentproto.sh
- *  compiles every `docs/cli/**` page as MDX, so one of these takes the whole
- *  site build down (ts#1256). Skipped inside fenced code blocks: a doc showing
+/** HTML comments (`<!-- … -->`) — legal Markdown, fatal in MDX. `docs/cli/**`
+ *  pages must stay MDX-compilable (the retired cli site compiled them as MDX
+ *  and one of these took its whole build down, ts#1256). Skipped inside fenced code blocks: a doc showing
  *  real HTML is a legitimate use. Pure. */
 export function findMdxComments(text) {
   const out = []
@@ -222,7 +222,7 @@ function printGaps({ verbs, missingVerbs, staleVersions, mdxComments, version })
   for (const c of mdxComments) {
     console.log(
       `  ✗ MDX-hostile HTML comment in ${c.file}:${c.line}: "${c.snippet}" — ` +
-        'use {/* … */} instead: docs/cli/** is compiled as MDX by cli.agentproto.sh, where `<!--` is a fatal parse error.'
+        'use {/* … */} instead: docs/cli/** must stay MDX-compilable, and in MDX `<!--` is a fatal parse error.'
     )
   }
   if (!missingVerbs.length && !staleVersions.length && !mdxComments.length) console.log('  ✓ docs in sync')

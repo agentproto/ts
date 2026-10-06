@@ -12,9 +12,9 @@
  * `agentproto sessions`.
  *
  * `--qr` renders `phoneUrl` (PHONE-PLAN.md P1.2) as an in-terminal QR code
- * so a phone can scan it straight into Control Center, or the hosted panel
- * when session-chat isn't installed — see `EnableResult.phoneUrl`'s doc in
- * remote-controller.ts for the two link shapes.
+ * so a phone can scan it straight into Control Center. Only present when
+ * session-chat is installed — see `EnableResult.phoneUrl`'s doc in
+ * remote-controller.ts.
  */
 import { parseArgs } from "node:util"
 import type { EnableResult, RemoteStatus } from "@agentproto/runtime"
@@ -44,8 +44,8 @@ enable  By default exposes the daemon's own gateway and gates it with a
         own auth). Re-running while a tunnel is already active errors — run
         \`agentproto remote disable\` first to rotate.
 --qr    Print the response's \`phoneUrl\` as an in-terminal QR code (gateway
-        mode only) — scan it to open Control Center (or the hosted panel,
-        if session-chat isn't installed) straight from a phone.
+        mode, with session-chat installed) — scan it to open Control
+        Center straight from a phone.
 
 Examples:
   agentproto remote enable --qr
@@ -147,7 +147,8 @@ async function runEnable(args: readonly string[]): Promise<number> {
     } else {
       process.stderr.write(
         "agentproto remote enable: --qr has nothing to render — no phoneUrl " +
-          "(passthrough --target-port tunnels don't get one).\n",
+          "(passthrough --target-port tunnels don't get one, and it needs the " +
+          "@agentik/session-chat app installed).\n",
       )
     }
   }

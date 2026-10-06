@@ -72,24 +72,22 @@ that only ever appears once, in `enable`'s own response.
 
 `enable`'s response (and MCP `remote_enable`'s) includes a `phoneUrl`: one
 link that gets a phone straight into a live view of this daemon, no typing
-required. Its shape depends on what's installed:
+required. It points at the `@agentik/session-chat` app:
+`<tunnelUrl>/apps/@agentik/session-chat/ui#token=<t>`, so it is only present
+when that app is installed with a UI. There is no hosted fallback panel; to
+connect a phone without session-chat, pair it through rendezvous instead
+(`agentproto pair offer --qr`, see [pairing](../concepts/pairing.md)).
 
-- **`@agentik/session-chat` app installed** — `phoneUrl` points directly at
-  it: `<tunnelUrl>/apps/@agentik/session-chat/ui#token=<t>`.
-- **not installed** — falls back to the hosted panel:
-  `https://cli.agentproto.sh/panel#daemon=<tunnelUrl>&token=<t>`.
-
-In both shapes the token rides in the URL **fragment** (`#token=…`), never a
+The token rides in the URL **fragment** (`#token=…`), never a
 `?` query string. A fragment is never sent to a server — no `Referer`
 header, no access/proxy log line, no CDN cache key — so the link is exactly
 as safe to generate as it is to *display* (a screenshot or shoulder-surf is
 the only leak surface, same as the bearer text printed above it). The
-receiving page (session-chat, or the hosted panel) reads the fragment client
--side and immediately strips it from the address bar.
+receiving page (session-chat) reads the fragment client-side and immediately strips it from the address bar.
 
-`phoneUrl` is omitted whenever `bearerToken`/`mcpEndpoint` are — i.e. for a
-`--target-port` passthrough tunnel, since there's no daemon UI to link a
-phone to in that mode.
+`phoneUrl` is also omitted whenever `bearerToken`/`mcpEndpoint` are — i.e.
+for a `--target-port` passthrough tunnel, since there's no daemon UI to link
+a phone to in that mode.
 
 ## Security model
 

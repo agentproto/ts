@@ -2,7 +2,7 @@
  * The per-daemon pair page, as a page consumes it through the public entry:
  * the QR link resolves `{fp}` to the daemon's own origin, the page can check it
  * is that origin (`expectedPairHost` vs `location.host`), and that per-daemon
- * page is the default. The shared `cli.agentproto.sh` page stays selectable.
+ * page is the default. A self-hosted shared-origin page stays selectable.
  */
 
 import { describe, it, expect } from "vitest"
@@ -13,7 +13,6 @@ import {
   expectedPairHost,
   DEFAULT_PAIR_PAGE,
   inspectOffer,
-  PAIR_WEB_URL,
   PAIR_WEB_URL_TEMPLATE_CLOUD,
 } from "../index.js"
 
@@ -52,8 +51,8 @@ describe("per-daemon pair page", () => {
     const { url, fingerprint } = await offerUrl()
     expect(DEFAULT_PAIR_PAGE).toBe(PAIR_WEB_URL_TEMPLATE_CLOUD)
     expect(new URL(encodeOfferWebUrl(url)).host).toBe(`${fingerprint}.agentproto.cloud`)
-    expect(PAIR_WEB_URL).toBe("https://cli.agentproto.sh/pair")
-    expect(new URL(encodeOfferWebUrl(url, PAIR_WEB_URL)).host).toBe("cli.agentproto.sh")
-    expect(expectedPairHost(PAIR_WEB_URL, fingerprint)).toBe("cli.agentproto.sh")
+    const shared = "https://pair.example.com/pair"
+    expect(new URL(encodeOfferWebUrl(url, shared)).host).toBe("pair.example.com")
+    expect(expectedPairHost(shared, fingerprint)).toBe("pair.example.com")
   })
 })

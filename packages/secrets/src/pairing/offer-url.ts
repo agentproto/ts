@@ -82,11 +82,6 @@ export const OFFER_URL_HOST = "pair" as const
 /** Offer-format version. Bumped if the param set changes. v2: `s` (a secret
  *  that never goes on the wire) replaces v1's `t` (route-and-proof). */
 export const OFFER_VERSION = 2 as const
-/** A single shared-origin page for the web form of an offer: every daemon's
- *  pairing on one origin (AIP-59 §5.8 fallback, which exposes each pairing to
- *  every other paired daemon's UI). Not the default: select it explicitly with
- *  `pairing.pairPage` / `--pair-page`. */
-export const PAIR_WEB_URL = "https://cli.agentproto.sh/pair" as const
 /** Placeholder for the daemon fingerprint in a pair-page template. Allowed in
  *  the hostname only. */
 export const PAIR_PAGE_FP_PLACEHOLDER = "{fp}" as const

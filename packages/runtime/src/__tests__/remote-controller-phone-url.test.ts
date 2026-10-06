@@ -2,9 +2,9 @@
  * `RemoteController.enable()`'s `phoneUrl` (PHONE-PLAN.md P1.2) — a single
  * link a phone can open, with the bearer riding in a URL *fragment*
  * (`#token=`), never a `?` query string (fragments never reach a server).
- * Two shapes, chosen by `isSessionChatInstalled`:
- *   - installed:     `<publicUrl>/apps/@agentik/session-chat/ui#token=<t>`
- *   - not installed: `https://cli.agentproto.sh/panel#daemon=<publicUrl>&token=<t>`
+ * Only emitted when `isSessionChatInstalled` says yes:
+ *   `<publicUrl>/apps/@agentik/session-chat/ui#token=<t>`. There is no hosted
+ *   panel fallback anymore (the hosted cli-site panel is retired).
  * Mocks the quick-tunnel provider so no real `cloudflared` process is
  * spawned — `start()` resolves immediately with a fake public URL.
  */
@@ -49,7 +49,7 @@ describe("RemoteController.enable() — phoneUrl", () => {
     )
   })
 
-  it("falls back to the hosted panel when session-chat isn't installed", async () => {
+  it("omits phoneUrl when session-chat isn't installed (no hosted panel fallback)", async () => {
     dir = await mkdtemp(join(tmpdir(), "agentproto-remote-phoneurl-"))
     const controller = new RemoteController({
       workspace: dir,
@@ -58,18 +58,16 @@ describe("RemoteController.enable() — phoneUrl", () => {
     })
     const result = await controller.enable({})
     expect(result.bearerToken).toBeTruthy()
-    expect(result.phoneUrl).toBe(
-      `https://cli.agentproto.sh/panel#daemon=${encodeURIComponent(FAKE_PUBLIC_URL)}&token=${result.bearerToken}`,
-    )
+    expect(result.mcpEndpoint).toBe(`${FAKE_PUBLIC_URL}/mcp`)
+    expect(result.phoneUrl).toBeUndefined()
   })
 
-  it("also falls back to the hosted panel when isSessionChatInstalled is omitted", async () => {
+  it("also omits phoneUrl when isSessionChatInstalled is omitted", async () => {
     dir = await mkdtemp(join(tmpdir(), "agentproto-remote-phoneurl-"))
     const controller = new RemoteController({ workspace: dir, port: 18790 })
     const result = await controller.enable({})
-    expect(result.phoneUrl).toBe(
-      `https://cli.agentproto.sh/panel#daemon=${encodeURIComponent(FAKE_PUBLIC_URL)}&token=${result.bearerToken}`,
-    )
+    expect(result.bearerToken).toBeTruthy()
+    expect(result.phoneUrl).toBeUndefined()
   })
 
   it("omits phoneUrl for a passthrough tunnel (targetPort != gateway port)", async () => {

@@ -139,7 +139,7 @@ describe("pairing.pairPage", () => {
   })
 
   it("validates as a URL or {fp}-in-hostname template, in the key and the whole-file schema", () => {
-    for (const ok of ["https://cli.agentproto.sh/pair", "https://{fp}.agentproto.cloud/pair", "http://{fp}.localhost:3000/pair"]) {
+    for (const ok of ["https://pair.example.com/pair", "https://{fp}.agentproto.cloud/pair", "http://{fp}.localhost:3000/pair"]) {
       expect(validateConfigKeyType("pairing.pairPage", ok), ok).toEqual({ ok: true })
       expect(validateConfig({ pairing: { pairPage: ok } }).ok, ok).toBe(true)
     }

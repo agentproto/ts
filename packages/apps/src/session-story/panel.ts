@@ -221,7 +221,7 @@ export const SESSION_STORY_PANEL_HTML = `<!doctype html>
         <div class="h2" id="heroSub"></div>
       </div>
       <div class="modewrap"><button id="modeSimple" class="on" type="button">Simple</button><button id="modeTech" type="button">Tech</button></div>
-      <a class="sim" id="fullPanelLink" href="#" target="_blank" rel="noopener" title="Ouvrir le panneau complet (Terminal/Chat/JSON/TTY)">&#8599; panneau complet</a>
+      <a class="sim hidden" id="fullPanelLink" href="#" target="_blank" rel="noopener" title="Ouvrir la session en direct (live-session du daemon)">&#8599; panneau complet</a>
       <button class="sim" id="switchBtn" type="button">&#8646; changer</button>
     </div>
     <div class="plan" id="plan"></div>
@@ -581,7 +581,13 @@ function openSession(id){
   lastSeenOutputAt=null;
   $('pickerScreen').classList.add('hidden');
   $('storyScreen').classList.remove('hidden');
-  $('fullPanelLink').href='https://cli.agentproto.sh/panel?session='+encodeURIComponent(id);
+  // Deep-link to the daemon's own live-session panel (GET /apps/:appId/ui
+  // pins it via ?sessionId=). Only resolvable when this panel is itself
+  // served standalone by the daemon; inside an MCP host iframe the origin
+  // isn't the daemon's, so the link stays hidden rather than dead.
+  var daemonOrigin=(location.pathname.indexOf('/apps/')===0&&location.origin&&location.origin!=='null')?location.origin:'';
+  $('fullPanelLink').href=daemonOrigin?daemonOrigin+'/apps/@agentproto/live-session/ui?sessionId='+encodeURIComponent(id):'#';
+  $('fullPanelLink').classList.toggle('hidden',!daemonOrigin);
   closePanel();
   loadStory().then(renderAll);
 }
