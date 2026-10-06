@@ -312,4 +312,15 @@ describe("sessionChatApp (AppHandle / catalog path)", () => {
       ]),
     )
   })
+
+  it("allowlists the artifact tools so the chat UI can create and manage artifacts", () => {
+    expect(sessionChatApp.ui?.tools).toEqual(
+      expect.arrayContaining([
+        "session_artifact_add",
+        "session_artifact_list",
+        "session_artifact_get",
+        "session_artifact_pin",
+      ]),
+    )
+  })
 })
