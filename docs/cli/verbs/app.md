@@ -423,16 +423,13 @@ Exit `0` iff ALL of:
 2. Every declared workflow loads via `@agentproto/workflow-loader` —
    harness blocks, `promptFile` resolution, and `kind: gate` steps are
    validated there.
-3. Every `ui.tools` entry is a known daemon tool or any `app_*` tool. There
-   is no authoritative exported tool-name list in the daemon today, so the
-   CLI validates against a documented static list of the
-   orchestration/session surface (`agent_start`, `agent_prompt`,
-   `agent_output`, `agent_kill`, `agent_export`, `session_list`,
-   `session_monitor`, `session_events_poll`, `session_tree`,
-   `session_set_keepalive`, `message_parent`, `command_execute`,
-   `permissions_list`, `permissions_respond`, `task_create`, `task_list`,
-   `task_claim`, `task_update`, `daemon_health`) plus the whole `app_*`
-   family.
+3. Every `ui.tools` entry is a tool the daemon registers or any `app_*`
+   tool. The daemon list is `DAEMON_TOOL_NAMES`
+   (`@agentproto/runtime/daemon-tool-names`), generated from a real
+   gateway's `tools/list` with every optional surface wired (workflows,
+   pairing/devices, llm-endpoint, ...) and kept exact by a runtime test, so
+   it follows the daemon of the same release. A tool added in a newer daemon
+   needs a CLI from that release.
 4. When APP.md declares `data.dir`, `<dir>/<data.dir>/DATA.md` exists (the
    data plane must ship its key dictionary — see `data/DATA.md`).
 5. When APP.md declares `verify.command`, it is run — argv-split on

@@ -282,6 +282,44 @@ describe("agentproto app validate", () => {
     ).toBe(true)
   })
 
+  it("accepts any tool the daemon registers in ui.tools (session-chat's surface)", async () => {
+    const appDir = await scaffoldTrame("daemon-tools")
+    const appMdPath = join(appDir, ".agentproto", "APP.md")
+    const appMd = await readFile(appMdPath, "utf8")
+    const tools = [
+      "adapter_list",
+      "catalog_models",
+      "auth_profile_list",
+      "agent_interrupt",
+      "session_queue_list",
+      "session_rename",
+      "conversation_read",
+      "message_send",
+      "session_capabilities",
+      "agent_set_model",
+      "session_compact",
+      "session_artifact_list",
+      "session_bg_task_tail",
+      "activities_list",
+      "cron_list",
+      "device_list",
+      "user_preset_list",
+      "mcp_app_ui_index",
+    ]
+    await writeFile(
+      appMdPath,
+      appMd.replace(
+        "    - app_state_list\n",
+        "    - app_state_list\n" + tools.map((t) => `    - ${t}\n`).join(""),
+      ),
+      "utf8",
+    )
+
+    const { stdout } = await captureJson(() => runAppValidate([appDir, "--json"]))
+    const report = parseReport(stdout)
+    expect(report.findings.filter((f) => f.scope === "ui.tools")).toEqual([])
+  })
+
   it("fails — and propagates the exit code shape — when verify.command exits 1", async () => {
     const appDir = await scaffoldTrame("failing-verify")
     await writeFile(
