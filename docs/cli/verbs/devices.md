@@ -252,7 +252,8 @@ drop the registered device separately if needed.
 A box daemon started with a valid `AGENTPROTO_JOIN` URL dials in at boot and
 this daemon adds it to its host registry automatically (same effect as
 running `agentproto devices add` by hand, but fully automated). See also the
-`AGENTPROTO_JOIN` boot-time handling in [`serve.md`](./serve.md#agentproto_join).
+`AGENTPROTO_JOIN` boot-time handling in
+[`serve.md`](./serve.md#agentproto_join--auto-register-as-a-host-at-boot).
 
 ## See also
 

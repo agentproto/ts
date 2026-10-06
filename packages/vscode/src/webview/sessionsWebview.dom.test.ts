@@ -539,6 +539,63 @@ describe("sessions webview — interactions", () => {
     expect(panel.posted).toEqual([{ type: "pin", id: "s1", pinned: false }])
   })
 
+  describe("pinned reorder controls", () => {
+    const pinnedRoots = (): Record<string, unknown>[] => [
+      { ...ROW_A, id: "p1", pinned: true, depth: 0 },
+      { ...ROW_A, id: "p2", pinned: true, depth: 0 },
+      { ...ROW_A, id: "p3", pinned: true, depth: 0 },
+    ]
+
+    it("first pinned root has no move-up, last has no move-down, middle has both", () => {
+      const panel = renderPanel()
+      send(panel, modelMessage({ groups: [group("pinned", "Pinned", pinnedRoots())] }))
+      const list = el(panel, "list")
+      expect(list.querySelector('[data-id="p1"] [data-move-up]')).toBeNull()
+      expect(list.querySelector('[data-id="p1"] [data-move-down]')).toBeTruthy()
+      expect(list.querySelector('[data-id="p2"] [data-move-up]')).toBeTruthy()
+      expect(list.querySelector('[data-id="p2"] [data-move-down]')).toBeTruthy()
+      expect(list.querySelector('[data-id="p3"] [data-move-up]')).toBeTruthy()
+      expect(list.querySelector('[data-id="p3"] [data-move-down]')).toBeNull()
+    })
+
+    it("renders no move buttons outside the Pinned group or on nested pinned rows", () => {
+      const panel = renderPanel()
+      send(
+        panel,
+        modelMessage({
+          groups: [
+            group("pinned", "Pinned", [
+              { ...ROW_A, id: "p1", pinned: true, depth: 0 },
+              { ...ROW_A, id: "child", pinned: true, depth: 1 },
+              { ...ROW_A, id: "p2", pinned: true, depth: 0 },
+            ]),
+            group("running", "Running", [{ ...ROW_A, id: "r1", pinned: false }]),
+          ],
+        }),
+      )
+      const list = el(panel, "list")
+      expect(list.querySelector('[data-id="child"] [data-move-up]')).toBeNull()
+      expect(list.querySelector('[data-id="child"] [data-move-down]')).toBeNull()
+      expect(list.querySelector('[data-id="r1"] [data-move-up]')).toBeNull()
+      expect(list.querySelector('[data-id="r1"] [data-move-down]')).toBeNull()
+      // The nested child doesn't count as a root: p2 is the last root.
+      expect(list.querySelector('[data-id="p2"] [data-move-down]')).toBeNull()
+      expect(list.querySelector('[data-id="p2"] [data-move-up]')).toBeTruthy()
+    })
+
+    it("clicking move-down / move-up posts {type:'movePinned', id, direction}", () => {
+      const panel = renderPanel()
+      send(panel, modelMessage({ groups: [group("pinned", "Pinned", pinnedRoots())] }))
+      panel.posted.length = 0
+      click(panel, el(panel, "list").querySelector('[data-id="p2"] [data-move-down]')!)
+      click(panel, el(panel, "list").querySelector('[data-id="p2"] [data-move-up]')!)
+      expect(panel.posted).toEqual([
+        { type: "movePinned", id: "p2", direction: "down" },
+        { type: "movePinned", id: "p2", direction: "up" },
+      ])
+    })
+  })
+
   it("renders a dedicated Pinned group header distinct from the attention sections", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("pinned", "Pinned", [{ ...ROW_A, pinned: true }]), group("running", "Running", [ROW_A])] }))

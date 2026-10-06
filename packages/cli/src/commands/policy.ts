@@ -590,10 +590,21 @@ async function runLs(args: readonly string[]): Promise<number> {
   )
   for (const p of policies) {
     process.stdout.write(
-      `${p.policyId.padEnd(14)}  ${p.status.padEnd(13)}  ${String(p.sessionIds.length).padEnd(10)}  ${p.startedAt}\n`,
+      `${p.policyId.padEnd(14)}  ${p.status.padEnd(13)}  ${String(policySessionCount(p)).padEnd(10)}  ${p.startedAt}\n`,
     )
   }
   return 0
+}
+
+/** Sessions a policy watches, for the SESSIONS column. The daemon's
+ *  pre-fan-in persisted snapshots carry only `sessionId` — terminal
+ *  policies are reloaded verbatim (supervisor.ts keeps their state as-is),
+ *  so `sessionIds` can be absent at runtime even though the current
+ *  PolicyRunState type declares it required. Count the fan-in group when
+ *  present, else 1 for the representative `sessionId`, else 0. */
+function policySessionCount(p: PolicyRunState): number {
+  if (Array.isArray(p.sessionIds)) return p.sessionIds.length
+  return p.sessionId ? 1 : 0
 }
 
 // ── cancel ───────────────────────────────────────────────────────────────

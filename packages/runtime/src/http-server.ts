@@ -84,6 +84,12 @@ import {
   sentinelView,
   type SentinelWatchInput,
 } from "./sentinel-tools.js"
+import {
+  followView,
+  removeSessionFollow,
+  upsertSessionFollow,
+  type SessionFollowDeps,
+} from "./session-follow-tools.js"
 
 /** Deps for the `/sentinels/*` HTTP routes — the same shape
  *  `registerSentinelTools` closes over, minus `defaultSessionId` (an HTTP
@@ -220,6 +226,9 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
+import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
+import { computeContextPct } from "./context-continuity.js"
+import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -615,6 +624,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    * restart even when a native resume id is available.
    */
   nativeTerminalResume?: boolean
+  /**
+   * Manifest-declared `capabilities.nativeToolSearch` (AIP-45) — the
+   * harness defers mounted MCP tools behind its own search tool, so the
+   * daemon's self-mount defaults to EAGER for it rather than double-deferring
+   * (see `resolveSpawnDeferredTools`). Omitted/`false` ⇒ role/daemon default.
+   */
+  nativeToolSearch?: boolean
 } | null>
 
 /**
@@ -1028,6 +1044,10 @@ export interface RuntimeHttpServerOptions {
    *  sentinel watch|list|rm|status` (the CLI has no in-process registry to
    *  call, unlike the MCP `sentinel_*` tools). Without it the routes 404. */
   sentinels?: SentinelHttpDeps
+  /** Optional — when wired, exposes `POST|GET /follows` and
+   *  `DELETE /follows/:idOrKey` (session-follow: wake a session on other
+   *  sessions' events). Without it the routes 404. */
+  follows?: Pick<SessionFollowDeps, "store" | "hasSession">
   /** Optional — when wired (i.e. `features.llmEndpoint` is on), exposes
    *  `GET /llm-endpoint/status` + `POST /llm-endpoint/restart` for
    *  `agentproto llm gateway status|restart` and the "LLM gateway" doctor
@@ -4112,6 +4132,12 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // Session-follow routes — /follows, /follows/:idOrKey.
+        if (opts.follows && (path === "/follows" || path.startsWith("/follows/"))) {
+          const handled = await handleFollows(req, res, path, opts.follows)
+          if (handled) return
+        }
+
         // llm-endpoint routes — only registered when the gateway was built
         // with an LlmEndpointRegistry (features.llmEndpoint on).
         // /llm-endpoint/status, /llm-endpoint/restart.
@@ -5049,6 +5075,7 @@ export function buildSpawnSessionHttpArgs(
   const attach =
     b.attach !== undefined ? parseWithJsonTolerance(attachFieldSchema, b.attach) : undefined
   const notifyUrl = parseNotifyUrlField(b.notifyUrl)
+  const notifySecret = parseNotifySecretField(b.notifySecret)
   const agentStartParity: Pick<
     SpawnAgentSessionInput,
     | "commandSandbox"
@@ -5059,6 +5086,7 @@ export function buildSpawnSessionHttpArgs(
     | "deferredTools"
     | "attach"
     | "notifyUrl"
+    | "notifySecret"
   > = {
     ...(commandSandbox !== undefined ? { commandSandbox } : {}),
     ...(skills !== undefined ? { skills } : {}),
@@ -5068,6 +5096,7 @@ export function buildSpawnSessionHttpArgs(
     ...(deferredTools !== undefined ? { deferredTools } : {}),
     ...(attach !== undefined ? { attach } : {}),
     ...(notifyUrl !== undefined ? { notifyUrl } : {}),
+    ...(notifySecret !== undefined ? { notifySecret } : {}),
   }
   // Per-session headless browser — the HTTP twin of the MCP `agent_start`
   // tool's `browser` field (`true` is sugar for "headless"). Hoisted into a
@@ -5360,12 +5389,27 @@ export function buildSpawnSessionHttpArgs(
  *                                    requires sessionEvents + eventRing wired). Query:
  *                                    event=turn-end|awaiting-input|exited|any (default any),
  *                                    since=<cursor>, timeoutMs=<n> (default 25000, cap 55000).
+ *   POST   /sessions/:id/checkpoint → build + persist a context-continuity
+ *                                    checkpoint; body { notes? }; returns
+ *                                    { checkpointId, path, checkpoint }
+ *   POST   /sessions/:id/handoff  → checkpoint + spawn a NEW session on another
+ *                                    harness; body { to, model?, access?,
+ *                                    notes?, dryRun? }; dryRun builds the
+ *                                    checkpoint only (no write, no spawn)
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
  *                                    {pinned: boolean}; returns {ok, sessionId,
  *                                    pinned}. Pure sort/display state — the
  *                                    HTTP twin of the `session_set_pinned`
  *                                    MCP verb, never touches keepAlive/reaper.
+ *   POST   /sessions/pinned/order  → manually reorder the pinned group, body
+ *                                    {ids: string[]}; returns {ok, ids}. Every
+ *                                    id must exist and be pinned (404 unknown,
+ *                                    400 unpinned/duplicate, error
+ *                                    "reorder_pinned_failed"). Unlisted pinned
+ *                                    sessions keep their relative order and
+ *                                    follow. Matched BEFORE the /sessions/:id
+ *                                    routes so "pinned" isn't read as an id.
  *   POST   /sessions/:id/interrupt → cancel the in-flight turn, leave the
  *                                    session alive and idle; returns
  *                                    {ok, id, wasBusy}. No-op (wasBusy:
@@ -5393,6 +5437,51 @@ export function buildSpawnSessionHttpArgs(
  *                                      location?, baseUrl?, binPath? }
  *                                    (requires `resolveBrowserAdapter` wired)
  */
+/** HTTP status for a `spawnAgentSession` failure code — shared by
+ *  `POST /sessions/agent` and `POST /sessions/:id/handoff`. */
+function spawnFailureStatus(code: string): number {
+  if (code === "adapter_not_found" || code === "no_cwd") return 404
+  if (code === "orchestrator_not_enabled") return 501
+  if (
+    code === "orchestrator_max_depth_exceeded" ||
+    code === "orchestrator_child_quota_exceeded" ||
+    code === "role_spawn_denied"
+  ) {
+    return 409
+  }
+  if (
+    code === "invalid_role" ||
+    code === "browser_unsupported" ||
+    code === "worktree_requires_explicit_repo" ||
+    code === "device_spawn_requires_repo_identity" ||
+    code === "device_bridge_workspace_unknown" ||
+    code === "access_profile_not_found" ||
+    code === "access_profile_ineligible" ||
+    code === "sandbox_cwd_invalid" ||
+    code === "device_spawn_unreachable"
+  ) {
+    return 400
+  }
+  return 500
+}
+
+/** Preconditions shared by `POST /sessions/:id/checkpoint` and `.../handoff`. */
+function checkpointableSession(
+  desc: SessionDescriptor,
+): { status: number; error: string; message: string } | undefined {
+  if (desc.kind !== "agent-cli") {
+    return { status: 400, error: "not_agent_session", message: `session "${desc.id}" is not an agent-cli session` }
+  }
+  if (!desc.contextContinuity) {
+    return {
+      status: 409,
+      error: "no_context_continuity_policy",
+      message: `session "${desc.id}" has no resolved context continuity policy`,
+    }
+  }
+  return undefined
+}
+
 /** Parse the `orchestrator` body field on `POST /sessions/agent` — the
  *  same flexible `boolean | object` shape the MCP `agent_start` tool's
  *  `jsonTolerant` schema accepts, including a JSON-stringified form of
@@ -5732,6 +5821,14 @@ function parseNotifyUrlField(raw: unknown): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/** The `notifySecret` body field — a `whsec_...` Standard Webhooks secret,
+ *  as `agent_start`'s schema requires. Anything else ⇒ undefined (dropped;
+ *  `notifyUrl` still fires, unauthenticated, same as when no secret is set). */
+function parseNotifySecretField(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined
+  return decodeWhsecSecret(raw) !== null ? raw : undefined
 }
 
 /**
@@ -6090,26 +6187,7 @@ async function handleSessions(
       spawnArgs,
     )
     if (!result.ok) {
-      const status =
-        result.code === "adapter_not_found" || result.code === "no_cwd"
-          ? 404
-          : result.code === "orchestrator_not_enabled"
-            ? 501
-            : result.code === "orchestrator_max_depth_exceeded" ||
-                result.code === "orchestrator_child_quota_exceeded" ||
-                result.code === "role_spawn_denied"
-              ? 409
-              : result.code === "invalid_role" ||
-                result.code === "browser_unsupported" ||
-                result.code === "worktree_requires_explicit_repo" ||
-                result.code === "device_spawn_requires_repo_identity" ||
-                result.code === "device_bridge_workspace_unknown" ||
-                result.code === "access_profile_not_found" ||
-                result.code === "access_profile_ineligible" ||
-                result.code === "sandbox_cwd_invalid" ||
-                result.code === "device_spawn_unreachable"
-                ? 400
-                : 500
+      const status = spawnFailureStatus(result.code)
       json(status, {
         error: result.code,
         message: result.message,
@@ -6511,19 +6589,32 @@ async function handleSessions(
         // operator surface (POST /sessions/:id/prompt — the CLI, the VS Code
         // panel, curl). It only affects the after-the-fact queue origin
         // badge; transcript provenance is untouched (`source` is not set).
-        await registry.enqueuePrompt(id, prompt, { interrupt, queue, force, queueId, origin: "user" })
+        // `steer: true`: a human instruction to a mid-turn steering-capable
+        // agent is injected into the running turn instead of waiting for it to
+        // end (a plain non-steering target still queues).
+        const enq = await registry.enqueuePrompt(id, prompt, {
+          interrupt,
+          queue,
+          force,
+          queueId,
+          origin: "user",
+          ...(queue && !force ? { steer: true } : {}),
+        })
         const promptQueue = queueId ? registry.get(id)?.promptQueue : undefined
         const queuePosition = promptQueue?.findIndex(p => p.id === queueId) ?? -1
         json(202, {
           ok: true,
           id,
           queued: true,
+          pending: enq.pending ?? enq.queued,
+          delivery: enq.delivery ?? (enq.queued ? "queued-mid-turn" : "delivered"),
+          ...(enq.deliveredAt ? { deliveredAt: enq.deliveredAt } : {}),
           // Present only when this prompt actually landed in the FIFO
           // (busy + `queue: true`) rather than dispatching immediately —
           // an idle session's `queueId` never appears in `promptQueue`,
           // so `queuePosition` stays -1 and this is omitted.
           ...(queuePosition >= 0
-            ? { pending: true, queueId, queuePosition: queuePosition + 1 }
+            ? { queueId, queuePosition: queuePosition + 1 }
             : {}),
         })
       } else {
@@ -6722,6 +6813,162 @@ async function handleSessions(
       return true
     }
     json(200, { ok: true, id, ...registry.ackInbox(id, ids) })
+    return true
+  }
+
+  // POST /sessions/:id/checkpoint — build + persist a context-continuity
+  // checkpoint (the REST twin of `session_checkpoint`). Body `{ notes? }`.
+  const checkpointMatch = path.match(/^\/sessions\/([^/]+)\/checkpoint$/)
+  if (checkpointMatch && req.method === "POST") {
+    const id = checkpointMatch[1]
+    if (!id) return false
+    const desc = registry.findByIdOrName(id)
+    if (!desc) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    if (b.notes !== undefined && typeof b.notes !== "string") {
+      json(400, { error: "invalid_notes", message: "notes must be a string" })
+      return true
+    }
+    const gate = checkpointableSession(desc)
+    if (gate) {
+      json(gate.status, { error: gate.error, message: gate.message, id: desc.id })
+      return true
+    }
+    try {
+      const policy = desc.contextContinuity!
+      const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
+      const checkpoint = await buildContextCheckpoint(desc, {
+        contextPct: pct,
+        ...(b.notes ? { notes: b.notes as string } : {}),
+      })
+      await persistCheckpoint(checkpoint)
+      json(200, {
+        ok: true,
+        checkpointId: checkpoint.checkpointId,
+        path: checkpoint.checkpointPath,
+        checkpoint,
+      })
+    } catch (err) {
+      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+  // POST /sessions/:id/handoff — checkpoint :id and spawn a NEW session on
+  // another harness/model/access profile that resumes from it (the REST twin
+  // of `session_continue_fresh`). Body `{ to, model?, access?, notes?,
+  // dryRun? }`. `dryRun: true` builds the checkpoint and the resume prompt
+  // only: nothing is persisted, nothing is spawned, :id is left untouched.
+  const handoffMatch = path.match(/^\/sessions\/([^/]+)\/handoff$/)
+  if (handoffMatch && req.method === "POST") {
+    const id = handoffMatch[1]
+    if (!id) return false
+    const prev = registry.findByIdOrName(id)
+    if (!prev) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    if (typeof b.to !== "string" || b.to.length === 0) {
+      json(400, { error: "to_required", message: "`to` (the target harness slug) is required" })
+      return true
+    }
+    if (b.model !== undefined && (typeof b.model !== "string" || b.model.length === 0)) {
+      json(400, { error: "invalid_model", message: "model must be a non-empty string" })
+      return true
+    }
+    if (b.notes !== undefined && typeof b.notes !== "string") {
+      json(400, { error: "invalid_notes", message: "notes must be a string" })
+      return true
+    }
+    if (b.dryRun !== undefined && typeof b.dryRun !== "boolean") {
+      json(400, { error: "invalid_dry_run", message: "dryRun must be a boolean" })
+      return true
+    }
+    const access = b.access as Record<string, unknown> | undefined
+    if (
+      b.access !== undefined &&
+      (!access || typeof access !== "object" || typeof access.profileRef !== "string" || access.profileRef.length === 0)
+    ) {
+      json(400, { error: "invalid_access", message: "access must be { profileRef: string }" })
+      return true
+    }
+    const gate = checkpointableSession(prev)
+    if (gate) {
+      json(gate.status, { error: gate.error, message: gate.message, id: prev.id })
+      return true
+    }
+    const to = b.to
+    const notes = b.notes as string | undefined
+    if (b.dryRun === true) {
+      try {
+        const policy = prev.contextContinuity!
+        const pct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
+        const checkpoint = await buildContextCheckpoint(prev, {
+          contextPct: pct,
+          ...(notes ? { notes } : {}),
+        })
+        json(200, {
+          ok: true,
+          dryRun: true,
+          continuedFrom: prev.id,
+          to,
+          ...(typeof b.model === "string" ? { model: b.model } : {}),
+          checkpoint,
+          prompt: renderCheckpointPrompt(checkpoint),
+        })
+      } catch (err) {
+        json(500, { error: "handoff_failed", message: err instanceof Error ? err.message : String(err) })
+      }
+      return true
+    }
+    if (!resolveAgentAdapter) {
+      json(501, {
+        error: "handoff_not_enabled",
+        message: "POST /sessions/:id/handoff needs the host to inject `resolveAgentAdapter`.",
+      })
+      return true
+    }
+    try {
+      const result = await continueAgentSessionFresh(
+        {
+          registry,
+          resolveAgentAdapter,
+          buildOrchestratorMcp,
+          daemonMcpUrl,
+          ...(provisionWorktree ? { provisionWorktree } : {}),
+          ...(listCatalogModels ? { listCatalogModels } : {}),
+          ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+          ...(webhookNotifier ? { webhookNotifier } : {}),
+          ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+          ...(listAgentAdapters ? { listAgentAdapters } : {}),
+        },
+        prev,
+        {
+          harness: to,
+          ...(typeof b.model === "string" ? { model: b.model } : {}),
+          ...(access ? { access: { profileRef: access.profileRef as string } } : {}),
+          ...(notes ? { notes } : {}),
+        },
+      )
+      json(201, {
+        ok: true,
+        continuedFrom: result.continuedFrom,
+        continuedTo: result.descriptor.id,
+        checkpointId: result.checkpoint.checkpointId,
+        path: result.checkpoint.checkpointPath,
+        handoff: result.descriptor.handoff,
+        session: sessionDescriptorForHttp(result.descriptor),
+      })
+    } catch (err) {
+      if (err instanceof ContinueFreshSpawnError) {
+        json(spawnFailureStatus(err.code), { error: err.code, message: err.message, ...err.details })
+        return true
+      }
+      json(500, { error: "handoff_failed", message: err instanceof Error ? err.message : String(err) })
+    }
     return true
   }
 
@@ -7284,6 +7531,31 @@ async function handleSessions(
         error: "spawn_failed",
         message: err instanceof Error ? err.message : String(err),
       })
+    }
+    return true
+  }
+
+  // POST /sessions/pinned/order — manually reorder the pinned group (the
+  // HTTP twin of the `session_reorder_pinned` MCP verb). MUST be matched
+  // before the per-id regex below so "pinned" is not read as a session id.
+  // Body: { ids: string[] } — the desired order; every id must exist and
+  // be pinned. Unlisted pinned sessions keep their relative order and
+  // follow. Pure sort/display state — never touches the live agent,
+  // keepAlive, or the idle-reaper.
+  if (path === "/sessions/pinned/order" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const ids = b.ids
+    if (!Array.isArray(ids) || !ids.every(x => typeof x === "string")) {
+      json(400, { error: "invalid_body", message: "`ids` must be an array of session id strings" })
+      return true
+    }
+    try {
+      registry.reorderPinned(ids)
+      json(200, { ok: true, ids })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 400, { error: "reorder_pinned_failed", message: msg })
     }
     return true
   }
@@ -8092,6 +8364,68 @@ async function handleSentinels(
       return true
     }
     json(200, { ok: true, id })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /follows routes — session-follow (wake a session on OTHER sessions'
+ * turn-end / awaiting-input / exit / PR events). The daemon-HTTP twin of
+ * `session_follow` / `session_unfollow` / `session_follows`, sharing their
+ * validation. Returns `true` when it handled the request.
+ *
+ *   POST   /follows            → 201 follow (created) | 200 follow (upserted by `key`)
+ *   GET    /follows[?follower=] → { follows: SessionFollow[] }
+ *   DELETE /follows/:idOrKey   → { ok: true, id }
+ *
+ * Errors: 400 `invalid_input` | `invalid_selector` | `no_follower`,
+ * 404 `session_not_found` (unknown follower on POST), 404 `follow_not_found`.
+ */
+async function handleFollows(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  deps: Pick<SessionFollowDeps, "store" | "hasSession">,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/follows" && req.method === "GET") {
+    const follower = new URL(req.url ?? "/", "http://localhost").searchParams.get("follower") ?? undefined
+    json(200, { follows: deps.store.list(follower ? { follower } : undefined).map(followView) })
+    return true
+  }
+
+  if (path === "/follows" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const result = upsertSessionFollow(deps, body)
+    if (!result.ok) {
+      json(result.status, { error: result.error, message: result.message })
+      return true
+    }
+    json(result.created ? 201 : 200, followView(result.follow))
+    return true
+  }
+
+  const match = path.match(/^\/follows\/([^/]+)$/)
+  if (!match) return false
+  const idOrKey = decodeURIComponent(match[1] ?? "")
+
+  if (req.method === "DELETE") {
+    const removed = removeSessionFollow(deps, idOrKey)
+    if (!removed) {
+      json(404, { error: "follow_not_found", id: idOrKey })
+      return true
+    }
+    json(200, { ok: true, id: removed.id })
     return true
   }
 

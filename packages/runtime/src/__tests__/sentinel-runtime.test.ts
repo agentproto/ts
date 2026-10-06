@@ -414,6 +414,44 @@ describe("SentinelRuntime", () => {
     expect(updated?.spec.target).toEqual({ kind: "session", sessionId: "sess_resumed", urgency: "next-turn" })
   })
 
+  it("in-place resume (restartSession returns the SAME id) → delivers to that id and does NOT re-target the sentinel", async () => {
+    // PR C: the dead-session restart now revives the row IN PLACE, so the
+    // sentinel's re-target must no-op — every following event keeps landing
+    // on the same session instead of extending a continuedFrom chain.
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider()
+    const sentinel = newSentinel(store, { sessionId: "sess_dead" })
+    provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+
+    let attempts = 0
+    const registry = stubRegistry(async msg => {
+      // The first delivery hits the dead row; the post-restart redelivery to
+      // the SAME id lands on the revived session and succeeds.
+      if (msg.to === "sess_dead" && attempts++ === 0) {
+        throw new SessionNotAliveError(msg.to, "error", "sendMessage")
+      }
+      return okResult()
+    })
+    const runtime = createSentinelRuntime({
+      store,
+      registry,
+      resolveProvider: resolverFor(provider),
+      isSessionAlive: () => false,
+      restartSession: async id => id,
+    })
+
+    await runtime.pollOnce()
+
+    expect(registry.calls).toHaveLength(2)
+    expect(registry.calls[0]!.msg.to).toBe("sess_dead")
+    // Delivered to the SAME id — no re-target, no new conversation.
+    expect(registry.calls[1]!.msg.to).toBe("sess_dead")
+
+    const updated = store.get(sentinel.id)
+    expect(updated?.status).toBe("active")
+    expect(updated?.spec.target).toEqual({ kind: "session", sessionId: "sess_dead", urgency: "next-turn" })
+  })
+
   describe("closed subjects (merged/closed PR)", () => {
     const readParked = (path: string): Array<Record<string, unknown>> =>
       readFileSync(path, "utf8").trim().split("\n").map(l => JSON.parse(l) as Record<string, unknown>)

@@ -1,10 +1,21 @@
 /**
  * Fire-and-forget webhook notifier for session lifecycle events.
  *
- * Each session can register its own `notifyUrl` (via `agent_start`).
- * A global URL can be set via `AGENTPROTO_NOTIFY_URL` env var or
- * `~/.agentproto/notify.json` (env wins). Both are POSTed when an event
- * fires — the union of per-session + global URLs, deduplicated.
+ * Each session can register its own `notifyUrl` (via `agent_start`), with an
+ * optional `notifySecret` (`whsec_...`). A global URL can be set via
+ * `AGENTPROTO_NOTIFY_URL` env var (+ optional `AGENTPROTO_NOTIFY_SECRET`) or
+ * `~/.agentproto/notify.json` `{url, secret?}` (env wins). Both are POSTed
+ * when an event fires — the union of per-session + global URLs, deduplicated
+ * by URL (a URL registered both ways is posted once; the per-session secret
+ * wins over the global one on conflict).
+ *
+ * Signing (opt-in, backward compatible): when a target has a secret, the
+ * POST carries Standard Webhooks headers (`webhook-id` / `webhook-timestamp`
+ * / `webhook-signature`, see `webhook-egress/signing.ts`) — HMAC-SHA256 over
+ * `id.timestamp.body`, the same contract sentinel/MCP Events already use for
+ * egress. A target with no secret is posted exactly as before: unauthenticated,
+ * `Content-Type` only. Existing callers that never set `notifySecret` or a
+ * `secret` in notify.json see zero behavior change.
  *
  * Retry policy: one retry after 2 s on network error. No retry on 4xx/5xx.
  * Timeout: 10 s per attempt. All errors are swallowed — the notifier never
@@ -17,17 +28,25 @@
  * schedule that can be every 20 minutes.
  */
 
+import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { SessionEvent, SessionAwaitingQuestion } from "./session-event-bus.js"
+import { signWebhook } from "./webhook-egress/signing.js"
 
 export interface WebhookNotifier {
-  /** Register a per-session URL (called from agent_start). */
-  register(sessionId: string, url: string): void
+  /** Register a per-session URL (called from agent_start), with an optional
+   *  `whsec_...` secret to sign its deliveries. */
+  register(sessionId: string, url: string, secret?: string): void
   unregister(sessionId: string): void
   /** Handler to wire into SessionEventBus.onAny. Fire-and-forget. */
   onSessionEvent(ev: SessionEvent): void
+}
+
+interface Target {
+  url: string
+  secret?: string
 }
 
 interface NotifyPayload {
@@ -63,29 +82,57 @@ interface NotifyPayload {
 export function createWebhookNotifier(opts?: {
   /** Pre-resolved global URL — overridden at call time by env var or file. */
   globalUrl?: string
+  /** Pre-resolved global secret — overridden by `AGENTPROTO_NOTIFY_SECRET` or file. */
+  globalSecret?: string
 }): WebhookNotifier {
-  const perSession = new Map<string, string>()
+  const perSession = new Map<string, Target>()
 
-  const resolveGlobalUrl = (): string | undefined => {
-    if (process.env.AGENTPROTO_NOTIFY_URL) return process.env.AGENTPROTO_NOTIFY_URL
+  const resolveGlobalTarget = (): Target | undefined => {
+    if (process.env.AGENTPROTO_NOTIFY_URL) {
+      return {
+        url: process.env.AGENTPROTO_NOTIFY_URL,
+        ...(process.env.AGENTPROTO_NOTIFY_SECRET
+          ? { secret: process.env.AGENTPROTO_NOTIFY_SECRET }
+          : {}),
+      }
+    }
     try {
       const path = join(homedir(), ".agentproto", "notify.json")
       const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown
       if (parsed && typeof parsed === "object" && "url" in parsed) {
-        const { url } = parsed as { url: unknown }
-        if (typeof url === "string" && url) return url
+        const { url, secret } = parsed as { url: unknown; secret?: unknown }
+        if (typeof url === "string" && url) {
+          return { url, ...(typeof secret === "string" && secret ? { secret } : {}) }
+        }
       }
     } catch {
       // file absent or malformed — not an error
     }
     return opts?.globalUrl
+      ? { url: opts.globalUrl, ...(opts.globalSecret ? { secret: opts.globalSecret } : {}) }
+      : undefined
   }
 
-  const post = async (url: string, payload: NotifyPayload): Promise<void> => {
+  const post = async (target: Target, payload: NotifyPayload): Promise<void> => {
+    // `body` stays the plain string fetch always sent — only the signature
+    // (when there's a secret) is computed over its exact UTF-8 bytes, so
+    // existing unauthenticated receivers (and tests reading `init.body` as a
+    // JSON string) see zero change.
     const body = JSON.stringify(payload)
-    const headers = { "Content-Type": "application/json" }
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (target.secret) {
+      Object.assign(
+        headers,
+        signWebhook({
+          msgId: `evt_${randomUUID()}`,
+          timestamp: Math.floor(Date.now() / 1000),
+          payload: new TextEncoder().encode(body),
+          secrets: [target.secret],
+        })
+      )
+    }
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch(target.url, {
         method: "POST",
         headers,
         body,
@@ -97,7 +144,7 @@ export function createWebhookNotifier(opts?: {
       // Network error — one retry after 2 s
       await new Promise<void>(res => setTimeout(res, 2_000))
       try {
-        await fetch(url, {
+        await fetch(target.url, {
           method: "POST",
           headers,
           body,
@@ -110,8 +157,8 @@ export function createWebhookNotifier(opts?: {
   }
 
   return {
-    register(sessionId, url) {
-      perSession.set(sessionId, url)
+    register(sessionId, url, secret) {
+      perSession.set(sessionId, { url, ...(secret ? { secret } : {}) })
     },
     unregister(sessionId) {
       perSession.delete(sessionId)
@@ -125,9 +172,9 @@ export function createWebhookNotifier(opts?: {
       // filtered (see the module doc): relaying every fire would spam the
       // same URL on a schedule that can be every 20 minutes.
       if (ev.type === "cron:unhealthy") {
-        const globalUrl = resolveGlobalUrl()
-        if (!globalUrl) return
-        void post(globalUrl, {
+        const globalTarget = resolveGlobalTarget()
+        if (!globalTarget) return
+        void post(globalTarget, {
           event: ev.type,
           jobId: ev.jobId,
           label: ev.label,
@@ -149,11 +196,13 @@ export function createWebhookNotifier(opts?: {
         return
       }
 
-      const targets = new Set<string>()
-      const sessionUrl = perSession.get(ev.sessionId)
-      if (sessionUrl) targets.add(sessionUrl)
-      const globalUrl = resolveGlobalUrl()
-      if (globalUrl) targets.add(globalUrl)
+      // Deduplicated by URL; the per-session secret wins over the global
+      // one when the same URL is registered both ways.
+      const targets = new Map<string, Target>()
+      const globalTarget = resolveGlobalTarget()
+      if (globalTarget) targets.set(globalTarget.url, globalTarget)
+      const sessionTarget = perSession.get(ev.sessionId)
+      if (sessionTarget) targets.set(sessionTarget.url, sessionTarget)
       if (targets.size === 0) return
 
       const payload: NotifyPayload = {
@@ -177,8 +226,8 @@ export function createWebhookNotifier(opts?: {
         if (ev.error !== undefined) payload.error = ev.error
       }
 
-      for (const url of targets) {
-        void post(url, payload)
+      for (const target of targets.values()) {
+        void post(target, payload)
       }
     },
   }

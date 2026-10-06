@@ -39,6 +39,7 @@ export type SessionEventType =
   | "session:config-changed"
   | "session:renamed"
   | "session:pinned-changed"
+  | "session:pinned-reordered"
   | "session:artifact-added"
   | "session:artifact-pinned-changed"
   | "session:message"
@@ -56,6 +57,7 @@ export type SessionEventType =
   | "workflow:suspended"
   | "workflow:suspend-resumed"
   | "session:harness-warning"
+  | "session:handoff-suggested"
   | "approval:requested"
   | "approval:decided"
   | "approval:consumed"
@@ -631,6 +633,19 @@ export interface SessionPinnedEvent {
   ts: string
 }
 
+/** Emitted when the pinned group is manually reordered
+ *  (`session_reorder_pinned`, `POST /sessions/pinned/order` →
+ *  `registry.reorderPinned`). `ids` is the requested new order — the full
+ *  pinned order is a `session_list` / `GET /sessions` call away. Rides the
+ *  same bus distribution as every other lifecycle event, which is how a
+ *  live UI learns to resort its pinned group without waiting for its next
+ *  snapshot poll. */
+export interface SessionPinnedReorderedEvent {
+  type: "session:pinned-reordered"
+  ids: string[]
+  ts: string
+}
+
 /**
  * Emitted when a new artifact (or a new version of an existing one) is
  * materialized into the session's artifact store (`session_artifact_add`,
@@ -936,6 +951,30 @@ export interface SessionHarnessWarningEvent {
   ts: string
 }
 
+/** Why a handoff is being suggested. */
+export type HandoffSuggestionReason = "provider-limit" | "quota-threshold"
+
+/**
+ * Emitted when agentproto SUGGESTS moving a session to another harness:
+ * the provider reported a usage cap (`provider-limit`) or the remaining
+ * quota fell under `contextContinuity.handoffAtQuotaRemaining`
+ * (`quota-threshold`). A suggestion only — nothing is spawned, the user
+ * runs the `command` (`agentproto sessions handoff <id> --to <harness>`)
+ * to switch. `suggestions` lists installed harnesses with usable
+ * credentials (never the source harness); the event is not emitted when
+ * there are none. Same bus distribution as every other lifecycle event
+ * (`session_events_poll`, SSE, webhooks).
+ */
+export interface SessionHandoffSuggestedEvent {
+  type: "session:handoff-suggested"
+  sessionId: string
+  fromHarness: string
+  reason: HandoffSuggestionReason
+  suggestions: Array<{ harness: string; command: string }>
+  label?: string
+  ts: string
+}
+
 /**
  * Emitted by the approvals engine (`approvals/engine.ts`) when an
  * `approval_request` (MCP or `POST /approvals`) raises a new pending
@@ -999,6 +1038,7 @@ export type SessionEvent =
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
+  | SessionHandoffSuggestedEvent
   | SessionWatcherAttachedEvent
   | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent
@@ -1012,6 +1052,7 @@ export type SessionEvent =
   | SessionConfigChangedEvent
   | SessionRenamedEvent
   | SessionPinnedEvent
+  | SessionPinnedReorderedEvent
   | SessionArtifactAddedEvent
   | SessionArtifactPinnedEvent
   | SessionMessageEvent

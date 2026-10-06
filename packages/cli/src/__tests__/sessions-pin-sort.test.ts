@@ -49,4 +49,33 @@ describe("sortPinnedFirst", () => {
     sortPinnedFirst(rows)
     expect(rows).toEqual(copy)
   })
+
+  it("sorts the pinned group by pinnedOrder asc", () => {
+    const rows = [
+      session("a", { pinned: true, pinnedOrder: 2 }),
+      session("b", { pinned: true, pinnedOrder: 0 }),
+      session("c", { pinned: true, pinnedOrder: 1 }),
+    ]
+    expect(sortPinnedFirst(rows).map(r => r.id)).toEqual(["b", "c", "a"])
+  })
+
+  it("places pinned rows with no pinnedOrder after ordered ones, keeping incoming relative order", () => {
+    const rows = [
+      session("a", { pinned: true }),
+      session("b", { pinned: true, pinnedOrder: 1 }),
+      session("c", { pinned: true }),
+      session("d", { pinned: true, pinnedOrder: 0 }),
+    ]
+    expect(sortPinnedFirst(rows).map(r => r.id)).toEqual(["d", "b", "a", "c"])
+  })
+
+  it("leaves the non-pinned group in incoming order", () => {
+    const rows = [
+      session("a", { pinned: true, pinnedOrder: 0 }),
+      session("b"),
+      session("c"),
+      session("d", { pinned: true, pinnedOrder: 1 }),
+    ]
+    expect(sortPinnedFirst(rows).map(r => r.id)).toEqual(["a", "d", "b", "c"])
+  })
 })

@@ -108,14 +108,14 @@ test('string form is unchanged: derived spec with hook + fallback passthrough (n
   assert.equal(spec.provider, 'e2b')
   assert.equal(spec.config.installPackages, undefined)
   assert.match(spec.config.setupCommands[0], ATTRIBUTION_HOOK)
-  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'])
   assert.equal(spec.reuse, undefined)
 })
 
 // ── reviewerModel (step `model` selector) ────────────────────────────────────
 
 test('reviewerModelFor resolves reviewerModel from the config (global and per-verb)', () => {
-  assert.equal(reviewerModelFor({ reviewerModel: 'openrouter/z-ai/glm-5.3-flash' }, 'review'), 'openrouter/z-ai/glm-5.3-flash')
+  assert.equal(reviewerModelFor({ reviewerModel: 'claude-sonnet-5-5' }, 'review'), 'claude-sonnet-5-5')
   assert.equal(
     reviewerModelFor(
       { reviewerModel: 'global', commands: { review: { reviewerModel: 'per-verb' } } },
@@ -134,24 +134,24 @@ test('reviewerModelFor returns undefined for absent/blank reviewerModel (adapter
 test('the review step declares a model selector resolving reviewerModel from reviewConfig', () => {
   assert.equal(typeof workflow.steps[0].model, 'function')
   assert.equal(
-    workflow.steps[0].model({ input: { reviewConfig: { reviewerModel: 'openrouter/z-ai/glm-5.3-flash' } } }),
-    'openrouter/z-ai/glm-5.3-flash',
+    workflow.steps[0].model({ input: { reviewConfig: { reviewerModel: 'claude-sonnet-5-5' } } }),
+    'claude-sonnet-5-5',
   )
   assert.equal(workflow.steps[0].model({ input: { reviewConfig: {} } }), undefined)
 })
 
-test('the opencode reviewer config resolves adapter + model + env end to end', () => {
+test('the claude-sdk reviewer config resolves adapter + model + env end to end', () => {
   const cfg = {
-    reviewerAdapter: 'opencode',
-    reviewerModel: 'openrouter/z-ai/glm-5.3-flash',
+    reviewerAdapter: 'claude-sdk',
+    reviewerModel: 'claude-sonnet-5-5',
     reviewerSandbox: 'e2b',
-    reviewerSandboxEnv: ['OPENROUTER_API_KEY', 'GITHUB_TOKEN'],
+    reviewerSandboxEnv: ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'],
   }
   const bindings = { input: { prNumber: 7, repo: 'agentproto/ts', reviewConfig: cfg } }
-  assert.equal(workflow.steps[0].adapter(bindings), 'opencode')
-  assert.equal(workflow.steps[0].model(bindings), 'openrouter/z-ai/glm-5.3-flash')
+  assert.equal(workflow.steps[0].adapter(bindings), 'claude-sdk')
+  assert.equal(workflow.steps[0].model(bindings), 'claude-sonnet-5-5')
   const spec = workflow.steps[0].sandbox(bindings)
-  assert.deepEqual(spec.env.passthrough, ['OPENROUTER_API_KEY', 'GITHUB_TOKEN'])
+  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'])
   assert.equal(workflow.steps[0].cwd(bindings), '/home/user')
 })
 
@@ -189,7 +189,7 @@ test('native object without env.passthrough falls back to reviewerSandboxEnv the
   )
   assert.deepEqual(viaCfg.env.passthrough, ['MY_TOKEN'])
   const viaDefault = sandboxRefFor({ reviewerSandbox: { provider: 'e2b' } }, 'review')
-  assert.deepEqual(viaDefault.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+  assert.deepEqual(viaDefault.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'])
 })
 
 test('native object passthrough beats reviewerSandboxEnv', () => {
@@ -230,14 +230,14 @@ test('empty/invalid reviewerSandbox still resolves to host (no spec, no cwd)', (
 test('default passthrough omits AGENTPROTO_JOIN when this process has none (fork PR / no secret configured)', () => {
   assert.equal(process.env.AGENTPROTO_JOIN, undefined)
   const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
-  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'])
 })
 
 test('default passthrough adds AGENTPROTO_JOIN when this process has a value to offer', () => {
   process.env.AGENTPROTO_JOIN = 'https://join.example/token'
   try {
     const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
-    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
   } finally {
     delete process.env.AGENTPROTO_JOIN
   }
@@ -247,10 +247,10 @@ test('a configured reviewerSandboxEnv still wins its own list, but AGENTPROTO_JO
   process.env.AGENTPROTO_JOIN = 'https://join.example/token'
   try {
     const spec = sandboxRefFor(
-      { reviewerSandbox: 'e2b', reviewerSandboxEnv: ['OPENROUTER_API_KEY', 'GITHUB_TOKEN'] },
+      { reviewerSandbox: 'e2b', reviewerSandboxEnv: ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'] },
       'review',
     )
-    assert.deepEqual(spec.env.passthrough, ['OPENROUTER_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
   } finally {
     delete process.env.AGENTPROTO_JOIN
   }
@@ -260,7 +260,7 @@ test('native object form without env.passthrough also picks up the gated AGENTPR
   process.env.AGENTPROTO_JOIN = 'https://join.example/token'
   try {
     const spec = sandboxRefFor({ reviewerSandbox: { provider: 'e2b' } }, 'review')
-    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
   } finally {
     delete process.env.AGENTPROTO_JOIN
   }
@@ -271,7 +271,7 @@ test('AGENTPROTO_JOIN set but blank/whitespace is treated as absent', () => {
     process.env.AGENTPROTO_JOIN = blank
     try {
       const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
-      assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+      assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'])
     } finally {
       delete process.env.AGENTPROTO_JOIN
     }
@@ -298,7 +298,7 @@ test('join metadata vars are omitted with no AGENTPROTO_JOIN (nothing to attach 
   process.env.AGENTPROTO_JOIN_NAME = 'ci-reviewer #1536'
   try {
     const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
-    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'])
   } finally {
     delete process.env.AGENTPROTO_JOIN_NAME
   }
@@ -313,7 +313,7 @@ test('join metadata vars are appended alongside AGENTPROTO_JOIN when both are pr
   try {
     const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
     assert.deepEqual(spec.env.passthrough, [
-      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
       'GITHUB_TOKEN',
       'AGENTPROTO_JOIN',
       'AGENTPROTO_JOIN_NAME',
@@ -336,7 +336,7 @@ test('only the join metadata vars this process actually set are appended — par
   try {
     const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
     assert.deepEqual(spec.env.passthrough, [
-      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
       'GITHUB_TOKEN',
       'AGENTPROTO_JOIN',
       'AGENTPROTO_JOIN_PROVIDER',
@@ -352,7 +352,7 @@ test('blank/whitespace join metadata vars are treated as absent, same as AGENTPR
   process.env.AGENTPROTO_JOIN_NAME = '   '
   try {
     const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
-    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
   } finally {
     delete process.env.AGENTPROTO_JOIN
     delete process.env.AGENTPROTO_JOIN_NAME

@@ -52,7 +52,16 @@ import type {
   RouteSpec,
 } from "./session-config.js"
 import type { CostBudget } from "@agentproto/auth"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AdapterCapabilitiesLister, AgentAdapterResolver } from "./http-server.js"
+import type { QuotaReadableProfile, RemainingQuotaReader } from "./remaining-quota.js"
+import {
+  HANDOFF_OPTION_PREFIX,
+  buildHandoffSuggestions,
+  handoffSuggestionLines,
+  harnessDisplayName,
+  listHandoffHarnesses,
+  parseHandoffOption,
+} from "./handoff-suggestion.js"
 import type {
   SessionEventBus,
   SessionAwaitingQuestion,
@@ -152,6 +161,7 @@ import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import {
+  createSessionMessage,
   escapeHumanPrompt,
   matchesMessageFilter,
   MESSAGE_PREAMBLE,
@@ -896,6 +906,20 @@ export interface QueuedPrompt {
    *  as a `session-message` transcript record, and coalesced with any
    *  envelope items queued right behind it (never with a plain prompt). */
   envelope?: SessionMessage
+  /** Opt-in (`enqueuePrompt` `opts.steer`): this item may be injected into
+   *  the target's RUNNING turn at the next safe point instead of waiting for
+   *  the turn to end — only when the agent advertises steering. Plain
+   *  (non-envelope), non-child prompts only. */
+  steer?: boolean
+  /** ISO 8601 deadline (`deliverWithin`): past it, the pending-prompt sweep
+   *  force-delivers this item per {@link deliverVia}. */
+  deliverBy?: string
+  /** How the sweep forces delivery at {@link deliverBy}: `steer` (inject,
+   *  else stay queued), `interrupt` (cancel the turn and run it now), or
+   *  `auto` (steer when the agent can, else interrupt). Default `auto`. */
+  deliverVia?: "auto" | "steer" | "interrupt"
+  /** ISO 8601 — when the staleness notice for this item was sent (once). */
+  staleNotifiedAt?: string
 }
 
 /** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
@@ -906,8 +930,24 @@ export interface QueuedPrompt {
  *  idle dispatch, an interrupt that redirected the live turn, a structured-
  *  question answer — resolves `queued: false`. */
 export interface EnqueuePromptResult {
+  /** Legacy: true ONLY when the prompt is parked in `promptQueue` (not yet
+   *  delivered). Prefer `delivery` / `pending`. */
   queued: boolean
+  /** `delivered` — started as a turn (idle target, or an interrupt);
+   *  `steered` — injected into the running turn; `queued-mid-turn` — parked
+   *  until the current turn ends (or a steer / `deliverWithin` fires).
+   *  `delivery` / `pending` are always set by the registry; optional here so
+   *  structural stand-ins that only know `queued` still type-check. */
+  delivery?: PromptDelivery
+  /** ISO 8601 delivery time, when already delivered. */
+  deliveredAt?: string
+  /** True while the prompt has NOT reached the target yet. */
+  pending?: boolean
+  /** Id of the parked item (`delivery: "queued-mid-turn"`). */
+  queueId?: string
 }
+
+export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn"
 
 /**
  * Short text preview of a queued `QueuedPrompt.message` (raw string OR an
@@ -1047,6 +1087,56 @@ export interface QueuedPromptView {
   position: number
 }
 
+/** One prompt still waiting to reach a session, with its age — the
+ *  `pendingPrompts` field on `session_list` / `session_recap` so a sender (or
+ *  a supervisor reading a truncated list) sees a stuck delivery. `stale` is
+ *  set once it has waited past the staleness threshold. */
+export interface PendingPromptView {
+  id: string
+  /** Same label as `QueuedPromptView.origin`. */
+  origin: string
+  preview: string
+  queuedAt: string
+  /** Milliseconds since `queuedAt` at read time. */
+  ageMs: number
+  stale?: true
+  /** ISO 8601 `deliverWithin` deadline, when one was set. */
+  deliverBy?: string
+}
+
+/** Tally of one `sweepPendingPrompts` pass. */
+export interface PendingPromptSweepSummary {
+  /** Prompts newly reported stale (sender notified). */
+  stale: number
+  /** Prompts force-delivered because their `deliverWithin` deadline passed. */
+  forced: number
+  ids: string[]
+}
+
+/** Daemon default for how long a prompt may sit queued before it is
+ *  reported stuck (`defaults.messaging.pendingPromptStaleMinutes`). */
+export const DEFAULT_PENDING_PROMPT_STALE_MS = 5 * 60_000
+
+/** Project a prompt queue into age-stamped {@link PendingPromptView}s. */
+export function pendingPromptViews(
+  queue: readonly QueuedPrompt[] | undefined,
+  now: number = Date.now(),
+  staleMs: number = DEFAULT_PENDING_PROMPT_STALE_MS,
+): PendingPromptView[] {
+  return (queue ?? []).map(p => {
+    const ageMs = Math.max(0, now - Date.parse(p.queuedAt))
+    return {
+      id: p.id,
+      origin: promptOriginLabel(p),
+      preview: previewPrompt(p.message),
+      queuedAt: p.queuedAt,
+      ageMs,
+      ...(ageMs >= staleMs ? { stale: true as const } : {}),
+      ...(p.deliverBy ? { deliverBy: p.deliverBy } : {}),
+    }
+  })
+}
+
 /** Provenance stamped onto a `session_continue_fresh` target by
  *  {@link SessionDescriptor.handoff} — which harness the checkpoint moved
  *  from/to and when. `fromHarness === toHarness` for a same-harness
@@ -1122,7 +1212,9 @@ export interface SessionDescriptor {
    *     MCP tool (never by an internal automatic teardown), so it reads as
    *     deliberate rather than random;
    *   - other internal/automatic reasons: `"cost-cap-exceeded"` (the
-   *     turn-granular `maxCostUsd` cap tripped), `"policy-cleanup"` (a
+   *     turn-granular `maxCostUsd` cap tripped), `"context-hard-stop"` (the
+   *     context-continuity hard-stop closed a session past `hardStopAtPct`),
+   *     `"policy-cleanup"` (a
    *     supervisor gate tore down its own ephemeral judge session),
    *     `"parent-exited"` (an orchestrator's dying subtree reap),
    *     `"provider-limit"` (a driver-reported subscription/usage-cap error,
@@ -1273,6 +1365,10 @@ export interface SessionDescriptor {
    *  preview, queuedAt, position) lives behind the `session_queue_list`
    *  verb / `GET /sessions/:id/queue` — this is just the scalar badge. */
   queuedPrompts?: number
+  /** The queued prompts themselves, with age (`PendingPromptView`) — derived
+   *  at read time from {@link promptQueue}, never persisted. Absent when
+   *  nothing is waiting. */
+  pendingPrompts?: PendingPromptView[]
   /** Short human-readable string describing the most recent automatic
    *  failure — currently only stamped by `markCrashed` (e.g. "adapter
    *  process gone (pid 1234) — session crashed"). Not a stack trace or raw
@@ -1564,6 +1660,15 @@ export interface SessionDescriptor {
    *  effects on reaping, notifications, or anything else. Absent (not
    *  `false`) for every session that hasn't been pinned. */
   pinned?: boolean
+  /** Ascending position among pinned sessions — the stored order behind
+   *  the pinned group of the CLI table / VS Code webview list. Set by
+   *  `registry.setPinned` (append-at-end) and `registry.reorderPinned`
+   *  (manual reorder); deleted when the session is unpinned. Absent on
+   *  legacy pinned rows persisted before this field existed — those sort
+   *  after every ordered pinned session (by `startedAt` asc, then id).
+   *  Pure sort/display state, same as `pinned` — never touches the live
+   *  agent, keepAlive, or the idle-reaper. */
+  pinnedOrder?: number
   /** True when the session was spawned under a real PTY (node-pty)
    *  instead of `child_process.spawn`. PTY sessions carry raw ANSI
    *  bytes (alt-screen, key bindings, colors); attach goes through
@@ -1780,8 +1885,8 @@ export interface SessionDescriptor {
   /**
    * Deterministic billing-auth mode + a non-secret credential fingerprint,
    * recorded at spawn time for adapters that resolved an explicit
-   * credential (today: claude-code — see `AgentCliAuth.modes` in
-   * `@agentproto/driver-agent-cli`). The "verifiability" answer to "what
+   * credential (adapters declaring `authSubscription` and/or an API-key
+   * `provider`). The "verifiability" answer to "what
    * was used": `mode` is the resolved `"subscription" | "api-key"`;
    * `fingerprint` is `credentialFingerprint(mode, credential)` — e.g.
    * `"subscription · sk-ant-oat…3f9c"` — NEVER the raw credential. Absent
@@ -2283,6 +2388,9 @@ export interface SessionSummary {
    *  left the session running; see `SessionDescriptor.wrapupFlag`. */
   wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
   pinned?: boolean
+  /** Ascending position among pinned sessions — see
+   *  `SessionDescriptor.pinnedOrder`. */
+  pinnedOrder?: number
   pty?: boolean
   name?: string
   argv?: readonly string[]
@@ -2409,6 +2517,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     archived: desc.archived,
     keepAlive: desc.keepAlive,
     pinned: desc.pinned,
+    pinnedOrder: desc.pinnedOrder,
     pty: desc.pty,
     name: desc.name,
     argv: desc.argv,
@@ -2467,6 +2576,11 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
 
 interface SessionRuntime {
   desc: SessionDescriptor
+  /** True while the latest `usage_update` carrying `used` was dropped by
+   *  `plausibleContextUsed` (more tokens than the window holds). The held
+   *  `desc.contextUsed` is then a stale reading, so context-continuity must
+   *  not act on it with an irreversible hard-stop. */
+  contextUsedInconsistent?: boolean
   /** Active tool calls in announcement order. Multiple calls can overlap;
    *  removing the latest one falls back to the previous still-active call. */
   activeToolCalls?: Map<string, string>
@@ -2499,6 +2613,15 @@ interface SessionRuntime {
   /** When this session last had a message steered into it — the R3 rate
    *  limit (`STEER_MIN_INTERVAL_MS`). In-memory only. */
   lastSteerAt?: number
+  /** Queue id of the prompt whose steer RPC is in flight — while set,
+   *  `dispatchQueuedPrompt` holds off so a turn ending mid-RPC can't also
+   *  dispatch it (double delivery). In-memory only. */
+  steerInFlight?: string
+  /** Serializes `flushSteerableQueue` runs per session (FIFO steering). */
+  steerChain?: Promise<void>
+  /** Queue id → ISO time for prompts steered into the running turn, read once
+   *  by the `enqueuePrompt` call that queued them. Bounded. In-memory only. */
+  steeredPromptAt?: Map<string, string>
   /** Messages this session received that have since left its inbox (acked
    *  by a wait, a turn, `inbox_ack`, or steered in), newest last, bounded
    *  by `INBOX_CAP`. `findReceivedMessage` reads this before the transcript:
@@ -2588,6 +2711,14 @@ interface SessionRuntime {
    *  delivered only after a turn that ends on its own — except the one item
    *  `deliverQueuedPrompt` interrupted for (`deliverQueueId`). */
   interruptRequested?: { by: string; deliverQueueId?: string }
+  /** Model-facing line explaining that the previous turn was cut to deliver
+   *  a prompt NOW (deliver-now / `interrupt: true`), set by
+   *  `interruptInFlightTurn` and prepended — once — to the next turn's
+   *  string prompt by `runAgentTurn`. Without it the model only sees its
+   *  turn cancelled then a new prompt, which reads exactly like a human
+   *  Esc/stop, and an agent may park itself waiting for a go-ahead.
+   *  Never set for a bare stop (`interruptSession`), which clears it. */
+  pendingInterruptNotice?: string
   /** In-flight resume promise. Deduplicates concurrent prompt
    *  attempts on a dead agent session — only one resume call hits
    *  the adapter, the rest await this promise. Cleared once
@@ -2597,6 +2728,15 @@ interface SessionRuntime {
    *  Called by kill() best-effort — the descriptor is already flipped
    *  to "killed" before this fires. */
   browserStop?: () => Promise<void>
+  /** Reasons a `session:handoff-suggested` was already emitted for this
+   *  session — each reason fires at most once (a quota-threshold suggestion
+   *  is additionally keyed per window, see `quotaSuggestedResetsAt`). */
+  handoffSuggested?: Set<string>
+  /** `resetsAt` of the quota window a threshold suggestion was last made
+   *  for — a window is only suggested once. */
+  quotaSuggestedResetsAt?: string
+  /** Epoch ms of the last quota read, to throttle the poll. */
+  quotaCheckedAt?: number
   /** Guard: true once session:exited has been emitted to sessionEvents.
    *  Prevents duplicate emissions when both kill() and an OS exit event fire. */
   exitedEmitted?: boolean
@@ -2848,6 +2988,16 @@ const INTERRUPT_CALLER_LABELS: Record<string, string> = {
   enqueuePrompt: "a prompt sent with interrupt: true",
   sendPrompt: "a prompt sent with interrupt: true",
   deliverQueuedPrompt: "a queue deliver-now (session_queue_deliver)",
+}
+
+/** The line `runAgentTurn` prepends to a prompt delivered by interrupting
+ *  the previous turn — tells the MODEL the cancellation was mechanical, not
+ *  a stop. `origin` is a `promptOriginLabel` ("user", "agent <id>", ...). */
+export function interruptDeliveryNotice(origin: string): string {
+  return (
+    `[agentproto] Your previous turn was interrupted to deliver this message immediately (from ${origin}). ` +
+    "This is NOT a stop request: resume your work after handling it."
+  )
 }
 
 /** Stamp the derived `desc.alive` liveness signal (§SessionDescriptor.alive):
@@ -3574,8 +3724,25 @@ export interface SessionsRegistry {
        *  structured-question answer, and noted in the SENDER's transcript
        *  as `session-message-sent`. */
       envelope?: SessionMessage
+      /** On the queue arm, inject this prompt into the target's RUNNING turn
+       *  at the next safe point (ACP steering) instead of waiting for the
+       *  turn to end — when the agent advertises steering. FIFO among steered
+       *  prompts. Ignored for envelopes and child-sourced prompts; absent ⇒
+       *  today's park-until-turn-end. A refused steer leaves it queued. */
+      steer?: boolean
+      /** Deadline in ms: a prompt still queued past it is force-delivered by
+       *  the pending-prompt sweep per `deliverVia`. */
+      deliverWithinMs?: number
+      /** `steer` — inject only (stay queued if it can't); `interrupt` —
+       *  cancel the turn and run it; `auto` (default) — steer, else interrupt. */
+      deliverVia?: "auto" | "steer" | "interrupt"
     }
   ): Promise<EnqueuePromptResult>
+  /** One pass over every prompt queue: force-deliver items past their
+   *  `deliverWithin` deadline, and notify the sender (typed `notice` into the
+   *  caller's — else the target's parent's — inbox) once per item that has
+   *  waited past `staleMs`. Driven on a timer by the daemon; callable directly. */
+  sweepPendingPrompts(opts?: { now?: number; staleMs?: number }): Promise<PendingPromptSweepSummary>
   /** Cancel one not-yet-dispatched item in `SessionDescriptor.promptQueue`
    *  by id — the composer's per-item "remove" action. Idempotent: an
    *  unknown session or an id that's already gone (dispatched, already
@@ -3896,12 +4063,26 @@ export interface SessionsRegistry {
    *  MCP verb / `POST /sessions/:id/pin`). `true` flips
    *  `SessionDescriptor.pinned` on — pure sort/display state for the CLI
    *  table and the VS Code webview's list, which sort a pinned session to
-   *  the top. `false` clears it. Persists via the same `schedulePersist`
-   *  every descriptor mutation uses and emits `session:pinned-changed` so a
+   *  the top. Pinning a session that isn't pinned yet APPENDS it to the
+   *  end of the pinned group (`pinnedOrder` = max pinned order over the
+   *  currently pinned + 1, missing treated as -1); re-pinning an already
+   *  pinned session keeps its order. `false` clears the pin and deletes
+   *  `pinnedOrder`. Persists via the same `schedulePersist` every
+   *  descriptor mutation uses and emits `session:pinned-changed` so a
    *  live UI resorts without waiting for its next snapshot poll. NEVER
    *  touches `keepAlive`, reaper eligibility, or any notification path —
    *  pin is quiet, structural state only. Throws when the id is unknown. */
   setPinned(id: string, pinned: boolean): SessionDescriptor
+  /** Manually reorder the pinned group (the `session_reorder_pinned` MCP
+   *  verb / `POST /sessions/pinned/order`). Every id must exist and be
+   *  pinned — throws `reorderPinned: ...` otherwise (duplicates rejected
+   *  too). Listed ids get `pinnedOrder` 0..n-1 in the given order; every
+   *  other pinned session keeps its relative order and is placed after
+   *  (legacy pinned rows with no `pinnedOrder` sort by `startedAt` asc,
+   *  then id). Persists via `schedulePersist`, emits
+   *  `session:pinned-reordered` on the session event bus, and returns the
+   *  pinned descriptors in their new order. */
+  reorderPinned(ids: string[]): SessionDescriptor[]
   /** Materialize a new artifact (or version of one) into the session's
    *  durable artifact store (`session_artifact_add` MCP verb / `POST
    *  /sessions/:id/artifacts`) — see `session-artifacts.ts`. Emits
@@ -4701,7 +4882,40 @@ export type AgentSessionResumer = (input: {
   onActivity?: () => void
 }) => Promise<AgentSessionLike | null>
 
+/** Pure pinned-order assignment behind `registry.reorderPinned` — split out
+ *  so the ordering is unit-testable without a registry. `pinned` is every
+ *  currently-pinned descriptor (any order); `ids` is the requested new
+ *  order. Listed ids get positions 0..n-1 in the given order; unlisted
+ *  pinned sessions keep their relative order and are placed after, with
+ *  legacy rows (no `pinnedOrder`) sorting by `startedAt` asc then id after
+ *  every ordered row. The caller validates existence/pinnedness/duplicates
+ *  and applies the returned map to the descriptors. */
+export function computePinnedOrder(
+  pinned: readonly SessionDescriptor[],
+  ids: readonly string[],
+): Map<string, number> {
+  const order = new Map<string, number>()
+  ids.forEach((id, i) => order.set(id, i))
+  const unlisted = pinned
+    .filter(s => !order.has(s.id))
+    .sort((a, b) => {
+      const ao = a.pinnedOrder ?? Number.POSITIVE_INFINITY
+      const bo = b.pinnedOrder ?? Number.POSITIVE_INFINITY
+      if (ao !== bo) return ao - bo
+      if (Number.isFinite(ao)) return 0 // both ordered — stable sort keeps their relative order
+      const byStart = a.startedAt.localeCompare(b.startedAt)
+      return byStart !== 0 ? byStart : a.id.localeCompare(b.id)
+    })
+  unlisted.forEach((s, i) => order.set(s.id, ids.length + i))
+  return order
+}
+
 export function createSessionsRegistry(opts?: {
+  /** How long a queued prompt may wait before it is reported stuck
+   *  (`pendingPrompts[].stale`, sender notice). Default
+   *  {@link DEFAULT_PENDING_PROMPT_STALE_MS}; `sweepPendingPrompts({staleMs})`
+   *  overrides it live (the daemon passes the hot `config.json` value). */
+  pendingPromptStaleMs?: number
   /** Fires exactly once per NEWLY-recorded opened PR (AIP-60 §6/step 4
    *  sentinel auto-link) — every lane that calls `recordOpenedPr`
    *  (`command_execute`'s stamper, both `pr-provenance-reconciler.ts` lanes)
@@ -4772,6 +4986,22 @@ export function createSessionsRegistry(opts?: {
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Harness capability lister — the "which installed harness has usable
+   *  credentials" signal behind handoff suggestions (the `handoff:<harness>`
+   *  options of the `ask`-mode context question and the
+   *  `session:handoff-suggested` event). Omitted → nothing is suggested. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
+  /** Proactive quota watch for `contextContinuity.handoffAtQuotaRemaining`:
+   *  the reader + the profile resolver for the session's `accessProfile`.
+   *  Omitted → the threshold is inert. */
+  quotaWatch?: {
+    reader: RemainingQuotaReader
+    resolveProfile: (profileRef: string) => Promise<QuotaReadableProfile | undefined>
+    /** Rolling window to read. Default "5h". */
+    window?: string
+    /** Minimum ms between two reads for one session. Default 5 min. */
+    minIntervalMs?: number
+  }
   /** Optional — best-effort exit-time worktree auto-reclaim, called from
    *  `emitExited` for a session whose `worktreeAutoProvisioned` flag is set
    *  (see that field's doc). Injected by the CLI over `@agentproto/worktree`;
@@ -4897,6 +5127,15 @@ export function createSessionsRegistry(opts?: {
    *  (mirrors `stampProcessAlive`). 0/empty when nothing is waiting — both
    *  fields are always set so a reader can tell "no watchers" from "field
    *  unsupported". A shallow copy so a caller can't mutate the live list. */
+  let pendingPromptStaleMs = opts?.pendingPromptStaleMs ?? DEFAULT_PENDING_PROMPT_STALE_MS
+  /** Read-time `pendingPrompts` projection (age + stale flag) of the queue. */
+  const stampPendingPrompts = (desc: SessionDescriptor): void => {
+    if (desc.promptQueue?.length) {
+      desc.pendingPrompts = pendingPromptViews(desc.promptQueue, Date.now(), pendingPromptStaleMs)
+    } else {
+      delete desc.pendingPrompts
+    }
+  }
   const stampWatchers = (desc: SessionDescriptor): void => {
     desc.watchers = watchersById.get(desc.id) ?? 0
     desc.watcherDetails = [...(watcherDetailsById.get(desc.id) ?? [])]
@@ -6294,6 +6533,7 @@ export function createSessionsRegistry(opts?: {
         if (typeof evt.used === "number" && evt.used > 0) {
           const used = plausibleContextUsed(rt.desc.contextSize, evt.used)
           if (used !== undefined) rt.desc.contextUsed = used
+          rt.contextUsedInconsistent = used === undefined
         }
         if (evt.cost) {
           rt.desc.costUsd = evt.cost.amount
@@ -6422,7 +6662,11 @@ export function createSessionsRegistry(opts?: {
       )
     }
     const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
-    if (rt.desc.contextContinuity && isContextContinuityHardStopped(pct, rt.desc.contextContinuity)) {
+    if (
+      !rt.contextUsedInconsistent &&
+      rt.desc.contextContinuity &&
+      isContextContinuityHardStopped(pct, rt.desc.contextContinuity)
+    ) {
       rt.desc.contextContinuityHardStopped = true
       schedulePersist()
       throw new Error(
@@ -6492,8 +6736,12 @@ export function createSessionsRegistry(opts?: {
     rt: SessionRuntime,
     id: string,
     caller: string,
-    deliverQueueId?: string
+    deliverQueueId?: string,
+    deliveryOrigin?: string
   ): Promise<void> => {
+    // A bare stop means stop: a delivery notice armed by an earlier
+    // interrupt whose prompt never ran must not ride on the next turn.
+    if (deliveryOrigin === undefined) rt.pendingInterruptNotice = undefined
     // An autonomous turn has no `session/prompt` to cancel (cancelling with
     // none in flight would mark the adapter's session cancelled and swallow
     // the NEXT prompt's result). Close the daemon-side turn; the agent folds
@@ -6515,6 +6763,9 @@ export function createSessionsRegistry(opts?: {
     }
     if (rt.busy) {
       rt.interruptRequested = { by: caller, ...(deliverQueueId ? { deliverQueueId } : {}) }
+      if (deliveryOrigin !== undefined) {
+        rt.pendingInterruptNotice = interruptDeliveryNotice(deliveryOrigin)
+      }
       const held = (rt.desc.promptQueue ?? []).filter(p => p.id !== deliverQueueId).length
       const banner =
         `── turn interrupted by ${INTERRUPT_CALLER_LABELS[caller] ?? caller}` +
@@ -6530,6 +6781,7 @@ export function createSessionsRegistry(opts?: {
       // Nothing was cancelled — the turn will end on its own, so its
       // `finally` must drain the queue as usual.
       rt.interruptRequested = undefined
+      rt.pendingInterruptNotice = undefined
       throw new Error(
         `${caller}: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
           err instanceof Error ? err.message : String(err)
@@ -6561,7 +6813,7 @@ export function createSessionsRegistry(opts?: {
    */
   const dispatchQueuedPrompt = (rt: SessionRuntime, onlyId?: string): void => {
     const queue = rt.desc.promptQueue
-    if (!queue?.length || rt.busy) return
+    if (!queue?.length || rt.busy || rt.steerInFlight) return
     const next = onlyId ? queue.find(p => p.id === onlyId) : queue[0]
     if (!next) return
     // A typed message at the head drains together with every envelope item
@@ -6920,6 +7172,7 @@ export function createSessionsRegistry(opts?: {
     // via emitExited, which reads desc.endedReason) so existing
     // session:exited consumers see the row leave "running".
     emitExited(rt)
+    if (providerLimitMessage) void suggestHandoff(rt, "provider-limit", "exit")
     return true
   }
 
@@ -7214,6 +7467,110 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /**
+   * Announce — never perform — a cross-harness handoff: a
+   * `session:handoff-suggested` event plus readable transcript lines carrying
+   * the command in clear. Once per `key` per session; silent when no other
+   * harness is eligible. Best-effort: never throws.
+   */
+  async function suggestHandoff(
+    rt: SessionRuntime,
+    reason: "provider-limit" | "quota-threshold",
+    key: string,
+    quota?: { remaining: number; window: string },
+  ): Promise<void> {
+    try {
+      const tag = `${reason}:${key}`
+      if (rt.handoffSuggested?.has(tag)) return
+      ;(rt.handoffSuggested ??= new Set()).add(tag)
+      const fromHarness = rt.desc.harness ?? rt.desc.adapterSlug ?? "claude-code"
+      const harnesses = await listHandoffHarnesses(fromHarness, opts?.listHarnessCapabilities)
+      if (harnesses.length === 0) return
+      const suggestions = buildHandoffSuggestions(rt.desc.id, harnesses)
+      for (const line of handoffSuggestionLines({
+        sessionId: rt.desc.id,
+        fromHarness,
+        reason,
+        suggestions,
+        ...(quota ? { quota } : {}),
+      })) {
+        appendLine(rt, line, "stderr")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+      }
+      sessionEvents?.emit({
+        type: "session:handoff-suggested",
+        sessionId: rt.desc.id,
+        fromHarness,
+        reason,
+        suggestions,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    } catch {
+      // a suggestion is a courtesy — it must never break the exit/turn path
+    }
+  }
+
+  /** Proactive quota threshold (`contextContinuity.handoffAtQuotaRemaining`):
+   *  suggest once per quota window when the session's auth profile is at or
+   *  under the threshold. Throttled; best-effort. */
+  async function evaluateQuotaHandoff(rt: SessionRuntime): Promise<void> {
+    const watch = opts?.quotaWatch
+    const threshold = rt.desc.contextContinuity?.handoffAtQuotaRemaining
+    const profileRef = rt.desc.accessProfile?.profileRef
+    if (!watch || threshold === undefined || !profileRef || rt.desc.kind !== "agent-cli") return
+    const now = Date.now()
+    if (rt.quotaCheckedAt !== undefined && now - rt.quotaCheckedAt < (watch.minIntervalMs ?? 300_000)) return
+    rt.quotaCheckedAt = now
+    try {
+      const profile = await watch.resolveProfile(profileRef)
+      if (!profile) return
+      const window = watch.window ?? "5h"
+      const quota = await watch.reader.readRemainingQuota(profile, window)
+      if (!quota || quota.remaining > threshold) return
+      if (rt.quotaSuggestedResetsAt === quota.resetsAt) return
+      rt.quotaSuggestedResetsAt = quota.resetsAt
+      await suggestHandoff(rt, "quota-threshold", quota.resetsAt, {
+        remaining: quota.remaining,
+        window: quota.window,
+      })
+    } catch {
+      // best-effort — a failing reader must never break the turn boundary
+    }
+  }
+
+  /** The user picked a `handoff:<harness>` option: the same path as
+   *  `POST /sessions/:id/handoff`. The source session is left running, like
+   *  the explicit verb. */
+  async function performContextHandoff(rt: SessionRuntime, harness: string): Promise<void> {
+    rt.desc.awaitingInput = false
+    rt.desc.awaitingQuestion = undefined
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (pct !== null) rt.desc.contextContinuityAckedAtPct = pct
+    schedulePersist()
+    if (!resolveAgentAdapter) {
+      appendLine(rt, "[context] handoff requested but no adapter resolver is configured", "stderr")
+      return
+    }
+    try {
+      const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
+        harness,
+      })
+      appendLine(
+        rt,
+        `[context] handed off to ${harnessDisplayName(harness)} as ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId})`,
+        "stdout",
+      )
+      schedulePersist()
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] handoff to ${harness} failed: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+  }
+
   async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
     appendLine(
       rt,
@@ -7223,6 +7580,7 @@ export function createSessionsRegistry(opts?: {
     rt.desc.contextContinuityHardStopped = true
     rt.desc.status = "killed"
     rt.desc.endedAt = new Date().toISOString()
+    rt.desc.endedReason = "context-hard-stop"
     void rt.agentSession?.close().catch(() => undefined)
     void transcriptWriter.close(rt.desc.id)
     tracedSessions.delete(rt.desc.id)
@@ -7247,6 +7605,9 @@ export function createSessionsRegistry(opts?: {
       const result = await continueAgentSessionFresh(
         { registry, resolveAgentAdapter },
         rt.desc,
+        // The session is at its context limit: don't spend another turn on
+        // a handoff question, extract from the transcript instead.
+        { askSource: false },
       )
       appendLine(
         rt,
@@ -7308,11 +7669,19 @@ export function createSessionsRegistry(opts?: {
         // `contextContinuityStateForPct`), so it's never suppressed by this.
         const ackedAtPct = rt.desc.contextContinuityAckedAtPct
         if (ackedAtPct !== undefined && pct <= ackedAtPct) return
+        const handoffHarnesses = await listHandoffHarnesses(
+          rt.desc.harness ?? rt.desc.adapterSlug ?? "claude-code",
+          opts?.listHarnessCapabilities,
+        )
         rt.desc.awaitingInput = true
         rt.desc.awaitingQuestion = {
           source: "structured",
           text: `Context is at ${pct}%. Continue fresh to avoid losing continuity?`,
-          options: ["continue-fresh", "keep-going"],
+          options: [
+            "continue-fresh",
+            ...handoffHarnesses.map(h => `${HANDOFF_OPTION_PREFIX}${h}`),
+            "keep-going",
+          ],
         }
         appendLine(
           rt,
@@ -7329,6 +7698,17 @@ export function createSessionsRegistry(opts?: {
         await performContextContinueFresh(rt)
         return
       case "hard-stop":
+        // The latest frame's `used` contradicted the window (see
+        // `contextUsedInconsistent`), so `pct` is a stale reading — ending a
+        // session on it is irreversible, a warning is not.
+        if (rt.contextUsedInconsistent) {
+          appendLine(
+            rt,
+            `[context] hard-stop skipped at ${pct}% — the adapter's last usage frame reported more tokens than the window holds, so the reading is unreliable`,
+            "stderr",
+          )
+          return
+        }
         await performContextHardStop(rt, pct)
         return
     }
@@ -7440,6 +7820,145 @@ export function createSessionsRegistry(opts?: {
     return true
   }
 
+  const canSteerPrompt = (rt: SessionRuntime): boolean => {
+    const agent = rt.agentSession
+    return !!agent?.steer && agent.steeringSupported === true && rt.busy && !rt.autonomousTurn
+  }
+
+  /** Inject one queued prompt into the running turn (ACP steering). Records it
+   *  as a user prompt in the transcript, like a turn it would have become. */
+  const steerQueuedPrompt = async (rt: SessionRuntime, item: QueuedPrompt): Promise<boolean> => {
+    const agent = rt.agentSession
+    if (!agent?.steer) return false
+    let outcome: "steered" | "promptRequired" | "unsupported"
+    try {
+      const content = typeof item.message === "string" ? escapeHumanPrompt(item.message) : item.message
+      outcome = await agent.steer(content)
+    } catch {
+      return false
+    }
+    if (outcome !== "steered") return false
+    const at = new Date().toISOString()
+    transcriptWriter.recordPrompt(
+      rt.desc.id,
+      item.message,
+      item.source ? { source: item.source } : undefined,
+    )
+    rt.lastUserPrompt = { ts: at, text: promptTextForIndex(item.message, undefined) }
+    appendLine(rt, `[prompt] ${item.id} from ${promptOriginLabel(item)} steered into the running turn`, "stdout")
+    const seen = (rt.steeredPromptAt ??= new Map())
+    seen.set(item.id, at)
+    if (seen.size > 100) seen.delete(seen.keys().next().value as string)
+    return true
+  }
+
+  /** Steer every `steer`-flagged queued prompt into the running turn, in queue
+   *  (FIFO) order, as soon as the agent can take it. Non-steer items are
+   *  skipped (they keep waiting for turn end); a refused steer stops the run so
+   *  later items never overtake an earlier one. Serialized per session. */
+  const flushSteerableQueue = (rt: SessionRuntime): Promise<void> => {
+    const run = async (): Promise<void> => {
+      try {
+        while (canSteerPrompt(rt)) {
+          const head = rt.desc.promptQueue?.find(p => p.steer && !p.envelope)
+          if (!head) break
+          rt.steerInFlight = head.id
+          let ok = false
+          try {
+            ok = await steerQueuedPrompt(rt, head)
+          } finally {
+            rt.steerInFlight = undefined
+          }
+          if (!ok) break
+          rt.desc.promptQueue = (rt.desc.promptQueue ?? []).filter(p => p.id !== head.id)
+          schedulePersist()
+        }
+      } finally {
+        // The turn may have ended while a steer RPC was in flight and
+        // `dispatchQueuedPrompt` held off — drain now.
+        if (!rt.busy) dispatchQueuedPrompt(rt)
+      }
+    }
+    rt.steerChain = (rt.steerChain ?? Promise.resolve()).then(run, run)
+    return rt.steerChain
+  }
+
+  /** One pass over every session's prompt queue: force-deliver items past
+   *  their `deliverWithin` deadline, and tell the sender once about items that
+   *  have waited past the staleness threshold. */
+  const sweepPendingPrompts = async (
+    sweepOpts?: { now?: number; staleMs?: number },
+  ): Promise<PendingPromptSweepSummary> => {
+    const now = sweepOpts?.now ?? Date.now()
+    if (sweepOpts?.staleMs !== undefined && sweepOpts.staleMs > 0) {
+      pendingPromptStaleMs = sweepOpts.staleMs
+    }
+    const summary: PendingPromptSweepSummary = { stale: 0, forced: 0, ids: [] }
+    for (const rt of Array.from(sessions.values())) {
+      for (const item of [...(rt.desc.promptQueue ?? [])]) {
+        if (!rt.desc.promptQueue?.some(p => p.id === item.id)) continue
+        if (item.deliverBy && Date.parse(item.deliverBy) <= now) {
+          const via = item.deliverVia ?? "auto"
+          if (via !== "interrupt" && canSteerPrompt(rt)) {
+            rt.desc.promptQueue = rt.desc.promptQueue.map(p => (p.id === item.id ? { ...p, steer: true } : p))
+            await flushSteerableQueue(rt)
+          }
+          if (rt.desc.promptQueue?.some(p => p.id === item.id) && via !== "steer") {
+            try {
+              await registry.deliverQueuedPrompt(rt.desc.id, item.id)
+            } catch (err) {
+              appendLine(rt, `[error] deliverWithin: ${err instanceof Error ? err.message : String(err)}`, "stderr")
+            }
+          }
+          if (!rt.desc.promptQueue?.some(p => p.id === item.id)) {
+            summary.forced++
+            summary.ids.push(item.id)
+            continue
+          }
+        }
+        const age = now - Date.parse(item.queuedAt)
+        // Typed-message envelopes are skipped: a notice about a notice would loop.
+        if (!item.envelope && !item.staleNotifiedAt && age >= pendingPromptStaleMs) {
+          rt.desc.promptQueue = (rt.desc.promptQueue ?? []).map(p =>
+            p.id === item.id ? { ...p, staleNotifiedAt: new Date(now).toISOString() } : p,
+          )
+          schedulePersist()
+          summary.stale++
+          summary.ids.push(item.id)
+          await notifyStalePrompt(rt, item, age)
+        }
+      }
+    }
+    return summary
+  }
+
+  /** Tell the sender (the `agent:<id>` session that queued it, else the
+   *  target's parent) that a prompt is still undelivered — as a typed `notice`
+   *  into its inbox. A human sender has no inbox; they see `pendingPrompts`. */
+  const notifyStalePrompt = async (rt: SessionRuntime, item: QueuedPrompt, ageMs: number): Promise<void> => {
+    const caller = item.source?.startsWith("agent:") ? item.source.slice("agent:".length) : undefined
+    const recipientId = caller && sessions.has(caller) ? caller : rt.desc.parentSessionId
+    if (!recipientId || recipientId === rt.desc.id || !sessions.has(recipientId)) return
+    const minutes = Math.round(ageMs / 60_000)
+    try {
+      await registry.sendMessage(
+        createSessionMessage({
+          to: recipientId,
+          from: { relation: "system" },
+          kind: "notice",
+          urgency: "steer",
+          text:
+            `Prompt ${item.id} to session ${rt.desc.id} ("${previewPrompt(item.message, 60)}") has been ` +
+            `queued for ${minutes} min and has NOT been delivered: the target is mid-turn. ` +
+            `Re-send with agent_prompt interrupt:true to redirect it now, or deliverWithin to force it.`,
+          data: { kind: "prompt-stale", sessionId: rt.desc.id, queueId: item.id, ageMs },
+        }),
+      )
+    } catch {
+      // Best-effort: the recipient may have exited — pendingPrompts still shows it.
+    }
+  }
+
   const recordSent = (msg: SessionMessage): void => {
     if (!msg.from.sessionId) return
     transcriptWriter.recordSessionMessageSent?.(msg.from.sessionId, {
@@ -7528,6 +8047,16 @@ export function createSessionsRegistry(opts?: {
         message = `${digest}\n\n${message}`
         turnOpts = { ...turnOpts, system: turnOpts?.system ? `${digest}\n\n${turnOpts.system}` : digest }
       }
+    }
+    // This turn was delivered by cutting the previous one — say so first,
+    // as a `system-prompt` slice, so the model doesn't read the cancel as a
+    // human stop and park. String messages only (same rule as the resume
+    // digest below): a raw content block keeps it for the next string turn.
+    if (rt.pendingInterruptNotice && typeof message === "string") {
+      const notice = rt.pendingInterruptNotice
+      rt.pendingInterruptNotice = undefined
+      message = `${notice}\n\n${message}`
+      turnOpts = { ...turnOpts, system: turnOpts?.system ? `${notice}\n\n${turnOpts.system}` : notice }
     }
     // `if (!title)`, not "on turn 1": every session already running when this
     // shipped has already had its first prompt, so a turn-1-only check would
@@ -7774,6 +8303,7 @@ export function createSessionsRegistry(opts?: {
         recordExitUsageSnapshot(rt)
         schedulePersist()
         emitExited(rt)
+        if (rt.desc.endedReason === "provider-limit") void suggestHandoff(rt, "provider-limit", "exit")
       }
     } finally {
       // Captured BEFORE `busy` flips: the awaits further down this block let
@@ -7921,6 +8451,9 @@ export function createSessionsRegistry(opts?: {
 
         // ── Context-continuity policy evaluation ─────────────────────
         await evaluateContextContinuity(rt)
+        if (opts?.quotaWatch && rt.desc.contextContinuity?.handoffAtQuotaRemaining !== undefined) {
+          await evaluateQuotaHandoff(rt)
+        }
 
         // ── Cost cap (best-effort, turn-granular) ────────────────────
         const overBudget =
@@ -8518,7 +9051,10 @@ export function createSessionsRegistry(opts?: {
     const trimmed = message.trim().toLowerCase()
     const matched = question.options.find(o => o.toLowerCase() === trimmed)
     if (!matched) return undefined
-    const handler = STRUCTURED_QUESTION_HANDLERS[matched.toLowerCase()]
+    const handoffHarness = parseHandoffOption(matched)
+    const handler = handoffHarness
+      ? (r: SessionRuntime) => performContextHandoff(r, handoffHarness)
+      : STRUCTURED_QUESTION_HANDLERS[matched.toLowerCase()]
     if (!handler) return undefined
     return { question, matched, handler }
   }
@@ -9555,7 +10091,7 @@ export function createSessionsRegistry(opts?: {
       // silently dropped on the blocking path — the caller asked to
       // redirect the session and got a 409 (or, worse, nothing).
       if (opts?.interrupt && rtPre?.busy) {
-        await interruptInFlightTurn(rtPre, id, "sendPrompt")
+        await interruptInFlightTurn(rtPre, id, "sendPrompt", undefined, promptOriginLabel({ source: opts.source }))
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
@@ -9572,6 +10108,12 @@ export function createSessionsRegistry(opts?: {
       })
     },
     async enqueuePrompt(id, message, opts) {
+      const deliveredNow = (): EnqueuePromptResult => ({
+        queued: false,
+        delivery: "delivered",
+        deliveredAt: new Date().toISOString(),
+        pending: false,
+      })
       // Admission phase — AWAITED, unlike the turn itself below. This
       // is what makes `{queued: true}` truthful: a dead (exited/
       // killed/error) session gets one resume attempt, then
@@ -9591,7 +10133,13 @@ export function createSessionsRegistry(opts?: {
       // only ever reached once the prior turn is genuinely over.
       const interrupted = opts?.interrupt === true && rtPre.busy
       if (interrupted) {
-        await interruptInFlightTurn(rtPre, id, "enqueuePrompt")
+        await interruptInFlightTurn(
+          rtPre,
+          id,
+          "enqueuePrompt",
+          undefined,
+          promptOriginLabel({ source: opts?.source, origin: opts?.origin })
+        )
       }
       // Queue arm (additive, opt-in — see this method's doc comment):
       // reached only when the caller explicitly asked to queue AND the
@@ -9614,6 +10162,7 @@ export function createSessionsRegistry(opts?: {
         }
       }
       if (opts?.queue && rtPre.busy) {
+        const steerable = opts.steer === true && !envelope && !isChildPromptSource(opts.source)
         const item: QueuedPrompt = {
           id: opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
           message: envelope ? envelope.text : message,
@@ -9621,15 +10170,34 @@ export function createSessionsRegistry(opts?: {
           ...(opts.source ? { source: opts.source } : {}),
           ...(opts.origin ? { origin: opts.origin } : {}),
           ...(envelope ? { envelope } : {}),
+          ...(steerable ? { steer: true } : {}),
+          ...(opts.deliverWithinMs !== undefined && opts.deliverWithinMs > 0
+            ? {
+                deliverBy: new Date(Date.now() + opts.deliverWithinMs).toISOString(),
+                deliverVia: opts.deliverVia ?? "auto",
+              }
+            : {}),
         }
         if (envelope) emitSessionMessage(envelope)
         rtPre.desc.promptQueue = opts.force
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
           : [...(rtPre.desc.promptQueue ?? []), item]
         schedulePersist()
+        if (steerable) {
+          await flushSteerableQueue(rtPre)
+          const steeredAt = rtPre.steeredPromptAt?.get(item.id)
+          if (steeredAt) {
+            rtPre.steeredPromptAt?.delete(item.id)
+            return { queued: false, delivery: "steered", deliveredAt: steeredAt, pending: false, queueId: item.id }
+          }
+          if (!rtPre.desc.promptQueue?.some(p => p.id === item.id)) {
+            // The turn ended while the steer ran and the queue drain took it.
+            return { queued: false, delivery: "delivered", deliveredAt: new Date().toISOString(), pending: false, queueId: item.id }
+          }
+        }
         // The ONLY path that parks the prompt behind a live turn — signal it
         // so the caller can surface the "queued, not delivered yet" hint.
-        return { queued: true }
+        return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: item.id }
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
@@ -9637,7 +10205,7 @@ export function createSessionsRegistry(opts?: {
         void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
           appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
         })
-        return { queued: false }
+        return deliveredNow()
       }
       // A structured-question answer is resolved synchronously (it never
       // starts a turn — it's a flag flip, or a hand-off to a fresh session)
@@ -9649,7 +10217,7 @@ export function createSessionsRegistry(opts?: {
         : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
-        return { queued: false }
+        return deliveredNow()
       }
       // Execution phase — fire-and-forget from here on. Errors during
       // the turn itself (network drop, child died mid-turn) land in
@@ -9665,8 +10233,9 @@ export function createSessionsRegistry(opts?: {
       })
       // Admitted + dispatched now (idle session, or an interrupt that already
       // settled the prior turn) — not parked, so no queued hint.
-      return { queued: false }
+      return deliveredNow()
     },
+    sweepPendingPrompts,
     async sendMessage(msg, opts) {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
@@ -9861,7 +10430,7 @@ export function createSessionsRegistry(opts?: {
       if (wasBusy) {
         // Await the cancelled turn actually settling — the interruption is
         // real and delivery is imminent (its finally dispatches the target).
-        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId)
+        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId, promptOriginLabel(item))
         return { delivered: true, interrupted: true }
       }
       dispatchQueuedPrompt(rt)
@@ -10192,6 +10761,7 @@ export function createSessionsRegistry(opts?: {
           stampAdapterConnected(desc, rt)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           desc.queuedPrompts = desc.promptQueue?.length ?? 0
+          stampPendingPrompts(desc)
           return desc
         })
     },
@@ -10268,6 +10838,7 @@ export function createSessionsRegistry(opts?: {
         stampAdapterConnected(desc, rt)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
+        stampPendingPrompts(desc)
       }
       return desc
     },
@@ -10842,7 +11413,30 @@ export function createSessionsRegistry(opts?: {
     setPinned(id, pinned) {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`setPinned: no session "${id}"`)
-      rt.desc.pinned = pinned
+      if (pinned) {
+        if (rt.desc.pinned !== true) {
+          // Append at the end of the pinned group: one past the max order over
+          // the currently pinned. Legacy pins (no order yet) are numbered first,
+          // in their startedAt order, so the new pin can't land ahead of them.
+          let max = -1
+          const legacy: SessionDescriptor[] = []
+          for (const other of sessions.values()) {
+            if (other.desc.pinned !== true) continue
+            if (other.desc.pinnedOrder === undefined) legacy.push(other.desc)
+            else if (other.desc.pinnedOrder > max) max = other.desc.pinnedOrder
+          }
+          legacy
+            .sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id))
+            .forEach(d => {
+              d.pinnedOrder = ++max
+            })
+          rt.desc.pinnedOrder = max + 1
+        }
+        rt.desc.pinned = true
+      } else {
+        rt.desc.pinned = false
+        delete rt.desc.pinnedOrder
+      }
       schedulePersist()
       sessionEvents?.emit({
         type: "session:pinned-changed",
@@ -10852,6 +11446,34 @@ export function createSessionsRegistry(opts?: {
       })
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    reorderPinned(ids) {
+      const seen = new Set<string>()
+      for (const id of ids) {
+        if (seen.has(id)) throw new Error(`reorderPinned: duplicate session id "${id}"`)
+        seen.add(id)
+        const rt = sessions.get(id)
+        if (!rt) throw new Error(`reorderPinned: no session "${id}"`)
+        if (rt.desc.pinned !== true) {
+          throw new Error(`reorderPinned: session "${id}" is not pinned`)
+        }
+      }
+      const pinned = registry.list({ includeArchived: true }).filter(s => s.pinned === true)
+      const order = computePinnedOrder(pinned, ids)
+      for (const s of pinned) {
+        const rt = sessions.get(s.id)
+        if (rt) rt.desc.pinnedOrder = order.get(s.id)
+      }
+      schedulePersist()
+      sessionEvents?.emit({
+        type: "session:pinned-reordered",
+        ids: [...ids],
+        ts: new Date().toISOString(),
+      })
+      return pinned
+        .slice()
+        .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+        .map(s => sessions.get(s.id)?.desc ?? s)
     },
     addSessionArtifact(id, input) {
       const rt = sessions.get(id)

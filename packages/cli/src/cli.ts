@@ -261,6 +261,7 @@ const VERBS = new Set([
   "host",
   "brain",
   "tunnel",
+  "sentinel",
   "remote",
   "presets",
   "provider-preset",

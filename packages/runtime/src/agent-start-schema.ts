@@ -21,6 +21,7 @@ import {
   contextContinuityInputSchema,
   promptInputSchema,
 } from "./spawn-field-schemas.js"
+import { decodeWhsecSecret } from "./webhook-egress/signing.js"
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
  *  These coercers let a flag work whether the client sends a real JSON
@@ -283,8 +284,10 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Explicit billing-auth mode + credential for adapters that declare it " +
-        "(today: claude-code) — 'subscription' (default) bills the Max/Pro " +
-        "plan, 'api-key' bills API credits. FAILS FAST with no fallback if the " +
+        "(those that declare a subscription login and/or an API-key provider; " +
+        "any other fails with unsupported_auth_mode) — 'subscription' " +
+        "(default) bills the user's subscription login, 'api-key' bills API " +
+        "credits. FAILS FAST with no fallback if the " +
         `resolved mode has no credential configured anywhere. ${help("auth")}`
     ),
   mcpServers: jsonTolerant(
@@ -359,6 +362,13 @@ export const agentStartInputShape = {
         "session's turn-end / awaiting-input / exited events, in addition to " +
         "any global notify URL."
     ),
+  notifySecret: z
+    .string()
+    .refine(s => decodeWhsecSecret(s) !== null, {
+      message: "must be a whsec_<base64> Standard Webhooks secret (24-64 decoded bytes)",
+    })
+    .optional()
+    .describe(`Standard Webhooks secret (\`whsec_...\`) signing \`notifyUrl\` POSTs. ${help("notifySecret")}`),
   wait: mcpBool
     .optional()
     .describe(
@@ -455,7 +465,8 @@ export const agentStartInputShape = {
     .describe(
       "Override lazy MCP tool loading for this spawn: `true` hides most " +
         "tools from `tools/list` (still callable via `tool_search`), `false` " +
-        `keeps the full eager surface. Omit to use the role/daemon default. ${help("deferredTools")}`
+        `keeps the full eager surface. Omit to use the harness/role/daemon default ` +
+        `(harnesses with native tool search default to eager). ${help("deferredTools")}`
     ),
   browser: z
     .preprocess(

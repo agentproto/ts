@@ -237,7 +237,8 @@ Context intake profile (for example full or lean).
 ## auth
 
 Deterministic billing-auth mode + EXPLICIT credential for adapters that
-declare it (today: claude-code). EXPLICIT credential selection, not
+declare a subscription login and/or an API-key provider (any other adapter
+fails with `unsupported_auth_mode`). EXPLICIT credential selection, not
 scrub-by-absence: `mode` picks 'subscription' (default) or 'api-key';
 `token`/`apiKey` (matching the resolved mode) is the secret VALUE, merged
 against `~/.agentproto/config.json`'s
@@ -264,6 +265,13 @@ Forwarded verbatim to `session/new.mcpServers` on the ACP arm — gives the
 child agent a host-chosen scoped toolset (e.g. the daemon's own
 orchestration gateway so it can spawn + supervise sub-agents). Adapters
 that don't model MCP mounting ignore it.
+
+A `mcpServers` entry in the descriptor (or the daemon self-mount) only
+means the mount was *requested*: it does not guarantee the child actually
+loaded any tools. A client can connect yet end up with 0 tools if the
+server's MCP handshake is not one it can use (e.g. a protocol-era mismatch
+on `server/discover` / `tools/list`). Verify from inside the session (list
+its tools) before relying on a mount.
 
 Each entry's `headers` are static HTTP headers sent with every request to
 an `http`/`sse` server (ignored for `stdio`). `credentialRef` resolves a
@@ -298,6 +306,14 @@ lower-only rule for a recursive spawn.
 Optional per-session webhook URL. POSTed (fire-and-forget) on this
 session's turn-end / awaiting-input / exited events, in addition to any
 global notify URL.
+
+## notifySecret
+
+Optional Standard Webhooks secret (`whsec_...`) for `notifyUrl`. When set,
+each POST carries `webhook-id` / `webhook-timestamp` / `webhook-signature`
+headers (HMAC-SHA256 over `id.timestamp.body`); the receiver verifies them
+to confirm the daemon sent it. Omit for the unauthenticated (legacy)
+behavior — ignored without `notifyUrl`.
 
 ## wait
 
@@ -379,10 +395,15 @@ anyway' via this field still has no delegation tools).
 Override deferred/lazy MCP tool loading for this spawn's daemon self-mount:
 `true` hides every tool outside a small always-on set from `tools/list`
 (still fully callable — use `tool_search` to look up a hidden tool's schema
-by keyword before calling it), `false` keeps the full eager surface. Omit
-to use the resolved role's own default ('executor' defaults ON, since it
-can't delegate anyway and rarely needs the full ~190-tool surface); omit
-AND spawn a role with no opinion to fall through to the daemon's own
+by keyword before calling it), `false` keeps the full eager surface. Only the
+loading strategy changes; no tool is removed.
+
+Resolution order (first with an opinion wins): this field > the mount's own
+`?deferred=1|0` (caller-supplied `mcpServers` entries) > a harness that
+defers MCP tools natively (manifest `capabilities.nativeToolSearch`, today
+claude-code ⇒ eager, so the daemon doesn't stack a second deferral layer on
+top of the harness's own `ToolSearch`) > the resolved role's default
+('executor' defaults ON, 'supervisor' has no opinion) > the daemon's
 boot-time `defaults.mcp.deferredTools` config.
 
 ## browser

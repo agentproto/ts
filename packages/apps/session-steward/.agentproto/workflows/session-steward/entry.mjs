@@ -11,13 +11,23 @@
 // Safety model: every mutation goes through `session_wrapup_apply`, which
 // RE-CLASSIFIES each id itself immediately before acting and refuses
 // `keep`-class ids outright. On top of that, this workflow:
-//   - mutates nothing unless `apply` is true (every mutating map runs over an
-//     empty list otherwise);
+//   - mutates no SESSION unless `apply` is true (every session-mutating map
+//     runs over an empty list otherwise). The one dry-run write is the
+//     append-only verdict-memory ledger (`app_state_append`) — never a
+//     session, and disableable with `appId: ""`;
 //   - only ever feeds `close`/`stuck` ids to the rules pass — a `keepAlive`
 //     session can only ever be `judge` class, so rules never close it;
 //   - drops the caller's own session from every candidate list;
 //   - treats a malformed judge reply as `active` with confidence 0 (never
-//     acted on).
+//     acted on);
+//   - PROPOSES loop/stall nudges in the report only — never sends one, never
+//     closes a `looping` session.
+//
+// The mechanical rules themselves live in `cron-rules.mjs` (pure, unit
+// tested): loop detection, stall, never-ran, fast-path done, terminal
+// relabel, self-exclusion, re-check, host saturation, and the verdict-memory
+// fold. This file wires them over `session_list` / `tool_calls_list` /
+// `host_load` / `app_state`.
 
 import {
   classifyOrigin,
@@ -26,9 +36,30 @@ import {
   DEFAULT_CLOSABLE_ORIGINS,
   DEFAULT_USER_ORIGINS,
 } from "./origin-policy.mjs"
+import {
+  buildProposals,
+  detectLoop,
+  detectStall,
+  evidenceFingerprint,
+  explainZeroCandidates,
+  foldVerdictMemory,
+  isNeverRan,
+  isSelfExcluded,
+  saturationHeader,
+  shouldRejudge,
+  terminalRelabelCandidate,
+  verdictMemoryEvent,
+  NUDGE_CONTINUE,
+  NUDGE_INTERRUPT,
+} from "./cron-rules.mjs"
 
 const DEFAULT_IDLE_MINUTES = 30
 const DEFAULT_MIN_CONFIDENCE = 0.8
+/** How many consecutive passes on an unchanged fingerprint before the judge
+ *  cache stops re-judging a session. */
+const DEFAULT_STABLE_VERDICT_PASSES = 2
+/** The installed app whose `app_state` ledger holds the verdict memory. */
+const DEFAULT_APP_ID = "session-steward"
 // The agent judge's model is the `judge.session` model ROLE, resolved at run
 // time by the `modelRoles` step (the daemon's `model_roles` tool): explicit
 // `judgeModel` input > repo agentproto.json `models` > daemon config `models`
@@ -79,6 +110,9 @@ export function resolveSettings(input, modelRoles) {
     maxJudged: Math.floor(num(i.maxJudged, DEFAULT_MAX_JUDGED)),
     askSessions: i.askSessions === true,
     callerSessionId: typeof i.callerSessionId === "string" && i.callerSessionId ? i.callerSessionId : null,
+    callerOrigin: typeof i.callerOrigin === "string" && i.callerOrigin ? i.callerOrigin : null,
+    appId: typeof i.appId === "string" && i.appId.trim() ? i.appId.trim() : DEFAULT_APP_ID,
+    stableVerdictPasses: Math.floor(num(i.stableVerdictPasses, DEFAULT_STABLE_VERDICT_PASSES, { min: 1 })),
     userOrigins: originPolicy.userOrigins,
     closableOrigins: originPolicy.closableOrigins,
   }
@@ -163,9 +197,14 @@ function cut(text, max) {
 
 /** Plan entry + `session_evidence` → the compact object the judge sees,
  *  under {@link EVIDENCE_MAX_CHARS} once serialized (oldest turns dropped
- *  first, then the tail signal shortened). */
-export function composeEvidence(entry, raw) {
+ *  first, then the tail signal shortened). `memory` (a folded verdict map
+ *  from `app_state`, optional) adds the previous verdict for this session.
+ *  Every field added by the PR-3 enrichment is copied through only when the
+ *  `session_evidence` tool supplied it — an old daemon still yields the old
+ *  shape. */
+export function composeEvidence(entry, raw, memory) {
   const signals = entry?.signals ?? {}
+  const previous = memory instanceof Map ? memory.get(entry.sessionId) : memory?.[entry?.sessionId]
   const evidence = {
     sessionId: entry.sessionId,
     label: raw?.label ?? entry.label,
@@ -177,6 +216,8 @@ export function composeEvidence(entry, raw) {
     busy: raw?.busy === true,
     rssMB: mb(entry.rssBytes),
     planReasons: entry.reasons ?? [],
+    origin: raw?.origin ?? entry.origin,
+    parentSessionId: raw?.parentSessionId ?? entry.parentSessionId,
     signals: {
       lastAssistantTail: cut(signals.lastAssistantTail, 800),
       pendingToolCall: signals.pendingToolCall === true,
@@ -185,6 +226,22 @@ export function composeEvidence(entry, raw) {
     },
     worktree: raw?.worktree ?? null,
     turns: Array.isArray(raw?.turns) ? [...raw.turns] : [],
+    ...(raw?.liveChildren !== undefined ? { liveChildren: raw.liveChildren } : {}),
+    ...(raw?.continuedFrom ? { continuedFrom: raw.continuedFrom } : {}),
+    ...(raw?.continuedTo ? { continuedTo: raw.continuedTo } : {}),
+    ...(raw?.tokensIn !== undefined ? { tokensIn: raw.tokensIn } : {}),
+    ...(raw?.tokensOut !== undefined ? { tokensOut: raw.tokensOut } : {}),
+    ...(raw?.lastTurnErroredAt ? { lastTurnErroredAt: raw.lastTurnErroredAt } : {}),
+    ...(raw?.lastTurnError ? { lastTurnError: raw.lastTurnError } : {}),
+    ...(raw?.outcome ? { outcome: raw.outcome } : {}),
+    ...(raw?.pullRequests ? { pullRequests: raw.pullRequests } : {}),
+    ...(raw?.toolStats ? { toolStats: raw.toolStats } : {}),
+    ...(raw?.lastToolCall ? { lastToolCall: raw.lastToolCall } : {}),
+    ...(raw?.minutesSinceUserMessage !== undefined ? { minutesSinceUserMessage: raw.minutesSinceUserMessage } : {}),
+    ...(raw?.minutesSinceAgentMessage !== undefined ? { minutesSinceAgentMessage: raw.minutesSinceAgentMessage } : {}),
+    ...(previous
+      ? { previousVerdict: { verdict: previous.verdict, confidence: previous.confidence ?? null, streak: previous.streak ?? 1, ts: previous.ts ?? null } }
+      : {}),
   }
   while (JSON.stringify(evidence).length > EVIDENCE_MAX_CHARS && evidence.turns.length > 0) evidence.turns.shift()
   if (JSON.stringify(evidence).length > EVIDENCE_MAX_CHARS) evidence.signals.lastAssistantTail = cut(evidence.signals.lastAssistantTail, 200)
@@ -195,15 +252,22 @@ export function buildJudgePrompt(evidence) {
   return (
     "You are the session steward's judge. Decide whether ONE idle AI coding-agent session " +
     "is finished, from the evidence below. Do NOT call any tool — answer from the evidence alone.\n\n" +
-    "Verdicts:\n" +
-    "- `done`: the task visibly finished — a PR was opened or merged, a final report was given, " +
-    "or the user said thanks/ok with nothing pending.\n" +
-    "- `abandoned`: superseded or a dead end, with nothing worth keeping.\n" +
-    "- `blocked`: waiting on something external (CI, another session, a dependency).\n" +
-    "- `needs-input`: waiting on a human answer or decision.\n" +
-    "- `active`: mid-work — keep it.\n" +
-    "When unsure, say `active` with a LOW confidence. Closing a session that still had work " +
-    "is worse than leaving an idle one open.\n\n" +
+    "Verdicts (concrete signals — see the evidence fields named in each):\n" +
+    "- `done`: finished with nothing pending — `pullRequests.merged` > 0 or " +
+    "`worktree.pr.state`=\"merged\"; or `pullRequests.opened` > 0 with a final report and no " +
+    "open question; or the last tool call is a `message_parent` with `kind:\"done\"`; or " +
+    "`outcome.verdict`=\"done\"; or the user's last message is an acknowledgement with no " +
+    "pending question.\n" +
+    "- `abandoned`: superseded or a dead end — `outcome.verdict`=\"abandoned\"/\"failed\", or " +
+    "the worktree is gone/merged elsewhere with no open PR and no pending question.\n" +
+    "- `blocked`: waiting on something EXTERNAL — an open PR with CI/review pending, " +
+    "`liveChildren` > 0, or a `lastTurnError` that clears on its own.\n" +
+    "- `needs-input`: waiting on a HUMAN — `awaitingInput` true, or the LAST assistant turn " +
+    "ends in a question to the user/operator.\n" +
+    "- `active`: mid-work — `busy`, a progress update with no conclusion, recent distinct " +
+    "`toolStats`, or an unchanged `previousVerdict` of active.\n" +
+    "When the evidence is thin or ambiguous, say `active` with a LOW confidence. Closing a " +
+    "session that still had work is worse than leaving an idle one open.\n\n" +
     "Reply with ONLY one JSON object, no prose, no code fence:\n" +
     `{"sessionId": "${evidence.sessionId}", "verdict": "done"|"abandoned"|"blocked"|"needs-input"|"active", ` +
     '"confidence": <number 0..1>, "reason": "<one line>"}\n\n' +
@@ -219,7 +283,7 @@ function foldEvidence(b) {
   if (!raw || raw.sessionId !== b.item?.sessionId) {
     throw new Error(`session_evidence answered for '${raw?.sessionId}', expected '${b.item?.sessionId}'`)
   }
-  const evidence = composeEvidence(b.item, raw)
+  const evidence = composeEvidence(b.item, raw, b.steps.memory)
   return { entry: b.item, evidence, judgePrompt: buildJudgePrompt(evidence) }
 }
 
@@ -486,7 +550,7 @@ function actionCell(id, decision, applied) {
 
 export function buildReport(b) {
   const s = b.steps.settings ?? resolveSettings(b.input)
-  const c = b.steps.candidates ?? { close: [], stuck: [], judge: [], judgeOverflow: [] }
+  const c = b.steps.candidatesPlus ?? b.steps.candidates ?? { close: [], stuck: [], judge: [], judgeOverflow: [] }
   const verdicts = b.steps.finalVerdicts ?? []
   const applied = collectApplyResults(b.steps.autoApply, b.steps.judgedApply)
   const lines = []
@@ -498,6 +562,8 @@ export function buildReport(b) {
       (s.askSessions ? " · askSessions on" : ""),
   )
   lines.push(`origins: user=${s.userOrigins.join(", ")} · closable=${s.closableOrigins.join(", ")}`)
+  // Host saturation header first, report-only (mission item 9).
+  for (const line of saturationHeader(b.steps.hostLoad)) lines.push(line)
   if (!s.apply) lines.push("", "_Dry run: nothing was closed or flagged. Re-run with `apply: true` to act._")
   lines.push("")
   lines.push("| class | session | origin | idle | RAM | verdict | confidence | reason | action |")
@@ -513,7 +579,7 @@ export function buildReport(b) {
   }
   for (const e of c.stuck) {
     const d = decideFor(e, "stuck", "abandoned", 1, s)
-    row("stuck", e, "abandoned (rules)", undefined, "stuck starting, never ran", actionCell(e.sessionId, d, applied))
+    row("stuck", e, "abandoned (rules)", undefined, (e.reasons ?? []).join("; ") || "stuck starting, never ran", actionCell(e.sessionId, d, applied))
   }
   for (const r of verdicts) {
     const d = decideFor(r.entry, "judge", r.verdict, r.confidence, s)
@@ -551,7 +617,261 @@ export function buildReport(b) {
   }
   lines.push(`- RAM freed (closed sessions): ${fmtMB(freed)}`)
   lines.push(`- RAM still held by idle sessions: ${fmtMB(held)}`)
+
+  // Explicit "0 candidates" explanation (mission item 8) — say WHY, instead
+  // of leaving an empty table to interpret.
+  const scan = b.steps.scan
+  if (scan && c.close.length === 0 && c.stuck.length === 0 && verdicts.length === 0) {
+    lines.push(`- ${explainZeroCandidates(scan.counts)}`)
+  }
+
+  // Nudge proposals (mission items 1-2) — report only, NEVER executed here.
+  const prop = b.steps.proposals ?? { proposals: [], observed: [] }
+  if ((prop.proposals ?? []).length > 0 || (prop.observed ?? []).length > 0) {
+    lines.push("", "## Proposals (report only — no nudge is sent by this workflow)")
+    for (const p of prop.proposals ?? []) lines.push(`- ${p.kind} nudge → ${p.sessionId} — ${p.reason}`)
+    for (const p of prop.observed ?? []) lines.push(`- observed → ${p.sessionId} — ${p.reason} (no nudge: ${p.suppressed})`)
+  }
+
+  // Terminal sessions with no outcome (mission item 5).
+  const relabel = b.steps.relabelQueue ?? []
+  if (relabel.length > 0) {
+    lines.push("", "## Terminal sessions missing an outcome (relabel candidates)")
+    for (const r of relabel) lines.push(`- ${r.sessionId} → ${r.proposedVerdict} — ${r.reason}`)
+  }
+
+  // Verdict memory / cache (mission item 10).
+  const memory = b.steps.memory
+  const cachedCount = verdicts.filter(r => r.source === "cache").length
+  if (memory instanceof Map && memory.size > 0) {
+    lines.push(`- verdict memory: ${memory.size} session(s) known` + (cachedCount > 0 ? `, ${cachedCount} served from cache` : ""))
+  }
+
   return lines.join("\n")
+}
+
+// ── live scan, loop/stall, memory (mission items 1-10) ───────────────────
+
+const TERMINAL_STATUSES = new Set(["killed", "exited", "error", "stopped", "completed", "failed"])
+
+function idleMinutesOf(row, nowMs) {
+  const ts = row?.lastActivityAt ?? row?.startedAt
+  const ms = ts ? Date.parse(ts) : Number.NaN
+  return Number.isFinite(ms) ? Math.max(0, (nowMs - ms) / 60_000) : 0
+}
+
+function liveRowsOf(liveSessions) {
+  if (Array.isArray(liveSessions?.items)) return liveSessions.items
+  if (Array.isArray(liveSessions)) return liveSessions
+  return []
+}
+
+/**
+ * One deterministic pass over the live `session_list` rows: busy sessions
+ * (loop/stall scan), idle sessions (zero-candidate accounting), terminal
+ * sessions missing an outcome (relabel candidates), never-ran 0/0 sessions,
+ * and everything excluded (self / same cron job / archived / pinned / pty /
+ * keepAlive). Pure over the rows + settings + an injected `nowMs`.
+ */
+export function scanLive(liveSessions, settings, nowMs) {
+  const rows = liveRowsOf(liveSessions)
+  const policy = policyOf(settings)
+  const self = settings?.callerSessionId ?? null
+  const idleThreshold = settings?.idleMinutes ?? DEFAULT_IDLE_MINUTES
+  const busy = []
+  const idle = []
+  const terminal = []
+  const terminalRelabel = []
+  const neverRan = []
+  const excluded = []
+  const loopQueue = []
+  const stallInputs = []
+  let liveCount = 0
+  for (const s of rows) {
+    const id = s?.id
+    if (!id) continue
+    if (self && id === self) {
+      excluded.push({ sessionId: id, reason: "caller session" })
+      continue
+    }
+    if (isSelfExcluded(s, { callerSessionId: self, callerOrigin: settings?.callerOrigin }).excluded) {
+      excluded.push({ sessionId: id, reason: "same cron job as caller" })
+      continue
+    }
+    if (s.archived === true) {
+      excluded.push({ sessionId: id, reason: "archived" })
+      continue
+    }
+    if (s.pinned === true) {
+      excluded.push({ sessionId: id, reason: "pinned" })
+      continue
+    }
+    if (s.pty === true) {
+      excluded.push({ sessionId: id, reason: "pty" })
+      continue
+    }
+    const originClass = classifyOrigin(s, policy)
+    const label = s.label ?? s.name
+    const idleMinutes = idleMinutesOf(s, nowMs)
+    if (TERMINAL_STATUSES.has(String(s.status ?? ""))) {
+      terminal.push({ sessionId: id, origin: s.origin, originClass, label })
+      const cand = terminalRelabelCandidate(s)
+      if (cand.candidate) {
+        terminalRelabel.push({ sessionId: id, origin: s.origin, originClass, label, proposedVerdict: cand.proposedVerdict, reason: cand.reason })
+      }
+      continue
+    }
+    if (s.status !== "running" && s.status !== "starting") continue
+    liveCount++
+    if (s.keepAlive === true) {
+      excluded.push({ sessionId: id, reason: "keepAlive" })
+      continue
+    }
+    const row = { sessionId: id, origin: s.origin, originClass, label, idleMinutes, lastTurnErroredAt: s.lastTurnErroredAt ?? null }
+    if (isNeverRan(s)) neverRan.push(row)
+    if (s.busy === true) {
+      busy.push(row)
+      loopQueue.push({ sessionId: id, originClass, label })
+      stallInputs.push({ sessionId: id, originClass, busy: true, idleMinutes, lastTurnErroredAt: s.lastTurnErroredAt ?? null })
+    } else if (idleMinutes >= idleThreshold) {
+      idle.push(row)
+    }
+  }
+  const counts = {
+    live: liveCount,
+    busy: busy.length,
+    idle: idle.length,
+    terminal: terminal.length,
+    terminalRelabel: terminalRelabel.length,
+    neverRan: neverRan.length,
+    excluded: excluded.length,
+  }
+  return { busy, idle, terminal, terminalRelabel, neverRan, excluded, loopQueue, stallInputs, counts }
+}
+
+/** Fold the never-ran 0/0 sessions into the plan as `stuck` (no judge,
+ *  whatever the idle) and drop them from the judge queue — mission item 3. */
+export function mergeNeverRan(candidates, scan) {
+  const never = scan?.neverRan ?? []
+  const neverIds = new Set(never.map(n => n.sessionId))
+  const existing = new Set((candidates?.stuck ?? []).map(e => e.sessionId))
+  const added = never
+    .filter(n => !existing.has(n.sessionId))
+    .map(n => ({
+      sessionId: n.sessionId,
+      ...(n.label ? { label: n.label } : {}),
+      idleMinutes: Math.round(n.idleMinutes ?? 0),
+      class: "stuck",
+      reasons: ["0 tokens in/out — never ran"],
+      signals: {},
+      ...(n.origin ? { origin: n.origin } : {}),
+    }))
+  return {
+    ...candidates,
+    stuck: [...(candidates?.stuck ?? []), ...added],
+    judge: (candidates?.judge ?? []).filter(e => !neverIds.has(e.sessionId)),
+    judgeOverflow: (candidates?.judgeOverflow ?? []).filter(e => !neverIds.has(e.sessionId)),
+  }
+}
+
+/** `tool_calls_list` map item → the loop verdict + stats for one session. */
+export function analyzeLoopItem(b) {
+  const item = b.item ?? {}
+  const raw = b.steps.loopCallsOne
+  const records = Array.isArray(raw?.records) ? raw.records : Array.isArray(raw) ? raw : []
+  const r = detectLoop(records, { nowMs: Date.now() })
+  return { sessionId: item.sessionId, label: item.label, originClass: item.originClass, ...r }
+}
+
+/** Stall verdicts for every busy live session. */
+export function analyzeStalls(scan, nowMs) {
+  return (scan?.stallInputs ?? []).map(s => ({
+    sessionId: s.sessionId,
+    originClass: s.originClass,
+    ...detectStall({ busy: s.busy, idleMinutes: s.idleMinutes, lastTurnErroredAt: s.lastTurnErroredAt, nowMs }),
+  }))
+}
+
+/** Fold the `app_state` read into the per-session verdict memory map. */
+export function foldMemory(b) {
+  const events = settled(b.steps.memoryRead).ok.flatMap(r => (Array.isArray(r.value?.events) ? r.value.events : []))
+  return foldVerdictMemory(events)
+}
+
+/** Judge candidates minus those already judged the same verdict on the same
+ *  evidence fingerprint for `stableVerdictPasses` passes (the cache). */
+export function buildJudgeQueueFiltered(evidenceResult, memory, settings) {
+  const rows = settled(evidenceResult).ok.map(r => r.value)
+  const queue = []
+  const cached = []
+  for (const q of rows) {
+    const fingerprint = evidenceFingerprint(q.evidence)
+    const decision = shouldRejudge(memory, q.entry.sessionId, fingerprint, { stablePasses: settings?.stableVerdictPasses })
+    if (!decision.rejudge && decision.cached) cached.push({ ...q, cached: decision.cached, fingerprint })
+    else queue.push(q)
+  }
+  return { queue, cached }
+}
+
+/** Cached rows as verdict rows, so they appear in the report and (when they
+ *  carry a confident close verdict) can still be applied without re-judging. */
+export function buildCachedVerdicts(cachedQueue) {
+  return (cachedQueue ?? []).map(q => ({
+    entry: q.entry,
+    evidence: q.evidence,
+    verdict: q.cached.verdict,
+    confidence: typeof q.cached.confidence === "number" ? q.cached.confidence : 0,
+    reason: `cached verdict (stable ${q.cached.streak ?? "?"} passes, evidence unchanged)`,
+    source: "cache",
+    cached: true,
+    judgedBy: q.cached.judgedBy ?? "steward-cache",
+  }))
+}
+
+/** `collectVerdicts` + the cached rows (cache rows are never re-judged). */
+export function buildVerdicts(b) {
+  const jq = b.steps.judgeQueue ?? {}
+  return [
+    ...collectVerdicts(b.steps.evidence, jq.queue, b.steps.jevJudge, b.steps.jevQueue, b.steps.agentJudgeQueue, b.steps.judge),
+    ...buildCachedVerdicts(jq.cached),
+  ]
+}
+
+/** The report's nudge PROPOSALS (loop → interrupt, stall → continue) plus
+ *  the user-origin findings reported as observed-only. Never a close. */
+export function buildProposalsStep(scan, loopResults, settings, nowMs) {
+  const stalls = analyzeStalls(scan, nowMs)
+  const { proposals, observed } = buildProposals({ loopResults, stallResults: stalls })
+  return { proposals, observed, stalls }
+}
+
+/** Terminal sessions missing an outcome, as relabel candidates. */
+export function buildRelabelQueue(scan) {
+  return (scan?.terminalRelabel ?? []).map(t => ({ ...t }))
+}
+
+/** The `app_state` events to append for this pass's verdicts. The memory is
+ *  written on every pass (it is a ledger, never a session action) so streaks
+ *  accumulate and the cache can engage. */
+export function buildMemoryWriteQueue(finalVerdicts, settings) {
+  if (!settings?.appId) return []
+  const out = []
+  for (const r of finalVerdicts ?? []) {
+    if (!r?.entry?.sessionId || r.malformed) continue
+    const fingerprint = r.evidence ? evidenceFingerprint(r.evidence) : null
+    out.push({
+      appId: settings.appId,
+      event: verdictMemoryEvent({
+        sessionId: r.entry.sessionId,
+        verdict: r.verdict,
+        confidence: r.confidence,
+        fingerprint,
+        judgedBy: r.judgedBy ?? r.source ?? null,
+        note: r.reason,
+      }),
+    })
+  }
+  return out
 }
 
 // ── the workflow ─────────────────────────────────────────────────────────
@@ -578,6 +898,9 @@ export default {
     maxJudged: { type: "number", description: `Most \`judge\` sessions judged per run, most RAM first. Default ${DEFAULT_MAX_JUDGED}.`, default: DEFAULT_MAX_JUDGED },
     askSessions: { type: "boolean", description: "Ask low-confidence idle sessions directly whether they're done. Default false — it spends a turn in someone else's conversation.", default: false },
     callerSessionId: { type: "string", description: "The calling session's id — never a candidate. The CLI passes AGENTPROTO_SESSION_ID." },
+    callerOrigin: { type: "string", description: "The calling session's origin (`cron:<jobId>`) — an older run of the SAME cron job is never judged as user work." },
+    appId: { type: "string", description: `Installed app whose \`app_state\` ledger holds the verdict memory. Default ${DEFAULT_APP_ID}.` },
+    stableVerdictPasses: { type: "number", description: `Consecutive passes on an unchanged evidence fingerprint before the judge cache stops re-judging. Default ${DEFAULT_STABLE_VERDICT_PASSES}.`, default: DEFAULT_STABLE_VERDICT_PASSES },
     userOrigins: { type: "array", description: `Origins that are ALWAYS flag-only, never closed (a human is in the loop). Trailing \`*\` is a prefix wildcard. Default ${JSON.stringify(DEFAULT_USER_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_USER_ORIGINS },
     closableOrigins: { type: "array", description: `Origins that may be closed under the current rules (cron jobs, gates). Trailing \`*\` is a prefix wildcard. Executors (a session with a parentSessionId) are closable regardless. Default ${JSON.stringify(DEFAULT_CLOSABLE_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_CLOSABLE_ORIGINS },
   },
@@ -597,7 +920,14 @@ export default {
       inputs: { idleMinutes: "$steps.settings.idleMinutes" },
     },
     { id: "candidates", kind: "transform", compute: b => splitCandidates(b.steps.plan, b.steps.settings) },
-    { id: "ruleApplyQueue", kind: "transform", compute: b => buildRuleApplyQueue(b.steps.candidates, b.steps.settings) },
+    // Host saturation header (report only — mission item 9) and the live
+    // session scan behind loop/stall/never-ran/terminal rules (items 1-5).
+    { id: "hostLoad", kind: "tool", tool: "host_load", inputs: {} },
+    { id: "liveSessions", kind: "tool", tool: "session_list", inputs: { full: true } },
+    { id: "scan", kind: "transform", compute: b => scanLive(b.steps.liveSessions, b.steps.settings, Date.now()) },
+    // Never-ran 0/0 sessions are `stuck` immediately, never judged (item 3).
+    { id: "candidatesPlus", kind: "transform", compute: b => mergeNeverRan(b.steps.candidates, b.steps.scan) },
+    { id: "ruleApplyQueue", kind: "transform", compute: b => buildRuleApplyQueue(b.steps.candidatesPlus, b.steps.settings) },
     {
       // Empty unless `apply` — a dry run dispatches no apply call at all.
       id: "autoApply",
@@ -614,10 +944,46 @@ export default {
         },
       ],
     },
+    // Verdict memory (item 10): read the app_state ledger best-effort. The
+    // map is empty when no app id is set, so a caller can turn memory off.
+    { id: "memoryQueue", kind: "transform", compute: b => (b.steps.settings?.appId ? [{ appId: b.steps.settings.appId }] : []) },
+    {
+      id: "memoryRead",
+      kind: "map",
+      over: "$steps.memoryQueue",
+      parallelism: 1,
+      onError: "collect",
+      steps: [
+        {
+          id: "memoryReadOne",
+          kind: "tool",
+          tool: "app_state_list",
+          inputs: { appId: "$item.appId", stage: "session-steward", kinds: ["note"], limit: 500 },
+        },
+      ],
+    },
+    { id: "memory", kind: "transform", compute: foldMemory },
+    // Loop sanity over the busy sessions (item 1) — one tool_calls_list each.
+    {
+      id: "loopScan",
+      kind: "map",
+      over: "$steps.scan.loopQueue",
+      parallelism: 4,
+      onError: "collect",
+      steps: [
+        { id: "loopCallsOne", kind: "tool", tool: "tool_calls_list", inputs: { sessionId: "$item.sessionId", lastN: 60 } },
+        { id: "loopFold", kind: "transform", compute: analyzeLoopItem },
+      ],
+    },
+    { id: "loopResults", kind: "transform", compute: b => settled(b.steps.loopScan).ok.map(r => r.value) },
+    // Nudge PROPOSALS (never executed here): loop → interrupt, stall →
+    // continue, at most one per session per pass, user origins observed only.
+    { id: "proposals", kind: "transform", compute: b => buildProposalsStep(b.steps.scan, b.steps.loopResults, b.steps.settings, Date.now()) },
+    { id: "relabelQueue", kind: "transform", compute: b => buildRelabelQueue(b.steps.scan) },
     {
       id: "evidence",
       kind: "map",
-      over: "$steps.candidates.judge",
+      over: "$steps.candidatesPlus.judge",
       parallelism: 4,
       onError: "collect",
       steps: [
@@ -627,11 +993,12 @@ export default {
         { id: "evidenceFold", kind: "transform", compute: foldEvidence },
       ],
     },
-    { id: "judgeQueue", kind: "transform", compute: b => settled(b.steps.evidence).ok.map(r => r.value) },
+    // Judge queue minus sessions cached by stable verdict+fingerprint (item 10).
+    { id: "judgeQueue", kind: "transform", compute: b => buildJudgeQueueFiltered(b.steps.evidence, b.steps.memory, b.steps.settings) },
     {
       id: "jevQueue",
       kind: "transform",
-      compute: b => (b.steps.settings?.judge === "agent" ? [] : b.steps.judgeQueue ?? []),
+      compute: b => (b.steps.settings?.judge === "agent" ? [] : b.steps.judgeQueue?.queue ?? []),
     },
     {
       // Jev backend: one calibrated `choice` call per candidate. Never an
@@ -654,7 +1021,7 @@ export default {
     {
       id: "agentJudgeQueue",
       kind: "transform",
-      compute: b => buildAgentJudgeQueue(b.steps.judgeQueue, b.steps.jevQueue, b.steps.jevJudge, b.steps.settings),
+      compute: b => buildAgentJudgeQueue(b.steps.judgeQueue?.queue, b.steps.jevQueue, b.steps.jevJudge, b.steps.settings),
     },
     {
       // One-shot judge per candidate. The engine releases (kills + archives)
@@ -683,9 +1050,7 @@ export default {
         },
       ],
     },
-    { id: "verdicts", kind: "transform", compute: b =>
-        collectVerdicts(b.steps.evidence, b.steps.judgeQueue, b.steps.jevJudge, b.steps.jevQueue, b.steps.agentJudgeQueue, b.steps.judge),
-    },
+    { id: "verdicts", kind: "transform", compute: buildVerdicts },
     { id: "askQueue", kind: "transform", compute: b => buildAskQueue(b.steps.verdicts, b.steps.settings) },
     {
       // Empty unless `askSessions`. ONE prompt per session (queue:false — a
@@ -755,14 +1120,30 @@ export default {
         },
       ],
     },
+    // Verdict memory write-back (item 10) — a ledger append, never a session
+    // action; best-effort (an uninstalled app just yields no memory).
+    { id: "memoryWriteQueue", kind: "transform", compute: b => buildMemoryWriteQueue(b.steps.finalVerdicts, b.steps.settings) },
+    {
+      id: "memoryWrite",
+      kind: "map",
+      over: "$steps.memoryWriteQueue",
+      parallelism: 1,
+      onError: "collect",
+      steps: [
+        { id: "memoryWriteOne", kind: "tool", tool: "app_state_append", inputs: { appId: "$item.appId", event: "$item.event" } },
+      ],
+    },
     { id: "report", kind: "transform", compute: b => buildReport(b) },
   ],
   result: {
     report: "$steps.report",
     apply: "$steps.settings.apply",
-    candidates: "$steps.candidates",
+    candidates: "$steps.candidatesPlus",
     verdicts: "$steps.finalVerdicts",
     autoApply: "$steps.autoApply",
     judgedApply: "$steps.judgedApply",
+    proposals: "$steps.proposals",
+    relabel: "$steps.relabelQueue",
+    scan: "$steps.scan",
   },
 }

@@ -91,6 +91,44 @@ describe("continueAgentSessionFresh", () => {
     expect(input.prompt).toContain("[continued session")
   })
 
+  it("threads notes and the handoff turn into the checkpoint prompt of the fresh session", async () => {
+    const prev = makePrev()
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const handoffAsker = vi.fn(async () =>
+      JSON.stringify({ decisions: ["Use the v2 endpoint"], nextStep: "Run the migration" }),
+    )
+
+    const result = await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints", notes: "Do not touch the billing module.", handoffAsker },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.prompt).toContain("Do not touch the billing module.")
+    expect(input.prompt).toContain("- Use the v2 endpoint")
+    expect(input.prompt).toContain("Run the migration")
+    expect(result.checkpoint.schemaVersion).toBe(1)
+    expect(result.checkpoint.handoffTurn).toEqual({ status: "answered" })
+  })
+
+  it("does not ask the source session when askSource is false", async () => {
+    const handoffAsker = vi.fn(async () => "{}")
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints", askSource: false, handoffAsker },
+    )
+    expect(handoffAsker).not.toHaveBeenCalled()
+  })
+
   it("strips the retired session's own callerSessionId stamp from carried mcpServers so the spawn re-stamps with the fresh id", async () => {
     // The spawn path respects an entry that already carries a
     // callerSessionId — copying prev's stamped mount verbatim would pin the

@@ -6,7 +6,7 @@
  * `repo-maintenance-workflow.test.ts`.
  */
 
-import { describe, it, expect, vi } from "vitest"
+import { beforeAll, describe, it, expect, vi } from "vitest"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -15,6 +15,23 @@ import type { AgentSessionHost } from "@agentproto/workflow-runtime"
 import { createDaemonToolRegistry, type DispatchTool } from "../workflow-tool-registry.js"
 import { judgeSessionWithJev } from "../jev-client.js"
 import { modelRoles } from "../model-roles-tools.js"
+
+const CRON_RULES_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "..",
+  "apps",
+  "session-steward",
+  ".agentproto",
+  "workflows",
+  "session-steward",
+  "cron-rules.mjs",
+)
+let cronRules: { evidenceFingerprint: (evidence: unknown) => string }
+beforeAll(async () => {
+  cronRules = (await import(CRON_RULES_PATH)) as never
+})
 
 const WORKFLOW_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -43,6 +60,13 @@ interface PlanEntry {
   signals: Record<string, unknown>
   origin?: string
   parentSessionId?: string
+  /** Live-row overrides for the `session_list` fake (scan inputs). */
+  status?: string
+  busy?: boolean
+  tokensIn?: number
+  tokensOut?: number
+  worktree?: { pr?: { state: string; number?: number } }
+  outcome?: { verdict?: string }
 }
 
 const entry = (sessionId: string, cls: PlanEntry["class"], rssMB: number, extra: Partial<PlanEntry> = {}): PlanEntry => ({
@@ -85,12 +109,52 @@ function fakeTools(opts: {
   askReplies?: Record<string, string>
   /** `session_judge_jev`'s answer; default = no key configured. */
   jev?: (inputs: Record<string, unknown>) => Promise<unknown>
+  /** Extra `session_list` rows (busy sessions for the loop/stall scan). */
+  liveExtra?: Array<Record<string, unknown>>
+  /** `tool_calls_list` records per session id (loop scan). */
+  toolCalls?: Record<string, unknown[]>
+  /** Prior verdict-memory events returned by `app_state_list`. */
+  memoryEvents?: unknown[]
+  /** `host_load` report; default = a calm host. */
+  hostLoad?: Record<string, unknown>
 }) {
   const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
   const evidenceReads = new Map<string, number>()
+  const calmHost = {
+    loadAvg: [1, 1, 1],
+    cpuCount: 12,
+    loadPerCore: 0.08,
+    memory: { totalBytes: 34 * 1024 ** 3, freeBytes: 10 * 1024 ** 3, availableBytes: 12 * 1024 ** 3 },
+    swap: { percent: 4 },
+    warnings: [],
+    topByMemory: [],
+  }
   const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
     calls.push({ name, inputs })
     if (name === "session_wrapup_plan") return mcpResult({ entries: opts.entries, totals: {} })
+    if (name === "host_load") return mcpResult(opts.hostLoad ?? calmHost)
+    if (name === "session_list") {
+      const rows = opts.entries.map(e => ({
+        id: e.sessionId,
+        label: e.label,
+        status: e.status ?? "running",
+        busy: e.busy ?? false,
+        keepAlive: opts.keepAlive?.has(e.sessionId) ?? false,
+        origin: e.origin,
+        parentSessionId: e.parentSessionId,
+        ...(e.tokensIn !== undefined ? { tokensIn: e.tokensIn } : {}),
+        ...(e.tokensOut !== undefined ? { tokensOut: e.tokensOut } : {}),
+        ...(e.worktree ? { worktree: e.worktree } : {}),
+        ...(e.outcome ? { outcome: e.outcome } : {}),
+        lastActivityAt: new Date(Date.now() - e.idleMinutes * 60_000).toISOString(),
+      }))
+      return mcpResult({ items: [...rows, ...(opts.liveExtra ?? [])] })
+    }
+    if (name === "tool_calls_list") {
+      return mcpResult({ records: opts.toolCalls?.[inputs.sessionId as string] ?? [] })
+    }
+    if (name === "app_state_list") return mcpResult({ events: opts.memoryEvents ?? [] })
+    if (name === "app_state_append") return mcpResult({ appId: inputs.appId, event: inputs.event })
     if (name === "session_evidence") {
       const id = inputs.sessionId as string
       const n = (evidenceReads.get(id) ?? 0) + 1
@@ -171,6 +235,9 @@ async function run(dispatchTool: DispatchTool, host: AgentSessionHost, input: Re
     apply: boolean
     candidates: { close: PlanEntry[]; stuck: PlanEntry[]; judge: PlanEntry[]; judgeOverflow: PlanEntry[] }
     verdicts: Array<{ entry: PlanEntry; verdict: string; confidence: number; reason: string; source: string; malformed?: boolean }>
+    proposals: { proposals: Array<{ sessionId: string; kind: string; reason: string }>; observed: Array<{ sessionId: string; kind: string }> }
+    relabel: Array<{ sessionId: string; proposedVerdict: string }>
+    scan: { counts: Record<string, number> }
   }
 }
 
@@ -211,8 +278,19 @@ describe("session-steward workflow — shape", () => {
       "settings:transform",
       "plan:tool",
       "candidates:transform",
+      "hostLoad:tool",
+      "liveSessions:tool",
+      "scan:transform",
+      "candidatesPlus:transform",
       "ruleApplyQueue:transform",
       "autoApply:map",
+      "memoryQueue:transform",
+      "memoryRead:map",
+      "memory:transform",
+      "loopScan:map",
+      "loopResults:transform",
+      "proposals:transform",
+      "relabelQueue:transform",
       "evidence:map",
       "judgeQueue:transform",
       "jevQueue:transform",
@@ -225,6 +303,8 @@ describe("session-steward workflow — shape", () => {
       "finalVerdicts:transform",
       "judgedApplyQueue:transform",
       "judgedApply:map",
+      "memoryWriteQueue:transform",
+      "memoryWrite:map",
       "report:transform",
     ])
     const compiled = compileWorkflow(handle, {
@@ -236,7 +316,7 @@ describe("session-steward workflow — shape", () => {
 })
 
 describe("session-steward workflow — run (fake tools + fake judge)", () => {
-  it("dry run (the default): plans and judges, but mutates nothing", async () => {
+  it("dry run (the default): plans and judges, but mutates no session", async () => {
     const f = fixture()
     const { dispatchTool, calls } = fakeTools({ entries: f.entries, keepAlive: f.keepAlive })
     const j = judgeHost(f.replies)
@@ -244,9 +324,13 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
 
     expect(out.apply).toBe(false)
     expect(calls.find(c => c.name === "session_wrapup_plan")!.inputs).toEqual({ idleMinutes: 30 })
-    // Nothing mutating is ever dispatched.
+    // No SESSION is ever mutated in a dry run.
     expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
     expect(calls.some(c => c.name === "agent_prompt")).toBe(false)
+    // The only write is the append-only verdict-memory ledger.
+    const writes = calls.filter(c => c.name === "app_state_append")
+    expect(writes.length).toBeGreaterThan(0)
+    for (const w of writes) expect(w.inputs.event).toMatchObject({ stage: "session-steward", kind: "note" })
     // Judges still ran (one per judge candidate, caller excluded), on sonnet,
     // and every judge session was released after its turn.
     expect(j.spawns).toHaveLength(6)
@@ -526,5 +610,126 @@ describe("session-steward workflow — Jev judge backend", () => {
         daemonModels = {}
       }
     })
+  })
+})
+
+/** The evidence object embedded at the tail of a judge prompt. */
+function evidenceFromPrompt(prompt: string): Record<string, unknown> {
+  const marker = "Evidence:\n"
+  return JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))
+}
+
+describe("session-steward workflow — mechanical cron rules (mission items 1-10)", () => {
+  const now = () => new Date().toISOString()
+  const busyRow = (id: string, over: Record<string, unknown> = {}) => ({
+    id,
+    status: "running",
+    busy: true,
+    origin: "cron:job",
+    lastActivityAt: now(),
+    ...over,
+  })
+
+  it("proposes an interrupt nudge (never a close) for a looping busy session", async () => {
+    const records = Array.from({ length: 3 }, (_, i) => ({
+      tool: "Bash",
+      command: "rg -rn sentinel docs/x.md | head -10",
+      ts: new Date(Date.now() - i * 1000).toISOString(),
+    }))
+    const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: [busyRow("sess_loop")], toolCalls: { sess_loop: records } })
+    const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
+    expect(out.proposals.proposals).toHaveLength(1)
+    expect(out.proposals.proposals[0]).toMatchObject({ sessionId: "sess_loop", kind: "interrupt" })
+    expect(out.proposals.proposals[0]!.reason).toContain("loop")
+    expect(out.report).toContain("interrupt nudge → sess_loop")
+    expect(f.calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
+    expect(f.calls.some(c => c.name === "agent_prompt")).toBe(false)
+  })
+
+  it("observes a user-origin loop without proposing a nudge", async () => {
+    const records = Array.from({ length: 3 }, (_, i) => ({
+      tool: "Bash",
+      command: "rg -rn sentinel docs/x.md",
+      ts: new Date(Date.now() - i * 1000).toISOString(),
+    }))
+    const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: [busyRow("sess_chat", { origin: "chat-starter" })], toolCalls: { sess_chat: records } })
+    const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
+    expect(out.proposals.proposals).toHaveLength(0)
+    expect(out.proposals.observed.map(o => o.sessionId)).toContain("sess_chat")
+    expect(out.report).not.toContain("interrupt nudge → sess_chat")
+    expect(out.report).toContain("observed → sess_chat")
+  })
+
+  it("proposes a continue nudge for a stalled busy session", async () => {
+    const stale = new Date(Date.now() - 35 * 60_000).toISOString()
+    const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: [busyRow("sess_stall", { lastActivityAt: stale })] })
+    const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
+    expect(out.proposals.proposals).toHaveLength(1)
+    expect(out.proposals.proposals[0]).toMatchObject({ sessionId: "sess_stall", kind: "continue" })
+    expect(out.proposals.proposals[0]!.reason).toContain("stall")
+    expect(f.calls.some(c => c.name === "agent_prompt")).toBe(false)
+  })
+
+  it("classifies a never-ran 0/0 session as stuck without judging it", async () => {
+    const f = fakeTools({ entries: [entry("nr", "judge", 100, { tokensIn: 0, tokensOut: 0 })] })
+    const j = judgeHost({})
+    const out = await run(f.dispatchTool, j.host, { apply: true })
+    expect(out.candidates.stuck.map(e => e.sessionId)).toContain("nr")
+    expect(out.candidates.judge.map(e => e.sessionId)).not.toContain("nr")
+    expect(j.spawns).toHaveLength(0)
+    const apply = f.calls.find(c => c.name === "session_wrapup_apply" && (c.inputs.sessionIds as string[])[0] === "nr")
+    expect(apply?.inputs).toMatchObject({ verdict: "abandoned" })
+  })
+
+  it("surfaces terminal sessions with no outcome as relabel candidates", async () => {
+    const term = { id: "sess_term", status: "killed", origin: "cron:job", worktree: { pr: { state: "merged" } } }
+    const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: [term] })
+    const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
+    expect(out.relabel).toEqual([expect.objectContaining({ sessionId: "sess_term", proposedVerdict: "done" })])
+    expect(out.report).toContain("Terminal sessions missing an outcome")
+  })
+
+  it("puts a saturated-host header first, listing orphans and non-session processes", async () => {
+    const saturated = {
+      loadAvg: [50, 40, 30],
+      cpuCount: 12,
+      loadPerCore: 4.2,
+      memory: { totalBytes: 34 * 1024 ** 3, freeBytes: 50 * 1024 ** 2, availableBytes: 80 * 1024 ** 2 },
+      swap: { percent: 96 },
+      warnings: [],
+      topByMemory: [{ pid: 1, command: "next-server", memoryBytes: 2 * 1024 ** 3, elapsedSec: 40000, owner: { kind: "orphan" } }],
+    }
+    const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], hostLoad: saturated })
+    const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
+    expect(out.report).toContain("Host saturated")
+    expect(out.report).toContain("next-server")
+  })
+
+  it("serves a stable verdict from memory cache without spawning a judge, and writes memory", async () => {
+    const f1 = fakeTools({ entries: [entry("cache_1", "judge", 100)] })
+    const j1 = judgeHost({ cache_1: verdict("cache_1", "active", 0.2) })
+    await run(f1.dispatchTool, j1.host, { judge: "agent" })
+    const evidence = evidenceFromPrompt([...j1.prompts.values()][0]!)
+    const fp = cronRules.evidenceFingerprint(evidence)
+    const prior = (ts: string) => ({
+      kind: "note",
+      ts,
+      payload: { kind: "steward-verdict", sessionId: "cache_1", verdict: "active", confidence: 0.2, fingerprint: fp, judgedBy: "stub" },
+    })
+
+    const f2 = fakeTools({ entries: [entry("cache_1", "judge", 100)], memoryEvents: [prior("2026-10-02T10:00:00Z"), prior("2026-10-02T11:00:00Z")] })
+    const j2 = judgeHost({})
+    const out = await run(f2.dispatchTool, j2.host, { judge: "agent" })
+    expect(j2.spawns).toHaveLength(0)
+    expect(out.verdicts.find(v => v.entry.sessionId === "cache_1")?.source).toBe("cache")
+    expect(out.report).toContain("served from cache")
+    expect(f2.calls.some(c => c.name === "app_state_append")).toBe(true)
+  })
+
+  it("reports why there were 0 candidates when nothing is idle", async () => {
+    const f = fakeTools({ entries: [], liveExtra: [busyRow("sess_busy")] })
+    const out = await run(f.dispatchTool, judgeHost({}).host, {})
+    expect(out.report).toContain("0 candidates:")
+    expect(out.report).toContain("1 busy")
   })
 })

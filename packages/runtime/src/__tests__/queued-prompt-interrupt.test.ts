@@ -23,10 +23,19 @@
 
 import { describe, it, expect, vi } from "vitest"
 
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  interruptDeliveryNotice,
+  type AgentSessionLike,
+} from "../sessions.js"
 
 function wrapped(text: string): string {
   return JSON.stringify({ type: "text", text })
+}
+
+/** What the model receives for a prompt delivered by cutting a turn. */
+function delivered(text: string, origin = "user"): string {
+  return wrapped(`${interruptDeliveryNotice(origin)}\n\n${text}`)
 }
 
 /** First turn hangs until cancel()/release(); every later turn completes
@@ -147,7 +156,7 @@ describe("queued prompts survive an interrupt of the turn they wait behind", () 
 
     await expect(
       reg.enqueuePrompt(id, "redirect now", { interrupt: true })
-    ).resolves.toEqual({ queued: false })
+    ).resolves.toMatchObject({ queued: false, delivery: "delivered", pending: false })
     await first
     await waitUntil(() => events.length === 3)
 
@@ -155,7 +164,7 @@ describe("queued prompts survive an interrupt of the turn they wait behind", () 
     // to end on its own, then drains.
     expect(events).toEqual([
       `turn1-start:${wrapped("first")}`,
-      `turn2-start:${wrapped("redirect now")}`,
+      `turn2-start:${delivered("redirect now")}`,
       `turn3-start:${wrapped("queued note")}`,
     ])
     reg.shutdown()
@@ -180,7 +189,7 @@ describe("queued prompts survive an interrupt of the turn they wait behind", () 
     expect(cancelSpy).toHaveBeenCalledTimes(1)
     expect(events).toEqual([
       `turn1-start:${wrapped("first")}`,
-      `turn2-start:${wrapped("third")}`,
+      `turn2-start:${delivered("third")}`,
       `turn3-start:${wrapped("second")}`,
     ])
     reg.shutdown()
@@ -196,6 +205,94 @@ describe("queued prompts survive an interrupt of the turn they wait behind", () 
     await first
     await waitUntil(() => events.length === 2)
     expect(events[1]).toBe(`turn2-start:${wrapped("queued note")}`)
+    reg.shutdown()
+  })
+})
+
+/**
+ * Incident (sess_9c9476ff): a child's `done` report was deliver-now'd into a
+ * supervisor mid-turn. The model saw its turn cancelled, then a new prompt —
+ * indistinguishable from a human Esc — replied "je reste en pause, j'attends
+ * votre feu vert" and sat idle. A prompt delivered by interrupting now opens
+ * with an explicit "this is NOT a stop request" line; a bare stop never does.
+ */
+describe("a prompt delivered by interrupting tells the model it was not a stop", () => {
+  it("deliver-now prefixes the notice with the queued item's origin, once", async () => {
+    const { reg, id, events } = spawn()
+    const first = reg.sendPrompt(id, "supervising")
+    await Promise.resolve()
+    await reg.enqueuePrompt(id, "child says done", {
+      queue: true,
+      source: "child:sess_child",
+      origin: "child:sess_child",
+    })
+    await reg.enqueuePrompt(id, "later note", { queue: true })
+
+    const target = reg.get(id)!.promptQueue![0]!
+    await reg.deliverQueuedPrompt(id, target.id)
+    await first
+    await waitUntil(() => events.length === 3)
+
+    expect(events).toEqual([
+      `turn1-start:${wrapped("supervising")}`,
+      `turn2-start:${delivered("child says done", "child sess_child")}`,
+      // The delivered turn ended on its own, so the parked rest drains —
+      // without the notice (that turn was not cut).
+      `turn3-start:${wrapped("later note")}`,
+    ])
+    expect(interruptDeliveryNotice("child sess_child")).toMatch(/NOT a stop request/)
+    expect(reg.get(id)?.promptQueue).toEqual([])
+    reg.shutdown()
+  })
+
+  it("interrupt: true carries the caller's agent origin", async () => {
+    const { reg, id, events } = spawn()
+    const first = reg.sendPrompt(id, "working")
+    await Promise.resolve()
+    await reg.enqueuePrompt(id, "redirect", {
+      interrupt: true,
+      source: "agent:sess_sup",
+      origin: "agent:sess_sup",
+    })
+    await first
+    await waitUntil(() => events.length === 2)
+    expect(events[1]).toBe(`turn2-start:${delivered("redirect", "agent sess_sup")}`)
+    reg.shutdown()
+  })
+
+  it("a bare Stop adds no notice to the next turn", async () => {
+    const { reg, id, events } = spawn()
+    const first = reg.sendPrompt(id, "working")
+    await Promise.resolve()
+    await reg.interruptSession(id)
+    await first
+    await reg.sendPrompt(id, "next")
+    expect(events[1]).toBe(`turn2-start:${wrapped("next")}`)
+    reg.shutdown()
+  })
+
+  it("an interrupt on an idle session adds no notice", async () => {
+    const { reg, id, events, release } = spawn()
+    release()
+    await reg.sendPrompt(id, "first")
+    await reg.enqueuePrompt(id, "idle redirect", { interrupt: true })
+    await waitUntil(() => events.length === 2)
+    expect(events[1]).toBe(`turn2-start:${wrapped("idle redirect")}`)
+    reg.shutdown()
+  })
+
+  it("the session's events log keeps the deliver-now notice", async () => {
+    const { reg, id } = spawn()
+    const first = reg.sendPrompt(id, "working")
+    await Promise.resolve()
+    await reg.enqueuePrompt(id, "msg", { queue: true })
+    await reg.deliverQueuedPrompt(id, reg.get(id)!.promptQueue![0]!.id)
+    await first
+    const lines: string[] = []
+    reg.attach(id, line => lines.push(line))?.()
+    expect(lines).toContainEqual(
+      expect.stringMatching(/turn interrupted by a queue deliver-now \(session_queue_deliver\)/)
+    )
     reg.shutdown()
   })
 })

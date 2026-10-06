@@ -26,7 +26,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle, loadAppBundledTools, peekAppUi, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app-kit"
+import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app-kit"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
@@ -58,9 +58,12 @@ import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import {
   loadAppCatalogFile,
   createRemoteCatalogClient,
+  isCatalogUpdate,
   resolveCatalogSources,
+  type AppCatalogEntry,
   type RemoteCatalogClient,
 } from "./app-catalog.js"
+import { FIRST_PARTY_CATALOG_ENTRIES } from "./first-party-catalog.js"
 import { loadConfig, type CatalogConfig } from "./config.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
@@ -483,6 +486,218 @@ export async function performBuiltinPanelToolCall(
   return dispatchAllowlistedAppTool(tools, input, deps)
 }
 
+/**
+ * App→app calls (`app_call`) — a consumer app invokes a workflow that one of
+ * its `requires.apps` entries both declares AND allowlists, on a provider
+ * app that exposes that workflow.
+ *
+ * TRUST MODEL: the daemon is local-trust. `callerAppId` is a DECLARATION
+ * check — it answers "may this consumer call that provider's workflow", not
+ * "is this caller really who it says it is". Any local process that can
+ * reach the daemon can name any installed callerAppId; there is no
+ * isolation between apps and no authentication of the caller. The check
+ * exists to enforce declared dependencies (an app can't call providers it
+ * never declared, or workflows its dependency didn't allowlist), not to
+ * sandbox untrusted code.
+ *
+ * Check order (each failure gets a distinct `errorCode`):
+ *   1. caller app installed            → `caller-not-installed`
+ *   2. caller declares a dependency on `appId` (requires.apps) → `not-declared`
+ *   3. workflow ∈ the caller's declared `workflows` for that dependency
+ *                                      → `workflow-not-allowed`
+ *   4. provider app installed           → `provider-not-installed`
+ *   5. workflow ∈ provider `exposes.workflows` → `workflow-not-exposed`
+ *   6. provider's installed version satisfies the declared `version` range,
+ *      when both are present         → `version-mismatch`
+ *   7. dispatch through the SAME `workflowRunner` path `workflow_run_file`
+ *      uses for a bundled WORKFLOW.md (`startFromFile` + bounded status
+ *      poll) and await the result:
+ *      run ended failed/cancelled      → `workflow-failed`
+ *      bounded wait elapsed            → `timeout`
+ */
+export type AppCallErrorCode =
+  | "caller-not-installed"
+  | "not-declared"
+  | "workflow-not-allowed"
+  | "provider-not-installed"
+  | "workflow-not-exposed"
+  | "version-mismatch"
+  | "workflow-failed"
+  | "timeout"
+  | "not-enabled"
+
+export type AppCallResult =
+  | { readonly ok: true; readonly output: unknown; readonly runId: string; readonly durationMs: number }
+  | { readonly ok: false; readonly error: string; readonly errorCode: AppCallErrorCode }
+
+export interface PerformAppCallDeps {
+  /** The daemon's workflow runner — the same dispatch `workflow_run_file`
+   *  uses for a bundled WORKFLOW.md. Omitted → `app_call` reports
+   *  `not-enabled` (mirrors `app_run`'s adapter-resolver posture). */
+  workflowRunner?: WorkflowRunner
+}
+
+/** Default bounded wait for a dispatched workflow run to reach a terminal
+ *  status. */
+export const DEFAULT_APP_CALL_TIMEOUT_MS = 60_000
+/** Hard cap on `timeoutMs` — a caller cannot wait forever. */
+export const MAX_APP_CALL_TIMEOUT_MS = 300_000
+/** Poll interval while awaiting a run's terminal status. */
+const APP_CALL_POLL_INTERVAL_MS = 500
+
+/** `versionSatisfies` throws on a malformed version or range; a refusal is a
+ *  result, never an exception. A missing provider version fails closed. */
+function checkVersion(providerVersion: string | undefined, range: string): string | undefined {
+  if (providerVersion === undefined) return "has no recorded version"
+  try {
+    return versionSatisfies(providerVersion, range) ? undefined : `is installed at version ${providerVersion}`
+  } catch (err) {
+    return `has an unusable version (${err instanceof Error ? err.message : String(err)})`
+  }
+}
+
+function appCallLog(input: { callerAppId: string; appId: string; workflow: string }, durationMs: number, ok: boolean): void {
+  console.error(
+    `app_call: caller=${input.callerAppId} provider=${input.appId} workflow=${input.workflow} durationMs=${durationMs} ok=${ok}`,
+  )
+}
+
+export async function performAppCall(
+  appRegistry: AppRegistry,
+  input: { callerAppId: string; appId: string; workflow: string; input?: unknown; timeoutMs?: number },
+  deps: PerformAppCallDeps,
+): Promise<AppCallResult> {
+  // 1. The caller must be an installed app.
+  const caller = appRegistry.getApp(input.callerAppId)
+  if (!caller) {
+    return {
+      ok: false,
+      errorCode: "caller-not-installed",
+      error: `app_call: caller app "${input.callerAppId}" is not installed.`,
+    }
+  }
+  // 2. The caller must declare a dependency on the provider (requires.apps,
+  //    either entry form — both normalize onto `requiresApps`).
+  const declared = caller.requiresApps?.find(e => e.id === input.appId)
+  if (!declared) {
+    return {
+      ok: false,
+      errorCode: "not-declared",
+      error:
+        `app_call: app "${input.callerAppId}" does not declare a dependency on "${input.appId}" ` +
+        `(requires.apps).`,
+    }
+  }
+  // 3. The workflow must be in the caller's declared allowlist for that
+  //    dependency. Omitted/empty `workflows` = dependency only, no calls.
+  if (declared.workflows === undefined || !declared.workflows.includes(input.workflow)) {
+    return {
+      ok: false,
+      errorCode: "workflow-not-allowed",
+      error:
+        `app_call: app "${input.callerAppId}"'s dependency on "${input.appId}" does not allow ` +
+        `calling workflow "${input.workflow}"${declared.workflows !== undefined ? ` (allowed: ${declared.workflows.join(", ") || "none"})` : ""}.`,
+    }
+  }
+  // 4. The provider must be installed.
+  const provider = appRegistry.getApp(input.appId)
+  if (!provider) {
+    return {
+      ok: false,
+      errorCode: "provider-not-installed",
+      error: `app_call: provider app "${input.appId}" is not installed.`,
+    }
+  }
+  // 5. The provider must expose the workflow.
+  if (!provider.exposes?.workflows.includes(input.workflow)) {
+    return {
+      ok: false,
+      errorCode: "workflow-not-exposed",
+      error:
+        `app_call: app "${input.appId}" does not expose workflow "${input.workflow}" ` +
+        `(exposes.workflows: ${provider.exposes?.workflows.join(", ") || "none"}).`,
+    }
+  }
+  // 6. The provider's installed version must satisfy the declared range.
+  if (declared.version !== undefined) {
+    const problem = checkVersion(provider.version, declared.version)
+    if (problem !== undefined) {
+      return {
+        ok: false,
+        errorCode: "version-mismatch",
+        error:
+          `app_call: app "${input.appId}" ${problem}, which does not ` +
+          `satisfy the range "${declared.version}" app "${input.callerAppId}" declared.`,
+      }
+    }
+  }
+
+  const runner = deps.workflowRunner
+  if (!runner) {
+    return {
+      ok: false,
+      errorCode: "not-enabled",
+      error:
+        "app_call is not enabled — the daemon was started without a workflow runner. " +
+        "Re-run the daemon with the `@agentproto/cli` shim wired (see playground/scripts/gateway.ts).",
+    }
+  }
+
+  // 7. Dispatch through the same runner path `workflow_run_file` uses for a
+  //    bundled WORKFLOW.md, then await the run's terminal status under a
+  //    bounded timeout.
+  const startedAt = Date.now()
+  const ref = provider.workflows.find(w => w.id === input.workflow)
+  if (!ref) {
+    return {
+      ok: false,
+      errorCode: "workflow-not-exposed",
+      error: `app_call: app "${input.appId}" exposes workflow "${input.workflow}" but does not bundle it.`,
+    }
+  }
+  let run: Awaited<ReturnType<typeof runner.startFromFile>>
+  try {
+    run = await runner.startFromFile({ path: ref.path, input: input.input, appId: provider.appId })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    appCallLog(input, Date.now() - startedAt, false)
+    return {
+      ok: false,
+      errorCode: "workflow-failed",
+      error: `app_call: could not start workflow "${input.workflow}" on "${input.appId}": ${message}`,
+    }
+  }
+  const timeoutMs = Math.min(Math.max(1, input.timeoutMs ?? DEFAULT_APP_CALL_TIMEOUT_MS), MAX_APP_CALL_TIMEOUT_MS)
+  for (;;) {
+    const status = runner.status(run.runId)
+    if (status !== undefined && (status.status === "done" || status.status === "failed" || status.status === "cancelled")) {
+      const durationMs = Date.now() - startedAt
+      if (status.status !== "done") {
+        appCallLog(input, durationMs, false)
+        return {
+          ok: false,
+          errorCode: "workflow-failed",
+          error:
+            `app_call: workflow "${input.workflow}" on "${input.appId}" ended ${status.status}` +
+            `${status.error !== undefined ? `: ${status.error}` : ""}.`,
+        }
+      }
+      appCallLog(input, durationMs, true)
+      return { ok: true, output: status.output, runId: run.runId, durationMs }
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      const durationMs = Date.now() - startedAt
+      appCallLog(input, durationMs, false)
+      return {
+        ok: false,
+        errorCode: "timeout",
+        error: `app_call: workflow "${input.workflow}" on "${input.appId}" did not finish within ${timeoutMs}ms (run ${run.runId} still ${status?.status ?? "unknown"}).`,
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, APP_CALL_POLL_INTERVAL_MS))
+  }
+}
+
 function refIdOf(ref: AnyRef): string {
   if (typeof ref === "string") return ref
   return ref.ref ?? ref.file ?? "inline"
@@ -621,11 +836,18 @@ export interface RegisterAppToolsOptions {
    *  Defaults to `~/.agentproto/app-catalog.json`. Missing file → empty
    *  catalog (never an error). */
   catalogPath?: string
-  /** Remote-catalog fetcher (5 min in-memory cache). Defaults to a fresh
-   *  client per `registerAppTools` call; tests inject one. */
+  /** Remote-catalog fetcher (5 min in-memory cache + disk cache under
+   *  `catalogCacheDir`). Defaults to a fresh client per `registerAppTools`
+   *  call; tests inject one. */
   remoteCatalog?: RemoteCatalogClient
   /** Loads the daemon config for `catalog.sources`. Defaults to `loadConfig`. */
   loadCatalogConfig?: () => Promise<{ catalog?: CatalogConfig }>
+  /** Disk cache for remote catalogs (last good copy per source). Defaults to
+   *  `<dir of apps.json>/cache/catalog` (`~/.agentproto/cache/catalog`). */
+  catalogCacheDir?: string
+  /** Offline fallback for the default catalog source. Defaults to the
+   *  embedded `FIRST_PARTY_CATALOG_ENTRIES`; tests inject their own. */
+  fallbackCatalogEntries?: readonly AppCatalogEntry[]
 }
 
 /** Expand a leading `~` (bare or `~/…`) against `os.homedir()`. Any other
@@ -679,10 +901,22 @@ export interface PerformInstallOptions {
   readonly dataDir?: string
   /** Provenance recorded on the installed-app record (remote installs). */
   readonly source?: AppSource
+  /** May `performInstall` run the APP.md `ui.build` command (and persist it
+   *  so later UI requests may re-run it)? Default true — a local `{dir}`
+   *  install is the user's own code. Remote installs pass false unless the
+   *  caller opted in (`app_install {url, allowBuild: true}` for git; never
+   *  for a `.agentapp`): the bundle must then already be on disk, and
+   *  `ui.build` is dropped from the persisted record so no later request
+   *  (`GET /apps/:id/ui`, the MCP panel cache) runs it either. */
+  readonly allowUiBuild?: boolean
   /** Last-resort data root when no explicit, previous or APP.md-hinted
    *  `dataDir` applies — remote installs pass `<state dir>/app-data/<id>` so
    *  data never lands in their replaceable code dir. Absent = `<dir>/data`. */
   readonly defaultDataDir?: (appId: string) => string
+  /** Catalog this remote install comes from (`app_install {catalogUrl}`):
+   *  recorded as `source.catalogId = {url, appId}` so `app_updates` /
+   *  `app_resync` follow that catalog's entry. Ignored for a local source. */
+  readonly catalogUrl?: string
 }
 
 /**
@@ -736,9 +970,30 @@ export async function performInstall(
   } catch (err) {
     return { ok: false, error: `${err instanceof Error ? err.message : String(err)}` }
   }
+  const allowUiBuild = opts?.allowUiBuild !== false
   if (uiPeek) {
-    const ensured = await ensureAppUiBuilt({ dir, uiPath: uiPeek.path, build: uiPeek.build })
-    if (!ensured.ok) return { ok: false, error: `app_install: ${ensured.error}` }
+    if (uiPeek.build !== undefined && !allowUiBuild) {
+      let present = false
+      try {
+        present = (await stat(uiPeek.path)).isFile()
+      } catch {
+        present = false
+      }
+      if (!present) {
+        return {
+          ok: false,
+          error:
+            `app_install: this app's UI bundle "${uiPeek.path}" is missing and would have to be built by ` +
+            `running \`${uiPeek.build.command}\` from the downloaded sources. The daemon does not run build ` +
+            "commands from remote sources by default: re-run with allowBuild: true (CLI: --allow-build) " +
+            "for a git URL you trust. A .agentapp never runs ui.build — ship it with the UI prebuilt " +
+            "(`agentproto app pack --release`).",
+        }
+      }
+    } else {
+      const ensured = await ensureAppUiBuilt({ dir, uiPath: uiPeek.path, build: uiPeek.build })
+      if (!ensured.ok) return { ok: false, error: `app_install: ${ensured.error}` }
+    }
   }
 
   let handle: Awaited<ReturnType<typeof loadAppHandle>>
@@ -794,7 +1049,7 @@ export async function performInstall(
         ...(handle.ui?.description !== undefined ? { description: handle.ui.description } : {}),
         ...(handle.ui?.tools !== undefined ? { tools: handle.ui.tools } : {}),
         ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
-        ...(handle.ui?.build !== undefined ? { build: handle.ui.build } : {}),
+        ...(handle.ui?.build !== undefined && allowUiBuild ? { build: handle.ui.build } : {}),
         // OpenAI MCP-extensions carrier (plan W-B): the normalized,
         // app-kit-validated `ui.extensions` block persists verbatim on the
         // installed record — `makeInstalledAppUiApps` (W-C) is the only
@@ -868,6 +1123,10 @@ export async function performInstall(
     workflows: refs.workflows,
     unvalidatedAgentTools,
     ...(handle.requires ? { requires: handle.requires } : {}),
+    ...(handle.appRequirements.length > 0 ? { requiresApps: handle.appRequirements } : {}),
+    ...(handle.exposes.agents.length > 0 || handle.exposes.workflows.length > 0
+      ? { exposes: handle.exposes }
+      : {}),
     ...(ui ? { ui } : {}),
     ...(artifact ? { artifact } : {}),
     ...(skill ? { skill } : {}),
@@ -875,7 +1134,14 @@ export async function performInstall(
     ...(handle.dev ? { dev: handle.dev } : {}),
     ...(externalReadRoots ? { externalReadRoots } : {}),
     ...(handle.boundaries ? { boundaries: { ...handle.boundaries } } : {}),
-    ...(opts?.source !== undefined ? { source: opts.source } : {}),
+    ...(opts?.source !== undefined
+      ? {
+          source:
+            opts.catalogUrl !== undefined && opts.source.kind !== "local"
+              ? { ...opts.source, catalogId: { url: opts.catalogUrl, appId: handle.id } }
+              : opts.source,
+        }
+      : {}),
   })
 
   return { ok: true, record }
@@ -892,11 +1158,65 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const appsDir =
     opts.appsDir ?? join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "apps")
 
+  const catalogCacheDir =
+    opts.catalogCacheDir ??
+    join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "cache", "catalog")
+  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient({ cacheDir: catalogCacheDir })
+  const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
+  const fallbackCatalogEntries = opts.fallbackCatalogEntries ?? FIRST_PARTY_CATALOG_ENTRIES
+
+  interface RemoteCatalogEntryRef {
+    entry: AppCatalogEntry
+    origin: string
+    catalogUrl: string
+    stale: boolean
+  }
+
+  /** Every remote catalog entry (default source, then config/file sources),
+   *  in precedence order, tagged with where it came from. Never throws: a
+   *  failing source becomes a warning (and its disk-cached copy, or for the
+   *  default source the embedded first-party list). */
+  const loadRemoteCatalogEntries = async (
+    refresh: boolean,
+    fileSources: readonly { url: string }[] | undefined,
+  ): Promise<{ remoteEntries: RemoteCatalogEntryRef[]; warnings: string[] }> => {
+    let catalogConfig: { sources?: unknown; defaultSource?: unknown } | undefined
+    try {
+      catalogConfig = (await loadCatalogConfig()).catalog
+    } catch {
+      // unreadable config → default source + the catalog file's sources
+    }
+    const sources = resolveCatalogSources(fileSources, catalogConfig)
+    const remote =
+      sources.length > 0
+        ? await remoteCatalog.fetchSources(sources, { refresh })
+        : { entries: [], warnings: [], bySource: [] }
+    const remoteEntries: RemoteCatalogEntryRef[] = []
+    ;(remote.bySource ?? []).forEach((result, i) => {
+      const src = sources[i]
+      if (src === undefined) return
+      if (src.origin === "default" && !result.ok) {
+        // Default catalog unreachable and never cached: fall back to the
+        // embedded first-party list so the listing is never empty of them.
+        for (const entry of fallbackCatalogEntries) {
+          remoteEntries.push({ entry, origin: "embedded", catalogUrl: src.url, stale: true })
+        }
+        return
+      }
+      for (const entry of result.entries) {
+        remoteEntries.push({ entry, origin: src.origin, catalogUrl: src.url, stale: result.stale })
+      }
+    })
+    return { remoteEntries, warnings: remote.warnings }
+  }
+
   /** Swap a staged remote tree in at `<appsDir>/<slug>` and run the normal
    *  `performInstall` on it; a failed install puts the previous tree back. */
   const installStaged = async (
     staged: StagedApp,
     dataDir?: string,
+    allowBuild?: boolean,
+    catalogUrl?: string,
   ): Promise<Awaited<ReturnType<typeof performInstall>>> => {
     const target = join(appsDir, staged.slug)
     const appDir = staged.subdir === "" ? target : join(target, staged.subdir)
@@ -917,8 +1237,11 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       result = await performInstall(appDir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
         ...(dataDir !== undefined ? { dataDir } : {}),
         source: staged.source,
+        // Only a git source may build, and only with explicit consent.
+        allowUiBuild: staged.source.kind === "git" && allowBuild === true,
         defaultDataDir: (appId: string) =>
           defaultRemoteAppDataDir(join(dirname(appsDir), APP_DATA_ROOT_SUBDIR), appId),
+        ...(catalogUrl !== undefined ? { catalogUrl } : {}),
       })
     } catch (err) {
       await swap.rollback()
@@ -932,14 +1255,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     return result
   }
 
-  const stageFromUrl = (input: { url: string; ref?: string; subdir?: string }): Promise<StagedApp> =>
+  const stageFromUrl = (input: { url: string; ref?: string; subdir?: string; sha?: string; sha256?: string }): Promise<StagedApp> =>
     isAgentappUrl(input.url)
-      ? stageAgentApp({ appsDir, url: input.url })
+      ? stageAgentApp({ appsDir, url: input.url, ...(input.sha256 !== undefined ? { expectedSha256: input.sha256 } : {}) })
       : stageGitApp({
           appsDir,
           url: input.url,
           ...(input.ref !== undefined ? { ref: input.ref } : {}),
           ...(input.subdir !== undefined ? { subdir: input.subdir } : {}),
+          ...(input.sha !== undefined ? { expectedSha: input.sha } : {}),
         })
 
   server.tool(
@@ -949,7 +1273,12 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "`{url, ref?, subdir?}` — a git repo (shallow-cloned into `<daemon state dir>/apps/<slug>`, " +
       "the installed commit pinned in `source.sha`); `{url}` ending in `.agentapp` — a packed " +
       "bundle fetched over https/file (digest-verified, pinned in `source.sha256`); `{file}` — a " +
-      "local `.agentapp` path. Remote installs are kept current with `app_resync`. Validates every " +
+      "local `.agentapp` path. " +
+      "Integrity: pass the expected `sha` (git commit) or `sha256` (bundle digest, as in a catalog entry) " +
+      "and any mismatch is refused before anything is installed. A remote app's `ui.build` command is NOT " +
+      "run unless `allowBuild: true` (git only; a `.agentapp` never builds) — without it the UI bundle must " +
+      "already be in the source. " +
+      "Remote installs are kept current with `app_resync`. Validates every " +
       "WORKFLOW.md `tool` step's id against the daemon's dispatchable tools (missing " +
       "ids are reported ALL at once, instead of failing one at a time at " +
       "STEP-DISPATCH time) and checks the `mastra-agent` adapter resolves. Agent-" +
@@ -967,6 +1296,22 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       ref: z.string().optional().describe("Git branch or tag to install (with a git `url`). Default: the remote HEAD."),
       subdir: z.string().optional().describe("Path of the app inside the git repo (with a git `url`). Default: the repo root."),
       file: z.string().optional().describe("Absolute path to a local .agentapp bundle."),
+      sha: z.string().optional().describe("Expected git commit (full sha) for a git `url`. Install is refused on mismatch."),
+      sha256: z
+        .string()
+        .optional()
+        .describe("Expected `.agentapp` digest (manifest sha256, as in a catalog entry) for a bundle `url`/`file`. Refused on mismatch."),
+      allowBuild: z
+        .boolean()
+        .optional()
+        .describe("Git `url` only: allow running the app's APP.md `ui.build` shell command from the cloned repo. Default false."),
+      catalogUrl: z
+        .string()
+        .optional()
+        .describe(
+          "Remote installs only: URL of the catalog this install comes from (the entry's `catalogUrl` in " +
+            "`app_catalog`). Recorded as `source.catalogId` so `app_updates` / `app_resync` follow that catalog's entry.",
+        ),
       dataDir: z
         .string()
         .optional()
@@ -989,19 +1334,36 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         if (!result.ok) return errorResult(`app_install: ${result.error}`)
         return textResult(result.record)
       }
-      if ("url" in input && isAgentappUrl(input.url) && (input.ref !== undefined || input.subdir !== undefined)) {
-        return errorResult("app_install: `ref`/`subdir` only apply to git URLs, not a .agentapp.")
+      if ("url" in input && isAgentappUrl(input.url)) {
+        if (input.ref !== undefined || input.subdir !== undefined || input.sha !== undefined) {
+          return errorResult("app_install: `ref`/`subdir`/`sha` only apply to git URLs, not a .agentapp (use `sha256`).")
+        }
+        if (input.allowBuild !== undefined) {
+          return errorResult("app_install: `allowBuild` only applies to git URLs — a .agentapp never runs ui.build.")
+        }
+      }
+      if ("url" in input && !isAgentappUrl(input.url) && input.sha256 !== undefined) {
+        return errorResult("app_install: `sha256` only applies to a .agentapp; pin a git URL with `sha`.")
       }
       let staged: StagedApp
       try {
         staged =
           "file" in input
-            ? await stageAgentApp({ appsDir, file: input.file })
+            ? await stageAgentApp({
+                appsDir,
+                file: input.file,
+                ...(input.sha256 !== undefined ? { expectedSha256: input.sha256 } : {}),
+              })
             : await stageFromUrl(input)
       } catch (err) {
         return errorResult(`app_install: ${err instanceof Error ? err.message : String(err)}`)
       }
-      const result = await installStaged(staged, input.dataDir)
+      const result = await installStaged(
+        staged,
+        input.dataDir,
+        "url" in input ? input.allowBuild : undefined,
+        input.catalogUrl,
+      )
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
       return textResult(result.record)
     },
@@ -1009,7 +1371,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
   server.tool(
     "app_resync",
-    "Re-check an app installed from git or a `.agentapp` against its source and reinstall it if " +
+    "An app installed from a catalog (`source.catalogId`) follows that catalog's current entry: a newer release (different digest/commit, version not lower) is staged from the entry's own URL and verified against its digest. " +
+      "Re-check an app installed from git or a `.agentapp` against its source and reinstall it if " +
       "the source moved. Git: `git ls-remote` for the installed `ref` vs the pinned `source.sha`. " +
       "`.agentapp`: re-download and compare the bundle's verified `sha256` with the pinned one. " +
       "Returns `{changed:false}` when current, `{changed:true, from, to}` after a reinstall " +
@@ -1025,6 +1388,52 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         )
       }
       try {
+        // Catalog-tracked apps follow their catalog's entry: a versioned bundle
+        // URL never changes content, so re-downloading the pinned URL alone
+        // would never see a new release.
+        const catalogRef = source.catalogId
+        if (catalogRef !== undefined) {
+          const { remoteEntries } = await loadRemoteCatalogEntries(true, (await loadAppCatalogFile(opts.catalogPath)).sources)
+          const tracked = remoteEntries.find(r => r.catalogUrl === catalogRef.url && r.entry.appId === catalogRef.appId)
+          if (tracked !== undefined && !tracked.stale) {
+            if (!isCatalogUpdate(app, tracked.entry)) {
+              return textResult({ appId: input.appId, changed: false, catalogUrl: tracked.catalogUrl })
+            }
+            const fromPin = source.kind === "git" ? source.sha : source.sha256
+            const es = tracked.entry.source
+            let catalogStaged: StagedApp
+            if (es.kind === "agentapp") {
+              catalogStaged = await stageAgentApp({ appsDir, url: es.url, expectedSha256: es.sha256 })
+            } else if (es.kind === "git") {
+              catalogStaged = await stageGitApp({
+                appsDir,
+                url: es.url,
+                ...(es.ref !== undefined ? { ref: es.ref } : {}),
+                ...(es.subdir !== undefined ? { subdir: es.subdir } : {}),
+                expectedSha: es.sha,
+              })
+            } else {
+              return errorResult(`app_resync: catalog entry for "${input.appId}" has no remote source.`)
+            }
+            const updated = await installStaged(
+              catalogStaged,
+              undefined,
+              source.kind === "git" && app.ui?.build !== undefined,
+              catalogRef.url,
+            )
+            if (!updated.ok) return errorResult(`app_resync: ${updated.error}`)
+            const nextPin = updated.record.source
+            return textResult({
+              appId: updated.record.appId,
+              changed: true,
+              from: fromPin,
+              to: nextPin?.kind === "git" ? nextPin.sha : nextPin?.kind === "agentapp" ? nextPin.sha256 : fromPin,
+              catalogUrl: tracked.catalogUrl,
+              ...(updated.record.version !== undefined ? { version: updated.record.version } : {}),
+            })
+          }
+          // Catalog unreachable/stale or entry gone: fall back to the pinned source below.
+        }
         let staged: StagedApp
         let from: string
         if (source.kind === "git") {
@@ -1045,7 +1454,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             return textResult({ appId: input.appId, changed: false })
           }
         }
-        const result = await installStaged(staged)
+        // A git app keeps building only if it was installed with consent —
+        // recorded as `ui.build` surviving on the record (performInstall drops
+        // it otherwise). A bundle never builds.
+        const result = await installStaged(
+          staged,
+          undefined,
+          source.kind === "git" && app.ui?.build !== undefined,
+          source.catalogId?.url,
+        )
         if (!result.ok) return errorResult(`app_resync: ${result.error}`)
         const next = result.record.source
         const to = next?.kind === "git" ? next.sha : next?.kind === "agentapp" ? next.sha256 : from
@@ -1053,6 +1470,74 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       } catch (err) {
         return errorResult(`app_resync: ${err instanceof Error ? err.message : String(err)}`)
       }
+    },
+  )
+
+  server.tool(
+    "app_updates",
+    "Check installed apps that came from a catalog (`app_install {catalogUrl}`, recorded as " +
+      "`source.catalogId`) against that catalog's current entry, without installing anything. " +
+      "Returns `{ updates: [{appId, from, to, catalogUrl, stale?}], upToDate, notListed, untracked }`: " +
+      "an entry is an update when its pin (bundle sha256 / git commit) differs and its version is " +
+      "not lower than the installed one; `notListed` = the catalog no longer lists the app (or is " +
+      "unreachable); `untracked` = remote installs not tied to a catalog (check those with " +
+      "`app_resync`). Apply an update with `app_resync {appId}`.",
+    {
+      appId: z.string().optional().describe("Only check this app."),
+      refresh: z.boolean().optional().describe("Bypass the 5-minute in-memory catalog cache."),
+    },
+    async input => {
+      const apps = appRegistry
+        .listApps()
+        .filter(a => a.source !== undefined && a.source.kind !== "local")
+        .filter(a => input.appId === undefined || a.appId === input.appId)
+      if (input.appId !== undefined && apps.length === 0) {
+        return errorResult(`app_updates: no app "${input.appId}" installed from git or a .agentapp.`)
+      }
+      const tracked = apps.filter(a => a.source !== undefined && a.source.kind !== "local" && a.source.catalogId !== undefined)
+      const { remoteEntries, warnings } =
+        tracked.length > 0
+          ? await loadRemoteCatalogEntries(input.refresh === true, (await loadAppCatalogFile(opts.catalogPath)).sources)
+          : { remoteEntries: [], warnings: [] as string[] }
+      const updates: Array<Record<string, unknown>> = []
+      const upToDate: string[] = []
+      const notListed: string[] = []
+      for (const app of tracked) {
+        const src = app.source
+        if (src === undefined || src.kind === "local" || src.catalogId === undefined) continue
+        const ref = src.catalogId
+        const hit = remoteEntries.find(r => r.catalogUrl === ref.url && r.entry.appId === ref.appId)
+        if (hit === undefined) {
+          notListed.push(app.appId)
+          continue
+        }
+        if (!isCatalogUpdate(app, hit.entry)) {
+          upToDate.push(app.appId)
+          continue
+        }
+        const es = hit.entry.source
+        updates.push({
+          appId: app.appId,
+          from:
+            src.kind === "agentapp"
+              ? { version: src.version, sha256: src.sha256 }
+              : { ...(app.version !== undefined ? { version: app.version } : {}), sha: src.sha },
+          to:
+            es.kind === "agentapp"
+              ? { version: es.version, sha256: es.sha256, url: es.url }
+              : es.kind === "git"
+                ? { ...(hit.entry.version !== undefined ? { version: hit.entry.version } : {}), sha: es.sha, url: es.url }
+                : {},
+          catalogUrl: hit.catalogUrl,
+          ...(hit.stale ? { stale: true } : {}),
+        })
+      }
+      const untracked = apps.filter(a => !tracked.includes(a)).map(a => a.appId)
+      const result = textResult({ updates, upToDate, notListed, untracked }) as {
+        content: { type: "text"; text: string }[]
+      }
+      if (warnings.length > 0) result.content.push({ type: "text", text: JSON.stringify({ warnings }) })
+      return result
     },
   )
 
@@ -1586,6 +2071,18 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         }
       }
 
+      for (const dep of installed.requiresApps ?? []) {
+        if (dep.version === undefined) continue
+        const provider = appRegistry.getApp(dep.id)
+        if (!provider) continue
+        const problem = checkVersion(provider.version, dep.version)
+        if (problem !== undefined) {
+          return errorResult(
+            `app_apply: app "${input.appId}" requires "${dep.id}" ${dep.version}, but "${dep.id}" ${problem}.`,
+          )
+        }
+      }
+
       const mount = appRegistry.applyApp({ scopeId, appId: input.appId })
       return textResult({
         scopeId: mount.scopeId,
@@ -1724,6 +2221,47 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   )
 
   server.tool(
+    "app_call",
+    "Call a workflow an installed provider app exposes, on behalf of an installed consumer app — " +
+      "the app→app call mechanism. The caller must declare the provider in `requires.apps`, and the " +
+      "dependency entry's `workflows` allowlist must name the workflow; the provider must list it in " +
+      "`exposes.workflows`, and its installed version must satisfy the dependency's `version` range " +
+      "when both are set. The workflow then runs through the same runner path as `workflow_run_file` " +
+      "and the call awaits its result under a bounded timeout. " +
+      "TRUST MODEL: the daemon is local-trust — `callerAppId` is a declaration check, NOT a security " +
+      "boundary; any local process can name any installed caller, and apps are not isolated from " +
+      "each other. Errors carry a distinct errorCode (caller-not-installed / not-declared / " +
+      "workflow-not-allowed / provider-not-installed / workflow-not-exposed / version-mismatch / " +
+      "workflow-failed / timeout).",
+    {
+      callerAppId: z.string().describe("The installed consumer app making the call."),
+      appId: z.string().describe("The provider app id — must be in the caller's requires.apps."),
+      workflow: z
+        .string()
+        .describe("Workflow id — must be in the provider's exposes.workflows AND the caller's dependency allowlist."),
+      input: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Workflow input, bound to `$input` in the compiled workflow."),
+      timeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Bounded wait for the workflow to finish, in milliseconds. Default 60000, capped at 300000.",
+        ),
+    },
+    async input => {
+      const result = await performAppCall(appRegistry, input, {
+        ...(workflowRunner ? { workflowRunner } : {}),
+      })
+      if (!result.ok) return errorResult(result.error)
+      return textResult({ ok: true, output: result.output, runId: result.runId, durationMs: result.durationMs })
+    },
+  )
+
+  server.tool(
     "app_uninstall",
     "Remove an installed app's record. Refuses if the app is applied to any scope " +
       "(unapply first via app_unapply) or has a running app_run (stop it first via app_stop).",
@@ -1755,19 +2293,21 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     },
   )
 
-  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient()
-  const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
-
   server.tool(
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
       "tolerates a missing file), merged with installed-app status — every entry reports " +
-      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Remote catalog `sources` (config " +
-      "`catalog.sources`, else `sources` in the catalog file) are fetched and appended after " +
-      "local entries, deduped by `appId` (first wins); their entries carry `source` for " +
-      "`app_install`. A failing source is reported in a trailing `{ warnings: [...] }` content " +
-      "block, never as an error. Installed apps absent from the catalog are included too, " +
-      "as are the always-on builtin panels (category `builtin`) — they need no `app_install`.",
+      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Remote catalogs (`app-catalog/v1`) " +
+      "are appended after local entries, deduped by `appId` (first wins): the default public " +
+      "catalog first (config `catalog.defaultSource`, `false` turns it off), then config " +
+      "`catalog.sources` (else `sources` in the catalog file) — extra sources ADD to the default " +
+      "one. Remote entries carry `source` (for `app_install`), `origin` (default|config|file|" +
+      "embedded), `catalogUrl`, the optional v1 fields (version, tier, icon, publisher, license, " +
+      "requires, minAgentprotoVersion, featured), and `stale: true` when served from the disk " +
+      "cache (or, for the default catalog when it was never reachable, from the embedded " +
+      "first-party list). A failing source is reported in a trailing `{ warnings: [...] }` " +
+      "content block, never as an error. Installed apps absent from the catalog are included " +
+      "too, as are the always-on builtin panels (category `builtin`).",
     {
       scopeId: z
         .string()
@@ -1802,24 +2342,24 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         }
       })
 
-      let configSources: unknown
-      try {
-        configSources = (await loadCatalogConfig()).catalog?.sources
-      } catch {
-        // unreadable config → fall back to the catalog file's sources
-      }
-      const sources = resolveCatalogSources(catalog.sources, configSources)
-      const remote =
-        sources.length > 0
-          ? await remoteCatalog.fetchSources(sources, { refresh: input.refresh === true })
-          : { entries: [], warnings: [] }
+      const { remoteEntries, warnings: remoteWarnings } = await loadRemoteCatalogEntries(
+        input.refresh === true,
+        catalog.sources,
+      )
 
-      for (const entry of remote.entries) {
+      for (const { entry, origin, catalogUrl, stale } of remoteEntries) {
         if (seen.has(entry.appId)) continue
         seen.add(entry.appId)
         const installed = installedById.get(entry.appId)
         const name = entry.name ?? installed?.name
         const description = entry.description ?? installed?.description
+        const installedCatalog =
+          installed?.source !== undefined && installed.source.kind !== "local" ? installed.source.catalogId : undefined
+        const updateAvailable =
+          installed !== undefined &&
+          installedCatalog !== undefined &&
+          installedCatalog.url === catalogUrl &&
+          isCatalogUpdate(installed, entry)
         entries.push({
           appId: entry.appId,
           ...(name ? { name } : {}),
@@ -1827,7 +2367,19 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           ...(entry.category ? { category: entry.category } : {}),
           source: entry.source,
           ...(entry.placement ? { placement: entry.placement } : {}),
+          ...(entry.version ? { version: entry.version } : {}),
+          ...(entry.tier ? { tier: entry.tier } : {}),
+          ...(entry.icon ? { icon: entry.icon } : {}),
+          ...(entry.publisher ? { publisher: entry.publisher } : {}),
+          ...(entry.license ? { license: entry.license } : {}),
+          ...(entry.requires ? { requires: entry.requires } : {}),
+          ...(entry.minAgentprotoVersion ? { minAgentprotoVersion: entry.minAgentprotoVersion } : {}),
+          ...(entry.featured ? { featured: true } : {}),
+          origin,
+          catalogUrl,
+          ...(stale ? { stale: true } : {}),
           installed: installed !== undefined,
+          ...(updateAvailable ? { updateAvailable: true, installedVersion: installed?.version } : {}),
           hasUi: installed?.ui !== undefined,
           hasArtifact: installed?.artifact !== undefined,
           hasSkill: installed?.skill !== undefined,
@@ -1856,8 +2408,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // Entries stay the first content block (a bare JSON array) so existing
       // clients keep parsing; warnings ride in a second block only when present.
       const result = textResult(entries) as { content: { type: "text"; text: string }[] }
-      if (remote.warnings.length > 0) {
-        result.content.push({ type: "text", text: JSON.stringify({ warnings: remote.warnings }) })
+      if (remoteWarnings.length > 0) {
+        result.content.push({ type: "text", text: JSON.stringify({ warnings: remoteWarnings }) })
       }
       return result
     },

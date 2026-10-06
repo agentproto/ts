@@ -1,4 +1,35 @@
 {
-  "description": "Known, pending-spec drift: fields already shipped in ts's vendored copy of an AIP JSON Schema (specs/resources/) that the canonical spec at agentproto/agentproto hasn't ratified yet. `scripts/sync-specs.mjs --check` masks exactly these fields before diffing the vendored tree against canonical, so the gate stays green for KNOWN, deliberate drift and fails on anything new or unaccounted for. It also asserts every entry below is still PRESENT (and, when a canonical checkout is available, still meaningfully different from canonical) in the vendored copy — so a careless resync can't silently drop one of these fields without the gate noticing. `field` is a dot path into the parsed JSON Schema (e.g. `$defs.stepTool.properties.cacheable`). Each entry is a candidate upstream spec PR; remove it here once that PR merges and a real `sync-specs` run brings the field in from canonical.",
-  "entries": []
+  "description": "Known, pending-spec drift: fields already shipped in ts's vendored copy of an AIP JSON Schema (specs/resources/) that the canonical spec at agentproto/agentproto hasn't ratified yet. `scripts/sync-specs.mjs --check` masks exactly these fields before diffing the vendored tree against canonical, so the gate stays green for KNOWN, deliberate drift and fails on anything new or unaccounted for. It also asserts every entry below is still PRESENT (and, when a canonical checkout is available, still meaningfully different from canonical) in the vendored copy \u2014 so a careless resync can't silently drop one of these fields without the gate noticing. `field` is a dot path into the parsed JSON Schema (e.g. `$defs.stepTool.properties.cacheable`). Each entry is a candidate upstream spec PR; remove it here once that PR merges and a real `sync-specs` run brings the field in from canonical.",
+  "entries": [
+    {
+      "file": "aip-53/draft/APP.schema.json",
+      "field": "properties.requires",
+      "reason": "app-to-app calls: requires.apps entries may be { id, version?, workflows? } objects and requires may be the { browser, fs, gpu, secrets, apps } object form; pending upstream spec PR"
+    },
+    {
+      "file": "aip-53/draft/APP.schema.json",
+      "field": "properties.exposes",
+      "reason": "app-to-app calls: exposes.workflows declares the callable surface other apps may name in requires.apps[].workflows; pending upstream spec PR"
+    },
+    {
+      "file": "aip-62/draft/REVIEW.schema.json",
+      "field": "$defs.agentCheck.properties.fallbackPresets",
+      "reason": "review lane fallback: ordered fallback reviewer presets tried when the primary reviewer is unavailable; pending upstream spec PR"
+    },
+    {
+      "file": "aip-62/draft/REVIEW.schema.json",
+      "field": "$defs.use.properties.fallbackPresets",
+      "reason": "review lane fallback: uses[] entry supplies fallbackPresets for imported pack agent checks; pending upstream spec PR"
+    },
+    {
+      "file": "aip-62/draft/REVIEW.schema.json",
+      "field": "$defs.use.properties.overrides",
+      "reason": "review lane fallback: uses[].overrides.<id>.fallbackPresets; pending upstream spec PR"
+    },
+    {
+      "file": "aip-62/draft/ATTESTATION.schema.json",
+      "field": "$defs.lane.properties.fallbacks",
+      "reason": "review lane fallback: records the reviewers that were unavailable before the one that produced the verdict; pending upstream spec PR"
+    }
+  ]
 }

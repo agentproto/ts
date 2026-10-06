@@ -12,7 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
-import { readRecentTurnsSync } from "../session-evidence.js"
+import { readRecentTurnsSync, readRecentToolCallRecordsSync, summarizeToolCalls } from "../session-evidence.js"
 import { registerSessionTools } from "../session-tools.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
@@ -67,6 +67,38 @@ describe("readRecentTurnsSync", () => {
   })
 })
 
+describe("tool-call stats (PR 3 enrichment)", () => {
+  it("reads the tail tool-call-record lines and strips the kind", () => {
+    const path = writeEvents([
+      { kind: "tool-call-record", tool: "Bash", command: "rg sentinel a.md", ts: "2026-10-02T10:00:00Z" },
+      { kind: "text-delta", text: "x" },
+      { kind: "tool-call-record", tool: "Read", args: ["src/b.ts"], isError: true },
+    ])
+    expect(readRecentToolCallRecordsSync(path)).toEqual([
+      { tool: "Bash", command: "rg sentinel a.md", ts: "2026-10-02T10:00:00Z" },
+      { tool: "Read", args: ["src/b.ts"], isError: true },
+    ])
+  })
+
+  it("summarizes distinct/repeated calls, the top command, and file re-reads", () => {
+    const records = [
+      { tool: "Bash", command: "rg sentinel a.md" },
+      { tool: "Bash", command: "rg sentinel a.md" },
+      { tool: "Bash", command: "rg sentinel a.md" },
+      { tool: "Bash", command: "ls" },
+      { tool: "Bash", command: "cat src/repeat.ts" },
+      { tool: "Bash", command: "cat src/repeat.ts" },
+    ]
+    const s = summarizeToolCalls(records)
+    expect(s).toMatchObject({ total: 6, distinct: 3, repeated: 3, ratio: 0.5, topCommandCount: 3, distinctReads: 2, repeatedReads: 3 })
+    expect(s.topCommand).toContain("rg sentinel a.md")
+  })
+
+  it("returns ratio 1 for no calls", () => {
+    expect(summarizeToolCalls([])).toMatchObject({ total: 0, distinct: 0, ratio: 1, topCommand: null })
+  })
+})
+
 function idleAgentSession(id: string): AgentSessionLike {
   return {
     sessionId: id,
@@ -110,6 +142,7 @@ describe("session_evidence tool", () => {
     })
     const rt = registry.get(desc.id)!
     rt.keepAlive = true
+    rt.origin = "cron:job"
     rt.worktreePath = "/tmp/wt/feature"
     rt.mainRepoPath = "/tmp/repo"
     rt.lastActivityAt = new Date(Date.now() - 45 * 60_000).toISOString()
@@ -135,6 +168,8 @@ describe("session_evidence tool", () => {
       adapter: "claude-code",
       keepAlive: true,
       awaitingInput: false,
+      origin: "cron:job",
+      pullRequests: { opened: 0, merged: 0, state: "open" },
       turns: [
         { role: "user", text: "ship it" },
         { role: "assistant", text: "PR #42 opened." },

@@ -344,6 +344,17 @@ export interface AgentCliCapabilities {
    * session id is not a native TUI resume. Default false.
    */
   nativeTerminalResume?: boolean
+  /**
+   * The harness itself defers mounted MCP tool schemas behind its own
+   * on-demand search tool (e.g. Claude Code's `ToolSearch`), so it never
+   * pays the full turn-0 `tools/list` payload of a large MCP server. The
+   * daemon uses this to default its own `/mcp` self-mount to EAGER for the
+   * session instead of stacking a second deferral layer (`tool_search`) on
+   * top, where a tool hidden by the daemon is invisible to the harness's
+   * native search. Declare it only when verified for the harness's default
+   * configuration; absent/false ⇒ the role / daemon default applies.
+   */
+  nativeToolSearch?: boolean
 }
 
 /**

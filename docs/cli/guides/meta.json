@@ -4,8 +4,15 @@
     "mcp-in-coding-cli",
     "central-capabilities",
     "create-agentproto-app",
+    "build-your-own-agent-app",
     "distribute-an-app",
     "app-agent-tools",
-    "no-admin-install"
+    "no-admin-install",
+    "fleets",
+    "handoff",
+    "gates",
+    "cron",
+    "workflows",
+    "sentinels"
   ]
 }

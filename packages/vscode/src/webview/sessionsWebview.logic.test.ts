@@ -6,6 +6,7 @@ import {
   buildFocusViewModel,
   buildSessionsWebviewModel,
   collapseCronRuns,
+  comparePinned,
   cronJobIdOf,
   defaultExpandedFor,
   focusTreeRows,
@@ -15,6 +16,7 @@ import {
   laneOf,
   missionCountsText,
   missionSummaryFor,
+  movePinnedId,
   nestByLineage,
   previewTextFor,
   relativeLuminance,
@@ -30,6 +32,7 @@ import {
   webviewRowStatus,
   WORKSPACE_PALETTE,
   workspaceColorFor,
+  type PinnedOrderSubject,
   type WebviewRow,
   type WebviewRowStatus,
 } from "./sessionsWebview.logic.js"
@@ -1193,3 +1196,125 @@ describe("conversation terminals in the Sessions list", () => {
     expect(model.groups.flatMap(g => g.rows.map(r => r.id))).toContain("conv2")
   })
 })
+
+describe("buildSessionsWebviewModel — pinned group order is stable (pinnedOrder)", () => {
+  it("sorts the Pinned group by pinnedOrder ascending, not recency", () => {
+    const sessions = [
+      session({ id: "p3", pinned: true, pinnedOrder: 3, lastActivityAt: "2026-01-01T00:00:00Z" }),
+      session({ id: "p1", pinned: true, pinnedOrder: 1, lastActivityAt: "2026-01-01T00:00:00Z" }),
+      session({ id: "p2", pinned: true, pinnedOrder: 2, lastActivityAt: "2026-01-01T00:00:00Z" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["p1", "p2", "p3"])
+  })
+
+  it("a pinned session receiving a new message does NOT move — activity never reorders the group", () => {
+    const base = [
+      session({ id: "quiet", pinned: true, pinnedOrder: 1, status: "exited", busy: false, lastActivityAt: "2026-01-01T00:00:00Z" }),
+      session({ id: "chatty", pinned: true, pinnedOrder: 2, status: "running", lastActivityAt: "2026-01-01T00:00:00Z" }),
+    ]
+    const before = buildSessionsWebviewModel(base, studioConfig, opts())
+    // `quiet` gets a burst of new activity — a newer lastActivityAt than
+    // `chatty` AND a running state — the exact shape that used to reshuffle
+    // the group, because it inherited compareSessions' running-first order.
+    const after = buildSessionsWebviewModel(
+      base.map(s => (s.id === "quiet"
+        ? { ...s, status: "running", busy: true, lastActivityAt: "2026-01-03T00:00:00Z" }
+        : s)),
+      studioConfig,
+      opts(),
+    )
+    expect(after.groups[0]!.rows.map(r => r.id)).toEqual(["quiet", "chatty"])
+    expect(after.groups[0]!.rows.map(r => r.id)).toEqual(before.groups[0]!.rows.map(r => r.id))
+  })
+
+  it("legacy pins (no pinnedOrder) sink below every ordered pin, oldest startedAt first", () => {
+    const sessions = [
+      session({ id: "legacy-newer", pinned: true, startedAt: "2026-01-05T00:00:00Z" }),
+      session({ id: "ordered", pinned: true, pinnedOrder: 1 }),
+      session({ id: "legacy-older", pinned: true, startedAt: "2026-01-01T00:00:00Z" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["ordered", "legacy-older", "legacy-newer"])
+  })
+
+  it("a tie on pinnedOrder falls back to startedAt ascending, then id ascending", () => {
+    const sessions = [
+      session({ id: "b", pinned: true, pinnedOrder: 1, startedAt: "2026-01-02T00:00:00Z" }),
+      session({ id: "a", pinned: true, pinnedOrder: 1, startedAt: "2026-01-02T00:00:00Z" }),
+      session({ id: "c", pinned: true, pinnedOrder: 1, startedAt: "2026-01-01T00:00:00Z" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["c", "a", "b"])
+  })
+
+  it("non-pinned groups still sort running-first then recency (unchanged)", () => {
+    const sessions = [
+      session({ id: "older-running", status: "running", busy: true, lastActivityAt: "2026-01-01T12:00:00Z" }),
+      session({ id: "newer-running", status: "running", busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }),
+      session({ id: "idle", status: "exited", busy: false, lastActivityAt: "2026-01-03T00:00:00Z" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    // Recency descending within the live section, untouched by the pinned
+    // work above. The exited session — the most recent of all three — still
+    // sinks to Earlier.
+    expect(model.groups.find(g => g.key === "attention")!.rows.map(r => r.id)).toEqual(["newer-running", "older-running"])
+    expect(model.groups.find(g => g.key === "earlier")!.rows.map(r => r.id)).toEqual(["idle"])
+  })
+})
+
+describe("comparePinned", () => {
+  const subject = (id: string, pinnedOrder: number | undefined, startedAt = "2026-01-01T00:00:00Z"): PinnedOrderSubject =>
+    ({ pinnedOrder, session: { id, startedAt } })
+
+  it("orders by pinnedOrder ascending", () => {
+    expect(comparePinned(subject("a", 2), subject("b", 1))).toBeGreaterThan(0)
+    expect(comparePinned(subject("a", 1), subject("b", 2))).toBeLessThan(0)
+  })
+
+  it("sinks a legacy pin (no pinnedOrder) below an ordered one", () => {
+    expect(comparePinned(subject("legacy", undefined), subject("ordered", 1))).toBeGreaterThan(0)
+    expect(comparePinned(subject("ordered", 1), subject("legacy", undefined))).toBeLessThan(0)
+  })
+
+  it("breaks a legacy-vs-legacy tie by startedAt ascending, then id ascending", () => {
+    expect(comparePinned(subject("new", undefined, "2026-01-02T00:00:00Z"), subject("old", undefined, "2026-01-01T00:00:00Z"))).toBeGreaterThan(0)
+    expect(comparePinned(subject("b", undefined), subject("a", undefined))).toBeGreaterThan(0)
+  })
+
+  it("breaks an equal-pinnedOrder tie by startedAt ascending, then id ascending", () => {
+    expect(comparePinned(subject("b", 1, "2026-01-02T00:00:00Z"), subject("a", 1, "2026-01-01T00:00:00Z"))).toBeGreaterThan(0)
+    expect(comparePinned(subject("b", 1), subject("a", 1))).toBeGreaterThan(0)
+  })
+})
+
+describe("movePinnedId", () => {
+  const ids = ["a", "b", "c"]
+
+  it("moves a row one slot up", () => {
+    expect(movePinnedId(ids, "b", "up")).toEqual(["b", "a", "c"])
+  })
+
+  it("moves a row one slot down", () => {
+    expect(movePinnedId(ids, "b", "down")).toEqual(["a", "c", "b"])
+  })
+
+  it("first row up is a no-op returning the same reference", () => {
+    expect(movePinnedId(ids, "a", "up")).toBe(ids)
+  })
+
+  it("last row down is a no-op returning the same reference", () => {
+    expect(movePinnedId(ids, "c", "down")).toBe(ids)
+  })
+
+  it("an unknown id is a no-op returning the same reference", () => {
+    expect(movePinnedId(ids, "zz", "up")).toBe(ids)
+  })
+
+  it("does not mutate the input", () => {
+    const input = ["a", "b", "c"]
+    movePinnedId(input, "a", "down")
+    expect(input).toEqual(["a", "b", "c"])
+  })
+})
+

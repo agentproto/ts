@@ -269,7 +269,7 @@ describe("background-task lifecycle + wake", () => {
     agent.emit(settled("bx1"))
     agent.emit(autonomousCycle[0]!)
     const res = await reg.enqueuePrompt(id, "what next?", { queue: true })
-    expect(res).toEqual({ queued: true })
+    expect(res).toMatchObject({ queued: true, delivery: "queued-mid-turn", pending: true })
     expect(agent.sent).toHaveLength(1)
 
     agent.emit(autonomousCycle[1]!) // the cycle ends → the queue drains

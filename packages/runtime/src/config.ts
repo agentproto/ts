@@ -173,9 +173,13 @@ export interface CatalogSourceConfig {
 }
 
 export interface CatalogConfig {
-  /** Remote app-catalog sources merged into `app_catalog`. When set, these
-   *  win over `sources` in `~/.agentproto/app-catalog.json`. */
+  /** Remote app-catalog sources merged into `app_catalog`, IN ADDITION to the
+   *  default catalog (`defaultSource`). When set, these win over (replace)
+   *  `sources` in `~/.agentproto/app-catalog.json`. */
   sources?: CatalogSourceConfig[]
+  /** The default public catalog (`DEFAULT_CATALOG_SOURCE_URL` in
+   *  app-catalog.ts): `false` turns it off, a URL replaces it. Absent = on. */
+  defaultSource?: string | false
 }
 
 export interface TunnelConfig {
@@ -435,6 +439,11 @@ export interface ReviewConfig {
    *  then a host-derived value; this never blocks signing, it only lets an
    *  operator pin one identity across every repo the daemon reviews. */
   principal?: string
+  /** Extra attempts for an agent lane whose reviewer turn ends in a
+   *  transient error (dropped socket, 5xx, overloaded provider). Auth,
+   *  quota and unknown-model errors are never retried. Default 1; `0`
+   *  disables; capped at 5. All attempts share the lane's `timeoutMs`. */
+  laneRetries?: number
 }
 
 /**

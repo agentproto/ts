@@ -115,7 +115,7 @@ import { loadConfig } from "./config.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { backfillSessionIndexes } from "./session-index.js"
-import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
+import { resolveResumeAuth, restartAgentSession, restartPreferInPlace } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
@@ -127,6 +127,9 @@ import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
 import { registerSentinelTools } from "./sentinel-tools.js"
+import { createSessionFollowStore } from "./session-follow-store.js"
+import { wireSessionFollow } from "./session-follow.js"
+import { registerSessionFollowTools } from "./session-follow-tools.js"
 import {
   eventsList,
   eventsSubscribe,
@@ -185,6 +188,8 @@ import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
 import { createSessionTurnObserver } from "./cron-turn-observer.js"
 import { getAuthProfile } from "@agentproto/auth"
+import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
+import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
@@ -794,6 +799,15 @@ export type {
   SentinelTarget,
 } from "./sentinel-providers/types.js"
 export type { SentinelView } from "./sentinel-tools.js"
+// Session-follow (wake a session on other sessions' events).
+export {
+  createSessionFollowStore,
+  FOLLOW_EVENTS,
+  type FollowEvent,
+  type SessionFollow,
+  type SessionFollowStore,
+} from "./session-follow-store.js"
+export { wireSessionFollow, type SessionFollowHandle } from "./session-follow.js"
 // MCP Events adapter (W-C of .plans/sentinel-mcp-events): deterministic
 // subscription ids, the per-scheme event registry, and the three native
 // methods' logic (`eventsList`/`eventsSubscribe`/`eventsUnsubscribe`). The
@@ -1150,6 +1164,39 @@ function bootResumeConcurrency(): number {
   const raw = process.env.AGENTPROTO_RESUME_CONCURRENCY
   const parsed = raw ? Number.parseInt(raw, 10) : NaN
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 4
+}
+
+/** Build the dead-session restart hook the routing paths share (PR C).
+ *  An ended-but-resumable agent-cli row is revived IN PLACE (same id) via
+ *  the registry's resume primitive instead of minting a new row — the
+ *  sentinel's re-target then no-ops. The flag splits the callers by INTENT:
+ *   - the SENTINEL is an AUTOMATIC path — a deliberate end
+ *     (operator-completed / steward-*) is never revived in place; it
+ *     falls back to today's new-id restart (and the sentinel's own
+ *     sessionInfo guard routes deliberate ends to the parent / parking
+ *     before this is ever reached).
+ *   - INBOUND (watcher + push router) is a HUMAN writing to the session —
+ *     explicit intent, so a deliberate end may still be revived in place. */
+export function makeRestartForRouting(
+  deps: { sessions: SessionsRegistry; resolveAgentAdapter: AgentAdapterResolver | undefined },
+  config: { name: string; allowDeliberateEnd: boolean },
+): (id: string) => Promise<string> {
+  return async (id: string): Promise<string> => {
+    const desc = deps.sessions.get(id)
+    if (!desc) {
+      throw new Error(`${config.name}: no session "${id}"`)
+    }
+    if (!deps.resolveAgentAdapter) {
+      throw new Error(
+        `${config.name}: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
+      )
+    }
+    const restarted = await restartPreferInPlace(deps.sessions, deps.resolveAgentAdapter, desc, {
+      forceAgentResume: true,
+      allowDeliberateEnd: config.allowDeliberateEnd,
+    })
+    return restarted.desc.id
+  }
 }
 
 export interface CreateGatewayOptions {
@@ -1945,6 +1992,9 @@ export async function createGateway(
   // below) needs both and neither depends on `sessions` itself (only
   // `sentinelRuntime`, built later, needs `sessions.sendMessage`).
   const sentinelStore = createSentinelStore({ persist })
+  // Session-follow store (`~/.agentproto/follows.json`) — the engine that
+  // reads it is wired below, once `sessions` exists.
+  const sessionFollowStore = createSessionFollowStore({ persist })
   const sentinelCredsStore = makeSentinelCredsStore()
   const resolveSentinelProviderResolved = async (slug: string) =>
     resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) })
@@ -1995,6 +2045,19 @@ export async function createGateway(
       ? { transcriptDir: defaultTranscriptBaseDir() }
       : {}),
     ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+    ...(opts.listHarnessCapabilities
+      ? { listHarnessCapabilities: opts.listHarnessCapabilities }
+      : {}),
+    // Inert unless a session's `contextContinuity.handoffAtQuotaRemaining`
+    // is set; only then does the live probe (one 1-token call, throttled)
+    // ever run.
+    quotaWatch: {
+      reader: new AnthropicRemainingQuotaReader({ liveProbe: true }),
+      resolveProfile: async ref => {
+        const profile = await getAuthProfile(ref)
+        return profile ? toQuotaReadableProfile(profile) : undefined
+      },
+    },
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
@@ -2370,6 +2433,7 @@ export async function createGateway(
             sessionEvents,
             eventRing,
             resolveAgentAdapter: opts.resolveAgentAdapter,
+            ...(daemonConfig.review?.laneRetries !== undefined ? { laneRetries: daemonConfig.review.laneRetries } : {}),
             spawnDeps: {
               resolveSandboxProvider: resolveSandboxProviderResolved,
               ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
@@ -2517,36 +2581,55 @@ export async function createGateway(
     if (!desc) return false
     return desc.processAlive !== false
   }
-  const restartInboundSession = async (id: string): Promise<string> => {
-    const desc = sessions.get(id)
-    if (!desc) {
-      throw new Error(`restartInboundSession: no session "${id}"`)
-    }
-    if (!opts.resolveAgentAdapter) {
-      throw new Error(
-        `restartInboundSession: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
-      )
-    }
-    const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter, desc, {
-      forceAgentResume: true,
-    })
-    return restarted.desc.id
-  }
+  // Shared restart core (PR C): an ended-but-resumable agent-cli row is
+  // revived IN PLACE (same id) via the registry's resume primitive instead
+  // of minting a new row — the sentinel's re-target below then no-ops.
+  // The flag splits the two callers by INTENT:
+  //   - the SENTINEL is an AUTOMATIC path — a deliberate end
+  //     (operator-completed / steward-*) is never revived in place; it
+  //     falls back to today's new-id restart (and the sentinel's own
+  //     sessionInfo guard routes deliberate ends to the parent / parking
+  //     before this is ever reached).
+  //   - INBOUND (watcher + push router) is a HUMAN writing to the session —
+  //     explicit intent, so a deliberate end may still be revived in place.
+  const restartSentinelSession = makeRestartForRouting(
+    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter },
+    { name: "restartSentinelSession", allowDeliberateEnd: false },
+  )
+  const restartInboundSession = makeRestartForRouting(
+    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter },
+    { name: "restartInboundSession", allowDeliberateEnd: true },
+  )
 
   // Sentinel primitive (AIP-60) — poll/delivery engine over the store +
   // resolver already built above (hoisted so the auto-link hook could use
-  // them before `sessions` existed). Landing reuses the exact same
-  // dead-session hooks the inbound router uses, above.
+  // them before `sessions` existed). Landing reuses the same dead-session
+  // restart hook shape the inbound router uses, above — but with
+  // allowDeliberateEnd:false: the sentinel is an AUTOMATIC path and never
+  // revives a deliberate end in place (its own sessionInfo guard routes
+  // those to the parent / parking first anyway).
   const sentinelRuntime = createSentinelRuntime({
     store: sentinelStore,
     registry: { sendMessage: sessions.sendMessage },
     resolveProvider: resolveSentinelProviderResolved,
     isSessionAlive,
-    restartSession: restartInboundSession,
+    restartSession: restartSentinelSession,
     sessionInfo: id => {
       const desc = sessions.get(id)
       return desc ? { endedReason: desc.endedReason, parentSessionId: desc.parentSessionId } : undefined
     },
+  })
+
+  // Session-follow — wakes a follower session (no polling) when sessions
+  // matching a selector end a turn / await input / exit / get a PR opened or
+  // merged. Delivery never interrupts; a dead follower is resumed through the
+  // same automatic-path restart core the sentinel uses (never a deliberate
+  // end). See session-follow.ts.
+  const sessionFollow = wireSessionFollow({
+    registry: sessions,
+    sessionEvents,
+    store: sessionFollowStore,
+    restartSession: restartSentinelSession,
   })
 
   // Inbound watcher — polls an agentpush source on a timer and spawns
@@ -2857,6 +2940,7 @@ export async function createGateway(
       // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a
       // windowed cost-budget governance policy on the spawned session.
       supervisor,
+      taskLedger,
       buildOrchestratorMcp: orchestratorInjector,
       // Same `?callerSessionId=` query that attributes `command_execute` back
       // to the calling session (above) — here it's the implicit auto-parent so
@@ -3183,6 +3267,13 @@ export async function createGateway(
       isSessionAlive,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
+    // session_follow / session_unfollow / session_follows — `follower`
+    // defaults to the connecting client's `?callerSessionId=`.
+    registerSessionFollowTools(server, {
+      store: sessionFollowStore,
+      hasSession: id => sessions.get(id) !== undefined,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
     // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_sandbox_providers + setup_sandbox_provider) — same resolver
     // `agent_start.sandbox` resolves slugs through above.
@@ -3346,6 +3437,10 @@ export async function createGateway(
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
       runtime: sentinelRuntime,
+    },
+    follows: {
+      store: sessionFollowStore,
+      hasSession: id => sessions.get(id) !== undefined,
     },
     ...(llmEndpoint ? { llmEndpoint } : {}),
     ...(opts.deviceInferenceShare ? { deviceInferenceShare: true } : {}),
@@ -3590,6 +3685,32 @@ export async function createGateway(
     restartSweepTimer.unref?.()
   }
 
+  // Pending-prompt sweep: force-delivers prompts past their `deliverWithin`
+  // deadline and tells the sender once when a prompt has sat queued behind a
+  // running turn past `defaults.messaging.pendingPromptStaleMinutes` (hot —
+  // re-read each tick). Cheap and non-destructive unless the caller opted into
+  // `deliverWithin`, so default-on. `.unref()` like the sweeps above.
+  const pendingPromptSweepMs = (() => {
+    const parsed = Number.parseInt(process.env.AGENTPROTO_PENDING_PROMPT_SWEEP_INTERVAL_MS ?? "", 10)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000
+  })()
+  let pendingPromptTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
+    void (async () => {
+      try {
+        const { pendingPromptStaleMinutes } = await resolveMessagingDefaults()
+        const summary = await sessions.sweepPendingPrompts({ staleMs: pendingPromptStaleMinutes * 60_000 })
+        if (summary.stale > 0 || summary.forced > 0) {
+          console.log(
+            `[pending-prompts] ${summary.stale} stale, ${summary.forced} force-delivered: ${summary.ids.join(", ")}`,
+          )
+        }
+      } catch (err) {
+        console.warn(`[pending-prompts] sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })()
+  }, pendingPromptSweepMs)
+  pendingPromptTimer.unref?.()
+
   // AIP-58 §2 owner-liveness sweep (P3b): catches the case the boot-time
   // `loadRuns` restart check doesn't — an owner that died WITHOUT the
   // daemon itself restarting (`workflowRunner.sweep()`, `WorkflowRun.lease`)
@@ -3703,6 +3824,7 @@ export async function createGateway(
       if (turnStallTimer) clearInterval(turnStallTimer)
       // Stop the restart-sweep tick before sessions shut down (restart-scheduler PR-2).
       if (restartSweepTimer) clearInterval(restartSweepTimer)
+      if (pendingPromptTimer) clearInterval(pendingPromptTimer)
       // Stop the AIP-58 liveness sweep before sessions shut down (P3b).
       clearInterval(livenessSweepTimer)
       // Detach the restart-scheduler's session:exited subscription.
@@ -3714,6 +3836,10 @@ export async function createGateway(
       // `sessions`).
       sentinelRuntime.stop()
       sentinelStore.flushSync()
+      // Drop pending follow batches (sessions are going away) and persist
+      // the follow records.
+      sessionFollow.dispose()
+      sessionFollowStore.flushSync()
       // Flush inbound-endpoint state synchronously -- persistence is a
       // debounced async write, so an endpoint registered via
       // inbound_endpoint_create just before a restart would otherwise be

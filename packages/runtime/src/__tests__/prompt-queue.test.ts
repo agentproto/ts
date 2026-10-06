@@ -28,6 +28,7 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import {
   createSessionsRegistry,
+  interruptDeliveryNotice,
   previewPrompt,
   promptOriginLabel,
   type AgentSessionLike,
@@ -286,7 +287,7 @@ describe("interrupt vs. queue precedence", () => {
 
     expect(events).toEqual([
       `turn1-start:${wrapped("first")}`,
-      `turn2-start:${wrapped("second")}`,
+      `turn2-start:${wrapped(`${interruptDeliveryNotice("user")}\n\nsecond`)}`,
     ])
     // Dispatched directly — never touched the queue.
     expect(reg.get(desc.id)?.promptQueue ?? []).toEqual([])
@@ -524,7 +525,8 @@ describe("HTTP POST /sessions/:id/prompt?wait=false — queue/force wiring", () 
       })
       expect(res.status).toBe(202)
       const body = (await res.json()) as Record<string, unknown>
-      expect(body).toEqual({ ok: true, id: desc.id, queued: true })
+      expect(body).toMatchObject({ ok: true, id: desc.id, queued: true, delivery: "delivered", pending: false })
+      expect(body).not.toHaveProperty("queueId")
     } finally {
       await http.stop()
     }
@@ -665,7 +667,7 @@ describe("promote vs deliver — two DISTINCT force operations", () => {
     expect(res).toEqual({ delivered: true, interrupted: true })
     expect(cancelSpy).toHaveBeenCalledTimes(1)
     await waitUntil(() => events.length >= 2)
-    expect(events[1]).toBe(`turn2-start:${wrapped("third")}`)
+    expect(events[1]).toBe(`turn2-start:${wrapped(`${interruptDeliveryNotice("user")}\n\nthird`)}`)
     // third is gone from the queue (delivered); second is still waiting.
     expect(reg.get(desc.id)?.promptQueue?.map(p => p.message)).toEqual(["second"])
 

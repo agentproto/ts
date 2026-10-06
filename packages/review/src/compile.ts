@@ -47,7 +47,7 @@ import {
   type ReviewManifest,
 } from "./manifest.js"
 import { listPlaceholders, substitutePlaceholders } from "./placeholders.js"
-import type { Finding, LaneResult, ReviewTarget, Verdict } from "./types.js"
+import type { Finding, LaneFallback, LaneResult, ReviewTarget, Verdict } from "./types.js"
 import { agentLaneStatus, foldVerdict } from "./verdict.js"
 
 /** One lane handed to the host's executor. Command lanes carry their `run`
@@ -71,13 +71,22 @@ export type LaneOutcome =
       sessionId?: string
       preset?: string
       model?: string
+      fallbacks?: LaneFallback[]
       composedFrom?: LaneResult["composedFrom"]
     }
   /** The lane exceeded its `timeoutMs` and was stopped. */
-  | { outcome: "timeout"; error: string; sessionId?: string; preset?: string; model?: string; output?: string }
+  | {
+      outcome: "timeout"
+      error: string
+      sessionId?: string
+      preset?: string
+      model?: string
+      fallbacks?: LaneFallback[]
+      output?: string
+    }
   /** The lane could not produce a result (spawn failed, no verdict file,
    *  cancelled, …). */
-  | { outcome: "skipped"; error: string; sessionId?: string; preset?: string; model?: string }
+  | { outcome: "skipped"; error: string; sessionId?: string; preset?: string; model?: string; fallbacks?: LaneFallback[] }
 
 /** The host seam that actually runs a lane. The daemon wires a real one
  *  (subprocess for command lanes, a child reviewer session for agent lanes);
@@ -139,10 +148,11 @@ const tail = (s: string | undefined): string =>
  *  status is decided. */
 export function toLaneResult(check: ReviewCheck, outcome: LaneOutcome, durationMs: number): LaneResult {
   const base = { id: check.id, kind: check.kind, blocking: check.blocking, durationMs }
-  const sessionFields = (o: { sessionId?: string; preset?: string; model?: string }) => ({
+  const sessionFields = (o: { sessionId?: string; preset?: string; model?: string; fallbacks?: LaneFallback[] }) => ({
     ...(o.sessionId !== undefined ? { sessionId: o.sessionId } : {}),
     ...(o.preset !== undefined ? { preset: o.preset } : {}),
     ...(o.model !== undefined ? { model: o.model } : {}),
+    ...(o.fallbacks !== undefined && o.fallbacks.length > 0 ? { fallbacks: o.fallbacks } : {}),
   })
   switch (outcome.outcome) {
     case "exited": {

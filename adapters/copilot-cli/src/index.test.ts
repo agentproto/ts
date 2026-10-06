@@ -20,6 +20,10 @@ describe("@agentproto/adapter-copilot-cli", () => {
     ])
   })
 
+  it("declares the CLI's own GitHub login as an external subscription (no bearer injected)", () => {
+    expect(copilotCli.authSubscription).toEqual({ external: true })
+  })
+
   it("has no catalog provider — Copilot bills through the GitHub subscription", () => {
     expect(copilotCli.provider).toBeUndefined()
     expect(copilotCli.modelDerivedApiKey).toBeUndefined()

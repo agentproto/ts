@@ -443,6 +443,31 @@ describe("agentproto policy", () => {
       expect(code).toBe(0)
       expect(stdoutChunks.join("")).toContain('No policies for session "ses_typo".')
     })
+
+    it("counts 1 for a legacy policy carrying only sessionId (no sessionIds), instead of throwing", async () => {
+      // Pre-fan-in persisted snapshots have no sessionIds; the daemon
+      // reloads terminal policies verbatim, so this shape reaches GET
+      // /policies. The row must render, not crash on .length.
+      httpGetJson.mockResolvedValue({
+        policies: [
+          { policyId: "pol_legacy", status: "done", sessionId: "s1", startedAt: "2026-07-15T00:00:00.000Z" },
+        ],
+      })
+      const code = await runPolicy(["ls"])
+      expect(code).toBe(0)
+      expect(stdoutChunks.join("")).toMatch(/pol_legacy\s+done\s+1\s+2026-07-15T00:00:00\.000Z/)
+    })
+
+    it("counts the fan-in group length for a policy with sessionIds", async () => {
+      httpGetJson.mockResolvedValue({
+        policies: [
+          { policyId: "pol_fanin", status: "watching", sessionId: "s1", sessionIds: ["s1", "s2"], startedAt: "2026-07-15T00:00:00.000Z" },
+        ],
+      })
+      const code = await runPolicy(["ls"])
+      expect(code).toBe(0)
+      expect(stdoutChunks.join("")).toMatch(/pol_fanin\s+watching\s+2\s+2026-07-15T00:00:00\.000Z/)
+    })
   })
 
   describe("cancel", () => {

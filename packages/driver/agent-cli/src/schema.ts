@@ -324,6 +324,13 @@ const capabilitiesSchema = z.object({
    */
   nativeTerminalResume: z.boolean().optional(),
   /**
+   * Harness defers mounted MCP tools behind its own native search tool
+   * (Claude Code `ToolSearch`). Makes the daemon's `/mcp` self-mount default
+   * to eager for this adapter instead of double-deferring behind the
+   * daemon's `tool_search`. Defaults to false (conservative).
+   */
+  nativeToolSearch: z.boolean().optional(),
+  /**
    * Adapter can ingest a filesystem path that the host UI just placed
    * on disk (host-side drag-drop into a terminal pastes the path
    * here). Implies the adapter has a Read-file tool wired so the

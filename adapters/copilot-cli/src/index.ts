@@ -81,6 +81,14 @@ export const copilotCli: AgentCliHandle = defineAgentCli({
       ],
     },
   },
+  // Copilot bills through the user's GitHub Copilot subscription, and the
+  // `copilot` CLI owns that login (`copilot login` → system keychain, or
+  // `~/.copilot/config.json`; `gh auth token` as a last fallback). `external:
+  // true` declares exactly that: the runtime injects NO bearer and the CLI
+  // reads its own stored login. The token env vars in `auth.state` above are
+  // the same GitHub identity, not a per-token API-billing route, so there is
+  // no api-key var to scrub (no `conflictEnv`).
+  authSubscription: { external: true },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./copilot-acp.ACP.md",

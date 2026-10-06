@@ -17,7 +17,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { z } from "zod"
 
-import { withDeferredTools, resolveDeferredToolsGatewayOption } from "../deferred-tools.js"
+import {
+  withDeferredTools,
+  resolveDeferredToolsGatewayOption,
+  resolveSpawnDeferredTools,
+} from "../deferred-tools.js"
 
 function parseToolJson(result: unknown): any {
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content
@@ -201,4 +205,29 @@ describe("resolveDeferredToolsGatewayOption — config.json's defaults.mcp.defer
       alwaysOn: ["file_read", "agent_start"],
     })
   })
+})
+
+describe("resolveSpawnDeferredTools", () => {
+  // spawnOverride × nativeToolSearch × roleDefault ⇒ ?deferred= override
+  // (undefined ⇒ none: the gateway's defaults.mcp.deferredTools applies).
+  const table: Array<[boolean | undefined, boolean | undefined, boolean | undefined, boolean | undefined]> = [
+    [undefined, undefined, undefined, undefined],
+    [undefined, undefined, true, true],
+    [undefined, undefined, false, false],
+    [undefined, false, true, true],
+    [undefined, true, undefined, false],
+    [undefined, true, true, false],
+    [undefined, true, false, false],
+    [true, true, undefined, true],
+    [true, true, false, true],
+    [false, true, true, false],
+    [true, false, false, true],
+    [false, undefined, true, false],
+  ]
+  it.each(table)(
+    "spawn=%s native=%s role=%s ⇒ %s",
+    (spawnOverride, nativeToolSearch, roleDefault, expected) => {
+      expect(resolveSpawnDeferredTools({ spawnOverride, nativeToolSearch, roleDefault })).toBe(expected)
+    },
+  )
 })

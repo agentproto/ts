@@ -41,7 +41,8 @@ export interface McpDefaultsConfig {
    *  3 — see `deferred-tools.ts`). Default false/absent: every daemon boot
    *  stays eager, byte-identical to pre-existing behaviour — turning this
    *  on is a deliberate operator opt-in. Independent of the per-role
-   *  default (`RoleProfile.deferredTools`, on for `executor`) and the
+   *  default (`RoleProfile.deferredTools`, on for `executor`), the
+   *  harness default (`nativeToolSearch` ⇒ eager) and the
    *  per-spawn `agent_start.deferredTools` override, and independent of
    *  the per-mount `?deferred=1|0` query override on `/mcp` — this is only
    *  the BOOT-TIME default for connections that specify neither. */
@@ -158,6 +159,10 @@ export interface SpawnDefaultsConfig {
      *  recipient's in-flight turn). Default "deny": downgraded to `steer`
      *  and reported as such. Human (HTTP/CLI) senders always may. */
     agentInterrupt?: "allow" | "deny"
+    /** Minutes a prompt may sit queued behind a running turn before the
+     *  sender is told it is stuck (typed notice) and it is flagged `stale`
+     *  in `pendingPrompts`. Default 5. */
+    pendingPromptStaleMinutes?: number
   }
   /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
   mcp?: McpDefaultsConfig

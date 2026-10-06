@@ -27,6 +27,8 @@ import { monitorSessionWait } from "./orchestration-tools.js"
 import { getHarnessPreset, type HarnessPreset } from "./harness-preset-store.js"
 import { getUserPreset, type UserPreset } from "./user-presets.js"
 import type { ReviewerRunResult, ReviewerSessionHost } from "./review-runner.js"
+import type { LaneFallback } from "@agentproto/review"
+import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
 
 export interface DaemonReviewerHostDeps {
   registry: SessionsRegistry
@@ -39,6 +41,77 @@ export interface DaemonReviewerHostDeps {
   /** Preset lookups — injectable for tests; default to the real stores. */
   getHarnessPreset?: (id: string) => Promise<HarnessPreset | undefined>
   getUserPreset?: (id: string) => Promise<UserPreset | undefined>
+  /** Extra attempts for a lane whose turn ends in a transient error (socket
+   *  closed, 5xx, overloaded). Default {@link DEFAULT_LANE_RETRIES}; `0`
+   *  disables. Mirrors `config.review.laneRetries`. */
+  laneRetries?: number
+  /** Auth-profile lookup for the OpenRouter guard — injectable for tests. */
+  getAuthProfile?: (id: string) => Promise<AuthProfile | undefined>
+}
+
+/** Retries (after the first attempt) for a lane whose reviewer turn ends in a
+ *  transient transport error. */
+export const DEFAULT_LANE_RETRIES = 1
+const MAX_LANE_RETRIES = 5
+
+/** An errored turn whose text says the retry cannot help: bad credentials, an
+ *  exhausted quota, an unknown model. Everything else that ends a turn in
+ *  `error` — a dropped socket, a 5xx, an overloaded provider, or an error with
+ *  no text at all — is worth one more attempt. */
+const PERMANENT_ERROR_RE =
+  /\b(401|403|404)\b|unauthori[sz]ed|forbidden|authentication|invalid[^.]{0,20}(api[ -]?key|credential|token|model)|usage limit|quota|insufficient|billing|model[^.]{0,30}not (found|supported)/i
+
+export function isRetryableTurnError(message: string | undefined): boolean {
+  return !message || !PERMANENT_ERROR_RE.test(message)
+}
+
+const clip = (text: string, max = 300): string => {
+  const one = text.replace(/\s+/g, " ").trim()
+  return one.length > max ? `${one.slice(0, max)}…` : one
+}
+
+interface AttemptOutcome {
+  result: ReviewerRunResult
+  /** The reviewer's turn ended in a transient error — another attempt may succeed. */
+  retryable: boolean
+  /** The reviewer was UNAVAILABLE (spawn failure, errored or empty turn,
+   *  session exited before finishing its turn) — the next `fallbackPresets`
+   *  entry may be tried. False for a verdict, a timeout, a cancel, a preset
+   *  that does not resolve, and the OpenRouter refusal: none of those is a
+   *  transport problem a different reviewer should paper over. */
+  fallbackable: boolean
+}
+
+const OPENROUTER_RE = /openrouter/i
+
+/** Fail closed: a review lane must never bill OpenRouter (pay-per-token
+ *  credit). Returns a human-readable refusal when the resolved lane would
+ *  route there — via the model id, the preset, or the auth profile's billing
+ *  endpoint — else `undefined`. */
+export async function reviewerOpenRouterViolation(
+  presetId: string,
+  spawnFields: Pick<SpawnAgentSessionInput, "adapter" | "model" | "access" | "preset">,
+  lookup: (id: string) => Promise<AuthProfile | undefined> = getAuthProfile,
+): Promise<string | undefined> {
+  const userPreset = spawnFields.preset as UserPreset | undefined
+  const model = spawnFields.model ?? userPreset?.model
+  const profileRef = spawnFields.access?.profileRef ?? userPreset?.access?.profileRef
+  let profile: AuthProfile | undefined
+  if (profileRef) {
+    try {
+      profile = await lookup(profileRef)
+    } catch (err) {
+      // Can't prove the billing endpoint: refuse rather than guess.
+      return `review lane refused: could not read auth profile '${profileRef}' to verify it does not bill OpenRouter (${err instanceof Error ? err.message : String(err)}).`
+    }
+  }
+  const hits: string[] = []
+  if (OPENROUTER_RE.test(presetId)) hits.push(`preset '${presetId}'`)
+  if (model && OPENROUTER_RE.test(model)) hits.push(`model '${model}'`)
+  if (profileRef && OPENROUTER_RE.test(profileRef)) hits.push(`auth profile '${profileRef}'`)
+  if (profile && OPENROUTER_RE.test(profile.endpoint)) hits.push(`auth profile '${profile.id}' (billing endpoint '${profile.endpoint}')`)
+  if (hits.length === 0) return undefined
+  return `review lane refused: ${hits.join(", ")} would bill OpenRouter, which is disabled for code reviews. Use a different preset (e.g. opencode-default-go, or a Claude-subscription preset such as claude-subs-agentik).`
 }
 
 /** Resolve a lane's `preset` to spawn fields — harness preset first, then a
@@ -59,107 +132,192 @@ export async function resolveReviewerPreset(
 
 export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): ReviewerSessionHost {
   const { registry, sessionEvents, eventRing } = deps
-  return {
-    async run(input): Promise<ReviewerRunResult> {
-      const spawnFields = await resolveReviewerPreset(input.preset, deps)
-      if (!spawnFields) {
-        return {
-          status: "failed",
-          preset: input.preset,
-          error: `preset '${input.preset}' not found — neither a harness preset (harness_preset_list) nor a user preset`,
-        }
-      }
-      if (input.signal?.aborted) {
-        return { status: "failed", preset: input.preset, error: "review cancelled before the reviewer spawned" }
-      }
-      // Cursor BEFORE the spawn: the wait below replays from here, so a
-      // reviewer whose turn ends before we subscribe is still seen.
-      const since = eventRing.since(Number.MAX_SAFE_INTEGER, { limit: 0 }).nextCursor
-      const spawned = await spawnAgentSession(
-        { ...deps.spawnDeps, registry, resolveAgentAdapter: deps.resolveAgentAdapter },
-        {
-          ...spawnFields,
-          cwd: input.cwd,
-          prompt: input.prompt,
-          label: input.label,
-          role: "executor",
-          origin: "review",
-          worktree: false,
-          dedupe: false,
-          ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
-        },
-      )
-      if (!spawned.ok) {
-        return { status: "failed", preset: input.preset, error: `reviewer spawn failed (${spawned.code}): ${spawned.message}` }
-      }
-      const sessionId = spawned.descriptor.id
-      /** The reviewer's model, read off the session record (the live active
-       *  model when the adapter reported one, else the spawn model). */
-      const withModel = <T extends ReviewerRunResult>(r: T): T => {
-        const desc = registry.get(sessionId)
-        const model = desc?.activeModel ?? desc?.model ?? spawnFields.model
-        return model ? { ...r, model } : r
-      }
-      const kill = () => {
-        try {
-          registry.kill(sessionId)
-        } catch {
-          // already gone
-        }
-      }
-      // Cancel = kill through the lifecycle; the kill's `session:exited`
-      // settles the wait below.
-      const onAbort = () => kill()
-      input.signal?.addEventListener("abort", onAbort, { once: true })
-      // An abort that landed WHILE the spawn was in flight fired before the
-      // listener existed — honour it now.
-      if (input.signal?.aborted) kill()
+  const maxRetries = Math.min(MAX_LANE_RETRIES, Math.max(0, Math.floor(deps.laneRetries ?? DEFAULT_LANE_RETRIES)))
+
+  async function runAttempt(
+    input: Parameters<ReviewerSessionHost["run"]>[0],
+    attempt: number,
+  ): Promise<AttemptOutcome> {
+    const once = (result: ReviewerRunResult): AttemptOutcome => ({ result, retryable: false, fallbackable: false })
+    const unavailable = (result: ReviewerRunResult): AttemptOutcome => ({ result, retryable: false, fallbackable: true })
+    const spawnFields = await resolveReviewerPreset(input.preset, deps)
+    if (!spawnFields) {
+      return once({
+        status: "failed",
+        preset: input.preset,
+        error: `preset '${input.preset}' not found — neither a harness preset (harness_preset_list) nor a user preset`,
+      })
+    }
+    const blocked = await reviewerOpenRouterViolation(input.preset, spawnFields, deps.getAuthProfile)
+    if (blocked) return once({ status: "failed", preset: input.preset, error: blocked })
+    if (input.signal?.aborted) {
+      return once({ status: "failed", preset: input.preset, error: "review cancelled before the reviewer spawned" })
+    }
+    // Cursor BEFORE the spawn: the wait below replays from here, so a
+    // reviewer whose turn ends before we subscribe is still seen.
+    const since = eventRing.since(Number.MAX_SAFE_INTEGER, { limit: 0 }).nextCursor
+    const spawned = await spawnAgentSession(
+      { ...deps.spawnDeps, registry, resolveAgentAdapter: deps.resolveAgentAdapter },
+      {
+        ...spawnFields,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        label: attempt === 0 ? input.label : `${input.label}:retry${attempt}`,
+        role: "executor",
+        origin: "review",
+        worktree: false,
+        dedupe: false,
+        ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+      },
+    )
+    if (!spawned.ok) {
+      return unavailable({
+        status: "failed",
+        preset: input.preset,
+        error: `reviewer spawn failed (${spawned.code}): ${spawned.message}`,
+      })
+    }
+    const sessionId = spawned.descriptor.id
+    /** The reviewer's model, read off the session record (the live active
+     *  model when the adapter reported one, else the spawn model). */
+    const withModel = <T extends ReviewerRunResult>(r: T): T => {
+      const desc = registry.get(sessionId)
+      const model = desc?.activeModel ?? desc?.model ?? spawnFields.model
+      return model ? { ...r, model } : r
+    }
+    const kill = () => {
       try {
-        const res = await monitorSessionWait({
-          registry,
-          sessionEvents,
-          eventRing,
-          sessionIds: [sessionId],
-          event: "any",
-          timeoutMs: input.timeoutMs,
-          since,
-        })
-        if (res.timedOut) return withModel({ status: "timeout", sessionId, preset: input.preset })
-        if (input.signal?.aborted) {
-          return withModel({
+        registry.kill(sessionId)
+      } catch {
+        // already gone
+      }
+    }
+    // Cancel = kill through the lifecycle; the kill's `session:exited`
+    // settles the wait below.
+    const onAbort = () => kill()
+    input.signal?.addEventListener("abort", onAbort, { once: true })
+    // An abort that landed WHILE the spawn was in flight fired before the
+    // listener existed — honour it now.
+    if (input.signal?.aborted) kill()
+    try {
+      const res = await monitorSessionWait({
+        registry,
+        sessionEvents,
+        eventRing,
+        sessionIds: [sessionId],
+        event: "any",
+        timeoutMs: input.timeoutMs,
+        since,
+      })
+      if (res.timedOut) return once(withModel({ status: "timeout", sessionId, preset: input.preset }))
+      if (input.signal?.aborted) {
+        return once(
+          withModel({
             status: "failed",
             sessionId,
             preset: input.preset,
             error: "review cancelled while the reviewer was running",
-          })
-        }
-        if (res.event === "exited") {
-          const status = registry.get(sessionId)?.status ?? res.status
-          return withModel({
+          }),
+        )
+      }
+      if (res.event === "exited") {
+        const status = registry.get(sessionId)?.status ?? res.status
+        return unavailable(
+          withModel({
             status: "failed",
             sessionId,
             preset: input.preset,
             error: `reviewer session exited before finishing its turn (status '${status ?? "unknown"}')`,
-          })
-        }
-        if (res.event === "turn-end" && (res.empty || res.reason === "error")) {
-          return withModel({
+          }),
+        )
+      }
+      if (res.event === "turn-end" && res.reason === "error") {
+        return {
+          retryable: isRetryableTurnError(res.error),
+          fallbackable: true,
+          result: withModel({
             status: "failed",
             sessionId,
             preset: input.preset,
-            error: res.empty
-              ? "reviewer produced an empty turn (commonly an auth failure or an invalid model id)"
-              : "reviewer's turn ended with reason 'error' (commonly an auth failure)",
+            error: res.error
+              ? `reviewer's turn ended with reason 'error': ${clip(res.error)}`
+              : "reviewer's turn ended with reason 'error' (the adapter reported no error text)",
+          }),
+        }
+      }
+      // An errored turn that produced nothing is also `empty` — check `error`
+      // first so a connection dropped at turn start is still retried and
+      // reported with its own text.
+      if (res.event === "turn-end" && res.empty) {
+        return unavailable(
+          withModel({
+            status: "failed",
+            sessionId,
+            preset: input.preset,
+            error: "reviewer produced an empty turn (commonly an auth failure or an invalid model id)",
+          }),
+        )
+      }
+      return once(withModel({ status: "ended", sessionId, preset: input.preset }))
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort)
+      // One-shot reviewer: its verdict is on disk (or it failed) — release
+      // the adapter process. The session row and transcript stay
+      // inspectable.
+      kill()
+    }
+  }
+
+  /** One preset's turn, with the per-attempt transient-error retries. */
+  async function runPreset(
+    input: Parameters<ReviewerSessionHost["run"]>[0],
+    deadline: number,
+  ): Promise<AttemptOutcome> {
+    let last: AttemptOutcome | undefined
+    let attempts = 0
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const remainingMs = deadline - Date.now()
+      if (attempt > 0 && remainingMs <= 0) break
+      last = await runAttempt({ ...input, timeoutMs: Math.max(1, remainingMs) }, attempt)
+      attempts++
+      if (!last.retryable || input.signal?.aborted) break
+    }
+    const final = last!
+    if (final.result.status === "failed" && final.retryable && attempts > 1) {
+      return { ...final, result: { ...final.result, error: `${final.result.error} (after ${attempts} attempts)` } }
+    }
+    return final
+  }
+
+  return {
+    async run(input): Promise<ReviewerRunResult> {
+      // ONE deadline for the whole chain: a fallback gets whatever time the
+      // unavailable reviewers left, never a fresh `timeoutMs`.
+      const deadline = Date.now() + input.timeoutMs
+      const chain = [input.preset, ...(input.fallbackPresets ?? [])]
+      const earlier: LaneFallback[] = []
+      const describe = (items: readonly LaneFallback[]) => items.map((t) => `'${t.preset}': ${t.error}`).join("; ")
+      for (let i = 0; i < chain.length; i++) {
+        const preset = chain[i]!
+        const label = i === 0 ? input.label : `${input.label}:fallback${i}`
+        const outcome = await runPreset({ ...input, preset, label }, deadline)
+        const { result } = outcome
+        const withEarlier = <T extends ReviewerRunResult>(r: T): T => (earlier.length > 0 ? { ...r, fallbacks: [...earlier] } : r)
+        if (result.status !== "failed" || !outcome.fallbackable || chain.length === 1) return withEarlier(result)
+        const tried = [...earlier, { preset, error: result.error }]
+        const next = chain[i + 1]
+        if (next === undefined) {
+          return withEarlier({ ...result, error: `every reviewer in the chain was unavailable — ${describe(tried)}` })
+        }
+        if (input.signal?.aborted || deadline - Date.now() <= 0) {
+          return withEarlier({
+            ...result,
+            error: `${input.signal?.aborted ? "review cancelled" : "no time left"} before trying '${next}' — ${describe(tried)}`,
           })
         }
-        return withModel({ status: "ended", sessionId, preset: input.preset })
-      } finally {
-        input.signal?.removeEventListener("abort", onAbort)
-        // One-shot reviewer: its verdict is on disk (or it failed) — release
-        // the adapter process. The session row and transcript stay
-        // inspectable.
-        kill()
+        earlier.push({ preset, error: result.error })
       }
+      throw new Error("unreachable: reviewer chain is never empty")
     },
   }
 }

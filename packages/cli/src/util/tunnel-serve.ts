@@ -105,6 +105,9 @@ export function buildDaemonTunnelServerOptions(
         const sock = new WebSocket(url, protocols ? [...protocols] : undefined, {
           headers: upstreamHeaders,
         })
+        // Permanent listener: terminating a CONNECTING socket emits an async
+        // 'error' after the dial listeners are removed; unhandled it would crash the daemon.
+        sock.on("error", () => {})
         const onAbort = (): void => {
           sock.off("open", onceOpen)
           sock.off("error", onceError)

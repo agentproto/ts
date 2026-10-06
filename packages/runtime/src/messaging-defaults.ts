@@ -34,6 +34,9 @@ export interface ResolvedMessagingDefaults {
   /** `defaults.messaging.agentInterrupt` — whether a SESSION sender's
    *  `interrupt` may cancel the recipient's turn. Default "deny". */
   agentInterrupt: "allow" | "deny"
+  /** `defaults.messaging.pendingPromptStaleMinutes` — minutes a queued prompt
+   *  may wait before its sender is told it is stuck. Default 5. */
+  pendingPromptStaleMinutes: number
 }
 
 /** Same unset-defaults as before this resolver existed — a missing/malformed
@@ -43,6 +46,7 @@ export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
   agentPromptInterrupt: false,
   allowSiblings: false,
   agentInterrupt: "deny",
+  pendingPromptStaleMinutes: 5,
 }
 
 export async function resolveMessagingDefaults(
@@ -54,6 +58,8 @@ export async function resolveMessagingDefaults(
       agentPromptInterrupt: d?.agentPromptInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentPromptInterrupt,
       allowSiblings: d?.messaging?.allowSiblings ?? DEFAULT_MESSAGING_DEFAULTS.allowSiblings,
       agentInterrupt: d?.messaging?.agentInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentInterrupt,
+      pendingPromptStaleMinutes:
+        d?.messaging?.pendingPromptStaleMinutes ?? DEFAULT_MESSAGING_DEFAULTS.pendingPromptStaleMinutes,
     }
   } catch {
     return DEFAULT_MESSAGING_DEFAULTS

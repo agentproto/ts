@@ -99,8 +99,10 @@ async function setup(opts: {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
   callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
   catalogPath?: string
-  loadCatalogConfig?: () => Promise<{ catalog?: { sources?: { url: string }[] } }>
+  loadCatalogConfig?: () => Promise<{ catalog?: { sources?: { url: string }[]; defaultSource?: string | false } }>
   remoteCatalog?: RegisterAppToolsOptions["remoteCatalog"]
+  catalogCacheDir?: string
+  fallbackCatalogEntries?: RegisterAppToolsOptions["fallbackCatalogEntries"]
   waitForSessionTerminal?: (sessionId: string) => Promise<void>
 } = {}) {
   const registry = createSessionsRegistry({ persist: false })
@@ -133,9 +135,16 @@ async function setup(opts: {
     ...(opts.dispatchTool ? { dispatchTool: opts.dispatchTool } : {}),
     ...(opts.callImportedTool ? { callImportedTool: opts.callImportedTool } : {}),
     ...(opts.catalogPath ? { catalogPath: opts.catalogPath } : {}),
-    // Never read the developer's real ~/.agentproto/config.json.
-    loadCatalogConfig: opts.loadCatalogConfig ?? (async () => ({})),
+    // Never read the developer's real ~/.agentproto/config.json, and never
+    // hit the real default catalog over the network unless a test opts in
+    // with its own `defaultSource`.
+    loadCatalogConfig: async () => {
+      const c = opts.loadCatalogConfig ? await opts.loadCatalogConfig() : {}
+      return { ...c, catalog: { defaultSource: false as const, ...c.catalog } }
+    },
     ...(opts.remoteCatalog ? { remoteCatalog: opts.remoteCatalog } : {}),
+    ...(opts.catalogCacheDir ? { catalogCacheDir: opts.catalogCacheDir } : {}),
+    ...(opts.fallbackCatalogEntries ? { fallbackCatalogEntries: opts.fallbackCatalogEntries } : {}),
   })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -2483,6 +2492,63 @@ describe("app_catalog", () => {
       expect(res.content).toHaveLength(2)
       expect(JSON.parse(res.content[1]!.text).warnings[0]).toContain(`${base}/c.json`)
       expect(JSON.parse(res.content[0]!.text).filter((e: any) => e.category !== "builtin")).toEqual([])
+    })
+
+    it("default source: entries tagged origin=default, cached on disk, served stale when it later fails", async () => {
+      const cacheDir = join(catalogDir, "cache")
+      const { client } = await setup({
+        catalogPath: join(catalogDir, "missing.json"),
+        catalogCacheDir: cacheDir,
+        loadCatalogConfig: async () => ({ catalog: { defaultSource: `${base}/default.json` } }),
+      })
+      const live = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
+      const app = live.find((e: any) => e.appId === "@remote/store-app")
+      expect(app).toMatchObject({ origin: "default", catalogUrl: `${base}/default.json` })
+      expect(app.stale).toBeUndefined()
+
+      body = "not a catalog"
+      const res = (await client.callTool({ name: "app_catalog", arguments: { refresh: true } })) as {
+        content: { text: string }[]
+      }
+      const stale = JSON.parse(res.content[0]!.text).find((e: any) => e.appId === "@remote/store-app")
+      expect(stale).toMatchObject({ origin: "default", stale: true })
+      expect(JSON.parse(res.content[1]!.text).warnings[0]).toContain("using the copy cached at")
+    })
+
+    it("an unreachable, never-cached default source falls back to the embedded first-party list", async () => {
+      const { client } = await setup({
+        catalogPath: join(catalogDir, "missing.json"),
+        catalogCacheDir: join(catalogDir, "empty-cache"),
+        loadCatalogConfig: async () => ({ catalog: { defaultSource: "http://127.0.0.1:1/unreachable.json" } }),
+        fallbackCatalogEntries: [
+          {
+            appId: "@agentik/fallback-app",
+            name: "Fallback",
+            featured: true,
+            source: { kind: "agentapp", url: "https://example.com/f.agentapp", sha256: "b".repeat(64), version: "1.0.0" },
+          },
+        ],
+      })
+      const res = (await client.callTool({ name: "app_catalog", arguments: {} })) as { content: { text: string }[] }
+      const entry = JSON.parse(res.content[0]!.text).find((e: any) => e.appId === "@agentik/fallback-app")
+      expect(entry).toMatchObject({ origin: "embedded", stale: true, featured: true, installed: false })
+      expect(res.content).toHaveLength(2)
+    })
+
+    it("config sources are added after the default source, which wins an appId collision", async () => {
+      const { client } = await setup({
+        catalogPath: join(catalogDir, "missing.json"),
+        catalogCacheDir: join(catalogDir, "cache2"),
+        loadCatalogConfig: async () => ({
+          catalog: { defaultSource: `${base}/default.json`, sources: [{ url: `${base}/extra.json` }] },
+        }),
+      })
+      const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} })).filter(
+        (e: any) => e.category !== "builtin",
+      )
+      const app = entries.filter((e: any) => e.appId === "@remote/store-app")
+      expect(app).toHaveLength(1)
+      expect(app[0].origin).toBe("default")
     })
   })
 
