@@ -194,6 +194,24 @@ describe("/mcp observer (end to end over the real HTTP transport)", () => {
     })
   })
 
+  it("does not record a server/discover 'Method not found' as an error", async () => {
+    await withDaemon("eager", async ({ port, store }) => {
+      await fetch(`http://127.0.0.1:${port}/mcp?callerSessionId=sess_discover_miss`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "server/discover", params: {} }),
+      })
+      const obs = store.get("sess_discover_miss")
+      expect(obs?.discover).toMatchObject({ ok: true })
+      expect(obs?.discover?.error).toBeUndefined()
+      expect(daemonMountStatus(obs, 1)).toBe("connected")
+      expect(assessDaemonMount(obs)).toMatchObject({ reason: "never-listed" })
+
+      await listToolsAs(port, "?callerSessionId=sess_discover_miss")
+      expect(daemonMountStatus(store.get("sess_discover_miss"), 1)).toBe("listed")
+    })
+  })
+
   it("records the header era (pre-coercion) on tools/list", async () => {
     await withDaemon("eager", async ({ port, store }) => {
       const res = await fetch(`http://127.0.0.1:${port}/mcp?callerSessionId=sess_modern`, {
@@ -338,6 +356,22 @@ describe("session_capabilities mcpServers (additive fields)", () => {
     expect(daemon(1, failed)).toMatchObject({ status: "error", error: "-32603: boom" })
     expect(daemon(1, failed)).not.toHaveProperty("tools")
     registry.shutdown()
+  })
+
+  it("drops a stale discover/initialize error once tools/list has succeeded (the server/discover -32601 false positive)", () => {
+    const { registry, withMounts } = spawn()
+    const recovered: McpSessionObservation = {
+      firstSeenAt: at,
+      lastSeenAt: at,
+      // What the observer records today for a `server/discover` probe this
+      // daemon never registers: a genuine -32601 would still reach here if
+      // a future SDK quirk ever resurfaced it on another method.
+      discover: { at, ok: false, error: "-32601: Method not found" },
+      toolsList: { at, ok: true, toolCount: 282, deferred: false, protocolVersion: "2025-11-25", tools: [{ name: "x" }] },
+    }
+    const result = buildSessionCapabilities({ ...withMounts, turnsCompleted: 1 }, 0, recovered).mcpServers[0]
+    expect(result).toMatchObject({ status: "listed", toolCount: 282 })
+    expect(result).not.toHaveProperty("error")
   })
 })
 

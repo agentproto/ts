@@ -165,7 +165,10 @@ function daemonMountFields(
 ): Partial<SessionCapabilityMcpServer> {
   const status = daemonMountStatus(obs, turnsCompleted)
   const tl = obs?.toolsList
-  const failing = tl && !tl.ok ? tl : [obs?.initialize, obs?.discover].find(c => c && !c.ok)
+  // Once `tools/list` has succeeded, the mount is healthy regardless of any
+  // earlier handshake hiccup (e.g. a `server/discover` probe) — don't keep
+  // surfacing a stale error after the harness has moved past it.
+  const failing = tl ? (tl.ok ? undefined : tl) : [obs?.initialize, obs?.discover].find(c => c && !c.ok)
   const error = failing?.error ?? (obs?.httpError ? `HTTP ${obs.httpError.status}` : undefined)
   const protocolVersion = tl?.protocolVersion ?? obs?.initialize?.protocolVersion ?? obs?.discover?.protocolVersion
   return {
