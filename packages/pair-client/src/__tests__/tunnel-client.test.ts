@@ -100,7 +100,7 @@ describe("pairFromOffer", () => {
     await expect(pairFromOffer(offerUrl, { WebSocket, now: () => Date.now() + 3_600_000 })).rejects.toMatchObject({
       code: "invalid_offer",
     })
-    await expect(inspectOffer("https://cli.agentproto.sh/pair#v=1&t=nope")).rejects.toBeInstanceOf(TunnelClientError)
+    await expect(inspectOffer("https://pair.example.com/pair#v=1&t=nope")).rejects.toBeInstanceOf(TunnelClientError)
   }, 30_000)
 })
 

@@ -2322,7 +2322,7 @@ export async function createGateway(
   // disabled — auth stays `mode: "none"` until `remote_enable` is
   // called. Tunnel logs flow through the events stream so `/events`
   // subscribers see cloudflared chatter. `isSessionChatInstalled` decides
-  // which of `EnableResult.phoneUrl`'s two shapes `enable()` builds
+  // whether `enable()` emits `EnableResult.phoneUrl`
   // (PHONE-PLAN.md P1.2) — the same call-time check the builtin-panel mount
   // and `registerSessionTools` already share, so all three surfaces agree.
   const remote = new RemoteController({

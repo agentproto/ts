@@ -54,7 +54,8 @@ export function registerRemoteTools(
       "the daemon does not gate the proxied traffic — the upstream service " +
       "handles its own auth. Returns the public URL plus a paste-ready " +
       "`.mcp.json` snippet and a `phoneUrl` — a single link to open on a " +
-      "phone, with the token in a URL fragment (gateway mode only). " +
+      "phone, with the token in a URL fragment (gateway mode, and only when " +
+      "the @agentik/session-chat app is installed). " +
       "Re-running while a tunnel is already up errors; call `remote_disable` " +
       "first to rotate.",
     {

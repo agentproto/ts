@@ -134,7 +134,7 @@ describe("agentproto pair offer --qr", () => {
     expect(JSON.parse(out.join("")).webUrl).toBe(`https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`)
 
     out.length = 0
-    expect(await runPair(["offer", "--qr", "--json", "--pair-page", "https://cli.agentproto.sh/pair"])).toBe(0)
-    expect(JSON.parse(out.join("")).webUrl).toBe(`https://cli.agentproto.sh/pair#${QUERY}`)
+    expect(await runPair(["offer", "--qr", "--json", "--pair-page", "https://pair.example.com/pair"])).toBe(0)
+    expect(JSON.parse(out.join("")).webUrl).toBe(`https://pair.example.com/pair#${QUERY}`)
   })
 })

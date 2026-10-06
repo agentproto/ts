@@ -2,11 +2,10 @@
  * The daemon gates mutating /sessions/* routes AND the /sessions/:id/pty
  * WebSocket upgrade behind `checkSessionsToken`, which accepts a trusted
  * browser Origin as an alternative to the per-boot token (browsers can't
- * set an Authorization header on a WS upgrade). The hosted panel at
- * cli.agentproto.sh drives the user's local daemon from the browser: its
- * read-only GETs work ungated, but the PTY terminal's WS upgrade 401'd
- * because that origin wasn't trusted. This locks cli.agentproto.sh (and the
- * localhost dev origins) into the allowlist and a random origin out.
+ * set an Authorization header on a WS upgrade). This locks the localhost dev
+ * origins into the default allowlist and everything else out, including the
+ * retired hosted-panel origin (cli.agentproto.sh no longer exists, so a
+ * leftover default trust would only help whoever registers it next).
  *
  * The gate runs identically for the PTY WS upgrade and for mutating HTTP
  * routes, and fires BEFORE session resolution, so `POST /sessions/:id/kill`
@@ -72,7 +71,7 @@ async function killWith(
 }
 
 describe("sessions gate — Origin allowlist", () => {
-  it("trusts the hosted panel origin and rejects unknown origins", async () => {
+  it("trusts localhost dev origins and rejects unknown or retired origins", async () => {
     const port = await freePort()
     const http = await startHttpServer({
       port,
@@ -93,19 +92,19 @@ describe("sessions gate — Origin allowlist", () => {
       })
       expect(withToken).not.toBe(401)
 
-      // The hosted panel origin is now trusted like localhost — same
-      // outcome as the token, NOT a 401.
-      const panelOrigin = await killWith(port, {
-        origin: "https://cli.agentproto.sh",
-      })
-      expect(panelOrigin).toBe(withToken)
-      expect(panelOrigin).not.toBe(401)
-
-      // A localhost dev origin (existing default) also passes.
+      // A localhost dev origin is trusted — same outcome as the token,
+      // NOT a 401.
       const localhost = await killWith(port, {
         origin: "http://localhost:3000",
       })
+      expect(localhost).toBe(withToken)
       expect(localhost).not.toBe(401)
+
+      // The retired hosted-panel origin is no longer trusted by default.
+      const retiredPanel = await killWith(port, {
+        origin: "https://cli.agentproto.sh",
+      })
+      expect(retiredPanel).toBe(401)
 
       // An arbitrary origin is rejected — the gate is not open to the world.
       const evil = await killWith(port, {

@@ -8,7 +8,7 @@
  * `authorizeMcp` closes that: a cross-origin browser request (which ALWAYS
  * carries an `Origin` the page can't forge) from an untrusted origin is 403'd
  * even from loopback / mode none, while native local clients (no `Origin`)
- * and trusted browser origins (localhost dev, the hosted panel) still pass.
+ * and trusted browser origins (localhost dev, `--allow-origin`) still pass.
  */
 
 import { describe, it, expect } from "vitest"
