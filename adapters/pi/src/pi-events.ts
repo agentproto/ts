@@ -71,7 +71,7 @@ export type PiAssistantMessageEvent =
  *  adapter acts on. Any other pi event is dropped before it reaches here. */
 export type PiSessionEvent =
   | { type: "agent_start" }
-  | { type: "agent_end"; willRetry?: boolean }
+  | { type: "agent_end"; willRetry?: boolean; messages?: PiTurnMessage[] }
   | { type: "turn_start" }
   | { type: "turn_end"; message?: PiTurnMessage }
   | { type: "message_update"; assistantMessageEvent: PiAssistantMessageEvent }
@@ -161,6 +161,16 @@ function narrowTurnMessage(value: unknown): PiTurnMessage | undefined {
   }
 }
 
+function narrowTurnMessages(value: unknown): PiTurnMessage[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: PiTurnMessage[] = []
+  for (const item of value) {
+    const msg = narrowTurnMessage(item)
+    if (msg !== undefined) out.push(msg)
+  }
+  return out
+}
+
 function narrowAssistantMessageEvent(
   value: unknown,
 ): PiAssistantMessageEvent | undefined {
@@ -205,7 +215,7 @@ function narrowSessionEvent(value: Record<string, unknown>, type: string): PiSes
     case "agent_start":
       return { type }
     case "agent_end":
-      return { type, willRetry: asBoolean(value.willRetry) }
+      return { type, willRetry: asBoolean(value.willRetry), messages: narrowTurnMessages(value.messages) }
     case "turn_start":
       return { type }
     case "turn_end":
@@ -283,16 +293,28 @@ export function classifyPiLine(line: string): PiOutbound {
  *  turn only truly closes on `agent_settled`, so it must be remembered. */
 export interface PiMapperState {
   lastStopReason: PiStopReason | undefined
+  /** `errorMessage` of an assistant message that ended with `stopReason:
+   *  "error"` (carried on `turn_end` / `agent_end.messages`), held until the
+   *  terminal `agent_end` so an auto-retried error never surfaces. */
+  lastErrorMessage: string | undefined
+  /** An `error` StreamEvent was already emitted this turn (via
+   *  `message_update`), so the terminal `agent_end` must not repeat it. */
+  errorEmitted: boolean
 }
 
 export function createPiMapperState(): PiMapperState {
-  return { lastStopReason: undefined }
+  return { lastStopReason: undefined, lastErrorMessage: undefined, errorEmitted: false }
 }
 
 /** Reset for a fresh turn (call in the client's `send`). */
 export function resetPiMapperState(state: PiMapperState): void {
   state.lastStopReason = undefined
+  state.lastErrorMessage = undefined
+  state.errorEmitted = false
 }
+
+/** Shown when pi ends a turn with `stopReason: "error"` but reports no text. */
+const PI_SILENT_ERROR_MESSAGE = "pi turn ended with stopReason=error (pi reported no error message)"
 
 /** Map a pi `StopReason` onto the canonical `turn-end` reason.
  *  `length` (token/context cap) has no exact equivalent; `max_turns` is the
@@ -313,6 +335,37 @@ export function mapStopReason(
     case undefined:
       return "completed"
   }
+}
+
+/** Terminal `agent_end`: emit the `turn-end`, preceded — for an errored turn
+ *  that no `message_update` error already reported — by an `error` event
+ *  carrying pi's own message. pi puts a provider failure (e.g. OpenRouter
+ *  402) on the assistant message (`turn_end.message.errorMessage`,
+ *  `agent_end.messages[]`) and may skip the `message_update` error entirely;
+ *  without this the runtime sees `turn-end{error}` with no text. */
+function closeTurn(
+  event: Extract<PiSessionEvent, { type: "agent_end" }>,
+  sessionId: string,
+  state: PiMapperState,
+): StreamEvent[] {
+  const reason = mapStopReason(state.lastStopReason)
+  const out: StreamEvent[] = []
+  if (reason === "error" && !state.errorEmitted) {
+    let message = state.lastErrorMessage
+    if (message === undefined) {
+      for (let i = (event.messages?.length ?? 0) - 1; i >= 0; i--) {
+        const m = event.messages![i]!
+        if (m.role === "assistant" && m.stopReason === "error" && m.errorMessage !== undefined) {
+          message = m.errorMessage
+          break
+        }
+      }
+    }
+    state.errorEmitted = true
+    out.push({ kind: "error", sessionId, error: { message: message ?? PI_SILENT_ERROR_MESSAGE } })
+  }
+  out.push({ kind: "turn-end", sessionId, reason })
+  return out
 }
 
 function usageUpdate(
@@ -375,6 +428,7 @@ export function mapPiEvent(
         case "error":
           state.lastStopReason = inner.reason
           if (inner.reason === "error") {
+            state.errorEmitted = true
             return [
               {
                 kind: "error",
@@ -412,6 +466,7 @@ export function mapPiEvent(
       const message = event.message
       if (message?.role === "assistant" && message.stopReason !== undefined) {
         state.lastStopReason = message.stopReason
+        state.lastErrorMessage = message.stopReason === "error" ? message.errorMessage : undefined
       }
       if (message?.usage !== undefined) {
         return [usageUpdate(sessionId, message.usage, contextWindow)]
@@ -422,7 +477,7 @@ export function mapPiEvent(
       // `willRetry: true` = an auto-retry cycle; the turn isn't over. Only a
       // terminal `agent_end` closes the turn.
       if (event.willRetry === true) return []
-      return [{ kind: "turn-end", sessionId, reason: mapStopReason(state.lastStopReason) }]
+      return closeTurn(event, sessionId, state)
     case "agent_start":
     case "turn_start":
     // `agent_settled` never reaches the RPC stdout stream (see the fn doc); if

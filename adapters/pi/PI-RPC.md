@@ -107,8 +107,9 @@ assistant message).
 | `message_update` / `error` | `reason === "aborted"` | *(no event)* — records `stopReason` |
 | `tool_execution_start` | — | `tool-call { toolCallId, toolName, arguments: args }` |
 | `tool_execution_end` | — | `tool-result { toolCallId, result, isError }` |
-| `turn_end` | assistant `message.stopReason` present | records `stopReason` |
+| `turn_end` | assistant `message.stopReason` present | records `stopReason` (and `message.errorMessage` when `stopReason === "error"`) |
 | `turn_end` | assistant `message.usage` present | `usage_update` (see note) |
+| `agent_end` | `willRetry !== true`, `lastStopReason === "error"`, no `message_update` error yet | `error { message }` (the recorded `turn_end` `errorMessage`, else the last errored assistant in `agent_end.messages`, else a diagnostic) **then** the `turn-end` below |
 | `agent_end` | `willRetry !== true` | **`turn-end { reason: mapStopReason(lastStopReason) }`** — the turn terminator |
 | `agent_end` | `willRetry === true` | *(no event)* — an auto-retry cycle; the turn continues |
 | `agent_start` / `turn_start` / `agent_settled` | — | *(no event)* |
