@@ -282,6 +282,15 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "qwen",
     provider: "opencode-go",
   },
+  "opencode-go/space-bunny": {
+    inputPer1M: 0.15,
+    outputPer1M: 0.6,
+    cacheReadMultiplier: 0.2,
+    cacheWriteMultiplier: 0,
+    addedAt: "2026-09-23",
+    vendor: "opencode",
+    provider: "opencode-go",
+  },
   "opencode-go/space-bunny-free": {
     inputPer1M: 0,
     outputPer1M: 0,
@@ -303,5 +312,7 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
 export const OPENCODE_GO_ANTHROPIC_MODELS: readonly string[] = [
   "minimax-m2.7",
   "minimax-m3",
+  "qwen3.7-plus",
   "qwen3.8-flash",
+  "qwen3.8-max",
 ]

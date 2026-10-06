@@ -246,6 +246,21 @@
           "cache_write": 2.5
         }
       },
+      "claude-sonnet-5-5": {
+        "id": "claude-sonnet-5-5",
+        "name": "Claude Sonnet 5.5",
+        "family": "claude-sonnet",
+        "release_date": "2026-09-28",
+        "provider": {
+          "npm": "@ai-sdk/anthropic"
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.2,
+          "cache_write": 2.5
+        }
+      },
       "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
@@ -299,6 +314,15 @@
           "input": 0.3,
           "output": 1.2,
           "cache_read": 0.006
+        }
+      },
+      "fledge-alpha-free": {
+        "id": "fledge-alpha-free",
+        "name": "Fledge Alpha Free",
+        "release_date": "2026-10-01",
+        "cost": {
+          "input": 0,
+          "output": 0
         }
       },
       "gemini-3-flash": {
@@ -840,6 +864,21 @@
           "cache_write": 2.5
         }
       },
+      "gpt-6.1-sol": {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1 Sol",
+        "family": "gpt-sol",
+        "release_date": "2026-09-29",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1,
+          "cache_write": 2.5
+        }
+      },
       "grok-4.5": {
         "id": "grok-4.5",
         "name": "Grok 4.5",
@@ -1058,6 +1097,17 @@
         "cost": {
           "input": 0,
           "output": 0
+        }
+      },
+      "ling-3.1-flash-free": {
+        "id": "ling-3.1-flash-free",
+        "name": "Ling 3.1 Flash Free",
+        "family": "ling",
+        "release_date": "2026-09-29",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
         }
       },
       "longcat-2.0-free": {
