@@ -248,3 +248,21 @@ for that.
 
 ### llm:anthropic
 - Added: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5
+
+## 2026-10-06
+
+### llm:openrouter
+- Added: nvidia/switchyard, openai/gpt-6.1-sol, openai/gpt-6.1-sol-pro, unbiased/pareto-26.10-preview
+
+### llm:opencode-go
+- Added: opencode-go/space-bunny
+
+### llm:opencode-zen
+- Added: opencode/claude-sonnet-5-5, opencode/fledge-alpha-free, opencode/gpt-6.1-sol, opencode/ling-3.1-flash-free
+
+### llm:huggingface
+- Added: Qwen/Qwen3-Coder-480B-A35B-Instruct, XiaomiMiMo/MiMo-V2.6-Flash-RL, deepseek-ai/DeepSeek-V3, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8
+- Removed: swiss-ai/Apertus-70B-Instruct-2509
+
+### llm:openai
+- Added: gpt-6.1-sol, gpt-6.1-sol-pro
