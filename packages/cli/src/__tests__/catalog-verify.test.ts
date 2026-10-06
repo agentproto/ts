@@ -252,4 +252,13 @@ describe("catalog verify", () => {
     expect(res.code).toBe(1)
     expect(res.stderr).toContain("bad.json")
   })
+
+  it("an existing directory with no *.json verifies 0 entries", async () => {
+    const root = await mktmp()
+    await mkdir(join(root, "entries"), { recursive: true })
+    await writeFile(join(root, "entries", ".gitkeep"), "", "utf8")
+    const res = await runVerify([join(root, "entries")])
+    expect(res.code).toBe(0)
+    expect(res.stdout).toContain("0 entries verified")
+  })
 })

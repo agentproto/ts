@@ -117,8 +117,11 @@ async function loadBase(path: string): Promise<{ entries: AppCatalogEntry[]; gen
 
 /** Collect `*.json` entry paths from the positional args: explicit files of
  *  any name, and directories walked RECURSIVELY (the `agentproto/apps` repo
- *  holds `entries/<appId>.json` in a nested tree). */
+ *  holds `entries/<appId>.json` in a nested tree). A directory holding no
+ *  `*.json` contributes nothing: an empty catalog is valid (a fresh
+ *  `agentproto/apps` has only `entries/.gitkeep`). */
 async function collectEntryPaths(args: readonly string[]): Promise<string[]> {
+  if (args.length === 0) throw new Error("at least one <entry.json|dir> is required")
   const paths: string[] = []
   for (const arg of args) {
     const abs = resolve(arg)
@@ -135,13 +138,11 @@ async function collectEntryPaths(args: readonly string[]): Promise<string[]> {
         }
       }
       await walk(abs)
-      if (found.length === 0) throw new Error(`no *.json files in ${abs}`)
       paths.push(...found)
     } else {
       paths.push(abs)
     }
   }
-  if (paths.length === 0) throw new Error("at least one <entry.json|dir> is required")
   return paths
 }
 

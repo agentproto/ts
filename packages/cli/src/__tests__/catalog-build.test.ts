@@ -174,6 +174,24 @@ describe("catalog build", () => {
     expect(JSON.parse(await readFile(out, "utf8")).entries).toHaveLength(1)
   })
 
+  it("an existing directory with no *.json builds an empty catalog, --check stays green", async () => {
+    // A fresh agentproto/apps repo holds only entries/.gitkeep.
+    const root = await mktmp()
+    await mkdir(join(root, "entries"), { recursive: true })
+    await writeFile(join(root, "entries", ".gitkeep"), "", "utf8")
+    const out = join(root, "apps.json")
+    const res = await runBuild([join(root, "entries"), "--out", out, "--generated-at", "2026-04-04T00:00:00.000Z"])
+    expect(res.code).toBe(0)
+    expect(JSON.parse(await readFile(out, "utf8"))).toEqual({
+      schema: "app-catalog/v1",
+      generatedAt: "2026-04-04T00:00:00.000Z",
+      entries: [],
+    })
+    expect((await runBuild([join(root, "entries"), "--out", out, "--check"])).code).toBe(0)
+    // A path that does not exist is still an error.
+    expect((await runBuild([join(root, "nope"), "--out", out])).code).toBe(1)
+  })
+
   it("keeps --base generatedAt when nothing changed", async () => {
     const root = await mktmp()
     const unchanged = entry({ appId: "alpha", version: "1.0.0" })
