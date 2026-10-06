@@ -164,6 +164,22 @@ describe("app install @scope/name catalog resolution", () => {
     expect(out).toContain("registered app '@scope/name'")
   })
 
+  it("an entry without its digest / commit pin is refused, never installed unverified", async () => {
+    catalogResponse({
+      appId: "@scope/name",
+      installed: false,
+      source: { kind: "agentapp", url: "https://releases.example/name-1.2.0.agentapp" },
+    })
+    const bundle = await of(() => appModule!.runAppInstall(["@scope/name"]))
+    expect(bundle.code).toBe(1)
+    expect(bundle.err).toContain("no sha256 pin")
+    catalogResponse({ appId: "@scope/name", installed: false, source: { kind: "git", url: "https://github.com/scope/name" } })
+    const git = await of(() => appModule!.runAppInstall(["@scope/name"]))
+    expect(git.code).toBe(1)
+    expect(git.err).toContain("no sha pin")
+    expect(h.calls.map(c => c.name)).not.toContain("app_install")
+  })
+
   it("an unknown appId errors with the catalog hint", async () => {
     catalogResponse(null)
     const { code, err } = await of(() => appModule!.runAppInstall(["@scope/name"]))

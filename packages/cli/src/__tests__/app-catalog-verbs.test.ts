@@ -231,6 +231,13 @@ describe("app update", () => {
     ])
   })
 
+  it("--all: a failing app_updates fails the command, nothing is resynced", async () => {
+    h.responses.app_updates = new Error("connect ECONNREFUSED")
+    const { code } = await of((m) => m.runAppUpdate(["--all"]))
+    expect(code).not.toBe(0)
+    expect(h.calls.map(c => c.name)).toEqual(["app_updates"])
+  })
+
   it("--all --dry-run: lists without resyncing", async () => {
     h.responses.app_updates = UPDATES
     const { code } = await of((m) => m.runAppUpdate(["--all", "--dry-run"]))

@@ -90,7 +90,7 @@ unpack:
   and restore the app folder (without manifest.json). Without --dir,
   restores into <id>-<version> in the current directory.
 
-  install:
+install:
   Install an app. <appDir> registers an app id→dir mapping in
   ~/.agentproto/apps.json (reads .agentproto/APP.md for the id; idempotent).
   A git URL (https://…, git@…, file://…; optional --ref branch/tag and
@@ -281,7 +281,7 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     if (refArg !== undefined || subdirArg !== undefined || shaArg !== undefined || sha256Arg !== undefined) {
       process.stderr.write(
         `agentproto app install: --ref/--subdir/--sha/--sha256 don't apply to a catalog appId ` +
-          `(the entry's own pins are used; only --allow-build may override it).\n`,
+          `(the entry's own pins are used; --allow-build is the only flag accepted, and only for a git entry).\n`,
       )
       return 2
     }
@@ -563,6 +563,16 @@ async function installFromCatalog(
     process.stderr.write(`agentproto app install: catalog entry '${appId}' has no source URL.\n`)
     return 1
   }
+  // Never install a catalog entry unpinned: the digest / commit is what makes
+  // the catalog's integrity effective (the schema requires it; a malformed
+  // source must not degrade into an unverified install).
+  const pin = source.kind === "agentapp" ? source.sha256 : source.sha
+  if (typeof pin !== "string" || pin.length === 0) {
+    process.stderr.write(
+      `agentproto app install: catalog entry '${appId}' has no ${source.kind === "agentapp" ? "sha256" : "sha"} pin; refusing an unverified install.\n`,
+    )
+    return 1
+  }
   const payload: Record<string, unknown> = { url: source.url }
   if (source.kind === "agentapp") {
     payload.sha256 = source.sha256
@@ -734,9 +744,14 @@ export async function runAppUpdate(args: readonly string[]): Promise<number> {
     return 0
   }
 
-  const targets = all
-    ? (await callUpdates()).updates.map(u => u.appId)
-    : [appId as string]
+  let targets: string[]
+  if (all) {
+    const listed = await callUpdates()
+    if (listed.code !== 0) return listed.code
+    targets = listed.updates.map(u => u.appId)
+  } else {
+    targets = [appId as string]
+  }
 
   let failed = 0
   for (const target of targets) {
