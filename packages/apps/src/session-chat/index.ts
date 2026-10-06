@@ -191,6 +191,15 @@ export const sessionChatApp: AppHandle = defineApp({
       // this repo, so its UI won't actually call these until that's done too.
       "device_list",
       "device_sessions",
+      // Session artifacts (documents, images, ...): the chat's artifact
+      // panel lists and pins them, add/get create and open one. Same
+      // lockstep rule: the installed app's APP.md `ui.tools` must carry
+      // the ones its UI calls (today `session_artifact_list` and
+      // `session_artifact_pin`).
+      "session_artifact_add",
+      "session_artifact_list",
+      "session_artifact_get",
+      "session_artifact_pin",
     ],
   },
 })
