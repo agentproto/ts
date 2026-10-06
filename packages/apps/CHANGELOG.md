@@ -1,5 +1,15 @@
 # @agentproto/apps
 
+## 0.20.0
+
+### Minor Changes
+
+- f3e06dc: Add the App Store builtin panel (`@agentproto/store`, tool `agentproto_store`): the browse/install surface over `app_catalog` / `app_list` / `app_updates`, with confirmed installs (`app_install` issued from an app panel's tool-call surface now answers a `{needsConfirmation}` preview first and installs only on a second call echoing the preview's `confirm` token; direct MCP/CLI calls are unchanged), `app_resync` / `app_uninstall` actions, install-from-URL, catalog sources warnings, builtin panels, and `GET /store` redirecting to `/apps/@agentproto/store/ui` with the query preserved. VS Code: `agentproto.openStore` command.
+
+### Patch Changes
+
+- 3ea7d79: session-steward: the workflow now reads the un-paged `{sessions}` shape from `session_list` (a dry run over 545 sessions used to report "0 live, 0 terminal"), defaults its verdict-memory `appId` to the installed `@agentproto/session-steward` (resolved through `app_list`, so a missing app turns memory off with a report note instead of failing a step; `appId: ""` really disables it), and waits for `session_wrapup_plan` instead of accepting the `{jobId}` fallback.
+
 ## 0.19.0
 
 ### Minor Changes

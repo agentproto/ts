@@ -1,5 +1,21 @@
 # @agentproto/cli
 
+## 1.12.0
+
+### Minor Changes
+
+- 2ed619f: Publishing pipeline for agent apps: `agentproto app pack --release --entry` writes a validated catalog entry (`<slug>-<version>.entry.json`) beside the release bundle, with the bundle's sha256/size and a GitHub Releases asset URL (overridable via `--asset-url`); the new `agentproto catalog build` verb merges entry files into the deterministic published `apps.json` (base merge by appId, higher version wins, `--check` drift guard, `--emit-ts` for the embedded fallback; explicit `.json` files of any name and recursively walked directories, duplicate appId among the inputs is an error); the new `agentproto catalog verify` verb downloads an entry's bundle (https only, the same caps as `app_install`, local substitution via repeatable `--offline-file <appId>=<path.agentapp>`), checks `source.size`, unpacks and reconciles the manifest digest with `source.sha256`, checks the unpacked APP.md (id, version, no `ui.build`) and runs the `app validate` checks. The default catalog source URL is now `https://agentproto.sh/catalog/v1/apps.json`, and `pnpm --filter @agentproto/runtime catalog:first-party` re-syncs the embedded first-party catalog from it (also wired into the catalog-sync workflow).
+
+### Patch Changes
+
+- 6c6cbd3: Handoff and checkpoint fixes from the cold-run review. `sessions handoff --dry-run` stays read-only but now says its content is an approximate extraction (`approximate` and `approximateNote` in the response) because the real handoff interrogates the source session. The handoff question, the source session's JSON reply to it, and the daemon-composed role/AGENTS.md preamble are tagged in the transcript export (`internal`) and left out of `recentDigest`, the fallback `nextStep` and the resume prompt. `nextAction: "compact_then_continue"` is now only suggested inside the compact band (`compactAtPct` up to `continueFreshAtPct`), not at low context. The 401 `sessions_unauthorized` message names `<workspace>/.agentproto/runtime.json` as the token source and how to send it, and the CLI's fallback 401 explanation no longer says it cannot tell where the token came from.
+- Updated dependencies [5f4f30d]
+- Updated dependencies [3ea7d79]
+- Updated dependencies [f3e06dc]
+  - @agentproto/model-catalog@0.11.4
+  - @agentproto/apps@0.20.0
+  - @agentproto/llm-endpoint@0.11.4
+
 ## 1.11.1
 
 ### Patch Changes
