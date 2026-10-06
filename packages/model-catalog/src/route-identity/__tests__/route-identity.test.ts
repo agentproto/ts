@@ -33,6 +33,7 @@ import {
   type ModelRef,
   type CustomRouteConfig,
 } from "../index.js"
+import { HUGGINGFACE_ROUTES } from "../../llm/huggingface-routes.generated.js"
 
 describe("parseModelRef", () => {
   it("parses vendor/product with implicit route = vendor", () => {
@@ -606,6 +607,20 @@ describe("resolveLlmModelRoute", () => {
   // pricing/context at all).
   describe("HuggingFace route", () => {
     it("prices from the cheapest live provider when no inferenceProvider pin is given", () => {
+      const model = HUGGINGFACE_ROUTES["google/gemma-4-31B-it"]!
+      const pricedProviders = model.providers.filter(
+        (provider) => provider.inputPer1M !== undefined && provider.outputPer1M !== undefined
+      )
+      const cheapestProvider = pricedProviders.reduce((cheapest, provider) =>
+        provider.inputPer1M! + provider.outputPer1M! <
+        cheapest.inputPer1M! + cheapest.outputPer1M!
+          ? provider
+          : cheapest
+      )
+      const contextWindow = model.providers.reduce<number | undefined>((max, provider) => {
+        if (provider.contextLength === undefined) return max
+        return max === undefined ? provider.contextLength : Math.max(max, provider.contextLength)
+      }, undefined)
       const route = resolveLlmModelRoute("google/gemma-4-31B-it@huggingface")
       expect(route).toBeDefined()
       expect(route!.route).toBe("huggingface")
@@ -615,18 +630,20 @@ describe("resolveLlmModelRoute", () => {
       })
       expect(route!.pricing.provider).toBe("huggingface")
       expect(route!.pricing.vendor).toBe("google")
-      // deepinfra (0.13 + 0.38 = 0.51) undercuts novita (0.54) and together (1.36).
-      expect(route!.pricing.inputPer1M).toBe(0.13)
-      expect(route!.pricing.outputPer1M).toBe(0.38)
-      expect(route!.limits.contextWindow).toBe(262144)
+      expect(route!.pricing.inputPer1M).toBe(cheapestProvider.inputPer1M)
+      expect(route!.pricing.outputPer1M).toBe(cheapestProvider.outputPer1M)
+      expect(route!.limits.contextWindow).toBe(contextWindow)
     })
 
     it("prices from the pinned inferenceProvider when the pin is a priced provider", () => {
+      const novita = HUGGINGFACE_ROUTES["google/gemma-4-31B-it"]!.providers.find(
+        (provider) => provider.provider === "novita"
+      )!
       const route = resolveLlmModelRoute("google/gemma-4-31B-it:novita@huggingface")
       expect(route).toBeDefined()
-      expect(route!.pricing.inputPer1M).toBe(0.14)
-      expect(route!.pricing.outputPer1M).toBe(0.4)
-      expect(route!.limits.contextWindow).toBe(262144)
+      expect(route!.pricing.inputPer1M).toBe(novita.inputPer1M)
+      expect(route!.pricing.outputPer1M).toBe(novita.outputPer1M)
+      expect(route!.limits.contextWindow).toBe(novita.contextLength)
     })
 
     it("falls back to default pricing and no context limit for a pinned sparse provider", () => {
