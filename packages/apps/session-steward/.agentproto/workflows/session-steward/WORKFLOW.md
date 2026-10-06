@@ -62,7 +62,9 @@ inputs:
     type: string
     description: >-
       Installed app whose `app_state` ledger holds the verdict memory.
-      Default `session-steward`.
+      Default `@agentproto/session-steward` (the id in APP.md). A bare name
+      also matches a scoped install; a missing app means no memory, noted in
+      the report.
   stableVerdictPasses:
     type: number
     description: >-
@@ -110,6 +112,7 @@ steps:
     tool: session_wrapup_plan
     inputs:
       idleMinutes: $steps.settings.idleMinutes
+      wait: true
 
   - id: candidates
     kind: transform
@@ -164,10 +167,21 @@ steps:
           verdict: $item.verdict
           note: $item.note
 
+  - id: installedApps
+    kind: tool
+    name: List installed apps (to resolve the memory app)
+    tool: app_list
+    inputs: {}
+
+  - id: memoryApp
+    kind: transform
+    name: Resolve the installed app holding the verdict memory
+    description: Entry-based — resolveMemoryApp. No such app ⇒ no memory + a report note.
+
   - id: memoryQueue
     kind: transform
     name: Memory read queue
-    description: Entry-based. Empty when no `appId` is configured.
+    description: Entry-based. Empty when no installed memory app resolves.
 
   - id: memoryRead
     kind: map

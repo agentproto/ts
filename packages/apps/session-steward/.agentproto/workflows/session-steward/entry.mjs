@@ -58,8 +58,9 @@ const DEFAULT_MIN_CONFIDENCE = 0.8
 /** How many consecutive passes on an unchanged fingerprint before the judge
  *  cache stops re-judging a session. */
 const DEFAULT_STABLE_VERDICT_PASSES = 2
-/** The installed app whose `app_state` ledger holds the verdict memory. */
-const DEFAULT_APP_ID = "session-steward"
+/** The installed app whose `app_state` ledger holds the verdict memory — the
+ *  `id` in APP.md, which is what the daemon's app registry keys installs by. */
+const DEFAULT_APP_ID = "@agentproto/session-steward"
 // The agent judge's model is the `judge.session` model ROLE, resolved at run
 // time by the `modelRoles` step (the daemon's `model_roles` tool): explicit
 // `judgeModel` input > repo agentproto.json `models` > daemon config `models`
@@ -111,7 +112,7 @@ export function resolveSettings(input, modelRoles) {
     askSessions: i.askSessions === true,
     callerSessionId: typeof i.callerSessionId === "string" && i.callerSessionId ? i.callerSessionId : null,
     callerOrigin: typeof i.callerOrigin === "string" && i.callerOrigin ? i.callerOrigin : null,
-    appId: typeof i.appId === "string" && i.appId.trim() ? i.appId.trim() : DEFAULT_APP_ID,
+    appId: typeof i.appId === "string" ? i.appId.trim() : DEFAULT_APP_ID,
     stableVerdictPasses: Math.floor(num(i.stableVerdictPasses, DEFAULT_STABLE_VERDICT_PASSES, { min: 1 })),
     userOrigins: originPolicy.userOrigins,
     closableOrigins: originPolicy.closableOrigins,
@@ -643,7 +644,9 @@ export function buildReport(b) {
   // Verdict memory / cache (mission item 10).
   const memory = b.steps.memory
   const cachedCount = verdicts.filter(r => r.source === "cache").length
-  if (memory instanceof Map && memory.size > 0) {
+  if (b.steps.memoryApp?.note) {
+    lines.push(`- verdict memory: ${b.steps.memoryApp.note}`)
+  } else if (memory instanceof Map && memory.size > 0) {
     lines.push(`- verdict memory: ${memory.size} session(s) known` + (cachedCount > 0 ? `, ${cachedCount} served from cache` : ""))
   }
 
@@ -660,7 +663,11 @@ function idleMinutesOf(row, nowMs) {
   return Number.isFinite(ms) ? Math.max(0, (nowMs - ms) / 60_000) : 0
 }
 
-function liveRowsOf(liveSessions) {
+/** `session_list` rows under any of its shapes: the un-paged `{sessions}`
+ *  wrapper (what a workflow tool step gets), the paged `{items}` envelope, or
+ *  a bare array. */
+export function liveRowsOf(liveSessions) {
+  if (Array.isArray(liveSessions?.sessions)) return liveSessions.sessions
   if (Array.isArray(liveSessions?.items)) return liveSessions.items
   if (Array.isArray(liveSessions)) return liveSessions
   return []
@@ -792,6 +799,25 @@ export function analyzeStalls(scan, nowMs) {
   }))
 }
 
+/** Ids out of an `app_list` result (bare array, `{apps}` or `{items}`). */
+function installedAppIdsOf(appList) {
+  const rows = Array.isArray(appList) ? appList : Array.isArray(appList?.apps) ? appList.apps : Array.isArray(appList?.items) ? appList.items : []
+  return rows.map(r => (typeof r === "string" ? r : r?.appId ?? r?.id)).filter(id => typeof id === "string" && id)
+}
+
+/** Which installed app holds the verdict memory. An exact id match wins; a
+ *  bare name (`session-steward`) also matches a scoped install
+ *  (`@agentproto/session-steward`). A missing app, or `appId: ""`, is "no
+ *  memory" with a note for the report — never a failed step. */
+export function resolveMemoryApp(settings, appList) {
+  const wanted = settings?.appId
+  if (!wanted) return { appId: null, note: "off (appId empty)" }
+  const installed = installedAppIdsOf(appList)
+  const hit = installed.find(id => id === wanted) ?? installed.find(id => id.endsWith(`/${wanted}`))
+  if (hit) return { appId: hit, note: null }
+  return { appId: null, note: `off — no installed app "${wanted}" (install it, or pass its installed id as appId); no verdict was read or recorded` }
+}
+
 /** Fold the `app_state` read into the per-session verdict memory map. */
 export function foldMemory(b) {
   const events = settled(b.steps.memoryRead).ok.flatMap(r => (Array.isArray(r.value?.events) ? r.value.events : []))
@@ -917,7 +943,7 @@ export default {
       id: "plan",
       kind: "tool",
       tool: "session_wrapup_plan",
-      inputs: { idleMinutes: "$steps.settings.idleMinutes" },
+      inputs: { idleMinutes: "$steps.settings.idleMinutes", wait: true },
     },
     { id: "candidates", kind: "transform", compute: b => splitCandidates(b.steps.plan, b.steps.settings) },
     // Host saturation header (report only — mission item 9) and the live
@@ -946,7 +972,9 @@ export default {
     },
     // Verdict memory (item 10): read the app_state ledger best-effort. The
     // map is empty when no app id is set, so a caller can turn memory off.
-    { id: "memoryQueue", kind: "transform", compute: b => (b.steps.settings?.appId ? [{ appId: b.steps.settings.appId }] : []) },
+    { id: "installedApps", kind: "tool", tool: "app_list", inputs: {} },
+    { id: "memoryApp", kind: "transform", compute: b => resolveMemoryApp(b.steps.settings, b.steps.installedApps) },
+    { id: "memoryQueue", kind: "transform", compute: b => (b.steps.memoryApp?.appId ? [{ appId: b.steps.memoryApp.appId }] : []) },
     {
       id: "memoryRead",
       kind: "map",
@@ -1122,7 +1150,7 @@ export default {
     },
     // Verdict memory write-back (item 10) — a ledger append, never a session
     // action; best-effort (an uninstalled app just yields no memory).
-    { id: "memoryWriteQueue", kind: "transform", compute: b => buildMemoryWriteQueue(b.steps.finalVerdicts, b.steps.settings) },
+    { id: "memoryWriteQueue", kind: "transform", compute: b => buildMemoryWriteQueue(b.steps.finalVerdicts, { ...b.steps.settings, appId: b.steps.memoryApp?.appId ?? "" }) },
     {
       id: "memoryWrite",
       kind: "map",

@@ -42,6 +42,7 @@ describe("session-steward app", () => {
     walk(workflow!.steps as never)
     expect([...tools].sort()).toEqual([
       "agent_prompt",
+      "app_list",
       "app_state_append",
       "app_state_list",
       "host_load",
