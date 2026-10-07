@@ -1583,7 +1583,7 @@ describe("createSessionsRegistry", () => {
       reg.shutdown()
     })
 
-    it("marks a nonzero exit as status \"error\"", () => {
+    it("marks a nonzero exit as status \"error\"", async () => {
       const reg = createSessionsRegistry({ persistPath, persist: false })
       const desc = reg.recordCommand({
         workspaceSlug: "default",
@@ -1597,6 +1597,7 @@ describe("createSessionsRegistry", () => {
         stderr: "boom",
       })
       expect(desc.status).toBe("error")
+      await reg.settlePendingWrites()
       reg.shutdown()
     })
 
