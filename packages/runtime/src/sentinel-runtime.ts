@@ -86,6 +86,10 @@ export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
   "operator-stopped",
   "steward-completed",
   "steward-abandoned",
+  // Superseded by a fresh-id restart continuation (session-restart-core.ts)
+  // while still alive — never auto-revive the OLD row, it already has a
+  // living replacement (`continuedTo`).
+  "restarted",
 ])
 
 const CLOSED_SUBJECTS_CAP = 500

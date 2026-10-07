@@ -7328,6 +7328,7 @@ async function handleSessions(
         forceAgentResume: true,
         overrides,
         ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(daemonMcpUrl ? { daemonMcpUrl } : {}),
       })
       json(200, {
         ...sessionDescriptorForHttp(restarted.desc),

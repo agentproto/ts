@@ -4153,6 +4153,7 @@ export function registerSessionTools(
             overrides,
             ...(listCatalogModels ? { listCatalogModels } : {}),
             ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+            ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
           })
           return {
             content: [
@@ -4486,6 +4487,7 @@ export function registerSessionTools(
         // handled earlier, so a restart reaching HERE never carries any.
         const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
           ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+          ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         })
         return {
           content: [

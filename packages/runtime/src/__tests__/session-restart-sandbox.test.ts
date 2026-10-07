@@ -148,7 +148,10 @@ describe("restartAgentSession on a sandboxed session", () => {
     await rm(box.workspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
   })
 
-  async function setup(): Promise<{
+  async function setup(opts: {
+    prevAgentSession?: AgentSessionLike
+    killPrev?: boolean
+  } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
   }> {
@@ -162,14 +165,14 @@ describe("restartAgentSession on a sandboxed session", () => {
     prev = registry.spawnAgent({
       workspaceSlug: "default",
       cwd: "/home/user",
-      agentSession: fakeAgentSession("box"),
+      agentSession: opts.prevAgentSession ?? fakeAgentSession("box"),
       adapterSlug: "fake-cli",
       commandPreview: "sandbox:fake → fake-cli",
       remote: true,
       sandboxId: "sbx_prev_1",
       sandboxTeardown: "pause",
     })
-    registry.kill(prev.id)
+    if (opts.killPrev ?? true) registry.kill(prev.id)
     return makeResolver(box)
   }
 
@@ -243,5 +246,45 @@ describe("restartAgentSession on a sandboxed session", () => {
       /no sandbox provider resolver/,
     )
     expect(receivedStarts).toHaveLength(0)
+  })
+
+  // Regression guard for the fix that closes a superseded OLD row
+  // (session-restart-core.ts "Close the superseded OLD row"): a sandbox
+  // restart's `prev.agentSession` is a `SandboxAgentSessionProxy` over the
+  // SAME remote `sandboxId` the fresh descriptor just reconnected to — a
+  // blind `registry.kill(prev.id, ...)` would call that proxy's `close()`,
+  // which tears down/pauses the underlying box (`host.stop()`/`pause()`),
+  // destroying the box the NEW session now depends on. The fix must skip
+  // closing `prev` for a sandbox restart specifically.
+  it("restarting an ALIVE sandboxed session never closes the old row's agentSession — the shared box survives", async () => {
+    // Unlike every other test in this file, `prev` is left ALIVE (not
+    // killed) — exactly the production bug's precondition.
+    let closed = false
+    const { resolver, providerResolver } = await setup({
+      killPrev: false,
+      prevAgentSession: {
+        sessionId: "box_alive",
+        // eslint-disable-next-line require-yield
+        async *send(): AsyncIterable<AgentStreamEvent> {
+          return
+        },
+        async cancel() {},
+        async close() {
+          closed = true
+        },
+      },
+    })
+    expect(registry.get(prev.id)?.status).toBe("running")
+
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    expect(result.desc.sandboxId).toBe("sbx_prev_1")
+    // The decisive assertions: the OLD row's session was never closed, and
+    // it's still reported as running — never torn down out from under its
+    // own replacement, which reconnected to the exact same box.
+    expect(closed).toBe(false)
+    expect(registry.get(prev.id)?.status).toBe("running")
   })
 })
