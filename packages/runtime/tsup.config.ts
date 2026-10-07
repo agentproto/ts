@@ -31,6 +31,7 @@ export default createTsupConfig({
     "app-ui-build": "src/app-ui-build.ts",
     "app-ui-placeholder": "src/app-ui-placeholder.ts",
     "app-catalog": "src/app-catalog.ts",
+    "daemon-tool-names": "src/daemon-tool-names.generated.ts",
     "first-party-catalog-gen": "src/first-party-catalog-gen.ts",
     "app-remote-install": "src/app-remote-install.ts",
   },
