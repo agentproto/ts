@@ -39,6 +39,14 @@ export const SESSION_END_REASONS = [
   // `registry.closeWithOutcome`, never a plain `kill()`.
   "steward-completed", // verdict:"done" — the steward closed it as finished work.
   "steward-abandoned", // verdict other than "done" — the steward closed it as not completed.
+  // `restartAgentSession` (session-restart-core.ts) minted a fresh-id
+  // continuation while this row was still alive (running/starting) — the
+  // OLD row is superseded (see its `continuedTo`) and closed cleanly here,
+  // never left running alongside its replacement. Deliberate, not a crash:
+  // never eligible for `restart-scheduler.ts`'s crash-restart (status is
+  // "killed", not "error") and never triggers `notifyParentOnCrash`
+  // (`supervisor-notify.ts` gates on `status:"error"`/`reason:"crashed"`).
+  "restarted",
 ] as const
 
 export type SessionEndReason = (typeof SESSION_END_REASONS)[number]
