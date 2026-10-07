@@ -40,6 +40,13 @@ function makeMockProvider(opts: {
  * Build a TunnelRegistry wired with a mock provider factory so no real
  * cloudflared binary is needed.
  */
+// Every `create()` now also starts a REAL link-guard HTTP listener (see
+// link-guard.ts) in front of the mock provider's target — `access: "public"`
+// is the only path that skips it. Track every registry this factory builds
+// so the top-level `afterEach` can `shutdown()` it, closing those listeners;
+// otherwise a leaked-but-harmless socket per test is still a socket.
+const liveRegistries: TunnelRegistry[] = []
+
 function makeRegistry(tmp: string, providerOverride?: RemoteProvider) {
   const persistPath = join(tmp, "tunnels.json")
   // Monkey-patch the private factory via a subclass trick is brittle;
@@ -53,6 +60,7 @@ function makeRegistry(tmp: string, providerOverride?: RemoteProvider) {
       return providerOverride ?? makeMockProvider()
     }
   })({ persistPath, workspace: tmp })
+  liveRegistries.push(reg)
   return { reg, persistPath }
 }
 
@@ -81,7 +89,8 @@ describe("TunnelRegistry", () => {
     // since the mock overrides start().
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.allSettled(liveRegistries.splice(0).map(r => r.shutdown()))
     rmSync(tmp, { recursive: true, force: true })
     vi.restoreAllMocks()
   })
@@ -479,6 +488,80 @@ describe("TunnelRegistry", () => {
 
     expect(reg.get("tun_no_auto")?.status).toBe("stopped")
     expect(mock.startCalled).toBe(0)
+  })
+
+  // ── access guard (private by default) ───────────────────────────────────
+
+  it("create is private by default: access, expiresAt and a token-bearing url", async () => {
+    const mock = makeMockProvider({ startUrl: "https://abc.trycloudflare.com" })
+    const { reg } = makeRegistry(tmp, mock)
+
+    const desc = await reg.create({ targetPort: 4000 })
+
+    // publicUrl stays exactly what the provider returned — existing callers
+    // that only care about the host are unaffected by the guard's existence.
+    expect(desc.publicUrl).toBe("https://abc.trycloudflare.com")
+    expect(desc.access).toBe("private")
+    expect(desc.expiresAt).toBeTruthy()
+    expect(desc.url).toMatch(/^https:\/\/abc\.trycloudflare\.com\/\?t=.+/)
+    expect(desc.warning).toBeUndefined()
+  })
+
+  it("create with public:true skips the guard and carries a warning", async () => {
+    const mock = makeMockProvider({ startUrl: "https://abc.trycloudflare.com" })
+    const { reg } = makeRegistry(tmp, mock)
+
+    const desc = await reg.create({ targetPort: 4000, public: true })
+
+    expect(desc.access).toBe("public")
+    expect(desc.url).toBe("https://abc.trycloudflare.com")
+    expect(desc.expiresAt).toBeUndefined()
+    expect(desc.warning).toMatch(/guard is OFF/)
+  })
+
+  it("create honors an explicit ttl", async () => {
+    const mock = makeMockProvider()
+    const { reg } = makeRegistry(tmp, mock)
+
+    const desc = await reg.create({ targetPort: 4000, ttl: "1h" })
+
+    expect(desc.ttl).toBe("1h")
+    const expiresInMs = new Date(desc.expiresAt!).getTime() - Date.now()
+    expect(expiresInMs).toBeGreaterThan(55 * 60_000)
+    expect(expiresInMs).toBeLessThanOrEqual(60 * 60_000)
+  })
+
+  it("revoke rotates the token and keeps the tunnel active", async () => {
+    const mock = makeMockProvider({ startUrl: "https://abc.trycloudflare.com" })
+    const { reg } = makeRegistry(tmp, mock)
+    const created = await reg.create({ targetPort: 4000 })
+
+    const revoked = reg.revoke(created.id)
+
+    expect(revoked.url).not.toBe(created.url)
+    expect(revoked.status).toBe("active")
+    expect(reg.get(created.id)?.url).toBe(revoked.url)
+  })
+
+  it("revoke throws for a public tunnel (nothing to revoke)", async () => {
+    const { reg } = makeRegistry(tmp)
+    const created = await reg.create({ targetPort: 4000, public: true })
+
+    expect(() => reg.revoke(created.id)).toThrow(/no access guard/)
+  })
+
+  it("revoke throws for an unknown tunnel", async () => {
+    const { reg } = makeRegistry(tmp)
+    expect(() => reg.revoke("no-such-id")).toThrow(/no tunnel/)
+  })
+
+  it("stop tears down the guard (a later revoke fails)", async () => {
+    const { reg } = makeRegistry(tmp)
+    const created = await reg.create({ targetPort: 4000 })
+
+    await reg.stop(created.id)
+
+    expect(() => reg.revoke(created.id)).toThrow()
   })
 })
 

@@ -248,6 +248,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "transmit_message",
   "tunnel_create",
   "tunnel_list",
+  "tunnel_revoke",
   "tunnel_status",
   "tunnel_stop",
   "usage_rollup",
