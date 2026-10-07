@@ -889,6 +889,17 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
     expect(output.gaps).toHaveLength(4)
     expect(output.report).not.toContain("every review candidate has a recorded verdict")
   })
+
+  it("one systemic failure naming each item's own review worktree groups as ONE reason, not one per branch", async () => {
+    const { output } = await run({
+      plan: scalePlan(6, i => i, () => 1),
+      spawn: async (_adapter, o) => {
+        throw new Error(`agent step spawn refused (app_boundary_cwd_outside): path is outside the app boundary: '${String(o.cwd)}'`)
+      },
+    })
+    expect(output.report).toContain("failure reasons (1 distinct):")
+    expect(output.report).toMatch(/ {2}- 4× .*app_boundary_cwd_outside.*'<review worktree>'/)
+  })
 })
 
 describe("repo-maintenance maintain workflow — reviewer models come from model roles", () => {

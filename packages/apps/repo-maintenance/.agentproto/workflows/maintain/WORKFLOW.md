@@ -265,6 +265,12 @@ it when the item ends; `reviewCleanup` removes them all after the map, and
 entry.mjs's `finally` block removes them once more on failure or cancel — a
 `finally` step always runs.
 
+A review worktree sits outside every app zone, so a reviewer spawned there
+gets two extra READ-ONLY zones for its own session: the worktree and the
+repo's git dir (`git log/show/diff` read the object store). Both are checked
+against git's own worktree back-pointer first, and both are read-only, so a
+reviewer still cannot stash, checkout or commit in the shared repo.
+
 ## Out of scope, on purpose
 
 Recording a verdict via `branch_gc_verdict` never reclaims a branch by

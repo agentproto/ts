@@ -258,13 +258,30 @@ export function formatNameList(names, cap = REPORT_LIST_CAP) {
   return names.length > cap ? `${shown}, … and ${names.length - cap} more` : shown
 }
 
-/** Distinct error messages of a tolerant fan-out's rejected items, most
+/** `error` with the per-candidate parts — its review worktree path, branch
+ *  name and tip sha, then any other full sha — replaced by placeholders, so
+ *  one systemic failure hitting N candidates groups as ONE reason instead of
+ *  N "distinct" ones that differ only by `…/repo-<sha>`. */
+export function normalizeReviewError(error, candidate) {
+  let out = String(error ?? "")
+  const swap = (needle, placeholder) => {
+    if (typeof needle === "string" && needle.length > 0) out = out.split(needle).join(placeholder)
+  }
+  swap(candidate?.reviewWorktree, "<review worktree>")
+  swap(candidate?.sha, "<sha>")
+  swap(candidate?.name, "<branch>")
+  return out.replace(/\b[0-9a-f]{40}\b/g, "<sha>")
+}
+
+/** Distinct error messages of a tolerant fan-out's rejected items (normalized
+ *  by {@link normalizeReviewError} against `reviewCandidates[index]`), most
  *  frequent first: `[{ error, count }]`. */
-export function tallyReviewErrors(review) {
+export function tallyReviewErrors(review, reviewCandidates) {
   const counts = new Map()
   for (const r of Array.isArray(review?.results) ? review.results : []) {
     if (r?.status !== "rejected") continue
-    counts.set(r.error, (counts.get(r.error) ?? 0) + 1)
+    const error = normalizeReviewError(r.error, r.item ?? reviewCandidates?.[r.index])
+    counts.set(error, (counts.get(error) ?? 0) + 1)
   }
   return [...counts].map(([error, count]) => ({ error, count })).sort((a, b) => b.count - a.count)
 }
@@ -363,7 +380,7 @@ export function buildReport(b) {
   const reviewOutcome = Array.isArray(review)
     ? { succeeded: review.length, failed: 0, skipped: 0 }
     : { succeeded: 0, failed: 0, skipped: 0, ...(review ?? {}) }
-  const reviewErrors = tallyReviewErrors(review)
+  const reviewErrors = tallyReviewErrors(review, reviewCandidates)
   const gaps = b.steps.gaps ?? []
   const verdicts = collectCandidateVerdicts(reviewCandidates, b.steps.branchGcVerify)
   const applyMerged = b.input?.applyMerged === true

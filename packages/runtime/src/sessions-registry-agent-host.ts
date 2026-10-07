@@ -30,6 +30,22 @@ import {
   unenforceableWarning,
   type AppBoundary,
 } from "./app-boundary.js"
+import { reviewWorktreeReadZones } from "./review-worktree.js"
+
+/**
+ * A step spawned IN a review worktree (`branch_gc_review_worktree`, the
+ * maintain workflow's reviewers) gets that worktree and its repo's git common
+ * dir as extra READ-ONLY zones for this one session: the worktree lives under
+ * the OS tmp dir, outside every app zone, and git cannot read a commit
+ * without the repo's object store. Read-only, so a reviewer still cannot
+ * stash, checkout or commit in the shared repo. Any other cwd → unchanged.
+ */
+export function withReviewWorktreeZones(boundary: AppBoundary, cwd: string): AppBoundary {
+  const zones = reviewWorktreeReadZones(cwd)
+  if (!zones) return boundary
+  const extra = [zones.worktree, zones.gitCommonDir].filter(z => !boundary.readOnly.includes(z))
+  return extra.length === 0 ? boundary : { ...boundary, readOnly: [...boundary.readOnly, ...extra] }
+}
 
 /**
  * The daemon-gateway mount a workflow agent step's (host) session gets —
@@ -203,7 +219,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
   ): Promise<string> {
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
     let cwd = opts.cwd ?? this.opts?.cwd ?? process.cwd()
-    const boundary = this.opts?.boundary
+    const boundary = this.opts?.boundary ? withReviewWorktreeZones(this.opts.boundary, cwd) : undefined
     if (boundary) {
       if (opts.sandbox !== undefined) {
         throw new Error(
