@@ -478,8 +478,20 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     try {
       await opts.registry.sendMessage(msg, { source: "sentinel", origin: sentinel.id })
     } catch (err) {
-      if (!(err instanceof SessionNotAliveError)) throw err
-      await handleDeadSession(sentinel, event, msg)
+      if (err instanceof SessionNotAliveError) {
+        await handleDeadSession(sentinel, event, msg)
+        return
+      }
+      // The target row is gone altogether (deleted/GC'd, not merely ended):
+      // nothing to resume and nobody to route to. Rethrowing here leaves the
+      // event unseen, so the sentinel re-delivers it every poll forever and
+      // never reaches its terminal event — park it and orphan the sentinel.
+      if (opts.sessionInfo && !opts.isSessionAlive(target.sessionId) && !opts.sessionInfo(target.sessionId)) {
+        parkEvent(sentinel, event, `target session ${target.sessionId} no longer exists`)
+        markOrphaned(sentinel)
+        return
+      }
+      throw err
     }
   }
 
