@@ -8220,6 +8220,7 @@ async function handlePresets(
  *   POST   /tunnels              → TunnelDescriptor (creates a new tunnel)
  *   GET    /tunnels/:id          → TunnelDescriptor
  *   DELETE /tunnels/:id          → { ok, tunnelId }
+ *   POST   /tunnels/:id/revoke   → TunnelDescriptor (fresh signed link, tunnel stays up)
  */
 async function handleTunnels(
   req: IncomingMessage,
@@ -8282,11 +8283,28 @@ async function handleTunnels(
         ...(typeof b.credentialsFile === "string"
           ? { credentialsFile: b.credentialsFile }
           : {}),
+        ...(typeof b.ttl === "string" ? { ttl: b.ttl } : {}),
+        ...(b.public === true ? { public: true } : {}),
       })
       json(201, desc)
     } catch (err) {
       json(500, {
         error: "create_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  const revokeMatch = path.match(/^\/tunnels\/([^/]+)\/revoke$/)
+  if (revokeMatch && req.method === "POST") {
+    const rawIdOrName = decodeURIComponent(revokeMatch[1] ?? "")
+    try {
+      const desc = registry.revoke(rawIdOrName)
+      json(200, desc)
+    } catch (err) {
+      json(404, {
+        error: "revoke_failed",
         message: err instanceof Error ? err.message : String(err),
       })
     }

@@ -53,6 +53,24 @@ export interface SttPort {
   transcribe(audioPath: string): Promise<Transcript>
 }
 
+/**
+ * A 401/403 or "api key" error from any SttPort fails every subsequent
+ * call the same way — fetchers that wrap a transcribe() call rethrow on
+ * this instead of treating it as a per-item skip, so a misconfigured key
+ * surfaces loudly rather than silently skipping an entire batch.
+ */
+export function isSttAuthError(e: unknown): boolean {
+  const m = (e instanceof Error ? e.message : String(e)).toLowerCase()
+  return (
+    m.includes(" 401") ||
+    m.includes(" 403") ||
+    m.includes("unauthorized") ||
+    m.includes("forbidden") ||
+    m.includes("api key") ||
+    m.includes("api_key")
+  )
+}
+
 const WHISPER_MAX_BYTES = 25 * 1024 * 1024 // OpenAI hard cap
 
 export interface OpenAiWhisperSttOptions {

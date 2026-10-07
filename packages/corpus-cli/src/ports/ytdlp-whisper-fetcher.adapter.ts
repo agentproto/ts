@@ -34,6 +34,7 @@ import { promisify } from "node:util"
 import { z } from "zod"
 import type { FetcherPort, FetchedSource } from "@agentproto/corpus"
 import type { SttPort } from "./stt.port.js"
+import { isSttAuthError } from "./stt.port.js"
 import { isVideoUrl } from "./video-hosts.js"
 
 const execFileAsync = promisify(execFile)
@@ -157,7 +158,7 @@ export class YtDlpWhisperFetcher implements FetcherPort {
       // let the resumable importer retry on the next run — EXCEPT for an
       // auth/config error, which would fail every video, so we surface it
       // loudly rather than silently dropping the entire run.
-      if (isAuthError(e)) throw e
+      if (isSttAuthError(e)) throw e
       process.stderr.write(
         `corpus: transcription failed for ${url} — skipped (${msg(e)})\n`
       )
@@ -170,19 +171,6 @@ export class YtDlpWhisperFetcher implements FetcherPort {
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
-}
-
-/** A 401/403 or "api key" error fails every video — abort, don't skip. */
-function isAuthError(e: unknown): boolean {
-  const m = msg(e).toLowerCase()
-  return (
-    m.includes(" 401") ||
-    m.includes(" 403") ||
-    m.includes("unauthorized") ||
-    m.includes("forbidden") ||
-    m.includes("api key") ||
-    m.includes("api_key")
-  )
 }
 
 // ── Default yt-dlp subprocess downloader ────────────────────────────

@@ -55,6 +55,7 @@ import {
 import { ScrapeMcpFetcher } from "../ports/scrape-mcp-fetcher.adapter.js"
 import { YtDlpWhisperFetcher } from "../ports/ytdlp-whisper-fetcher.adapter.js"
 import { YtDlpCaptionsFetcher } from "../ports/ytdlp-captions-fetcher.adapter.js"
+import { LocalFileFetcher } from "../ports/local-file-fetcher.adapter.js"
 import { OpenAiWhisperStt, type SttPort } from "../ports/stt.port.js"
 import { AssemblyAiStt } from "../ports/assemblyai-stt.adapter.js"
 import { ChunkedStt } from "../ports/chunked-stt.adapter.js"
@@ -227,33 +228,19 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
   process.stdout.write(`import-web\n${plan}`)
 
   // Build the fetcher chain (first non-null wins):
-  //   1. videos    → yt-dlp captions/auto-subs  (free, no key; default)
-  //   2. videos    → yt-dlp audio → Whisper     (caption-less fallback; needs OPENAI_API_KEY)
-  //   3. PDFs      → plain HTTP + unpdf extraction (pure-JS, no browser/key)
-  //   4. articles  → authed browser readability (only if --browser-mcp given)
-  //   5. articles  → plain HTTP readability     (browser-free fallback)
+  //   0. local files → hand the file straight to the STT (no download at all)
+  //   1. videos      → yt-dlp captions/auto-subs  (free, no key; default)
+  //   2. videos      → yt-dlp audio → Whisper     (caption-less fallback; needs OPENAI_API_KEY)
+  //   3. PDFs        → plain HTTP + unpdf extraction (pure-JS, no browser/key)
+  //   4. articles    → authed browser readability (only if --browser-mcp given)
+  //   5. articles    → plain HTTP readability     (browser-free fallback)
   const chain: FetcherPort[] = []
-
-  // Tier-1 (free, no key): pull the video's captions/auto-subs. Resolves
-  // captioned videos for zero cost; returns null for caption-less ones so
-  // the Whisper tier below takes over. Modern yt-dlp retrieves auto-subs
-  // reliably, so this is the default video path (disable with --no-captions).
-  if (!parsed.noCaptions) {
-    chain.push(
-      new YtDlpCaptionsFetcher({
-        ...(parsed.lang ? { preferLang: parsed.lang } : {}),
-        ...(parsed.maxDurationSec ? { maxDurationSec: parsed.maxDurationSec } : {}),
-        ...(parsed.cookiesFromBrowser
-          ? { cookiesFromBrowser: parsed.cookiesFromBrowser }
-          : {}),
-        ...(parsed.cookiesFile ? { cookiesFile: parsed.cookiesFile } : {}),
-      })
-    )
-  }
 
   // Pick the video STT: --diarize → AssemblyAI (speaker-labelled, for
   // multi-speaker interviews/panels), else OpenAI Whisper (flat, cheaper,
-  // faster). Both satisfy SttPort, so the fetcher is identical.
+  // faster). Both satisfy SttPort, so the fetcher is identical. Computed
+  // up front because both the local-file tier and the Whisper tier share
+  // this one instance.
   let stt: SttPort | undefined
   if (parsed.diarize) {
     const aaiKey = process.env.ASSEMBLYAI_API_KEY
@@ -276,6 +263,30 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
           : "corpus: OPENAI_API_KEY not set — caption-less videos will be skipped (captioned videos still import).\n"
       )
   }
+
+  // Tier-0 (no network): a `--url` that is actually a local file path or
+  // `file://` URI (a recording already on disk — no captions, no remote
+  // host to pull from). Only claims strings that resolve to a real file,
+  // so it's a no-op for every http(s) URL.
+  if (stt) chain.push(new LocalFileFetcher({ stt }))
+
+  // Tier-1 (free, no key): pull the video's captions/auto-subs. Resolves
+  // captioned videos for zero cost; returns null for caption-less ones so
+  // the Whisper tier below takes over. Modern yt-dlp retrieves auto-subs
+  // reliably, so this is the default video path (disable with --no-captions).
+  if (!parsed.noCaptions) {
+    chain.push(
+      new YtDlpCaptionsFetcher({
+        ...(parsed.lang ? { preferLang: parsed.lang } : {}),
+        ...(parsed.maxDurationSec ? { maxDurationSec: parsed.maxDurationSec } : {}),
+        ...(parsed.cookiesFromBrowser
+          ? { cookiesFromBrowser: parsed.cookiesFromBrowser }
+          : {}),
+        ...(parsed.cookiesFile ? { cookiesFile: parsed.cookiesFile } : {}),
+      })
+    )
+  }
+
   if (stt)
     chain.push(
       new YtDlpWhisperFetcher({

@@ -1,8 +1,10 @@
 /**
  * `agentproto tunnel create --port <n> [--provider quick] [--name <slug>]
- *                            [--label <text>] [--host <host>] [--json]`
+ *                            [--label <text>] [--host <host>] [--ttl <dur>]
+ *                            [--public] [--json]`
  * `agentproto tunnel list [--active] [--json]`
  * `agentproto tunnel stop <id-or-name> [--json]`     (alias: delete, rm)
+ * `agentproto tunnel revoke <id-or-name> [--json]`
  * `agentproto tunnel status <id-or-name> [--json]`
  *
  * Manage public tunnels via the daemon's /tunnels HTTP routes.
@@ -28,10 +30,17 @@ Usage:
   agentproto tunnel create --port <n> [--provider <slug>] [--name <slug>]
                            [--label <text>] [--host <host>] [--autostart]
                            [--hostname <fqdn>] [--tunnel-id <id>]
-                           [--credentials-file <path>] [--json]
+                           [--credentials-file <path>] [--ttl <1h|24h|7d>]
+                           [--public] [--json]
   agentproto tunnel list   [--active] [--json]
   agentproto tunnel stop   <id-or-name> [--json]       (alias: delete, rm)
+  agentproto tunnel revoke <id-or-name> [--json]
   agentproto tunnel status <id-or-name> [--json]
+
+Private by default: unless --public is passed, an access guard sits in
+front of the target — share the printed \`url\` (a signed link, default TTL
+24h), not the bare tunnel host. \`tunnel revoke\` invalidates it instantly
+without stopping the tunnel; \`tunnel stop\` tears everything down.
 
 Discovers the daemon the same layered way \`agentproto sessions\` does — see
 \`agentproto sessions --help\` or this package's README ("Discovery + token")
@@ -73,6 +82,7 @@ export async function runTunnel(args: readonly string[]): Promise<number> {
   if (sub === "create") return runCreate(args.slice(1))
   if (sub === "list") return runList(args.slice(1))
   if (sub === "stop" || sub === "delete" || sub === "rm") return runStop(args.slice(1))
+  if (sub === "revoke") return runRevoke(args.slice(1))
   if (sub === "status") return runStatus(args.slice(1))
 
   if (!sub) {
@@ -81,7 +91,7 @@ export async function runTunnel(args: readonly string[]): Promise<number> {
   }
   process.stderr.write(
     `agentproto tunnel: unknown subcommand "${sub}"\n` +
-      `  Known: create | list | stop | status\n`,
+      `  Known: create | list | stop | revoke | status\n`,
   )
   return 2
 }
@@ -103,6 +113,8 @@ async function runCreate(args: readonly string[]): Promise<number> {
       hostname: { type: "string" },
       "tunnel-id": { type: "string" },
       "credentials-file": { type: "string" },
+      ttl: { type: "string" },
+      public: { type: "boolean" },
       json: { type: "boolean" },
     },
   })
@@ -149,6 +161,8 @@ async function runCreate(args: readonly string[]): Promise<number> {
   if (values.hostname) body.hostname = values.hostname
   if (values["tunnel-id"]) body.tunnelId = values["tunnel-id"]
   if (values["credentials-file"]) body.credentialsFile = values["credentials-file"]
+  if (values.ttl) body.ttl = values.ttl
+  if (values.public) body.public = true
 
   let desc: TunnelDescriptor
   try {
@@ -169,9 +183,11 @@ async function runCreate(args: readonly string[]): Promise<number> {
   } else {
     process.stdout.write(
       `tunnel created  id=${desc.id}${desc.name ? `  name=${desc.name}` : ""}\n` +
-        `  url    ${desc.publicUrl}\n` +
+        `  url    ${desc.url ?? desc.publicUrl}\n` +
         `  target ${desc.targetHost}:${desc.targetPort}\n` +
-        `  status ${desc.status}\n`,
+        `  access ${desc.access ?? "private"}${desc.expiresAt ? `  expires ${desc.expiresAt}` : ""}\n` +
+        `  status ${desc.status}\n` +
+        (desc.warning ? `  WARNING ${desc.warning}\n` : ""),
     )
   }
   return 0
@@ -228,7 +244,7 @@ async function runList(args: readonly string[]): Promise<number> {
   for (const t of tunnels) {
     const age = humaniseDelta(now - new Date(t.createdAt).getTime())
     process.stdout.write(
-      `${t.id.padEnd(36)}  ${(t.name ?? "").padEnd(16)}  ${t.status.padEnd(8)}  ${String(t.targetPort).padEnd(5)}  ${age.padEnd(6)}  ${t.publicUrl || "—"}\n`,
+      `${t.id.padEnd(36)}  ${(t.name ?? "").padEnd(16)}  ${t.status.padEnd(8)}  ${String(t.targetPort).padEnd(5)}  ${age.padEnd(6)}  ${t.url || t.publicUrl || "—"}\n`,
     )
   }
   return 0
@@ -280,6 +296,57 @@ async function runStop(args: readonly string[]): Promise<number> {
       return 2
     }
     process.stderr.write(`agentproto tunnel stop: ${msg}\n`)
+    return 1
+  }
+}
+
+// ── revoke ────────────────────────────────────────────────────────────
+
+async function runRevoke(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+    },
+  })
+
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      "agentproto tunnel revoke: missing id or name.\n" +
+        "  Try: agentproto tunnel revoke <id-or-name>  (find ids with `agentproto tunnel list`)\n",
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto tunnel revoke")
+    return 2
+  }
+  const endpoint = report.found
+
+  try {
+    const desc = await httpPostJson<TunnelDescriptor>(
+      `${endpoint.url}/tunnels/${encodeURIComponent(id)}/revoke`,
+      {},
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(desc, null, 2) + "\n")
+    } else {
+      process.stdout.write(
+        `tunnel revoked  ${id}\n` +
+          `  url      ${desc.url ?? desc.publicUrl}\n` +
+          (desc.expiresAt ? `  expires  ${desc.expiresAt}\n` : ""),
+      )
+    }
+    return 0
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`agentproto tunnel revoke: ${msg}\n`)
     return 1
   }
 }
@@ -341,12 +408,15 @@ async function runStatus(args: readonly string[]): Promise<number> {
         (desc.tunnelId ? `tunnelId ${desc.tunnelId}\n` : "") +
         (desc.autostart ? `autostart yes\n` : "") +
         `target   ${desc.targetHost}:${desc.targetPort}\n` +
-        `url      ${desc.publicUrl || "—"}\n` +
+        `url      ${desc.url ?? desc.publicUrl ?? "—"}\n` +
+        `access   ${desc.access ?? "private"}\n` +
+        (desc.expiresAt ? `expires  ${desc.expiresAt}\n` : "") +
         `status   ${desc.status}\n` +
         `pid      ${desc.pid ?? "—"}\n` +
         `created  ${desc.createdAt} (${age} ago)\n` +
         (desc.stoppedAt ? `stopped  ${desc.stoppedAt}\n` : "") +
-        (desc.lastError ? `error    ${desc.lastError}\n` : ""),
+        (desc.lastError ? `error    ${desc.lastError}\n` : "") +
+        (desc.warning ? `WARNING  ${desc.warning}\n` : ""),
     )
   }
   return 0
