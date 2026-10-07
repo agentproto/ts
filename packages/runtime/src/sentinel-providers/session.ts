@@ -36,7 +36,7 @@
  * `session_list`/`session_monitor` directly.
  */
 
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import type { SessionEvent, SessionEventBus } from "../session-event-bus.js"
 import type {
   DeliveryPreference,
@@ -88,6 +88,9 @@ interface RingEntry {
 }
 
 interface SessionRing {
+  /** Unique per ring instance (i.e. per process / bus) — tags cursors so a
+   *  cursor persisted by a previous daemon is recognised as stale. */
+  epoch: string
   entries: RingEntry[]
   nextSeq: number
 }
@@ -236,12 +239,49 @@ function eventsForSessionEvent(ev: SessionEvent): SentinelEvent[] {
 function getRing(bus: SessionEventBus): SessionRing {
   const existing = ringsByBus.get(bus)
   if (existing) return existing
-  const ring: SessionRing = { entries: [], nextSeq: 0 }
+  const ring: SessionRing = { epoch: randomUUID(), entries: [], nextSeq: 0 }
   ringsByBus.set(bus, ring)
   bus.onAny(ev => {
     for (const event of eventsForSessionEvent(ev)) appendEvent(ring, event)
   })
   return ring
+}
+
+/** Cursors are `<epoch>:<seq>`. The epoch identifies the per-process ring
+ *  the seq belongs to; a persisted cursor from a previous process carries a
+ *  different epoch and must not be compared numerically against this ring. */
+function formatCursor(epoch: string, seq: number): string {
+  return `${epoch}:${seq}`
+}
+
+function parseCursor(cursor: string | undefined): { epoch: string; seq: number } | undefined {
+  if (!cursor) return undefined
+  const idx = cursor.lastIndexOf(":")
+  // A legacy bare-number cursor (pre-epoch) has no epoch → treated as stale.
+  if (idx < 0) return { epoch: "", seq: Number(cursor) }
+  const seq = Number(cursor.slice(idx + 1))
+  return { epoch: cursor.slice(0, idx), seq: Number.isFinite(seq) ? seq : -1 }
+}
+
+function synthesizeExitEvent(
+  sessionId: string,
+  subject: string,
+  info: SessionSentinelLookup | undefined,
+): SentinelEvent {
+  return makeEvent({
+    idParts: [sessionId, "exited", "already-ended-at-create"],
+    type: "session.exited",
+    subject,
+    time: new Date().toISOString(),
+    terminal: true,
+    data: {
+      sessionId,
+      status: info?.status ?? "exited",
+      ...(info?.exitCode !== undefined ? { exitCode: info.exitCode } : {}),
+      ...(info?.endedReason ? { reason: info.endedReason } : {}),
+    },
+    summary: `${info?.label ?? sessionId} had already exited${info?.endedReason ? ` (${info.endedReason})` : ""}`,
+  })
 }
 
 function identityOf(handle: SentinelHandle): string | undefined {
@@ -302,26 +342,15 @@ export function sessionSentinelProvider(deps: SessionSentinelDeps): SentinelProv
         // the terminal event now so `until: subject_terminal` still closes
         // the watch on the very first poll instead of hanging forever on a
         // session that will never emit another bus event.
-        appendEvent(
-          ring,
-          makeEvent({
-            idParts: [sessionId, "exited", "already-ended-at-create"],
-            type: "session.exited",
-            subject,
-            time: new Date().toISOString(),
-            terminal: true,
-            data: {
-              sessionId,
-              status: info.status ?? "exited",
-              ...(info.exitCode !== undefined ? { exitCode: info.exitCode } : {}),
-              ...(info.endedReason ? { reason: info.endedReason } : {}),
-            },
-            summary: `${info.label ?? sessionId} had already exited${info.endedReason ? ` (${info.endedReason})` : ""}`,
-          }),
-        )
+        appendEvent(ring, synthesizeExitEvent(sessionId, subject, info))
       }
 
-      return { provider: SESSION_SLUG, remoteId: sessionId, cursor: String(lastSeq), state: { sessionId } }
+      return {
+        provider: SESSION_SLUG,
+        remoteId: sessionId,
+        cursor: formatCursor(ring.epoch, lastSeq),
+        state: { sessionId },
+      }
     },
 
     async attach(handle: SentinelHandle, _delivery: DeliveryPreference): Promise<SentinelHandle> {
@@ -347,12 +376,33 @@ export function sessionSentinelProvider(deps: SessionSentinelDeps): SentinelProv
       const sessionId = identityOf(handle)
       if (!sessionId) return { events: [], cursor: handle.cursor ?? "-1" }
       const ring = getRing(deps.sessionEvents)
-      const lastSeq = handle.cursor ? Number(handle.cursor) : -1
       const subject = `session:${sessionId}`
+      const parsed = parseCursor(handle.cursor)
+      let lastSeq: number
+      if (parsed === undefined || parsed.epoch === ring.epoch) {
+        lastSeq = parsed?.seq ?? -1
+      } else {
+        // Stale cursor: it was minted against a previous ring (daemon
+        // restart, or a different bus) whose seq numbering is unrelated to
+        // this one. Everything in the current ring was appended after that
+        // cursor, so start from the beginning of it instead of comparing
+        // seqs across epochs (which would silently drop new events).
+        lastSeq = -1
+        // Events emitted while the daemon was down are unrecoverable. If the
+        // target is no longer alive, synthesize its terminal event so an
+        // `until: subject_terminal` sentinel still closes.
+        const info = deps.getSession(sessionId)
+        const hasTerminal = ring.entries.some(e => e.event.subject === subject && e.event.terminal)
+        if (!hasTerminal && (!info || !info.alive)) {
+          appendEvent(ring, synthesizeExitEvent(sessionId, subject, info))
+        }
+      }
       const matching = ring.entries.filter(e => e.seq > lastSeq && e.event.subject === subject)
+      // Note: if more than RING_CAP entries were evicted between polls,
+      // those events are lost silently (non-durable, see module doc).
       const slice = matching.slice(0, limit)
-      const cursor = slice.length > 0 ? String(slice[slice.length - 1]!.seq) : handle.cursor ?? String(lastSeq)
-      return { events: slice.map(e => e.event), cursor }
+      const newSeq = slice.length > 0 ? slice[slice.length - 1]!.seq : lastSeq === -1 ? ring.nextSeq - 1 : lastSeq
+      return { events: slice.map(e => e.event), cursor: formatCursor(ring.epoch, newSeq) }
     },
 
     defaultTypes(subject: string): string[] {

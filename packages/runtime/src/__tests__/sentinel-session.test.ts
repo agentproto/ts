@@ -174,6 +174,48 @@ describe("sessionSentinelProvider", () => {
     expect(result.events[0]!.summary).toContain("deploy now?")
   })
 
+  it("a stale cursor from a previous process (fresh bus) does not drop new events", async () => {
+    // Process 1: watch is created and has advanced its cursor.
+    const bus1 = createSessionEventBus()
+    const p1 = sessionSentinelProvider({ sessionEvents: bus1, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const handle = await p1.create(watchSpec("sess_child"), { mode: "poll", intervalMs: 15_000 })
+    for (let i = 0; i < 8; i++) {
+      bus1.emit({ type: "session:turn-end", sessionId: "sess_child", awaitingInput: false, ts: `2026-01-01T00:00:0${i}Z` })
+    }
+    const advanced = await p1.poll!(handle, 50)
+    expect(advanced.events).toHaveLength(8)
+    const persisted = { ...handle, cursor: advanced.cursor }
+
+    // Process 2 (daemon restart): fresh bus + ring, same persisted handle.
+    const bus2 = createSessionEventBus()
+    const p2 = sessionSentinelProvider({ sessionEvents: bus2, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    bus2.emit({ type: "session:turn-end", sessionId: "sess_child", awaitingInput: false, ts: "2026-01-02T00:00:00Z" })
+    // Ring is created lazily on first poll; emit after it exists.
+    await p2.poll!(persisted, 50)
+    bus2.emit({ type: "session:exited", sessionId: "sess_child", status: "exited", ts: "2026-01-02T00:00:01Z" })
+    const result = await p2.poll!(persisted, 50)
+    expect(result.events.some(e => e.type === "session.exited" && e.terminal)).toBe(true)
+  })
+
+  it("a stale cursor with a dead target synthesizes the terminal event", async () => {
+    const bus1 = createSessionEventBus()
+    const p1 = sessionSentinelProvider({ sessionEvents: bus1, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const handle = await p1.create(watchSpec("sess_child"), { mode: "poll", intervalMs: 15_000 })
+
+    const bus2 = createSessionEventBus()
+    const p2 = sessionSentinelProvider({
+      sessionEvents: bus2,
+      getSession: fakeLookup({ sess_child: { alive: false, status: "exited", endedReason: "operator-completed" } }),
+    })
+    const result = await p2.poll!(handle, 50)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0]!.type).toBe("session.exited")
+    expect(result.events[0]!.terminal).toBe(true)
+    // Cursor is re-tagged to the current epoch: a second poll yields nothing.
+    const again = await p2.poll!({ ...handle, cursor: result.cursor }, 50)
+    expect(again.events).toEqual([])
+  })
+
   it("session:exited produces a terminal event carrying the exit reason", async () => {
     const bus = createSessionEventBus()
     const provider = sessionSentinelProvider({ sessionEvents: bus, getSession: fakeLookup({ sess_child: { alive: true } }) })
