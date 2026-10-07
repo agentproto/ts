@@ -53,8 +53,9 @@ agentproto app pack ./my-app --release --out ./my-app.agentapp
 ```
 
 `--release` builds the UI first, leaves UI sources, docs, data, scripts,
-logs and source maps out of the bundle, and strips `ui.build` from the
-packed APP.md. Narrow the contents further with the APP.md `package` block
+tests, the root `README.md` / `CHANGELOG.md` / `CONTRIBUTING.md`, repo
+tooling config, logs and source maps out of the bundle (`LICENSE` still
+ships), and strips `ui.build` from the packed APP.md. Narrow the contents further with the APP.md `package` block
 (`include` / `exclude` globs, see `agentproto app pack`).
 
 Then host the `.agentapp` file anywhere static files are served, and:

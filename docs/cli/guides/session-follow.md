@@ -39,7 +39,9 @@ At least one of `sessionIds` (non-empty), `all: true`, `cwdPrefix` is required.
 The follower never receives its own events. By default
 (`excludeFollowerChildren: true`) it also never receives events of its own
 descendants - it already hears about those through the normal parent/child
-channel.
+channel. With `excludeFollowerChildren: false` its descendants (any depth) are
+delivered under a broad selector (`all` or `cwdPrefix`), bypassing `rootOnly`
+and `cwdPrefix`, like explicit `sessionIds`.
 
 ## Delivery
 
