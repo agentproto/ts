@@ -81,7 +81,9 @@ The extension adds two Activity Bar containers.
   **agents** and **workflows**; click one to read its `AGENT.md` /
   `WORKFLOW.md`. An app that ships a UI opens its **panel** on click (or in a
   browser tab); an agent/workflow-only app opens its `APP.md` instead. **Run
-  workflow…** on a workflow row starts it on the daemon.
+  workflow…** on a workflow row starts it on the daemon. With nothing
+  installed, the view offers **Browse the App Store**
+  (`agentproto.openStore`) instead of staying empty.
 
 ### Agentproto Lab
 
