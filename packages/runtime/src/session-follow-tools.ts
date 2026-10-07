@@ -166,8 +166,8 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       "time, so sessions spawned later are covered; root sessions only unless " +
       "`rootOnly: false`), or `cwdPrefix`. `exclude` removes ids/labels. Events " +
       "are coalesced within `batchMs` into one automatic digest message that " +
-      "never interrupts a busy follower. Your own events and your children's " +
-      "are never delivered to you. Upserts by `key` when given. Survives daemon " +
+      "never interrupts a busy follower. Your own events are never delivered to " +
+      "you; your descendants' only with `excludeFollowerChildren: false`. Upserts by `key` when given. Survives daemon " +
       "restarts.",
     {
       follower: z.string().optional().describe("Session to wake. Defaults to the calling session."),
@@ -180,7 +180,10 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
         .describe("Event kinds to deliver. Default: all of turn-end, awaiting-input, exited, crashed, pr-opened, pr-merged."),
       batchMs: z.number().int().optional().describe("Coalescing window in ms. Default 15000."),
       skipEmptyTurns: z.boolean().optional().describe("Drop silent no-op turns. Default true."),
-      excludeFollowerChildren: z.boolean().optional().describe("Ignore the follower's own descendants. Default true."),
+      excludeFollowerChildren: z.boolean().optional().describe(
+          "Ignore the follower's own descendants. Default true. `false` delivers them " +
+            "(any depth, even under `rootOnly`) — what a supervisor wants for its own children.",
+        ),
     },
     async (input: Record<string, unknown>) => {
       const result = upsertSessionFollow(
