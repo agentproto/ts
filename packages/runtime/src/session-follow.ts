@@ -18,10 +18,17 @@
  * interrupts. The follower's own events are never delivered to itself, and
  * (by default) neither are its descendants'.
  *
- * Dead follower: same approach as `sentinel-runtime.ts` — resume it through
- * the injected `restartSession` hook (never a deliberately-closed one) and
- * retry; otherwise park the digest in `~/.agentproto/follows-parked.jsonl`
- * so the events are not silently lost. The follow record is always kept.
+ * Dead follower: first check whether a live replacement already exists —
+ * either because the batch's follow(s) were re-pointed at a new follower
+ * since the events were enqueued (`store.setFollower` / `upsert` by key), or
+ * because the daemon's own lineage (`continuedTo`) already links to one —
+ * and deliver the digest there instead of reviving anything. Only when no
+ * replacement exists do we fall back to the `sentinel-runtime.ts` approach:
+ * resume through the injected `restartSession` hook (never a
+ * deliberately-closed one). Concurrent deliveries racing for the same dead
+ * id share one in-flight revival, so a stale id is never resurrected twice.
+ * Otherwise the digest parks in `~/.agentproto/follows-parked.jsonl` so the
+ * events are not silently lost. The follow record is always kept.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -319,6 +326,9 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   const batches = new Map<string, Batch>()
   const seenPrs = new Set<string>()
   const inFlight = new Set<Promise<void>>()
+  /** One in-flight `restartSession` promise per dead follower id, so two
+   *  stale batches racing for the same dead id collapse into one revival. */
+  const revivals = new Map<string, Promise<string>>()
 
   function park(followerId: string, text: string, reason: string): void {
     log(`[session-follow] follower ${followerId}: ${reason} — digest parked`)
@@ -356,7 +366,40 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     )
   }
 
-  async function reviveAndSend(followerId: string, text: string): Promise<void> {
+  /** A dead follower may already have a live replacement: its follow(s) may
+   *  have been re-pointed since this batch's events were enqueued (repoint
+   *  race), or the daemon's own lineage may already link to one. */
+  function findLiveReplacement(followerId: string, followIds: ReadonlySet<string>): string | undefined {
+    for (const followId of followIds) {
+      const follower = store.get(followId)?.follower
+      if (!follower || follower === followerId) continue
+      const desc = registry.get(follower)
+      if (desc && isAlive(desc)) return follower
+    }
+    const continuedTo = registry.get(followerId)?.continuedTo
+    if (continuedTo) {
+      const desc = registry.get(continuedTo)
+      if (desc && isAlive(desc)) return continuedTo
+    }
+    return undefined
+  }
+
+  /** Resume a dead follower's id, reusing an already in-flight revival for
+   *  the same id instead of starting a second one. */
+  function reviveOnce(followerId: string): Promise<string> {
+    const pending = revivals.get(followerId)
+    if (pending) return pending
+    const started = opts.restartSession!(followerId).finally(() => revivals.delete(followerId))
+    revivals.set(followerId, started)
+    return started
+  }
+
+  async function reviveAndSend(followerId: string, text: string, followIds: ReadonlySet<string>): Promise<void> {
+    const replacement = findLiveReplacement(followerId, followIds)
+    if (replacement) {
+      await sendOnce(replacement, text, replacement)
+      return
+    }
     const desc = registry.get(followerId)
     if (desc?.endedReason && DELIBERATE_END_REASONS.has(desc.endedReason)) {
       park(followerId, text, `follower was closed on purpose (${desc.endedReason}); not resuming`)
@@ -367,7 +410,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       return
     }
     try {
-      const resumed = await opts.restartSession(followerId)
+      const resumed = await reviveOnce(followerId)
       if (resumed !== followerId) {
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
       }
@@ -377,21 +420,21 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     }
   }
 
-  async function deliver(followerId: string, text: string): Promise<void> {
+  async function deliver(followerId: string, text: string, followIds: ReadonlySet<string>): Promise<void> {
     const desc = registry.get(followerId)
     if (!desc) {
       log(`[session-follow] follower ${followerId} no longer exists — digest dropped (follow kept)`)
       return
     }
     if (!isAlive(desc)) {
-      await reviveAndSend(followerId, text)
+      await reviveAndSend(followerId, text, followIds)
       return
     }
     try {
       await sendOnce(followerId, text, followerId)
     } catch (err) {
       if (err instanceof SessionNotAliveError) {
-        await reviveAndSend(followerId, text)
+        await reviveAndSend(followerId, text, followIds)
         return
       }
       log(`[session-follow] delivery to ${followerId} failed: ${describeError(err)}`)
@@ -405,7 +448,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     clearTimer(batch.timer)
     if (batch.entries.length === 0) return Promise.resolve()
     const text = formatFollowDigest(batch.entries, textFor, id => registry.get(id))
-    const p = deliver(followerId, text)
+    const p = deliver(followerId, text, batch.followIds)
       .catch(err => log(`[session-follow] flush for ${followerId} failed: ${describeError(err)}`))
       .finally(() => inFlight.delete(p))
     inFlight.add(p)
