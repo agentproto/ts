@@ -159,6 +159,26 @@ describe("agentproto workflow", () => {
       expect(out).toContain("Stage 0")
     })
 
+    it("names each step by its label (the map item's `reviewOne[3]`), like MCP workflow_status", async () => {
+      httpGetJson.mockResolvedValue({
+        ...RUN,
+        stages: [
+          {
+            index: 0,
+            status: "done",
+            steps: [
+              { index: 2, label: "reviewOne[3]", status: "failed", error: "boom" },
+              { index: 2, label: "reviewOne[4]", status: "skipped" },
+            ],
+          },
+        ],
+      })
+      expect(await runWorkflow(["status", "wf_1"])).toBe(0)
+      const out = stdoutChunks.join("")
+      expect(out).toContain("step reviewOne[3]: failed — boom")
+      expect(out).toContain("step reviewOne[4]: skipped")
+    })
+
     it("exits 3 on 404", async () => {
       httpGetJson.mockRejectedValue(new Error("HTTP 404: run not found"))
       const code = await runWorkflow(["status", "wf_x"])

@@ -14,7 +14,7 @@
  */
 
 import { execFile } from "node:child_process"
-import { existsSync, mkdirSync, realpathSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
@@ -111,6 +111,46 @@ export async function removeReviewWorktrees(input: { repoRoot: string; paths: re
   }
   await git(repoRoot, ["worktree", "prune"])
   return { removed }
+}
+
+/** `gitdir: <path>` file contents → the path (relative ones resolve against `base`). */
+function readGitdirPointer(file: string, base: string): string | undefined {
+  try {
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(file, "utf8"))
+    return m ? resolve(base, m[1]!) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The read-only fs zones a session working in review worktree `path` needs:
+ * the worktree itself and its repo's git common dir (object store, refs —
+ * every `git log/show/diff` reads them). Undefined unless `path` is a real
+ * review worktree, proven both ways: its `.git` file points at
+ * `<common>/worktrees/<name>`, AND that admin dir's `gitdir` file points
+ * back at `<path>/.git`. A `.git` file planted in the review root (OS tmp is
+ * writable from most sandboxes) cannot forge the back-pointer inside a
+ * repo it cannot write, so it cannot widen a boundary to an arbitrary tree.
+ */
+export function reviewWorktreeReadZones(path: string): { worktree: string; gitCommonDir: string } | undefined {
+  if (!isReviewWorktreePath(path)) return undefined
+  const worktree = canonical(path)
+  const adminDir = readGitdirPointer(join(worktree, ".git"), worktree)
+  if (!adminDir || !existsSync(adminDir)) return undefined
+  let backPointer: string
+  try {
+    // A bare path, unlike the worktree's own `gitdir: <path>` file.
+    backPointer = resolve(adminDir, readFileSync(join(adminDir, "gitdir"), "utf8").trim())
+  } catch {
+    return undefined
+  }
+  if (canonical(backPointer) !== join(worktree, ".git")) return undefined
+  const adminCanon = canonical(adminDir)
+  if (basename(dirname(adminCanon)) !== "worktrees") return undefined
+  const gitCommonDir = dirname(dirname(adminCanon))
+  if (basename(gitCommonDir) !== ".git" || !existsSync(join(gitCommonDir, "objects"))) return undefined
+  return { worktree, gitCommonDir }
 }
 
 /**

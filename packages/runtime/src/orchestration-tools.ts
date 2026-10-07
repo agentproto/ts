@@ -36,6 +36,7 @@ import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { WorkflowRun } from "./workflow-runner.js"
+import type { RoutineStepState } from "./step-run-types.js"
 import type { ActivityRecord } from "./activity-projection.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
@@ -706,19 +707,90 @@ function truncateCompactError(error: string): string {
   return `${error.slice(0, COMPACT_ERROR_MAX_CHARS)}… [${dropped} more chars — pass full: true]`
 }
 
+/** Compact `run.output`: a top-level value whose JSON exceeds this is cut (a
+ *  string) or replaced by a size marker (anything else) — the maintain
+ *  workflow's `branchGcApply` alone is ~150k chars. `full: true` has it all. */
+export const COMPACT_OUTPUT_VALUE_MAX_CHARS = 8_000
+
+function compactRunOutput(output: unknown): unknown {
+  if (output === null || typeof output !== "object" || Array.isArray(output)) {
+    return compactOutputValue(output)
+  }
+  return Object.fromEntries(Object.entries(output).map(([k, v]) => [k, compactOutputValue(v)]))
+}
+
+function compactOutputValue(v: unknown): unknown {
+  if (typeof v === "string") {
+    if (v.length <= COMPACT_OUTPUT_VALUE_MAX_CHARS) return v
+    return `${v.slice(0, COMPACT_OUTPUT_VALUE_MAX_CHARS)}… [${v.length - COMPACT_OUTPUT_VALUE_MAX_CHARS} more chars — pass full: true]`
+  }
+  const json = v === undefined ? undefined : JSON.stringify(v)
+  if (json === undefined || json.length <= COMPACT_OUTPUT_VALUE_MAX_CHARS) return v
+  return `[${Array.isArray(v) ? "array" : typeof v}, ${json.length} chars — pass full: true]`
+}
+
+/** A compact step row: no `output`, no gate `report` body. A row standing for
+ *  a run of consecutive skipped steps that share one `skipReason` carries
+ *  `collapsedSteps` (how many) and a `first … last` label. */
+export type CompactWorkflowStep = Omit<RoutineStepState, "output" | "gateReport"> & {
+  gateReport?: { ok: boolean; exitCode: number; attempt: number; report: undefined }
+  collapsedSteps?: number
+}
+
+export type CompactWorkflowRunStatus = Omit<WorkflowRun, "artifacts" | "startStages" | "stages"> & {
+  artifacts?: { key: string; path: string; size: number }[]
+  stages: Array<Omit<WorkflowRun["stages"][number], "steps"> & { steps: CompactWorkflowStep[] }>
+}
+
+/** Compact a stage's step rows. A spawn circuit breaker skips every step of
+ *  every unstarted fan-out item with the SAME long reason (dogfood: 30 rows ×
+ *  ~750 chars) — consecutive skipped rows sharing a reason fold into one row,
+ *  and a reason already shown in full is not repeated further down. */
+function compactSteps(steps: readonly RoutineStepState[]): CompactWorkflowStep[] {
+  const out: CompactWorkflowStep[] = []
+  /** skipReason → label of the row that shows it in full. */
+  const shownAt = new Map<string, string>()
+  let openRun: { row: CompactWorkflowStep; reason: string; firstLabel: string } | undefined
+  for (const step of steps) {
+    const { output: _output, gateReport, ...rest } = step
+    if (rest.status === "skipped" && rest.skipReason !== undefined && openRun?.reason === rest.skipReason) {
+      openRun.row.collapsedSteps = (openRun.row.collapsedSteps ?? 1) + 1
+      openRun.row.label = `${openRun.firstLabel} … ${rest.label}`
+      continue
+    }
+    const row: CompactWorkflowStep = {
+      ...rest,
+      ...(rest.error !== undefined ? { error: truncateCompactError(rest.error) } : {}),
+      ...(gateReport !== undefined
+        ? { gateReport: { ok: gateReport.ok, exitCode: gateReport.exitCode, attempt: gateReport.attempt, report: undefined } }
+        : {}),
+    }
+    if (rest.skipReason !== undefined) {
+      const firstLabel = shownAt.get(rest.skipReason)
+      row.skipReason = firstLabel !== undefined ? `(same as ${firstLabel})` : truncateCompactError(rest.skipReason)
+      if (firstLabel === undefined) shownAt.set(rest.skipReason, rest.label)
+    }
+    openRun =
+      rest.status === "skipped" && rest.skipReason !== undefined
+        ? { row, reason: rest.skipReason, firstLabel: rest.label }
+        : undefined
+    out.push(row)
+  }
+  return out
+}
+
 /**
  * AIP-58 §9 `run.get` compact boundary applied to `workflow_status`'s FULL
  * per-run detail (distinct from `compactWorkflowRun` above, which compacts
  * a `workflow_list` ROW summary): strips each step's raw `output` and a gate
  * step's full `report` body (the "big bodies" a UI polling for status
- * shouldn't pay for on every call) while keeping
- * status/timestamps/error (capped, F30)/sessionId/suspend/hint — everything a caller
- * needs to know WHAT happened, without the full payload of what a step
- * produced.
+ * shouldn't pay for on every call), folds runs of identically-skipped steps
+ * into one row (see {@link compactSteps}) and caps oversized `run.output`
+ * values, while keeping status/timestamps/error (capped, F30)/sessionId/
+ * suspend/hint — everything a caller needs to know WHAT happened, without
+ * the full payload of what a step produced.
  */
-export function compactWorkflowRunStatus(
-  run: WorkflowRun,
-): Omit<WorkflowRun, "artifacts" | "startStages"> & { artifacts?: { key: string; path: string; size: number }[] } {
+export function compactWorkflowRunStatus(run: WorkflowRun): CompactWorkflowRunStatus {
   // `startStages` is pure internal plumbing (AIP-58 §6 `retry()`'s own
   // source-reconstruction record) — never useful to a caller polling status,
   // and potentially large (every step's full prompt text). Dropped even
@@ -729,25 +801,13 @@ export function compactWorkflowRunStatus(
   return {
     ...rest,
     ...(run.error !== undefined ? { error: truncateCompactError(run.error) } : {}),
+    ...(run.output !== undefined ? { output: compactRunOutput(run.output) } : {}),
     // AIP-58 §4 — compact projection of Run.artifacts[]: key/path/size only
     // (sha256/contentType/stepId are `full: true` detail).
     ...(run.artifacts !== undefined
       ? { artifacts: run.artifacts.map(a => ({ key: a.key, path: a.path, size: a.size })) }
       : {}),
-    stages: run.stages.map(stage => ({
-      ...stage,
-      steps: stage.steps.map(step => {
-        const { output: _output, gateReport, ...rest } = step
-        return {
-          ...rest,
-          ...(rest.error !== undefined ? { error: truncateCompactError(rest.error) } : {}),
-          ...(rest.skipReason !== undefined ? { skipReason: truncateCompactError(rest.skipReason) } : {}),
-          ...(gateReport !== undefined
-            ? { gateReport: { ok: gateReport.ok, exitCode: gateReport.exitCode, attempt: gateReport.attempt, report: undefined } }
-            : {}),
-        }
-      }),
-    })),
+    stages: run.stages.map(stage => ({ ...stage, steps: compactSteps(stage.steps) })),
   }
 }
 

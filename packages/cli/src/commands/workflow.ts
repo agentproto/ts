@@ -648,6 +648,15 @@ interface WorkflowRunShape {
   stages?: Array<Record<string, unknown>>
 }
 
+/** A run step's display name: its label (the step id, `reviewOne[3]` for a
+ *  map item — what MCP `workflow_status` shows), else the id, else the index. */
+export function stepName(step: Record<string, unknown>): string {
+  for (const key of ["label", "id", "index"] as const) {
+    if (step[key] !== undefined && step[key] !== null && step[key] !== "") return String(step[key])
+  }
+  return "?"
+}
+
 function printRun(run: WorkflowRunShape, json: boolean): number {
   if (json) {
     process.stdout.write(JSON.stringify(run, null, 2) + "\n")
@@ -671,8 +680,7 @@ function printRun(run: WorkflowRunShape, json: boolean): number {
     for (const step of (stage["steps"] as Array<Record<string, unknown>>) ?? []) {
       const sid = step["sessionId"] ? ` · session ${String(step["sessionId"])}` : ""
       const err = step["error"] ? ` — ${String(step["error"])}` : ""
-      const stepId = step["id"] !== undefined ? String(step["id"]) : String(step["index"] ?? "?")
-      out += `    step ${stepId}: ${String(step["status"])}${sid}${err}\n`
+      out += `    step ${stepName(step)}: ${String(step["status"])}${sid}${err}\n`
     }
   }
   process.stdout.write(out.replace(/\n$/, "") + "\n")

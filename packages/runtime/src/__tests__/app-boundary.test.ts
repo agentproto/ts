@@ -12,9 +12,9 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir, userInfo } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -34,6 +34,7 @@ import type { AgentAdapterResolver } from "../http-server.js"
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { SessionsRegistryAgentHost } from "../sessions-registry-agent-host.js"
+import { addReviewWorktree, removeReviewWorktrees, reviewWorktreeRoot } from "../review-worktree.js"
 
 let base: string
 let daemonWorkspace: string
@@ -343,6 +344,72 @@ describe("app-workflow step session (SessionsRegistryAgentHost + boundary)", () 
     })
     expect(allowed.isError).toBeFalsy()
     expect(readFileSync(join(appDir, "scripts", "dedup_vtt.py"), "utf8")).toBe("original")
+  })
+
+  describe("a step spawned in a review worktree (maintain's reviewOne)", () => {
+    // The maintained repo IS the daemon workspace (hidden) — the dogfood case:
+    // `agentproto maintain --repo <the daemon's own workspace>`.
+    let worktree: string
+    let sha: string
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim()
+    beforeEach(async () => {
+      git(daemonWorkspace, "init", "-q", "-b", "main")
+      git(daemonWorkspace, "-c", "user.email=t@e.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init")
+      writeFileSync(join(daemonWorkspace, "feature.txt"), "branch work\n")
+      git(daemonWorkspace, "add", "feature.txt")
+      git(daemonWorkspace, "-c", "user.email=t@e.com", "-c", "user.name=T", "commit", "-q", "-m", "feature")
+      sha = git(daemonWorkspace, "rev-parse", "HEAD")
+      worktree = (await addReviewWorktree({ repoRoot: daemonWorkspace, path: join(reviewWorktreeRoot(), `appboundary-${process.pid}-${sha}`), sha })).path
+    })
+    afterEach(async () => {
+      await removeReviewWorktrees({ repoRoot: daemonWorkspace, paths: [worktree] })
+    })
+
+    it("passes the boundary check and gets the worktree + the repo's git dir as read-only zones", async () => {
+      const { host, registry, startSession } = hostFixture({ supportsFsZones: true }, makeBoundary())
+      const id = await host.spawn("mock", { stepId: "reviewOne", cwd: worktree })
+      const args = startSession.mock.calls[0]![0] as { cwd: string; fsZones?: { readOnly: string[]; writable: string[] } }
+      expect(args.cwd).toBe(worktree)
+      const gitDir = join(realpathSync(daemonWorkspace), ".git")
+      const recovered = boundaryFromMeta(registry.get(id)?.meta)!
+      expect(recovered.readOnly).toEqual([appDir, worktree, gitDir])
+      expect(recovered.writable).toEqual([dataDir, runWorkspace])
+      if (resolveCommandSandbox() !== null) expect(args.fsZones?.readOnly).toEqual([appDir, worktree, gitDir])
+    })
+
+    it("a look-alike dir in the review root whose .git points at a repo that never registered it is still refused", async () => {
+      const fake = join(reviewWorktreeRoot(), `appboundary-fake-${process.pid}`)
+      mkdirSync(fake, { recursive: true })
+      try {
+        const adminDir = join(daemonWorkspace, ".git", "worktrees", basename(worktree))
+        writeFileSync(join(fake, ".git"), `gitdir: ${adminDir}\n`)
+        const { host, startSession } = hostFixture({ supportsFsZones: true }, makeBoundary())
+        await expect(host.spawn("mock", { stepId: "reviewOne", cwd: fake })).rejects.toThrow(/app_boundary_cwd_outside/)
+        expect(startSession).not.toHaveBeenCalled()
+      } finally {
+        rmSync(fake, { recursive: true, force: true })
+      }
+    })
+
+    it.skipIf(!canRunSandbox)("git reads the branch under the OS sandbox; writes to the shared repo stay denied", async () => {
+      const { host, startSession } = hostFixture({ supportsFsZones: true }, makeBoundary())
+      await host.spawn("mock", { stepId: "reviewOne", cwd: worktree })
+      const zones = (startSession.mock.calls[0]![0] as { fsZones: { readOnly: string[]; writable: string[]; hidden: string[] } }).fsZones
+      const sb = resolveCommandSandbox()!
+      const run = (...argv: string[]): boolean => {
+        const wrapped = sb.wrap(argv, { workspace: worktree, extraReadPaths: [], zones, network: "allow" })
+        try {
+          execFileSync(wrapped[0]!, wrapped.slice(1), { stdio: "pipe" })
+          return true
+        } catch {
+          return false
+        }
+      }
+      expect(run("git", "-C", worktree, "show", "--stat", sha)).toBe(true)
+      expect(run("git", "-C", worktree, "log", "--oneline", "-2")).toBe(true)
+      expect(run("git", "-C", worktree, "branch", "reviewer-was-here", sha)).toBe(false)
+      expect(git(daemonWorkspace, "branch", "--list", "reviewer-was-here")).toBe("")
+    })
   })
 
   it.skipIf(!canRunSandbox)(
