@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { TunnelRegistry, type TunnelDescriptor } from "../tunnel-registry.js"
@@ -357,6 +357,23 @@ describe("TunnelRegistry", () => {
       require("fs").readFileSync(persistPath, "utf8"),
     ) as { tunnels: TunnelDescriptor[] }
     expect(raw.tunnels).toHaveLength(1)
+  })
+
+  it("never persists the signed url (bearer token) to tunnels.json", async () => {
+    const persistPath = join(tmp, "tunnels.json")
+    const { reg } = makeRegistry(tmp)
+
+    const desc = await createOne(reg)
+    expect(desc.url).toMatch(/\?t=.+/) // the in-memory descriptor still has it
+
+    await reg.shutdown()
+
+    const raw = JSON.parse(
+      require("fs").readFileSync(persistPath, "utf8"),
+    ) as { tunnels: Array<Record<string, unknown>> }
+    expect(raw.tunnels).toHaveLength(1)
+    expect(raw.tunnels[0]).not.toHaveProperty("url")
+    expect((statSync(persistPath).mode & 0o777)).toBe(0o600)
   })
 
   // ── named provider + autostart ───────────────────────────────────────────────

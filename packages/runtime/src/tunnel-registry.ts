@@ -21,7 +21,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs"
+import { chmodSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
@@ -540,7 +540,15 @@ export class TunnelRegistry {
 
   private persistNow(): void {
     try {
-      const all = Array.from(this.tunnels.values()).map(e => e.desc)
+      // `url` carries the live guard token — never write a bearer secret to
+      // disk. It costs nothing to drop: the guard is rebuilt with a FRESH
+      // secret on every restart (see startEntry), so a persisted token
+      // would already be dead on the next boot, just sitting there as a
+      // leak risk in the meantime.
+      const all = Array.from(this.tunnels.values()).map(e => {
+        const { url: _url, ...rest } = e.desc
+        return rest
+      })
       // Newest first, capped to HISTORY_CAP.
       const sliced = all.slice(-HISTORY_CAP)
       const payload: PersistedTunnels = {
@@ -548,7 +556,13 @@ export class TunnelRegistry {
         tunnels: sliced,
       }
       mkdirSync(dirname(this.persistPath), { recursive: true })
-      writeFileSync(this.persistPath, JSON.stringify(payload, null, 2) + "\n", "utf8")
+      // Owner-only: even without `url`, a named tunnel's `credentialsFile`
+      // path and hostname are sensitive enough to keep off other accounts.
+      writeFileSync(this.persistPath, JSON.stringify(payload, null, 2) + "\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      })
+      chmodSync(this.persistPath, 0o600)
     } catch {
       // Best-effort persistence — a write failure must not crash the daemon.
     }

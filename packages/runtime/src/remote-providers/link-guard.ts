@@ -126,6 +126,37 @@ function splitUrl(raw: string): { path: string; search: string } {
     : { path: raw.slice(0, qIdx), search: raw.slice(qIdx + 1) }
 }
 
+/**
+ * Decode percent-encoding (repeatedly, so a doubly-encoded `%2540fs` is
+ * also caught) and collapse repeated slashes, so the sensitive-path block
+ * below can't be bypassed via `/%40fs/etc/passwd`, `//@fs/…`, or
+ * `/app.js%2Emap`. Malformed encoding is left as-is rather than thrown —
+ * {@link SENSITIVE_PATH_RE} is still checked against the ORIGINAL raw path
+ * too, so a decode failure never widens what gets through, only what gets
+ * normalized.
+ */
+function normalizeForSensitiveCheck(path: string): string {
+  let out = path
+  for (let i = 0; i < 3; i++) {
+    let decoded: string
+    try {
+      decoded = decodeURIComponent(out)
+    } catch {
+      break
+    }
+    if (decoded === out) break
+    out = decoded
+  }
+  return out.replace(/\/{2,}/g, "/")
+}
+
+function isSensitivePath(path: string): boolean {
+  return (
+    SENSITIVE_PATH_RE.test(path) ||
+    SENSITIVE_PATH_RE.test(normalizeForSensitiveCheck(path))
+  )
+}
+
 function readCookieToken(req: IncomingMessage): string | undefined {
   const header = req.headers.cookie
   if (!header) return undefined
@@ -199,6 +230,9 @@ export function createLinkGuard(opts: LinkGuardOptions): LinkGuard {
         res.end("bad gateway")
       }
     })
+    // A client that disconnects mid-request (closed tab, dead tunnel hop)
+    // must not leave the upstream request running indefinitely.
+    res.on("close", () => proxyReq.destroy())
     req.pipe(proxyReq)
   }
 
@@ -206,7 +240,7 @@ export function createLinkGuard(opts: LinkGuardOptions): LinkGuard {
     const rawUrl = req.url ?? "/"
     const { path, search } = splitUrl(rawUrl)
 
-    if (SENSITIVE_PATH_RE.test(path)) {
+    if (isSensitivePath(path)) {
       res.writeHead(403, { "content-type": "text/plain", "x-robots-tag": "noindex" })
       res.end("blocked: sensitive dev-server path")
       return

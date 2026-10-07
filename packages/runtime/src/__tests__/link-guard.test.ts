@@ -126,6 +126,24 @@ describe("createLinkGuard", () => {
     expect(map.status).toBe(403)
   })
 
+  it("blocks percent-encoded and doubly-encoded variants of the same sensitive paths", async () => {
+    const { base, handle } = await setup()
+    const first = await fetch(`${base}/?t=${handle.token}`, { redirect: "manual" })
+    const cookie = readSetCookie(first)!.split(";")[0]!
+
+    const encoded = await fetch(`${base}/%40fs/etc/passwd`, { headers: { cookie } })
+    expect(encoded.status).toBe(403)
+
+    const doubly = await fetch(`${base}/%2540fs/etc/passwd`, { headers: { cookie } })
+    expect(doubly.status).toBe(403)
+
+    const doubleSlash = await fetch(`${base}//@fs/etc/passwd`, { headers: { cookie } })
+    expect(doubleSlash.status).toBe(403)
+
+    const encodedMap = await fetch(`${base}/app.js%2Emap`, { headers: { cookie } })
+    expect(encodedMap.status).toBe(403)
+  })
+
   it("revoke invalidates the previous token and cookie immediately", async () => {
     const { base, guard, handle } = await setup()
     const first = await fetch(`${base}/?t=${handle.token}`, { redirect: "manual" })
