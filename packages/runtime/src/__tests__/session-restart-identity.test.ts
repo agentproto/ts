@@ -156,33 +156,42 @@ describe("restartAgentSession — mcpServers callerSessionId identity stamp", ()
     expect(sentServers?.[0]?.ref).not.toContain(prev.id)
   })
 
-  it("strips the stale OLD stamp even when daemonMcpUrl is unknown (never replaced, but never left wrong)", async () => {
+  it("NEVER strips to no-identity when daemonMcpUrl is unknown — falls back to carrying mcpServers through untouched", async () => {
+    // Supervisor-review regression: an earlier version of this fix stripped
+    // the stale stamp unconditionally and only re-stamped when `daemonMcpUrl`
+    // was known — so a caller that forgot to thread `daemonMcpUrl` (as
+    // `makeRestartForRouting`/the cron scheduler's `prompt-session` action
+    // both did before being fixed) left the restarted session with NO
+    // identity at all on its daemon mount. That's worse than the pre-fix
+    // bug: the stale id at least resolved to a real (if dead) session for
+    // `message_parent`/auto-parent; no id resolves to nothing. An absent
+    // `daemonMcpUrl` must be a pure no-op on `mcpServers`.
     const { resolver } = makeResolver()
     const registry = createSessionsRegistry({ persist: false })
     const daemonMcpUrl = "http://127.0.0.1:4848/mcp"
+    const staleRef = `${daemonMcpUrl}?callerSessionId=PLACEHOLDER`
     const prev = registry.spawnAgent({
       workspaceSlug: "default",
       cwd: "/tmp",
       agentSession: fakeAgentSession(),
       adapterSlug: "hermes",
-      mcpServers: [
-        { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=placeholder` },
-      ],
+      mcpServers: [{ name: "agentproto", transport: "http", ref: staleRef }],
     })
     prev.mcpServers = [
       { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${prev.id}` },
     ]
 
     // No `daemonMcpUrl` passed — the restart doesn't know the daemon's own
-    // URL, so it can't re-stamp, but must never leave the OLD id attached.
+    // URL, so it can't safely re-identify the mount.
     const restarted = await restartAgentSession(registry, resolver, prev, {
       forceAgentResume: true,
       loadDefaultsConfig: NOOP_DEFAULTS,
     })
 
     const storedRef = restarted.desc.mcpServers?.[0]?.ref
-    expect(storedRef).not.toContain(prev.id)
-    expect(storedRef).not.toContain("callerSessionId=")
+    // Carried through exactly as `prev` had it — stale id and all — never
+    // stripped to a bare, identity-less entry.
+    expect(storedRef).toBe(`${daemonMcpUrl}?callerSessionId=${prev.id}`)
   })
 
   it("leaves a caller's explicit third-party callerSessionId pin untouched (not our stamp to strip)", async () => {

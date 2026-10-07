@@ -1179,7 +1179,16 @@ function bootResumeConcurrency(): number {
  *   - INBOUND (watcher + push router) is a HUMAN writing to the session —
  *     explicit intent, so a deliberate end may still be revived in place. */
 export function makeRestartForRouting(
-  deps: { sessions: SessionsRegistry; resolveAgentAdapter: AgentAdapterResolver | undefined },
+  deps: {
+    sessions: SessionsRegistry
+    resolveAgentAdapter: AgentAdapterResolver | undefined
+    /** Daemon's own `/mcp` base URL — threaded into `restartPreferInPlace` so
+     *  a new-id restart re-stamps `mcpServers`' `callerSessionId` with the
+     *  FRESH session's id instead of either keeping the dead OLD id or (worse)
+     *  silently stripping it to no identity at all — see
+     *  `RestartAgentSessionOptions.daemonMcpUrl`'s doc (session-restart-core.ts). */
+    daemonMcpUrl?: string
+  },
   config: { name: string; allowDeliberateEnd: boolean },
 ): (id: string) => Promise<string> {
   return async (id: string): Promise<string> => {
@@ -1195,6 +1204,7 @@ export function makeRestartForRouting(
     const restarted = await restartPreferInPlace(deps.sessions, deps.resolveAgentAdapter, desc, {
       forceAgentResume: true,
       allowDeliberateEnd: config.allowDeliberateEnd,
+      ...(deps.daemonMcpUrl ? { daemonMcpUrl: deps.daemonMcpUrl } : {}),
     })
     return restarted.desc.id
   }
@@ -2254,6 +2264,7 @@ export async function createGateway(
   const cronScheduler = createCronScheduler({
     sessionEvents,
     registry: sessions,
+    daemonMcpUrl,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -2604,11 +2615,11 @@ export async function createGateway(
   //   - INBOUND (watcher + push router) is a HUMAN writing to the session —
   //     explicit intent, so a deliberate end may still be revived in place.
   const restartSentinelSession = makeRestartForRouting(
-    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter },
+    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter, daemonMcpUrl },
     { name: "restartSentinelSession", allowDeliberateEnd: false },
   )
   const restartInboundSession = makeRestartForRouting(
-    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter },
+    { sessions, resolveAgentAdapter: opts.resolveAgentAdapter, daemonMcpUrl },
     { name: "restartInboundSession", allowDeliberateEnd: true },
   )
 

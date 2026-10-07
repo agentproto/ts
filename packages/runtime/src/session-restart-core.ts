@@ -521,9 +521,16 @@ export interface RestartAgentSessionOptions {
    *  `RegisterAgentToolsOptions.daemonMcpUrl` / `SpawnAgentSessionDeps`'s own
    *  threading. Lets the carried-forward `mcpServers` be re-stamped with the
    *  FRESH session's id (see `stampDaemonCallerSessionId`) instead of staying
-   *  pinned to the OLD (now-dead) session's id. Omitted ⇒ the stale stamp is
-   *  still stripped (`stripOwnCallerStamp`) but never replaced — same as a
-   *  daemon with no `/mcp` URL configured. */
+   *  pinned to the OLD (now-dead) session's id. Every production restart path
+   *  should wire this (`POST /sessions/:id/restart`, `session_restart`,
+   *  `makeRestartForRouting`'s sentinel/inbound hooks, the cron scheduler's
+   *  `prompt-session` action — all in index.ts, mirroring `daemonMcpUrl`'s own
+   *  construction there). Omitted ⇒ `mcpServers` is carried forward UNTOUCHED
+   *  (neither stripped nor re-stamped) — an absent URL means this restart
+   *  can't safely re-identify the mount, so it deliberately falls back to the
+   *  pre-fix behaviour (stale-but-present identity) rather than stripping to
+   *  no identity at all, and logs loudly so a caller that forgot to wire it
+   *  shows up in the daemon's own log. */
   daemonMcpUrl?: string
 }
 
@@ -884,16 +891,37 @@ export async function restartAgentSession(
   // to the wrong follower). Strip the stale stamp (`stripOwnCallerStamp`,
   // same helper `continueAgentSessionFresh` uses) and re-stamp with THIS
   // restart's own fresh id (`stampDaemonCallerSessionId`, shared with
-  // `spawnAgentSession`'s identity-stamp block) whenever the daemon's `/mcp`
-  // URL is known.
+  // `spawnAgentSession`'s identity-stamp block).
+  //
+  // Both steps need the daemon's OWN `/mcp` URL — stripping alone (no
+  // restamp) would leave the entry with NO identity at all, which is WORSE
+  // than the stale stamp: every caller of this function is expected to
+  // thread `daemonMcpUrl` through (HTTP route, MCP verb, `makeRestartForRouting`
+  // (index.ts) for the sentinel/inbound paths, and the cron scheduler's
+  // `prompt-session` action), but a caller that forgets must never silently
+  // erase the only identity the mount had — the stale-but-present id at
+  // least resolves to a real (if dead) session, same as before this fix
+  // existed. So an absent `daemonMcpUrl` is a no-op here: `prev.mcpServers`
+  // rides through completely untouched, and the gap is logged loudly so a
+  // caller that forgot to wire `daemonMcpUrl` shows up in the daemon's own
+  // log rather than silently degrading identity.
   const buildRestartMcpServers = (newSessionId: string): SessionDescriptor["mcpServers"] => {
+    if (!opts.daemonMcpUrl) {
+      if (prev.mcpServers && prev.mcpServers.length > 0) {
+        console.warn(
+          `[restartAgentSession] no daemonMcpUrl wired for restart of ${prev.id} — ` +
+            `carrying mcpServers forward WITHOUT re-stamping callerSessionId (the ` +
+            `restarted session ${newSessionId} will keep speaking to the daemon under ` +
+            `the OLD session's identity).`,
+        )
+      }
+      return prev.mcpServers
+    }
     const stripped = stripOwnCallerStamp(prev.mcpServers, prev.id)
-    return opts.daemonMcpUrl
-      ? stampDaemonCallerSessionId(stripped, {
-          daemonMcpUrl: opts.daemonMcpUrl,
-          callerSessionId: newSessionId,
-        })
-      : stripped
+    return stampDaemonCallerSessionId(stripped, {
+      daemonMcpUrl: opts.daemonMcpUrl,
+      callerSessionId: newSessionId,
+    })
   }
 
   const spawnWithResume = async (
