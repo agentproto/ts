@@ -25,6 +25,12 @@ describe("renderAppUiBuildingHtml", () => {
     expect(html).toMatch(/<meta http-equiv="refresh" content="\d+">/)
   })
 
+  it("actively reloads an HTTP host when embedded browsers ignore meta refresh", () => {
+    const html = renderAppUiBuildingHtml({ appName: "Model Bench", startedAt: Date.now() })
+    expect(html).toContain('window.location.protocol === "http:"')
+    expect(html).toContain("window.location.reload()")
+  })
+
   it("escapes the app name (no markup injection via a hostile install)", () => {
     const html = renderAppUiBuildingHtml({ appName: '<script>alert(1)</script>', startedAt: Date.now() })
     expect(html).not.toContain("<script>alert(1)</script>")
