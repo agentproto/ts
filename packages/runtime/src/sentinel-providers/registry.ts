@@ -60,7 +60,19 @@ export const BUILTIN_SENTINEL_SLUGS: readonly string[] = [LOCAL_GH_SLUG, WEBHOOK
  * `index.ts` calls this ONCE — right after its `sessions` registry exists —
  * to install `BUILTIN_SENTINEL_PROVIDERS[session]` for real. Before that
  * call (or in a test gateway that never makes it), `resolveSentinelProvider
- * ("session")` returns null, same as any other not-yet-installed slug. */
+ * ("session")` returns null, same as any other not-yet-installed slug.
+ *
+ * Last-write-wins on `BUILTIN_SENTINEL_PROVIDERS` itself (a module-level
+ * mutable singleton): multiple `createGateway()` calls in ONE process (e.g.
+ * several gateways stood up across a test run) each overwrite the slug with
+ * their own `deps`, so only the most-recently-configured gateway's `session`
+ * provider is actually reachable process-wide. Same tradeoff this file's
+ * sibling `sentinel-public-url.ts`'s `setSentinelPublicUrlSource` already
+ * makes for its own single daemon-wide resolver — acceptable because this
+ * repo doesn't run two production gateways in one process, and because
+ * `sessionSentinelProvider(deps)` can always be constructed directly with
+ * explicit `deps` for a test that needs several gateways side by side (see
+ * `sentinel-session.test.ts`), bypassing this global entirely. */
 export function configureSessionSentinelProvider(deps: SessionSentinelDeps): void {
   BUILTIN_SENTINEL_PROVIDERS[SESSION_SLUG] = () => sessionSentinelProvider(deps)
 }

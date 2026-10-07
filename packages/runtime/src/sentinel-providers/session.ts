@@ -11,10 +11,11 @@
  * in-process `SessionEventBus` (`session-event-bus.ts`). The provider still
  * fits the poll-mode contract (`capabilities.poll: true`) so it reuses
  * `sentinel-runtime.ts`'s existing dedup/lifetime/dead-session machinery
- * unchanged: a bus subscription (set up once, see {@link getBuffer}) feeds a
+ * unchanged: a bus subscription (set up once, see {@link getRing}) feeds a
  * capped in-memory ring buffer of already-normalized {@link SentinelEvent}s,
- * and `poll()` just slices that buffer by a numeric cursor — the same shape
- * `fake.ts`'s test provider uses, except the stream is real.
+ * and `poll()` just slices that buffer by cursor — the same shape `fake.ts`'s
+ * test provider uses, except the stream is real (and the cursor carries a
+ * process-epoch tag — see further down).
  *
  * Wiring note: every other builtin factory in `registry.ts` is
  * `(creds) => handle` — this provider needs the session event bus AND a
@@ -34,9 +35,25 @@
  * supervisor that genuinely needs to survive daemon restarts should prefer
  * `session_follow` (which has its own, separate dead-letter parking) or poll
  * `session_list`/`session_monitor` directly.
+ *
+ * Cursor format is `<epoch>:<seq>`, NOT a bare numeric `seq` — `epoch` is a
+ * random id minted once when a ring is built (see {@link getRing}), i.e. it
+ * changes every process boot. A `Sentinel.handle.cursor` is PERSISTED
+ * (`sentinel-store.ts`) and survives a daemon restart; the ring it was
+ * minted against does not (`nextSeq` restarts at 0). Filtering a restart-era
+ * cursor's numeric `seq` (e.g. `"7"`) against the fresh ring would silently
+ * drop the first ~8 real events for that sentinel — including, worst case,
+ * the very `session.exited` event `until: subject_terminal` is waiting on,
+ * leaving the sentinel stuck `active` forever. Tagging the cursor with the
+ * epoch it was minted against makes that mismatch detectable: `attach()`
+ * (the real "daemon restarted" entry point, see `sentinel-runtime.ts`'s
+ * `reattachAll`) resyncs it eagerly, and `poll()` carries the identical
+ * check as a safety net for any cursor that reaches it unresynced (a stale
+ * legacy cursor pre-dating this field, or any other path that skips
+ * `attach()`) — see {@link resyncIfStale}.
  */
 
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import type { SessionEvent, SessionEventBus } from "../session-event-bus.js"
 import type {
   DeliveryPreference,
@@ -88,14 +105,24 @@ interface RingEntry {
 }
 
 interface SessionRing {
+  /** Minted once per ring instance (one per process boot, in practice —
+   *  see `getRing`) — the cursor-staleness tag. See module doc. */
+  epoch: string
   entries: RingEntry[]
   nextSeq: number
 }
 
 /** Caps total buffered events across EVERY watched session sharing this
  *  bus. Generous relative to realistic concurrent session-sentinel counts;
- *  overflow silently evicts the oldest entries (non-durable, see module
- *  doc) rather than growing unbounded in a long-lived daemon. */
+ *  overflow silently evicts the oldest entries. Non-durable by design (see
+ *  module doc) — but note this cap is a SEPARATE loss mode from a restart:
+ *  even within one process's lifetime, a sentinel that goes unpolled for
+ *  long enough (longer than it takes `RING_CAP` events — across every
+ *  session sharing this bus, not just the one it watches — to cycle
+ *  through) can have its own events evicted before a poll ever reads them.
+ *  `sentinel-runtime.ts`'s poll cadence (15-60s) makes this unlikely in
+ *  practice, but it is a real possibility worth knowing about, not just a
+ *  restart-time one. */
 const RING_CAP = 2000
 
 const ringsByBus = new WeakMap<SessionEventBus, SessionRing>()
@@ -105,6 +132,22 @@ function appendEvent(ring: SessionRing, event: SentinelEvent): number {
   ring.entries.push({ seq, event })
   if (ring.entries.length > RING_CAP) ring.entries.splice(0, ring.entries.length - RING_CAP)
   return seq
+}
+
+/** `<epoch>:<seq>` → `{epoch, seq}`, or undefined for anything that doesn't
+ *  parse (absent, malformed, or a pre-epoch legacy bare-numeric cursor —
+ *  all three are treated identically by {@link resyncIfStale}: unknown
+ *  epoch, so stale). */
+function parseCursor(cursor: string | undefined): { epoch: string; seq: number } | undefined {
+  if (!cursor) return undefined
+  const i = cursor.lastIndexOf(":")
+  if (i < 0) return undefined
+  const seq = Number(cursor.slice(i + 1))
+  return Number.isFinite(seq) ? { epoch: cursor.slice(0, i), seq } : undefined
+}
+
+function formatCursor(ring: SessionRing, seq: number): string {
+  return `${ring.epoch}:${seq}`
 }
 
 function mintEventId(parts: readonly string[]): string {
@@ -231,12 +274,23 @@ function eventsForSessionEvent(ev: SessionEvent): SentinelEvent[] {
   }
 }
 
-/** Subscribe (once per distinct bus — see module doc) and return the shared
- *  ring every handle built off `bus` reads from. */
+/**
+ * Subscribe (once per distinct bus — see module doc) and return the shared
+ * ring every handle built off `bus` reads from.
+ *
+ * The returned unsubscribe fn is deliberately never called: the
+ * subscription and the ring share the exact same lifetime as `bus` itself
+ * (both live only as long as something still holds a reference to `bus`,
+ * and the `WeakMap` key means the entry — and the listener the daemon's
+ * EventEmitter holds — is freed together with `bus` once nothing does).
+ * For the daemon's own lifetime bus this is a no-op either way; for a
+ * short-lived bus (e.g. one built fresh per test) it means no separate
+ * teardown call is needed, not an actual leak.
+ */
 function getRing(bus: SessionEventBus): SessionRing {
   const existing = ringsByBus.get(bus)
   if (existing) return existing
-  const ring: SessionRing = { entries: [], nextSeq: 0 }
+  const ring: SessionRing = { epoch: randomUUID(), entries: [], nextSeq: 0 }
   ringsByBus.set(bus, ring)
   bus.onAny(ev => {
     for (const event of eventsForSessionEvent(ev)) appendEvent(ring, event)
@@ -247,6 +301,92 @@ function getRing(bus: SessionEventBus): SessionRing {
 function identityOf(handle: SentinelHandle): string | undefined {
   const state = handle.state as { sessionId?: string } | undefined
   return typeof state?.sessionId === "string" ? state.sessionId : handle.remoteId
+}
+
+/**
+ * Append a synthetic terminal `session.exited` event for a target that will
+ * never itself emit another bus event: either `info` describes it already
+ * dead (ended before `create()`, or while the daemon was down), or `info` is
+ * undefined because the session is gone entirely (e.g. GC'd across a
+ * restart) — `goneReason` then stands in for the detail a live lookup would
+ * have given. Without this, `until: subject_terminal` would wait forever.
+ *
+ * `tag` makes the minted id distinct per CALL SITE (`create()` vs
+ * `attach()`) rather than per calendar instant — deterministic, and each
+ * site only ever calls this once per handle before the sentinel is expected
+ * to expire (see call sites), so there is no redelivery storm to dedup.
+ */
+function synthesizeExitEvent(
+  ring: SessionRing,
+  subject: string,
+  sessionId: string,
+  tag: string,
+  info: SessionSentinelLookup | undefined,
+  goneReason?: string,
+): void {
+  const data: Record<string, unknown> = info
+    ? {
+        sessionId,
+        status: info.status ?? "exited",
+        ...(info.exitCode !== undefined ? { exitCode: info.exitCode } : {}),
+        ...(info.endedReason ? { reason: info.endedReason } : {}),
+      }
+    : { sessionId, status: "exited", ...(goneReason ? { reason: goneReason } : {}) }
+  const summary = info
+    ? `${info.label ?? sessionId} had already exited${info.endedReason ? ` (${info.endedReason})` : ""}`
+    : `${sessionId} no longer exists${goneReason ? ` (${goneReason})` : ""}`
+  appendEvent(
+    ring,
+    makeEvent({
+      idParts: [sessionId, "exited", tag],
+      type: "session.exited",
+      subject,
+      time: new Date().toISOString(),
+      terminal: true,
+      data,
+      summary,
+    }),
+  )
+}
+
+/**
+ * The cursor-staleness check shared by `attach()` and `poll()` (see module
+ * doc for why both need it). Returns the `seq` to filter/resume FROM:
+ *
+ * - `handle.cursor`'s epoch matches `ring.epoch` → the common case, this
+ *   process already owns that ring continuously since the cursor was
+ *   minted — returns the cursor's own `seq` untouched.
+ * - Otherwise (a different/missing epoch — a daemon restart rebuilt the
+ *   ring since, or a pre-epoch legacy cursor, or no cursor at all) → the
+ *   cursor's numeric `seq` means nothing against THIS ring. Resync to "the
+ *   last entry that already exists right now", i.e. treat it exactly like
+ *   a brand-new `create()` — AND, since whatever gap this cursor spans
+ *   might have included the target's entire death (no live bus event for
+ *   it to have been caught by), check `getSession` and synthesize the
+ *   terminal event if so. `tag`/`goneTag` distinguish the minted ids from
+ *   `create()`'s own synthetic-event tags (distinct call sites, see that
+ *   function's doc).
+ */
+function resyncIfStale(
+  ring: SessionRing,
+  handle: SentinelHandle,
+  sessionId: string,
+  subject: string,
+  getSession: SessionSentinelDeps["getSession"],
+  tag: string,
+  goneTag: string,
+): number {
+  const parsed = parseCursor(handle.cursor)
+  if (parsed && parsed.epoch === ring.epoch) return parsed.seq
+
+  const lastSeq = ring.nextSeq - 1
+  const info = getSession(sessionId)
+  if (!info) {
+    synthesizeExitEvent(ring, subject, sessionId, goneTag, undefined, "session no longer exists")
+  } else if (!info.alive) {
+    synthesizeExitEvent(ring, subject, sessionId, tag, info)
+  }
+  return lastSeq
 }
 
 export function sessionSentinelProvider(deps: SessionSentinelDeps): SentinelProviderHandle {
@@ -302,32 +442,32 @@ export function sessionSentinelProvider(deps: SessionSentinelDeps): SentinelProv
         // the terminal event now so `until: subject_terminal` still closes
         // the watch on the very first poll instead of hanging forever on a
         // session that will never emit another bus event.
-        appendEvent(
-          ring,
-          makeEvent({
-            idParts: [sessionId, "exited", "already-ended-at-create"],
-            type: "session.exited",
-            subject,
-            time: new Date().toISOString(),
-            terminal: true,
-            data: {
-              sessionId,
-              status: info.status ?? "exited",
-              ...(info.exitCode !== undefined ? { exitCode: info.exitCode } : {}),
-              ...(info.endedReason ? { reason: info.endedReason } : {}),
-            },
-            summary: `${info.label ?? sessionId} had already exited${info.endedReason ? ` (${info.endedReason})` : ""}`,
-          }),
-        )
+        synthesizeExitEvent(ring, subject, sessionId, "already-ended-at-create", info)
       }
 
-      return { provider: SESSION_SLUG, remoteId: sessionId, cursor: String(lastSeq), state: { sessionId } }
+      return { provider: SESSION_SLUG, remoteId: sessionId, cursor: formatCursor(ring, lastSeq), state: { sessionId } }
     },
 
     async attach(handle: SentinelHandle, _delivery: DeliveryPreference): Promise<SentinelHandle> {
-      // Nothing external to re-point — the shared ring (while this process
-      // lives) already has everything after `handle.cursor`.
-      return { ...handle }
+      const sessionId = identityOf(handle)
+      if (!sessionId) return { ...handle }
+      const subject = `session:${sessionId}`
+      const ring = getRing(deps.sessionEvents)
+      // This IS the real "the daemon restarted" entry point
+      // (`sentinel-runtime.ts`'s `reattachAll`, called once at `start()`) —
+      // `resyncIfStale` detects the epoch mismatch against the fresh ring
+      // and resyncs eagerly (plus synthesizes the target's terminal event
+      // if it died during the downtime). See module doc + that function's.
+      const lastSeq = resyncIfStale(
+        ring,
+        handle,
+        sessionId,
+        subject,
+        deps.getSession,
+        "already-ended-at-attach",
+        "gone-at-attach",
+      )
+      return { ...handle, cursor: formatCursor(ring, lastSeq) }
     },
 
     async cancel(_handle: SentinelHandle): Promise<void> {
@@ -345,13 +485,26 @@ export function sessionSentinelProvider(deps: SessionSentinelDeps): SentinelProv
 
     async poll(handle: SentinelHandle, limit: number): Promise<{ events: SentinelEvent[]; cursor: string }> {
       const sessionId = identityOf(handle)
-      if (!sessionId) return { events: [], cursor: handle.cursor ?? "-1" }
+      if (!sessionId) return { events: [], cursor: handle.cursor ?? "" }
       const ring = getRing(deps.sessionEvents)
-      const lastSeq = handle.cursor ? Number(handle.cursor) : -1
       const subject = `session:${sessionId}`
+      // Safety net, not the primary path (that's `attach()`): a cursor
+      // that reaches `poll()` without ever going through a matching-epoch
+      // `attach()` (a stale legacy cursor, or any future call path that
+      // skips it) gets resynced here instead of silently filtering against
+      // a `seq` that means nothing for this ring. See module doc.
+      const lastSeq = resyncIfStale(
+        ring,
+        handle,
+        sessionId,
+        subject,
+        deps.getSession,
+        "already-ended-at-poll",
+        "gone-at-poll",
+      )
       const matching = ring.entries.filter(e => e.seq > lastSeq && e.event.subject === subject)
       const slice = matching.slice(0, limit)
-      const cursor = slice.length > 0 ? String(slice[slice.length - 1]!.seq) : handle.cursor ?? String(lastSeq)
+      const cursor = slice.length > 0 ? formatCursor(ring, slice[slice.length - 1]!.seq) : formatCursor(ring, lastSeq)
       return { events: slice.map(e => e.event), cursor }
     },
 

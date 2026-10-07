@@ -42,6 +42,10 @@ function watchSpec(sessionId: string, target = "sess_target"): SentinelSpec {
   }
 }
 
+function bus_emitTurnEnd(bus: SessionEventBus, sessionId: string): void {
+  bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: new Date().toISOString() })
+}
+
 interface StubRegistry extends SentinelRuntimeRegistry {
   calls: Array<{ msg: SessionMessage; opts?: { source?: string; origin?: string } }>
 }
@@ -186,6 +190,109 @@ describe("sessionSentinelProvider", () => {
     expect(result.events[0]!.type).toBe("session.exited")
     expect(result.events[0]!.terminal).toBe(true)
     expect(result.events[0]!.data.reason).toBe("steward-completed")
+  })
+})
+
+// ── Daemon restart: the ring resets, the persisted cursor must not ───
+// ── silently go deaf against it (epoch-tagged cursor) ────────────────
+
+describe("sessionSentinelProvider across a simulated daemon restart", () => {
+  it("attach() resyncs a stale (previous-process) cursor and subsequent events are still delivered", async () => {
+    const busBeforeRestart = createSessionEventBus()
+    const before = sessionSentinelProvider({ sessionEvents: busBeforeRestart, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const persistedHandle = await before.create(watchSpec("sess_child"), { mode: "poll", intervalMs: 15_000 })
+
+    // "Restart": a brand-new bus/ring (nextSeq back at 0, a fresh epoch) —
+    // but `persistedHandle.cursor` still carries the OLD process's epoch,
+    // exactly what `sentinel-store.ts` would have handed back after
+    // reloading `sentinels.json`.
+    const busAfterRestart = createSessionEventBus()
+    const after = sessionSentinelProvider({ sessionEvents: busAfterRestart, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const reattached = await after.attach(persistedHandle, { mode: "poll", intervalMs: 15_000 })
+    expect(reattached.cursor).not.toBe(persistedHandle.cursor)
+
+    bus_emitTurnEnd(busAfterRestart, "sess_child")
+    const result = await after.poll!(reattached, 50)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0]!.type).toBe("session.turn.ended")
+  })
+
+  it("attach() treats a pre-epoch legacy bare-numeric cursor the same way — as stale", async () => {
+    const bus = createSessionEventBus()
+    const provider = sessionSentinelProvider({ sessionEvents: bus, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const legacyHandle = { provider: SESSION_SLUG, remoteId: "sess_child", cursor: "1500", state: { sessionId: "sess_child" } }
+
+    const reattached = await provider.attach(legacyHandle, { mode: "poll", intervalMs: 15_000 })
+    bus_emitTurnEnd(bus, "sess_child")
+    const result = await provider.poll!(reattached, 50)
+    expect(result.events).toHaveLength(1)
+  })
+
+  it("attach() synthesizes a terminal event when the target exited WHILE the daemon was down", async () => {
+    const busBeforeRestart = createSessionEventBus()
+    const before = sessionSentinelProvider({ sessionEvents: busBeforeRestart, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const persistedHandle = await before.create(watchSpec("sess_child"), { mode: "poll", intervalMs: 15_000 })
+
+    // The real `session:exited` bus event never fired for this process —
+    // it only fires live, and the exit happened during the downtime gap.
+    const busAfterRestart = createSessionEventBus()
+    const after = sessionSentinelProvider({
+      sessionEvents: busAfterRestart,
+      getSession: fakeLookup({ sess_child: { alive: false, status: "killed", endedReason: "idle-reaped" } }),
+    })
+    const reattached = await after.attach(persistedHandle, { mode: "poll", intervalMs: 15_000 })
+
+    const result = await after.poll!(reattached, 50)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0]!.type).toBe("session.exited")
+    expect(result.events[0]!.terminal).toBe(true)
+    expect(result.events[0]!.data.reason).toBe("idle-reaped")
+  })
+
+  it("attach() synthesizes a 'gone' terminal event when the target no longer exists at all", async () => {
+    const busBeforeRestart = createSessionEventBus()
+    const before = sessionSentinelProvider({ sessionEvents: busBeforeRestart, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const persistedHandle = await before.create(watchSpec("sess_child"), { mode: "poll", intervalMs: 15_000 })
+
+    const busAfterRestart = createSessionEventBus()
+    const after = sessionSentinelProvider({ sessionEvents: busAfterRestart, getSession: fakeLookup({}) })
+    const reattached = await after.attach(persistedHandle, { mode: "poll", intervalMs: 15_000 })
+
+    const result = await after.poll!(reattached, 50)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0]!.type).toBe("session.exited")
+    expect(result.events[0]!.terminal).toBe(true)
+  })
+
+  it("poll() resyncs a stale cursor as a safety net even if attach() was skipped", async () => {
+    const bus = createSessionEventBus()
+    const provider = sessionSentinelProvider({ sessionEvents: bus, getSession: fakeLookup({ sess_child: { alive: true } }) })
+    const staleHandle = { provider: SESSION_SLUG, remoteId: "sess_child", cursor: "some-other-epoch:999", state: { sessionId: "sess_child" } }
+
+    // First poll with the stale cursor resyncs (no replay — same "start
+    // from now" policy a fresh create()/attach() would apply) and returns
+    // a freshly-epoched cursor.
+    const first = await provider.poll!(staleHandle, 50)
+    expect(first.events).toEqual([])
+    expect(first.cursor).not.toBe(staleHandle.cursor)
+
+    bus_emitTurnEnd(bus, "sess_child")
+    const second = await provider.poll!({ ...staleHandle, cursor: first.cursor }, 50)
+    expect(second.events).toHaveLength(1)
+  })
+
+  it("poll()'s safety net also synthesizes the terminal event for a target that exited during the gap", async () => {
+    const bus = createSessionEventBus()
+    const provider = sessionSentinelProvider({
+      sessionEvents: bus,
+      getSession: fakeLookup({ sess_child: { alive: false, status: "exited", endedReason: "operator-stopped" } }),
+    })
+    const staleHandle = { provider: SESSION_SLUG, remoteId: "sess_child", cursor: "some-other-epoch:42", state: { sessionId: "sess_child" } }
+
+    const result = await provider.poll!(staleHandle, 50)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0]!.type).toBe("session.exited")
+    expect(result.events[0]!.data.reason).toBe("operator-stopped")
   })
 })
 
