@@ -107,6 +107,10 @@ describe("cron rules — readTargetOf", () => {
     expect(mod.readTargetOf(call())).toBe("packages/runtime/docs/mcp-tools/agent_start.md")
     expect(mod.readTargetOf({ tool: "Bash", command: "cat src/a/b.md" })).toBe("src/a/b.md")
   })
+  it("targets the path after the read verb, not a leading `cd <dir>` or a trailing `| head`", () => {
+    expect(mod.readTargetOf({ tool: "Bash", command: "cd /repo/packages/x && rg -n foo src/a.ts | head -5" })).toBe("src/a.ts")
+    expect(mod.readTargetOf({ tool: "Bash", command: "cd /repo/packages/x && git log | head -5" })).toBeNull()
+  })
   it("is null for a non-read call and for an in-agent Read with no command", () => {
     expect(mod.readTargetOf({ tool: "Edit", command: "git commit -m x" })).toBeNull()
     expect(mod.readTargetOf({ tool: "Read" })).toBeNull()
@@ -167,6 +171,24 @@ describe("cron rules — detectLoop", () => {
     const r = mod.detectLoop(records, { nowMs: NOW })
     expect(r.looping).toBe(false)
     expect(r.stats.total).toBe(2)
+  })
+
+  it("does not call four different reads run from the same `cd` directory a re-read of that directory", () => {
+    const records = ["a.ts", "b.ts", "c.ts", "d.ts"].map((f, i) => call({ command: `cd /repo/packages/x && rg -n foo src/${f} | head -5`, ts: at(i + 1) }))
+    expect(mod.detectLoop(records, { nowMs: NOW }).looping).toBe(false)
+  })
+
+  it("ignores anonymous in-agent calls (no command, no args): three `read`s in 10 minutes are not a loop", () => {
+    const records = [{ tool: "read", ts: at(1) }, { tool: "read", ts: at(3) }, { tool: "read", ts: at(5) }, { tool: "edit", ts: at(6) }]
+    const r = mod.detectLoop(records, { nowMs: NOW })
+    expect(r.looping).toBe(false)
+    expect(r.stats.total).toBe(0)
+    expect(r.stats.anonymousExcluded).toBe(4)
+  })
+
+  it("still flags a verbatim shell command repeated among anonymous calls", () => {
+    const records = [{ tool: "read", ts: at(1) }, call({ command: "cron list", ts: at(2) }), call({ command: "cron list", ts: at(3) }), call({ command: "cron list", ts: at(4) })]
+    expect(mod.detectLoop(records, { nowMs: NOW }).looping).toBe(true)
   })
 
   it("does not flag a handful of distinct calls", () => {
@@ -273,21 +295,46 @@ describe("cron rules — terminalRelabelCandidate", () => {
 
   it("names the PR when the worktree PR is merged", () => {
     const r = mod.terminalRelabelCandidate({ status: "killed", worktree: { pr: { state: "merged", number: 12 } } })
+    expect(r).toMatchObject({ proposedVerdict: "done", reason: "PR #12 merged (worktree)" })
+  })
+
+  it("does not credit a shared worktree's merged PR to a session whose last turn errored", () => {
+    const r = mod.terminalRelabelCandidate({ status: "killed", lastTurnErroredAt: "2026-10-06T13:54:38Z", worktree: { pr: { state: "merged", number: 1737 } } })
+    expect(r).toMatchObject({ candidate: true, proposedVerdict: "unknown" })
+  })
+
+  it("keeps a worktree PR the session recorded itself as plain 'merged'", () => {
+    const r = mod.terminalRelabelCandidate({ status: "killed", lastTurnErroredAt: "2026-10-06T13:54:38Z", openedPrs: [{ number: 12 }], worktree: { pr: { state: "merged", number: 12 } } })
     expect(r).toMatchObject({ proposedVerdict: "done", reason: "PR #12 merged" })
   })
 
   it("refineRelabel: merged → done+merged, open/opened → done, nothing → unchanged", () => {
-    const base = { sessionId: "s", proposedVerdict: "abandoned", reason: "terminal, no outcome recorded", prs: [] }
+    const base = { sessionId: "s", proposedVerdict: "unknown", reason: "terminal, no PR recorded — outcome unknown", prs: [] }
     expect(mod.refineRelabel(base, undefined)).toBe(base)
     expect(mod.refineRelabel(base, { pullRequests: { opened: 0, merged: 0, state: null } })).toBe(base)
-    expect(mod.refineRelabel(base, { worktree: { pr: { state: "merged", number: 3 } } })).toMatchObject({ proposedVerdict: "done", reason: "PR #3 merged" })
+    expect(mod.refineRelabel(base, { worktree: { pr: { state: "merged", number: 3 } } })).toMatchObject({ proposedVerdict: "done", reason: "PR #3 merged (worktree)" })
     expect(mod.refineRelabel(base, { pullRequests: { opened: 1, merged: 0, state: null } })).toMatchObject({ proposedVerdict: "done", reason: "1 PR opened" })
     const opened = { ...base, proposedVerdict: "done", reason: "PR #8 opened", prs: [8] }
     expect(mod.refineRelabel(opened, { pullRequests: { opened: 1, merged: 1, state: "merged" } })).toMatchObject({ reason: "PR #8 merged" })
   })
 
-  it("proposes abandoned for a terminal session with no outcome", () => {
-    expect(mod.terminalRelabelCandidate({ status: "exited" })).toMatchObject({ candidate: true, proposedVerdict: "abandoned" })
+  it("proposes unknown (not abandoned) for a terminal session with no PR: absence of a PR is not evidence of abandonment", () => {
+    expect(mod.terminalRelabelCandidate({ status: "exited" })).toMatchObject({ candidate: true, proposedVerdict: "unknown" })
+  })
+
+  it("refineRelabel: no PR → abandoned only on positive evidence (errored last turn, no turn completed)", () => {
+    const base = { sessionId: "s", proposedVerdict: "unknown", reason: "x", prs: [] }
+    expect(mod.refineRelabel(base, { turnsCompleted: 3, pullRequests: { opened: 0, merged: 0, state: null } })).toBe(base)
+    expect(mod.refineRelabel(base, { turnsCompleted: 2, lastTurnError: "Upstream request failed" })).toMatchObject({ proposedVerdict: "abandoned" })
+    expect(mod.refineRelabel(base, { turnsCompleted: 0 })).toMatchObject({ proposedVerdict: "abandoned", reason: "no PR, no turn ever completed" })
+  })
+
+  it("refineRelabel: a sibling's merged worktree PR is not credited to an errored session with no PR of its own", () => {
+    const base = { sessionId: "s", proposedVerdict: "unknown", reason: "x", prs: [] }
+    const ev = { lastTurnError: "Endpoint is unavailable", turnsCompleted: 1, pullRequests: { opened: 0, merged: 1, state: "merged" }, worktree: { pr: { state: "merged", number: 1737 } } }
+    const r = mod.refineRelabel(base, ev)
+    expect(r.proposedVerdict).not.toBe("done")
+    expect(mod.refineRelabel({ ...base, prs: [1737] }, ev)).toMatchObject({ proposedVerdict: "done", reason: "PR #1737 merged" })
   })
 
   it("skips a running session, a recorded outcome, or an existing flag", () => {

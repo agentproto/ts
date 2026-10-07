@@ -64,7 +64,7 @@ export function isUsefulLoopCommand(signature) {
 }
 
 const READ_TOOLS = new Set(["read", "cat", "rg", "grep", "sed", "head", "tail", "less", "view", "readfile"])
-const READ_COMMAND = /\b(cat|rg|grep|sed|head|tail|less|view)\b/
+const READ_VERB_WORD = /^["']?(cat|rg|grep|sed|head|tail|less|view)["']?$/
 
 /**
  * The file a read-like call targeted, or `null`. Best-effort: an in-agent
@@ -76,15 +76,26 @@ export function readTargetOf(record) {
   const tool = String(record?.tool ?? "").toLowerCase()
   const command = str(record?.command)
   const args = Array.isArray(record?.args) ? record.args.map(String) : []
-  const isRead = READ_TOOLS.has(tool) || (command !== undefined && READ_COMMAND.test(command))
-  if (!isRead) return null
-  const tokens = command !== undefined ? command.split(/\s+/) : args
-  for (const raw of tokens) {
-    const t = raw.replace(/^['"]|['"]$/g, "")
-    if (!t || t.startsWith("-") || t.includes("=")) continue
-    if (t.includes("/") || /\.(md|ts|tsx|js|mjs|cjs|json|txt|py|go|rs|sql|yml|yaml|toml)$/.test(t)) return t
+  const readTool = READ_TOOLS.has(tool)
+  if (!readTool && command === undefined) return null
+  // A shell line is several commands: only a segment that STARTS with a read
+  // verb reads a file. `cd <dir> &&`, `git log | head` and `--grep=…` do not.
+  const segments = command !== undefined && !readTool ? command.split(/&&|\|\||\||;/) : [undefined]
+  for (const seg of segments) {
+    let tokens = seg !== undefined ? seg.trim().split(/\s+/) : command !== undefined ? command.split(/\s+/) : args
+    if (seg !== undefined) {
+      const first = tokens.findIndex((t) => !t.includes("=") || t.startsWith("-"))
+      if (first < 0 || !READ_VERB_WORD.test(tokens[first])) continue
+      tokens = tokens.slice(first + 1)
+    }
+    for (const raw of tokens) {
+      const t = raw.replace(/^['"]|['"]$/g, "")
+      if (!t || t.startsWith("-") || t.includes("=")) continue
+      if (t.includes("/") || /\.(md|ts|tsx|js|mjs|cjs|json|txt|py|go|rs|sql|yml|yaml|toml)$/.test(t)) return t
+    }
+    if (seg === undefined) return args[0] ?? null
   }
-  return args[0] ?? null
+  return null
 }
 
 function topEntry(counts) {
@@ -115,7 +126,11 @@ export function detectLoop(records, opts = {}) {
     const ts = Date.parse(r?.ts)
     return Number.isFinite(ts) && ts <= nowMs + 1000 && nowMs - ts <= windowMs
   })
-  const calls = inWindow.filter((r) => !isUsefulLoopCommand(callSignature(r)))
+  // A record with no command and no args (an in-agent `read`/`edit` call) has
+  // nothing but its tool name to compare, so three of them in ten minutes is
+  // normal work, not a loop — leave it out of every repetition signal.
+  const informative = inWindow.filter((r) => str(r?.command) !== undefined || (Array.isArray(r?.args) && r.args.length > 0))
+  const calls = informative.filter((r) => !isUsefulLoopCommand(callSignature(r)))
   const counts = new Map()
   const reads = new Map()
   for (const r of calls) {
@@ -146,7 +161,8 @@ export function detectLoop(records, opts = {}) {
       ratio: Math.round(ratio * 100) / 100,
       maxVerbatim,
       maxReads,
-      usefulExcluded: inWindow.length - total,
+      usefulExcluded: informative.length - total,
+      anonymousExcluded: inWindow.length - informative.length,
       topCommand: top ? top.key : null,
       topCommandCount: top ? top.count : 0,
     },
@@ -278,6 +294,9 @@ export function prNumbersOf(session) {
   return [...nums].sort((a, b) => a - b)
 }
 
+/** Relabel verdict for "no positive evidence either way". */
+export const UNKNOWN_VERDICT = "unknown"
+
 const fmtPrs = nums => nums.map(n => `#${n}`).join(", ")
 const isMergedState = state => state === "merged" || state === "MERGED"
 
@@ -285,7 +304,9 @@ const isMergedState = state => state === "merged" || state === "MERGED"
  * A terminal session that still carries no derived outcome and no wrapup
  * flag is a relabel CANDIDATE — visible instead of invisible, as the log
  * asks. The proposed verdict is `done` when the session's own record shows a
- * PR (merged, or merely opened — the PR is the hand-off), else `abandoned`.
+ * PR (merged, or merely opened — the PR is the hand-off), else `unknown`: a
+ * session with no PR is as likely finished as abandoned, and only evidence
+ * ({@link refineRelabel}) can say which.
  * `reason` carries the evidence (`PR #1738 merged`, `PRs #1738, #1740 opened`).
  */
 export function terminalRelabelCandidate(session) {
@@ -294,14 +315,21 @@ export function terminalRelabelCandidate(session) {
   if (session?.wrapupFlag) return { candidate: false, reason: "already flagged" }
   const prs = prNumbersOf(session)
   const wt = session?.worktree?.pr
-  if (isMergedState(wt?.state)) {
-    const n = Number.isInteger(wt.number) ? [wt.number] : prs
-    return { candidate: true, proposedVerdict: "done", reason: n.length > 0 ? `PR ${fmtPrs(n)} merged` : "PR merged", prs }
+  // A worktree can be shared by several sessions, so its merged PR is not
+  // proof THIS one finished: a session whose last turn errored is not credited
+  // with it, and a PR the session did not record itself is labelled as the
+  // worktree's.
+  const ownMerged = Number.isInteger(wt?.number) && prs.includes(wt.number)
+  if (isMergedState(wt?.state) && (ownMerged || !session?.lastTurnErroredAt)) {
+    if (Number.isInteger(wt.number)) {
+      return { candidate: true, proposedVerdict: "done", reason: `PR ${fmtPrs([wt.number])} merged${prs.includes(wt.number) ? "" : " (worktree)"}`, prs }
+    }
+    return { candidate: true, proposedVerdict: "done", reason: prs.length > 0 ? `PR ${fmtPrs(prs)} merged` : "PR merged", prs }
   }
   if (prs.length > 0) {
     return { candidate: true, proposedVerdict: "done", reason: `PR${prs.length > 1 ? "s" : ""} ${fmtPrs(prs)} opened`, prs }
   }
-  return { candidate: true, proposedVerdict: "abandoned", reason: "terminal, no outcome recorded", prs }
+  return { candidate: true, proposedVerdict: UNKNOWN_VERDICT, reason: "terminal, no PR recorded — outcome unknown", prs }
 }
 
 /**
@@ -315,19 +343,34 @@ export function refineRelabel(item, evidence) {
   const wt = evidence.worktree?.pr
   const state = wt?.state ?? evidence.pullRequests?.state ?? null
   const known = Array.isArray(item?.prs) ? item.prs : []
-  const merged = isMergedState(state) || (evidence.pullRequests?.merged ?? 0) > 0
+  // `pullRequests.merged` and `worktree.pr` describe the whole worktree, which
+  // sibling sessions share: a session that recorded no PR of its own and whose
+  // last turn errored is not credited with a sibling's merge.
+  const ownPr = known.length > 0 || (evidence.pullRequests?.opened ?? 0) > 0
+  const errored = typeof evidence.lastTurnError === "string" && evidence.lastTurnError.trim() !== ""
+  const credited = ownPr || !errored
+  const merged = credited && (isMergedState(state) || (evidence.pullRequests?.merged ?? 0) > 0)
   if (merged) {
     const n = Number.isInteger(wt?.number) ? wt.number : known.length === 1 ? known[0] : undefined
     const others = known.filter(k => k !== n)
-    const reason = (n !== undefined ? `PR #${n} merged` : "PR merged") + (others.length > 0 && n !== undefined ? `; also opened ${fmtPrs(others)}` : "")
+    // A PR number the session did not record itself is the worktree's.
+    const shared = n !== undefined && !known.includes(n) ? " (worktree)" : ""
+    const reason = (n !== undefined ? `PR #${n} merged${shared}` : "PR merged") + (others.length > 0 && n !== undefined ? `; also opened ${fmtPrs(others)}` : "")
     return { ...item, proposedVerdict: "done", reason }
   }
   if (item?.proposedVerdict === "done") return item
-  if (state === "open" || state === "OPEN") {
+  if (credited && (state === "open" || state === "OPEN")) {
     return { ...item, proposedVerdict: "done", reason: Number.isInteger(wt?.number) ? `PR #${wt.number} open` : "PR open" }
   }
   const opened = evidence.pullRequests?.opened ?? 0
   if (opened > 0) return { ...item, proposedVerdict: "done", reason: `${opened} PR${opened > 1 ? "s" : ""} opened` }
+  // No PR: `abandoned` needs positive evidence the session did not finish.
+  if (item?.proposedVerdict === UNKNOWN_VERDICT) {
+    if (typeof evidence.lastTurnError === "string" && evidence.lastTurnError.trim()) {
+      return { ...item, proposedVerdict: "abandoned", reason: `no PR, last turn errored: ${evidence.lastTurnError.trim().slice(0, 80)}` }
+    }
+    if (evidence.turnsCompleted === 0) return { ...item, proposedVerdict: "abandoned", reason: "no PR, no turn ever completed" }
+  }
   return item
 }
 
