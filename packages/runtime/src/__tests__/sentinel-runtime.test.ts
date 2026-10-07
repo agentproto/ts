@@ -8,7 +8,7 @@
  * `supervisor-notify.test.ts`, which needs `markCrashed`).
  */
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -378,6 +378,45 @@ describe("SentinelRuntime", () => {
       expect(parked[0]!.sentinelId).toBe(sentinel.id)
       expect((parked[0]!.event as { id: string }).id).toBe("evt_1")
       expect(parked[0]!.reason).toContain("cannot resume")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("parks and orphans (no retry loop) when the target session row no longer exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-parked-"))
+    const parkedPath = join(dir, "sentinels-parked.jsonl")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      const sentinel = newSentinel(store, { sessionId: "sess_gone" })
+      provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+
+      const registry = stubRegistry(async msg => {
+        throw new Error(`sendMessage: no session "${msg.to}"`)
+      })
+      const restartSession = vi.fn(async (): Promise<string> => {
+        throw new Error("should not be called")
+      })
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => false,
+        restartSession,
+        sessionInfo: () => undefined,
+        parkedPath,
+      })
+
+      await runtime.pollOnce()
+
+      const updated = store.get(sentinel.id)
+      expect(updated?.status).toBe("orphaned")
+      expect(updated?.handle.cursor).toBe("1")
+      expect(restartSession).not.toHaveBeenCalled()
+      const parked = readFileSync(parkedPath, "utf8").trim().split("\n").map(l => JSON.parse(l) as Record<string, unknown>)
+      expect(parked).toHaveLength(1)
+      expect(parked[0]!.reason).toContain("no longer exists")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

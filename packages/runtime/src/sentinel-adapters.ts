@@ -45,6 +45,7 @@ import {
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { WEBHOOK_SLUG } from "./sentinel-providers/webhook.js"
 import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
+import { SESSION_SLUG } from "./sentinel-providers/session.js"
 import type {
   SentinelProviderHandle,
   SentinelProviderCapabilities,
@@ -99,6 +100,17 @@ export const SENTINEL_CATALOG: AdapterCatalog = [
       "(`setup_sentinel_provider`, or an imported `agentpush` MCP alias).",
     packageName: "@agentproto/runtime",
     hint: "any source · durable · needs API key",
+  },
+  {
+    slug: SESSION_SLUG,
+    name: "Session Lifecycle",
+    description:
+      "In-process watcher over this daemon's own session lifecycle (turn-end, " +
+      "awaiting-input, exit) for a \"session:<id>\" subject. No credentials, no " +
+      "external system — wired up by the daemon itself, not configurable via " +
+      "`setup_sentinel_provider`.",
+    packageName: "@agentproto/runtime",
+    hint: "session · zero-infra · in-process",
   },
 ]
 

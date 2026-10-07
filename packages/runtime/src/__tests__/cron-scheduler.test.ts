@@ -644,6 +644,11 @@ describe("CronScheduler", () => {
       sendPrompt,
       spawnAgent,
       pulseActivity,
+      // `restartAgentSession` closes a still-alive prior row after a
+      // successful restart (session-restart-core.ts) — a no-op here since
+      // `deadDesc.processAlive` is already false, but the call itself still
+      // needs a stub on this minimal mock.
+      kill: vi.fn(),
     } as unknown as SessionsRegistry
 
     // resolveAgentAdapter returns a minimal adapter that can start a session.
@@ -727,6 +732,7 @@ describe("CronScheduler", () => {
       sendPrompt,
       spawnAgent,
       pulseActivity,
+      kill: vi.fn(),
     } as unknown as SessionsRegistry
 
     const mockAgentSession = { id: "adapter_sess_1" }

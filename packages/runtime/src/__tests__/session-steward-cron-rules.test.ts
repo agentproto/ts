@@ -42,6 +42,8 @@ interface CronRules {
   isCommitOrPrCall: AnyFn
   detectFastPathDone: AnyFn
   terminalRelabelCandidate: AnyFn
+  prNumbersOf: AnyFn
+  refineRelabel: AnyFn
   sameCronJob: AnyFn
   isSelfExcluded: AnyFn
   recheckApply: AnyFn
@@ -258,6 +260,30 @@ describe("cron rules — terminalRelabelCandidate", () => {
   it("proposes done for a terminal session with a merged PR and no outcome", () => {
     const r = mod.terminalRelabelCandidate({ status: "killed", worktree: { pr: { state: "merged" } } })
     expect(r).toMatchObject({ candidate: true, proposedVerdict: "done" })
+  })
+
+  it("proposes done with the PR numbers for a session that opened PRs (row openedPrs / outcome artifacts)", () => {
+    const openedPrs = [{ number: 1740 }, { number: 1738 }]
+    const r = mod.terminalRelabelCandidate({ status: "killed", openedPrs })
+    expect(r).toMatchObject({ candidate: true, proposedVerdict: "done", reason: "PRs #1738, #1740 opened", prs: [1738, 1740] })
+    const art = { status: "exited", outcome: { status: "produced", verdict: null, artifacts: [{ type: "pr", ref: "https://github.com/o/r/pull/1743", title: "#1743" }, { type: "file", ref: "x" }] } }
+    expect(mod.terminalRelabelCandidate(art)).toMatchObject({ proposedVerdict: "done", reason: "PR #1743 opened" })
+    expect(mod.prNumbersOf({ outcome: { artifacts: [{ type: "pr", ref: "https://github.com/o/r/pull/9" }] } })).toEqual([9])
+  })
+
+  it("names the PR when the worktree PR is merged", () => {
+    const r = mod.terminalRelabelCandidate({ status: "killed", worktree: { pr: { state: "merged", number: 12 } } })
+    expect(r).toMatchObject({ proposedVerdict: "done", reason: "PR #12 merged" })
+  })
+
+  it("refineRelabel: merged → done+merged, open/opened → done, nothing → unchanged", () => {
+    const base = { sessionId: "s", proposedVerdict: "abandoned", reason: "terminal, no outcome recorded", prs: [] }
+    expect(mod.refineRelabel(base, undefined)).toBe(base)
+    expect(mod.refineRelabel(base, { pullRequests: { opened: 0, merged: 0, state: null } })).toBe(base)
+    expect(mod.refineRelabel(base, { worktree: { pr: { state: "merged", number: 3 } } })).toMatchObject({ proposedVerdict: "done", reason: "PR #3 merged" })
+    expect(mod.refineRelabel(base, { pullRequests: { opened: 1, merged: 0, state: null } })).toMatchObject({ proposedVerdict: "done", reason: "1 PR opened" })
+    const opened = { ...base, proposedVerdict: "done", reason: "PR #8 opened", prs: [8] }
+    expect(mod.refineRelabel(opened, { pullRequests: { opened: 1, merged: 1, state: "merged" } })).toMatchObject({ reason: "PR #8 merged" })
   })
 
   it("proposes abandoned for a terminal session with no outcome", () => {

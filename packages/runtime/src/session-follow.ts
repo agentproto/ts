@@ -200,11 +200,15 @@ export function followCoversSession(
   if (follow.exclude?.sessionIds?.includes(sessionId)) return false
   const label = desc?.label ?? eventLabel
   if (label && follow.exclude?.labels?.includes(label)) return false
-  if (follow.excludeFollowerChildren && descendsFrom(registry as SessionFollowRegistry, desc, follow.follower)) {
-    return false
-  }
+  const ownDescendant = descendsFrom(registry as SessionFollowRegistry, desc, follow.follower)
+  if (ownDescendant && follow.excludeFollowerChildren) return false
   const sel = follow.selector
   if (sel.sessionIds?.includes(sessionId)) return true
+  // Opting IN to its own descendants (`excludeFollowerChildren: false`) must
+  // actually deliver them: a supervisor following `all` (rootOnly by default)
+  // would otherwise still miss every child it spawned, since those have a
+  // parent. They bypass `rootOnly` and `cwdPrefix`, like explicit ids.
+  if (ownDescendant && (sel.all === true || (sel.cwdPrefix !== undefined && sel.cwdPrefix !== ""))) return true
   const broad = sel.all === true || (sel.cwdPrefix !== undefined && sel.cwdPrefix !== "")
   if (!broad) return false
   if (sel.cwdPrefix && !cwdUnder(desc?.cwd, sel.cwdPrefix)) return false

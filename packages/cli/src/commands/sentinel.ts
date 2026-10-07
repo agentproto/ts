@@ -22,7 +22,7 @@ import {
   humaniseDelta,
 } from "./_daemon-helpers.js"
 
-const USAGE = `agentproto sentinel — watch GitHub subjects, deliver events into a session's inbox
+const USAGE = `agentproto sentinel — watch GitHub subjects (or another session's lifecycle), deliver events into a session's inbox
 
 Usage:
   agentproto sentinel watch pr <url> [--session <id>] [--urgency <u>]
@@ -41,24 +41,37 @@ Discovers the daemon the same layered way \`agentproto sessions\` does — see
 \`github:owner/repo#N\`, the default PR type set, and \`--until closed\`
 (subject_terminal — the sentinel expires when the PR closes/merges).
 
+A raw subject \`session:<id>\` watches ANOTHER SESSION's own lifecycle
+instead of GitHub — woken on its turn-end, awaiting-input, or exit, even if
+it never calls message_parent, self-expiring once it exits. Same
+\`--until closed\` default as \`watch pr\`, and \`--provider\` defaults to
+\`session\` (the only provider that understands this subject).
+
 \`--session\` defaults to nothing from the CLI (unlike the MCP \`sentinel_watch\`
 tool, a CLI invocation has no calling-session identity to default to) — it is
-REQUIRED unless the daemon has some other default wired.
+REQUIRED unless the daemon has some other default wired. This is the DELIVERY
+target, distinct from the \`<id>\` inside a \`session:<id>\` subject (the session
+being WATCHED).
 
 \`--urgency\` one of: fyi | next-turn | steer | interrupt (default next-turn).
-\`--until\`   closed (alias for subject_terminal, default for \`watch pr\`) | never.
-\`--provider\` local-gh | webhook. \`local-gh\` polls the host's authenticated \`gh\`
-             CLI (zero infra). \`webhook\` is near-real-time push via a GitHub repo
-             hook: it needs a public daemon URL (a named tunnel or
-             AGENTPROTO_PUBLIC_URL) and a \`gh\` token with admin:repo_hook — see
-             \`list_sentinel_adapters\` for readiness. Omitted, the daemon picks
-             \`webhook\` only when a stable public URL exists and webhook is ready,
-             else \`local-gh\`.
+\`--until\`   closed (alias for subject_terminal, default for \`watch pr\` and a
+             \`session:<id>\` subject) | never.
+\`--provider\` local-gh | webhook | session. \`local-gh\` polls the host's
+             authenticated \`gh\` CLI (zero infra). \`webhook\` is near-real-time
+             push via a GitHub repo hook: it needs a public daemon URL (a
+             named tunnel or AGENTPROTO_PUBLIC_URL) and a \`gh\` token with
+             admin:repo_hook — see \`list_sentinel_adapters\` for readiness.
+             \`session\` watches another session's lifecycle (zero infra, no
+             credentials). Omitted for a GitHub subject, the daemon picks
+             \`webhook\` only when a stable public URL exists and webhook is
+             ready, else \`local-gh\`; for a \`session:<id>\` subject it always
+             picks \`session\`.
 
 Examples:
   agentproto sentinel watch pr https://github.com/agentproto/ts/pull/1501 --session sess_abc123
   agentproto sentinel watch pr https://github.com/agentproto/ts/pull/1501 --session sess_abc123 --provider webhook
   agentproto sentinel watch github:agentproto/ts --types 'github.issue_comment.*' --session sess_abc123
+  agentproto sentinel watch session:sess_child456 --session sess_supervisor789
   agentproto sentinel list
   agentproto sentinel status sen_01ABC...
   agentproto sentinel rm sen_01ABC...

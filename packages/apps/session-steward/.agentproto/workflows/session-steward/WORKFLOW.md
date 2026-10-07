@@ -242,7 +242,30 @@ steps:
   - id: relabelQueue
     kind: transform
     name: Terminal sessions missing an outcome (relabel candidates)
-    description: Entry-based — buildRelabelQueue.
+    description: Entry-based — buildRelabelQueue. PR numbers come from the session row.
+
+  - id: relabelEvidenceQueue
+    kind: transform
+    name: Relabel candidates that get an evidence lookup (the newest 20)
+    description: Entry-based — buildRelabelEvidenceQueue.
+
+  - id: relabelEvidence
+    kind: map
+    name: Worktree/PR state per listed relabel candidate
+    over: $steps.relabelEvidenceQueue
+    parallelism: 4
+    onError: collect
+    steps:
+      - id: relabelEvidenceOne
+        kind: tool
+        tool: session_evidence
+        inputs:
+          sessionId: $item.sessionId
+
+  - id: relabelFinal
+    kind: transform
+    name: Relabel proposals with their evidence
+    description: Entry-based — applyRelabelEvidence (merged PR/worktree or opened PR → done).
 
   - id: evidence
     kind: map
@@ -398,7 +421,7 @@ result:
   autoApply: $steps.autoApply
   judgedApply: $steps.judgedApply
   proposals: $steps.proposals
-  relabel: $steps.relabelQueue
+  relabel: $steps.relabelFinal
   scan: $steps.scan
 ---
 

@@ -77,6 +77,8 @@ import {
   type AuthEcho,
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
+import { stampDaemonCallerSessionId } from "./session-spawn.js"
+import { stripOwnCallerStamp } from "./session-continue-fresh.js"
 import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
@@ -515,6 +517,21 @@ export interface RestartAgentSessionOptions {
    *  local session. Omitted for a sandbox session ⇒ a loud error — never a
    *  local spawn of a box path (`/home/user` etc.). */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Daemon's own `/mcp` base URL — same seam as
+   *  `RegisterAgentToolsOptions.daemonMcpUrl` / `SpawnAgentSessionDeps`'s own
+   *  threading. Lets the carried-forward `mcpServers` be re-stamped with the
+   *  FRESH session's id (see `stampDaemonCallerSessionId`) instead of staying
+   *  pinned to the OLD (now-dead) session's id. Every production restart path
+   *  should wire this (`POST /sessions/:id/restart`, `session_restart`,
+   *  `makeRestartForRouting`'s sentinel/inbound hooks, the cron scheduler's
+   *  `prompt-session` action — all in index.ts, mirroring `daemonMcpUrl`'s own
+   *  construction there). Omitted ⇒ `mcpServers` is carried forward UNTOUCHED
+   *  (neither stripped nor re-stamped) — an absent URL means this restart
+   *  can't safely re-identify the mount, so it deliberately falls back to the
+   *  pre-fix behaviour (stale-but-present identity) rather than stripping to
+   *  no identity at all, and logs loudly so a caller that forgot to wire it
+   *  shows up in the daemon's own log. */
+  daemonMcpUrl?: string
 }
 
 // ── In-place restart (same-id revival) ─────────────────────────────────
@@ -866,6 +883,47 @@ export async function restartAgentSession(
     authEcho = resumeAuth.authEcho
   }
 
+  // Copying `prev.mcpServers` verbatim would carry the OLD session's own
+  // `callerSessionId` stamp (baked in at ITS spawn time) onto the fresh
+  // restart — every spawn/`command_execute` the restarted session makes
+  // through that mount would misattribute to the dead id (wrong auto-parent,
+  // `message_parent` reaching the wrong session, `session_follow` defaulting
+  // to the wrong follower). Strip the stale stamp (`stripOwnCallerStamp`,
+  // same helper `continueAgentSessionFresh` uses) and re-stamp with THIS
+  // restart's own fresh id (`stampDaemonCallerSessionId`, shared with
+  // `spawnAgentSession`'s identity-stamp block).
+  //
+  // Both steps need the daemon's OWN `/mcp` URL — stripping alone (no
+  // restamp) would leave the entry with NO identity at all, which is WORSE
+  // than the stale stamp: every caller of this function is expected to
+  // thread `daemonMcpUrl` through (HTTP route, MCP verb, `makeRestartForRouting`
+  // (index.ts) for the sentinel/inbound paths, and the cron scheduler's
+  // `prompt-session` action), but a caller that forgets must never silently
+  // erase the only identity the mount had — the stale-but-present id at
+  // least resolves to a real (if dead) session, same as before this fix
+  // existed. So an absent `daemonMcpUrl` is a no-op here: `prev.mcpServers`
+  // rides through completely untouched, and the gap is logged loudly so a
+  // caller that forgot to wire `daemonMcpUrl` shows up in the daemon's own
+  // log rather than silently degrading identity.
+  const buildRestartMcpServers = (newSessionId: string): SessionDescriptor["mcpServers"] => {
+    if (!opts.daemonMcpUrl) {
+      if (prev.mcpServers && prev.mcpServers.length > 0) {
+        console.warn(
+          `[restartAgentSession] no daemonMcpUrl wired for restart of ${prev.id} — ` +
+            `carrying mcpServers forward WITHOUT re-stamping callerSessionId (the ` +
+            `restarted session ${newSessionId} will keep speaking to the daemon under ` +
+            `the OLD session's identity).`,
+        )
+      }
+      return prev.mcpServers
+    }
+    const stripped = stripOwnCallerStamp(prev.mcpServers, prev.id)
+    return stampDaemonCallerSessionId(stripped, {
+      daemonMcpUrl: opts.daemonMcpUrl,
+      callerSessionId: newSessionId,
+    })
+  }
+
   const spawnWithResume = async (
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
@@ -877,6 +935,7 @@ export async function restartAgentSession(
     // process ever exec's so it can be injected as AGENTPROTO_SESSION_ID —
     // never the id being restarted FROM.
     const restartedSessionId = mintSessionId()
+    const restartMcpServers = buildRestartMcpServers(restartedSessionId)
     if (sandboxId !== undefined) {
       return spawnInSandbox(sandboxId, restartedSessionId)
     }
@@ -929,7 +988,7 @@ export async function restartAgentSession(
       // Legacy AIP-45 mode: prefer an explicit override; otherwise carry the
       // prior descriptor's mode forward so a plain restart preserves it.
       ...(effMode ? { mode: effMode } : {}),
-      ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+      ...(restartMcpServers ? { mcpServers: restartMcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
       // Spawn-time guarantees survive a restart: the adapter runs under the
@@ -991,7 +1050,7 @@ export async function restartAgentSession(
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
       ...(prev.label ? { label: prev.label } : {}),
-      ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+      ...(restartMcpServers ? { mcpServers: restartMcpServers } : {}),
       ...(prevBoundary ? { meta: boundaryMeta(prevBoundary) } : {}),
       ...(effModel ? { model: effModel } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
@@ -1017,6 +1076,16 @@ export async function restartAgentSession(
       ...(prev.origin ? { origin: prev.origin } : {}),
       ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
       ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
+      // Immutable spawn-time flags survive a restart exactly like
+      // `continueAgentSessionFresh` carries `keepAlive`/`notifyParentOnCrash`
+      // forward (session-continue-fresh.ts) — these are never axes a restart
+      // overrides, only inherited, so dropping them here is what let a
+      // persistent supervisor's restart silently become idle-reapable and
+      // lose its crash-detect opt-ins.
+      ...(prev.keepAlive ? { keepAlive: true } : {}),
+      ...(prev.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+      ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
+      ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
       // Verifiability echo (never the credential) — see the auth
       // resolution block above. Absent when no credential resolved,
       // same as session-spawn.ts.
@@ -1072,6 +1141,7 @@ export async function restartAgentSession(
           `re-attach sandbox "${boxSandboxId}".`,
       )
     }
+    const sandboxMcpServers = buildRestartMcpServers(restartedSessionId)
     const spec: SandboxSpec = { provider: providerSlug, config: {} }
     const lifecyclePolicy = resolveLifecyclePolicy(spec, true)
     let host: SandboxAgentSessionHost
@@ -1105,7 +1175,7 @@ export async function restartAgentSession(
           : {}),
         ...(effEffort ? { effort: effEffort } : {}),
         ...(prev.label ? { label: prev.label } : {}),
-        ...(prev.mcpServers ? { mcpServers: toBoxMcpServerMounts(prev.mcpServers) } : {}),
+        ...(sandboxMcpServers ? { mcpServers: toBoxMcpServerMounts(sandboxMcpServers) } : {}),
         ...(authSpec ? { auth: sandboxAuthForBox(authSpec) } : {}),
       })
       remoteSessionId = remoteDesc.id
@@ -1147,7 +1217,7 @@ export async function restartAgentSession(
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
       ...(prev.label ? { label: prev.label } : {}),
-      ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+      ...(sandboxMcpServers ? { mcpServers: sandboxMcpServers } : {}),
       ...(effModel ? { model: effModel } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
@@ -1158,6 +1228,10 @@ export async function restartAgentSession(
       ...(prev.origin ? { origin: prev.origin } : {}),
       ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
       ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
+      ...(prev.keepAlive ? { keepAlive: true } : {}),
+      ...(prev.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+      ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
+      ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
       ...(authEcho?.fingerprint
         ? {
             auth: {
@@ -1225,6 +1299,40 @@ export async function restartAgentSession(
       desc.pendingResumeContext = result.digest
       digestRecovered = result.hasContent
     }
+  }
+
+  // ── Close the superseded OLD row ──────────────────────────────────
+  // This new-id path mints a FRESH descriptor continuing `prev`'s
+  // conversation — the normal case is `prev` already ended (that's WHY a
+  // restart was requested), so this is a no-op. But nothing upstream
+  // actually requires `prev` to be dead (neither the HTTP `POST
+  // /sessions/:id/restart` route nor the `session_restart` MCP verb check
+  // `prev.status` before calling in), so restarting an ALIVE session used to
+  // leave it running forever — two live processes on the same conversation,
+  // the daemon only ever attributing to `desc.id` from here on. `kill()`
+  // reads the row's CURRENT status off the registry (not this function's
+  // stale `prev` snapshot) and already no-ops on an already-terminal row, so
+  // calling it unconditionally here is safe. `"restarted"` is a DELIBERATE
+  // end reason (`DELIBERATE_END_REASONS`, sentinel-runtime.ts) —
+  // `status: "killed"`, never `"error"`, so it's invisible to both
+  // `restart-scheduler.ts`'s crash-restart eligibility (which requires
+  // `endedReason:"crashed"` or an unreasoned `"error"`) and
+  // `supervisor-notify.ts`'s `notifyParentOnCrash` delivery (which gates on
+  // that same unexpected-death pair) — the old row's own crash-handling
+  // opt-ins never misfire for a restart that was never a crash.
+  //
+  // EXCEPT a sandbox restart: `prev.agentSession` is a
+  // `SandboxAgentSessionProxy` over the SAME remote `sandboxId` the fresh
+  // `desc` just reconnected to (`spawnInSandbox` above) — `kill()` would
+  // call that proxy's `close()`, which kills/pauses the underlying BOX
+  // (`SandboxAgentSessionHost.stop`/`pause`), tearing down the sandbox the
+  // NEW session now depends on. There is no close-the-row-without-closing-
+  // the-shared-resource primitive today, so a sandbox restart leaves `prev`
+  // alive rather than risk destroying the box out from under its own
+  // replacement — a narrower version of the pre-fix gap, scoped to sandbox
+  // sessions only.
+  if (sandboxId === undefined) {
+    registry.kill(prev.id, "SIGTERM", "restarted")
   }
 
   // ── Announce the changed axes (SPEC §4.3) ────────────────────────

@@ -122,6 +122,8 @@ function fakeTools(opts: {
   listShape?: "sessions" | "items"
   /** `host_load` report; default = a calm host. */
   hostLoad?: Record<string, unknown>
+  /** Extra `session_evidence` fields per session id (worktree / pullRequests); `"throw"` fails the lookup. */
+  evidenceExtra?: Record<string, Record<string, unknown> | "throw">
 }) {
   const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
   const evidenceReads = new Map<string, number>()
@@ -170,7 +172,10 @@ function fakeTools(opts: {
       const n = (evidenceReads.get(id) ?? 0) + 1
       evidenceReads.set(id, n)
       const askText = n > 1 ? opts.askReplies?.[id] : undefined
+      const extra = opts.evidenceExtra?.[id]
+      if (extra === "throw") throw new Error("evidence lookup failed")
       return mcpResult({
+        ...(extra ?? {}),
         sessionId: id,
         label: `label-${id}`,
         cwd: `/tmp/${id}`,
@@ -246,7 +251,7 @@ async function run(dispatchTool: DispatchTool, host: AgentSessionHost, input: Re
     candidates: { close: PlanEntry[]; stuck: PlanEntry[]; judge: PlanEntry[]; judgeOverflow: PlanEntry[] }
     verdicts: Array<{ entry: PlanEntry; verdict: string; confidence: number; reason: string; source: string; malformed?: boolean }>
     proposals: { proposals: Array<{ sessionId: string; kind: string; reason: string }>; observed: Array<{ sessionId: string; kind: string }> }
-    relabel: Array<{ sessionId: string; proposedVerdict: string }>
+    relabel: Array<{ sessionId: string; proposedVerdict: string; reason: string }>
     scan: { counts: Record<string, number> }
   }
 }
@@ -303,6 +308,9 @@ describe("session-steward workflow — shape", () => {
       "loopResults:transform",
       "proposals:transform",
       "relabelQueue:transform",
+      "relabelEvidenceQueue:transform",
+      "relabelEvidence:map",
+      "relabelFinal:transform",
       "evidence:map",
       "judgeQueue:transform",
       "jevQueue:transform",
@@ -754,6 +762,65 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(out.report).toContain("31 ended in the last 24h (82 without an outcome in all) — done: 1, abandoned: 30")
     expect(out.report).toContain("… and 62 more (older/omitted)")
     expect(out.report).not.toContain("old_0")
+  })
+
+  describe("relabel evidence (PR / worktree)", () => {
+    const prRow = (id: string, nums: number[], over: Record<string, unknown> = {}) =>
+      terminalRow(id, hoursAgo(1), {
+        openedPrs: nums.map(number => ({ adapter: "claude-code", number, url: `https://github.com/o/r/pull/${number}`, openedAt: hoursAgo(2) })),
+        outcome: { status: "produced", verdict: null, artifacts: nums.map(n => ({ type: "pr", ref: `https://github.com/o/r/pull/${n}`, title: `#${n}` })) },
+        ...over,
+      })
+    const relabelOf = async (rows: unknown[], evidenceExtra?: Record<string, Record<string, unknown> | "throw">) => {
+      const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: rows as never, evidenceExtra })
+      const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
+      return { out, calls: f.calls, byId: Object.fromEntries(out.relabel.map(r => [r.sessionId, r])) }
+    }
+
+    it("opened PRs on the list row → done with the PR numbers in the reason", async () => {
+      const { byId, out } = await relabelOf([prRow("sess_prs", [1740, 1738]), prRow("sess_one", [1743]), terminalRow("sess_none", hoursAgo(1))])
+      expect(byId.sess_prs).toMatchObject({ proposedVerdict: "done", reason: "PRs #1738, #1740 opened" })
+      expect(byId.sess_one).toMatchObject({ proposedVerdict: "done", reason: "PR #1743 opened" })
+      expect(byId.sess_none).toMatchObject({ proposedVerdict: "abandoned", reason: "terminal, no outcome recorded" })
+      expect(out.report).toContain("- sess_prs → done — PRs #1738, #1740 opened")
+      expect(out.report).toContain("done: 2, abandoned: 1")
+    })
+
+    it("a merged PR/worktree in session_evidence → done with 'PR #N merged'", async () => {
+      const { byId } = await relabelOf(
+        [prRow("sess_merged", [1738, 1740]), terminalRow("sess_wt", hoursAgo(2))],
+        {
+          sess_merged: { worktree: { branch: "wt/x", pr: { state: "merged", number: 1738 } }, pullRequests: { opened: 2, merged: 1, state: "merged" } },
+          sess_wt: { worktree: { branch: "wt/y", pr: { state: "merged", number: 9 } }, pullRequests: { opened: 0, merged: 1, state: "merged" } },
+        },
+      )
+      expect(byId.sess_merged).toMatchObject({ proposedVerdict: "done", reason: "PR #1738 merged; also opened #1740" })
+      expect(byId.sess_wt).toMatchObject({ proposedVerdict: "done", reason: "PR #9 merged" })
+    })
+
+    it("an open worktree PR the row did not carry → done; no PR anywhere stays abandoned", async () => {
+      const { byId } = await relabelOf(
+        [terminalRow("sess_open", hoursAgo(1)), terminalRow("sess_nothing", hoursAgo(2))],
+        { sess_open: { worktree: { branch: "wt/z", pr: { state: "open", number: 77 } }, pullRequests: { opened: 0, merged: 0, state: "open" } } },
+      )
+      expect(byId.sess_open).toMatchObject({ proposedVerdict: "done", reason: "PR #77 open" })
+      expect(byId.sess_nothing).toMatchObject({ proposedVerdict: "abandoned" })
+    })
+
+    it("a failed evidence lookup keeps the list-row proposal", async () => {
+      const { byId } = await relabelOf([prRow("sess_x", [5]), terminalRow("sess_y", hoursAgo(2))], { sess_x: "throw", sess_y: "throw" })
+      expect(byId.sess_x).toMatchObject({ proposedVerdict: "done", reason: "PR #5 opened" })
+      expect(byId.sess_y).toMatchObject({ proposedVerdict: "abandoned" })
+    })
+
+    it("looks up session_evidence only for the newest 20, never every terminal session", async () => {
+      const rows = Array.from({ length: 40 }, (_, i) => terminalRow(`new_${i}`, hoursAgo(1 + i * 0.5)))
+      const { calls } = await relabelOf(rows)
+      const looked = calls.filter(c => c.name === "session_evidence" && String(c.inputs.sessionId).startsWith("new_"))
+      expect(looked).toHaveLength(20)
+      expect(new Set(looked.map(c => c.inputs.sessionId)).has("new_0")).toBe(true)
+      expect(new Set(looked.map(c => c.inputs.sessionId)).has("new_39")).toBe(false)
+    })
   })
 
   it("honours relabelWindowHours", async () => {

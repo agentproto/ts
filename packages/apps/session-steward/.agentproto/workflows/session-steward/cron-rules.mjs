@@ -262,22 +262,73 @@ export function detectFastPathDone(input = {}) {
 
 const TERMINAL_STATUSES = new Set(["killed", "exited", "error", "stopped", "completed", "failed"])
 
+/** PR numbers a `session_list` row records: `openedPrs[].number` plus the
+ *  `outcome.artifacts` `pr` entries (`#N` title or a `…/pull/N` ref). Sorted,
+ *  de-duplicated. */
+export function prNumbersOf(session) {
+  const nums = new Set()
+  for (const pr of Array.isArray(session?.openedPrs) ? session.openedPrs : []) {
+    if (Number.isInteger(pr?.number)) nums.add(pr.number)
+  }
+  for (const a of Array.isArray(session?.outcome?.artifacts) ? session.outcome.artifacts : []) {
+    if (a?.type !== "pr") continue
+    const m = /#(\d+)$/.exec(String(a.title ?? "")) ?? /\/pull\/(\d+)/.exec(String(a.ref ?? ""))
+    if (m) nums.add(Number(m[1]))
+  }
+  return [...nums].sort((a, b) => a - b)
+}
+
+const fmtPrs = nums => nums.map(n => `#${n}`).join(", ")
+const isMergedState = state => state === "merged" || state === "MERGED"
+
 /**
  * A terminal session that still carries no derived outcome and no wrapup
  * flag is a relabel CANDIDATE — visible instead of invisible, as the log
- * asks. The proposed verdict is `done` when the worktree/PR proves the work
- * merged, else `abandoned` (the ambiguous ones still go to a judge).
+ * asks. The proposed verdict is `done` when the session's own record shows a
+ * PR (merged, or merely opened — the PR is the hand-off), else `abandoned`.
+ * `reason` carries the evidence (`PR #1738 merged`, `PRs #1738, #1740 opened`).
  */
 export function terminalRelabelCandidate(session) {
   if (!TERMINAL_STATUSES.has(String(session?.status ?? ""))) return { candidate: false, reason: "not terminal" }
   if (session?.outcome?.verdict) return { candidate: false, reason: "outcome already recorded" }
   if (session?.wrapupFlag) return { candidate: false, reason: "already flagged" }
-  const prState = session?.worktree?.pr?.state
-  const merged = prState === "merged" || prState === "MERGED"
-  const outcomePrs = Array.isArray(session?.outcome?.pullRequests) ? session.outcome.pullRequests : []
-  const mergedPr = merged || outcomePrs.some((p) => p?.state === "MERGED" || p?.state === "merged")
-  if (mergedPr) return { candidate: true, proposedVerdict: "done", reason: "terminal, PR merged, no outcome recorded" }
-  return { candidate: true, proposedVerdict: "abandoned", reason: "terminal, no outcome recorded" }
+  const prs = prNumbersOf(session)
+  const wt = session?.worktree?.pr
+  if (isMergedState(wt?.state)) {
+    const n = Number.isInteger(wt.number) ? [wt.number] : prs
+    return { candidate: true, proposedVerdict: "done", reason: n.length > 0 ? `PR ${fmtPrs(n)} merged` : "PR merged", prs }
+  }
+  if (prs.length > 0) {
+    return { candidate: true, proposedVerdict: "done", reason: `PR${prs.length > 1 ? "s" : ""} ${fmtPrs(prs)} opened`, prs }
+  }
+  return { candidate: true, proposedVerdict: "abandoned", reason: "terminal, no outcome recorded", prs }
+}
+
+/**
+ * Sharpen one relabel proposal with its `session_evidence` answer: a merged
+ * PR / merged worktree (`pullRequests.merged`, `worktree.pr.state`) →
+ * `done` with `PR #N merged`; an open or recorded PR the list row did not
+ * carry → `done`. Anything else leaves the proposal untouched.
+ */
+export function refineRelabel(item, evidence) {
+  if (!evidence) return item
+  const wt = evidence.worktree?.pr
+  const state = wt?.state ?? evidence.pullRequests?.state ?? null
+  const known = Array.isArray(item?.prs) ? item.prs : []
+  const merged = isMergedState(state) || (evidence.pullRequests?.merged ?? 0) > 0
+  if (merged) {
+    const n = Number.isInteger(wt?.number) ? wt.number : known.length === 1 ? known[0] : undefined
+    const others = known.filter(k => k !== n)
+    const reason = (n !== undefined ? `PR #${n} merged` : "PR merged") + (others.length > 0 && n !== undefined ? `; also opened ${fmtPrs(others)}` : "")
+    return { ...item, proposedVerdict: "done", reason }
+  }
+  if (item?.proposedVerdict === "done") return item
+  if (state === "open" || state === "OPEN") {
+    return { ...item, proposedVerdict: "done", reason: Number.isInteger(wt?.number) ? `PR #${wt.number} open` : "PR open" }
+  }
+  const opened = evidence.pullRequests?.opened ?? 0
+  if (opened > 0) return { ...item, proposedVerdict: "done", reason: `${opened} PR${opened > 1 ? "s" : ""} opened` }
+  return item
 }
 
 // ── self-exclusion (mission item 7) ──────────────────────────────────────

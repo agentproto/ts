@@ -149,6 +149,11 @@
       "import": "./dist/app-catalog.mjs",
       "default": "./dist/app-catalog.mjs"
     },
+    "./daemon-tool-names": {
+      "types": "./dist/daemon-tool-names.d.ts",
+      "import": "./dist/daemon-tool-names.mjs",
+      "default": "./dist/daemon-tool-names.mjs"
+    },
     "./first-party-catalog-gen": {
       "types": "./dist/first-party-catalog-gen.d.ts",
       "import": "./dist/first-party-catalog-gen.mjs",
@@ -176,6 +181,7 @@
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
+    "gen:daemon-tool-names": "UPDATE_DAEMON_TOOL_NAMES=1 vitest run src/__tests__/daemon-tool-names.test.ts",
     "test:watch": "vitest",
     "gen:checkpoint-schema": "vite-node scripts/gen-checkpoint-schema.mjs",
     "sim:inbound": "vite-node scripts/simulate-inbound.mjs",

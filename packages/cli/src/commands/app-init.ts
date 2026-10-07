@@ -31,6 +31,7 @@ import matter from "gray-matter"
 import { scaffoldApp } from "create-agentproto-app/scaffold"
 import { loadAppHandle } from "@agentproto/app-kit"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
+import { DAEMON_TOOL_NAMES } from "@agentproto/runtime/daemon-tool-names"
 
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
@@ -42,44 +43,16 @@ import { expandHome } from "./skill-install/pack-resolve.js"
 const VERIFY_TIMEOUT_MS = 10 * 60 * 1000
 
 /**
- * The known daemon tool names a `ui.tools` allowlist may name besides the
- * `app_*` family (which is accepted wholesale — app tools evolve together).
- * This is a documented static list in the CLI: the daemon registers its
- * full surface dynamically and exports no authoritative name list today.
- * It covers the orchestration/session surface an app UI or app agent
- * typically reaches (see `packages/runtime/src/orchestrator-gateway.ts`
- * `DEFAULT_ORCHESTRATOR_TOOLS` and `DEFAULT_ALWAYS_ON_TOOLS` in
- * `packages/runtime/src/index.ts`); genuinely app-scoped tools are all
- * `app_*` and need no entry here.
+ * A `ui.tools` entry is valid when it is an `app_*` tool (accepted wholesale:
+ * app tools evolve together) or a tool the daemon registers. The daemon list
+ * is `DAEMON_TOOL_NAMES`, generated from a real gateway's `tools/list` and
+ * kept exact by a runtime test (`daemon-tool-names.test.ts`), so it follows
+ * the daemon instead of a hand-kept subset.
  */
-const KNOWN_NON_APP_TOOLS: readonly string[] = [
-  "agent_start",
-  "agent_prompt",
-  "agent_output",
-  "agent_kill",
-  "agent_export",
-  "session_list",
-  "session_monitor",
-  "session_events_poll",
-  "session_tree",
-  "session_set_keepalive",
-  "message_parent",
-  "command_execute",
-  "permissions_list",
-  "permissions_respond",
-  "task_create",
-  "task_list",
-  "task_claim",
-  "task_update",
-  "daemon_health",
-  // Reached by app UIs through the served stage board (/agentproto/stageboard.js):
-  // Approve resolves a parked approval step via the escalation seam.
-  "workflow_escalation_resolve",
-  "workflow_status",
-]
+const DAEMON_TOOL_SET: ReadonlySet<string> = new Set(DAEMON_TOOL_NAMES)
 
 function isKnownUiTool(name: string): boolean {
-  return name.startsWith("app_") || KNOWN_NON_APP_TOOLS.includes(name)
+  return name.startsWith("app_") || DAEMON_TOOL_SET.has(name)
 }
 
 /**
@@ -370,8 +343,9 @@ export async function collectAppFindings(appDir: string): Promise<{
             scope: "ui.tools",
             level: "error",
             message:
-              `unknown tool '${tool}' — ui.tools entries must be app_* ` +
-              `tools or known daemon tools (${KNOWN_NON_APP_TOOLS.join(", ")}).`,
+              `unknown tool '${tool}': ui.tools entries must be app_* tools or ` +
+              `tools the agentproto daemon registers (${DAEMON_TOOL_NAMES.length} known ` +
+              `to this CLI version; a newer daemon tool needs a newer CLI).`,
           })
         }
       }

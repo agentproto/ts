@@ -285,6 +285,83 @@ describe("routeInboundMessage", () => {
     registry.shutdown()
   })
 
+  it("mode \"route\" new-id fallback: makeRestartForRouting re-stamps mcpServers with the FRESH id when daemonMcpUrl is wired — never left on the dead OLD id, never stripped to no identity", async () => {
+    // Supervisor-review regression: `makeRestartForRouting` (index.ts) used to
+    // build `restartPreferInPlace`'s options with no `daemonMcpUrl` at all —
+    // on this new-id fallback (no `resumeAgent` wired, so the in-place
+    // revival never takes), the restarted session's `mcpServers` either kept
+    // speaking to the daemon as the DEAD old session, or — with the
+    // session-restart-core.ts safety net alone — lost its identity stamp
+    // entirely. Driving the REAL `routeInboundMessage` → `restartInboundSession`
+    // (`makeRestartForRouting`) → `restartPreferInPlace` → `restartAgentSession`
+    // chain end to end proves the production wiring, not just the core.
+    const resumedSession = (id: string): AgentSessionLike => ({
+      sessionId: id,
+      async *send() {},
+      async cancel() {},
+      async close() {},
+    })
+    // No `resumeAgent` wired — `tryRestartInPlace` never succeeds, so this
+    // always falls through to the new-id `restartAgentSession` path.
+    const registry = createSessionsRegistry({ persist: false })
+    const startSessionCalls: Array<{ mcpServers?: unknown }> = []
+    const resolver: AgentAdapterResolver = async slug => ({
+      async startSession(o: { mcpServers?: unknown }) {
+        startSessionCalls.push({ mcpServers: o.mcpServers })
+        return resumedSession(`spawn_${slug}`)
+      },
+      commandPreview: `mock-${slug}`,
+    })
+    const daemonMcpUrl = "http://127.0.0.1:4848/mcp"
+    const restartSession = makeRestartForRouting(
+      { sessions: registry, resolveAgentAdapter: resolver, daemonMcpUrl },
+      { name: "restartInboundSession", allowDeliberateEnd: true },
+    )
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: { sessionId: "acp_orig", async *send() {}, async cancel() {}, async close() {} },
+      adapterSlug: "hermes",
+      mcpServers: [
+        { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=placeholder` },
+      ],
+    })
+    prev.mcpServers = [
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${prev.id}` },
+    ]
+    registry.kill(prev.id)
+
+    const { store } = makeBindingStore({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: prev.id,
+      mode: "route",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const deps = makeDeps({
+      bindings: store,
+      enqueuePrompt,
+      isSessionAlive: vi.fn(() => false),
+      restartSession,
+    })
+
+    const result = await routeInboundMessage(deps, makeMsg(), "route")
+    // Not an in-place revival — a genuinely new id, so "restarted-routed".
+    expect(result.action).toBe("restarted-routed")
+    const newId = (result as { sessionId: string }).sessionId
+    expect(newId).not.toBe(prev.id)
+
+    const sentRef = (startSessionCalls[0]?.mcpServers as Array<{ ref: string }> | undefined)?.[0]
+      ?.ref
+    expect(sentRef).toContain(`callerSessionId=${newId}`)
+    expect(sentRef).not.toContain(prev.id)
+
+    registry.shutdown()
+  })
+
   it('mode "route" with no binding skips without spawning', async () => {
     const spawnForContact = vi.fn(async () => {})
     const deps = makeDeps({ spawnForContact })

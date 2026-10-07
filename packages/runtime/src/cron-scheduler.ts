@@ -509,6 +509,12 @@ export function createCronScheduler(opts: {
   sessionEvents: SessionEventBus
   registry: SessionsRegistry
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Daemon's own `/mcp` base URL — threaded into `restartAgentSession` for
+   *  the `prompt-session` action's auto-resume of a dead session, so the
+   *  revived session's `mcpServers` re-stamps `callerSessionId` with its OWN
+   *  fresh id instead of the dead session's — see
+   *  `RestartAgentSessionOptions.daemonMcpUrl`'s doc (session-restart-core.ts). */
+  daemonMcpUrl?: string
   /**
    * In-process caller for ANY registered daemon MCP tool by name — powers
    * `kind:"tool"` actions. See `dispatchTool` in `index.ts` (reaches into
@@ -539,7 +545,7 @@ export function createCronScheduler(opts: {
   /** Default bound (ms) on the turn observation. Defaults to 30 min. */
   observeTimeoutMs?: number
 }): CronScheduler {
-  const { sessionEvents, registry, resolveAgentAdapter, dispatchTool, workspace } = opts
+  const { sessionEvents, registry, resolveAgentAdapter, daemonMcpUrl, dispatchTool, workspace } = opts
   const observeTurn = opts.observeTurn
   const observeTimeoutMs = opts.observeTimeoutMs ?? DEFAULT_OBSERVE_TIMEOUT_MS
   const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
@@ -666,7 +672,10 @@ export function createCronScheduler(opts: {
           // result, which only an agent-cli session has — never let
           // decideRestartStrategy hand back a PTY-native resume (e.g.
           // claude-code's `claude --resume`) here.
-          { forceAgentResume: true },
+          {
+            forceAgentResume: true,
+            ...(daemonMcpUrl ? { daemonMcpUrl } : {}),
+          },
         )
         action.sessionId = restarted.desc.id
         await registry.sendPrompt(restarted.desc.id, action.prompt)

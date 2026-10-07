@@ -864,6 +864,46 @@ export function buildDaemonSelfMountEntry(
   return { name: "agentproto", transport: "http", ref }
 }
 
+/**
+ * Ensure every `mcpServers` entry that targets THIS daemon's own `/mcp`
+ * endpoint carries `callerSessionId=<callerSessionId>`, so any spawn made
+ * back through it attributes to the right session (→ auto-parent, see
+ * spawn-attach.ts) — regardless of adapter, and regardless of whether the
+ * entry was default-injected (`buildDaemonSelfMountEntry`, already stamped
+ * and skipped as idempotent) or supplied by the caller (e.g. a claude-code
+ * supervisor explicitly pointed at the daemon, or a restarted session's
+ * carried-forward `mcpServers`). Grants NO new capability — it only
+ * identity-stamps daemon access the session already has, which is why it's
+ * safe to apply uniformly. The scoped orchestrator entry
+ * (`/mcp/orchestrator?scope=…`) attributes via its own token and sits on a
+ * deeper path than `daemonMcpUrl`, so the exact-path match here leaves it
+ * untouched. An entry that already carries a `callerSessionId` (a caller's
+ * explicit pin, or one left over from a prior stamp) is respected and never
+ * overwritten — strip a stale stamp first (see `stripOwnCallerStamp`,
+ * session-continue-fresh.ts) when the caller wants it replaced.
+ *
+ * Shared by the fresh-spawn path (`spawnAgentSession`, below) and the
+ * restart path (`restartAgentSession`, session-restart-core.ts) — one place
+ * for the exact-path matching logic.
+ */
+export function stampDaemonCallerSessionId(
+  mcpServers: readonly AcpMcpServer[] | undefined,
+  opts: { daemonMcpUrl: string; callerSessionId: string },
+): AcpMcpServer[] | undefined {
+  if (!mcpServers) return undefined
+  const daemonQ = `${opts.daemonMcpUrl}?`
+  return mcpServers.map(entry => {
+    if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
+    const targetsDaemon = entry.ref === opts.daemonMcpUrl || entry.ref.startsWith(daemonQ)
+    if (!targetsDaemon || entry.ref.includes("callerSessionId=")) return entry
+    const sep = entry.ref.includes("?") ? "&" : "?"
+    return {
+      ...entry,
+      ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`,
+    }
+  })
+}
+
 /** Slugify an imported-MCP alias into a valid `mcpServers[].name` — lowercase,
  *  non-alphanumerics collapsed to a single hyphen, trimmed. Falls back to the
  *  import id when the alias slugifies to nothing (e.g. an alias made only of
@@ -2542,29 +2582,12 @@ export async function spawnAgentSession(
     }
   }
   // ── Identity stamp: decouple attribution from capability ────────
-  // Ensure EVERY mcpServers entry that targets THIS daemon's own `/mcp`
-  // endpoint carries `callerSessionId=<own id>`, so any spawn this child makes
-  // back through it attributes to the child (→ auto-parent, see
-  // spawn-attach.ts) — regardless of adapter, and regardless of whether the
-  // daemon default-injected the entry (the hermes case above, already stamped
-  // and skipped as idempotent) or the CALLER supplied it (e.g. a claude-code
-  // supervisor explicitly pointed at the daemon). This grants NO new
-  // capability — it only identity-stamps daemon access the session already has
-  // — which is why it's safe to apply uniformly. The scoped orchestrator entry
-  // (`/mcp/orchestrator?scope=…`) attributes via its own token and sits on a
-  // deeper path than `daemonMcpUrl`, so the exact-path match below leaves it
-  // untouched. A caller who set `callerSessionId` themselves is respected.
+  // See `stampDaemonCallerSessionId`'s doc for the full rationale — shared
+  // with the restart path (session-restart-core.ts).
   if (daemonMcpUrl && mcpServers) {
-    const daemonQ = `${daemonMcpUrl}?`
-    mcpServers = mcpServers.map(entry => {
-      if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
-      const targetsDaemon = entry.ref === daemonMcpUrl || entry.ref.startsWith(daemonQ)
-      if (!targetsDaemon || entry.ref.includes("callerSessionId=")) return entry
-      const sep = entry.ref.includes("?") ? "&" : "?"
-      return {
-        ...entry,
-        ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(mintedSessionId)}`,
-      }
+    mcpServers = stampDaemonCallerSessionId(mcpServers, {
+      daemonMcpUrl,
+      callerSessionId: mintedSessionId,
     })
   }
   // ── Report-back channel (child → parent) ──────────────────────────

@@ -553,7 +553,7 @@ describe("session_restart", () => {
     registry.shutdown()
   })
 
-  it("restarts a still-alive session the same way as a dead one (no liveness gate)", async () => {
+  it("restarts a still-alive session the same way as a dead one (no liveness gate) — and closes the superseded OLD row cleanly", async () => {
     const { client, registry, close } = await buildHarness()
 
     const prev = registry.spawnAgent({
@@ -573,9 +573,43 @@ describe("session_restart", () => {
 
     expect(desc.id).not.toBe(prev.id)
     expect(desc.resumedFrom).toBe(prev.id)
-    // Restarting doesn't touch the prior session — it's left exactly as
-    // it was (still "running"), same as the CLI's `sessions restart`.
-    expect(registry.get(prev.id)?.status).toBe("running")
+    // Regression (2026-10): restarting an ALIVE session used to mint a new
+    // id and leave the OLD one running forever — two live processes on the
+    // same conversation. The old row must be closed cleanly instead: a
+    // DELIBERATE end reason ("restarted"), never "crashed"/"error", so its
+    // own crash-handling opt-ins (notifyParentOnCrash, restartPolicy) never
+    // misfire for a restart that was never a crash.
+    const old = registry.get(prev.id)
+    expect(old?.status).toBe("killed")
+    expect(old?.endedReason).toBe("restarted")
+    expect(old?.continuedTo).toBe(desc.id)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("restarting an already-dead session stays a no-op on the dead row's own endedReason", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.kill(prev.id, undefined, "operator-stopped")
+    expect(registry.get(prev.id)?.endedReason).toBe("operator-stopped")
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+
+    // Closing the superseded row is a no-op for an already-terminal one —
+    // its original endedReason is never clobbered with "restarted".
+    expect(registry.get(prev.id)?.status).toBe("killed")
+    expect(registry.get(prev.id)?.endedReason).toBe("operator-stopped")
 
     await close()
     registry.shutdown()
