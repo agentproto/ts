@@ -392,7 +392,7 @@ steps:
   - id: memoryWriteQueue
     kind: transform
     name: Verdict memory events to append
-    description: Entry-based — buildMemoryWriteQueue (a ledger write, never a session action).
+    description: Entry-based — buildMemoryWriteQueue (a ledger write, never a session action; empty unless apply).
 
   - id: memoryWrite
     kind: map
@@ -465,8 +465,9 @@ Every rule below is a pure function in `cron-rules.mjs`, pinned by
   why (`n live, m busy, k terminal, j excluded`).
 - **Host saturation (9).** If `host_load` is critical, the report lists
   orphans and big non-session processes FIRST — report only, no action.
-- **Verdict memory (10).** Each verdict is written to the app's `app_state`
-  ledger; a session judged the same verdict on an unchanged evidence
+- **Verdict memory (10).** On an `apply: true` pass each verdict is written to
+  the app's `app_state` ledger (a dry run reads the ledger but never writes it,
+  so its verdicts cannot be served as cached ones to a later real pass); a session judged the same verdict on an unchanged evidence
   fingerprint for `stableVerdictPasses` passes is served from cache and not
   re-judged. Operator disagreements are recorded as examples.
 
@@ -478,10 +479,10 @@ as observed, never nudged.
 ## Safety
 
 - `apply: false` (the default) mutates no SESSION: every session-mutating map
-  runs over an empty list. The one write a dry run performs is the append-only
-  verdict-memory ledger (`app_state_append`) — it never touches a session and
-  is what lets the cache accumulate across passes. Set `appId: ""` to disable
-  it entirely.
+  runs over an empty list, and a dry run writes nothing else either: the
+  append-only verdict-memory ledger (`app_state_append`) is read but only
+  appended to on an `apply: true` pass, so a dry run can never influence a later
+  real close. Set `appId: ""` to disable the memory entirely.
 - `session_wrapup_apply` re-classifies each id right before acting and always
   refuses `keep`-class ids; this workflow never feeds it one.
 - Rules only ever close `close`/`stuck` ids; a `keepAlive` session is never
