@@ -6,6 +6,7 @@ agentproto catalog build <entry.json|dir>... --out <apps.json>
                          [--emit-ts <file.ts>] [--generated-at <iso>]
 agentproto catalog verify <entry.json|dir>... [--json] [--allow-git]
                           [--offline-file <appId>=<path.agentapp>]...
+                          [--local-media <https-url-prefix>=<dir>]...
 ```
 
 > The publishing pipeline's merge and audit steps: `app pack --release
@@ -74,3 +75,11 @@ Exit `1` at the first failing entry by default, with a per-entry report;
 | `--json` | off | Print the full per-entry report (`{ok, entries}`) instead of human lines. |
 | `--allow-git` | off | Accept `source.kind: "git"` entries, skipping the bundle checks. |
 | `--offline-file <appId>=<path.agentapp>` | none | Repeatable. Substitute a local bundle for the download of that appId: testing without network. |
+| `--local-media <https-url-prefix>=<dir>` | none | Repeatable. Store listing media (icon, screenshots) whose URL starts with the prefix are read from `<dir>` instead of downloaded. The agentproto/apps CI maps `https://raw.githubusercontent.com/agentproto/apps/main/` to its checkout. |
+
+verify also checks the entry's store listing: `tagline` 1 to 120
+characters, `longDescription` 20 000 max, at most 8 screenshots each with
+`alt` text, at most 5 `categories` matching `[a-z0-9-]`, https `icon`,
+`homepage`, `repository` and screenshot URLs, and each icon/screenshot's
+format (png/jpeg/webp, svg for the icon) and size (1 MB per screenshot,
+256 KB for the icon).

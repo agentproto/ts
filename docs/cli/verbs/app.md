@@ -238,7 +238,8 @@ app folder's *contents* (not a wrapping folder). Extraction therefore yields
 | `--release` | `false` | Build the publishable bundle (see below). |
 | `--entry` | `false` | Requires `--release`. Also write a validated catalog entry next to the bundle (see below). |
 | `--asset-url <url>` | GitHub Releases URL | With `--entry`: the published bundle URL recorded in the entry's `source.url`. |
-| `--publisher <name>` | none | With `--entry`: the entry's `publisher` field. |
+| `--publisher <name>` | none | With `--entry`: the entry's `publisher` field (APP.md `store.publisher` wins). |
+| `--media-base-url <url>` | `https://raw.githubusercontent.com/agentproto/apps/main/media/<appId>/<version>` | With `--entry`: base URL of the store listing's local media (APP.md `store:` icon/screenshots), copied to `media/<appId>/<version>/` next to the entry. See [Store listing](../guides/distribute-an-app.md#store-listing-the-page-at-agentprotoshappsslug). |
 | `--json` | `false` | Print the generated `manifest.json` on stdout instead of a human summary (with `--entry`: the bundle path, entry file path, and the entry itself). |
 
 Fails with exit code `2` if `<appDir>` has no `.agentproto/APP.md`.

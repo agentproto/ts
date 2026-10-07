@@ -5,6 +5,7 @@
  */
 
 import { AppCatalogEntrySchema, type AppCatalogEntry } from "@agentproto/runtime/app-catalog"
+import type { ListingFields } from "./app-store-listing.js"
 
 /** Base URL of the public `agentproto/apps` GitHub Releases. */
 export const APP_RELEASES_BASE = "https://github.com/agentproto/apps/releases/download"
@@ -37,6 +38,9 @@ export interface CatalogEntryInput {
   sha256: string
   /** Size in bytes of the `.agentapp` file. */
   size: number
+  /** Store listing (APP.md `store:` block, see app-store-listing.ts). Its
+   *  `icon` / `publisher` win over the plain fields above. */
+  listing?: ListingFields
 }
 
 /**
@@ -56,6 +60,7 @@ export function buildCatalogEntry(input: CatalogEntryInput): AppCatalogEntry {
     ...(input.placement !== undefined ? { placement: input.placement } : {}),
     ...(input.publisher !== undefined ? { publisher: input.publisher } : {}),
     license: { kind: "free" },
+    ...(input.listing ?? {}),
     source: {
       kind: "agentapp",
       url: input.url,

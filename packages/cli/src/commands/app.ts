@@ -25,7 +25,7 @@
  * daemon's `app_*` tools.
  */
 
-import { readFile, stat, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
@@ -45,6 +45,7 @@ import { runAppBuild } from "../app-build.js"
 import { runAppDev } from "../app-dev.js"
 import { runAppInit, runAppValidate } from "./app-init.js"
 import { buildCatalogEntry, bundleReleaseAssetUrl, catalogSlug } from "../app-catalog-entry.js"
+import { defaultMediaBaseUrl, readStoreListing, StoreListingError, type StoreListing } from "../app-store-listing.js"
 import { openInBrowser } from "../lib/open-browser.js"
 
 const USAGE = `agentproto app — package, unpack, install, serve, build, or dev an agentproto app
@@ -52,6 +53,7 @@ const USAGE = `agentproto app — package, unpack, install, serve, build, or dev
 Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--release] [--json]
                  pack --release --entry [--asset-url <url>] [--publisher <p>]
+                                        [--media-base-url <url>]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--sha <commit>]
                          [--sha256 <digest>] [--allow-build] [--data-dir <path>]
@@ -85,6 +87,12 @@ pack:
   <slug>-<version>.agentapp; override with --asset-url) and whose
   sha256/size are the bundle's own manifest digest and file size. Feed the
   entries to \`agentproto catalog build\`.
+  With an APP.md \`store:\` block (tagline, categories, publisher, homepage,
+  repository, icon, listing markdown file, screenshots with alt text), the
+  entry also carries the store listing; local icon/screenshot files are
+  checked (format, size), copied to media/<appId>/<version>/ next to the
+  entry and referenced as <media-base-url>/<file> (default: the agentproto/apps
+  repo, raw.githubusercontent.com/agentproto/apps/main/media/<appId>/<version>).
 
 unpack:
   Extract a .agentapp, verify format agentapp/v1 and the sha256 aggregate,
@@ -807,6 +815,7 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
       release: { type: "boolean" },
       entry: { type: "boolean" },
       "asset-url": { type: "string" },
+      "media-base-url": { type: "string" },
       publisher: { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -841,6 +850,7 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
     icon?: string
     placement?: string
   } | undefined
+  let listing: StoreListing | undefined
   if (withEntry) {
     let front: Record<string, unknown>
     try {
@@ -875,6 +885,22 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
           `none found in ${appDirAbs}.\n`,
       )
       return 1
+    }
+    // Store listing (APP.md `store:`), validated BEFORE packing so a bad
+    // listing never leaves a bundle without its entry.
+    try {
+      listing = await readStoreListing(appDirAbs, front, {
+        mediaBaseUrl:
+          typeof values["media-base-url"] === "string" && values["media-base-url"] !== ""
+            ? values["media-base-url"]
+            : defaultMediaBaseUrl(appId, entryMeta.version),
+      })
+    } catch (err) {
+      if (err instanceof StoreListingError) {
+        process.stderr.write(`agentproto app pack: invalid store listing: ${err.message}\n`)
+        return 1
+      }
+      throw err
     }
   }
   const outArg = typeof values.out === "string" ? resolve(process.cwd(), expandHome(values.out)) : undefined
@@ -916,7 +942,10 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
         ...(manifest.name !== undefined ? { name: manifest.name } : {}),
         ...(manifest.description !== undefined ? { description: manifest.description } : {}),
         ...(entryMeta?.category !== undefined ? { category: entryMeta.category } : {}),
-        ...(entryMeta?.icon !== undefined ? { icon: entryMeta.icon } : {}),
+        // A top-level APP.md `icon` is usually an app-relative path, only
+        // meaningful to a local daemon; a catalog entry needs a URL (set
+        // `store.icon` to publish one).
+        ...(entryMeta?.icon !== undefined && /^https:\/\//i.test(entryMeta.icon) ? { icon: entryMeta.icon } : {}),
         ...(entryMeta?.placement !== undefined && ["local", "box", "any", "split"].includes(entryMeta.placement)
           ? { placement: entryMeta.placement as "local" | "box" | "any" | "split" }
           : {}),
@@ -925,15 +954,29 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
         url: assetUrl,
         sha256: manifest.sha256,
         size,
+        ...(listing !== undefined ? { listing: listing.fields } : {}),
       })
       const entryFile = join(dirname(file), `${catalogSlug(manifest.id)}-${version}.entry.json`)
       await writeFile(entryFile, JSON.stringify(entry, null, 2) + "\n", "utf8")
+      // Listing media, laid out as the catalog repo expects them
+      // (media/<appId>/<version>/<file>), ready to add to the entry PR.
+      const mediaFiles: string[] = []
+      if (listing !== undefined && listing.media.length > 0) {
+        const mediaDir = join(dirname(file), "media", manifest.id, version)
+        await mkdir(mediaDir, { recursive: true })
+        for (const m of listing.media) {
+          const dest = join(mediaDir, m.name)
+          await copyFile(m.src, dest)
+          mediaFiles.push(dest)
+        }
+      }
       if (values.json) {
-        process.stdout.write(JSON.stringify({ bundle: file, entry, entryFile }, null, 2) + "\n")
+        process.stdout.write(JSON.stringify({ bundle: file, entry, entryFile, media: mediaFiles }, null, 2) + "\n")
       } else {
         process.stdout.write(
           `agentproto: packed ${manifest.totalSize} bytes -> ${file}\n` +
-            `  catalog entry: ${entryFile}\n  asset url: ${assetUrl}\n`,
+            `  catalog entry: ${entryFile}\n  asset url: ${assetUrl}\n` +
+            (mediaFiles.length > 0 ? `  listing media: ${mediaFiles.length} file(s) in ${dirname(mediaFiles[0]!)}\n` : ""),
         )
       }
       return 0

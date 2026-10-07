@@ -101,7 +101,8 @@ describe("app pack --release --entry", () => {
     expect(entry.name).toBe("Shop App")
     expect(entry.description).toBe("A shop")
     expect(entry.category).toBe("commerce")
-    expect(entry.icon).toBe("shop.svg")
+    // A relative APP.md icon is local-only: not carried into a public entry.
+    expect(entry.icon).toBeUndefined()
     expect(entry.version).toBe("2.0.1")
     expect(entry.tier).toBe("bundle")
     expect(entry.placement).toBe("any")
