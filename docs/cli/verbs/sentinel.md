@@ -52,18 +52,26 @@ the sentinel expires once the PR closes or merges).
 
 ## `watch <subject>`
 
-Watches a raw subject directly - a PR (`github:owner/repo#N`), or an entire
+Watches a raw subject directly - a PR (`github:owner/repo#N`), an entire
 repo (`github:owner/repo`) or owner (`github:owner`) via a trailing `*`
-prefix match.
+prefix match, or ANOTHER SESSION's own lifecycle (`session:<id>`) - woken on
+its turn-end, awaiting-input or exit, even if it never calls
+`message_parent`, self-expiring once it exits. For a `session:<id>`
+subject, `--until` defaults to `closed` (not `never`) and `--provider`
+defaults to `session`, same as the PR sugar form.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--types <t1,t2,...>` | the provider's `defaultTypes(subject)` | Comma-separated type globs to match. |
-| `--session <id>` | *(required)* | Target session to deliver matching events to. |
+| `--session <id>` | *(required)* | Target session to deliver matching events to - distinct from the `<id>` inside a `session:<id>` subject (the session being WATCHED). |
 | `--urgency <u>` | `next-turn` | Inbox delivery urgency: `fyi` \| `next-turn` \| `steer` \| `interrupt`. |
-| `--until <kind>` | `never` | `closed` (alias for `subject_terminal`) \| `never`. |
-| `--provider <slug>` | auto-selected | `local-gh` \| `webhook`. See [Providers](#providers). |
+| `--until <kind>` | `never` (`closed` for a `session:<id>` subject) | `closed` (alias for `subject_terminal`) \| `never`. |
+| `--provider <slug>` | auto-selected | `local-gh` \| `webhook` \| `session`. See [Providers](#providers). |
 | `--json` | `false` | Emit the created sentinel as JSON. |
+
+Prefer `session:<id>` over the `session_follow` MCP tool for a single known
+target that should auto-expire on exit; prefer a follow for a broad
+selector (`all`/`cwdPrefix`) with coalesced digests across many sessions.
 
 ## `list`
 
@@ -98,10 +106,13 @@ Prints a detailed descriptor for one sentinel via `GET /sentinels/:id`.
 | `local-gh` | Poll (~15-60s) | Zero infra - uses the host's authenticated `gh` CLI. Does not watch comments (`github.issue_comment.created`); add `webhook` or `agentpush` for that. |
 | `webhook` (Experimental) | Push | Near-real-time via a GitHub repo hook. Needs a public daemon URL (a named tunnel or `AGENTPROTO_PUBLIC_URL`) and a `gh` token with `admin:repo_hook`. |
 | `agentpush` (Experimental) | Push or poll | Hosted durable subscription; events queue server-side even while the daemon is down. Needs an agentpush workspace API key. Not selectable from this CLI's `--provider` flag directly - set up via `setup_sentinel_provider` and it is then picked automatically when ready. |
+| `session` | Poll (~15-60s, in-process) | Zero infra, no credentials - watches another AGENTPROTO SESSION's own lifecycle (not GitHub). Only understands a `session:<id>` subject, and is always picked for one regardless of the other providers' readiness. Non-durable: a daemon restart loses any buffered-but-undelivered events. |
 
-`--provider` omitted: the daemon auto-selects `agentpush` when set up, else
-`webhook` when a stable public URL exists and the provider is ready, else
-`local-gh`. Check readiness with the `list_sentinel_adapters` MCP tool.
+`--provider` omitted for a GitHub subject: the daemon auto-selects
+`agentpush` when set up, else `webhook` when a stable public URL exists and
+the provider is ready, else `local-gh`. For a `session:<id>` subject it
+always picks `session`. Check readiness with the `list_sentinel_adapters`
+MCP tool.
 
 ## Auto-watch on PR open
 
@@ -142,6 +153,10 @@ agentproto sentinel watch pr https://github.com/agentproto/ts/pull/1501 --sessio
 
 # Watch an entire repo for issue comments, never expiring
 agentproto sentinel watch github:agentproto/ts --types 'github.issue_comment.*' --session sess_abc123
+
+# Watch a child session's lifecycle - woken on turn-end/awaiting-input/exit,
+# self-expiring once it exits
+agentproto sentinel watch session:sess_child456 --session sess_supervisor789
 
 # List, inspect, stop
 agentproto sentinel list
