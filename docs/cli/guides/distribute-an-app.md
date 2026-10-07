@@ -131,8 +131,9 @@ an app that does not set `accepts.tasks` has no ingress at all.
 ## 5. Publish a remote catalog
 
 The default public catalog is a static JSON file served at
-`https://agentproto.sh/catalog/v1/apps.json` (the `apps.json` file lives in
-the `agentproto/site` repo, under `public/catalog/v1/apps.json`). The
+`https://agentproto.sh/catalog/v1/apps.json`, which relays the
+`catalog/v1/apps.json` generated in the `agentproto/apps` repo (see
+[the public catalog flow](#the-public-catalog-flow) below). The
 `.agentapp` bundles it references are assets of GitHub Releases on the
 public `agentproto/apps` repo: one release per app version, tagged
 `<slug>@<version>` (the `slug` is the last segment of the appId without its
