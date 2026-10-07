@@ -18,12 +18,17 @@
 
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, resolve, sep } from "node:path"
 import { parseArgs } from "node:util"
 
 import { unpackApp } from "@agentproto/app-kit"
 import matter from "gray-matter"
-import { AppCatalogEntrySchema, compareCatalogVersions, type AppCatalogEntry } from "@agentproto/runtime/app-catalog"
+import {
+  AppCatalogEntrySchema,
+  CATALOG_LISTING_LIMITS,
+  compareCatalogVersions,
+  type AppCatalogEntry,
+} from "@agentproto/runtime/app-catalog"
 import { downloadTo, DOWNLOAD_MAX_BYTES } from "@agentproto/runtime/app-remote-install"
 import {
   buildCatalogDocument,
@@ -33,6 +38,7 @@ import {
 } from "@agentproto/runtime/first-party-catalog-gen"
 
 import { collectAppFindings } from "./app-init.js"
+import { checkMediaBytes, listingIssues } from "../app-store-listing.js"
 
 const USAGE = `agentproto catalog — build and verify the published app catalog
 
@@ -42,6 +48,7 @@ Usage:
                            [--generated-at <iso>]
   agentproto catalog verify <entry.json|dir>... [--json] [--allow-git]
                             [--offline-file <appId>=<path.agentapp>]...
+                            [--local-media <https-url-prefix>=<dir>]...
 
 Reads each argument: a \`.json\` file of any name (as written by
 \`agentproto app pack --release --entry\`, or an \`entries/<appId>.json\` of
@@ -73,7 +80,13 @@ ui.build, and that the unpacked app passes \`app validate\`. git sources are
 refused (the public catalog is bundles only) unless --allow-git.
 verify exits 1 at the first failing entry by default; --json prints the
 full per-entry report instead. --offline-file <appId>=<path.agentapp>
-substitutes a local bundle for the download (testing without network).`
+substitutes a local bundle for the download (testing without network).
+verify also checks the store listing: tagline, longDescription, categories
+and alt text limits, https URLs, and each icon/screenshot's format and
+size (downloaded). --local-media <https-url-prefix>=<dir> reads media under
+that URL prefix from <dir> instead, e.g. the agentproto/apps CI maps
+https://raw.githubusercontent.com/agentproto/apps/main/ to its checkout so
+media added by a pull request verify before they are merged.`
 
 interface BuildOutcome {
   doc: ReturnType<typeof buildCatalogDocument>
@@ -227,6 +240,7 @@ export async function runCatalog(args: readonly string[]): Promise<number> {
   // --offline-file may repeat (node:util parseArgs keeps only the last
   // occurrence), so pull those pairs out before parsing the rest.
   const offline = new Map<string, string>()
+  const localMedia: Array<{ prefix: string; dir: string }> = []
   const restArgs: string[] = []
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -243,6 +257,17 @@ export async function runCatalog(args: readonly string[]): Promise<number> {
         return 2
       }
       offline.set(v.slice(0, eq), resolve(v.slice(eq + 1).trim()))
+      continue
+    }
+    if (a === "--local-media" || a.startsWith("--local-media=")) {
+      const v = a.startsWith("--local-media=") ? a.slice("--local-media=".length) : args[++i]
+      // The prefix is a URL (it contains "://"), so split on the LAST "=".
+      const eq = typeof v === "string" ? v.lastIndexOf("=") : -1
+      if (typeof v !== "string" || eq <= 0 || !/^https:\/\//i.test(v)) {
+        process.stderr.write(`agentproto catalog: --local-media expects <https-url-prefix>=<dir>, got "${v ?? ""}".\n`)
+        return 2
+      }
+      localMedia.push({ prefix: v.slice(0, eq), dir: resolve(v.slice(eq + 1).trim()) })
       continue
     }
     restArgs.push(a)
@@ -264,6 +289,7 @@ export async function runCatalog(args: readonly string[]): Promise<number> {
   if (sub === "verify") {
     return runCatalogVerify(rest, {
       offline,
+      localMedia,
       json: values.json === true,
       allowGit: values["allow-git"] === true,
     })
@@ -418,13 +444,68 @@ async function verifyBundleOnDisk(
 
 /** Parse `--offline-file` style is handled in runCatalog; here: run the
  *  full verify for one entry. */
+type LocalMedia = ReadonlyArray<{ prefix: string; dir: string }>
+
+/** Bytes of a listing media URL: from a `--local-media` directory when the
+ *  URL is under its prefix (media added by the PR under review, not yet on
+ *  the default branch), else downloaded over https with a size cap. */
+async function readMedia(url: string, localMedia: LocalMedia, maxBytes: number): Promise<Uint8Array> {
+  for (const { prefix, dir } of localMedia) {
+    if (url.startsWith(prefix)) {
+      const rel = decodeURIComponent(url.slice(prefix.length))
+      const path = resolve(dir, rel)
+      if (!path.startsWith(dir.endsWith(sep) ? dir : dir + sep)) throw new Error(`${url} escapes ${dir}`)
+      return new Uint8Array(await readFile(path))
+    }
+  }
+  if (!/^https:\/\//i.test(url)) throw new Error(`${url} is not https`)
+  const res = await fetch(url, { signal: AbortSignal.timeout(30_000), redirect: "follow" })
+  if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status}`)
+  const declared = Number(res.headers.get("content-length") ?? "0")
+  // Read a little past the cap so an oversized file is reported, not truncated.
+  if (declared > maxBytes + 1) throw new Error(`${url} is ${declared} bytes, over the ${maxBytes} byte cap`)
+  return new Uint8Array(await res.arrayBuffer())
+}
+
+/** The entry's store listing: field limits, then each icon/screenshot's
+ *  format and size. Entries without listing fields pass trivially. */
+async function verifyListing(entry: AppCatalogEntry, localMedia: LocalMedia): Promise<VerifyCheck[]> {
+  const issues = listingIssues(entry)
+  const checks = [check("listing", issues.length === 0, issues.join("; ") || undefined)]
+  const media: Array<{ url: string; kind: "icon" | "screenshot"; label: string }> = [
+    ...(entry.icon !== undefined && /^https:\/\//i.test(entry.icon) ? [{ url: entry.icon, kind: "icon" as const, label: "icon" }] : []),
+    ...(entry.screenshots ?? [])
+      .filter((s) => /^https:\/\//i.test(s.url))
+      .map((s, i) => ({ url: s.url, kind: "screenshot" as const, label: `screenshots[${i}]` })),
+  ]
+  if (media.length === 0) return checks
+  const problems: string[] = []
+  for (const m of media) {
+    const cap = m.kind === "icon" ? CATALOG_LISTING_LIMITS.iconMaxBytes : CATALOG_LISTING_LIMITS.screenshotMaxBytes
+    try {
+      problems.push(...checkMediaBytes(await readMedia(m.url, localMedia, cap), m.kind, m.label))
+    } catch (err) {
+      problems.push(`${m.label}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  checks.push(
+    check(
+      "media",
+      problems.length === 0,
+      problems.length === 0 ? `${media.length} file(s) checked` : problems.join("; "),
+    ),
+  )
+  return checks
+}
+
 async function verifyEntry(
   entry: AppCatalogEntry,
   file: string,
-  opts: { offline: Map<string, string>; allowGit: boolean },
+  opts: { offline: Map<string, string>; localMedia: LocalMedia; allowGit: boolean },
 ): Promise<VerifyReport> {
   const checks: VerifyCheck[] = []
   try {
+    checks.push(...(await verifyListing(entry, opts.localMedia)))
     if (entry.source.kind === "git") {
       checks.push(
         opts.allowGit
@@ -472,7 +553,7 @@ async function verifyEntry(
 /** `agentproto catalog verify ...` */
 async function runCatalogVerify(
   args: readonly string[],
-  opts: { offline: Map<string, string>; json: boolean; allowGit: boolean },
+  opts: { offline: Map<string, string>; localMedia: LocalMedia; json: boolean; allowGit: boolean },
 ): Promise<number> {
   let paths: string[]
   try {

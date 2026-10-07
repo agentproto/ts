@@ -245,6 +245,9 @@ export const RELEASE_DEFAULT_EXCLUDE: readonly string[] = [
   "docs/**",
   "data/**",
   "scripts/**",
+  // Store listing sources (APP.md `store:`): published next to the catalog
+  // entry, never needed by an installed app.
+  "store/**",
   // Root-level only: `**/dev/**` would also drop a shipped agent named
   // `dev` (`.agentproto/agents/dev/`); `ui/dev/` is covered by `ui/**`.
   // Same for `test/` and `tests/`.

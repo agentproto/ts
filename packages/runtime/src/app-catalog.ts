@@ -32,6 +32,14 @@ export interface AppCatalogLicense {
   url?: string
 }
 
+/** A store-page screenshot (`app-catalog/v1` listing fields). */
+export interface AppCatalogScreenshot {
+  url: string
+  alt: string
+  width?: number
+  height?: number
+}
+
 export interface AppCatalogRequires {
   browser?: boolean
   fs?: boolean
@@ -57,7 +65,33 @@ export interface AppCatalogEntry {
   minAgentprotoVersion?: string
   requires?: AppCatalogRequires
   featured?: boolean
+  /** Listing fields for a store page (agentproto.sh/apps/<slug>, the
+   *  daemon's /store). Shapes only here; `agentproto app pack --entry` and
+   *  `agentproto catalog verify` enforce the limits (CATALOG_LISTING_LIMITS). */
+  tagline?: string
+  /** Markdown (CommonMark + GFM); raw HTML is not rendered by consumers. */
+  longDescription?: string
+  screenshots?: AppCatalogScreenshot[]
+  /** Multi-valued successor of `category` (both are read). */
+  categories?: string[]
+  homepage?: string
+  repository?: string
 }
+
+/** Limits on the listing fields, enforced when an entry is produced
+ *  (`app pack --entry`) and checked before it is published (`catalog
+ *  verify`). The runtime schema stays shape-only so an older daemon never
+ *  drops an entry over a limit change. */
+export const CATALOG_LISTING_LIMITS = {
+  taglineMaxChars: 120,
+  longDescriptionMaxChars: 20_000,
+  screenshotsMax: 8,
+  screenshotMaxBytes: 1_000_000,
+  iconMaxBytes: 256_000,
+  altMaxChars: 200,
+  categoriesMax: 5,
+  categoryPattern: /^[a-z0-9-]{1,32}$/,
+} as const
 
 /** Entry of the local `app-catalog.json` `apps` array: a directory on disk. */
 export interface AppCatalogFileEntry {
@@ -118,6 +152,21 @@ export const AppCatalogEntrySchema: z.ZodType<AppCatalogEntry> = z.object({
     })
     .optional(),
   featured: z.boolean().optional(),
+  tagline: z.string().min(1).optional(),
+  longDescription: z.string().min(1).optional(),
+  screenshots: z
+    .array(
+      z.object({
+        url: z.string().min(1),
+        alt: z.string().min(1),
+        width: z.number().int().positive().optional(),
+        height: z.number().int().positive().optional(),
+      }),
+    )
+    .optional(),
+  categories: z.array(z.string().min(1)).optional(),
+  homepage: z.string().min(1).optional(),
+  repository: z.string().min(1).optional(),
 })
 
 /** `schema` tag of a v1 catalog document. */

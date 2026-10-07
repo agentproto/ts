@@ -256,6 +256,45 @@ To publish a third-party app:
    is enforced by the repo's CI, which knows the PR author, not by the
    CLI).
 
+### Store listing (the page at agentproto.sh/apps/&lt;slug&gt;)
+
+An entry can carry a store listing, shown on the public page
+`https://agentproto.sh/apps/<slug>` and in the daemon's `/store`: `tagline`,
+`longDescription` (markdown; raw HTML is not rendered), `screenshots`
+(`{url, alt, width?, height?}`), `icon`, `categories`, `publisher`,
+`homepage`, `repository`. All are optional. Declare them in APP.md and
+`app pack --release --entry` puts them in the entry:
+
+```yaml
+store:
+  tagline: Notes with your agents.            # 1 to 120 characters
+  categories: [productivity, notes]            # at most 5, [a-z0-9-]
+  publisher: Acme
+  homepage: https://acme.dev/notes             # https only
+  repository: https://github.com/acme/notes
+  icon: store/icon.svg                         # app path or https URL; png/jpeg/webp/svg, 256 KB max
+  listing: store/LISTING.md                    # long description, 20 000 characters max
+  screenshots:                                 # at most 8; png/jpeg/webp, 1 MB max each
+    - path: store/screenshots/editor.png
+      alt: The note editor next to an agent session   # required
+    - url: https://acme.dev/shots/sync.png
+      alt: Notes synced across sessions
+```
+
+`store/` never ships in the bundle. Local media (`path:`) are checked
+(format, size, png/jpeg pixel size), copied to
+`media/<appId>/<version>/` next to the entry, and referenced as
+`<media-base-url>/<file>`. The default base is the catalog repo
+(`https://raw.githubusercontent.com/agentproto/apps/main/media/<appId>/<version>`):
+add that `media/` folder to your entry PR. To host media yourself, pass
+`--media-base-url https://your.host/path` and upload the folder there.
+
+`agentproto catalog verify` re-checks the listing: limits, https URLs, alt
+text, and each image's format and size. The agentproto/apps CI runs it
+with `--local-media https://raw.githubusercontent.com/agentproto/apps/main/=.`
+so media added by the PR are read from the checkout before they exist on
+`main`.
+
 `app_catalog` always queries the **default public catalog** first, then
 the sources you add. Add yours in either place (config wins over the
 catalog file when both list sources; both ADD to the default one):

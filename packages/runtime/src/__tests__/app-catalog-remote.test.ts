@@ -236,3 +236,33 @@ describe("catalog updates", () => {
     ).toBe(false)
   })
 })
+
+describe("app-catalog/v1 listing fields", () => {
+  const base = {
+    appId: "@acme/notes",
+    source: { kind: "agentapp", url: "https://x/notes.agentapp", sha256: "a".repeat(64), version: "1.0.0" },
+  }
+
+  it("keeps the store listing fields on a parsed entry", () => {
+    const listing = {
+      tagline: "Notes with your agents.",
+      longDescription: "# Notes\n\nTake **notes**.",
+      screenshots: [{ url: "https://m/a.png", alt: "The editor", width: 1280, height: 800 }],
+      icon: "https://m/icon.svg",
+      categories: ["productivity", "notes"],
+      publisher: "Acme",
+      homepage: "https://acme.dev/notes",
+      repository: "https://github.com/acme/notes",
+    }
+    const parsed = AppCatalogEntrySchema.parse({ ...base, ...listing })
+    expect(parsed).toMatchObject(listing)
+  })
+
+  it("still accepts an entry without them (additive change)", () => {
+    expect(AppCatalogEntrySchema.safeParse(base).success).toBe(true)
+  })
+
+  it("rejects a screenshot without alt text", () => {
+    expect(AppCatalogEntrySchema.safeParse({ ...base, screenshots: [{ url: "https://m/a.png" }] }).success).toBe(false)
+  })
+})
