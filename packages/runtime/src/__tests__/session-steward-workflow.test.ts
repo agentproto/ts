@@ -349,10 +349,10 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     // No SESSION is ever mutated in a dry run.
     expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
     expect(calls.some(c => c.name === "agent_prompt")).toBe(false)
-    // The only write is the append-only verdict-memory ledger.
-    const writes = calls.filter(c => c.name === "app_state_append")
-    expect(writes.length).toBeGreaterThan(0)
-    for (const w of writes) expect(w.inputs.event).toMatchObject({ stage: "session-steward", kind: "note" })
+    // A dry run writes nothing — not even verdict memory — but still reads it.
+    expect(calls.some(c => c.name === "app_state_append")).toBe(false)
+    expect(calls.some(c => c.name === "app_state_list")).toBe(true)
+    expect(out.report).toContain("verdict memory was read but not written (dry run)")
     // Judges still ran (one per judge candidate, caller excluded), on sonnet,
     // and every judge session was released after its turn.
     expect(j.spawns).toHaveLength(6)
@@ -896,7 +896,7 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
 
     const f2 = fakeTools({ entries: [entry("cache_1", "judge", 100)], memoryEvents: [prior("2026-10-02T10:00:00Z"), prior("2026-10-02T11:00:00Z")] })
     const j2 = judgeHost({})
-    const out = await run(f2.dispatchTool, j2.host, { judge: "agent" })
+    const out = await run(f2.dispatchTool, j2.host, { judge: "agent", apply: true })
     expect(j2.spawns).toHaveLength(0)
     expect(out.verdicts.find(v => v.entry.sessionId === "cache_1")?.source).toBe("cache")
     expect(out.report).toContain("served from cache")
@@ -915,10 +915,24 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
 
   it("verdict memory resolves the installed app id by default (read + write use it)", async () => {
     const f = fakeTools({ entries: [entry("m_1", "judge", 100)] })
-    const out = await run(f.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent" })
+    const out = await run(f.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent", apply: true })
     expect(f.calls.find(c => c.name === "app_state_list")?.inputs.appId).toBe("@agentproto/session-steward")
     expect(f.calls.find(c => c.name === "app_state_append")?.inputs.appId).toBe("@agentproto/session-steward")
     expect(out.report).not.toContain("verdict memory: off")
+  })
+
+  it("a dry run writes no verdict memory; the same pass with apply: true does", async () => {
+    const dry = fakeTools({ entries: [entry("m_1", "judge", 100)] })
+    const dryOut = await run(dry.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent" })
+    expect(dry.calls.some(c => c.name === "app_state_append")).toBe(false)
+    expect(dryOut.report).toContain("verdict memory was read but not written (dry run)")
+
+    const real = fakeTools({ entries: [entry("m_1", "judge", 100)] })
+    const realOut = await run(real.dispatchTool, judgeHost({ m_1: verdict("m_1", "active", 0.2) }).host, { judge: "agent", apply: true })
+    const writes = real.calls.filter(c => c.name === "app_state_append")
+    expect(writes.length).toBeGreaterThan(0)
+    for (const w of writes) expect(w.inputs.event).toMatchObject({ stage: "session-steward", kind: "note" })
+    expect(realOut.report).not.toContain("not written")
   })
 
   it("a bare appId name matches the scoped install", async () => {

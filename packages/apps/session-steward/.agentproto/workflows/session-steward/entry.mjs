@@ -12,9 +12,10 @@
 // RE-CLASSIFIES each id itself immediately before acting and refuses
 // `keep`-class ids outright. On top of that, this workflow:
 //   - mutates no SESSION unless `apply` is true (every session-mutating map
-//     runs over an empty list otherwise). The one dry-run write is the
-//     append-only verdict-memory ledger (`app_state_append`) — never a
-//     session, and disableable with `appId: ""`;
+//     runs over an empty list otherwise). A dry run writes nothing at all:
+//     the append-only verdict-memory ledger (`app_state_append`) is read but
+//     only appended to when `apply` is true, so a dry run's verdicts can
+//     never be served as cached verdicts to a later real pass;
 //   - only ever feeds `close`/`stuck` ids to the rules pass — a `keepAlive`
 //     session can only ever be `judge` class, so rules never close it;
 //   - drops the caller's own session from every candidate list;
@@ -664,6 +665,9 @@ export function buildReport(b) {
   } else if (memory instanceof Map && memory.size > 0) {
     lines.push(`- verdict memory: ${memory.size} session(s) known` + (cachedCount > 0 ? `, ${cachedCount} served from cache` : ""))
   }
+  if (!s.apply && b.steps.memoryApp?.appId) {
+    lines.push("- verdict memory was read but not written (dry run)")
+  }
 
   return lines.join("\n")
 }
@@ -941,10 +945,12 @@ export function applyRelabelEvidence(relabelQueue, evidenceResult) {
   return (relabelQueue ?? []).map(r => (bySession.has(r.sessionId) ? refineRelabel(r, bySession.get(r.sessionId)) : r))
 }
 
-/** The `app_state` events to append for this pass's verdicts. The memory is
- *  written on every pass (it is a ledger, never a session action) so streaks
- *  accumulate and the cache can engage. */
+/** The `app_state` events to append for this pass's verdicts. Written only on
+ *  an `apply` pass (so streaks accumulate and the cache can engage); a dry run
+ *  reads memory but never writes it, or its verdicts would be reused by the
+ *  next real pass instead of being re-judged. */
 export function buildMemoryWriteQueue(finalVerdicts, settings) {
+  if (!settings?.apply) return []
   if (!settings?.appId) return []
   const out = []
   for (const r of finalVerdicts ?? []) {
@@ -1228,7 +1234,8 @@ export default {
       ],
     },
     // Verdict memory write-back (item 10) — a ledger append, never a session
-    // action; best-effort (an uninstalled app just yields no memory).
+    // action; empty unless `apply`; best-effort (an uninstalled app just
+    // yields no memory).
     { id: "memoryWriteQueue", kind: "transform", compute: b => buildMemoryWriteQueue(b.steps.finalVerdicts, { ...b.steps.settings, appId: b.steps.memoryApp?.appId ?? "" }) },
     {
       id: "memoryWrite",
