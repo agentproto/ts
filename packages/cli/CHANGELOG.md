@@ -1,5 +1,28 @@
 # @agentproto/cli
 
+## 1.13.1
+
+### Patch Changes
+
+- 8e87002: `app pack --release` also leaves out tests (root `test/` and `tests/`, `__tests__/` and `*.test.*` / `*.spec.*` anywhere), the root `README.md`, `CHANGELOG.md` and `CONTRIBUTING.md`, and repo tooling config (`.github/`, editor folders, `tsconfig*.json`, test runner and lint configs). `LICENSE` still ships.
+- fdaaf7d: Remove every link to the retired cli.agentproto.sh host. The `PAIR_WEB_URL` export is removed from secrets and pair-client (breaking). The daemon no longer trusts the cli.agentproto.sh origin by default, and `remote_enable` only returns a `phoneUrl` when `@agentik/session-chat` is installed. The session-story panel's full-panel link now opens the daemon's live-session panel.
+- fdaaf7d: Remove every link to the retired cli.agentproto.sh host. `PAIR_WEB_URL` (the opt-in shared pair page on that host) is no longer exported; the default per-daemon pair page is unchanged, and a self-hosted shared page still works through `pairing.pairPage` / `--pair-page`. The daemon no longer trusts the `https://cli.agentproto.sh` origin by default. `remote_enable` only returns a `phoneUrl` when the `@agentik/session-chat` app is installed (there is no hosted panel fallback anymore; pair a phone through rendezvous with `agentproto pair offer --qr`). The session-story panel's "panneau complet" link now opens the daemon's own live-session panel for that session, and is hidden when the panel is not served by the daemon.
+- 468059d: Add a built-in `session` sentinel provider (AIP-60): `sentinel_watch { subject: "session:<id>" }` now watches another session's own lifecycle — turn-end, awaiting-input, exit — and lands matching events into the caller's inbox even if the watched session never calls `message_parent`, self-expiring once it exits (`until` defaults to `subject_terminal` for this subject scheme). `agentproto sentinel watch session:<id>` and its CLI usage text gain the same capability.
+- 1e758e6: `agentproto app validate` (and `catalog verify`) checks an app's `ui.tools` against the daemon's real tool surface instead of a hand-kept list of 21 names, which rejected valid apps such as session-chat. The list is `DAEMON_TOOL_NAMES`, exported as `@agentproto/runtime/daemon-tool-names`, generated from a gateway's `tools/list` with every optional surface wired (`pnpm --filter @agentproto/runtime gen:daemon-tool-names`) and kept exact by a runtime test.
+- f4043fc: `agentproto app validate` (and so `catalog verify`) accepts the runtime node kinds `transform`, `pipeline` and `group` in an entry-based workflow (`entry: ./entry.mjs`), whose manifest the loader requires to mirror the code graph kind for kind. A manifest-only workflow using them is still rejected, per AIP-15.
+- Updated dependencies [8e87002]
+- Updated dependencies [fdaaf7d]
+- Updated dependencies [fdaaf7d]
+- Updated dependencies [11d503f]
+- Updated dependencies [baebdce]
+  - @agentproto/app-kit@1.6.1
+  - @agentproto/secrets@2.0.0
+  - @agentproto/apps@0.20.2
+  - @agentproto/acp@0.10.0
+  - @agentproto/pairing-host@0.2.5
+  - @agentproto/sandbox-box@0.2.25
+  - @agentproto/sandbox-e2b@0.5.15
+
 ## 1.13.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @agentproto/app-kit
 
+## 1.6.1
+
+### Patch Changes
+
+- 8e87002: `app pack --release` also leaves out tests (root `test/` and `tests/`, `__tests__/` and `*.test.*` / `*.spec.*` anywhere), the root `README.md`, `CHANGELOG.md` and `CONTRIBUTING.md`, and repo tooling config (`.github/`, editor folders, `tsconfig*.json`, test runner and lint configs). `LICENSE` still ships.
+
 ## 1.6.0
 
 ### Minor Changes

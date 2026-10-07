@@ -1,5 +1,13 @@
 # @agentproto/pair-page
 
+## 0.0.9
+
+### Patch Changes
+
+- Updated dependencies [fdaaf7d]
+- Updated dependencies [fdaaf7d]
+  - @agentproto/pair-client@1.0.0
+
 ## 0.0.8
 
 ### Patch Changes
