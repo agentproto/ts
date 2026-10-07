@@ -71,6 +71,10 @@ Commands:
                                          scrape MCP server (stealth + clean Markdown) for
                                          walled/JS pages, ahead of plain readability.
                                          --diarize: AssemblyAI speaker labels (interviews).
+                                         A --url can also be a local audio/video file path
+                                         or file:// URI (e.g. an already-extracted MP3) —
+                                         it skips yt-dlp entirely and goes straight to the
+                                         configured STT (needs --diarize or OPENAI_API_KEY).
   import-code [path] --root <dir> [--include glob … --granularity file|module --max n --tags t --lang l --dry-run]
                                          Import a source tree as knowledge sources, one note
                                          per code unit (file or module). Notes-only: ZERO

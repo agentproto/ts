@@ -28,7 +28,10 @@ export type {
   AudioDownloader,
 } from "./ytdlp-whisper-fetcher.adapter.js"
 
-export { OpenAiWhisperStt } from "./stt.port.js"
+export { LocalFileFetcher } from "./local-file-fetcher.adapter.js"
+export type { LocalFileFetcherOptions } from "./local-file-fetcher.adapter.js"
+
+export { OpenAiWhisperStt, isSttAuthError } from "./stt.port.js"
 export type { SttPort, Transcript, OpenAiWhisperSttOptions } from "./stt.port.js"
 
 export { AssemblyAiStt } from "./assemblyai-stt.adapter.js"
