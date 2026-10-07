@@ -804,6 +804,24 @@ export function mergeNeverRan(candidates, scan) {
   }
 }
 
+/** A rule-certain `close` whose session's last turn errored did not finish —
+ *  parentEnded / merged-worktree only says the parent moved on. Closing it
+ *  would record `done` on a failed run, so demote it to the judge list. */
+export function demoteErroredCloses(candidates, scan) {
+  const errored = new Set((scan?.idle ?? []).filter(r => r?.lastTurnErroredAt).map(r => r.sessionId))
+  const close = candidates?.close ?? []
+  const demoted = close.filter(e => errored.has(e.sessionId))
+  if (demoted.length === 0) return candidates
+  return {
+    ...candidates,
+    close: close.filter(e => !errored.has(e.sessionId)),
+    judge: [
+      ...(candidates?.judge ?? []),
+      ...demoted.map(e => ({ ...e, class: "judge", reasons: [...(e.reasons ?? []), "last turn errored — not auto-closed"] })),
+    ],
+  }
+}
+
 /** `tool_calls_list` map item → the loop verdict + stats for one session. */
 export function analyzeLoopItem(b) {
   const item = b.item ?? {}
@@ -1000,7 +1018,7 @@ export default {
     { id: "liveSessions", kind: "tool", tool: "session_list", inputs: { full: true } },
     { id: "scan", kind: "transform", compute: b => scanLive(b.steps.liveSessions, b.steps.settings, Date.now()) },
     // Never-ran 0/0 sessions are `stuck` immediately, never judged (item 3).
-    { id: "candidatesPlus", kind: "transform", compute: b => mergeNeverRan(b.steps.candidates, b.steps.scan) },
+    { id: "candidatesPlus", kind: "transform", compute: b => demoteErroredCloses(mergeNeverRan(b.steps.candidates, b.steps.scan), b.steps.scan) },
     { id: "ruleApplyQueue", kind: "transform", compute: b => buildRuleApplyQueue(b.steps.candidatesPlus, b.steps.settings) },
     {
       // Empty unless `apply` — a dry run dispatches no apply call at all.

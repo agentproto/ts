@@ -68,6 +68,7 @@ interface PlanEntry {
   startedAt?: string
   worktree?: { pr?: { state: string; number?: number } }
   outcome?: { verdict?: string }
+  lastTurnErroredAt?: string
 }
 
 const entry = (sessionId: string, cls: PlanEntry["class"], rssMB: number, extra: Partial<PlanEntry> = {}): PlanEntry => ({
@@ -153,6 +154,7 @@ function fakeTools(opts: {
         ...(e.tokensOut !== undefined ? { tokensOut: e.tokensOut } : {}),
         ...(e.worktree ? { worktree: e.worktree } : {}),
         ...(e.outcome ? { outcome: e.outcome } : {}),
+        ...(e.lastTurnErroredAt ? { lastTurnErroredAt: e.lastTurnErroredAt } : {}),
         ...(e.startedAt ? { startedAt: e.startedAt } : {}),
         lastActivityAt: new Date(Date.now() - e.idleMinutes * 60_000).toISOString(),
       }))
@@ -690,6 +692,25 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(f.calls.some(c => c.name === "agent_prompt")).toBe(false)
   })
 
+  it("demotes a rule-certain close whose last turn errored to the judge list (never auto-closed as done)", async () => {
+    const f = fakeTools({
+      entries: [
+        entry("err_close", "close", 100, { lastTurnErroredAt: new Date(Date.now() - 3_600_000).toISOString() }),
+        entry("ok_close", "close", 100),
+      ],
+    })
+    const j = judgeHost({ err_close: verdict("err_close", "abandoned", 0.9) })
+    const out = await run(f.dispatchTool, j.host, { apply: true })
+    expect(out.candidates.close.map(e => e.sessionId)).toEqual(["ok_close"])
+    expect(out.candidates.judge.map(e => e.sessionId)).toContain("err_close")
+    const applies = f.calls.filter(c => c.name === "session_wrapup_apply").map(c => c.inputs)
+    expect(applies.find(a => (a.sessionIds as string[])[0] === "ok_close")).toMatchObject({ verdict: "done" })
+    // judged, not rule-closed: if it is closed at all it carries the judge's own verdict, never `done`
+    const err = applies.find(a => (a.sessionIds as string[])[0] === "err_close")
+    expect(err?.verdict).not.toBe("done")
+    expect(err).toHaveProperty("judgedBy")
+  })
+
   it("classifies a never-ran 0/0 session as stuck without judging it", async () => {
     const f = fakeTools({ entries: [entry("nr", "judge", 100, { tokensIn: 0, tokensOut: 0 })] })
     const j = judgeHost({})
@@ -759,7 +780,7 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     const lines = out.report.split("\n").filter(l => /^- sess|^- (new|old)_/.test(l) && l.includes("→"))
     expect(lines).toHaveLength(20)
     expect(lines[0]).toContain("new_merged → done")
-    expect(out.report).toContain("31 ended in the last 24h (82 without an outcome in all) — done: 1, abandoned: 30")
+    expect(out.report).toContain("31 ended in the last 24h (82 without an outcome in all) — done: 1, unknown: 30")
     expect(out.report).toContain("… and 62 more (older/omitted)")
     expect(out.report).not.toContain("old_0")
   })
@@ -781,9 +802,9 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
       const { byId, out } = await relabelOf([prRow("sess_prs", [1740, 1738]), prRow("sess_one", [1743]), terminalRow("sess_none", hoursAgo(1))])
       expect(byId.sess_prs).toMatchObject({ proposedVerdict: "done", reason: "PRs #1738, #1740 opened" })
       expect(byId.sess_one).toMatchObject({ proposedVerdict: "done", reason: "PR #1743 opened" })
-      expect(byId.sess_none).toMatchObject({ proposedVerdict: "abandoned", reason: "terminal, no outcome recorded" })
+      expect(byId.sess_none).toMatchObject({ proposedVerdict: "unknown", reason: "terminal, no PR recorded — outcome unknown" })
       expect(out.report).toContain("- sess_prs → done — PRs #1738, #1740 opened")
-      expect(out.report).toContain("done: 2, abandoned: 1")
+      expect(out.report).toContain("done: 2, unknown: 1")
     })
 
     it("a merged PR/worktree in session_evidence → done with 'PR #N merged'", async () => {
@@ -795,22 +816,36 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
         },
       )
       expect(byId.sess_merged).toMatchObject({ proposedVerdict: "done", reason: "PR #1738 merged; also opened #1740" })
-      expect(byId.sess_wt).toMatchObject({ proposedVerdict: "done", reason: "PR #9 merged" })
+      expect(byId.sess_wt).toMatchObject({ proposedVerdict: "done", reason: "PR #9 merged (worktree)" })
     })
 
-    it("an open worktree PR the row did not carry → done; no PR anywhere stays abandoned", async () => {
+    it("an open worktree PR the row did not carry → done; no PR anywhere stays unknown", async () => {
       const { byId } = await relabelOf(
         [terminalRow("sess_open", hoursAgo(1)), terminalRow("sess_nothing", hoursAgo(2))],
         { sess_open: { worktree: { branch: "wt/z", pr: { state: "open", number: 77 } }, pullRequests: { opened: 0, merged: 0, state: "open" } } },
       )
       expect(byId.sess_open).toMatchObject({ proposedVerdict: "done", reason: "PR #77 open" })
-      expect(byId.sess_nothing).toMatchObject({ proposedVerdict: "abandoned" })
+      expect(byId.sess_nothing).toMatchObject({ proposedVerdict: "unknown" })
+    })
+
+    it("no PR: abandoned only with positive evidence (errored last turn / no completed turn); a sibling's merged PR is not credited to an errored session", async () => {
+      const { byId } = await relabelOf(
+        [terminalRow("sess_err", hoursAgo(1)), terminalRow("sess_fine", hoursAgo(2)), terminalRow("sess_sibling", hoursAgo(3))],
+        {
+          sess_err: { turnsCompleted: 2, lastTurnError: "Upstream request failed", pullRequests: { opened: 0, merged: 0, state: null } },
+          sess_fine: { turnsCompleted: 4, pullRequests: { opened: 0, merged: 0, state: null } },
+          sess_sibling: { turnsCompleted: 1, lastTurnError: "Endpoint is unavailable", worktree: { branch: "wt/s", pr: { state: "merged", number: 1737 } }, pullRequests: { opened: 0, merged: 1, state: "merged" } },
+        },
+      )
+      expect(byId.sess_err).toMatchObject({ proposedVerdict: "abandoned" })
+      expect(byId.sess_fine).toMatchObject({ proposedVerdict: "unknown" })
+      expect(byId.sess_sibling).not.toMatchObject({ proposedVerdict: "done" })
     })
 
     it("a failed evidence lookup keeps the list-row proposal", async () => {
       const { byId } = await relabelOf([prRow("sess_x", [5]), terminalRow("sess_y", hoursAgo(2))], { sess_x: "throw", sess_y: "throw" })
       expect(byId.sess_x).toMatchObject({ proposedVerdict: "done", reason: "PR #5 opened" })
-      expect(byId.sess_y).toMatchObject({ proposedVerdict: "abandoned" })
+      expect(byId.sess_y).toMatchObject({ proposedVerdict: "unknown" })
     })
 
     it("looks up session_evidence only for the newest 20, never every terminal session", async () => {
