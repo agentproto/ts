@@ -9,10 +9,11 @@
  * 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'` with NO
  * `connect-src`, and the srcdoc iframe inherits that verbatim. jsdom
  * doesn't enforce CSP from a meta tag, so this asserts the CSP-relevant
- * PROPERTIES directly: nothing here issues a network request (no `fetch`,
+ * PROPERTIES directly: nothing here opens a network client (no `fetch`,
  * `XMLHttpRequest`, `WebSocket`, `EventSource`, or externally-sourced
  * `<script>`/`<img>`/`<link>`), and the one bit of inline script it does
- * ship — the elapsed-time counter — actually runs and mutates the DOM
+ * ship — the elapsed-time counter plus an HTTP-only reload timer — runs
+ * safely in `about:srcdoc` (where the reload branch stays off) and mutates the DOM
  * under `runScripts: "dangerously"` with no other globals stubbed in
  * (exactly what an `unsafe-inline`, `connect-src`-less document allows).
  */
@@ -75,7 +76,7 @@ describe("renderAppUiBuildingHtml under the VS Code webview CSP", () => {
     expect(html).toContain('data-agentproto-ui-status="building"')
   })
 
-  it("self-refreshes via meta tag (not fetch) — the mechanism the standalone HTTP page relies on", () => {
+  it("keeps meta refresh as the no-script fallback without adding a fetch surface", () => {
     const window = render(renderAppUiBuildingHtml({ appName: "Model Bench", startedAt: Date.now() }))
     const meta = window.document.querySelector('meta[http-equiv="refresh"]')
     expect(meta?.getAttribute("content")).toMatch(/^\d+$/)

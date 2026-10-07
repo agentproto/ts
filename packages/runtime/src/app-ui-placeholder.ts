@@ -21,9 +21,11 @@
  *     re-issues `resources/read` on a timer, replacing `panel.webview.html`
  *     wholesale until the marker is gone (see appPanel.logic.ts's
  *     `isAppUiBuilding`).
- *   - `GET /apps/:appId/ui` (http-server.ts) IS a real top-level navigation
- *     target, so this page's own `<meta http-equiv="refresh">` re-requests
- *     the same URL from the server directly — no host cooperation needed.
+ *   - `GET /apps/:appId/ui` (http-server.ts) IS a real navigation target.
+ *     The page keeps a meta refresh as a no-script fallback and also calls
+ *     `location.reload()` from its inline timer. VS Code's Simple Browser can
+ *     leave a meta refresh parked in an embedded page; the explicit reload is
+ *     what makes the already-open tab pick up the completed bundle reliably.
  *
  * Both mechanisms are outside this module's own script, which is
  * deliberate: the page also has to survive the strictest CSP either host
@@ -31,9 +33,9 @@
  * 'unsafe-inline'; style-src 'unsafe-inline'` with NO `connect-src`, and the
  * srcdoc iframe inherits it verbatim, so nothing here may `fetch`, open a
  * `WebSocket`/`EventSource`, or load an external image/font. The one bit of
- * live JS this page does carry — the elapsed-time counter — only touches
- * `Date.now()` and the DOM off a baked-in timestamp, neither of which needs
- * network access.
+ * live JS this page does carry — the elapsed-time counter and an HTTP-page
+ * reload timer — needs no `connect-src`. The reload is skipped for the
+ * webview's `about:srcdoc`, whose extension host owns polling.
  */
 
 /** `data-agentproto-ui-status` value while a build is in flight (or about to
@@ -128,6 +130,9 @@ export function renderAppUiBuildingHtml(input: AppUiBuildingHtmlInput): string {
   }
   tick();
   setInterval(tick, 1000);
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    setTimeout(function () { window.location.reload(); }, ${REFRESH_SECONDS * 1000});
+  }
 })();`
   return pageShell({
     statusAttr: APP_UI_BUILDING_STATUS_ATTR,
