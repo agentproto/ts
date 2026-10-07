@@ -447,15 +447,16 @@ Every rule below is a pure function in `cron-rules.mjs`, pinned by
 - **Stall (2).** Busy > 20 min with no new activity, or a recent
   `lastTurnErroredAt` on an idle process → a proposed **"continue" nudge**.
 - **Never-ran (3).** `tokensIn === 0 && tokensOut === 0` → `stuck`
-  immediately, without a judge, whatever the idle.
+  without a judge, but only when the session is not busy, not
+  starting/provisioning, has no queued first prompt, and is both older
+  (`startedAt`) and idler (`lastActivityAt`) than `idleMinutes`. A young or
+  just-started session is not flagged.
 - **Fast-path done (4).** Last tool call is `message_parent(kind:done)` plus a
   commit/PR → `done` without a judge (used by the criteria, see below).
-- **Terminal without outcome (5).** Terminal sessions missing an outcome are
-  surfaced as relabel candidates instead of staying invisible. A session that
-  opened a PR (`openedPrs` / `outcome.artifacts` on the list row) or whose
-  worktree/PR is merged (`session_evidence`, looked up for the newest 20 only)
-  is proposed `done` with the PR in the reason (`PR #1738 merged`, `PRs #1738,
-  #1740 opened`); the rest stay `abandoned`.
+- **Terminal without outcome (5).** Terminal sessions missing an outcome that
+  ended within `relabelWindowHours` (default 24) are surfaced as relabel
+  candidates instead of staying invisible. The report lists at most 20,
+  newest first, with a per-label count and an "… and N more" line.
 - **Re-check at apply (6).** A candidate that became busy before the apply is
   skipped (the apply tool also re-classifies).
 - **Self-exclusion (7).** An older run of the caller's own `cron:<job>` is
