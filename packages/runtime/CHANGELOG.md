@@ -1,5 +1,47 @@
 # @agentproto/runtime
 
+## 5.12.0
+
+### Minor Changes
+
+- fdaaf7d: Remove every link to the retired cli.agentproto.sh host. The `PAIR_WEB_URL` export is removed from secrets and pair-client (breaking). The daemon no longer trusts the cli.agentproto.sh origin by default, and `remote_enable` only returns a `phoneUrl` when `@agentik/session-chat` is installed. The session-story panel's full-panel link now opens the daemon's live-session panel.
+- fdaaf7d: Remove every link to the retired cli.agentproto.sh host. `PAIR_WEB_URL` (the opt-in shared pair page on that host) is no longer exported; the default per-daemon pair page is unchanged, and a self-hosted shared page still works through `pairing.pairPage` / `--pair-page`. The daemon no longer trusts the `https://cli.agentproto.sh` origin by default. `remote_enable` only returns a `phoneUrl` when the `@agentik/session-chat` app is installed (there is no hosted panel fallback anymore; pair a phone through rendezvous with `agentproto pair offer --qr`). The session-story panel's "panneau complet" link now opens the daemon's own live-session panel for that session, and is hidden when the panel is not served by the daemon.
+- 468059d: Add a built-in `session` sentinel provider (AIP-60): `sentinel_watch { subject: "session:<id>" }` now watches another session's own lifecycle — turn-end, awaiting-input, exit — and lands matching events into the caller's inbox even if the watched session never calls `message_parent`, self-expiring once it exits (`until` defaults to `subject_terminal` for this subject scheme). `agentproto sentinel watch session:<id>` and its CLI usage text gain the same capability.
+- 1e758e6: `agentproto app validate` (and `catalog verify`) checks an app's `ui.tools` against the daemon's real tool surface instead of a hand-kept list of 21 names, which rejected valid apps such as session-chat. The list is `DAEMON_TOOL_NAMES`, exported as `@agentproto/runtime/daemon-tool-names`, generated from a gateway's `tools/list` with every optional surface wired (`pnpm --filter @agentproto/runtime gen:daemon-tool-names`) and kept exact by a runtime test.
+
+### Patch Changes
+
+- c1583a5: session_follow: `excludeFollowerChildren: false` now actually delivers the follower's own descendants (any depth) under a broad selector, bypassing `rootOnly`/`cwdPrefix`. Before, a supervisor following `all` (rootOnly by default) still missed every child it spawned.
+- ddbc8ca: Fix `POST /sessions/:id/restart`, the `session_restart` MCP verb, the
+  sentinel/inbound restart hooks, and the cron scheduler's `prompt-session`
+  auto-resume minting a new session id without carrying forward the prior
+  session's `keepAlive` / `notifyParentOnCrash` / `sentinelAutoWatch` /
+  `restartPolicy` flags, without re-stamping the daemon's self-mount
+  `mcpServers` entry with the NEW session's id (so spawns/commands the
+  restarted session made kept attributing to the dead OLD session), and
+  without closing the OLD row when it was still alive — leaving two live
+  processes on the same conversation. The OLD row is now closed with a
+  deliberate `"restarted"` end reason after a successful restart (never
+  treated as a crash), except for a sandbox restart, where closing it would
+  tear down the box the new session just reconnected to. Every production
+  restart path now threads the daemon's own `/mcp` URL through so the
+  `mcpServers` re-stamp can actually happen; a path that still doesn't wire it
+  falls back to carrying `mcpServers` through untouched (keeping the prior
+  identity) rather than stripping it to no identity at all.
+- 690f31a: Sentinels: a target session whose row no longer exists (deleted, not merely ended) now parks the event and orphans the sentinel instead of failing the delivery on every poll. Before, the event was never marked seen, so the sentinel never reached its terminal event and retried forever (thousands of `delivery failed: sendMessage: no session` log lines).
+- baebdce: session-steward: the "terminal sessions missing an outcome" proposals now use real evidence instead of always falling back to `abandoned`. A session whose list row records an opened PR (`openedPrs` / `outcome.artifacts`) is proposed `done` with the PR in the reason (`PR #1738 merged`, `PRs #1738, #1740 opened`); a merged worktree/PR or an open PR seen through `session_evidence` is proposed `done` too. That lookup runs only for the newest 20 listed sessions; the rest stay `abandoned`.
+- Updated dependencies [8e87002]
+- Updated dependencies [fdaaf7d]
+- Updated dependencies [fdaaf7d]
+- Updated dependencies [11d503f]
+- Updated dependencies [baebdce]
+  - @agentproto/app-kit@1.6.1
+  - @agentproto/secrets@2.0.0
+  - @agentproto/apps@0.20.2
+  - @agentproto/acp@0.10.0
+  - @agentproto/pairing-host@0.2.5
+  - @agentproto/sandbox@0.8.3
+
 ## 5.11.1
 
 ### Patch Changes

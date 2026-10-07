@@ -1,5 +1,16 @@
 # @agentproto/apps
 
+## 0.20.2
+
+### Patch Changes
+
+- fdaaf7d: Remove every link to the retired cli.agentproto.sh host. The `PAIR_WEB_URL` export is removed from secrets and pair-client (breaking). The daemon no longer trusts the cli.agentproto.sh origin by default, and `remote_enable` only returns a `phoneUrl` when `@agentik/session-chat` is installed. The session-story panel's full-panel link now opens the daemon's live-session panel.
+- fdaaf7d: Remove every link to the retired cli.agentproto.sh host. `PAIR_WEB_URL` (the opt-in shared pair page on that host) is no longer exported; the default per-daemon pair page is unchanged, and a self-hosted shared page still works through `pairing.pairPage` / `--pair-page`. The daemon no longer trusts the `https://cli.agentproto.sh` origin by default. `remote_enable` only returns a `phoneUrl` when the `@agentik/session-chat` app is installed (there is no hosted panel fallback anymore; pair a phone through rendezvous with `agentproto pair offer --qr`). The session-story panel's "panneau complet" link now opens the daemon's own live-session panel for that session, and is hidden when the panel is not served by the daemon.
+- 11d503f: The session-chat launcher allowlists `session_artifact_add`, `session_artifact_list`, `session_artifact_get` and `session_artifact_pin`, so the chat can create, list, open and pin session artifacts through its UI bridge.
+- baebdce: session-steward: the "terminal sessions missing an outcome" proposals now use real evidence instead of always falling back to `abandoned`. A session whose list row records an opened PR (`openedPrs` / `outcome.artifacts`) is proposed `done` with the PR in the reason (`PR #1738 merged`, `PRs #1738, #1740 opened`); a merged worktree/PR or an open PR seen through `session_evidence` is proposed `done` too. That lookup runs only for the newest 20 listed sessions; the rest stay `abandoned`.
+- Updated dependencies [8e87002]
+  - @agentproto/app-kit@1.6.1
+
 ## 0.20.1
 
 ### Patch Changes
