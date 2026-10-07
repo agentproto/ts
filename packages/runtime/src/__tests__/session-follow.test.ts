@@ -168,6 +168,27 @@ describe("session-follow", () => {
       expect(off.sent).toHaveLength(1)
     })
 
+    it("excludeFollowerChildren:false delivers the follower's descendants even under rootOnly", async () => {
+      const descs = [
+        running("chief"),
+        running("root1"),
+        running("kid", { parentSessionId: "chief", cwd: "/elsewhere" }),
+        running("grandkid", { parentSessionId: "kid" }),
+        running("other-kid", { parentSessionId: "root1" }),
+      ]
+      const { sent } = setup(descs, { selector: { all: true }, excludeFollowerChildren: false })
+      emitTurnEnd(bus, "root1")
+      emitTurnEnd(bus, "kid")
+      emitTurnEnd(bus, "grandkid")
+      emitTurnEnd(bus, "other-kid")
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("(root1)")
+      expect(sent[0]!.text).toContain("(kid)")
+      expect(sent[0]!.text).toContain("(grandkid)")
+      expect(sent[0]!.text).not.toContain("(other-kid)") // someone else's child: still rootOnly
+    })
+
     it("the follower is never notified of its own events", async () => {
       const { sent } = setup([running("chief")], { selector: { all: true } })
       emitTurnEnd(bus, "chief")

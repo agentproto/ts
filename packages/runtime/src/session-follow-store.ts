@@ -69,7 +69,9 @@ export interface SessionFollow {
   batchMs: number
   /** Drop turn-ends flagged `empty` (silent no-op turns). Default true. */
   skipEmptyTurns: boolean
-  /** Ignore sessions descending from the follower. Default true. */
+  /** Ignore sessions descending from the follower. Default true. When false,
+   *  they are delivered whenever the selector is broad (`all`/`cwdPrefix`),
+   *  bypassing `rootOnly`/`cwdPrefix` like explicit ids. */
   excludeFollowerChildren: boolean
 }
 
