@@ -397,7 +397,11 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   async function reviveAndSend(followerId: string, text: string, followIds: ReadonlySet<string>): Promise<void> {
     const replacement = findLiveReplacement(followerId, followIds)
     if (replacement) {
-      await sendOnce(replacement, text, replacement)
+      try {
+        await sendOnce(replacement, text, replacement)
+      } catch (err) {
+        park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`)
+      }
       return
     }
     const desc = registry.get(followerId)

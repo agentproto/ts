@@ -526,6 +526,39 @@ describe("session-follow", () => {
       expect(sent[0]!.to).toBe("chief-2")
     })
 
+    it("the daemon's own continuedTo lineage counts as a live replacement too", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const { sent } = setup(
+        [running("chief", { status: "exited", continuedTo: "chief-2" }), running("chief-2"), running("a")],
+        { selector: { all: true } },
+        { restartSession },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.to).toBe("chief-2")
+    })
+
+    it("a failed delivery to a live replacement parks the digest instead of dropping it", async () => {
+      const parkedPath = join(tmp, "parked-replacement.jsonl")
+      const restartSession = vi.fn(async (id: string) => id)
+      const { sent, store, sendMessage } = setup(
+        [running("chief", { status: "exited" }), running("chief-2"), running("a")],
+        { selector: { all: true } },
+        { restartSession, parkedPath },
+      )
+      sendMessage.mockImplementation(async () => {
+        throw new Error("replacement unreachable")
+      })
+      emitTurnEnd(bus, "a")
+      store.setFollower(store.list()[0]!.id, "chief-2")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain("replacement unreachable")
+    })
+
     it("two deliveries racing for the same dead follower collapse into one restart", async () => {
       let resolveRestart: (() => void) | undefined
       const restartSession = vi.fn(
