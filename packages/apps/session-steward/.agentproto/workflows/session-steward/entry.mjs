@@ -47,6 +47,7 @@ import {
   isSelfExcluded,
   saturationHeader,
   shouldRejudge,
+  refineRelabel,
   terminalRelabelCandidate,
   verdictMemoryEvent,
   NUDGE_CONTINUE,
@@ -641,7 +642,7 @@ export function buildReport(b) {
   }
 
   // Terminal sessions with no outcome (mission item 5).
-  const relabel = b.steps.relabelQueue ?? []
+  const relabel = b.steps.relabelFinal ?? b.steps.relabelQueue ?? []
   if (relabel.length > 0) {
     const total = b.steps.scan?.counts?.relabelTotal ?? relabel.length
     const byVerdict = new Map()
@@ -649,6 +650,7 @@ export function buildReport(b) {
     const perLabel = [...byVerdict].map(([v, n]) => `${v}: ${n}`).join(", ")
     lines.push("", "## Terminal sessions missing an outcome (relabel candidates)")
     lines.push(`- ${relabel.length} ended in the last ${s.relabelWindowHours}h (${total} without an outcome in all) — ${perLabel}`)
+    lines.push(`- evidence: PR numbers come from the session record; worktree/PR state was looked up for the newest ${RELABEL_MAX_LINES} only`)
     for (const r of relabel.slice(0, RELABEL_MAX_LINES)) lines.push(`- ${r.sessionId} → ${r.proposedVerdict} — ${r.reason}`)
     const hidden = total - Math.min(relabel.length, RELABEL_MAX_LINES)
     if (hidden > 0) lines.push(`- … and ${hidden} more (older/omitted)`)
@@ -743,7 +745,7 @@ export function scanLive(liveSessions, settings, nowMs) {
         const endedAt = s.endedAt ?? s.lastActivityAt ?? s.startedAt
         const endedMs = endedAt ? Date.parse(endedAt) : Number.NaN
         if (Number.isFinite(endedMs) && nowMs - endedMs <= relabelWindowMs) {
-          terminalRelabel.push({ sessionId: id, origin: s.origin, originClass, label, proposedVerdict: cand.proposedVerdict, reason: cand.reason, endedAt, endedMs })
+          terminalRelabel.push({ sessionId: id, origin: s.origin, originClass, label, proposedVerdict: cand.proposedVerdict, reason: cand.reason, prs: cand.prs ?? [], endedAt, endedMs })
         }
       }
       continue
@@ -898,6 +900,29 @@ export function buildRelabelQueue(scan) {
   return (scan?.terminalRelabel ?? []).map(t => ({ ...t })).sort((a, b) => b.endedMs - a.endedMs)
 }
 
+/** The sessions that get a per-session `session_evidence` lookup: only the
+ *  newest {@link RELABEL_MAX_LINES} of the (already windowed) relabel queue —
+ *  the ones the report lists — never every terminal session. */
+export function buildRelabelEvidenceQueue(relabelQueue) {
+  return (relabelQueue ?? []).slice(0, RELABEL_MAX_LINES).map(r => ({ sessionId: r.sessionId }))
+}
+
+/** One relabel evidence map item: the `session_evidence` answer, id-checked. */
+function foldRelabelEvidence(b) {
+  const raw = b.steps.relabelEvidenceOne
+  if (!raw || raw.sessionId !== b.item?.sessionId) {
+    throw new Error(`session_evidence answered for '${raw?.sessionId}', expected '${b.item?.sessionId}'`)
+  }
+  return { sessionId: b.item.sessionId, evidence: raw }
+}
+
+/** Relabel proposals sharpened by the evidence lookups (a failed lookup
+ *  leaves its proposal as the list row had it). Order is preserved. */
+export function applyRelabelEvidence(relabelQueue, evidenceResult) {
+  const bySession = new Map(settled(evidenceResult).ok.map(r => [r.value?.sessionId, r.value?.evidence]))
+  return (relabelQueue ?? []).map(r => (bySession.has(r.sessionId) ? refineRelabel(r, bySession.get(r.sessionId)) : r))
+}
+
 /** The `app_state` events to append for this pass's verdicts. The memory is
  *  written on every pass (it is a ledger, never a session action) so streaks
  *  accumulate and the cache can engage. */
@@ -1031,6 +1056,19 @@ export default {
     // continue, at most one per session per pass, user origins observed only.
     { id: "proposals", kind: "transform", compute: b => buildProposalsStep(b.steps.scan, b.steps.loopResults, b.steps.settings, Date.now()) },
     { id: "relabelQueue", kind: "transform", compute: b => buildRelabelQueue(b.steps.scan) },
+    { id: "relabelEvidenceQueue", kind: "transform", compute: b => buildRelabelEvidenceQueue(b.steps.relabelQueue) },
+    {
+      id: "relabelEvidence",
+      kind: "map",
+      over: "$steps.relabelEvidenceQueue",
+      parallelism: 4,
+      onError: "collect",
+      steps: [
+        { id: "relabelEvidenceOne", kind: "tool", tool: "session_evidence", inputs: { sessionId: "$item.sessionId" } },
+        { id: "relabelEvidenceFold", kind: "transform", compute: foldRelabelEvidence },
+      ],
+    },
+    { id: "relabelFinal", kind: "transform", compute: b => applyRelabelEvidence(b.steps.relabelQueue, b.steps.relabelEvidence) },
     {
       id: "evidence",
       kind: "map",
@@ -1194,7 +1232,7 @@ export default {
     autoApply: "$steps.autoApply",
     judgedApply: "$steps.judgedApply",
     proposals: "$steps.proposals",
-    relabel: "$steps.relabelQueue",
+    relabel: "$steps.relabelFinal",
     scan: "$steps.scan",
   },
 }

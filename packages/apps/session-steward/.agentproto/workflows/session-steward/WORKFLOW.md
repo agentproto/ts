@@ -242,7 +242,30 @@ steps:
   - id: relabelQueue
     kind: transform
     name: Terminal sessions missing an outcome (relabel candidates)
-    description: Entry-based — buildRelabelQueue.
+    description: Entry-based — buildRelabelQueue. PR numbers come from the session row.
+
+  - id: relabelEvidenceQueue
+    kind: transform
+    name: Relabel candidates that get an evidence lookup (the newest 20)
+    description: Entry-based — buildRelabelEvidenceQueue.
+
+  - id: relabelEvidence
+    kind: map
+    name: Worktree/PR state per listed relabel candidate
+    over: $steps.relabelEvidenceQueue
+    parallelism: 4
+    onError: collect
+    steps:
+      - id: relabelEvidenceOne
+        kind: tool
+        tool: session_evidence
+        inputs:
+          sessionId: $item.sessionId
+
+  - id: relabelFinal
+    kind: transform
+    name: Relabel proposals with their evidence
+    description: Entry-based — applyRelabelEvidence (merged PR/worktree or opened PR → done).
 
   - id: evidence
     kind: map
@@ -398,7 +421,7 @@ result:
   autoApply: $steps.autoApply
   judgedApply: $steps.judgedApply
   proposals: $steps.proposals
-  relabel: $steps.relabelQueue
+  relabel: $steps.relabelFinal
   scan: $steps.scan
 ---
 
@@ -428,7 +451,11 @@ Every rule below is a pure function in `cron-rules.mjs`, pinned by
 - **Fast-path done (4).** Last tool call is `message_parent(kind:done)` plus a
   commit/PR → `done` without a judge (used by the criteria, see below).
 - **Terminal without outcome (5).** Terminal sessions missing an outcome are
-  surfaced as relabel candidates instead of staying invisible.
+  surfaced as relabel candidates instead of staying invisible. A session that
+  opened a PR (`openedPrs` / `outcome.artifacts` on the list row) or whose
+  worktree/PR is merged (`session_evidence`, looked up for the newest 20 only)
+  is proposed `done` with the PR in the reason (`PR #1738 merged`, `PRs #1738,
+  #1740 opened`); the rest stay `abandoned`.
 - **Re-check at apply (6).** A candidate that became busy before the apply is
   skipped (the apply tool also re-classifies).
 - **Self-exclusion (7).** An older run of the caller's own `cron:<job>` is
