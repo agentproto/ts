@@ -121,7 +121,7 @@ import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
 import { createSentinelStore } from "./sentinel-store.js"
 import { createSentinelRuntime } from "./sentinel-runtime.js"
-import { resolveSentinelProvider } from "./sentinel-providers/registry.js"
+import { resolveSentinelProvider, configureSessionSentinelProvider } from "./sentinel-providers/registry.js"
 import { makePublicUrlResolver, setSentinelPublicUrlSource } from "./sentinel-public-url.js"
 import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
@@ -2163,6 +2163,28 @@ export async function createGateway(
           },
         }
       : {}),
+  })
+
+  // Install the real `session` sentinel provider (AIP-60) now that
+  // `sessions` exists — see `configureSessionSentinelProvider`'s doc for why
+  // this builtin needs a setter instead of the plain `(creds) => handle`
+  // every other factory in `BUILTIN_SENTINEL_PROVIDERS` uses. `sessionEvents`
+  // was already in scope before `sentinelStore`/`resolveSentinelProviderResolved`
+  // (both declared above `sessions`); this is the earliest point `sessions`
+  // itself is available for the existence/liveness lookup.
+  configureSessionSentinelProvider({
+    sessionEvents,
+    getSession: sessionId => {
+      const desc = sessions.get(sessionId)
+      if (!desc) return undefined
+      return {
+        alive: desc.alive === true,
+        status: desc.status,
+        ...(desc.label ? { label: desc.label } : {}),
+        ...(desc.endedReason ? { endedReason: desc.endedReason } : {}),
+        ...(desc.exitCode !== undefined ? { exitCode: desc.exitCode } : {}),
+      }
+    },
   })
 
   // Restart scheduler (restart-scheduler PR-2) — the EVENT-driven half only;

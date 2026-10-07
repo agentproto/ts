@@ -28,6 +28,7 @@ import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { parsePrUrl } from "./review-pr.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
+import { parseSessionSubject, SESSION_SLUG } from "./sentinel-providers/session.js"
 import type { SentinelPublicUrl } from "./sentinel-public-url.js"
 import {
   deliveryPreferenceFor,
@@ -74,13 +75,14 @@ export type SentinelWatchResult =
   | { ok: true; sentinel: Sentinel }
   | { ok: false; error: string; message: string }
 
-function resolveUntil(input: "subject_terminal" | "never" | undefined, prSugar: boolean): SentinelUntil {
+function resolveUntil(input: "subject_terminal" | "never" | undefined, defaultsToTerminal: boolean): SentinelUntil {
   if (input === "never") return { kind: "never" }
   if (input === "subject_terminal") return { kind: "subject_terminal" }
-  // No explicit `until` — `prUrl` sugar defaults to watching until the PR's
-  // terminal event (design §6); a raw `subject` defaults to "never" (the
+  // No explicit `until` — `prUrl` sugar and a `session:<id>` subject both
+  // default to watching until the subject's terminal event (PR closed /
+  // session exited); any other raw `subject` defaults to "never" (the
   // caller presumably wants `sentinel_unwatch` to be the only way out).
-  return prSugar ? { kind: "subject_terminal" } : { kind: "never" }
+  return defaultsToTerminal ? { kind: "subject_terminal" } : { kind: "never" }
 }
 
 /** The shared create path: resolve `prUrl` sugar / a raw `subject`, default
@@ -112,7 +114,8 @@ export async function createSentinelWatch(
   } else {
     subject = input.subject!
   }
-  const until = resolveUntil(input.until, prSugar)
+  const sessionSubject = !prSugar && parseSessionSubject(subject) !== undefined
+  const until = resolveUntil(input.until, prSugar || sessionSubject)
 
   const sessionId = input.sessionId ?? deps.defaultSessionId
   if (!sessionId) {
@@ -128,12 +131,21 @@ export async function createSentinelWatch(
     return { ok: false, error: "session_not_alive", message: `session "${sessionId}" is not alive` }
   }
 
+  // A `session:<id>` subject always resolves to the `session` provider when
+  // no explicit `provider` is given — `autoSelectProviderSlug` only knows
+  // about the GitHub-shaped providers (local-gh/webhook/agentpush), none of
+  // which understand this scheme, so routing it through there would pick a
+  // provider that creates a dead watch (or, for agentpush's `subjects:
+  // ["*"]`, a bogus remote subscription for a scheme it has no hosted
+  // source for).
   const providerSlug =
     input.provider ??
-    (await autoSelectProviderSlug({
-      resolveProvider: deps.resolveProvider,
-      ...(deps.publicUrl ? { publicUrl: deps.publicUrl } : {}),
-    }))
+    (sessionSubject
+      ? SESSION_SLUG
+      : await autoSelectProviderSlug({
+          resolveProvider: deps.resolveProvider,
+          ...(deps.publicUrl ? { publicUrl: deps.publicUrl } : {}),
+        }))
   const provider = await deps.resolveProvider(providerSlug)
   if (!provider) {
     return { ok: false, error: "unknown_provider", message: `provider "${providerSlug}" is not available` }
@@ -278,29 +290,40 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
 
   server.tool(
     "sentinel_watch",
-    "Watch a GitHub subject (a PR, by default) and deliver matching events " +
-      "as a `system`/`notice` message into a session's AIP-46 inbox. Provide " +
-      "either `prUrl` (sugar: `https://github.com/o/r/pull/N` -> subject " +
-      "`github:o/r#N`, the default PR type set, and `until: subject_terminal`) " +
-      "or a raw `subject` (e.g. `github:o/r#N`, `github:o/r`). `sessionId` " +
-      "defaults to the calling session. `provider` picks the backend: " +
-      "`local-gh` (poll every ~15-60s over the host's authenticated `gh` CLI, " +
-      "zero infra), `webhook` (near-real-time push via a GitHub repo hook; " +
-      "needs a public daemon URL — a named tunnel or AGENTPROTO_PUBLIC_URL — " +
-      "and a `gh` token with admin:repo_hook) or `agentpush` (hosted, durable " +
-      "subscription: events queue server-side across daemon downtime; needs an " +
-      "agentpush API key; one subject per sentinel); see `list_sentinel_adapters` " +
-      "for readiness. Omitted, it defaults to `agentpush` when set up, else " +
-      "`webhook` when a stable public URL exists and webhook is ready, else " +
-      "`local-gh`.",
+    "Watch a subject — a GitHub PR/repo (default) or ANOTHER SESSION's own " +
+      "lifecycle — and deliver matching events as a `system`/`notice` message " +
+      "into a session's AIP-46 inbox. Provide either `prUrl` (sugar: " +
+      "`https://github.com/o/r/pull/N` -> subject `github:o/r#N`, the default " +
+      "PR type set, and `until: subject_terminal`) or a raw `subject`: a GitHub " +
+      "one (`github:o/r#N`, `github:o/r`), or `session:<id>` to watch another " +
+      "session — woken on its turn-end, awaiting-input, or exit, even if it " +
+      "never calls `message_parent`, with the watch self-expiring once it " +
+      "exits (`until` defaults to `subject_terminal` for this scheme too). " +
+      "Prefer this over `session_follow` for a single, known target that should " +
+      "auto-expire on exit; prefer `session_follow` for a broad selector " +
+      "(`all`/`cwdPrefix`) with coalesced digests across many sessions. " +
+      "`sessionId` (the DELIVERY target) defaults to the calling session — " +
+      "distinct from the `<id>` inside a `session:<id>` subject (the WATCHED " +
+      "session). `provider` picks the backend: `local-gh` (poll every ~15-60s " +
+      "over the host's authenticated `gh` CLI, zero infra), `webhook` " +
+      "(near-real-time push via a GitHub repo hook; needs a public daemon URL " +
+      "— a named tunnel or AGENTPROTO_PUBLIC_URL — and a `gh` token with " +
+      "admin:repo_hook), `agentpush` (hosted, durable subscription: events " +
+      "queue server-side across daemon downtime; needs an agentpush API key; " +
+      "one subject per sentinel) or `session` (in-process, zero infra, no " +
+      "credentials — the only backend that understands a `session:<id>` " +
+      "subject, and picked automatically for one); see `list_sentinel_adapters` " +
+      "for readiness. Omitted for a GitHub subject, it defaults to `agentpush` " +
+      "when set up, else `webhook` when a stable public URL exists and webhook " +
+      "is ready, else `local-gh`.",
     {
-      subject: z.string().optional().describe("Raw subject, e.g. \"github:owner/repo#42\". Mutually exclusive with prUrl."),
+      subject: z.string().optional().describe("Raw subject, e.g. \"github:owner/repo#42\" or \"session:sess_abc123\". Mutually exclusive with prUrl."),
       prUrl: z.string().optional().describe("https://github.com/owner/repo/pull/N — sugar for subject+types+until."),
-      sessionId: z.string().optional().describe("Target session. Defaults to the calling session."),
+      sessionId: z.string().optional().describe("Delivery target session. Defaults to the calling session."),
       types: z.array(z.string()).optional().describe("Type globs. Defaults to the provider's defaultTypes(subject)."),
       urgency: urgencyField.optional().describe("Inbox delivery urgency. Default \"next-turn\"."),
-      until: untilField.optional().describe("Lifetime. Default \"subject_terminal\" for prUrl, \"never\" for a raw subject."),
-      provider: z.string().optional().describe("Provider slug: \"local-gh\", \"webhook\" or \"agentpush\". Default: \"agentpush\" when set up, else \"webhook\" when a stable public URL is configured and webhook is ready, else \"local-gh\"."),
+      until: untilField.optional().describe("Lifetime. Default \"subject_terminal\" for prUrl and for a \"session:<id>\" subject, \"never\" for any other raw subject."),
+      provider: z.string().optional().describe("Provider slug: \"local-gh\", \"webhook\", \"agentpush\" or \"session\". Default for a GitHub subject: \"agentpush\" when set up, else \"webhook\" when a stable public URL is configured and webhook is ready, else \"local-gh\". A \"session:<id>\" subject always defaults to \"session\"."),
     },
     async (input: SentinelWatchInput) => {
       const result = await createSentinelWatch(

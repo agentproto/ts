@@ -13,6 +13,7 @@ import { discoverAdapterPackages } from "@agentproto/provider-kit"
 import { agentpushSentinelProvider, AGENTPUSH_SLUG } from "./agentpush.js"
 import { localGhSentinelProvider, LOCAL_GH_SLUG } from "./local-gh.js"
 import { webhookSentinelProvider, WEBHOOK_SLUG } from "./webhook.js"
+import { sessionSentinelProvider, SESSION_SLUG, type SessionSentinelDeps } from "./session.js"
 import type { SentinelProviderHandle } from "./types.js"
 
 /** Per-slug credentials, as stored by the creds store / setup tool. */
@@ -40,8 +41,29 @@ export const BUILTIN_SENTINEL_PROVIDERS: Record<string, SentinelProviderFactory>
   [AGENTPUSH_SLUG]: creds => agentpushSentinelProvider({ creds }),
 }
 
-/** The canonical built-in slugs, in catalog order. */
-export const BUILTIN_SENTINEL_SLUGS: readonly string[] = [LOCAL_GH_SLUG, WEBHOOK_SLUG, AGENTPUSH_SLUG]
+/** The canonical built-in slugs, in catalog order. `session` is included
+ *  even before {@link configureSessionSentinelProvider} ever runs — a
+ *  daemon that never wires it up simply never installs a factory for the
+ *  slug, which resolves/lists exactly like an unknown/not-installed
+ *  third-party provider (see that function's doc). */
+export const BUILTIN_SENTINEL_SLUGS: readonly string[] = [LOCAL_GH_SLUG, WEBHOOK_SLUG, AGENTPUSH_SLUG, SESSION_SLUG]
+
+/**
+ * Install the real `session` provider factory. Every other builtin factory
+ * here is `(creds) => handle` because credentials are all a built-in
+ * provider ever needs beyond what's in this module already — `session`
+ * instead needs the live `SessionEventBus` and a session lookup, neither of
+ * which exists at this module's load time (they're built inside
+ * `createGateway`, well after this registry is first imported). So instead
+ * of threading a new "runtime deps" parameter through every
+ * `SentinelProviderFactory` call site for the sake of one provider,
+ * `index.ts` calls this ONCE — right after its `sessions` registry exists —
+ * to install `BUILTIN_SENTINEL_PROVIDERS[session]` for real. Before that
+ * call (or in a test gateway that never makes it), `resolveSentinelProvider
+ * ("session")` returns null, same as any other not-yet-installed slug. */
+export function configureSessionSentinelProvider(deps: SessionSentinelDeps): void {
+  BUILTIN_SENTINEL_PROVIDERS[SESSION_SLUG] = () => sessionSentinelProvider(deps)
+}
 
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
