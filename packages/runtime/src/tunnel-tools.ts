@@ -3,10 +3,12 @@
  * daemon. Lets a remote operator create, list, stop, and inspect
  * public tunnels for any local port without touching the terminal.
  *
- * Four tools:
- *   tunnel_create    spawn a public URL for a local port (cloudflared quick tunnel)
- *   tunnel_list     browse active + historical tunnels
- *   tunnel_stop      SIGTERM the tunnel provider + mark stopped
+ * Five tools:
+ *   tunnel_create    spawn a public URL for a local port (private by
+ *                    default — see link-guard.ts — public:true opts out)
+ *   tunnel_list      browse active + historical tunnels
+ *   tunnel_stop      SIGTERM the tunnel provider, tear down its guard, mark stopped
+ *   tunnel_revoke    instantly invalidate a private tunnel's link without stopping it
  *   tunnel_status    read-only descriptor for one tunnel
  *
  * Designed parallel to session-tools.ts — same error-shape, same style.
@@ -63,6 +65,12 @@ export function registerTunnelTools(
     provider: t.provider,
     targetPort: t.targetPort,
     publicUrl: t.publicUrl,
+    // The link to actually hand to a human — `publicUrl` alone is a dead
+    // end behind the access guard (`access: "private"`, the default).
+    url: t.url,
+    access: t.access,
+    expiresAt: t.expiresAt,
+    warning: t.warning,
     status: t.status,
     hostname: t.hostname,
     createdAt: t.createdAt,
@@ -82,8 +90,20 @@ export function registerTunnelTools(
       "(`@scope/agentproto-adapter-<slug>`) also works — see " +
       "`list_tunnel_adapters` for the full set. Returns the TunnelDescriptor " +
       "once ready (typically <10s). Use `tunnel_list` before opening a " +
-      "duplicate. Unlike `remote_enable`, this does NOT gate auth — pure " +
-      "passthrough; the proxied service handles its own authn.",
+      "duplicate.\n\n" +
+      "PRIVATE BY DEFAULT: unless `public:true` is passed, an access guard " +
+      "sits in front of the target before the chosen backend ever sees it — " +
+      "the real URL to hand out is the returned `url` (publicUrl + a signed " +
+      "`?t=` token), not `publicUrl` alone, which rejects every request " +
+      "without that token or the cookie it sets on first use. The link " +
+      "expires after `ttl` (default 24h); `tunnel_revoke` invalidates it " +
+      "immediately without stopping the tunnel, `tunnel_stop` tears " +
+      "everything down. The guard also blocks a dev server's own dangerous " +
+      "paths (`/@fs/…`, `*.map` source maps) and tags every response " +
+      "`X-Robots-Tag: noindex`. Pass `public:true` only for content that is " +
+      "genuinely meant to be public — it skips the guard entirely (no " +
+      "token, no TTL, no revoke) and the response carries a `warning` " +
+      "field saying so.",
     {
       targetPort: z
         .number()
@@ -147,6 +167,25 @@ export function registerTunnelTools(
           "Optional for `named`: path to the tunnel credentials JSON. " +
             "Defaults to ~/.cloudflared/<tunnelId>.json.",
         ),
+      ttl: z
+        .string()
+        .optional()
+        .describe(
+          "How long the signed link stays valid — \"1h\" | \"24h\" | \"7d\" " +
+            "(default \"24h\", clamped to [1m, 30d]). Ignored when " +
+            "`public:true` (no guard, no expiry). `tunnel_revoke` mints a " +
+            "fresh link on a fresh window without waiting this out.",
+        ),
+      public: z
+        .boolean()
+        .optional()
+        .describe(
+          "Explicit opt-out of the access guard — the tunnel is reachable " +
+            "by anyone who finds the URL, with no token, no TTL and no " +
+            "revoke, exactly like every tunnel before this option existed. " +
+            "Default false (private). Only set this for content that is " +
+            "already meant to be public.",
+        ),
     },
     async input => {
       try {
@@ -160,6 +199,8 @@ export function registerTunnelTools(
           ...(input.hostname ? { hostname: input.hostname } : {}),
           ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
           ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
+          ...(input.ttl ? { ttl: input.ttl } : {}),
+          ...(input.public ? { public: true } : {}),
         })
         return text(desc)
       } catch (err) {
@@ -214,9 +255,11 @@ export function registerTunnelTools(
   // ── tunnel_stop ────────────────────────────────────────────────
   server.tool(
     "tunnel_stop",
-    "Stop an active tunnel — SIGTERM cloudflared and mark the tunnel stopped. " +
-      "Accepts either the tunnel id or the friendly name set at create time. " +
-      "Idempotent on an already-stopped tunnel.",
+    "Stop an active tunnel — SIGTERM cloudflared, tear down its access " +
+      "guard (so the signed link stops working immediately, same as " +
+      "`tunnel_revoke`), and mark the tunnel stopped. Accepts either the " +
+      "tunnel id or the friendly name set at create time. Idempotent on an " +
+      "already-stopped tunnel.",
     {
       tunnelId: z
         .string()
@@ -243,6 +286,34 @@ export function registerTunnelTools(
         return text({ ok, tunnelId: input.tunnelId })
       } catch (err) {
         return errText("tunnel_stop", err)
+      }
+    },
+  )
+
+  // ── tunnel_revoke ──────────────────────────────────────────────
+  server.tool(
+    "tunnel_revoke",
+    "Instantly invalidate every link/cookie issued so far for a private " +
+      "tunnel, WITHOUT stopping the tunnel itself — rotates the access " +
+      "guard's signing secret and returns a fresh signed `url` on a fresh " +
+      "TTL window. Use this when a link leaked, or just to mint a new one " +
+      "before the old one expires. Errors for a tunnel created with " +
+      "`public:true` (no guard to revoke) or one that isn't active — use " +
+      "`tunnel_stop` to tear the tunnel down instead.",
+    {
+      tunnelId: z
+        .string()
+        .min(1)
+        .describe(
+          "Tunnel id (UUID from `tunnel_create`) or the name slug.",
+        ),
+    },
+    async input => {
+      try {
+        const desc = registry.revoke(input.tunnelId)
+        return text(desc)
+      } catch (err) {
+        return errText("tunnel_revoke", err)
       }
     },
   )
