@@ -364,19 +364,21 @@ afterEach(async () => {
 
 describe("mcp-events e2e — full user story", () => {
   it("subscribe (challenge passes) → signed delivery → 2xx → unsubscribe → delivery stops", async () => {
-    const before = h!.now()
-    const sub = (await callClient(h!.client, "events/subscribe", SUB_PARAMS)) as {
+    // Frozen clock (the harness's `nowMs` seam): refreshBefore is then exact.
+    // A wall clock made the granted delta drift on loaded CI runners.
+    await h!.dispose()
+    h = undefined
+    const t0 = 1_700_000_000_000
+    h = await makeHarness({ now: () => t0 })
+    const sub = (await callClient(h.client, "events/subscribe", SUB_PARAMS)) as {
       id: string
       refreshBefore: string
       cursor: string | null
     }
     expect(sub.id).toMatch(/^sub_[0-9a-f]{32}$/)
     expect(sub.cursor).toBeNull()
-    // refreshBefore is the granted expiration (until.ms as ISO-8601) — assert
-    // the delta, not the instant (the adapter's now() may tick 1ms later).
-    const grantedDelta = Date.parse(sub.refreshBefore) - before
-    expect(grantedDelta).toBeGreaterThanOrEqual(DEFAULT_TTL_MS)
-    expect(grantedDelta).toBeLessThan(DEFAULT_TTL_MS + 50)
+    // refreshBefore is the granted expiration (until.ms as ISO-8601).
+    expect(sub.refreshBefore).toBe(new Date(t0 + DEFAULT_TTL_MS).toISOString())
 
     // The fake ChatGPT saw exactly one challenge, signed with SECRET, echoed.
     expect(h!.fake.challenges).toHaveLength(1)
