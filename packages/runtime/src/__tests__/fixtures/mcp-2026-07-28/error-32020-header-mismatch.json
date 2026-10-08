@@ -1,0 +1,13 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http",
+  "_note": "Section 'Server Validation', 'Example error response'. Same body on https://modelcontextprotocol.io/specification/2026-07-28/schema (HeaderMismatchError). The same pages say the HTTP status MUST be 400 Bad Request.",
+  "httpStatus": 400,
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32020,
+      "message": "Header mismatch: Mcp-Name header value 'foo' does not match body value 'bar'"
+    }
+  }
+}

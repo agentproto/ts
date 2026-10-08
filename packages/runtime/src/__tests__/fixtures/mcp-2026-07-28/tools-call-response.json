@@ -1,0 +1,18 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
+  "_note": "Section 'Calling Tools', 'Response'. A tools/call result carries resultType and no ttlMs or cacheScope: tools/call is not in the cacheable-operations list of https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching.",
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "resultType": "complete",
+      "content": [
+        {
+          "type": "text",
+          "text": "Current weather in New York:\nTemperature: 72°F\nConditions: Partly cloudy"
+        }
+      ],
+      "isError": false
+    }
+  }
+}

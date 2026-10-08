@@ -1776,6 +1776,52 @@ describe("BRIEF-D: app-bundled TOOL.md/DRIVER.md tool steps", () => {
     expect(installed.appId).toBe("@test/bundled-tools-app")
   })
 
+  it("G1: app_tool_call runs an allowlisted app-bundled tool through the app's driver, not dispatchTool", async () => {
+    await buildBundledApp()
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/bundled-tools-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: join(dir, "index.html"), tools: ["greet"] },
+    })
+    const dispatchTool = vi.fn(async () => ({ shouldNot: "be called" }))
+    const { client } = await setup({ appRegistry, dispatchTool })
+
+    const res = await client.callTool({
+      name: "app_tool_call",
+      arguments: { appId: "@test/bundled-tools-app", tool: "greet", args: { name: "World" } },
+    })
+    expect(isError(res)).toBe(false)
+    expect(parseToolJson(res)).toEqual({ greeting: "hello, World" })
+    expect(dispatchTool).not.toHaveBeenCalled()
+  })
+
+  it("G1: an allowlisted id that is NOT a bundled tool still goes to dispatchTool", async () => {
+    await buildBundledApp()
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/bundled-tools-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: join(dir, "index.html"), tools: ["known_tool"] },
+    })
+    const dispatchTool = vi.fn(async (name: string, args: Record<string, unknown>) => ({ name, args }))
+    const { client } = await setup({ appRegistry, dispatchTool })
+
+    const res = parseToolJson(
+      await client.callTool({
+        name: "app_tool_call",
+        arguments: { appId: "@test/bundled-tools-app", tool: "known_tool", args: { x: 1 } },
+      }),
+    )
+    expect(res).toEqual({ name: "known_tool", args: { x: 1 } })
+  })
+
   it("runs the app driver for the app tool step and the daemon passthrough for the other — agent-free", async () => {
     await buildBundledApp()
     const { client, appRegistry } = await setup()

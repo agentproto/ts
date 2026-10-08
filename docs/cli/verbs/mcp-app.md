@@ -2,6 +2,7 @@
 
 ```text
 agentproto mcp-app <appId>
+agentproto mcp-app --http <appDir> [--port N] [--host H] [--tenants <file.json>]
 ```
 
 A stdio MCP server scoped to ONE installed app's tools — the buyer-facing
@@ -80,3 +81,26 @@ agentproto mcp-app: app "my-book" has no `ui.tools` allowlist declared in APP.md
 - [`mcp-bridge.md`](./mcp-bridge.md) — the unscoped, full-daemon equivalent
 - [`app.md`](./app.md) — `app install`, the prerequisite for `mcp-app`
 - [`serve.md`](./serve.md) — the daemon that answers `/apps/:appId/tool-call`
+
+## Standalone HTTP mode (`--http`)
+
+`agentproto mcp-app --http <appDir>` serves ONE app directory as a streamable-HTTP
+MCP App with no daemon behind it: only the app's own bundled
+`.agentproto/tools/<id>/TOOL.md` tools (run through its bundled drivers) plus its
+`ui://` resource, restricted to the declared `ui.tools` allowlist.
+
+- Single tenant: `POST /mcp`; secrets come from env vars named in the app's
+  `requirements.secrets` (a missing one logs a warning).
+- Multi tenant (`--tenants file.json`, `{ "<slug>": { "<SECRET>": "<value>" } }`):
+  `POST /mcp/<slug>`. Secret names must be declared by the app; slugs are
+  lowercase letters, digits and `-`.
+- `--port` must be an integer in 1..65535; every flag needs a value.
+
+**No built-in authentication.** Anyone who can reach the port can call the served
+tools with the (tenant's) secrets. The tenant slug in the URL only selects which
+secrets apply; it is NOT a credential. For anything beyond loopback, run it
+behind a front proxy that terminates TLS and authenticates the caller (and maps
+the caller to a tenant slug). Built in: `Host`/`Origin` are checked against the
+loopback names when bound to loopback (DNS-rebinding guard; `allowedHosts` in the
+programmatic API for other binds), request bodies are capped at 1 MiB, and only
+`POST` is served.

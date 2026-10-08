@@ -412,6 +412,21 @@ function collectStepIds(steps: any[], ids: Set<string> = new Set()): Set<string>
   return ids
 }
 
+/** Whether any step (at any nesting depth) reuses a session via `sessionRef`.
+ *  A subworkflow's steps live in its own child, which reuses the parent's
+ *  release scope — so a `subworkflow` step counts as reuse (conservative). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function usesSessionRef(steps: any[]): boolean {
+  for (const s of steps) {
+    if (s?.sessionRef !== undefined || s?.kind === "subworkflow") return true
+    if (Array.isArray(s?.steps) && usesSessionRef(s.steps)) return true
+    if (Array.isArray(s?.branches)) {
+      for (const br of s.branches) if (Array.isArray(br?.steps) && usesSessionRef(br.steps)) return true
+    }
+  }
+  return false
+}
+
 /** Per-compile context: the public options plus the full set of step ids
  *  declared anywhere in THIS workflow (recomputed fresh for each nested
  *  `subworkflow` child, which has its own id namespace). */
@@ -458,6 +473,7 @@ export function compileWorkflow(
     ...(finallySteps?.length ? { finally: compileSiblingsToSteps(finallySteps, finallyCtx) } : {}),
     ...(output ? { output } : {}),
     ...(outputsFiles ? { outputsFiles } : {}),
+    ...(usesSessionRef([...steps, ...(finallySteps ?? [])]) ? {} : { reusesSessions: false }),
   }
 }
 

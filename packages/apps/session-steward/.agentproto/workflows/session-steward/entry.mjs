@@ -1000,7 +1000,7 @@ export default {
     appId: { type: "string", description: `Installed app whose \`app_state\` ledger holds the verdict memory. Default ${DEFAULT_APP_ID}.` },
     stableVerdictPasses: { type: "number", description: `Consecutive passes on an unchanged evidence fingerprint before the judge cache stops re-judging. Default ${DEFAULT_STABLE_VERDICT_PASSES}.`, default: DEFAULT_STABLE_VERDICT_PASSES },
     userOrigins: { type: "array", description: `Origins that are ALWAYS flag-only, never closed (a human is in the loop). Trailing \`*\` is a prefix wildcard. Default ${JSON.stringify(DEFAULT_USER_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_USER_ORIGINS },
-    closableOrigins: { type: "array", description: `Origins that may be closed under the current rules (cron jobs, gates). Trailing \`*\` is a prefix wildcard. Executors (a session with a parentSessionId) are closable regardless. Default ${JSON.stringify(DEFAULT_CLOSABLE_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_CLOSABLE_ORIGINS },
+    closableOrigins: { type: "array", description: `Origins that may be closed under the current rules (cron jobs, gates, workflow steps, reviewer lanes). Trailing \`*\` is a prefix wildcard. Executors (a session with a parentSessionId) are closable regardless. Default ${JSON.stringify(DEFAULT_CLOSABLE_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_CLOSABLE_ORIGINS },
   },
   outputs: {},
   steps: [

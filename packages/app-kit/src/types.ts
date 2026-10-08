@@ -108,6 +108,14 @@ export interface AppUiDefinition {
   readonly description?: string
   readonly tools?: readonly string[]
   /**
+   * Subset of `tools` whose results the host displays in this UI: a server
+   * publishing the app as an MCP App links each of these tools to the app's
+   * `ui://` resource (`_meta.ui.resourceUri`), so calling it opens the panel.
+   * Every id MUST also be in `tools`; no duplicates. Omitted = no binding
+   * beyond what the publishing server decides by default.
+   */
+  readonly renders?: readonly string[]
+  /**
    * Preferred local port when this app's UI is served standalone
    * (`agentproto app serve`). A declared port is a hint only — it falls
    * back to auto-assignment when taken or when no port is given.

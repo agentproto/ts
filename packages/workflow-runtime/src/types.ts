@@ -694,6 +694,14 @@ export interface RuntimeWorkflow {
    *  every top-level step finishes successfully. See {@link OutputsFileContract}
    *  and `run-workflow.ts`'s `checkOutputsFiles`. */
   outputsFiles?: Readonly<Record<string, OutputsFileContract>>
+  /**
+   * `false` ⇒ no step anywhere in this workflow reuses another step's session
+   * (`sessionRef`), so each top-level step's sessions are released as soon as
+   * that step finishes instead of being held until the run ends (a run parked
+   * on an approval would otherwise keep every finished step's session live).
+   * Omitted/`true` ⇒ the conservative default: release at run end.
+   */
+  reusesSessions?: boolean
 }
 
 /** A human/host decision on one approval request. `who` records WHO decided

@@ -34,6 +34,7 @@ import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import type { ToolHandle } from "@agentproto/tool"
+import { runTool } from "@agentproto/driver"
 import { createDaemonToolRegistry, type AppToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
 import { buildAppBoundary } from "./app-boundary.js"
@@ -591,6 +592,7 @@ async function dispatchAllowlistedAppTool(
   declaredAllowlist: readonly string[],
   input: { appId: string; tool: string; args?: Record<string, unknown> },
   deps: AppToolCallDeps,
+  appDir?: string,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
   const effectiveAllowlist: readonly string[] = [...declaredAllowlist, ...APP_UI_DISCOVERY_TOOLS]
   if (!effectiveAllowlist.includes(input.tool)) {
@@ -624,6 +626,19 @@ async function dispatchAllowlistedAppTool(
       const result = await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), args)
       return textResult(result)
     }
+    // G1: an allowlisted id that names one of the app's OWN bundled TOOL.md
+    // contracts runs through the app's DRIVER.md implementations (AIP-30
+    // runTool), the same pair `resolveAppToolsForWorkflow` hands workflows.
+    // Re-read from disk per call, like the workflow path: the compiled
+    // handles are not persisted on the InstalledApp record.
+    if (appDir !== undefined) {
+      const bundled = await loadAppBundledTools(appDir)
+      const bundledTool = bundled.tools.find(t => t.id === input.tool)
+      if (bundledTool) {
+        const output = await runTool({ tool: bundledTool, candidates: bundled.drivers, input: args })
+        return textResult(output)
+      }
+    }
     if (!deps.dispatchTool) return notEnabled("app_tool_call")
     const result = await deps.dispatchTool(input.tool, args)
     return textResult(result)
@@ -649,7 +664,7 @@ export async function performAppToolCall(
   if (!installed || !installed.ui) {
     return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
   }
-  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps)
+  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir)
 }
 
 /**

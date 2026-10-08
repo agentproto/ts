@@ -791,6 +791,8 @@ const DEFAULT_PERSIST_PATH = (): string =>
 // `heartbeatIntervalMs` doc comments for the rationale behind these values.
 const DEFAULT_LEASE_TTL_MS = 60_000
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
+/** Floor between two full rewrites of the runs file for non-status changes. */
+const DEFAULT_PERSIST_MIN_INTERVAL_MS = 2_000
 
 // ── Persistence helpers (mirrors routine-runner.ts exactly) ──────────
 
@@ -930,8 +932,6 @@ function saveRuns(runs: Map<string, RunState>, persistPath: string): void {
     mkdirSync(dirname(persistPath), { recursive: true })
     const payload = JSON.stringify(
       Array.from(runs.values()).map(s => s.run),
-      null,
-      2,
     ) + "\n"
     const tmp = `${persistPath}.tmp.${process.pid}`
     writeFileSync(tmp, payload, "utf8")
@@ -2019,6 +2019,10 @@ export function createWorkflowRunner(opts: {
    *  quarter of the default TTL, so a run survives one or two missed
    *  renewals before `sweep()` would call it orphaned. */
   heartbeatIntervalMs?: number
+  /** Minimum gap between two full rewrites of the runs file for changes that
+   *  don't alter any run's status (step progress, lease renewals). Status
+   *  changes always flush at once. Default 2s; `0` writes on every change. */
+  persistMinIntervalMs?: number
   /** Clock override for lease timestamps AND `sweep()`'s "now" — tests only;
    *  defaults to `() => new Date()`. */
   now?: () => Date
@@ -2058,8 +2062,51 @@ export function createWorkflowRunner(opts: {
 
   const runs = shouldPersist ? loadRuns(persistPath, runsRoot) : new Map<string, RunState>()
 
+  // Every step transition calls `persist()`, and `saveRuns` rewrites the WHOLE
+  // runs file synchronously — with hundreds of retained runs that is hundreds
+  // of MB per call, enough to hog the event loop for minutes across a run (the
+  // lease heartbeat and the orphan sweep never get a turn). So: flush at once
+  // when any run's STATUS changed (a park, a terminal state — these must be
+  // durable immediately), otherwise coalesce into at most one write per
+  // `persistMinIntervalMs` with a trailing flush, and flush on process exit.
+  const persistMinIntervalMs = opts.persistMinIntervalMs ?? DEFAULT_PERSIST_MIN_INTERVAL_MS
+  let lastFlushAt = 0
+  let lastStatusSig = ""
+  let trailingFlush: ReturnType<typeof setTimeout> | undefined
+  let dirty = false
+  const flushRuns = (): void => {
+    if (trailingFlush) {
+      clearTimeout(trailingFlush)
+      trailingFlush = undefined
+    }
+    dirty = false
+    lastFlushAt = Date.now()
+    saveRuns(runs, persistPath)
+  }
+  const statusSig = (): string => {
+    let sig = ""
+    for (const st of runs.values()) sig += `${st.run.runId}:${st.run.status}|`
+    return sig
+  }
+  if (shouldPersist && persistMinIntervalMs > 0) {
+    process.once("exit", () => {
+      if (dirty) flushRuns()
+    })
+  }
   const persist = (): void => {
-    if (shouldPersist) saveRuns(runs, persistPath)
+    if (!shouldPersist) return
+    if (persistMinIntervalMs <= 0) return flushRuns()
+    const sig = statusSig()
+    const wait = lastFlushAt + persistMinIntervalMs - Date.now()
+    if (sig !== lastStatusSig || wait <= 0) {
+      lastStatusSig = sig
+      return flushRuns()
+    }
+    dirty = true
+    if (!trailingFlush) {
+      trailingFlush = setTimeout(flushRuns, wait)
+      trailingFlush.unref?.()
+    }
   }
 
   const newEventLog = (runId: string): RunEventLog | undefined =>
