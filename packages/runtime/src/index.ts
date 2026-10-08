@@ -15,6 +15,7 @@
  * server.
  */
 
+import { createLivenessTickGuard } from "./liveness-tick-guard.js"
 import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdtempSync } from "node:fs"
@@ -3861,7 +3862,14 @@ export async function createGateway(
   // indefinitely (the "~25 app runs stuck for weeks" evidence this exists
   // for). `.unref()` so the ticker never keeps the process alive on its own.
   const livenessSweepIntervalMs = 30_000
+  const livenessTickGuard = createLivenessTickGuard(livenessSweepIntervalMs, 5_000)
   const livenessSweepTimer: ReturnType<typeof setInterval> = setInterval(() => {
+    // A tick that fires seconds late means the loop was starved, so lease
+    // renewals are overdue rather than the owners dead (see the guard's doc).
+    if (livenessTickGuard.shouldSkip()) {
+      console.warn("[liveness-sweep] tick fired late (event loop starved) — skipping this sweep")
+      return
+    }
     try {
       const orphanedRuns = workflowRunner?.sweep().orphaned ?? []
       if (orphanedRuns.length > 0) {
