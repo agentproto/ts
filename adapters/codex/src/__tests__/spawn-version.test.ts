@@ -15,3 +15,12 @@ describe("codex spawn version", () => {
     })
   })
 })
+
+describe("codex state home", () => {
+  // An app-boundary spawn denies $HOME; the driver gives codex its own
+  // CODEX_HOME from this declaration (packages/runtime
+  // app-boundary-codex-parallel.test.ts mirrors it end to end).
+  it("declares CODEX_HOME so a confined spawn gets a writable home", () => {
+    expect(codex.stateHome).toEqual({ env: "CODEX_HOME", defaultDir: ".codex", share: ["auth.json"] })
+  })
+})
