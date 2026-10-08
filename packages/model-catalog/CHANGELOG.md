@@ -1,5 +1,22 @@
 # @agentproto/model-catalog
 
+## 0.12.0
+
+### Minor Changes
+
+- 3e46f5a: Prompt-length pricing tiers. `LLMPricing` gains an optional `tiers: [{ aboveInputTokens, inputPer1M, outputPer1M, cacheReadMultiplier?, cacheWriteMultiplier? }]`, and the new `selectPricingTier(pricing, promptTokens)` flattens a row to the rates for a given prompt length. `calculateLLMCreditCost` (and so `calculateCost` and `getCacheStats`) bills the whole request at the tier its prompt falls in, counting cache-read and cache-write input toward that length. Claude Haiku 5.5 is $0.10/$0.50 up to 100k prompt tokens and $0.50/$2.50 over it, so long prompts were priced 5x too low before this. The `llm:openrouter` generator and `scripts/catalog-sync/sync-anthropic.mjs` emit tiers from OpenRouter's `pricing.overrides` (`min_prompt_tokens` entries only; time-of-day discounts are ignored). Runtime session cost picks the tier from the latest request's `contextUsed`.
+
+### Patch Changes
+
+- 796e0f3: Sync generated catalog data from the pinned provider sources.
+- a5050a6: Native Google and xAI pricing now carries prompt-length tiers. `sync-google.mjs` emits `tiers` from OpenRouter's `min_prompt_tokens` overrides, so Gemini Pro prompts over 200k tokens bill at the higher rate. `sync-xai.mjs` turns xAI's native long-context prices into `tiers` and its cached-input price into `cacheReadMultiplier`. Both were captured before but never billed, so xAI cache hits were charged at the full input rate. The row conversion lives in the new `src/sources/xai-pricing.mjs`.
+
+  `sync-xai.mjs` now falls back to the committed `snapshots/llm-xai.json` when `XAI_API_KEY` is missing or the xAI API call fails, the same way `sync-anthropic.mjs` does. The xAI key has been answering 403 (out of credits), which failed the native sync every week and froze xAI pricing. The regenerated `xai-pricing.generated.ts` and `google-pricing.generated.ts` are included: same prices in the billed shape, plus `grok-4.7` from the pinned snapshot.
+
+- 7c06811: Anthropic and Kimi prices now come from the vendor's own pricing page, not OpenRouter. `sync-anthropic.mjs` reads `platform.claude.com/docs/en/about-claude/pricing.md` and `sync-moonshot.mjs` reads `platform.kimi.ai/docs/pricing/chat.md`. Neither needs an API key. OpenRouter stays as the per-row fallback for ids the page doesn't list, and as the whole-file fallback if the page can't be used. OpenRouter's `moonshotai/*` price is the rate of whichever host it routes to: on 2026-10-08 it had kimi-k3 at $0.62 / $12.30 against Moonshot's $3.00 / $15.00. Every row now records `priceSource` (`"anthropic"`, `"moonshot"` or `"openrouter"`). `sync-moonshot.mjs` takes its id list from the committed `llm-moonshot.json` snapshot when there is no key, which adds `kimi-k2.7-code-highspeed`. The parsers are `src/sources/anthropic-pricing-page.mjs` and `src/sources/kimi-pricing-page.mjs`. The regenerated Anthropic and Moonshot pricing files are included.
+
+  MiniMax gets the same treatment. `sync-minimax.mjs` reads `platform.minimax.io/docs/guides/pricing-paygo.md` for prices, cache-write prices and the MiniMax-M3 >512k tier, plus model ids. It skips the opt-in Priority tab and bills the sale price where the page also shows a struck list price. This adds MiniMax-M3 and the `-highspeed` variants, and corrects MiniMax-M2.7 ($0.21 / $0.84 → $0.30 / $1.20) and M2.5. M2-her isn't on the page, so it stays on OpenRouter. Mistral is unchanged: its OpenRouter prices match Mistral's own page on every row we carry.
+
 ## 0.11.4
 
 ### Patch Changes

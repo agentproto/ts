@@ -1,5 +1,30 @@
 # @agentproto/cli
 
+## 1.14.0
+
+### Minor Changes
+
+- 0ea7fe9: Store listing fields on app-catalog/v1 entries (all optional): `tagline`, `longDescription` (markdown), `screenshots` ({url, alt, width?, height?}), `categories`, `homepage`, `repository`, alongside the existing `icon` and `publisher`. Declared in an APP.md `store:` block and written by `agentproto app pack --release --entry`, which checks the media and copies them to `media/<appId>/<version>/` next to the entry (`--media-base-url` relocates them). `agentproto catalog verify` checks the listing (limits, https, alt text, image format and size); `--local-media <prefix>=<dir>` reads media from a checkout. `store/` is left out of release bundles. A relative top-level APP.md `icon` is no longer copied into a public entry.
+
+### Patch Changes
+
+- 9aed05d: Repo maintenance: reviewers spawn again. A workflow agent step started in a review worktree (`branch_gc_review_worktree`) now gets that worktree and its repo's git dir as read-only zones, so `reviewOne` passes the app boundary check and git can read the branch under the OS sandbox. Before, every reviewer was refused with `app_boundary_cwd_outside` and the run recorded no verdicts. A look-alike directory in the review root is still refused. The maintain report also groups one failure that hit several branches as a single reason. `agentproto workflow status` prints step labels. Compact `workflow_status` folds repeated circuit-open skips into one row and caps large run outputs.
+- 5733913: Docs: update CLI app verb list, session-steward workflow rule text, and VS Code README (App Store entry point).
+- 17112d0: `tunnel_create` is private by default: a signed-link access guard (random bearer token, 24h TTL by default, instant revoke, `X-Robots-Tag: noindex`, blocks `/@fs/` and source maps) now sits in front of every tunnel unless `public: true` is passed explicitly. The descriptor's new `url` field is the one to actually share — `publicUrl` alone now rejects every request without a valid token or cookie. New `tunnel_revoke` tool/route/CLI subcommand instantly invalidates the current link without stopping the tunnel.
+- Updated dependencies [0ea7fe9]
+- Updated dependencies [796e0f3]
+- Updated dependencies [a5050a6]
+- Updated dependencies [3e46f5a]
+- Updated dependencies [9aed05d]
+- Updated dependencies [7c06811]
+- Updated dependencies [5733913]
+- Updated dependencies [dad18f3]
+- Updated dependencies [70b8e9c]
+  - @agentproto/app-kit@1.6.2
+  - @agentproto/model-catalog@0.12.0
+  - @agentproto/apps@0.20.3
+  - @agentproto/llm-endpoint@0.11.5
+
 ## 1.13.1
 
 ### Patch Changes

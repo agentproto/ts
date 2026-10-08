@@ -1,5 +1,15 @@
 # @agentproto/adapter-mastracode
 
+## 0.3.33
+
+### Patch Changes
+
+- Updated dependencies [796e0f3]
+- Updated dependencies [a5050a6]
+- Updated dependencies [3e46f5a]
+- Updated dependencies [7c06811]
+  - @agentproto/model-catalog@0.12.0
+
 ## 0.3.32
 
 ### Patch Changes
