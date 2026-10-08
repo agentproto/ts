@@ -445,7 +445,9 @@ export interface PolicyRunState {
  * set the daemon already holds in memory.
  */
 export function policyWatchesSession(policy: PolicyRunState, sessionId: string): boolean {
-  return policy.sessionId === sessionId || policy.sessionIds.includes(sessionId)
+  // `?.`: a state rehydrated from a pre-fan-in snapshot may lack `sessionIds`
+  // despite the type; one such row must not throw for every caller.
+  return policy.sessionId === sessionId || (policy.sessionIds?.includes(sessionId) ?? false)
 }
 
 export interface CompletionPolicySupervisor {
@@ -1573,12 +1575,15 @@ export function createCompletionPolicySupervisor(opts: {
           }
 
           if (isTerminal) {
-            // Keep for history, no re-arm needed.
+            // Keep for history, no re-arm needed. Normalize the state too:
+            // `list()` hands it out, and pre-fan-in snapshots lack
+            // `sessionIds`/`pending` (consumers such as checkpoint
+            // `lastGate` read them unguarded).
             const entry: RunEntry = {
               input,
               group,
               pending: new Set(persistedPending),
-              state,
+              state: { ...state, sessionIds: group, pending: state.pending ?? [] },
               unsubscribes: [],
               cancelled: true,
             }
