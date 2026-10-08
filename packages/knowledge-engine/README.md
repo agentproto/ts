@@ -28,6 +28,8 @@ interface IKnowledgeProvider {
   listSources(filter?: ListSourcesFilter): Promise<readonly KnowledgeSource[]>
   getSource(id: string): Promise<KnowledgeSource | null>
   deleteSource(id: string): Promise<void>
+  supersede(id: string, by?: string): Promise<void>
+  explain(id: string): Promise<KnowledgeProvenance | null>
   healthCheck(): Promise<boolean>
   dispose(): Promise<void>
 }
@@ -39,7 +41,14 @@ an engine that can't serve the requested mode falls back and echoes the mode
 it actually used in `KnowledgeQueryResult.modeUsed`. `"none"` is the
 cold-start sentinel (no recall this turn). Data types: `KnowledgeCapabilities`,
 `KnowledgeSource`, `KnowledgeIngestInput`, `KnowledgeQuery`, `KnowledgeHit`,
-`KnowledgeQueryResult`, `ListSourcesFilter`, `CorpusFilter`.
+`KnowledgeQueryResult`, `ListSourcesFilter`, `CorpusFilter`,
+`KnowledgeProvenance`.
+
+`supersede` and `explain` are required members. `supersede` marks a source as
+superseded (optionally by another id) without hard-deleting it; `explain`
+returns a source's provenance, or `null` for an unknown id. A backend with no
+native concept of either must throw `KnowledgeNotSupportedError` rather than
+no-op.
 
 ## The tools — `kb_query` / `kb_ingest`
 
