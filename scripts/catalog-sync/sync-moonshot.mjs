@@ -5,11 +5,61 @@
  * and OpenRouter pricing, regenerates
  * `packages/model-catalog/src/llm/moonshot-pricing.generated.ts`.
  *
- * Needs MOONSHOT_API_KEY (optional — falls back to OpenRouter if unset or API fails).
+ * MOONSHOT_API_KEY is optional: without it, or when the API fails, ids come
+ * from the committed snapshot packages/catalog-sync/snapshots/llm-moonshot.json
+ * (Moonshot's own /v1/models), then from OpenRouter as a last resort.
+ *
+ * PRICES come first from Moonshot's own pricing page
+ * (platform.kimi.ai/docs/pricing/chat.md, no key needed), parsed by
+ * packages/catalog-sync/src/sources/kimi-pricing-page.mjs. OpenRouter's
+ * `moonshotai/*` price is the price of whichever host OpenRouter routes to,
+ * not Moonshot's — 2026-10-08 it had kimi-k3 at $0.62 / $12.30 against
+ * Moonshot's $3.00 / $15.00 — so it is only the per-row fallback for an id
+ * the page doesn't list, and the whole-file fallback when the page is
+ * unreachable or unparseable. Ids the page prices are added to the id list
+ * (the page is first-party). Each row records its `priceSource`.
  */
 
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+
+import {
+  checkKimiPricingUsable,
+  parseKimiPricingPage,
+} from "../../packages/catalog-sync/src/sources/kimi-pricing-page.mjs"
+
+// Moonshot's own /v1/models, pinned by `catalog-sync generate --refresh`.
+const SNAPSHOT_PATH = resolve(
+  import.meta.dirname,
+  "../../packages/catalog-sync/snapshots/llm-moonshot.json"
+)
+
+function readSnapshotIds() {
+  try {
+    return (JSON.parse(readFileSync(SNAPSHOT_PATH, "utf-8")).data || [])
+      .filter((m) => m.id && !m.archived)
+      .map((m) => ({ id: m.id }))
+  } catch {
+    return []
+  }
+}
+
+const KIMI_PRICING_URL = "https://platform.kimi.ai/docs/pricing/chat.md"
+
+/** Moonshot's own prices — `{ prices, reason }`, `prices` null if unusable. */
+async function fetchKimiPricing() {
+  try {
+    const res = await fetch(KIMI_PRICING_URL, {
+      headers: { Accept: "text/markdown, text/plain;q=0.9, */*;q=0.1" },
+    })
+    if (!res.ok) return { prices: null, reason: `pricing page returned ${res.status} ${res.statusText}` }
+    const prices = parseKimiPricingPage(await res.text())
+    const problem = checkKimiPricingUsable(prices)
+    return problem ? { prices: null, reason: problem } : { prices, reason: null }
+  } catch (err) {
+    return { prices: null, reason: `pricing page fetch failed: ${err.message}` }
+  }
+}
 
 const OUTPUT_PATH = resolve(
   import.meta.dirname,
@@ -90,9 +140,13 @@ async function main() {
       // Extract just the id
       moonshotModels = moonshotModels.map((m) => ({ id: m.id }))
     } catch (err) {
-      console.log(`  Moonshot API failed: ${err.message} — falling back to OpenRouter`)
-      idSource = "OpenRouter fallback"
+      console.log(`  Moonshot API failed: ${err.message} — falling back to the committed snapshot`)
     }
+  }
+
+  if (!moonshotModels.length) {
+    moonshotModels = readSnapshotIds()
+    if (moonshotModels.length) idSource = "llm-moonshot.json snapshot"
   }
 
   if (!moonshotModels.length) {
@@ -138,10 +192,26 @@ async function main() {
   }
   console.log(`  ${Object.keys(openRouterMap).length} Moonshot models with pricing found`)
 
-  // Match Moonshot model ids with OpenRouter pricing
+  console.log("→ Fetching Moonshot's own pricing page…")
+  const { prices: officialPrices, reason: officialProblem } = await fetchKimiPricing()
+  if (officialPrices) {
+    console.log(`  ${officialPrices.size} priced rows parsed`)
+    const known = new Set(moonshotModels.map((m) => m.id))
+    for (const id of officialPrices.keys()) {
+      if (!known.has(id)) moonshotModels.push({ id })
+    }
+  } else {
+    console.warn(`  ⚠ official pricing unusable (${officialProblem}) — every price from OpenRouter`)
+  }
+
   const entries = []
   for (const model of moonshotModels) {
     if (!model.id) continue
+    const official = officialPrices?.get(model.id)
+    if (official) {
+      entries.push({ id: model.id, ...official, priceSource: "moonshot" })
+      continue
+    }
     const pricing = findPricing(model.id, openRouterMap)
     if (pricing) {
       entries.push({
@@ -149,6 +219,7 @@ async function main() {
         inputPer1M: pricing.inputPer1M,
         outputPer1M: pricing.outputPer1M,
         cacheReadMultiplier: pricing.cacheReadMultiplier,
+        priceSource: "openrouter",
       })
     } else {
       console.log(`  No pricing found for: ${model.id}`)
@@ -159,12 +230,18 @@ async function main() {
   entries.sort((a, b) => a.id.localeCompare(b.id))
 
   const date = new Date().toISOString()
-  const banner = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-moonshot.mjs (data: ${idSource} + OpenRouter pricing, synced ${date})\n\n`
+  const priceSourceLabel = officialPrices
+    ? "platform.kimi.ai pricing page, OpenRouter fallback per row"
+    : `OpenRouter pricing — Moonshot pricing page unusable: ${officialProblem}`
+  const banner = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-moonshot.mjs (data: ${idSource} + ${priceSourceLabel}, synced ${date})\n\n`
 
   const body = entries
     .map((e) => {
-      const cache = e.cacheReadMultiplier !== undefined ? `, cacheReadMultiplier: ${e.cacheReadMultiplier}` : ""
-      return `  ${JSON.stringify(e.id)}: { inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}${cache}, vendor: "moonshot", provider: "moonshot" },`
+      const cacheParts = []
+      if (e.cacheReadMultiplier !== undefined) cacheParts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)
+      if (e.cacheWriteMultiplier !== undefined) cacheParts.push(`cacheWriteMultiplier: ${e.cacheWriteMultiplier}`)
+      const cache = cacheParts.length > 0 ? `, ${cacheParts.join(", ")}` : ""
+      return `  ${JSON.stringify(e.id)}: { inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}${cache}, priceSource: ${JSON.stringify(e.priceSource)}, vendor: "moonshot", provider: "moonshot" },`
     })
     .join("\n")
 
