@@ -98,4 +98,20 @@ describe("agent-step session release", () => {
     const wf: RuntimeWorkflow = { id: "wf", steps: [{ kind: "agent", id: "a", adapter: "mock", prompt: () => "x" }] }
     await expect(runWorkflow({ workflow: wf, agents: host })).resolves.toBeDefined()
   })
+
+  it("reusesSessions:false releases each top-level step's session as soon as it finishes", async () => {
+    const { host, log } = fakeHost()
+    const step = (id: string) => ({ kind: "agent" as const, id, adapter: "mock", prompt: () => "go" })
+    const wf: RuntimeWorkflow = { id: "wf", reusesSessions: false, steps: [step("a"), step("b")] }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(log).toEqual(["spawn s0", "prompt s0", "release s0", "spawn s1", "prompt s1", "release s1"])
+  })
+
+  it("without reusesSessions:false, top-level sessions are held until the run ends", async () => {
+    const { host, log } = fakeHost()
+    const step = (id: string) => ({ kind: "agent" as const, id, adapter: "mock", prompt: () => "go" })
+    const wf: RuntimeWorkflow = { id: "wf", steps: [step("a"), step("b")] }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(log).toEqual(["spawn s0", "prompt s0", "spawn s1", "prompt s1", "release s0", "release s1"])
+  })
 })
