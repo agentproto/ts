@@ -85,6 +85,18 @@ AIP-18 candidate review pipeline. Chunks land in the backing engine via
 `CorpusInternalWriter`, which the host constructs at boot and hands only to the
 indexer.
 
+## Supersession and provenance
+
+`supersede(id, by?)` flips an AIP-10 entry to `deprecated`, records a
+`supersededBy` link when `by` is given, and appends a `deprecated` attestation
+(a compare-and-swap write). When a caller is set it needs the `curate`
+capability. Passing a source id throws `KnowledgeNotSupportedError` (AIP-10
+sources are immutable — supersede the entry that cites them).
+
+`explain(id)` returns the entry's sources and attestation chain, honoring the
+same visibility rules as reads, or `null` when the id is unknown or not visible
+to the caller.
+
 ## Capabilities
 
 Derived from the wrapped backing engine, with `citations` forced to `true` (the

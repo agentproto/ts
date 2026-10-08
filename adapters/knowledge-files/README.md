@@ -70,6 +70,13 @@ names live:
   a fresh instance is created. Hosts wanting second-precision freshness on
   external edits can wire fs-watch into a new instance.
 
+## Provenance and supersession
+
+`explain(id)` returns file-level provenance (the file's `uri` plus its own
+frontmatter in `metadata`; `derivedFrom` is empty) or `null` for an unknown id.
+`supersede()` throws `KnowledgeNotSupportedError` — plain files carry no
+lifecycle status; use the corpus adapter over an AIP-10 workspace.
+
 ## Capabilities
 
 `vectorSearch: false`, `hybridSearch: false`, `citations: true` — BM25 returns

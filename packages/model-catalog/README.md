@@ -33,6 +33,13 @@ const p = LLM_PRICING_CATALOG["claude-opus-4-8"]
 //    → { inputPer1M, outputPer1M, provider, … }
 ```
 
+Rows may carry prompt-length `tiers` (`[{ aboveInputTokens, inputPer1M,
+outputPer1M, cacheReadMultiplier?, cacheWriteMultiplier? }]`) for models that
+bill a higher rate once the prompt passes a threshold. `selectPricingTier(pricing,
+promptTokens)` flattens a row to the rates for a given prompt length, and the
+cost calculators bill the whole request at the tier its prompt falls in
+(cache-read and cache-write input count toward that length).
+
 ## License
 
 MIT

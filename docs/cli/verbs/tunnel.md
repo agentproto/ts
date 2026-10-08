@@ -16,12 +16,15 @@ Manage public tunnels via the daemon's `/tunnels` HTTP routes. Tunnels
 expose a local port to the internet through Cloudflare or Ngrok, driven
 by the daemon — no separate tunnel CLI process to manage.
 
-**Private by default.** Unless `--public` is passed, a signed-link access
-guard (random bearer token, 24h TTL by default, `X-Robots-Tag: noindex`,
-blocks `/@fs/` and source maps) sits in front of the tunnel. Share the
-descriptor's `url` (the signed link), not the bare `publicUrl`, which
-rejects requests without a valid token or cookie. `tunnel revoke`
-invalidates the link instantly without stopping the tunnel.
+## Private by default
+
+Unless `--public` is passed, an access guard sits in front of the target.
+The bare tunnel host (`publicUrl`) rejects every request that lacks a valid
+token or cookie — share the printed `url` instead, a signed link (random
+bearer token, default TTL 24h). The guard also adds `X-Robots-Tag: noindex`
+and blocks a dev server's own `/@fs/` paths and `*.map` source maps.
+`tunnel revoke` invalidates the current link instantly without stopping the
+tunnel and returns a fresh one; `tunnel stop` tears everything down.
 
 Requires a running daemon ([`serve.md`](./serve.md) or
 [`daemon.md`](./daemon.md)). Discovery follows the same layered order as
@@ -67,9 +70,13 @@ Creates a tunnel via `POST /tunnels`.
 | `--hostname <fqdn>` | — | (Named) Stable FQDN for the tunnel. |
 | `--tunnel-id <id>` | — | (Named) Pre-provisioned Cloudflare tunnel id. |
 | `--credentials-file <path>` | — | (Named) Path to Cloudflare credentials JSON. |
-| `--ttl <dur>` | `24h` | How long the signed link stays valid (`1h`, `24h`, `7d`). Ignored with `--public`. |
-| `--public` | `false` | Opt out of the access guard: reachable by anyone with the URL, no token, no TTL, no revoke. |
+| `--ttl <dur>` | `24h` | How long the signed link stays valid (`1h`, `24h`, `7d`; clamped to 1 minute – 30 days). Ignored with `--public`. |
+| `--public` | `false` | Opt out of the access guard: anyone with the URL can reach the tunnel (no token, no TTL, no revoke). The descriptor carries a `warning`. |
 | `--json` | `false` | Emit the tunnel descriptor as JSON. |
+
+The descriptor's `url` is the link to share (the signed link for a private
+tunnel); `access` is `private` or `public`, and `expiresAt` is the link's
+expiry.
 
 ### `list`
 
@@ -92,9 +99,9 @@ aliases.
 ### `revoke <id-or-name>`
 
 Invalidates every link and cookie issued so far for a private tunnel,
-without stopping it, via `POST /tunnels/:id/revoke`. Prints a fresh signed
-`url`. Fails for a tunnel created with `--public` (no guard to revoke) or
-one that isn't active.
+without stopping it, via `POST /tunnels/:id/revoke`. Rotates the guard's
+signing secret and prints a fresh signed `url` on a new TTL window. Errors
+for a `--public` tunnel (no guard) or a tunnel that is not active.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -125,6 +132,12 @@ agentproto tunnel create --port 3040 --name prod-preview \
 
 # List active tunnels
 agentproto tunnel list --active
+
+# Content that is meant to be public (no access guard)
+agentproto tunnel create --port 4000 --public
+
+# Rotate a leaked link without stopping the tunnel
+agentproto tunnel revoke vite-preview
 
 # Inspect one
 agentproto tunnel status prod-preview

@@ -370,6 +370,17 @@ Context-continuity policy for this session — controls warning,
 opportunistic compaction, fresh-continuation, and hard-stop thresholds.
 Resolved from global → per-adapter → explicit override.
 
+Every step that discards conversation context writes a checkpoint (goal,
+plan, decisions, changed files, tests, errors, risks, next step) first: a
+`/compact` or `/compress` prompt, the runtime's own auto-compaction, and the
+context hard stop. If the checkpoint can't be written, compaction is refused
+(the hard stop still happens, with a loud warning).
+
+`compactRequiresOperator: true` reserves compaction to the operator: a
+compaction prompt attributed to a session (`agent_prompt`, `session_compact`,
+or the session itself) is refused; only an operator-originated prompt (HTTP,
+CLI, UI) can compact. Default off.
+
 ## role
 
 Spawn-time role gating whether this child may itself delegate (spawn/drive
