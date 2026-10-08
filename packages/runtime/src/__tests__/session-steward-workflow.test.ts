@@ -748,7 +748,11 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(out.candidates.stuck.map(e => e.sessionId)).not.toContain("young_idle")
   })
 
-  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
+  // One shared instant for every row: calling Date.now() per row lets rows built
+  // in the same expression land on different ms, flipping the endedMs sort (and the
+  // per-verdict order of the report) between runs.
+  const rowsNow = Date.now()
+  const hoursAgo = (h: number) => new Date(rowsNow - h * 3_600_000).toISOString()
   const terminalRow = (id: string, endedAt: string | undefined, over: Record<string, unknown> = {}) => ({
     id,
     status: "killed",
