@@ -268,6 +268,17 @@ export interface LadderContext {
    *  plan's anchor detection asks the same question of every tip) — saves
    *  the ladder's first `merge-base` per tip. */
   related?: ReadonlyMap<string, boolean>
+  /** Tip sha → `git merge-base baseSha tip`, filled by the same pass as
+   *  `related` — saves the ladder's second `merge-base` per related tip. */
+  mergeBases?: ReadonlyMap<string, string>
+  /**
+   * Memoized `git patch-id --stable` of non-merge commits (the key `git
+   * cherry` matches on), batched and shared across tips: `git cherry` re-did
+   * the patch-id of every base commit since the merge-base for EVERY tip.
+   * `null` for a commit with no patch (empty diff) and `null` for the whole
+   * call when git failed — both mean "ask `git cherry` itself".
+   */
+  patchIds?: (shas: readonly string[]) => Promise<Map<string, string | null> | null>
   /**
    * Memoized set of every commit reachable from `cmp` (at most two distinct
    * values: `baseSha` and the anchor) — ONE `git rev-list <cmp>` replaces one
@@ -282,6 +293,7 @@ export async function createLadderContext(
   baseRef: string,
   anchor: string | null,
   related?: ReadonlyMap<string, boolean>,
+  mergeBases?: ReadonlyMap<string, string>,
 ): Promise<LadderContext> {
   const baseSha = (await gitOk(repoRoot, ["rev-parse", "--verify", `${baseRef}^{commit}`])).trim()
   const baseTree = (await gitOk(repoRoot, ["rev-parse", `${baseSha}^{tree}`])).trim()
@@ -301,6 +313,35 @@ export async function createLadderContext(
     }
     return p
   }
+  const patchIdCache = new Map<string, Promise<string | null>>()
+  const patchIds = async (shas: readonly string[]): Promise<Map<string, string | null> | null> => {
+    const fresh = [...new Set(shas)].filter((sha) => !patchIdCache.has(sha))
+    if (fresh.length) {
+      // Claim every sha BEFORE computing: concurrent tips ask for overlapping
+      // base commits, and each must be hashed once.
+      const settle = new Map<string, { resolve: (id: string | null) => void; reject: (e: unknown) => void }>()
+      for (const sha of fresh) {
+        const p = new Promise<string | null>((resolve, reject) => settle.set(sha, { resolve, reject }))
+        p.catch(() => patchIdCache.delete(sha))
+        patchIdCache.set(sha, p)
+      }
+      await pool(chunk(fresh, PATCH_ID_BATCH), 2, async (batch) => {
+        try {
+          const got = await patchIdsOf(repoRoot, batch)
+          for (const sha of batch) settle.get(sha)?.resolve(got.get(sha) ?? null)
+        } catch (err) {
+          for (const sha of batch) settle.get(sha)?.reject(err)
+        }
+      })
+    }
+    try {
+      const out = new Map<string, string | null>()
+      for (const sha of shas) out.set(sha, (await patchIdCache.get(sha)) ?? null)
+      return out
+    } catch {
+      return null
+    }
+  }
   return {
     repoRoot,
     baseSha,
@@ -308,13 +349,102 @@ export async function createLadderContext(
     anchor,
     index: () => (idx ??= indexTree(repoRoot, baseSha)),
     ancestorsOf,
+    patchIds,
     ...(related ? { related } : {}),
+    ...(mergeBases ? { mergeBases } : {}),
   }
 }
 
-/** Does `tip` share history with `baseSha`? (`git merge-base` exits 0.) */
-async function sharesHistory(repoRoot: string, baseSha: string, tip: string): Promise<boolean> {
-  return (await git(repoRoot, ["merge-base", baseSha, tip])).exitCode === 0
+const PATCH_ID_BATCH = 500
+
+/**
+ * `git log -p | git patch-id --stable` over exactly `shas`. Options mirror what
+ * `git cherry` hashes (no rename detection, no external/textconv diff, default
+ * prefixes); `--stable` matches cherry's file-order-independent id. Streams —
+ * a base commit's patch can be large.
+ */
+function patchIdsOf(repoRoot: string, shas: readonly string[]): Promise<Map<string, string>> {
+  return new Promise((resolvePromise, reject) => {
+    const log = spawn(
+      "git",
+      [
+        "-C", repoRoot,
+        "-c", "diff.noprefix=false",
+        "-c", "diff.mnemonicPrefix=false",
+        "log", "--no-walk=unsorted", "--stdin", "-p", "--no-color", "--no-renames", "--no-textconv", "--no-ext-diff",
+      ],
+      { cwd: repoRoot, stdio: ["pipe", "pipe", "pipe"] },
+    )
+    const pid = spawn("git", ["-C", repoRoot, "patch-id", "--stable"], { cwd: repoRoot, stdio: ["pipe", "pipe", "pipe"] })
+    let out = ""
+    let logCode: number | null = null
+    let pidCode: number | null = null
+    let failed = false
+    const fail = (err: unknown): void => {
+      if (failed) return
+      failed = true
+      log.kill()
+      pid.kill()
+      reject(err instanceof Error ? err : new Error(String(err)))
+    }
+    const done = (): void => {
+      if (failed || logCode === null || pidCode === null) return
+      if (logCode !== 0 || pidCode !== 0) return fail(new Error(`patch-id batch failed (log exit ${logCode}, patch-id exit ${pidCode})`))
+      const ids = new Map<string, string>()
+      for (const line of out.split("\n")) {
+        const [id, commit] = line.split(" ")
+        if (id && commit) ids.set(commit, id)
+      }
+      resolvePromise(ids)
+    }
+    log.stdout.pipe(pid.stdin)
+    log.stdout.on("error", fail)
+    pid.stdin.on("error", () => {})
+    pid.stdout.on("data", (d: Buffer) => (out += d.toString("utf8")))
+    log.stderr.resume()
+    pid.stderr.resume()
+    log.on("error", fail)
+    pid.on("error", fail)
+    log.on("close", (code) => {
+      logCode = code ?? -1
+      done()
+    })
+    pid.on("close", (code) => {
+      pidCode = code ?? -1
+      done()
+    })
+    log.stdin.on("error", () => {})
+    log.stdin.end(shas.join("\n") + "\n")
+  })
+}
+
+/**
+ * Does every non-merge commit `cmp..tip` have a patch-equivalent among the
+ * non-merge commits `tip..cmp`? Same question `git cherry cmp tip` answers
+ * ("no `+` line"), from memoized patch-ids. `false` is definitive ("there is a
+ * `+`"); `true`/`null` (cannot tell: git failed, or a commit has no patch-id)
+ * are only candidates and the caller confirms with `git cherry` itself — so a
+ * discrepancy here can only cost a missed shortcut, never a wrong reclaim.
+ */
+async function allPatchEquivalent(ctx: LadderContext, cmp: string, tip: string): Promise<boolean | null> {
+  if (!ctx.patchIds) return null
+  const lines = async (range: string): Promise<string[]> =>
+    (await gitOk(ctx.repoRoot, ["rev-list", "--no-merges", range])).split("\n").filter(Boolean)
+  const [tipOnly, upstreamOnly] = await Promise.all([lines(`${cmp}..${tip}`), lines(`${tip}..${cmp}`)])
+  const ids = await ctx.patchIds([...tipOnly, ...upstreamOnly])
+  if (!ids) return null
+  const upstream = new Set<string>()
+  for (const sha of upstreamOnly) {
+    const id = ids.get(sha)
+    if (id) upstream.add(id)
+  }
+  let unknown = false
+  for (const sha of tipOnly) {
+    const id = ids.get(sha)
+    if (!id) unknown = true
+    else if (!upstream.has(id)) return false
+  }
+  return unknown ? null : true
 }
 
 const NULL_SHA_RE = /^0+$/
@@ -395,7 +525,13 @@ async function coverage(ctx: LadderContext, tip: string, mergeBase: string): Pro
  */
 export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipClassification> {
   const { repoRoot, baseSha, baseTree, anchor } = ctx
-  const related = ctx.related?.get(tip) ?? (await sharesHistory(repoRoot, baseSha, tip))
+  let relatedMergeBase = ctx.mergeBases?.get(tip)
+  let related = ctx.related?.get(tip)
+  if (related === undefined) {
+    const res = await git(repoRoot, ["merge-base", baseSha, tip])
+    related = res.exitCode === 0
+    if (related) relatedMergeBase = res.stdout.trim()
+  }
   if (!related && !anchor) return { status: "unmerged", history: "unrelated", conflicts: true, ahead: null, behind: null }
   const history: BranchHistory = related ? "current" : "pre-rewrite"
   const cmp = related ? baseSha : (anchor as string)
@@ -409,13 +545,15 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
   const counts = (await gitOk(repoRoot, ["rev-list", "--left-right", "--count", `${cmp}...${tip}`])).trim().split(/\s+/)
   const behind = Number(counts[0])
   const ahead = Number(counts[1])
-  const mergeBase = (await git(repoRoot, ["merge-base", cmp, tip])).stdout.trim()
+  const mergeBase = (related ? relatedMergeBase : undefined) ?? (await git(repoRoot, ["merge-base", cmp, tip])).stdout.trim()
   const mtArgs = related ? [baseSha, tip] : [`--merge-base=${mergeBase}`, baseSha, tip]
   const mt = await git(repoRoot, ["merge-tree", "--write-tree", "--no-messages", ...mtArgs])
   const mergedTree = (mt.stdout.split("\n")[0] ?? "").trim()
   const conflicts = mt.exitCode !== 0
   if (!conflicts && mergedTree === baseTree) return { status: "squash-merged", history, ahead, behind, conflicts }
-  if (conflicts) {
+  // `false` = a `+` for sure: skip the (slow) `git cherry`. Otherwise it is
+  // only a candidate — confirm with the real thing.
+  if (conflicts && (await allPatchEquivalent(ctx, cmp, tip)) !== false) {
     const cherry = await gitOk(repoRoot, ["cherry", cmp, tip])
     if (!cherry.split("\n").some((l) => l.startsWith("+"))) return { status: "patch-merged", history, ahead, behind, conflicts }
   }
@@ -483,6 +621,8 @@ export async function detectAnchor(
   /** Filled with every tip's answer (`true` = shares history with base) for
    *  the ladder to reuse — see {@link LadderContext.related}. */
   related?: Map<string, boolean>,
+  /** Filled with `merge-base baseSha tip` for every related tip — see {@link LadderContext.mergeBases}. */
+  mergeBases?: Map<string, string>,
 ): Promise<string | null> {
   const roots = (await gitOk(repoRoot, ["rev-list", "--max-parents=0", baseSha])).trim().split("\n").filter(Boolean)
   if (roots.length !== 1) return null
@@ -490,9 +630,13 @@ export async function detectAnchor(
   // One `merge-base` per unique tip — pure reads, so run them in parallel
   // (sequential, this alone was ~2 min of a ~900-ref plan).
   const unique = [...new Set(tips)]
-  const shares = await pool(unique, 8, (sha) => sharesHistory(repoRoot, baseSha, sha))
-  const unrelated = unique.filter((_, i) => !shares[i])
-  if (related) unique.forEach((sha, i) => related.set(sha, shares[i] as boolean))
+  const bases = await pool(unique, 8, async (sha) => {
+    const res = await git(repoRoot, ["merge-base", baseSha, sha])
+    return res.exitCode === 0 ? res.stdout.trim() : null
+  })
+  const unrelated = unique.filter((_, i) => bases[i] === null)
+  if (related) unique.forEach((sha, i) => related.set(sha, bases[i] !== null))
+  if (mergeBases) unique.forEach((sha, i) => bases[i] !== null && mergeBases.set(sha, bases[i] as string))
   if (!unrelated.length) return null
   const rootDate = (await gitOk(repoRoot, ["log", "-1", "--format=%cI", root])).trim()
   const since = new Date(new Date(rootDate).getTime() - 3 * 86_400_000).toISOString()
@@ -761,10 +905,11 @@ async function snapshot(input: {
   const baseSha = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.base}^{commit}`])).trim()
   let anchor: string | null
   const related = new Map<string, boolean>()
-  if (input.anchor === "auto") anchor = await detectAnchor(input.repoRoot, baseSha, refs.map((r) => r.sha), related)
+  const mergeBases = new Map<string, string>()
+  if (input.anchor === "auto") anchor = await detectAnchor(input.repoRoot, baseSha, refs.map((r) => r.sha), related, mergeBases)
   else if (input.anchor) anchor = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.anchor}^{commit}`])).trim()
   else anchor = null
-  const ctx = await createLadderContext(input.repoRoot, baseSha, anchor, related)
+  const ctx = await createLadderContext(input.repoRoot, baseSha, anchor, related, mergeBases)
   const remoteRefs = refs.filter((r) => r.kind === "remote")
   // ONE `git rev-list` per question, memoized: every commit reachable from
   // the base remote's refs (for `contained-in-remote`), and from local

@@ -161,6 +161,55 @@ describe("branch gc — reclaim ladder", () => {
     expect(e).toMatchObject({ status: "patch-merged", class: "reclaim", conflicts: true })
   })
 
+  it("patch-merged needs EVERY commit picked: one cherry-picked + one unpicked commit stays unmerged", async () => {
+    const repo = await makeRepo()
+    await commitFiles(repo, { "conf.txt": "line1\nvalue=1\nline3\n" }, "conf")
+    const first = await branchWith(repo, "feat/half", { "conf.txt": "line1\nvalue=2\nline3\n" })
+    await execGit(repo, ["checkout", "-q", "feat/half"])
+    await commitFiles(repo, { "extra.txt": "never landed\n" }, "second commit, not picked")
+    await execGit(repo, ["checkout", "-q", "main"])
+    await commitFiles(repo, { "other.txt": "o\n" }, "unrelated base work")
+    await execGit(repo, ["cherry-pick", first])
+    await commitFiles(repo, { "conf.txt": "line1\nvalue=3\nline3\n" }, "base keeps editing")
+    const e = entry(await plan(repo), "feat/half")
+    expect(e).toMatchObject({ status: "unmerged", conflicts: true })
+    expect(e.class).not.toBe("reclaim")
+  })
+
+  it("ladder context patch-ids: equal for a cherry-pick, distinct otherwise, null for an empty commit, memoized", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/p", { "p.txt": "p\n" })
+    await commitFiles(repo, { "other.txt": "o\n" }, "unrelated base work")
+    await execGit(repo, ["cherry-pick", tip])
+    const picked = await sha(repo, "HEAD")
+    const unrelated = await sha(repo, "HEAD~1")
+    const empty = await commitFiles(repo, {}, "empty commit")
+    const ctx = await createLadderContext(repo, "main", null)
+    const ids = await ctx.patchIds!([tip, picked, unrelated, empty])
+    expect(ids).not.toBeNull()
+    expect(ids!.get(tip)).toMatch(/^[0-9a-f]{40}$/)
+    expect(ids!.get(picked)).toBe(ids!.get(tip))
+    expect(ids!.get(unrelated)).not.toBe(ids!.get(tip))
+    expect(ids!.get(empty)).toBeNull()
+    // `git patch-id` itself is the reference.
+    const ref = (await execArgv("sh", ["-c", `git -C '${repo}' show ${tip} | git patch-id --stable`], repo)).stdout.split(" ")[0]
+    expect(ids!.get(tip)).toBe(ref)
+    // A second ask is served from the cache (same answer, no recompute needed).
+    expect(await ctx.patchIds!([tip])).toEqual(new Map([[tip, ids!.get(tip)]]))
+  })
+
+  it("a known merge-base from the anchor sweep gives the same classification as asking git", async () => {
+    const repo = await makeRepo()
+    const base = await sha(repo, "main")
+    const tip = await branchWith(repo, "feat/mb", { "mb.txt": "mb\n" })
+    await commitFiles(repo, { "later.txt": "l\n" }, "base moves on")
+    const plain = await createLadderContext(repo, "main", null)
+    const known = await createLadderContext(repo, "main", null, new Map([[tip, true]]), new Map([[tip, base]]))
+    const want = await classifyTip(plain, tip)
+    expect(want).toMatchObject({ status: "unmerged", mergeBase: base })
+    expect(await classifyTip(known, tip)).toEqual(want)
+  })
+
   it("content-merged: base squash-landed the work, then moved it (reorg) — by blob, any path", async () => {
     const repo = await makeRepo()
     await branchWith(repo, "feat/reorg", { "src/x.ts": "export const x = 1\n", "src/y.ts": "export const y = 2\n" })
