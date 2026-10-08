@@ -1,5 +1,16 @@
 # @agentproto/apps
 
+## 0.20.3
+
+### Patch Changes
+
+- 9aed05d: Repo maintenance: reviewers spawn again. A workflow agent step started in a review worktree (`branch_gc_review_worktree`) now gets that worktree and its repo's git dir as read-only zones, so `reviewOne` passes the app boundary check and git can read the branch under the OS sandbox. Before, every reviewer was refused with `app_boundary_cwd_outside` and the run recorded no verdicts. A look-alike directory in the review root is still refused. The maintain report also groups one failure that hit several branches as a single reason. `agentproto workflow status` prints step labels. Compact `workflow_status` folds repeated circuit-open skips into one row and caps large run outputs.
+- 5733913: Docs: update CLI app verb list, session-steward workflow rule text, and VS Code README (App Store entry point).
+- dad18f3: Session steward: errored sessions are no longer auto-closed as done, relabel proposes `unknown` instead of `abandoned` without PR evidence, and loop detection ignores anonymous calls and reads the file after the read verb.
+- 70b8e9c: Session steward: a dry run (`apply: false`) no longer appends verdict memory to the `app_state` ledger, so its verdicts cannot be served from cache to a later real pass; the report says the memory was read but not written.
+- Updated dependencies [0ea7fe9]
+  - @agentproto/app-kit@1.6.2
+
 ## 0.20.2
 
 ### Patch Changes

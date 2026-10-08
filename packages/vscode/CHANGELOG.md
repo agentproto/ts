@@ -1,5 +1,34 @@
 # agentproto-vscode
 
+## 0.22.3
+
+### Patch Changes
+
+- 5733913: Docs: update CLI app verb list, session-steward workflow rule text, and VS Code README (App Store entry point).
+- Updated dependencies [0ea7fe9]
+- Updated dependencies [796e0f3]
+- Updated dependencies [25ffb55]
+- Updated dependencies [ebf8631]
+- Updated dependencies [31fbe12]
+- Updated dependencies [badf321]
+- Updated dependencies [3e46f5a]
+- Updated dependencies [9aed05d]
+- Updated dependencies [c5a67f7]
+- Updated dependencies [5733913]
+- Updated dependencies [dad18f3]
+- Updated dependencies [70b8e9c]
+- Updated dependencies [badf321]
+- Updated dependencies [ccebf3b]
+- Updated dependencies [7512f38]
+- Updated dependencies [67104f5]
+- Updated dependencies [70b8e9c]
+- Updated dependencies [dad18f3]
+- Updated dependencies [a32538f]
+- Updated dependencies [87b658a]
+- Updated dependencies [17112d0]
+  - @agentproto/runtime@5.13.0
+  - @agentproto/apps@0.20.3
+
 ## 0.22.2
 
 ### Patch Changes

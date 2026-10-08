@@ -1,5 +1,58 @@
 # @agentproto/runtime
 
+## 5.13.0
+
+### Minor Changes
+
+- 0ea7fe9: Store listing fields on app-catalog/v1 entries (all optional): `tagline`, `longDescription` (markdown), `screenshots` ({url, alt, width?, height?}), `categories`, `homepage`, `repository`, alongside the existing `icon` and `publisher`. Declared in an APP.md `store:` block and written by `agentproto app pack --release --entry`, which checks the media and copies them to `media/<appId>/<version>/` next to the entry (`--media-base-url` relocates them). `agentproto catalog verify` checks the listing (limits, https, alt text, image format and size); `--local-media <prefix>=<dir>` reads media from a checkout. `store/` is left out of release bundles. A relative top-level APP.md `icon` is no longer copied into a public entry.
+- 25ffb55: Context-losing steps now write a checkpoint first, and compaction can be reserved to the operator. A `/compact` or `/compress` prompt, the runtime's own auto-compaction and the context hard stop each persist a checkpoint (goal, plan, decisions, changed files, tests, errors, risks, next step) before they act; if the checkpoint cannot be written, compaction is refused (the hard stop still happens, with a loud warning). New `contextContinuity.compactRequiresOperator` policy flag: a compaction prompt attributed to a session (`agent_prompt`, `session_compact`, the session itself) is refused, so only an operator-originated prompt can compact. `session_compact` now attributes its prompt to the calling session.
+- 17112d0: `tunnel_create` is private by default: a signed-link access guard (random bearer token, 24h TTL by default, instant revoke, `X-Robots-Tag: noindex`, blocks `/@fs/` and source maps) now sits in front of every tunnel unless `public: true` is passed explicitly. The descriptor's new `url` field is the one to actually share — `publicUrl` alone now rejects every request without a valid token or cookie. New `tunnel_revoke` tool/route/CLI subcommand instantly invalidates the current link without stopping the tunnel.
+
+### Patch Changes
+
+- 796e0f3: Sync generated catalog data from the pinned provider sources.
+- ebf8631: `session_continue_fresh` no longer fails with `Cannot read properties of undefined (reading 'includes')` when the daemon's `policies.json` holds terminal policies persisted before fan-in `sessionIds` existed. Reload now normalizes `sessionIds`/`pending` on terminal policies, as it already did for active and awaiting-ack ones, and `policyWatchesSession` tolerates a state without `sessionIds`.
+- 31fbe12: session-follow no longer resurrects a dead follower id that already has a live replacement: a digest batch queued before a follow was re-pointed to a revived follower (or whose dead descriptor's `continuedTo` already links to one) now delivers to that live session instead of calling `restartSession` again. Concurrent deliveries racing for the same dead id now share a single in-flight revival instead of each spawning their own.
+- badf321: `IKnowledgeProvider` gains `supersede(id, by?)` and `explain(id)`, plus the `KnowledgeProvenance` type and a typed `KnowledgeNotSupportedError`. The corpus adapter implements both for real: `supersede` flips an AIP-10 entry to `deprecated` with a `supersededBy` link and a `deprecated` attestation (CAS write, `curate` capability when a caller is set), and `explain` returns the entry's sources and attestation chain, honoring the same visibility rules as reads. gbrain-doc implements `explain` from `get_page`; files returns file-level provenance; supersede (all three) and qdrant's explain throw `KnowledgeNotSupportedError`. `FederatedKnowledgeProvider` fans `supersede` out with `Promise.allSettled`: a backend that throws `KnowledgeNotSupportedError` is skipped while another succeeds, but a genuine failure on any backend is surfaced (a partial-apply error naming the failing backends) so backends never silently diverge; it answers `explain` with the first non-null result. Existing methods are unchanged.
+
+  Breaking for out-of-tree implementers: `supersede` and `explain` are required members of `IKnowledgeProvider`, so a custom implementation stops compiling until it adds them (throwing `KnowledgeNotSupportedError` is a valid body). This ships as a minor because `@agentproto/knowledge-engine` is pre-1.0 (0.x, where minor is the breaking-change channel); optional methods were rejected because every caller would then need `provider.supersede?.()` guards and a missing implementation would fail at runtime instead of compile time. (runtime: test stub only.)
+
+- 3e46f5a: Prompt-length pricing tiers. `LLMPricing` gains an optional `tiers: [{ aboveInputTokens, inputPer1M, outputPer1M, cacheReadMultiplier?, cacheWriteMultiplier? }]`, and the new `selectPricingTier(pricing, promptTokens)` flattens a row to the rates for a given prompt length. `calculateLLMCreditCost` (and so `calculateCost` and `getCacheStats`) bills the whole request at the tier its prompt falls in, counting cache-read and cache-write input toward that length. Claude Haiku 5.5 is $0.10/$0.50 up to 100k prompt tokens and $0.50/$2.50 over it, so long prompts were priced 5x too low before this. The `llm:openrouter` generator and `scripts/catalog-sync/sync-anthropic.mjs` emit tiers from OpenRouter's `pricing.overrides` (`min_prompt_tokens` entries only; time-of-day discounts are ignored). Runtime session cost picks the tier from the latest request's `contextUsed`.
+- 9aed05d: Repo maintenance: reviewers spawn again. A workflow agent step started in a review worktree (`branch_gc_review_worktree`) now gets that worktree and its repo's git dir as read-only zones, so `reviewOne` passes the app boundary check and git can read the branch under the OS sandbox. Before, every reviewer was refused with `app_boundary_cwd_outside` and the run recorded no verdicts. A look-alike directory in the review root is still refused. The maintain report also groups one failure that hit several branches as a single reason. `agentproto workflow status` prints step labels. Compact `workflow_status` folds repeated circuit-open skips into one row and caps large run outputs.
+- c5a67f7: Test-only: the mcp-events e2e full-story test now subscribes under a frozen clock and asserts `refreshBefore` exactly, instead of bounding the granted TTL delta by +50 ms of wall clock (which flaked on loaded CI runners).
+- dad18f3: Session steward: errored sessions are no longer auto-closed as done, relabel proposes `unknown` instead of `abandoned` without PR evidence, and loop detection ignores anonymous calls and reads the file after the read verb.
+- 70b8e9c: Session steward: a dry run (`apply: false`) no longer appends verdict memory to the `app_state` ledger, so its verdicts cannot be served from cache to a later real pass; the report says the memory was read but not written.
+- badf321: Add `supersede()` and `explain()` to the knowledge provider contract, with `KnowledgeNotSupportedError` and provenance types. Implemented across the corpus, files, gbrain-doc, qdrant and federated providers.
+- ccebf3b: A retired session is never revived by an automated path. One `isRetired` predicate (archived, a deliberate `endedReason`, a `continuedTo` successor, or the new `retiredAt` stamp) gates session-follow digests, sentinel notices, cron `prompt-session` (decided by status, tagged `source: "cron"`), the restart sweep, `continue-interrupted`, and the restart helpers, in place and under a new id. The automated-source allowlist now includes `daemon:*` and `workflow:*` (the workflow agent host tags its prompts `workflow:agent-step`). Notices for a retired follower/target go to the end of its `continuedTo` chain (the follow/sentinel is re-pointed there, same id and cursor) or are parked. An inbound message (a human) follows `continuedTo`, otherwise may revive the row in place, but an archived row is never revived under a new id: the message is parked with a log line.
+
+  A human prompt to a superseded or retired row fails with HTTP 409 `error: "session_not_alive"` (unchanged code) plus `reason: "superseded" | "retired"` and `continuedTo` when set; the MCP `message_send` / `agent_prompt` errors carry the same fields. `forceResume: true` in the body overrides.
+
+  New HTTP-only `POST /sessions/:id/retire { successor?, reason? }` stamps retirement on an alive or terminal row (idempotent), sets `continuedTo`, and re-points follows and sentinels in place. `SessionSummary` now exposes `retiredAt` (and `continuedTo`). Archive stays reversible and no longer touches follows or sentinels; `forget()` / `DELETE /sessions/:id` re-points them to the successor, or deletes follows and cancels sentinels when there is none. Also: a refused restart clears `nextRestartAt`, `continuedTo` is stamped on the prior row only after a pending successor provisions, and the sentinel path decides liveness by status, not `processAlive`.
+
+- 7512f38: Session cost now prices router ids on the router's own rate. `opencode-go/kimi-k3`, `opencode/claude-sonnet-4-6`, `vendor/model@requesty`, `vendor/model@openrouter` and `vendor/model@huggingface` resolve through their route table instead of falling through `resolvePricing`'s substring scan onto the direct vendor row (which priced `opencode-go/kimi-k3` at direct Moonshot rates). A router id missing from its router's table is now reported as `no-pricing` rather than borrowing the vendor's price. Bare ids and OpenRouter-native `vendor/model` ids are unchanged.
+- 67104f5: `settlePendingWrites()` now also waits for the transcript-stream closes that `forget()` and `shutdown()` start, so the sessions tests can drain every write before removing their temp dir instead of retrying the removal on ENOTEMPTY.
+- 70b8e9c: Session steward: a dry run (`apply: false`) no longer appends verdict memory to the app's `app_state` ledger, so its verdicts cannot be served from cache to a later real pass; the report says the memory was read but not written.
+- dad18f3: Session steward: a session whose last turn errored is no longer auto-closed (it goes to the judge); relabel proposes `unknown` instead of `abandoned` when no PR is recorded, and no longer credits a session with a sibling worktree's merged PR; loop detection no longer collapses arg-less in-agent calls into one signature and reads the file after the read verb rather than a leading `cd` path.
+- a32538f: Reload the app UI build placeholder page so embedded browsers refresh it
+- 87b658a: `transmit_message` no longer re-points a contact binding from a revived session back to its dead ancestor. A revived session keeps quoting its ancestor's id, so each reply used to reset the binding to the dead session and the next inbound message resurrected yet another copy. An ancestor id (via `continuedFrom`) now never overrides a binding already on its descendant.
+- Updated dependencies [0ea7fe9]
+- Updated dependencies [796e0f3]
+- Updated dependencies [a5050a6]
+- Updated dependencies [badf321]
+- Updated dependencies [3e46f5a]
+- Updated dependencies [9aed05d]
+- Updated dependencies [7c06811]
+- Updated dependencies [5733913]
+- Updated dependencies [dad18f3]
+- Updated dependencies [70b8e9c]
+- Updated dependencies [badf321]
+  - @agentproto/app-kit@1.6.2
+  - @agentproto/model-catalog@0.12.0
+  - @agentproto/workspace-brain@0.5.0
+  - @agentproto/apps@0.20.3
+  - @agentproto/providers-store@0.3.23
+  - @agentproto/llm-endpoint@0.11.5
+
 ## 5.12.0
 
 ### Minor Changes
