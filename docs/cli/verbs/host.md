@@ -1,4 +1,10 @@
-# `agentproto host load`
+# `agentproto host`
+
+Two read-only verbs: [`host load`](#agentproto-host-load), the human report on why a
+machine is slow, and [`host health`](#agentproto-host-health), a verdict on whether
+it can take more agents.
+
+## `agentproto host load`
 
 ```text
 agentproto host load [--full] [--json] [--watch <seconds>] [--budget <ms>]
@@ -113,3 +119,76 @@ Node's own load, memory and CPU-count figures and shows the rest as
   scheduler such as the provisioning queue can gate heavy jobs on
   `report.loadPerCore`, `report.swap` or `report.warnings` without shelling
   out. One probe round is shared by all callers within the 2 s cache window.
+
+## `agentproto host health`
+
+```text
+agentproto host health [--json] [--watch <seconds>] [--budget <ms>] [--local]
+                       [--no-color] [--warn-load <x>] [--crit-load <x>] [...]
+```
+
+Answers "is this host OK to spawn more agents?" in a few lines, and is meant to
+be called from cron or scripts. The first line is the verdict and the reasons;
+a compact table of every check follows.
+
+```text
+WARN  load 2.6x per core on 12 cores; 11 orphan processes (ppid 1)
+
+CHECK         STATUS  VALUE          WARN   CRIT
+load          WARN    2.60x per core >=2x   >=4x
+ram           OK      41.2% avail    <15%   <5%
+swap          OK      12.0% used     >=50%  >=85%
+daemon        OK      up 3d          <60s   -
+sessions      OK      9 live         >=30   >=60
+busy          OK      3 busy         >=8    >=16
+orphans       WARN    11             >=10   >=30
+busy orphans  OK      0              >=1    >=5
+disk          OK      212 GB free    <10 GB <2 GB
+```
+
+**Exit codes:** `0` OK, `1` WARN, `2` CRIT. A host that cannot be sampled at all
+also exits `2` (fail safe). A usage error (bad flag or value) exits `64`, so it
+cannot be mistaken for a verdict. With `--watch` the exit code is the last
+verdict.
+
+### Checks and default thresholds
+
+A limit trips when the value is **at or above** it (load, swap, counts) or
+**below** it (RAM available, uptime, disk free). The defaults live in one place,
+`DEFAULT_HEALTH_THRESHOLDS` in `packages/cli/src/commands/host-health.ts`; the
+load and swap limits are the daemon's own `host_load` limits.
+
+| Check | WARN | CRIT | Flags |
+|-------|------|------|-------|
+| `load`: 1-minute load / cores | `>= 2` | `>= 4` | `--warn-load` `--crit-load` |
+| `ram`: available / total (free + reclaimable) | `< 15%` | `< 5%` | `--warn-mem` `--crit-mem` |
+| `swap`: used percent | `>= 50%` | `>= 85%` | `--warn-swap` `--crit-swap` |
+| `daemon`: `GET /health` | uptime `< 60 s` (just restarted) | unreachable | `--warn-uptime` |
+| `sessions`: live agent sessions | `>= 30` | `>= 60` | `--warn-sessions` `--crit-sessions` |
+| `busy`: live sessions mid-turn | `>= 8` | `>= 16` | `--warn-busy` `--crit-busy` |
+| `orphans`: processes reparented to init | `>= 10` | `>= 30` | `--warn-orphans` `--crit-orphans` |
+| `busy orphans`: the `orphan` warnings of `host_load` (old and busy) | `>= 1` | `>= 5` | `--warn-busy-orphans` `--crit-busy-orphans` |
+| `disk`: free space where the sessions dir lives | `< 10 GB` | `< 2 GB` | `--warn-disk` `--crit-disk` (GB) |
+
+Overrides must stay ordered (`--warn-load` at most `--crit-load`, `--warn-mem`
+at least `--crit-mem`, and so on). A check with no data (no swap probe, or
+`--local` for the daemon and session checks) shows `SKIP` and never changes the
+verdict.
+
+If the daemon is unreachable the verdict is `CRIT`, but the other checks are
+still reported from an in-process sample (the same fallback `host load` uses),
+with a note under the verdict.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | off | `{verdict, exitCode, sampledAt, reasons[], checks[], thresholds}`; each check has `id`, `label`, `status`, `value`, `unit`, `display`, `threshold` and `detail` |
+| `--watch <s>` | off | Re-check every `<s>` seconds; with `--json`, one JSON object per line |
+| `--budget <ms>` | 1900 | Time budget for the sample, at least 300 |
+| `--local` | off | Skip the daemon: no daemon check, no session counts |
+| `--no-color` | off | Plain output |
+
+Read-only: it needs no sudo and never kills or changes anything. The session
+counts come from `GET /sessions`, the daemon check from `GET /health`, and the
+rest from the `host_load` report.

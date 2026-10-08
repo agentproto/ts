@@ -1,4 +1,9 @@
 /**
+ * `agentproto host health` - a verdict (OK / WARN / CRIT, exit 0 / 1 / 2) on
+ * "is this host OK to spawn more agents?"; the checks and rendering are pure
+ * functions in host-health.ts, the probes around the shared host_load report
+ * live here.
+ *
  * `agentproto host load` - one-screen host load report: loadavg vs cores, CPU,
  * RAM/swap, per-disk IO, the heaviest processes with their owning session and
  * a WARNINGS section (swap pressure, old busy orphans, deleted-cwd loops,
@@ -10,19 +15,35 @@
  * only loses session attribution. Rendering is a pure function of the report
  * so the output is snapshot-testable.
  */
+import { statfs } from "node:fs/promises"
+import { dirname } from "node:path"
 import { parseArgs } from "node:util"
 import type { HostLoadReport, HostProcess, HostProcessOwner } from "@agentproto/runtime"
 import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
+import {
+  DEFAULT_HEALTH_THRESHOLDS as D,
+  THRESHOLD_FLAGS,
+  computeHostHealth,
+  renderHostHealth,
+  resolveThresholds,
+  type DaemonProbe,
+  type DiskProbe,
+  type HostHealthInput,
+  type HostHealthThresholds,
+  type SessionCounts,
+} from "./host-health.js"
 import { formatBytes, formatCpu, formatElapsed } from "./sessions-stats.js"
 
 export const HOST_USAGE = `Usage:
-  agentproto host load [--full] [--json] [--watch <seconds>] [--budget <ms>]
-                       [--fresh] [--local] [--no-color]
+  agentproto host load   [--full] [--json] [--watch <seconds>] [--budget <ms>]
+                         [--fresh] [--local] [--no-color]
+  agentproto host health [--json] [--watch <seconds>] [--budget <ms>] [--local]
+                         [--no-color] [--warn-load <x>] [--crit-load <x>] [...]
 
-One-screen host load report: load average vs core count, CPU user/sys/idle,
-RAM (used/wired/compressor/free) and swap, per-disk transfers/s + MB/s, the top
-10 processes by CPU and by memory footprint with their owning session
-("orphan" / "system" / "daemon" otherwise), and WARNINGS.
+host load: one-screen host load report: load average vs core count, CPU
+user/sys/idle, RAM (used/wired/compressor/free) and swap, per-disk transfers/s +
+MB/s, the top 10 processes by CPU and by memory footprint with their owning
+session ("orphan" / "system" / "daemon" otherwise), and WARNINGS.
 
   --full            also the per-session rollup and every process
   --json            machine-readable report (same JSON as GET /host/load)
@@ -33,6 +54,35 @@ RAM (used/wired/compressor/free) and swap, per-disk transfers/s + MB/s, the top
   --local           sample in this process instead of asking the daemon
                     (no session attribution)
   --no-color        plain output
+
+host health: "is this host OK to spawn more agents?" as one verdict line
+(OK / WARN / CRIT) with the reasons, then a table of the checks. Exit code
+0 = OK, 1 = WARN, 2 = CRIT (also when the host cannot be sampled at all); a
+usage error exits 64. Safe for cron and scripts.
+
+  --json            {verdict, exitCode, reasons[], checks[], thresholds}
+  --watch <s>       re-check every <s> seconds (exit code = the last verdict)
+  --budget <ms>     time budget for the sample (default 1900)
+  --local           skip the daemon (no daemon check, no session counts)
+  --no-color        plain output
+
+A limit trips WARN/CRIT when the value is at or above it ("above" rows) or
+below it ("below" rows). Defaults, each overridable by the flag shown:
+
+  check         WARN        CRIT        flags
+  load          >=${D.warnLoadPerCore}x/core    >=${D.critLoadPerCore}x/core    --warn-load <x>  --crit-load <x>      (1m load / cores)
+  ram           <${D.warnMemAvailablePercent}% avail   <${D.critMemAvailablePercent}% avail    --warn-mem <%>  --crit-mem <%>       (available / total)
+  swap          >=${D.warnSwapPercent}% used   >=${D.critSwapPercent}% used   --warn-swap <%>  --crit-swap <%>
+  daemon        up <${D.warnDaemonUptimeSec}s      unreachable --warn-uptime <s>     (unreachable = CRIT)
+  sessions      >=${D.warnSessions} live     >=${D.critSessions} live     --warn-sessions <n>  --crit-sessions <n>
+  busy          >=${D.warnBusySessions} mid-turn >=${D.critBusySessions} mid-turn --warn-busy <n>  --crit-busy <n>
+  orphans       >=${D.warnOrphans}          >=${D.critOrphans}          --warn-orphans <n>  --crit-orphans <n>
+  busy orphans  >=${D.warnBusyOrphans}           >=${D.critBusyOrphans}           --warn-busy-orphans <n>  --crit-busy-orphans <n>
+  disk          <${D.warnDiskFreeGb} GB free   <${D.critDiskFreeGb} GB free    --warn-disk <GB>  --crit-disk <GB>  (sessions dir)
+
+Checks with no data (e.g. no swap probe, --local) show SKIP and never move the
+verdict. If the daemon is unreachable the verdict is CRIT, but the rest is still
+reported from an in-process sample.
 
 Read-only: needs no sudo and never kills anything.
 `
@@ -197,29 +247,21 @@ interface Fetched {
   note?: string
 }
 
-async function fetchReport(o: { mode: "summary" | "full"; budgetMs?: number; fresh: boolean; local: boolean }): Promise<Fetched> {
-  let note: string | undefined
-  if (!o.local) {
-    const found = (await discoverDaemon()).found
-    if (found) {
-      const qs = new URLSearchParams({ detail: o.mode })
-      if (o.fresh) qs.set("fresh", "true")
-      if (o.budgetMs) qs.set("budgetMs", String(o.budgetMs))
-      try {
-        const report = await withTimeout(
-          httpGetJson<HostLoadReport>(`${found.url}/host/load?${qs}`),
-          (o.budgetMs ?? 1900) + 5000,
-          "the daemon",
-        )
-        return { report }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        note = `daemon unavailable (${/404/.test(msg) ? "it predates GET /host/load; restart it to pick the route up" : msg}); sampled locally, no session attribution`
-      }
-    } else {
-      note = "no daemon found; sampled locally, no session attribution"
-    }
-  }
+interface FetchOpts {
+  mode: "summary" | "full"
+  budgetMs?: number
+  fresh: boolean
+  local: boolean
+}
+
+async function fetchDaemonReport(url: string, o: Omit<FetchOpts, "local">): Promise<HostLoadReport> {
+  const qs = new URLSearchParams({ detail: o.mode })
+  if (o.fresh) qs.set("fresh", "true")
+  if (o.budgetMs) qs.set("budgetMs", String(o.budgetMs))
+  return withTimeout(httpGetJson<HostLoadReport>(`${url}/host/load?${qs}`), (o.budgetMs ?? 1900) + 5000, "the daemon")
+}
+
+async function sampleLocal(o: Omit<FetchOpts, "local">, note?: string): Promise<Fetched> {
   const { getHostLoadService } = await import("@agentproto/runtime")
   const report = await getHostLoadService().report([], {
     detail: o.mode,
@@ -229,12 +271,202 @@ async function fetchReport(o: { mode: "summary" | "full"; budgetMs?: number; fre
   return { report, ...(note ? { note } : {}) }
 }
 
+const daemonFallbackNote = (err: unknown): string => {
+  const msg = err instanceof Error ? err.message : String(err)
+  return `daemon unavailable (${/404/.test(msg) ? "it predates GET /host/load; restart it to pick the route up" : msg}); sampled locally, no session attribution`
+}
+
+async function fetchReport(o: FetchOpts): Promise<Fetched> {
+  let note: string | undefined
+  if (!o.local) {
+    const found = (await discoverDaemon()).found
+    if (found) {
+      try {
+        return { report: await fetchDaemonReport(found.url, o) }
+      } catch (err) {
+        note = daemonFallbackNote(err)
+      }
+    } else {
+      note = "no daemon found; sampled locally, no session attribution"
+    }
+  }
+  return sampleLocal(o, note)
+}
+
+// ── host health: the probes around the shared report ────────────────
+
+/** How long /health and /sessions may take before the daemon counts as down. */
+const HEALTH_PROBE_TIMEOUT_MS = 3000
+const EXIT_USAGE = 64
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+interface SessionRow {
+  kind?: string
+  status?: string
+  alive?: boolean
+  busy?: boolean
+}
+
+export function countSessions(rows: readonly SessionRow[]): SessionCounts {
+  let alive = 0
+  let busy = 0
+  for (const r of rows) {
+    if (r.kind !== undefined && r.kind !== "agent-cli") continue
+    if (!(r.alive ?? (r.status === "running" || r.status === "starting"))) continue
+    alive++
+    if (r.busy === true) busy++
+  }
+  return { alive, busy }
+}
+
+/** Free space on the filesystem holding the sessions dir (or its nearest existing parent). */
+async function probeSessionsDisk(): Promise<DiskProbe> {
+  const { loadConfig } = await import("@agentproto/runtime/config")
+  const { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } = await import("@agentproto/runtime")
+  const cfg = await loadConfig().catch(() => undefined)
+  setDefaultSessionsBaseDir(cfg?.sessions?.eventsDir)
+  const path = defaultTranscriptBaseDir()
+  let probe = path
+  for (;;) {
+    try {
+      const s = await statfs(probe)
+      return { path, freeBytes: s.bavail * s.bsize, totalBytes: s.blocks * s.bsize }
+    } catch (err) {
+      const parent = dirname(probe)
+      if (parent === probe) return { path, error: errText(err) }
+      probe = parent
+    }
+  }
+}
+
+async function gatherHealthInput(o: { local: boolean; budgetMs?: number }): Promise<HostHealthInput> {
+  const opts = { mode: "full" as const, fresh: true, ...(o.budgetMs !== undefined ? { budgetMs: o.budgetMs } : {}) }
+  const disk = probeSessionsDisk().catch((err): DiskProbe => ({ path: "sessions dir", error: errText(err) }))
+
+  if (o.local) {
+    const { report } = await sampleLocal(opts)
+    return { report, disk: await disk }
+  }
+
+  const found = (await discoverDaemon()).found
+  if (!found) {
+    const { report } = await sampleLocal(opts)
+    return {
+      report,
+      daemon: { reachable: false, error: "no daemon found" },
+      disk: await disk,
+      note: "no daemon found; sampled locally, no session attribution",
+    }
+  }
+
+  let daemon: DaemonProbe
+  try {
+    const h = await withTimeout(httpGetJson<{ uptimeMs?: unknown }>(`${found.url}/health`), HEALTH_PROBE_TIMEOUT_MS, "the daemon")
+    daemon = { reachable: true, ...(typeof h.uptimeMs === "number" ? { uptimeMs: h.uptimeMs } : {}) }
+  } catch (err) {
+    daemon = { reachable: false, error: errText(err) }
+  }
+  if (!daemon.reachable) {
+    const { report } = await sampleLocal(opts)
+    return { report, daemon, disk: await disk, note: "daemon unreachable; sampled locally, no session attribution" }
+  }
+
+  const [rep, list] = await Promise.allSettled([
+    fetchDaemonReport(found.url, opts),
+    withTimeout(httpGetJson<{ sessions?: SessionRow[] }>(`${found.url}/sessions?fields=kind,status,alive,busy`), HEALTH_PROBE_TIMEOUT_MS + 2000, "the daemon"),
+  ])
+  const sessions = list.status === "fulfilled" && Array.isArray(list.value?.sessions) ? countSessions(list.value.sessions) : undefined
+  if (rep.status === "fulfilled") {
+    return { report: rep.value, daemon, ...(sessions ? { sessions } : {}), disk: await disk }
+  }
+  const { report } = await sampleLocal(opts)
+  return { report, daemon, ...(sessions ? { sessions } : {}), disk: await disk, note: daemonFallbackNote(rep.reason) }
+}
+
+async function runHealth(args: readonly string[]): Promise<number> {
+  let values: Record<string, string | boolean | undefined>
+  try {
+    values = parseArgs({
+      args: [...args],
+      allowPositionals: false,
+      strict: true,
+      options: {
+        json: { type: "boolean" },
+        watch: { type: "string" },
+        budget: { type: "string" },
+        local: { type: "boolean" },
+        "no-color": { type: "boolean" },
+        ...Object.fromEntries(THRESHOLD_FLAGS.map(({ flag }) => [flag, { type: "string" as const }])),
+      },
+    }).values
+  } catch (err) {
+    process.stderr.write(`agentproto host health: ${errText(err)}\n`)
+    return EXIT_USAGE
+  }
+
+  const flagNum = (raw: unknown, flag: string, min: number): number | undefined | "bad" => {
+    if (raw === undefined) return undefined
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n < min) {
+      process.stderr.write(`agentproto host health: ${flag} expects a number >= ${min}, got "${String(raw)}"\n`)
+      return "bad"
+    }
+    return n
+  }
+  const watchSec = flagNum(values.watch, "--watch", 1)
+  const budgetMs = flagNum(values.budget, "--budget", 300)
+  if (watchSec === "bad" || budgetMs === "bad") return EXIT_USAGE
+  const resolved = resolveThresholds(
+    Object.fromEntries(THRESHOLD_FLAGS.map(({ flag }) => [flag, typeof values[flag] === "string" ? (values[flag] as string) : undefined])),
+  )
+  if ("error" in resolved) {
+    process.stderr.write(`agentproto host health: ${resolved.error}\n`)
+    return EXIT_USAGE
+  }
+  const thresholds: HostHealthThresholds = resolved.thresholds
+
+  const colour = values["no-color"] !== true && process.stdout.isTTY === true
+  let exitCode = 2
+  const once = async (): Promise<void> => {
+    const health = computeHostHealth(
+      await gatherHealthInput({ local: values.local === true, ...(budgetMs !== undefined ? { budgetMs } : {}) }),
+      thresholds,
+    )
+    exitCode = health.exitCode
+    if (values.json) {
+      process.stdout.write((watchSec !== undefined ? JSON.stringify(health) : JSON.stringify(health, null, 2)) + "\n")
+      return
+    }
+    if (watchSec !== undefined && process.stdout.isTTY) process.stdout.write("\x1b[2J\x1b[H")
+    process.stdout.write(renderHostHealth(health, { colour }))
+  }
+
+  try {
+    await once()
+    if (watchSec === undefined) return exitCode
+    let stop = false
+    process.once("SIGINT", () => {
+      stop = true
+    })
+    while (!stop) {
+      await new Promise(r => setTimeout(r, watchSec * 1000))
+      if (!stop) await once()
+    }
+    return exitCode
+  } catch (err) {
+    process.stderr.write(`agentproto host health: ${errText(err)}\n`)
+    return 2
+  }
+}
+
 export async function runHost(args: readonly string[]): Promise<number> {
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     process.stdout.write(HOST_USAGE)
     return args.length === 0 ? 2 : 0
   }
   const sub = args[0]
+  if (sub === "health") return runHealth(args.slice(1))
   if (sub !== "load") {
     process.stderr.write(`agentproto host: unknown subcommand "${sub}"\n\n${HOST_USAGE}`)
     return 2

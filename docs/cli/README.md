@@ -48,6 +48,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto daemon`](./verbs/daemon.md) — install/start/restart/stop the background service
 - [`agentproto devices`](./verbs/devices.md) — list/rename/revoke devices known to this daemon
 - [`agentproto doctor`](./verbs/doctor.md) — read-only health check of the whole install (`--json` for bug reports)
+- [`agentproto host`](./verbs/host.md) — `load`: why is this machine slow; `health`: OK/WARN/CRIT verdict on whether it can take more agents
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
 - [`agentproto install-mcp`](./verbs/install-mcp.md) — register the daemon's MCP server with installed coding CLIs
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
