@@ -23,8 +23,15 @@
 import {
   resolvePricing,
   selectPricingTier,
+  splitContextWindowHint,
+  type LLMPricing,
   type LLMPricingTier,
 } from "@agentproto/model-catalog/llm"
+import {
+  resolveLlmModelRoute,
+  tryParseModelRef,
+} from "@agentproto/model-catalog/route-identity"
+import { WIDENING_ROUTES, normalizeRouterPrefixedId } from "./catalog-models.js"
 
 /** Where a session's `costUsd` came from — see the module doc. */
 export type UsageSource = "adapter" | "computed" | "no-pricing" | "none"
@@ -166,7 +173,32 @@ export function plausibleContextUsed(
   return contextUsed
 }
 
-const defaultResolver: PricingResolver = model => resolvePricing(model)
+/**
+ * Price a session's model on the route it is actually billed through.
+ *
+ * Each router bills its own rate: a bare `kimi-k3` is direct Moonshot, but
+ * `opencode-go/kimi-k3` is OpenCode Go and `moonshotai/kimi-k3@openrouter` is
+ * OpenRouter. The router route tables are deliberately NOT spread into
+ * `LLM_PRICING_CATALOG`, so `resolvePricing` alone would substring-match the
+ * router id onto the DIRECT vendor row and cost the session at the wrong rate.
+ * An id routed through one of the {@link WIDENING_ROUTES} routers therefore
+ * resolves through `resolveLlmModelRoute`, and a router id with no row in its
+ * router's table stays unpriced (`no-pricing`) rather than borrowing the
+ * direct vendor's price. Everything else (bare ids, OpenRouter-native
+ * `vendor/model` ids, other `@route`s) keeps `resolvePricing` semantics.
+ */
+export function resolveSessionPricing(model: string): LLMPricing | undefined {
+  // A `[1m]` context-lane hint is not part of the model's identity (the
+  // route tables are keyed without it).
+  const id = splitContextWindowHint(model).id
+  const ref = tryParseModelRef(normalizeRouterPrefixedId(id))
+  if (ref && (WIDENING_ROUTES as readonly string[]).includes(ref.route)) {
+    return resolveLlmModelRoute(ref)?.pricing
+  }
+  return resolvePricing(model)
+}
+
+const defaultResolver: PricingResolver = model => resolveSessionPricing(model)
 
 /** Cost of `tokens` at `pricePer1M` USD/1M tokens. */
 function tokenCost(tokens: number | undefined, pricePer1M: number): number {

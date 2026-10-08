@@ -3,8 +3,11 @@ import {
   deriveSessionUsage,
   plausibleContextUsed,
   projectSessionUsage,
+  resolveSessionPricing,
   type PricingResolver,
 } from "../usage.js"
+import { resolvePricing } from "@agentproto/model-catalog/llm"
+import { resolveLlmModelRoute } from "@agentproto/model-catalog/route-identity"
 
 /**
  * The pricing decision tree is the heart of part ② — cover every source
@@ -286,5 +289,47 @@ describe("deriveSessionUsage — prompt-length pricing tiers", () => {
   it("falls back to the base tier without a contextUsed signal", () => {
     const usage = deriveSessionUsage(tokens, tieredResolver)
     expect(usage.costUsd).toBeCloseTo(0.16, 10)
+  })
+})
+
+/**
+ * The DEFAULT resolver against the real catalog: a router-prefixed id must
+ * price on its router's own row, never fall through `resolvePricing`'s
+ * substring scan onto the direct vendor row.
+ */
+describe("resolveSessionPricing", () => {
+  it("prices an OpenCode Go id on the opencode-go route, not direct Moonshot", () => {
+    const pricing = resolveSessionPricing("opencode-go/kimi-k3")
+    expect(pricing?.provider).toBe("opencode-go")
+    expect(pricing).toEqual(resolveLlmModelRoute("opencode-go/kimi-k3")?.pricing)
+    // The bug shape: the substring fallback lands on the direct Moonshot row.
+    expect(resolvePricing("opencode-go/kimi-k3")?.provider).toBe("moonshot")
+    expect(pricing?.inputPer1M).not.toBe(resolvePricing("kimi-k3")?.inputPer1M)
+  })
+
+  it("prices an OpenCode Zen id on the opencode route, not direct Anthropic", () => {
+    expect(resolveSessionPricing("opencode/claude-sonnet-4-6")?.provider).toBe("opencode")
+  })
+
+  it("prices an explicit @router suffix on that router", () => {
+    expect(resolveSessionPricing("openai/gpt-4.1@requesty")?.provider).toBe("requesty")
+    expect(resolveSessionPricing("moonshotai/kimi-k3@openrouter")?.provider).toBe("openrouter")
+  })
+
+  it("leaves a router id with no row in its router's table unpriced instead of borrowing the vendor price", () => {
+    expect(resolveSessionPricing("opencode-go/claude-sonnet-4-6")).toBeUndefined()
+  })
+
+  it("leaves bare ids and OpenRouter-native vendor/model ids on resolvePricing", () => {
+    for (const id of ["kimi-k3", "claude-sonnet-4-6", "claude-sonnet-4-5[1m]", "moonshotai/kimi-k3", "anthropic/claude-sonnet-4.5"]) {
+      expect(resolveSessionPricing(id)).toEqual(resolvePricing(id))
+    }
+    expect(resolveSessionPricing("kimi-k3")?.provider).toBe("moonshot")
+  })
+
+  it("is the default resolver deriveSessionUsage uses", () => {
+    const usage = deriveSessionUsage({ model: "opencode-go/kimi-k3", tokensIn: 1_000_000 })
+    expect(usage.source).toBe("computed")
+    expect(usage.costUsd).toBeCloseTo(resolveLlmModelRoute("opencode-go/kimi-k3")!.pricing.inputPer1M, 10)
   })
 })

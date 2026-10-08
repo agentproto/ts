@@ -246,7 +246,7 @@ interface ResolvedModel {
  *  peeled; every other id is returned untouched. A `:pin` variant/provider
  *  suffix on the upstream id is preserved (it rides along in the remainder).
  */
-function normalizeRouterPrefixedId(id: string): string {
+export function normalizeRouterPrefixedId(id: string): string {
   const firstSlash = id.indexOf("/")
   if (firstSlash === -1) return id
   const head = id.slice(0, firstSlash)
