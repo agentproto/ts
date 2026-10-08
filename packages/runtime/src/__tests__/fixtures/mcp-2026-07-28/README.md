@@ -2,8 +2,7 @@
 
 Request and response examples copied verbatim from the 2026-07-28 specification
 pages. Retrieved 2026-10-08. Each JSON file carries a `_source` field with the page.
-Nothing here is invented: a shape the spec text does not show has no fixture and is a
-`test.todo` in `../../mcp-modern-contract.test.ts`.
+Nothing here is invented: a shape the spec text does not show has no fixture; the contract rows built on these fixtures live in `../../mcp-modern-contract-live.test.ts`.
 
 | File | Page |
 |---|---|

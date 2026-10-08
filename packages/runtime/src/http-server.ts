@@ -2377,7 +2377,8 @@ export async function startHttpServer(
         }
 
         applyCors(req, res)
-        if (req.method === "OPTIONS") {
+        // The events origin is not a browser surface: its OPTIONS is routed on (405, Allow: POST), not answered by CORS.
+        if (req.method === "OPTIONS" && !(opts.eventsMcp && path.startsWith("/mcp/events/"))) {
           res.writeHead(204)
           res.end()
           return
@@ -2417,7 +2418,18 @@ export async function startHttpServer(
           return
         }
         if (path.startsWith("/mcp/events/")) {
-          await handleEventsMcp(req, res, decodeURIComponent(path.slice("/mcp/events/".length)))
+          let presented: string | undefined
+          try {
+            presented = decodeURIComponent(path.slice("/mcp/events/".length))
+          } catch (error) {
+            if (!(error instanceof URIError)) throw error
+          }
+          if (presented === undefined) {
+            res.writeHead(404, { "content-type": "application/json", "cache-control": "no-store" })
+            res.end(JSON.stringify({ error: "not_found" }))
+            return
+          }
+          await handleEventsMcp(req, res, presented)
           return
         }
         if (path === "/mcp/orchestrator") {

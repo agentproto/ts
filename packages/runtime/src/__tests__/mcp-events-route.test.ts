@@ -81,6 +81,21 @@ describe("events surface: /mcp/events route", () => {
     })
   })
 
+  it("404s a malformed percent-encoding in the secret segment, with no-store", async () => {
+    await withServer({ eventsMcp }, async base => {
+      for (const method of ["GET", "POST"]) {
+        const res = await fetch(`${base}/mcp/events/%E0%A4%A`, {
+          method,
+          headers: MODERN_HEADERS,
+          ...(method === "POST" ? { body: DISCOVER_BODY } : {}),
+        })
+        expect(res.status).toBe(404)
+        expect(res.headers.get("cache-control")).toBe("no-store")
+        expect(await res.json()).toEqual({ error: "not_found" })
+      }
+    })
+  })
+
   it("403s any Origin by default, even with the right secret", async () => {
     await withServer({ eventsMcp }, async base => {
       const res = await fetch(`${base}/mcp/events/${SECRET}`, {
@@ -130,6 +145,34 @@ describe("events surface: /mcp/events route", () => {
     await withServer({ eventsMcp }, async base => {
       const res = await fetch(`${base}/mcp/events/${SECRET}`, { method: "GET", headers: MODERN_HEADERS })
       expect(res.status).toBe(405)
+    })
+  })
+
+  it("answers OPTIONS, HEAD, GET and DELETE with 405 and `Allow: POST` (OPTIONS is not a CORS 204)", async () => {
+    await withServer({ eventsMcp }, async base => {
+      for (const method of ["OPTIONS", "HEAD", "GET", "DELETE"]) {
+        const res = await fetch(`${base}/mcp/events/${SECRET}`, { method, headers: MODERN_HEADERS })
+        expect(res.status, method).toBe(405)
+        expect(res.headers.get("allow"), method).toBe("POST")
+      }
+    })
+  })
+
+  it("403s an untrusted Origin even when the request carries a valid daemon bearer", async () => {
+    await withServer({ eventsMcp, auth: { mode: "bearer", token: DAEMON_TOKEN } }, async base => {
+      const res = await fetch(`${base}/mcp/events/${SECRET}`, {
+        method: "POST",
+        headers: { ...MODERN_HEADERS, authorization: `Bearer ${DAEMON_TOKEN}`, origin: "https://evil.example" },
+        body: DISCOVER_BODY,
+      })
+      expect(res.status).toBe(403)
+    })
+  })
+
+  it("serves a request with no Origin header at all", async () => {
+    await withServer({ eventsMcp }, async base => {
+      const res = await fetch(`${base}/mcp/events/${SECRET}`, { method: "POST", headers: MODERN_HEADERS, body: DISCOVER_BODY })
+      expect(res.status).toBe(200)
     })
   })
 

@@ -119,7 +119,9 @@ export function validateRequest(
 
   if (method === "initialize") {
     const requested = typeof params.protocolVersion === "string" ? params.protocolVersion : "unknown"
-    return err(400, ERR_UNSUPPORTED_VERSION, "Unsupported protocol version: this endpoint is stateless, send server/discover", {
+    // Removed in the modern era: 404 -32601 like any removed method (conformance `server-stateless`), with the supported
+    // versions named in `data` because a modern-only server SHOULD name them in any error answering `initialize`.
+    return err(404, ERR_METHOD_NOT_FOUND, "Method not found: initialize (this endpoint is stateless, send server/discover)", {
       supported: [...supported],
       requested,
     })

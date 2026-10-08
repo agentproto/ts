@@ -294,12 +294,13 @@ describe("request validation", () => {
     expect(err?.data?.supported.every((v: string) => discover?.supportedVersions.includes(v))).toBe(true)
   })
 
-  it("initialize is refused with -32022 naming the supported versions", async () => {
+  it("initialize is a removed method: 404 -32601, naming the supported versions in data", async () => {
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "x", version: "1" } } })
     const r = await call("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "x", version: "1" } }, { body })
-    expect(r.status).toBe(400)
+    expect(r.status).toBe(404)
     const err = json(r).error
-    expect(err?.code).toBe(-32022)
+    expect(err?.code).toBe(-32601)
+    expect(err?.data?.supported).toEqual(["2026-07-28"])
     expect(err?.data?.requested).toBe("2025-11-25")
   })
 
