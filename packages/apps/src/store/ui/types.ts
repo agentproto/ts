@@ -6,6 +6,19 @@
  * work-board/ui/types.ts); only what the UI renders is modelled.
  */
 
+/** `AppSource` (app-registry.ts) as the panel reads it; every field but
+ *  `kind` is optional because local rows carry only `{kind: "local"}`. */
+export interface AppSourceRow {
+  kind: string
+  url?: string
+  sha256?: string
+  sha?: string
+  ref?: string
+  subdir?: string
+  size?: number
+  version?: string
+}
+
 /** Entry of the local + remote app_catalog listings (app-catalog.ts). */
 export interface CatalogRow {
   appId: string
@@ -15,7 +28,15 @@ export interface CatalogRow {
   installed?: boolean
   hasUi?: boolean
   /** Remote entries: where the app comes from (the `app_install` payload). */
-  source?: { kind: string } & Record<string, unknown>
+  source?: AppSourceRow
+  /** Icon URL (https / data:image). May be blocked by the host's CSP — the
+   *  panel falls back to an initial-letter tile on load error. */
+  icon?: string
+  license?: { kind?: string; url?: string }
+  /** Builtin panels only: the MCP tool id and its ui:// resource. */
+  toolId?: string
+  resourceUri?: string
+  dir?: string
   origin?: string
   catalogUrl?: string
   version?: string
@@ -33,6 +54,18 @@ export interface CatalogRow {
   installedVersion?: string
 }
 
+/** One run summary of `app_list` (compact). */
+export interface RunRow {
+  appRunId: string
+  status?: string
+  startedAt?: string
+  endedAt?: string
+  adapter?: string
+  harness?: string
+  model?: string
+  sessions?: number
+}
+
 /** One installed app of `app_list` (compact fields only). */
 export interface InstalledRow {
   appId: string
@@ -41,8 +74,22 @@ export interface InstalledRow {
   description?: string
   dir?: string
   dataDir?: string
-  source?: { kind: string } & Record<string, unknown>
+  source?: AppSourceRow
   dirMissing?: boolean
+  /** Agent / workflow ids (compact app_list). */
+  agents?: string[]
+  workflows?: string[]
+  /** Flat app-id dependency list (compact app_list). */
+  requires?: string[]
+  runs?: RunRow[]
+}
+
+/** The panel's view state, mirrored in the URL (`?app=`, `?q=`, `?cat=`). */
+export interface ViewState {
+  /** Open detail view, or empty for the shelves. */
+  app: string
+  q: string
+  cat: string
 }
 
 /** One update of `app_updates`. */
