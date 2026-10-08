@@ -22,6 +22,9 @@ export default {
       inputs: {
         apply: true,
         salvageDirty: false,
+        // Block for the real outcomes — worktree_gc otherwise returns a bare
+        // jobId after 25 s on a big repo, and `format` would report nothing.
+        wait: true,
         repoRoot:
           "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
       },

@@ -68,11 +68,15 @@ steps:
   - id: worktreeGcPlan
     kind: tool
     name: Plan worktree gc
+    description: >-
+      `wait: true` — without it worktree_gc falls back to a background job
+      after 25 s and returns a bare jobId instead of the plan.
     tool: worktree_gc
     inputs:
       repoRoot: $input.repoRoot
       workspaceSlug: $input.workspaceSlug
       apply: false
+      wait: true
 
   - id: branchGcPlan
     kind: tool
@@ -175,6 +179,7 @@ steps:
       workspaceSlug: $input.workspaceSlug
       apply: $input.applyMerged
       salvageDirty: false
+      wait: true
 
   - id: branchGcApply
     kind: tool

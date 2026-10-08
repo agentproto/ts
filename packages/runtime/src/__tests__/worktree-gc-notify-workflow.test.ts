@@ -36,6 +36,9 @@ describe("worktree-gc-notify dogfood workflow", () => {
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       calls.push({ name, inputs })
       if (name === "worktree_gc") {
+        // Like the real tool: no `wait: true` ⇒ a big repo outlasts the 25 s
+        // default `waitMs` and only a running jobId comes back.
+        if (inputs.wait !== true) return mcpResult({ jobId: "wgc_test", status: "running" })
         return mcpResult({
           mode: "apply",
           outcomes: [
@@ -59,6 +62,7 @@ describe("worktree-gc-notify dogfood workflow", () => {
     expect(calls[0]!.inputs).toEqual({
       apply: true,
       salvageDirty: false,
+      wait: true,
       repoRoot:
         "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
     })
