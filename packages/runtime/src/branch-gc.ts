@@ -169,6 +169,84 @@ export function withBranchGcApplySummary(result: BranchGcResult): BranchGcResult
   return { ...result, status: applySummary.status, applySummary }
 }
 
+export type BranchGcResultSection = "entries" | "outcomes"
+
+export interface BranchGcResultSliceInput {
+  /** Which list to return. Default: `entries` for a plan, `outcomes` for an apply. */
+  section?: BranchGcResultSection
+  /** Entries only: keep these classes. */
+  classes?: BranchGcClass[]
+  /** Keep these ref kinds (entries and outcomes). */
+  scopes?: BranchGcKind[]
+  /** Outcomes only: keep these outcome results. */
+  results?: BranchGcOutcomeView["result"][]
+  limit?: number
+  cursor?: string
+}
+
+export interface BranchGcResultPage {
+  section: BranchGcResultSection
+  /** Rows matching the filters (before paging). */
+  total: number
+  returned: number
+  nextCursor?: string
+}
+
+export const BRANCH_GC_PAGE_DEFAULT = 100
+export const BRANCH_GC_PAGE_MAX = 500
+
+const encodeOffset = (n: number): string => Buffer.from(`o:${n}`).toString("base64url")
+function decodeOffset(cursor: string): number {
+  const m = /^o:(\d+)$/.exec(Buffer.from(cursor, "base64url").toString("utf8"))
+  if (!m) throw new Error("branch_gc_status: invalid `cursor`")
+  return Number(m[1])
+}
+
+/**
+ * Pure: project a full result down to ONE filtered, paged list. A real
+ * repo's full result is 65k+ chars on one line — over the MCP output cap — so
+ * `branch_gc_status` never returns the whole thing inline. The other list is
+ * dropped (it is still on disk at `resultPath`); everything else (summary,
+ * plan metadata, restore log, applySummary) is kept.
+ */
+export function sliceBranchGcResult(
+  result: BranchGcResult,
+  opts: BranchGcResultSliceInput,
+): { result: object; page: BranchGcResultPage } {
+  const section: BranchGcResultSection = opts.section ?? (result.mode === "apply" ? "outcomes" : "entries")
+  const scopeOk = (kind: BranchGcKind): boolean => !opts.scopes?.length || opts.scopes.includes(kind)
+  let rows: object[]
+  if (section === "outcomes") {
+    if (result.mode !== "apply") throw new Error("branch_gc_status: `section: outcomes` is only available on an apply result")
+    rows = result.outcomes.filter(o => scopeOk(o.kind) && (!opts.results?.length || opts.results.includes(o.result)))
+  } else {
+    rows = result.plan.entries.filter(
+      e => scopeOk(e.kind) && (!opts.classes?.length || opts.classes.includes(e.class)),
+    )
+  }
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? BRANCH_GC_PAGE_DEFAULT), 1), BRANCH_GC_PAGE_MAX)
+  const start = opts.cursor !== undefined ? decodeOffset(opts.cursor) : 0
+  const pageRows = rows.slice(start, start + limit)
+  const next = start + limit
+  const page: BranchGcResultPage = {
+    section,
+    total: rows.length,
+    returned: pageRows.length,
+    ...(next < rows.length ? { nextCursor: encodeOffset(next) } : {}),
+  }
+  const { plan, ...rest } = result
+  const { entries: _entries, ...planMeta } = plan
+  const { outcomes: _outcomes, ...restNoOutcomes } = rest as typeof rest & { outcomes?: unknown }
+  return {
+    page,
+    result: {
+      ...restNoOutcomes,
+      plan: section === "entries" ? { ...planMeta, entries: pageRows } : planMeta,
+      ...(section === "outcomes" ? { outcomes: pageRows } : {}),
+    },
+  }
+}
+
 /** Input to the injected runner. `apply` defaults to false at the tool/route
  *  boundary — a bare call is a dry run — and an apply requires `scopes`. */
 export interface BranchGcRunInput {
