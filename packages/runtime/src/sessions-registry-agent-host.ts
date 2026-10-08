@@ -8,9 +8,10 @@
  * delegate to the workflow-runtime's step-walker.
  */
 
-import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, SessionNotAliveError, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
+import { AgentSessionLostError } from "@agentproto/workflow-runtime"
 import type { AgentHarness, AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
@@ -35,6 +36,19 @@ import { reviewWorktreeReadZones } from "./review-worktree.js"
 /** Prompt provenance for workflow steps — classified as automated (`isAutomatedPromptSource`)
  *  so a step never revives a retired session. */
 const WORKFLOW_PROMPT_SOURCE = "workflow:agent-step"
+
+/** `endedReason`s meaning a session died UNDER its workflow step rather than
+ *  being ended on purpose — the only deaths reported as
+ *  {@link AgentSessionLostError}, which an agent step's transport `retry`
+ *  re-spawns past. Absent is a kill/crash nobody tagged: the 2026-10-08
+ *  mid-turn "ACP connection closed" death (`sess_bd64a550`) ended `killed`
+ *  with no reason. Every deliberate end (operator kill, cost cap, provider
+ *  limit, context hard-stop, steward, restart) carries one and stays a
+ *  plain failure. */
+const TRANSPORT_END_REASONS: ReadonlySet<string | undefined> = new Set([undefined, "crashed", "daemon-restart"])
+
+/** A prompt rejection that means the session's transport is gone. */
+const TRANSPORT_CLOSED_RE = /\bACP connection closed\b/i
 
 /**
  * A step spawned IN a review worktree (`branch_gc_review_worktree`, the
@@ -516,7 +530,44 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
    * synchronously, before the event bus can fire the rejection asynchronously.
    */
   async sendPromptAndWait(sessionId: string, prompt: string): Promise<void> {
-    await Promise.all([this.waitTurnEnd(sessionId), this.registry.sendPrompt(sessionId, prompt, { source: WORKFLOW_PROMPT_SOURCE })])
+    await Promise.all([
+      this.waitTurnEnd(sessionId),
+      this.registry
+        .sendPrompt(sessionId, prompt, { source: WORKFLOW_PROMPT_SOURCE })
+        .catch((err: unknown) => {
+          throw this.classifyPromptFailure(sessionId, err)
+        }),
+    ])
+  }
+
+  /** True when `sessionId` dying (with `reason`) is the session's transport
+   *  failing under the step — not this host's own cancel/release, and not a
+   *  deliberate end (see {@link TRANSPORT_END_REASONS}). */
+  private diedUnderStep(sessionId: string, reason: string | undefined): boolean {
+    if (this.opts?.signal?.aborted) return false
+    if (!this.unreleased.has(sessionId)) return false
+    return TRANSPORT_END_REASONS.has(reason)
+  }
+
+  /** The error a wait rejects with when the session ends mid-turn. */
+  private sessionEndedError(sessionId: string, status: string, reason: string | undefined): Error {
+    const message = `session ${sessionId} ended with status '${status}'${reason ? ` (${reason})` : ""}`
+    return this.diedUnderStep(sessionId, reason) ? new AgentSessionLostError(sessionId, message) : new Error(message)
+  }
+
+  /** `registry.sendPrompt` rejected: a closed ACP connection or an already-
+   *  dead session is a transport loss ({@link AgentSessionLostError});
+   *  anything else propagates unchanged. */
+  private classifyPromptFailure(sessionId: string, err: unknown): unknown {
+    if (!(err instanceof Error)) return err
+    const desc = this.registry.get(sessionId)
+    const dead =
+      err instanceof SessionNotAliveError ||
+      TRANSPORT_CLOSED_RE.test(err.message) ||
+      desc?.status === "killed" ||
+      desc?.status === "error"
+    if (!dead || !this.diedUnderStep(sessionId, desc?.endedReason)) return err
+    return new AgentSessionLostError(sessionId, `session ${sessionId} lost before its turn ended — ${err.message}`, err)
   }
 
   resolveByLabel(stepId: string): string | undefined {
@@ -633,9 +684,9 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         for (const u of unsubs) u()
         resolve()
       }
-      const fail = (reason: string): void => {
+      const fail = (reason: string | Error): void => {
         for (const u of unsubs) u()
-        reject(new Error(reason))
+        reject(typeof reason === "string" ? new Error(reason) : reason)
       }
       unsubs.push(
         this.sessionEvents.on("session:turn-end", (ev) => {
@@ -675,10 +726,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         this.sessionEvents.on("session:exited", (ev) => {
           if (ev.sessionId !== sessionId) return
           // Reject on terminal-error/killed so step failures propagate to
-          // the workflow run as `status: "failed"`. Plain "exited" (clean
-          // exit code 0 path) resolves normally.
+          // the workflow run as `status: "failed"` — as AgentSessionLostError
+          // when it died under the step, so a transport `retry` re-spawns.
+          // Plain "exited" (clean exit code 0 path) resolves normally.
           if (ev.status === "killed" || ev.status === "error") {
-            fail(`session ${sessionId} ended with status '${ev.status}'`)
+            fail(this.sessionEndedError(sessionId, ev.status, ev.reason))
           } else {
             done()
           }
@@ -689,7 +741,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       if (desc?.status === "exited" || desc?.awaitingInput === true) {
         done()
       } else if (desc?.status === "killed" || desc?.status === "error") {
-        fail(`session ${sessionId} ended with status '${desc.status}'`)
+        fail(this.sessionEndedError(sessionId, desc.status, desc.endedReason))
       }
     })
   }

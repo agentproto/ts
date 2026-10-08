@@ -282,6 +282,74 @@ steps:
     expect(stepFailed?.stepId).toBe("draft")
     expect((stepFailed?.data as { code?: string })?.code).toBe("missing-output")
   })
+  it("an agent step whose session dies mid-turn is re-spawned once: step.retrying, then step.succeeded", async () => {
+    const bus = createSessionEventBus()
+    const prompted: string[] = []
+    const registry = makeMockRegistry({
+      sendPrompt: async (sessionId: string) => {
+        prompted.push(sessionId)
+        // First session: the 2026-10-08 shape — ACP drops, row ends `killed`
+        // with no endedReason. Second session: a normal turn.
+        if (prompted.length === 1) bus.emit({ type: "session:exited", sessionId, status: "killed", ts: "t" })
+        else bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      },
+      kill: () => true,
+      archiveSession: () => true,
+    } as Partial<SessionsRegistry>)
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+    })
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(
+      path,
+      `---
+name: Revise
+id: revise
+description: One agent step with a transport retry.
+version: 1.0.0
+inputs: {}
+outputs: {}
+steps:
+  - id: apply-fact-fixes
+    kind: agent
+    adapter: mock
+    prompt: fix the facts
+    retry: { max_attempts: 2, backoff: fixed, initial_ms: 0 }
+---
+`,
+      "utf8",
+    )
+
+    const run = await runner.startFromFile({ path })
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+    expect(final?.status).toBe("done")
+    expect(prompted).toHaveLength(2)
+    expect(prompted[0]).not.toBe(prompted[1])
+
+    const events = runner.events(run.runId)
+    expect(events?.map(e => e.type)).toEqual([
+      "run.created",
+      "run.started",
+      "step.started",
+      "step.retrying",
+      "step.succeeded",
+      "run.succeeded",
+    ])
+    const retrying = events?.find(e => e.type === "step.retrying")
+    expect(retrying?.stepId).toBe("apply-fact-fixes")
+    expect(retrying?.data).toMatchObject({ attempt: 2, maxAttempts: 2, sessionId: prompted[0], delayMs: 0 })
+  })
 })
 
 describe("AIP-58 §2 liveness (host-level, vectors V4/V6)", () => {

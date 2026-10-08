@@ -23,6 +23,8 @@ export interface AgentStepFields {
   policy?: AgentStep["policy"]
   outputSchema?: AgentStep["outputSchema"]
   maxRetries?: number
+  /** See {@link AgentStep.retry}. */
+  retry?: AgentStep["retry"]
   options?: Record<string, boolean | number | string>
   harness?: AgentHarness
   agentTools?: readonly string[]
@@ -46,6 +48,7 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     policy: fields.policy ?? { awaiting: "fail" as const },
     ...(fields.outputSchema !== undefined ? { outputSchema: fields.outputSchema } : {}),
     ...(fields.maxRetries !== undefined ? { maxRetries: fields.maxRetries } : {}),
+    ...(fields.retry !== undefined ? { retry: fields.retry } : {}),
     ...(fields.harness !== undefined ? { harness: fields.harness } : {}),
     ...(fields.agentTools !== undefined ? { agentTools: fields.agentTools } : {}),
   }

@@ -15,7 +15,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { z } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
+  AgentHarness,
+  AgentSandboxRef,
   AgentStep,
+  AgentStepRetry,
   ApprovalDecision,
   ArtifactEntry,
   ArtifactStep,
@@ -36,7 +39,7 @@ import type {
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
-import { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES, DEFAULT_STEP_TIMEOUT_MS } from "./types.js"
+import { DEFAULT_AGENT_TRANSPORT_RETRY, DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES, DEFAULT_STEP_TIMEOUT_MS } from "./types.js"
 import { materializeKnowledge, resolveKnowledgeSelectors } from "./knowledge.js"
 
 /** Thrown by a `suspend` step when no host `resume` hook is provided. */
@@ -130,6 +133,43 @@ export class AgentSpawnError extends Error {
 }
 
 /**
+ * Thrown by an {@link AgentSessionHost} when a spawned session died under a
+ * step before its turn ended — killed or crashed mid-turn, its ACP
+ * connection closed, its prompt never delivered — as opposed to a turn that
+ * ended and produced the wrong thing. The `transport: true` marker (not the
+ * class identity) is what {@link isAgentTransportFailure} reads, so a host
+ * bundling its own copy of this package still classifies correctly.
+ */
+export class AgentSessionLostError extends Error {
+  readonly transport = true as const
+  constructor(
+    readonly sessionId: string,
+    message: string,
+    readonly cause?: unknown,
+  ) {
+    super(message)
+    this.name = "AgentSessionLostError"
+  }
+}
+
+/**
+ * True when `err` is a transport failure an {@link AgentStep}'s `retry` may
+ * re-spawn past: an {@link AgentSpawnError}, or any error carrying
+ * `transport: true` (see {@link AgentSessionLostError}). Everything else —
+ * an empty or errored turn, a schema mismatch, a budget cap — is the step's
+ * own outcome and is never retried.
+ */
+export function isAgentTransportFailure(err: unknown): boolean {
+  return err instanceof AgentSpawnError || isAgentSessionLost(err)
+}
+
+/** The narrower half of {@link isAgentTransportFailure}: a session that
+ *  spawned and then died under its turn (`transport: true`). */
+function isAgentSessionLost(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { transport?: unknown }).transport === true
+}
+
+/**
  * Thrown instead of dispatching a step whose run was cancelled
  * (`ctx.signal.aborted`) — checked BEFORE any work for the step begins (see
  * {@link execStepBody}'s entry guard), so a cancel stops the run from
@@ -189,6 +229,7 @@ interface RunCtx {
   readonly onStepFailed?: RunWorkflowArgs["onStepFailed"]
   readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
   readonly onGateReport?: RunWorkflowArgs["onGateReport"]
+  readonly onAgentRetry?: RunWorkflowArgs["onAgentRetry"]
   /** Sessions spawned in the current release scope (the run, or one
    *  `map`/`pipeline` item) — released when that scope settles. */
   readonly spawned?: string[]
@@ -240,7 +281,7 @@ function view(ctx: RunCtx, item?: unknown, index?: number): Bindings {
  */
 function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
   const cacheKeySuffix = `${ctx.cacheKeySuffix ?? ""}[${index}]`
-  if (!ctx.onStepStart && !ctx.onStepComplete && !ctx.onStepSkipped && !ctx.onStepFailed) {
+  if (!ctx.onStepStart && !ctx.onStepComplete && !ctx.onStepSkipped && !ctx.onStepFailed && !ctx.onAgentRetry) {
     return { ...ctx, cacheKeySuffix }
   }
   return {
@@ -257,6 +298,9 @@ function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
       : undefined,
     onStepFailed: ctx.onStepFailed
       ? (id: string, info: StepFailedInfo) => ctx.onStepFailed!(`${id}[${index}]`, info)
+      : undefined,
+    onAgentRetry: ctx.onAgentRetry
+      ? (ev) => ctx.onAgentRetry!({ ...ev, stepId: `${ev.stepId}[${index}]` })
       : undefined,
   }
 }
@@ -670,33 +714,129 @@ async function sendPromptAndAwaitOutcome(
   sessionId: string,
   prompt: string,
 ): Promise<void> {
-  let next = prompt
+  await ctx.agents!.sendPromptAndWait(sessionId, prompt)
+  await settleInputRequests(ctx, step, sessionId)
+}
+
+/** The half of {@link sendPromptAndAwaitOutcome} that runs after a turn
+ *  has ended: suspend-and-resume for as long as the session keeps
+ *  signalling `run.requestInput`. */
+async function settleInputRequests(ctx: RunCtx, step: AgentStep, sessionId: string): Promise<void> {
   for (;;) {
-    await ctx.agents!.sendPromptAndWait(sessionId, next)
     const req = ctx.agents!.takeInputRequest?.(sessionId)
     if (!req) return
     if (!ctx.onInputRequired) {
       throw new AgentInputRequiredError(step.id, req.prompt, req.schema)
     }
     const payload = await ctx.onInputRequired({ stepId: step.id, prompt: req.prompt, schema: req.schema })
-    next = JSON.stringify(payload)
+    await ctx.agents!.sendPromptAndWait(sessionId, JSON.stringify(payload))
   }
 }
 
-/** Execute the full AgentStep body — spawn, prompt, policy, budget, outputSchema retry loop. */
+/** Wait before transport retry `attempt` (2 = the first retry), per the
+ *  same backoff rule a gate's `retry` uses. */
+function agentRetryDelayMs(retry: AgentStepRetry, attempt: number): number {
+  if (!retry.initialMs) return 0
+  return retry.backoff === "exponential" ? retry.initialMs * 2 ** (attempt - 2) : retry.initialMs
+}
+
+/** Sleep `ms`, cut short by a cancel — the caller re-checks the signal. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+/** Spawn the step's session (a NEW one when `adapter` is set) or resolve
+ *  its `sessionRef` reuse. Never returns an empty id. */
+async function spawnOrResolveSession(
+  step: AgentStep,
+  ctx: RunCtx,
+  b: Bindings,
+  spawnOpts: { cwd: string | undefined; sandbox: AgentSandboxRef | undefined; harness: AgentHarness | undefined },
+): Promise<string> {
+  let sessionId: string | undefined
+  if (step.adapter) {
+    // A cancelled run winds down (its `finally` still runs) — it must not
+    // start new agent sessions on the way (a fan-out would otherwise keep
+    // spawning reviewers after the cancel killed the running ones). The
+    // entry guard in `execStepBody` already catches this for a step that
+    // hadn't started at all; this second check covers a cancel landing
+    // WHILE this step's own body is already running (knowledge
+    // materialization, sandbox/model resolution, …), before it reaches spawn.
+    if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
+    const { cwd, sandbox, harness } = spawnOpts
+    try {
+      sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
+        cwd,
+        workspaceSlug: ctx.workspaceSlug,
+        stepId: step.id,
+        ...(sandbox !== undefined ? { sandbox } : {}),
+        ...(step.options !== undefined ? { options: step.options } : {}),
+        ...(harness !== undefined ? { harness } : {}),
+        ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
+        ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
+      })
+    } catch (err) {
+      throw new AgentSpawnError(step.id, err)
+    }
+  } else {
+    sessionId = ctx.agents!.resolveByLabel(resolveSessionRef(step.sessionRef!, b))
+  }
+  if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+  return sessionId
+}
+
+/** A transport-failed attempt's session is done for: bank whatever it cost
+ *  (run budgeting counts it) and release it now rather than at scope end,
+ *  so the retry's fresh session is the only live one. Never throws. */
+async function retireLostSession(ctx: RunCtx, sessionId: string): Promise<void> {
+  const agents = ctx.agents!
+  if (agents.readCostUsd) {
+    try {
+      ctx.state.costBySession.set(sessionId, await agents.readCostUsd(sessionId))
+    } catch {
+      // Cost unknown — the retry still goes ahead.
+    }
+  }
+  const idx = ctx.spawned?.indexOf(sessionId) ?? -1
+  if (idx >= 0) ctx.spawned!.splice(idx, 1)
+  if (agents.releaseSession) {
+    try {
+      await agents.releaseSession(sessionId)
+    } catch {
+      // Best-effort, as at scope release.
+    }
+  }
+}
+
+/** Execute the full AgentStep body — spawn, prompt (re-spawning past a transport
+ *  failure per `step.retry`), policy, budget, outputSchema retry loop. */
 async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
   // Notify step start before any execution
   ctx.onStepStart?.(step.id)
 
-  if (
-    step.adapter &&
-    ctx.state.maxTotalCostUsd !== undefined &&
-    spentUsd(ctx.state) >= ctx.state.maxTotalCostUsd
-  ) {
-    throw new Error(
-      `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
-    )
+  const assertBudget = (): void => {
+    if (
+      step.adapter &&
+      ctx.state.maxTotalCostUsd !== undefined &&
+      spentUsd(ctx.state) >= ctx.state.maxTotalCostUsd
+    ) {
+      throw new Error(
+        `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
+      )
+    }
   }
+  assertBudget()
   // Harness precedence: step `harness.cwd` (highest, among what this runtime
   // sees) beats the step's own `cwd` selector, which beats the run-level
   // `ctx.cwd` — see `AgentHarness`'s doc for the full chain (AGENT.md
@@ -756,54 +896,6 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
           ...(model !== undefined && step.harness?.model === undefined ? { model } : {}),
         }
       : undefined
-  let sessionId: string | undefined
-  if (step.adapter) {
-    // A cancelled run winds down (its `finally` still runs) — it must not
-    // start new agent sessions on the way (a fan-out would otherwise keep
-    // spawning reviewers after the cancel killed the running ones). The
-    // entry guard in `execStepBody` already catches this for a step that
-    // hadn't started at all; this second check covers a cancel landing
-    // WHILE this step's own body is already running (knowledge
-    // materialization, sandbox/model resolution, …), before it reaches spawn.
-    if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
-    try {
-      sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
-        cwd,
-        workspaceSlug: ctx.workspaceSlug,
-        stepId: step.id,
-        ...(sandbox !== undefined ? { sandbox } : {}),
-        ...(step.options !== undefined ? { options: step.options } : {}),
-        ...(harness !== undefined ? { harness } : {}),
-        ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
-        ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
-      })
-    } catch (err) {
-      throw new AgentSpawnError(step.id, err)
-    }
-  } else {
-    sessionId = ctx.agents!.resolveByLabel(resolveSessionRef(step.sessionRef!, b))
-  }
-  if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
-  if (step.adapter) ctx.spawned?.push(sessionId)
-  if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
-    ctx.agents!.emitHarnessWarning({
-      sessionId,
-      warnings: knowledgeWarnings,
-      label: step.id,
-    })
-  }
-  // `harness.tools` has no generic per-spawn allowlist mechanism reaching
-  // this runtime today (see `AgentHarness.tools`'s doc) — record that
-  // honestly on the run record rather than silently dropping the field.
-  const harnessOut =
-    harness !== undefined
-      ? {
-          ...harness,
-          ...(harness.tools && harness.tools.length > 0
-            ? { toolsApplied: false as const }
-            : {}),
-        }
-      : undefined
   // AIP-15 P2 prompt affordance: only when the host actually exposes the
   // `run_request_input` tool (signalled by `takeInputRequest` existing) —
   // a host without it never suspends on this signal, so telling the model
@@ -816,7 +908,66 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // the shape and then get corrected.
   const outputSchemaNote = step.outputSchema ? describeOutputSchemaForPrompt(step.outputSchema) : undefined
   const outputSchemaAffordance = outputSchemaNote ? `\n\n${outputSchemaNote}` : ""
-  await sendPromptAndAwaitOutcome(ctx, step, sessionId, step.prompt(b) + inputRequestAffordance + outputSchemaAffordance)
+  // Resolved ONCE: a transport retry re-sends the exact same prompt.
+  const firstPrompt = step.prompt(b) + inputRequestAffordance + outputSchemaAffordance
+  // Transport retry: only a step that spawns can re-spawn — a `sessionRef`
+  // reuse has no fresh session to fall back to.
+  const retry = step.adapter ? (step.retry ?? DEFAULT_AGENT_TRANSPORT_RETRY) : undefined
+  const maxAttempts = Math.max(1, Math.floor(retry?.maxAttempts ?? 1))
+  let sessionId: string | undefined
+  for (let attempt = 1; ; attempt++) {
+    let attemptSession: string | undefined
+    try {
+      attemptSession = await spawnOrResolveSession(step, ctx, b, { cwd, sandbox, harness })
+      if (step.adapter) ctx.spawned?.push(attemptSession)
+      if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
+        ctx.agents!.emitHarnessWarning({
+          sessionId: attemptSession,
+          warnings: knowledgeWarnings,
+          label: step.id,
+        })
+      }
+      // Only the FIRST turn sits inside the retry: once it has ended, the
+      // session did real work and a failure after that (an input-request
+      // resume, a schema re-prompt) is never re-spawned past.
+      await ctx.agents!.sendPromptAndWait(attemptSession, firstPrompt)
+      sessionId = attemptSession
+      break
+    } catch (err) {
+      // A declared `retry` covers every transport failure, spawn included;
+      // the implicit default covers only a session lost mid-turn — a spawn
+      // failure is usually deterministic (bad cwd, missing adapter) and the
+      // fan-out spawn circuit breaker wants to see it at once.
+      const retryable = step.retry !== undefined ? isAgentTransportFailure(err) : isAgentSessionLost(err)
+      if (attempt >= maxAttempts || !retryable || ctx.signal?.aborted) throw err
+      if (attemptSession !== undefined) await retireLostSession(ctx, attemptSession)
+      const delayMs = agentRetryDelayMs(retry!, attempt + 1)
+      ctx.onAgentRetry?.({
+        stepId: step.id,
+        attempt: attempt + 1,
+        maxAttempts,
+        error: errorMessage(err),
+        ...(attemptSession !== undefined ? { sessionId: attemptSession } : {}),
+        delayMs,
+      })
+      await sleepUnlessAborted(delayMs, ctx.signal)
+      if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
+      assertBudget()
+    }
+  }
+  await settleInputRequests(ctx, step, sessionId)
+  // `harness.tools` has no generic per-spawn allowlist mechanism reaching
+  // this runtime today (see `AgentHarness.tools`'s doc) — record that
+  // honestly on the run record rather than silently dropping the field.
+  const harnessOut =
+    harness !== undefined
+      ? {
+          ...harness,
+          ...(harness.tools && harness.tools.length > 0
+            ? { toolsApplied: false as const }
+            : {}),
+        }
+      : undefined
   if (step.policy && ctx.agents!.onAwaitingInput) {
     await ctx.agents!.onAwaitingInput(sessionId, step.policy)
   }
@@ -1494,6 +1645,7 @@ async function execStepBody(
         cacheKey: ctx.cacheKey,
         runGateCommand: ctx.runGateCommand,
         onGateReport: ctx.onGateReport,
+        onAgentRetry: ctx.onAgentRetry,
         spawned: ctx.spawned,
         usedArtifactNames: ctx.usedArtifactNames,
       })
@@ -1726,7 +1878,7 @@ async function runFinally(steps: readonly RunStep[], ctx: RunCtx, bodyFailed: bo
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "workspace" | "artifactsDir" | "runId" | "onArtifact" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "spawned" | "usedArtifactNames">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "workspace" | "artifactsDir" | "runId" | "onArtifact" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "onAgentRetry" | "spawned" | "usedArtifactNames">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
@@ -1793,5 +1945,6 @@ export async function runWorkflow(
     onStepFailed: args.onStepFailed,
     runGateCommand: args.runGateCommand,
     onGateReport: args.onGateReport,
+    onAgentRetry: args.onAgentRetry,
   }, args.maxTotalCostUsd)
 }

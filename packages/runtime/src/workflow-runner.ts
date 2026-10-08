@@ -1572,6 +1572,21 @@ async function executeRunWorkflow(
           }
         }
       },
+      onAgentRetry: (ev) => {
+        // An agent step's session died under it (transport, not content) and
+        // the runtime is re-spawning a fresh one — AIP-58 `step.retrying`.
+        eventLog?.append({
+          stepId: ev.stepId,
+          type: "step.retrying",
+          data: {
+            attempt: ev.attempt,
+            maxAttempts: ev.maxAttempts,
+            error: ev.error,
+            delayMs: ev.delayMs,
+            ...(ev.sessionId !== undefined ? { sessionId: ev.sessionId } : {}),
+          },
+        })
+      },
       onStepStart: (stepId, info) => {
         const cached = info?.cached === true
         if (nonLeafStepIds.has(stepId)) return
