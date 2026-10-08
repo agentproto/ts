@@ -34,7 +34,7 @@ describe("session-steward-hourly routine", () => {
       apply: true,
       askSessions: false,
       userOrigins: ["chat-starter", "vscode"],
-      closableOrigins: ["cron:*", "gate"],
+      closableOrigins: ["cron:*", "gate", "workflow", "review"],
     })
   })
 })

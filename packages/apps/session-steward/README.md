@@ -53,7 +53,7 @@ the `userOrigins` / `closableOrigins` inputs:
   `origin` and no `parentSessionId` (a human launched it). A would-be close —
   even a rule-certain `close`/`stuck`, even a confident `done` — is recorded
   as a `needs-input` flag with reason `flag (origine utilisateur)`.
-- **Close allowed:** `cron:*`, `gate`, and executors (a session with a
+- **Close allowed:** `cron:*`, `gate`, `workflow` (step sessions), `review` (reviewer lanes), and executors (a session with a
   `parentSessionId`).
 
 A trailing `*` in either list is a prefix wildcard. The report carries the

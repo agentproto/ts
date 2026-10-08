@@ -12,7 +12,7 @@ export const DEFAULT_USER_ORIGINS = ["chat-starter", "vscode"]
 /** Origins the steward MAY close under the current rules. `cron:*` matches
  *  every cron-spawned job (`origin: "cron:<jobId>"`); `gate` matches
  *  supervision-gate sessions. */
-export const DEFAULT_CLOSABLE_ORIGINS = ["cron:*", "gate"]
+export const DEFAULT_CLOSABLE_ORIGINS = ["cron:*", "gate", "workflow", "review"]
 
 /** The reason shown (and recorded) when a would-be close is bounded by origin. */
 export const USER_ORIGIN_REASON = "flag (origine utilisateur)"
@@ -46,7 +46,7 @@ export function resolveOriginPolicy(policy) {
 /** The origin class of a candidate:
  *  - `"user"` — human-launched: a `userOrigins` match, OR a root with no
  *    origin and no parent. FLAG ONLY, never close.
- *  - `"closable"` — a `closableOrigins` match (cron:*, gate) or an executor
+ *  - `"closable"` — a `closableOrigins` match (cron:*, gate, workflow, review) or an executor
  *    (has a `parentSessionId`). Close allowed under the current rules.
  *  `userOrigins` wins over both `closableOrigins` and the executor rule, so a
  *  `vscode` executor is still user-origin. An unrecognized root origin is

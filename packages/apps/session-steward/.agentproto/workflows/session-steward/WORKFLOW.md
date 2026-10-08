@@ -91,11 +91,11 @@ inputs:
     type: array
     description: >-
       Origins that may be closed under the current rules. A trailing `*` is a
-      prefix wildcard. Default `["cron:*", "gate"]`. Executors (a session with
+      prefix wildcard. Default `["cron:*", "gate", "workflow", "review"]`. Executors (a session with
       a `parentSessionId`) are closable regardless.
     items:
       type: string
-    default: ["cron:*", "gate"]
+    default: ["cron:*", "gate", "workflow", "review"]
 outputs: {}
 steps:
   - id: modelRoles
@@ -495,7 +495,8 @@ as observed, never nudged.
   `origin`/`parentSessionId` runs through the pure `decideAction`
   (`origin-policy.mjs`): a `userOrigins` match (`chat-starter`, `vscode` by
   default) or a root with no origin and no parent is FLAG-ONLY, even with
-  `apply: true` and a confident `done` verdict. `cron:*`, `gate`, and
+  `apply: true` and a confident `done` verdict. `cron:*`, `gate`, `workflow`
+  (workflow-step sessions), `review` (reviewer lanes) and
   executors (a session with a `parentSessionId`) stay closeable. Both lists
   are workflow inputs; a trailing `*` is a prefix wildcard.
 - The report carries an `origin` column and the retained action (e.g.
