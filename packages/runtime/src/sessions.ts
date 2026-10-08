@@ -4517,8 +4517,9 @@ export interface SessionsRegistry {
    *  orphans a running process tree. */
   forget(id: string): boolean
   /** Await every best-effort fire-and-forget per-session write currently in
-   *  flight — today the `CommandLogEntry` → `ToolCallRecord` chain
-   *  `recordCommand` kicks off. Resolves once they've all settled (success
+   *  flight — the `CommandLogEntry` → `ToolCallRecord` chain `recordCommand`
+   *  kicks off, and the transcript-stream closes `forget()`/`shutdown()`
+   *  start. Resolves once they've all settled (success
    *  or swallowed failure), and immediately when nothing is pending. A live
    *  daemon never needs this (it doesn't remove the transcript base dir out
    *  from under an in-flight write); a test that tears that dir down right
@@ -5271,8 +5272,9 @@ export function createSessionsRegistry(opts?: {
   // serve --interactive's Ctrl-C race; without this, the second
   // call writes an empty snapshot over the real one.
   let shutdownDone = false
-  // In-flight best-effort per-session writes fired fire-and-forget (today:
-  // `recordCommand`'s CommandLogEntry → ToolCallRecord chain). Tracked only
+  // In-flight best-effort per-session writes fired fire-and-forget
+  // (`recordCommand`'s CommandLogEntry → ToolCallRecord chain, and the
+  // transcript-stream closes `forget()`/`shutdown()` start). Tracked only
   // so `settlePendingWrites()` can await them settling. A live daemon never
   // needs this — nothing removes `transcriptBaseDir` under it — but a caller
   // that tears that dir down right after the write was kicked off (tests do)
@@ -11873,8 +11875,8 @@ export function createSessionsRegistry(opts?: {
       }
       // Don't leak: tear down the emitter so backfill listeners stop.
       rt.emitter.removeAllListeners()
-      void transcriptWriter.close(id)
-      void terminalTranscriptWriter.close(id)
+      trackWrite(transcriptWriter.close(id))
+      trackWrite(terminalTranscriptWriter.close(id))
       tracedSessions.delete(id)
       // Cleanup listeners read the row (to follow its `continuedTo` chain), so
       // notify BEFORE it leaves the map.
@@ -11975,8 +11977,10 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
       }
     }
-    void transcriptWriter.closeAll()
-    void terminalTranscriptWriter.closeAll()
+    // Tracked so `settlePendingWrites()` after `shutdown()` waits for the
+    // streams to finish flushing into `transcriptBaseDir`.
+    trackWrite(transcriptWriter.closeAll())
+    trackWrite(terminalTranscriptWriter.closeAll())
     // Sync flush so quick sessions (spawned + ended in less than
     // PERSIST_DEBOUNCE_MS) aren't lost. The debounced async write
     // may have been cancelled by clearTimeout above, but a 200-byte

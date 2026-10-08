@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  createSessionsRegistry,
+  createSessionsRegistry as createSessionsRegistryImpl,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
   type AgentSessionLike,
@@ -37,6 +37,15 @@ async function pollUntil<T>(read: () => Promise<T | null>, timeoutMs = 2000): Pr
   }
 }
 
+/** Every registry a test builds, so `afterEach` can drain its in-flight
+ *  writes before removing the dir they write into. */
+const liveRegistries: ReturnType<typeof createSessionsRegistryImpl>[] = []
+const createSessionsRegistry: typeof createSessionsRegistryImpl = (...args) => {
+  const reg = createSessionsRegistryImpl(...args)
+  liveRegistries.push(reg)
+  return reg
+}
+
 describe("createSessionsRegistry", () => {
   let tmp: string
   let persistPath: string
@@ -46,11 +55,18 @@ describe("createSessionsRegistry", () => {
     persistPath = join(tmp, "sessions.json")
   })
 
-  afterEach(() => {
-    // The registry's transcript writer flushes asynchronously, so a plain rm
-    // can race a late write and fail with ENOTEMPTY. `maxRetries` makes
-    // `fs.rm` retry the whole removal on ENOTEMPTY/EBUSY/EPERM, absorbing it.
-    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  afterEach(async () => {
+    // A registry keeps writing into `<tmp>/sessions` after the test's last
+    // assertion: `recordCommand`'s fire-and-forget CommandLogEntry →
+    // ToolCallRecord chain (async mkdir + appendFile) and the transcript
+    // streams `shutdown()` closes without awaiting. Removing the dir while
+    // one of those lands fails with ENOTEMPTY, so shut every registry down
+    // (idempotent) and drain its writes before the rm.
+    for (const reg of liveRegistries.splice(0)) {
+      reg.shutdown()
+      await reg.settlePendingWrites()
+    }
+    rmSync(tmp, { recursive: true, force: true })
   })
 
   it("loads historical descriptors from sessions.json on boot", () => {
