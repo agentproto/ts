@@ -918,6 +918,55 @@ describe("computeLiveness — joins over buckets, not just the legacy file (AIP-
     expect(liveness.state).toBe("idle")
   })
 
+  it.each(["killed", "error", "exited"] as const)(
+    "a %s session never counts as live (a just-killed worktree's only session must not keep it `sessions`)",
+    async (status) => {
+      const home = await mkdtemp(join(tmpdir(), "agentproto-live-home-"))
+      dirs.push(home)
+      process.env.HOME = home
+
+      const worktree = await realpath(await mkdtemp(join(tmpdir(), "agentproto-live-wt-")))
+      dirs.push(worktree)
+
+      const dir = join(home, ".agentproto", "workspaces", "alpha")
+      await mkdir(dir, { recursive: true })
+      await writeFile(
+        join(dir, "sessions.json"),
+        JSON.stringify({
+          sessions: [{ id: `dead-${status}`, startedAt: "2026-08-22T00:00:00.000Z", status, cwd: worktree }],
+        }),
+      )
+
+      expect((await computeLiveness(worktree)).state).toBe("idle")
+    },
+  )
+
+  it("counts starting and running sessions, ignores a killed sibling in the same cwd", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agentproto-live-home-"))
+    dirs.push(home)
+    process.env.HOME = home
+
+    const worktree = await realpath(await mkdtemp(join(tmpdir(), "agentproto-live-wt-")))
+    dirs.push(worktree)
+
+    const dir = join(home, ".agentproto", "workspaces", "alpha")
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, "sessions.json"),
+      JSON.stringify({
+        sessions: [
+          { id: "booting", startedAt: "2026-08-22T00:00:00.000Z", status: "starting", cwd: worktree },
+          { id: "going", startedAt: "2026-08-22T00:00:00.000Z", status: "running", cwd: worktree },
+          { id: "gone", startedAt: "2026-08-22T00:00:00.000Z", status: "killed", cwd: worktree },
+        ],
+      }),
+    )
+
+    const liveness = await computeLiveness(worktree)
+    expect(liveness.state).toBe("sessions")
+    expect(liveness.sessions.map((s) => s.id).sort()).toEqual(["booting", "going"])
+  })
+
   it("an explicit sessionsPath still means that one file, nothing else — bucket rows don't bleed into a pinned read", async () => {
     const home = await mkdtemp(join(tmpdir(), "agentproto-live-home-"))
     dirs.push(home)

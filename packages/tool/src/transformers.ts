@@ -41,6 +41,14 @@ export interface PaginatedOptions<TItem> {
    * envelope; set this to reproduce that wrapper (default `"items"`).
    */
   itemKey?: string
+  /**
+   * Row cap for the NON-paginated (no `limit`/`cursor`) call. Unset = the
+   * legacy unbounded `{ [itemKey]: [...] }`. When set and the list is longer,
+   * the wrapper carries the first `defaultLimit` rows plus
+   * `{ total, truncated: true, nextCursor }` so the caller can page on —
+   * keeps a tool whose rows pile up (terminals) under the MCP output cap.
+   */
+  defaultLimit?: number
 }
 
 /**
@@ -65,7 +73,7 @@ export interface PaginatedOptions<TItem> {
 export function paginated<TItem extends object>(
   opts: PaginatedOptions<TItem>,
 ): ToolTransformer<unknown, readonly TItem[], McpTextResult> {
-  const { project, keyOf, maxLimit = 200, itemKey = "items" } = opts
+  const { project, keyOf, maxLimit = 200, itemKey = "items", defaultLimit } = opts
   return {
     name: "paginated",
     wrapShape: (shape: ZodRawShape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
@@ -80,6 +88,13 @@ export function paginated<TItem extends object>(
         return projectRows
           ? textResult(toolText({ ...page, items: page.items.map(project) }, params))
           : textResult(toolText(page, params))
+      }
+      if (defaultLimit !== undefined && items.length > defaultLimit) {
+        const page = paginate(items, { limit: defaultLimit }, { maxLimit: Math.max(maxLimit, defaultLimit), keyOf })
+        const rows = compact ? page.items.map(project) : page.items
+        return textResult(
+          JSON.stringify({ [itemKey]: rows, total: page.total, truncated: true, nextCursor: page.nextCursor }),
+        )
       }
       const rows = compact ? items.map(project) : items
       return textResult(JSON.stringify({ [itemKey]: rows }))

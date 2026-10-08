@@ -283,7 +283,7 @@ import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
-import type { BranchGcKind, BranchGcRunner, BranchGcVerdictRecorder } from "./branch-gc.js"
+import { withBranchGcApplySummary, type BranchGcKind, type BranchGcRunner, type BranchGcVerdictRecorder } from "./branch-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -3210,15 +3210,17 @@ export async function startHttpServer(
           try {
             const base = str("base")
             const anchor = str("anchor")
-            const result = await opts.runBranchGc({
-              repoRoot: resolved.repoRoot,
-              apply,
-              includeReviewed: bool("includeReviewed"),
-              ...(base ? { base } : {}),
-              ...(scopes?.length ? { scopes } : {}),
-              ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
-              ...(anchor ? { anchor } : {}),
-            })
+            const result = withBranchGcApplySummary(
+              await opts.runBranchGc({
+                repoRoot: resolved.repoRoot,
+                apply,
+                includeReviewed: bool("includeReviewed"),
+                ...(base ? { base } : {}),
+                ...(scopes?.length ? { scopes } : {}),
+                ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
+                ...(anchor ? { anchor } : {}),
+              }),
+            )
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))
           } catch (err) {

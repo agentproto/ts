@@ -34,6 +34,7 @@ import type {
   BranchGcVerdictReader,
   BranchGcPlanView,
 } from "../branch-gc.js"
+import { summarizeBranchGcApply, withBranchGcApplySummary } from "../branch-gc.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -214,7 +215,7 @@ describe("POST /branches/gc + /branches/gc/verdict — HTTP routes", () => {
       expect(seen()).toBeUndefined()
       const ok = await post(http, "/branches/gc", { repoRoot: "/repo", apply: "true", scopes: ["local"] })
       expect(ok.status).toBe(200)
-      expect(await ok.json()).toEqual(APPLY_RESULT)
+      expect(await ok.json()).toEqual(withBranchGcApplySummary(APPLY_RESULT))
       expect(seen()).toMatchObject({ apply: true, scopes: ["local"] })
     } finally {
       await http.stop()
@@ -303,7 +304,11 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(isError(bad)).toBe(true)
       expect(seen()).toBeUndefined()
       const ok = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", apply: "true", scopes: ["local", "orphan"] } })
-      expect(JSON.parse(text(ok))).toEqual(APPLY_RESULT)
+      expect(JSON.parse(text(ok))).toEqual(withBranchGcApplySummary(APPLY_RESULT))
+      expect(JSON.parse(text(ok))).toMatchObject({
+        status: "ok",
+        applySummary: { status: "ok", totals: { deleted: 1, skipped: 0, failed: 0 }, restoreLog: APPLY_RESULT.mode === "apply" ? APPLY_RESULT.restoreLog : null },
+      })
       expect(seen()).toMatchObject({ apply: true, scopes: ["local", "orphan"] })
     } finally {
       await client.close()
@@ -473,6 +478,17 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(done!.status).toBe("done")
       expect(done!.restoreLog).toBe("/state/branch-gc/repo/restore-fake.json")
       expect(done!.outcomeCounts).toEqual({ deleted: 2, held: 1 })
+      expect((done as { applySummary?: unknown }).applySummary).toEqual({
+        status: "ok",
+        totals: { deleted: 2, skipped: 1, failed: 0 },
+        byScope: {
+          local: { deleted: 1, skipped: 0, failed: 0 },
+          remote: { deleted: 0, skipped: 1, failed: 0 },
+          orphan: { deleted: 1, skipped: 0, failed: 0 },
+        },
+        byResult: { deleted: 2, held: 1 },
+        restoreLog: "/state/branch-gc/repo/restore-fake.json",
+      })
     } finally {
       await client.close()
     }
@@ -488,17 +504,20 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     try {
       const start = JSON.parse(
         text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })),
-      ) as { jobId: string; resultPath: string; followUp: { tool: string; args: { jobId: string }; pollAfterMs: number; hint: string } }
+      ) as { jobId: string; resultPath?: string; followUp: { tool: string; args: { jobId: string }; pollAfterMs: number; hint: string } }
       expect(start.followUp.tool).toBe("branch_gc_status")
       expect(start.followUp.args.jobId).toBe(start.jobId)
       expect(start.followUp.pollAfterMs).toBe(30000)
       expect(start.followUp.hint).toContain("branch_gc_status")
-      expect(start.resultPath.endsWith(`${start.jobId}.json`)).toBe(true)
+      // The result file does not exist until the job finishes, so a running
+      // job must not announce a path that would 404.
+      expect(start).not.toHaveProperty("resultPath")
 
       const running = JSON.parse(
         text(await client.callTool({ name: "branch_gc_status", arguments: { jobId: start.jobId } })),
-      ) as { resultPath: string; followUp: { pollAfterMs: number } }
-      expect(running.resultPath.endsWith(`${start.jobId}.json`)).toBe(true)
+      ) as { status: string; resultPath?: string; followUp: { pollAfterMs: number } }
+      expect(running.status).toBe("running")
+      expect(running).not.toHaveProperty("resultPath")
       expect(running.followUp.pollAfterMs).toBe(30000)
     } finally {
       release(PLAN_RESULT)
@@ -520,9 +539,22 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(view.resultPath).toBe(join(jobsDir, `${FAKE_ID}.json`))
       expect(view.restoreLog).toBe("/state/branch-gc/repo/restore-x.json")
       expect(view.outcomeCounts).toEqual({ deleted: 1 })
+      // A result file written before applySummary existed is summarised on read.
+      expect((view as { applySummary?: { status: string; totals: unknown } }).applySummary).toMatchObject({
+        status: "ok",
+        totals: { deleted: 1, skipped: 0, failed: 0 },
+      })
       // full: true includes the parsed result
-      const full = JSON.parse(text(await client.callTool({ name: "branch_gc_status", arguments: { jobId: FAKE_ID, full: true } }))) as { status: string; result: unknown }
-      expect(full.result).toEqual(APPLY_RESULT)
+      const full = JSON.parse(text(await client.callTool({ name: "branch_gc_status", arguments: { jobId: FAKE_ID, full: true } }))) as {
+        status: string
+        result: { outcomes: unknown[]; restoreLog: string; plan: { entries?: unknown } }
+        page: unknown
+      }
+      // An apply result's default slice is its outcomes; the (large) plan entries stay on disk.
+      expect(full.result.outcomes).toEqual(APPLY_RESULT.mode === "apply" ? APPLY_RESULT.outcomes : [])
+      expect(full.result.restoreLog).toBe("/state/branch-gc/repo/restore-x.json")
+      expect(full.result.plan.entries).toBeUndefined()
+      expect(full.page).toEqual({ section: "outcomes", total: 1, returned: 1 })
     } finally {
       await client.close()
       await rm(jobsDir, { recursive: true, force: true })
@@ -578,5 +610,182 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     } finally {
       await unknown.close()
     }
+  })
+
+  describe("branch_gc_status filtering + pagination", () => {
+    const BIG_KINDS = ["local", "remote", "orphan"] as const
+    const CLASSES = ["reclaim", "review", "hold"] as const
+    const bigPlan = (n: number): BranchGcPlanView => ({
+      ...PLAN,
+      entries: Array.from({ length: n }, (_, i) => ({
+        ...PLAN.entries[0]!,
+        name: `b/${i}`,
+        kind: BIG_KINDS[i % 3]!,
+        class: CLASSES[i % 3]!,
+      })),
+    })
+    const bigResult = (n: number): BranchGcResult => ({ mode: "plan", plan: bigPlan(n), summary: SUMMARY })
+
+    async function startDone(client: Client, result: BranchGcResult, runnerRelease: (r: BranchGcResult) => void): Promise<string> {
+      const started = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })
+      const { jobId } = JSON.parse(text(started)) as { jobId: string }
+      runnerRelease(result)
+      for (let i = 0; i < 100; i++) {
+        const r = JSON.parse(text(await client.callTool({ name: "branch_gc_status", arguments: { jobId } }))) as { status: string }
+        if (r.status === "done") return jobId
+        await new Promise(res => setTimeout(res, 10))
+      }
+      throw new Error("job never finished")
+    }
+
+    async function withJob<T>(result: BranchGcResult, fn: (client: Client, jobId: string) => Promise<T>): Promise<T> {
+      let release!: (r: BranchGcResult) => void
+      const gate = new Promise<BranchGcResult>(res => {
+        release = res
+      })
+      const client = await harness({ runBranchGc: () => gate })
+      try {
+        return await fn(client, await startDone(client, result, release))
+      } finally {
+        await client.close()
+      }
+    }
+
+    type Slice = {
+      result: { plan: { entries?: Array<{ name: string; class: string; kind: string }> }; outcomes?: unknown[] }
+      page: { section: string; total: number; returned: number; nextCursor?: string }
+    }
+    const status = async (client: Client, args: Record<string, unknown>) =>
+      JSON.parse(text(await client.callTool({ name: "branch_gc_status", arguments: args }))) as Slice
+
+    it("full: true returns one default page (100) of a big plan with a nextCursor, not the whole result", async () => {
+      await withJob(bigResult(250), async (client, jobId) => {
+        const first = await status(client, { jobId, full: true })
+        expect(first.page).toMatchObject({ section: "entries", total: 250, returned: 100 })
+        expect(first.result.plan.entries).toHaveLength(100)
+        expect(first.page.nextCursor).toBeTruthy()
+        expect(first.result).toHaveProperty("summary")
+      })
+    })
+
+    it("pages through every entry exactly once via cursor", async () => {
+      await withJob(bigResult(250), async (client, jobId) => {
+        const names: string[] = []
+        let cursor: string | undefined
+        let pages = 0
+        do {
+          const p = await status(client, { jobId, limit: 80, ...(cursor ? { cursor } : {}) })
+          names.push(...p.result.plan.entries!.map(e => e.name))
+          cursor = p.page.nextCursor
+          pages++
+        } while (cursor)
+        expect(pages).toBe(4)
+        expect(names).toHaveLength(250)
+        expect(new Set(names).size).toBe(250)
+      })
+    })
+
+    it("classes + scopes filter before paging; any slice param implies full", async () => {
+      await withJob(bigResult(250), async (client, jobId) => {
+        const reclaim = await status(client, { jobId, classes: ["reclaim"] })
+        // i % 3 === 0 -> class reclaim AND kind local
+        expect(reclaim.page.total).toBe(84)
+        expect(reclaim.result.plan.entries!.every(e => e.class === "reclaim")).toBe(true)
+        const none = await status(client, { jobId, classes: ["reclaim"], scopes: ["remote"] })
+        expect(none.page).toEqual({ section: "entries", total: 0, returned: 0 })
+        const remote = await status(client, { jobId, scopes: ["remote"], limit: 5 })
+        expect(remote.page).toMatchObject({ total: 83, returned: 5 })
+        expect(remote.page.nextCursor).toBeTruthy()
+      })
+    })
+
+    it("without full or slice params the view is still just the summary", async () => {
+      await withJob(bigResult(250), async (client, jobId) => {
+        const view = (await status(client, { jobId })) as unknown as Record<string, unknown>
+        expect(view.result).toBeUndefined()
+        expect(view.page).toBeUndefined()
+      })
+    })
+
+    it("apply results page their outcomes and filter by result/scope; section: outcomes on a plan is an error", async () => {
+      const outcomes = Array.from({ length: 30 }, (_, i) => ({
+        kind: BIG_KINDS[i % 3]!,
+        name: `o/${i}`,
+        sha: "c".repeat(40),
+        result: i % 5 === 0 ? ("failed" as const) : ("deleted" as const),
+      }))
+      const apply: BranchGcResult = { mode: "apply", plan: bigPlan(40), summary: SUMMARY, outcomes, restoreLog: "/r.json" }
+      await withJob(apply, async (client, jobId) => {
+        const failed = await status(client, { jobId, results: ["failed"] })
+        expect(failed.page).toMatchObject({ section: "outcomes", total: 6, returned: 6 })
+        expect(failed.result.plan.entries).toBeUndefined()
+        const localDeleted = await status(client, { jobId, results: ["deleted"], scopes: ["local"], limit: 3 })
+        expect(localDeleted.page.returned).toBe(3)
+        const entries = await status(client, { jobId, section: "entries", classes: ["hold"] })
+        expect(entries.page.section).toBe("entries")
+        expect(entries.result.outcomes).toBeUndefined()
+      })
+      await withJob(bigResult(3), async (client, jobId) => {
+        const r = await client.callTool({ name: "branch_gc_status", arguments: { jobId, section: "outcomes" } })
+        expect(isError(r)).toBe(true)
+        expect(text(r)).toContain("only available on an apply result")
+        const bad = await client.callTool({ name: "branch_gc_status", arguments: { jobId, cursor: "garbage" } })
+        expect(isError(bad)).toBe(true)
+        expect(text(bad)).toContain("invalid `cursor`")
+      })
+    })
+
+    it("a default-page response for a realistic big plan stays well under the MCP output cap", async () => {
+      await withJob(bigResult(650), async (client, jobId) => {
+        const raw = text(await client.callTool({ name: "branch_gc_status", arguments: { jobId, full: true } }))
+        expect(raw.length).toBeLessThan(65_000)
+      })
+    })
+  })
+})
+
+describe("summarizeBranchGcApply", () => {
+  const out = (kind: "local" | "remote" | "orphan", result: string): never =>
+    ({ kind, name: `${kind}/${result}`, sha: "c".repeat(40), result }) as never
+  const apply = (outcomes: unknown[], restoreLog: string | null = null): Extract<BranchGcResult, { mode: "apply" }> => ({
+    mode: "apply",
+    plan: PLAN,
+    summary: SUMMARY,
+    outcomes: outcomes as never,
+    restoreLog,
+  })
+
+  it("counts deleted / skipped / failed per scope and in total, with the restore log path", () => {
+    const s = summarizeBranchGcApply(
+      apply(
+        [out("local", "deleted"), out("local", "deleted"), out("local", "held"), out("remote", "failed"), out("remote", "deleted"), out("orphan", "skipped-review")],
+        "/r/restore.json",
+      ),
+    )
+    expect(s.totals).toEqual({ deleted: 3, skipped: 2, failed: 1 })
+    expect(s.byScope).toEqual({
+      local: { deleted: 2, skipped: 1, failed: 0 },
+      remote: { deleted: 1, skipped: 0, failed: 1 },
+      orphan: { deleted: 0, skipped: 1, failed: 0 },
+    })
+    expect(s.restoreLog).toBe("/r/restore.json")
+    expect(s.status).toBe("partial")
+  })
+
+  it("status: ok when only deletes/holds, partial on an abort, failed when nothing was deleted but something failed, noop when nothing happened", () => {
+    expect(summarizeBranchGcApply(apply([out("local", "deleted"), out("local", "held")])).status).toBe("ok")
+    expect(summarizeBranchGcApply(apply([out("local", "deleted"), out("local", "aborted-moved")])).status).toBe("partial")
+    expect(summarizeBranchGcApply(apply([out("local", "failed"), out("remote", "held")])).status).toBe("failed")
+    expect(summarizeBranchGcApply(apply([])).status).toBe("noop")
+    expect(summarizeBranchGcApply(apply([out("local", "aborted-vanished")])).status).toBe("noop")
+  })
+
+  it("withBranchGcApplySummary hoists status, leaves plans untouched, and doesn't mutate its input", () => {
+    expect(withBranchGcApplySummary(PLAN_RESULT)).toBe(PLAN_RESULT)
+    const input = apply([out("local", "deleted")], "/r.json")
+    const withSummary = withBranchGcApplySummary(input) as Extract<BranchGcResult, { mode: "apply" }>
+    expect(withSummary.status).toBe("ok")
+    expect(withSummary.applySummary?.restoreLog).toBe("/r.json")
+    expect(input).not.toHaveProperty("applySummary")
   })
 })

@@ -303,6 +303,46 @@ describe("terminal_sessions_list — compact default / full / fields / paginatio
   })
 })
 
+describe("terminal_sessions_list — bounded when called without limit/cursor", () => {
+  it("caps an unpaged call at 50 rows with total/truncated/nextCursor; the cursor reaches the rest", async () => {
+    const { client, close } = await buildHarness({ registry })
+    const spawned = new Set<string>()
+    for (let i = 0; i < 60; i++) {
+      spawned.add(
+        registry.spawnPty({ workspaceSlug: "default", cwd: workspace, argv: ["bash"], cols: 80, rows: 24 }).id,
+      )
+    }
+    try {
+      const first = parse<{ sessions: Array<{ id: string }>; total: number; truncated: boolean; nextCursor: string }>(
+        await call(client, "terminal_sessions_list"),
+      )
+      expect(first.sessions).toHaveLength(50)
+      expect(first).toMatchObject({ total: 60, truncated: true })
+      const rest = parse<{ items: Array<{ id: string }>; nextCursor?: string }>(
+        await call(client, "terminal_sessions_list", { cursor: first.nextCursor, limit: 50 }),
+      )
+      expect(rest.items).toHaveLength(10)
+      expect(rest.nextCursor).toBeUndefined()
+      const seen = new Set([...first.sessions, ...rest.items].map(r => r.id))
+      expect(seen).toEqual(spawned)
+    } finally {
+      await close()
+    }
+  })
+
+  it("a list within the cap is unchanged (no total/truncated)", async () => {
+    const { client, close } = await buildHarness({ registry })
+    registry.spawnPty({ workspaceSlug: "default", cwd: workspace, argv: ["bash"], cols: 80, rows: 24 })
+    try {
+      const out = parse<Record<string, unknown>>(await call(client, "terminal_sessions_list"))
+      expect(out).not.toHaveProperty("truncated")
+      expect(out).not.toHaveProperty("total")
+    } finally {
+      await close()
+    }
+  })
+})
+
 describe("command_list — compact default (provenance kept) / full / fields / pagination", () => {
   it("default rows are compact but keep origin/callerSessionId; full:true restores the descriptor", async () => {
     const { client, close } = await buildHarness({ registry })

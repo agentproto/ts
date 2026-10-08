@@ -157,12 +157,17 @@ import {
   timedOutWaiting,
   type BackgroundJob,
 } from "./background-jobs.js"
-import type {
-  BranchGcResult,
-  BranchGcRunInput,
-  BranchGcRunner,
-  BranchGcVerdictRecorder,
-  BranchGcVerdictReader,
+import {
+  BRANCH_GC_PAGE_MAX,
+  sliceBranchGcResult,
+  summarizeBranchGcApply,
+  withBranchGcApplySummary,
+  type BranchGcResultSliceInput,
+  type BranchGcResult,
+  type BranchGcRunInput,
+  type BranchGcRunner,
+  type BranchGcVerdictRecorder,
+  type BranchGcVerdictReader,
 } from "./branch-gc.js"
 import { basename, join } from "node:path"
 import { homedir } from "node:os"
@@ -939,8 +944,8 @@ const branchGcBackgroundView = (job: BackgroundJob<BranchGcResult>): object =>
     hint:
       "Running in the background; a plan on a large repo takes a few minutes. " +
       "Call branch_gc_status with this jobId about every 30 s. When done it " +
-      "returns the summary; the full result is written to resultPath (pass " +
-      "full: true to get it inline).",
+      "returns the summary and, once the file exists, a resultPath holding " +
+      "the full result (pass full: true to get a filtered/paged slice inline).",
   })
 
 /** The `done` view `branch_gc_status` returns — identical for an in-memory
@@ -948,19 +953,20 @@ const branchGcBackgroundView = (job: BackgroundJob<BranchGcResult>): object =>
  *  disk-fallback contract: callers see the same shape either way). */
 const branchGcDoneView = (
   jobId: string,
-  resultPath: string,
+  resultPath: string | undefined,
   result: BranchGcResult,
-  full: boolean,
+  slice: BranchGcResultSliceInput | undefined,
   endedAt?: string,
 ): object => ({
   jobId,
   status: "done",
   ...(endedAt !== undefined ? { endedAt } : {}),
-  resultPath,
+  ...(resultPath !== undefined ? { resultPath } : {}),
   summary: result.summary,
-  // Apply results carry the restore log path and a per-outcome tally —
-  // exactly what a caller needs to decide "safe?" without fetching the
-  // full ~MB result with `full: true`.
+  // Apply results carry the restore log path, a per-outcome tally and the
+  // per-scope deleted/skipped/failed summary — exactly what a caller needs
+  // to decide "safe?" without fetching the full ~MB result with `full: true`.
+  // Result files written before `applySummary` existed are summarised here.
   ...(result.mode === "apply"
     ? {
         restoreLog: result.restoreLog ?? null,
@@ -968,9 +974,10 @@ const branchGcDoneView = (
           acc[o.result] = (acc[o.result] ?? 0) + 1
           return acc
         }, {}),
+        applySummary: result.applySummary ?? summarizeBranchGcApply(result),
       }
     : {}),
-  ...(full ? { result } : {}),
+  ...(slice ? sliceBranchGcResult(result, slice) : {}),
 })
 
 const worktreeGcBackgroundView = (job: BackgroundJob<WorktreeGcResult>): object =>
@@ -1032,7 +1039,7 @@ const backgroundStatusResult = async <T>(
           jobId: job.id,
           status: "done",
           endedAt: job.endedAt,
-          resultPath: jobs.resultPathFor(job.id),
+          ...(job.resultPath !== undefined ? { resultPath: job.resultPath } : {}),
           result: job.result,
         }),
       },
@@ -1092,6 +1099,8 @@ export function registerSessionTools(
     project: (item: TItem) => object
     keyOf: (item: TItem) => string | number | null
     itemKey: string
+    /** Row cap for a call with no `limit`/`cursor` (default: unbounded). */
+    defaultLimit?: number
   }): void => {
     registerBuiltinTool<TInput, TItem[]>(server, {
       id: args.id,
@@ -1105,6 +1114,7 @@ export function registerSessionTools(
           keyOf: args.keyOf,
           maxLimit: 200,
           itemKey: args.itemKey,
+          ...(args.defaultLimit !== undefined ? { defaultLimit: args.defaultLimit } : {}),
         }),
       ],
     })
@@ -2263,7 +2273,10 @@ export function registerSessionTools(
       "Each entry includes `kind`, `pty`, `status`, age, etc. Use this when you only want " +
       "the terminal subset. COMPACT BY DEFAULT: each entry is session_list's slim " +
       "projection; pass `full: true` (or `compact: false`) for the complete, " +
-      "unprojected per-session record.",
+      "unprojected per-session record. Without `limit`/`cursor` at most 50 rows " +
+      "come back; when there are more the reply carries `total`, " +
+      "`truncated: true` and a `nextCursor` — pass it as `cursor` (with a " +
+      "`limit`) for the rest, or filter with `onlyAlive` / `status`.",
     schema: terminalSessionsListSchema,
     body: async input => {
       // Full list (includeArchived) for subtree correctness — see
@@ -2291,6 +2304,9 @@ export function registerSessionTools(
     project: compactSessionItemWithProvenance,
     keyOf: s => s.id,
     itemKey: "sessions",
+    // Dead terminals pile up: an unpaged call used to return every row
+    // (65k+ chars, over the MCP output cap). Cap it and say so.
+    defaultLimit: 50,
   })
 
   // ── command_list ────────────────────────────────────────────────
@@ -3657,7 +3673,9 @@ export function registerSessionTools(
       "open PR head, PR check unavailable, or younger than `minAgeDays`). " +
       "`apply: true` (requires explicit `scopes`) deletes only `reclaim` " +
       "entries, re-classifying each right before deleting it, and returns " +
-      "the path of a restore log (sha + re-create command per deleted ref). " +
+      "the path of a restore log (sha + re-create command per deleted ref) " +
+      "plus a top-level `status` and an `applySummary` (deleted / skipped / " +
+      "failed counts per scope, and the restore log path). " +
       "A plan can take minutes on a big repo: as an MCP caller, pass " +
       "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
       "the returned jobId instead of blocking. A `wait: false` (or `waitMs` " +
@@ -3728,7 +3746,7 @@ export function registerSessionTools(
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
         }
-        const { job, promise } = branchGcJobs.start(() => runBranchGc(runInput))
+        const { job, promise } = branchGcJobs.start(async () => withBranchGcApplySummary(await runBranchGc(runInput)))
         if (input.wait === false) {
           return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job)) }] }
         }
@@ -3750,15 +3768,64 @@ export function registerSessionTools(
     "branch_gc_status",
     "Poll a branch_gc run started with `wait: false` (or one that fell back to " +
       "the background via `waitMs`). While running: status + elapsed time. When " +
-      "done: the plan's own summary, the path of the full result saved on disk " +
-      "(`resultPath`), and — with `full: true` — the full result itself. While " +
-      "running the view also carries `followUp.pollAfterMs` (poll every 30 s). " +
-      "When failed: the error.",
+      "done: the plan's own summary (plus, for an apply, `applySummary` — " +
+      "deleted/skipped/failed per scope and the restore log path) and the path " +
+      "of the full result saved on disk (`resultPath`). The full result is " +
+      "too big to return whole, so `full: true` (or any of `section`, " +
+      "`classes`, `scopes`, `results`, `limit`, `cursor`) returns ONE filtered " +
+      "page of it: `result` (summary + plan metadata + the selected list) and " +
+      "`page { section, total, returned, nextCursor }` — default 100 rows, " +
+      "pass `nextCursor` back as `cursor` for the next page. Use " +
+      "`classes: [\"reclaim\"]` to see only what an apply would delete. " +
+      "While running the view carries `followUp.pollAfterMs` (poll every " +
+      "30 s). When failed: the error.",
     {
       jobId: z.string().describe("Job id returned by `branch_gc` (`bgc_…`)."),
-      full: mcpBool.optional().describe("Include the full result JSON, not just the summary. Default false."),
+      full: mcpBool.optional().describe("Include a filtered/paged slice of the full result (see description). Implied by any other slice param. Default false."),
+      section: z
+        .enum(["entries", "outcomes"])
+        .optional()
+        .describe("Which list to return: plan `entries` or apply `outcomes`. Default `entries` for a plan, `outcomes` for an apply."),
+      classes: z
+        .array(z.enum(["reclaim", "review", "hold"]))
+        .optional()
+        .describe("Entries only: keep these classes (e.g. [\"reclaim\"])."),
+      scopes: z.array(branchGcKind).optional().describe("Keep these ref kinds (local, remote, orphan)."),
+      results: z
+        .array(
+          z.enum(["deleted", "held", "skipped-review", "aborted-moved", "aborted-vanished", "aborted-reclassified", "failed"]),
+        )
+        .optional()
+        .describe("Outcomes only: keep these outcome results."),
+      limit: mcpNumber.optional().describe(`Rows per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
+      cursor: z.string().optional().describe("`page.nextCursor` from the previous page."),
     },
     async input => {
+      const wantsSlice =
+        input.full === true ||
+        input.section !== undefined ||
+        input.classes !== undefined ||
+        input.scopes !== undefined ||
+        input.results !== undefined ||
+        input.limit !== undefined ||
+        input.cursor !== undefined
+      const slice: BranchGcResultSliceInput | undefined = wantsSlice
+        ? {
+            ...(input.section ? { section: input.section } : {}),
+            ...(input.classes ? { classes: input.classes } : {}),
+            ...(input.scopes ? { scopes: input.scopes } : {}),
+            ...(input.results ? { results: input.results } : {}),
+            ...(input.limit !== undefined ? { limit: input.limit } : {}),
+            ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+          }
+        : undefined
+      const doneView = (...args: Parameters<typeof branchGcDoneView>): { content: Array<{ type: "text"; text: string }>; isError?: boolean } => {
+        try {
+          return { content: [{ type: "text", text: JSON.stringify(branchGcDoneView(...args)) }] }
+        } catch (err) {
+          return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true }
+        }
+      }
       const job = branchGcJobs.get(input.jobId)
       if (!job) {
         // The map is per-process: an id from a prior daemon lifetime (or one
@@ -3777,14 +3844,12 @@ export function registerSessionTools(
             isError: true,
           }
         }
-        const view = branchGcDoneView(input.jobId, branchGcJobs.resultPathFor(input.jobId), parsed, input.full === true)
-        return { content: [{ type: "text", text: JSON.stringify(view) }] }
+        return doneView(input.jobId, branchGcJobs.resultPathFor(input.jobId), parsed, slice)
       }
       if (job.status !== "done") {
         return { content: [{ type: "text", text: JSON.stringify(branchGcJobs.progressView(job)) }] }
       }
-      const view = branchGcDoneView(job.id, branchGcJobs.resultPathFor(job.id), job.result!, input.full === true, job.endedAt)
-      return { content: [{ type: "text", text: JSON.stringify(view) }] }
+      return doneView(job.id, job.resultPath, job.result!, slice, job.endedAt)
     },
   )
 

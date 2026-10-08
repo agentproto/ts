@@ -159,6 +159,48 @@ describe("paginated", () => {
     expect(parsed.nextCursor).toBeDefined()
   })
 
+  describe("defaultLimit (the no-limit/no-cursor call)", () => {
+    const many: Item[] = Array.from({ length: 7 }, (_, i) => ({ ...items[0]!, id: `m${i}` }))
+
+    it("caps the legacy wrapper and says so: first N rows + total/truncated/nextCursor", async () => {
+      const t = paginated<Item>({ project: compact, keyOf: i => i.id, itemKey: "things", defaultLimit: 3 })
+      const w = t.wrapHandler(async () => many)
+      const first = JSON.parse(textOf((await w({})) as McpTextResult)) as {
+        things: Array<{ id: string }>
+        total: number
+        truncated: boolean
+        nextCursor: string
+      }
+      expect(first.things.map(r => r.id)).toEqual(["m0", "m1", "m2"])
+      expect(first).toMatchObject({ total: 7, truncated: true })
+      const second = JSON.parse(textOf((await w({ cursor: first.nextCursor, limit: 10 })) as McpTextResult)) as {
+        items: Array<{ id: string }>
+      }
+      expect(second.items.map(r => r.id)).toEqual(["m3", "m4", "m5", "m6"])
+    })
+
+    it("leaves a list within the cap, and an explicit limit, exactly as before", async () => {
+      const t = paginated<Item>({ project: compact, itemKey: "things", defaultLimit: 7 })
+      const w = t.wrapHandler(async () => many)
+      const parsed = JSON.parse(textOf((await w({})) as McpTextResult)) as Record<string, unknown>
+      expect(parsed.things).toHaveLength(7)
+      expect(parsed).not.toHaveProperty("truncated")
+      expect(parsed).not.toHaveProperty("total")
+      const t2 = paginated<Item>({ project: compact, defaultLimit: 3 })
+      const paged = JSON.parse(textOf((await t2.wrapHandler(async () => many)({ limit: 5 })) as McpTextResult)) as { items: unknown[] }
+      expect(paged.items).toHaveLength(5)
+    })
+
+    it("still honours compact: false / full on the capped rows", async () => {
+      const t = paginated<Item>({ project: compact, itemKey: "things", defaultLimit: 2 })
+      const parsed = JSON.parse(textOf((await t.wrapHandler(async () => many)({ full: true })) as McpTextResult)) as {
+        things: Array<Record<string, unknown>>
+      }
+      expect(parsed.things).toHaveLength(2)
+      expect(Object.keys(parsed.things[0]!).length).toBeGreaterThan(Object.keys(compact(many[0]!)).length)
+    })
+  })
+
   it("defaults itemKey to 'items'", async () => {
     const t = paginated<Item>({ project: compact })
     const w = t.wrapHandler(async () => items)
