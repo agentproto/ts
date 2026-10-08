@@ -159,13 +159,13 @@ interface TranscriptView {
   digest: string
 }
 
-async function readTranscript(sessionId: string): Promise<TranscriptView> {
+async function readTranscript(sessionId: string, baseDir?: string): Promise<TranscriptView> {
   let messages: ExportedMessage[]
   try {
     // The handoff exchange and the daemon-composed preamble are plumbing,
     // not work: leave them out of the digest, the extraction and the
     // resume prompt.
-    messages = (await exportDaemonEventsSession(sessionId)).messages.filter(m => !m.internal)
+    messages = (await exportDaemonEventsSession(sessionId, undefined, baseDir)).messages.filter(m => !m.internal)
   } catch {
     return { messages: [], digest: "(no daemon transcript available)" }
   }
@@ -362,7 +362,7 @@ export async function buildContextCheckpoint(
   const gitStatus = sectionsReq.gitStatus ? await captureGitStatus(desc.cwd) : undefined
   // Read BEFORE the handoff turn so the digest and extraction describe the
   // work itself, not the handoff exchange.
-  const { messages, digest: recentDigest } = await readTranscript(desc.id)
+  const { messages, digest: recentDigest } = await readTranscript(desc.id, opts.baseDir)
   const { reply, turn: handoffTurn } = await runHandoffTurn(desc, opts)
 
   const sections: ContextCheckpointSections = {}
