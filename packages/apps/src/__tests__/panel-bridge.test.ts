@@ -47,8 +47,10 @@ describe("panelBridgeScript standalone detection", () => {
     expect(callFn).toContain("_standaloneApp")
     expect(callFn).toContain(".callTool(name, args || {})")
     expect(callFn).toContain("rpcRequest('tools/call'")
-    // Both paths share the same isError/JSON-unwrap logic — not duplicated.
-    expect(callFn.match(/isError/g)).toHaveLength(1)
+    // Both paths share the same envelope-unwrap logic — not duplicated.
+    expect(callFn).toContain(".then(_unwrapToolResult)")
+    expect(callFn).not.toContain("isError")
+    expect(js.match(/env\.isError/g)).toHaveLength(1)
   })
 
   it("compiles as valid JavaScript", () => {
@@ -78,5 +80,54 @@ describe("panelBridgeScript display-mode toggle", () => {
     // controller instead of taking the floating one.
     expect(js).toContain("window.AgentprotoUI.installDisplayMode =")
     expect(js).toContain("mountToggle: mountToggle")
+  })
+})
+
+describe("panelBridgeScript callTool envelope unwrap", () => {
+  // Evaluate just the emitted callTool + unwrap helpers against a stubbed
+  // transport — the rest of the script needs a real window/document.
+  const start = js.indexOf("// An MCP tool-result envelope")
+  const end = js.indexOf("// ── Display-mode")
+  const factory = new Function(
+    "rpcRequest",
+    "_standaloneApp",
+    `${js.slice(start, end)}\nreturn callTool;`,
+  ) as (rpc: unknown, standalone: unknown) => (name: string, args?: unknown) => Promise<unknown>
+
+  const text = (value: string, isError?: true) => ({
+    content: [{ type: "text", text: value }],
+    ...(isError ? { isError } : {}),
+  })
+  const envelope = (data: unknown) => text(JSON.stringify(data))
+  const rows = [{ appId: "@acme/greeter", category: "builtin" }]
+
+  const viaHost = (result: unknown) => factory(() => Promise.resolve(result), null)("app_catalog")
+  const viaStandalone = (result: unknown) =>
+    factory(null, { callTool: () => Promise.resolve(result) })("app_catalog")
+
+  it("returns the parsed payload of a single-wrapped result (postMessage host path)", async () => {
+    await expect(viaHost(envelope(rows))).resolves.toEqual(rows)
+  })
+
+  it("peels the second wrap the standalone tool-call route adds", async () => {
+    const doubled = text(JSON.stringify(envelope(rows)))
+    await expect(viaStandalone(doubled)).resolves.toEqual(rows)
+    await expect(viaStandalone(text(JSON.stringify(doubled)))).resolves.toEqual(rows)
+  })
+
+  it("throws the inner text when an inner layer is an error under an outer success", async () => {
+    const inner = text("boom", true)
+    await expect(viaStandalone(text(JSON.stringify(inner)))).rejects.toThrow("boom")
+  })
+
+  it("throws on an outer isError", async () => {
+    await expect(viaHost(text("nope", true))).rejects.toThrow("nope")
+    await expect(viaHost({ isError: true })).rejects.toThrow("tool error")
+  })
+
+  it("returns non-JSON text as the string and does not mistake plain objects for envelopes", async () => {
+    await expect(viaHost(text("plain words"))).resolves.toBe("plain words")
+    await expect(viaHost(envelope({ content: "not an array" }))).resolves.toEqual({ content: "not an array" })
+    await expect(viaHost({ content: [] })).resolves.toEqual({})
   })
 })

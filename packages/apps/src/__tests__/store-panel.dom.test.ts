@@ -44,6 +44,18 @@ const CATALOG_ENTRY = {
   hasUi: true,
 }
 
+/** What POST /apps/:id/tool-call really answers for a builtin tool — the
+ *  already-wrapped result wrapped a second time (runtime app-tools.ts). */
+function okDoubleWrapped(data: unknown): ToolResult {
+  return ok(ok(data))
+}
+
+const BUILTIN_ROWS = [
+  { appId: "@agentproto/review-panel", name: "Reviews", description: "PR review ledger", category: "builtin", installed: true, hasUi: true },
+  { appId: "@agentproto/session-chat-widget", name: "Session Chat", description: "Chat widget", category: "builtin", installed: true, hasUi: true },
+  { appId: "@agentproto/store", name: "App Store", description: "This panel", category: "builtin", installed: true, hasUi: true },
+]
+
 const BASE_HANDLERS: Record<string, ToolHandler> = {
   app_catalog: () => ok([CATALOG_ENTRY]),
   app_list: () =>
@@ -217,6 +229,70 @@ describe("store panel — render (real panel script, fake bridge)", () => {
     expect(installs.length).toBe(2)
     expect(installs[0]!.args.url).toBe(CATALOG_ENTRY.source.url)
     }
+  })
+})
+
+describe("store panel — standalone double-wrapped results, builtins, status", () => {
+  const CHAT = { appId: "@agentik/session-chat", name: "Session Chat", installed: true, hasUi: true }
+  const NO_UI = { appId: "@agentproto/code-team", name: "Code Team", installed: true, hasUi: false }
+  const standalone = {
+    app_catalog: () => okDoubleWrapped([...BUILTIN_ROWS, CHAT, NO_UI, CATALOG_ENTRY, { ...CATALOG_ENTRY, appId: "@acme/other", name: "Other" }]),
+    app_list: () => okDoubleWrapped([{ appId: CHAT.appId, name: CHAT.name }, { appId: NO_UI.appId, name: NO_UI.name }]),
+    app_updates: () => okDoubleWrapped([]),
+  }
+
+  it("renders from double-wrapped envelopes instead of the empty state", async () => {
+    const { window } = renderPanel({ handlers: standalone })
+    await settle()
+    const html = window.document.getElementById("content")!.innerHTML
+    expect(html).not.toContain("store-empty")
+    expect(html).toContain("Installed")
+    expect(html).toContain("Available")
+    expect(html).toContain("Greeter")
+  })
+
+  it("lists builtin panels from the catalog (open by default), skipping the store itself", async () => {
+    const { window, document } = renderPanel({ handlers: standalone })
+    await settle()
+    const details = document.querySelector("details.store-builtins")!
+    expect(details.getAttribute("open")).not.toBeNull()
+    const ids = Array.from(details.querySelectorAll("button[data-decision=open]")).map(b => b.getAttribute("data-appid"))
+    expect(ids).toEqual(["@agentproto/review-panel", "@agentproto/session-chat-widget"])
+    expect(details.textContent).toContain("PR review ledger")
+    // Builtin rows never leak into Available/Featured.
+    const main = document.getElementById("content")!.innerHTML.split("<details")[0]!
+    expect(main).not.toContain("@agentproto/review-panel")
+    void window
+  })
+
+  it("a builtin's Open button opens /apps/<appId>/ui in a new tab", async () => {
+    const { window } = renderPanel({ handlers: standalone })
+    await settle()
+    click(window, 'button[data-decision="open"][data-appid="@agentproto/review-panel"]')
+    expect(window.open).toHaveBeenCalledWith("/apps/@agentproto/review-panel/ui", "_blank", "noopener")
+  })
+
+  it("builtin-only catalog still shows the empty state, plus the builtin list", async () => {
+    const { document } = renderPanel({
+      handlers: { app_catalog: () => okDoubleWrapped(BUILTIN_ROWS), app_list: () => okDoubleWrapped([]), app_updates: () => okDoubleWrapped([]) },
+    })
+    await settle()
+    const html = document.getElementById("content")!.innerHTML
+    expect(html).toContain("store-empty")
+    expect(html).toContain("store-builtin-item")
+  })
+
+  it("Open shows on installed cards whose catalog row hasUi, and only those", async () => {
+    const { document } = renderPanel({ handlers: standalone })
+    await settle()
+    expect(document.querySelector('#store-entry-\\@agentik\\/session-chat button[data-decision="open"]')).toBeTruthy()
+    expect(document.querySelector('#store-entry-\\@agentproto\\/code-team button[data-decision="open"]')).toBeNull()
+  })
+
+  it("replaces 'Connecting to bridge…' with installed/available/builtin counts", async () => {
+    const { document } = renderPanel({ handlers: standalone })
+    await settle()
+    expect(document.getElementById("statusbar")!.textContent).toBe("2 installed · 2 available · 3 builtin")
   })
 })
 

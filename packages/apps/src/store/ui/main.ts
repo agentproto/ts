@@ -1,5 +1,5 @@
 import "./style.css"
-import { render, isAgentappUrl } from "./render.js"
+import { render, isAgentappUrl, isBuiltin } from "./render.js"
 import type { CatalogRow, InstalledRow, StoreSnapshot, UpdateRow, InstallConfirmationRequest } from "./types.js"
 
 function getEl(id: string): HTMLElement {
@@ -205,9 +205,20 @@ function refresh(): Promise<void> {
       const rows: unknown[] = Array.isArray(sr.updates) ? sr.updates : (Array.isArray(updatesRaw) ? (updatesRaw as unknown[]) : [])
       snapshot.updates = (rows as UpdateRow[]).filter(u => u && u.appId)
       renderBody()
+      setStatus(summarize(snapshot))
       deepLinkInstall()
     })
     .catch((e: Error) => setStatus(`Error: ${e.message}`))
+}
+
+function summarize(snap: StoreSnapshot): string {
+  const available = snap.catalog.filter(r => !r.installed && !isBuiltin(r)).length
+  const builtin = snap.catalog.filter(isBuiltin).length
+  const warnings = snap.warnings?.length ?? 0
+  return (
+    `${snap.installed.length} installed · ${available} available · ${builtin} builtin` +
+    (warnings > 0 ? ` · ${warnings} warning${warnings === 1 ? "" : "s"}` : "")
+  )
 }
 
 function renderBody(): void {

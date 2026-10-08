@@ -641,6 +641,10 @@ async function dispatchAllowlistedAppTool(
     }
     if (!deps.dispatchTool) return notEnabled("app_tool_call")
     const result = await deps.dispatchTool(input.tool, args)
+    // `result` is usually already an MCP envelope, so this wraps it a second
+    // time. Installed apps and the builtin panel bridge
+    // (packages/apps/src/panel-bridge.ts `_unwrapToolResult`) unwrap
+    // recursively and depend on this shape — don't flatten it here.
     return textResult(result)
   } catch (err) {
     return errorResult(`app_tool_call: ${err instanceof Error ? err.message : String(err)}`)

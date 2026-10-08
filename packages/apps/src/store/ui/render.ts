@@ -40,7 +40,7 @@ export function installButton(catalogRow: CatalogRow): string {
 }
 
 export function renderCatalogFeatured(rows: readonly CatalogRow[]): string {
-  const featured = rows.filter(r => r.featured === true)
+  const featured = rows.filter(r => r.featured === true && !isBuiltin(r))
   if (featured.length === 0) return ""
   return featured
     .map(
@@ -59,6 +59,7 @@ export function renderCatalogAvailable(rows: readonly CatalogRow[]): string {
   for (const r of rows) {
     if (r.installed) continue
     if (r.featured === true) continue
+    if (isBuiltin(r)) continue
     const key = r.category && r.category !== "" ? r.category : "Other"
     const list = byCategory.get(key)
     if (list) list.push(r)
@@ -111,12 +112,24 @@ export function renderSourcesHeader(snapshot: { warnings?: string[] }): string {
   return `<div class="store-warnings">${snapshot.warnings.map(w => `<p class="store-warning">${esc(w)}</p>`).join("")}</div>`
 }
 
-export function renderBuiltins(builtinNames: readonly string[]): string {
-  if (builtinNames.length === 0) return ""
-  const details = `<details class="store-builtins"><summary>Builtin panels</summary><ul class="store-builtin-list">${builtinNames
-    .map(n => `<li class="store-builtin-item">${esc(n)}</li>`)
-    .join("")}</ul></details>`
-  return details
+const STORE_APP_ID = "@agentproto/store"
+
+export function isBuiltin(row: CatalogRow): boolean {
+  return row.category === "builtin"
+}
+
+/** Builtin panels from the catalog's `category === "builtin"` rows, each
+ *  with an Open button (the store itself is the current page, so it's left
+ *  out). Open by default — the list is the only way to reach them. */
+export function renderBuiltins(rows: readonly CatalogRow[]): string {
+  const builtins = rows.filter(r => isBuiltin(r) && r.appId !== STORE_APP_ID)
+  if (builtins.length === 0) return ""
+  const items = builtins
+    .map(
+      r => `<li class="store-builtin-item" id="store-entry-${esc(r.appId)}"><span class="store-builtin-name">${text(r.name, r.appId)}</span> <span class="store-builtin-desc">${text(r.description, "")}</span> <button class="sbtn store-open-btn" data-appid="${esc(r.appId)}" data-decision="open">Open</button></li>`,
+    )
+    .join("")
+  return `<details class="store-builtins" open><summary>Builtin panels</summary><ul class="store-builtin-list">${items}</ul></details>`
 }
 
 export function isAgentappUrl(url: string): boolean {
@@ -135,7 +148,7 @@ export function render(snapshot: StoreSnapshot): string {
   const installed = renderInstalled(snapshot.installed, snapshot.catalog, snapshot.updates)
   const featured = renderCatalogFeatured(snapshot.catalog)
   const available = renderCatalogAvailable(snapshot.catalog)
-  const builtins = renderBuiltins(["sessions-panel", "agents-overview", "bureau-sessions", "session-story", "live-session", "work-board"])
+  const builtins = renderBuiltins(snapshot.catalog)
   const sections: string[] = []
   sections.push(renderSourcesHeader(snapshot))
   if (installed !== "") {
@@ -148,7 +161,7 @@ export function render(snapshot: StoreSnapshot): string {
     sections.push(`<h2 class="store-section-title">Available</h2>`, `<div class="grill">${available}</div>`)
   }
   if (installed === "" && featured === "" && available === "") {
-    sections.push(storeEmpty(snapshot.catalog, snapshot.installed))
+    sections.push(storeEmpty(snapshot.catalog.filter(r => !isBuiltin(r)), snapshot.installed))
   }
   sections.push(builtins)
   return sections.join("\n")
