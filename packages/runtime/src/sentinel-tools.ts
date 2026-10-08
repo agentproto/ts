@@ -40,6 +40,7 @@ import {
   type SentinelTarget,
   type SentinelUntil,
 } from "./sentinel-providers/types.js"
+import type { CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
 import { mintSentinelId, type Sentinel, type SentinelStatus, type SentinelStore } from "./sentinel-store.js"
 
 // ── Shared create/cancel/view (MCP + HTTP) ───────────────────────────────
@@ -176,16 +177,28 @@ export async function createSentinelWatch(
   }
 }
 
-/** The shared stop path: best-effort provider cancel, then remove the
- *  record. `false` only means "no such sentinel" — a failed provider cancel
- *  never blocks the record's removal (a stuck provider-side resource must
- *  not strand `sentinel_unwatch`/`DELETE /sentinels/:id`). */
+/** The shared stop path: record a persisted cancel tombstone for the backing
+ *  remote (retried by the runtime sweep until the provider confirms), drop the
+ *  record, then attempt the remote delete. `false` only means "no such
+ *  sentinel" — a failed or unreachable provider never blocks the record's
+ *  removal (a stuck provider-side resource must not strand
+ *  `sentinel_unwatch`/`DELETE /sentinels/:id`). Without `tombstones` it
+ *  degrades to the old best-effort cancel. */
 export async function cancelSentinelWatch(
-  deps: Pick<SentinelWatchDeps, "store" | "resolveProvider">,
+  deps: Pick<SentinelWatchDeps, "store" | "resolveProvider"> & { tombstones?: CancelTombstoneStore },
   id: string,
 ): Promise<boolean> {
   const sentinel = deps.store.get(id)
   if (!sentinel) return false
+  if (deps.tombstones) {
+    try {
+      await deps.tombstones.cancel(sentinel.handle, () => deps.store.remove(id))
+      return true
+    } catch {
+      // The tombstone could not be made durable; fall through to the
+      // best-effort path so the operator is never stranded.
+    }
+  }
   const provider = await deps.resolveProvider(sentinel.provider)
   if (provider) {
     try {
@@ -257,6 +270,8 @@ export interface SentinelRuntimeLike {
 export interface RegisterSentinelToolsOptions {
   store: SentinelStore
   runtime: SentinelRuntimeLike
+  /** Persisted remote-cancel store (the runtime's `cancelTombstones`). */
+  tombstones?: CancelTombstoneStore
   resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
   isSessionAlive: (sessionId: string) => boolean
   /** The trusted `?callerSessionId=` of the connecting `/mcp` client — the
@@ -286,7 +301,7 @@ const urgencyField = z.enum(MESSAGE_URGENCIES as [MessageUrgency, ...MessageUrge
 const untilField = z.enum(["subject_terminal", "never"])
 
 export function registerSentinelTools(server: McpServer, opts: RegisterSentinelToolsOptions): void {
-  const { store, runtime, resolveProvider, isSessionAlive, callerSessionId, activeIntervalMs } = opts
+  const { store, runtime, resolveProvider, isSessionAlive, callerSessionId, activeIntervalMs, tombstones } = opts
 
   server.tool(
     "sentinel_watch",
@@ -350,7 +365,7 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
       "removes the record. Idempotent-ish: an unknown id is reported, not thrown.",
     { id: z.string().describe("Sentinel id (sen_...).") },
     async ({ id }: { id: string }) => {
-      const removed = await cancelSentinelWatch({ store, resolveProvider }, id)
+      const removed = await cancelSentinelWatch({ store, resolveProvider, ...(tombstones ? { tombstones } : {}) }, id)
       if (!removed) return fail("not_found", `sentinel_unwatch: no sentinel "${id}"`)
       return ok({ removed: true, id })
     },

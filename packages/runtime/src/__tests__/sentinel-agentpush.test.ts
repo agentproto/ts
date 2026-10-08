@@ -29,6 +29,7 @@ import { webhookSentinelProvider } from "../sentinel-providers/webhook.js"
 import { createWebhookHookStore } from "../sentinel-providers/webhook-hooks.js"
 import {
   deliveryPreferenceFor,
+  SentinelBackingExpiredError,
   singleMatch,
   type SentinelEvent,
   type SentinelHandle,
@@ -104,7 +105,8 @@ function fakeAgentpush() {
       return json(204, undefined)
     }
     if (!m[2] && method === "PATCH") {
-      sub.view.callback_url = body?.callback_url
+      if (body && "callback_url" in body) sub.view.callback_url = body.callback_url
+      if (body && "until" in body) sub.view.until = body.until
       return json(200, { subscription: sub.view })
     }
     if (m[2] === "/events" && method === "GET") {
@@ -183,6 +185,8 @@ function mkRuntime(store: SentinelStore, resolve: () => SentinelProviderHandle) 
     restartSession: async id => id,
     log: () => {},
     parkedPath: join(tmpdir(), `ap-parked-${process.pid}.jsonl`),
+    quarantinePath: join(tmpdir(), `ap-quarantine-${process.pid}.jsonl`),
+    cancelTombstonePath: join(tmpdir(), `ap-tombstones-${process.pid}.json`),
   })
   return { runtime, texts }
 }
@@ -220,7 +224,7 @@ describe("agentpush provider — lifecycle over HTTP", () => {
       provider: "agentpush",
       remoteId: "sub_1",
       cursor: "0",
-      state: { mode: "poll", consumerRef: "agentproto:sentinel:sen_ABC" },
+      state: { mode: "poll", consumerRef: "agentproto:sentinel:sen_ABC", signature: "v2" },
     })
     // The API key never lands in the handle that is persisted / returned.
     expect(JSON.stringify(handle)).not.toContain("ak_secret")
@@ -312,6 +316,77 @@ describe("agentpush provider — lifecycle over HTTP", () => {
       seq: 1,
     })
     expect(cursor).toBe("2")
+  })
+
+  it("renew → PATCH {until} on the backing subscription and keeps the handle", async () => {
+    const server = fakeAgentpush()
+    const provider = mkProvider(server)
+    const handle = await provider.create(SPEC, POLL, { sentinelId: "sen_R" })
+    const until = { kind: "at" as const, ms: Date.UTC(2026, 11, 1) }
+
+    const renewed = await provider.renew!(handle, until)
+
+    const [call] = server.callsTo("PATCH", /^\/subscriptions\/sub_1$/)
+    expect(call!.body).toEqual({ until })
+    expect(server.subs.get("sub_1")!.view.until).toEqual(until)
+    expect(renewed).toMatchObject({ remoteId: "sub_1", cursor: "0" })
+  })
+
+  it("renew on a deleted subscription (404) is a typed backing_subscription_expired — nothing is re-created", async () => {
+    const server = fakeAgentpush()
+    const provider = mkProvider(server)
+    const handle = await provider.create(SPEC, POLL)
+    server.subs.clear()
+
+    const err = await provider.renew!(handle, { kind: "at", ms: Date.UTC(2026, 11, 1) }).catch(e => e)
+    expect(err).toBeInstanceOf(SentinelBackingExpiredError)
+    expect(err).toMatchObject({ code: "backing_subscription_expired", remoteId: "sub_1" })
+    expect(server.callsTo("POST", /^\/subscriptions$/)).toHaveLength(1) // only the original create
+  })
+
+  it("renew on a row agentpush reports as expired is the same typed error (PATCH does not reject it)", async () => {
+    const server = fakeAgentpush()
+    const provider = mkProvider(server)
+    const handle = await provider.create(SPEC, POLL)
+    server.subs.get("sub_1")!.view.status = "expired"
+
+    await expect(provider.renew!(handle, { kind: "at", ms: Date.UTC(2026, 11, 1) })).rejects.toBeInstanceOf(
+      SentinelBackingExpiredError,
+    )
+  })
+
+  it("renew leaves a transient failure (5xx) as a plain error, not the expired error", async () => {
+    const server = fakeAgentpush()
+    const provider = mkProvider(server)
+    const handle = await provider.create(SPEC, POLL)
+    server.state.failAll = 503
+
+    const err = await provider.renew!(handle, { kind: "never" }).catch(e => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(SentinelBackingExpiredError)
+  })
+
+  it("poll reports unparseable items as malformed (seq, delivery id, error, digest, no payload) and still advances the cursor past them", async () => {
+    const server = fakeAgentpush()
+    const provider = mkProvider(server)
+    const handle = await provider.create(SPEC, POLL)
+    server.push(
+      "sub_1",
+      envelope("ok_1"),
+      { id: "poison", type: "github.pull_request.opened", data: { token: "ghp_SECRETSECRET" } },
+      envelope("ok_3"),
+    )
+
+    const res = await provider.poll!(handle, 10)
+
+    expect(res.events.map(e => e.id)).toEqual(["ok_1", "ok_3"])
+    expect(res.cursor).toBe("3")
+    expect(res.malformed).toHaveLength(1)
+    const [m] = res.malformed!
+    expect(m).toMatchObject({ seq: 2, remoteDeliveryId: "dlv_2", excerpt: { id: "poison" } })
+    expect(m!.error).toEqual(expect.any(String))
+    expect(m!.digest).toMatch(/^[0-9a-f]{64}$/)
+    expect(JSON.stringify(m)).not.toContain("ghp_SECRETSECRET")
   })
 
   it("cancel → DELETE, idempotent on 404; status reflects the subscription state", async () => {
@@ -466,6 +541,27 @@ describe("agentpush signature v2 (parseInbound)", () => {
     expect(provider.parseInbound!({ rawBody: body, headers: { "x-agentpush-signature": legacy } }, handle).ok).toBe(true)
     const bad = `sha256=${createHmac("sha256", "wrong").update(body).digest("hex")}`
     expect(provider.parseInbound!({ rawBody: body, headers: { "x-agentpush-signature": bad } }, handle)).toEqual({ ok: false, reason: "bad_signature" })
+  })
+
+  it("a handle created by this provider is stamped v2-only and rejects the legacy `sha256=` header", async () => {
+    const server = fakeAgentpush()
+    const real = mkProvider(server)
+    const created = await real.create(SPEC, { mode: "push", callbackUrl: "https://hooks.example.com" }, { sentinelId: "sen_V2" })
+    expect(created.state).toMatchObject({ mode: "push", signature: "v2" })
+    const secret = created.state!.callbackSecret as string
+    const legacy = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`
+
+    expect(real.parseInbound!({ rawBody: body, headers: { "x-agentpush-signature": legacy } }, created)).toEqual({
+      ok: false,
+      reason: "legacy_signature_rejected",
+    })
+    // The timestamped v2 form for the same subscription still verifies.
+    const ts = Math.floor(Date.now() / 1000)
+    const v2 = {
+      "x-agentpush-timestamp": String(ts),
+      "x-agentpush-signature": `v2=${computeSignatureV2(secret, ts, body)}`,
+    }
+    expect(real.parseInbound!({ rawBody: body, headers: v2 }, created).ok).toBe(true)
   })
 
   it("a verified but malformed payload is invalid_json / invalid_envelope", () => {

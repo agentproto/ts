@@ -174,6 +174,46 @@ export type DeliveryPreference =
       secret?: string
     }
 
+/** One polled item the provider could not turn into a {@link SentinelEvent}
+ *  (poison envelope). Reported — never silently skipped — so the runtime can
+ *  quarantine it durably BEFORE the cursor moves past it. Deliberately carries
+ *  no payload `data`: identifiers, the parse error, and a digest only, so the
+ *  quarantine record can be inspected without exposing secrets. */
+export interface SentinelMalformedItem {
+  /** Provider sequence number, when the item had one. */
+  seq?: number
+  /** The provider's own delivery id (agentpush `delivery_id`). */
+  remoteDeliveryId?: string
+  error: string
+  /** Best-effort string identifiers lifted from the envelope. */
+  excerpt?: { id?: string; type?: string; subject?: string; source?: string }
+  /** sha256 hex of the item's JSON, for correlating with the remote copy. */
+  digest?: string
+  bytes?: number
+}
+
+/** Result of one provider poll. */
+export interface SentinelPollResult {
+  events: SentinelEvent[]
+  cursor: string
+  /** Items that could not be parsed. The runtime quarantines each before it
+   *  acknowledges `cursor`. */
+  malformed?: SentinelMalformedItem[]
+}
+
+/** `renew` found the backing remote subscription already expired or deleted.
+ *  The caller must unsubscribe and recreate; a provider never silently
+ *  provisions a replacement. */
+export class SentinelBackingExpiredError extends Error {
+  readonly code = "backing_subscription_expired" as const
+  readonly remoteId?: string
+  constructor(message: string, remoteId?: string) {
+    super(message)
+    this.name = "SentinelBackingExpiredError"
+    if (remoteId !== undefined) this.remoteId = remoteId
+  }
+}
+
 /** The delivery a runtime/tool should request from `provider`: poll when it
  *  can poll (cheap, zero infra), otherwise push. Keeps every `create`/
  *  `attach` call site from hardcoding `mode: "poll"` now that push-only
@@ -219,10 +259,23 @@ export interface SentinelProviderHandle extends AdapterHandle {
    *  cursor). */
   attach(handle: SentinelHandle, delivery: DeliveryPreference): Promise<SentinelHandle>
   cancel(handle: SentinelHandle): Promise<void>
+  /** True when every handle owns a DISTINCT remote resource (agentpush: one
+   *  subscription per sentinel), so a failed `cancel` is worth persisting and
+   *  retrying as a cancel tombstone keyed by `provider + remoteId`. Providers
+   *  that share one remote across handles (the webhook provider's per-repo
+   *  hook, refcounted by holder) leave this unset and keep the best-effort
+   *  cancel. */
+  exclusiveRemote?: boolean
+  /** Extend the backing remote watch to `until` (MCP Events refresh). Throws
+   *  {@link SentinelBackingExpiredError} when the remote is already expired or
+   *  deleted; any other throw is a transient failure. Absent = the provider
+   *  holds no remote lifetime to extend (local-only watches). Returns the
+   *  (possibly updated) handle. */
+  renew?(handle: SentinelHandle, until: SentinelUntil): Promise<SentinelHandle>
   status(handle: SentinelHandle): Promise<{ ok: boolean; detail?: string; pending?: number }>
   /** Poll mode: events after `handle.cursor`, oldest first, plus the new
    *  cursor. */
-  poll?(handle: SentinelHandle, limit: number): Promise<{ events: SentinelEvent[]; cursor: string }>
+  poll?(handle: SentinelHandle, limit: number): Promise<SentinelPollResult>
   ack?(handle: SentinelHandle, cursor: string): Promise<void>
   /** Push mode: verify + parse one inbound HTTP request into events (called
    *  by the `"sentinel"` dialect on `POST /inbound/sentinel-<hookKey>`). */

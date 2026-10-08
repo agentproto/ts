@@ -22,11 +22,13 @@ import { decodeWhsecSecret } from "../webhook-egress/signing.js"
 import { verifyCallback, type ChallengeFailureReason, type ChallengeOutcome } from "../webhook-egress/challenge.js"
 import {
   deliveryPreferenceFor,
+  SentinelBackingExpiredError,
   type SentinelEvent,
   type SentinelProviderHandle,
   type SentinelSpec,
   type SentinelUntil,
 } from "../sentinel-providers/types.js"
+import type { CancelTombstoneStore } from "../sentinel-cancel-tombstones.js"
 import type { SentinelStore } from "../sentinel-store.js"
 import type { McpEventEnvelope } from "../webhook-egress/delivery.js"
 import { subscriptionId } from "./subscription-id.js"
@@ -101,6 +103,23 @@ export function callbackEndpointError(reason: ChallengeFailureReason, detail: st
   return new McpEventsError(-32015, `CallbackEndpointError: ${detail}`, { reason })
 }
 
+/**
+ * `-32016 BackingSubscriptionError` — the remote subscription behind a
+ * refresh could not be renewed. `data.reason`:
+ *   - `backing_subscription_expired`: the remote is already expired/deleted;
+ *     the caller must unsubscribe and subscribe again (a refresh never
+ *     silently provisions a second remote). Local state is untouched.
+ *   - `backing_renew_failed`: transient (provider unreachable); retry the
+ *     refresh. Local state is untouched.
+ */
+export function backingSubscriptionError(
+  reason: "backing_subscription_expired" | "backing_renew_failed",
+  detail: string,
+  subscriptionId: string,
+): McpEventsError {
+  return new McpEventsError(-32016, `BackingSubscriptionError: ${detail}`, { reason, subscriptionId })
+}
+
 // ── Serialize subscribe/unsubscribe mutations ────────────────────────────
 
 let mutationChain: Promise<unknown> = Promise.resolve()
@@ -167,6 +186,10 @@ export interface EventsUnsubscribeContext {
   principal: Principal
   store: SentinelStore
   resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
+  /** Persisted remote-cancel store. Present ⇒ unsubscribe records a tombstone
+   *  keyed by provider + remote id, drops the local row (delivery eligibility
+   *  ends immediately) and lets the sweep converge an unreachable remote. */
+  tombstones?: CancelTombstoneStore
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -286,9 +309,32 @@ export async function eventsSubscribe(
       if (target.kind !== "webhook") {
         throw invalidParams("identity_conflict", `subscription ${id} exists with a non-webhook target`)
       }
+      // Renew the backing remote FIRST: local TTL/secret only move once the
+      // remote lifetime has moved, so a failure leaves the previous state
+      // intact and local never outlives the remote.
+      let handle = existing.handle
+      const provider = await ctx.resolveProvider(existing.provider)
+      if (provider?.renew) {
+        try {
+          handle = await provider.renew(existing.handle, until)
+        } catch (err) {
+          if (err instanceof SentinelBackingExpiredError) {
+            throw backingSubscriptionError(
+              "backing_subscription_expired",
+              `${err.message}; unsubscribe and subscribe again`,
+              id,
+            )
+          }
+          throw backingSubscriptionError(
+            "backing_renew_failed",
+            err instanceof Error ? err.message : String(err),
+            id,
+          )
+        }
+      }
       const ref = ctx.store.materializeWebhookTargetRef(target)
       if (ref !== undefined) ctx.store.putSentinelSecret(ref, { secret })
-      ctx.store.update(id, { spec: { ...existing.spec, until }, status: "active" })
+      ctx.store.update(id, { spec: { ...existing.spec, until }, handle, status: "active" })
       return { id, refreshBefore: computeRefreshBefore(until), cursor: null }
     }
 
@@ -337,6 +383,16 @@ export async function eventsUnsubscribe(
   await withSubscribeMutex(async () => {
     const existing = ctx.store.get(id)
     if (!existing) return // idempotent: second call returns {} with no record
+    if (ctx.tombstones) {
+      try {
+        // Tombstone durable → local row dropped (no more deliveries) → remote
+        // delete attempted; if it fails the sweep retries until 404/204.
+        await ctx.tombstones.cancel(existing.handle, () => ctx.store.remove(id))
+        return
+      } catch {
+        // Could not persist the intent: fall back to best-effort below.
+      }
+    }
     const provider = await ctx.resolveProvider(existing.provider)
     if (provider) {
       try {
