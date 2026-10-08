@@ -84,6 +84,10 @@ export const codex: AgentCliHandle = defineAgentCli({
     conflictEnv: ["CODEX_API_KEY"],
   },
   sandbox: "./SANDBOX.md",
+  // Codex keeps a sqlite state db, PATH aliases and rollouts under CODEX_HOME
+  // and fails to start when it can't write there. An OS-confined spawn (app
+  // boundary) gets a per-session CODEX_HOME with only the login linked back.
+  stateHome: { env: "CODEX_HOME", defaultDir: ".codex", share: ["auth.json"] },
   protocol: "acp",
   acp: "./codex-acp.ACP.md",
   session: {

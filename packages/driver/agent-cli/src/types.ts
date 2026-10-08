@@ -791,6 +791,14 @@ export interface AgentCliDefinition {
    */
   authEnforce?: "always" | "when-configured"
   sandbox: string | Record<string, unknown>
+  /**
+   * The CLI's own mutable state home (codex: `CODEX_HOME`, default
+   * `~/.codex`). When the spawn is OS-confined (`fsZones` / `commandSandbox`),
+   * `$HOME` is denied, so the driver points `env` at an isolated per-session
+   * home (the host's `configDir` when given) and links only `share` back to
+   * the real one. Unconfined spawns are untouched. See `state-home.ts`.
+   */
+  stateHome?: AgentCliStateHome
   runner?: string | Record<string, unknown>
   protocol: AgentCliProtocol
   /** REQUIRED when protocol=acp. Workspace-relative ref to AIP-44 ACP.md. */
@@ -1320,6 +1328,20 @@ export interface AgentCliStartOptions {
    * caller is expected to warn (see `agentCliSupportsHostContextIsolation`).
    */
   isolateHostContext?: boolean
+}
+
+/** See {@link AgentCliDefinition.stateHome}. */
+export interface AgentCliStateHome {
+  /** Env var the CLI reads its home from (codex: `CODEX_HOME`). */
+  env: string
+  /** Default home relative to `$HOME` when `env` is unset (codex: `.codex`). */
+  defaultDir: string
+  /**
+   * Files of the real home symlinked into the isolated one and granted
+   * read+write through the sandbox — the login file (codex: `auth.json`), so
+   * auth works and a token refresh lands in the operator's real login.
+   */
+  share?: string[]
 }
 
 /** Filesystem zones handed to the driver — see {@link AgentCliStartOptions.fsZones}. */

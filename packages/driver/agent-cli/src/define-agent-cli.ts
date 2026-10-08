@@ -9,7 +9,8 @@ import { createAcpProtocolArm } from "./protocol/acp-client.js"
 import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
-import { wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
+import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
+import { prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
@@ -471,6 +472,23 @@ export function createAgentCliRuntime(
         env.CLAUDE_CONFIG_DIR = claudeConfigDir
       }
 
+      // A CLI that keeps mutable state under `$HOME` (codex: `~/.codex`) can't
+      // start once the OS sandbox denies `$HOME` — give a confined spawn its
+      // own home instead of opening the operator's (see `state-home.ts`).
+      const extraWritePaths = claudeConfigDir ? [claudeConfigDir] : []
+      if (
+        definition.stateHome &&
+        definition.protocol !== "proprietary" &&
+        (await willConfineAgentCliSpawn({ mode: opts?.commandSandbox, cwd, zones: opts?.fsZones }))
+      ) {
+        const isolated = prepareIsolatedStateHome(definition.stateHome, {
+          ...(opts?.configDir ? { configDir: opts.configDir } : {}),
+          env,
+        })
+        env[definition.stateHome.env] = isolated.dir
+        extraWritePaths.push(...isolated.writePaths)
+      }
+
       // The print arm spawns a fresh subprocess per turn — no
       // long-lived child, no AgentCliClient connect/events cycle.
       // Short-circuit here so buildProtocolArm is never called for it.
@@ -495,7 +513,7 @@ export function createAgentCliRuntime(
           printConfig: definition.print,
           commandSandbox: opts?.commandSandbox,
           ...(opts?.fsZones ? { fsZones: opts.fsZones } : {}),
-          ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+          ...(extraWritePaths.length ? { extraWritePaths } : {}),
           // Exact-file read grant — see the ACP arm's wrapAgentCliSpawn call.
           ...(opts?.additionalReadPaths?.length
             ? { extraReadPaths: opts.additionalReadPaths }
@@ -531,7 +549,7 @@ export function createAgentCliRuntime(
             mode: opts?.commandSandbox,
             cwd,
             ...(opts?.fsZones ? { zones: opts.fsZones } : {}),
-            ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+            ...(extraWritePaths.length ? { extraWritePaths } : {}),
             // Exact-file read grant (see additionalReadPaths above):
             // READ-only exceptions to the confinement boundary, never writes.
             ...(opts?.additionalReadPaths?.length
