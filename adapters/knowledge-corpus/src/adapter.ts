@@ -32,25 +32,35 @@
  */
 
 import {
+  CorpusEventEmitter,
   CorpusWorkspaceReader,
+  CorpusWorkspaceWriter,
+  appendAttestation,
   evaluateAccess,
+  evaluateCapability,
+  makeAttestation,
+  readAccessModes,
   readAccessSpec,
+  readAttestations,
   type AccessCaller,
   type AccessContext,
   type CorpusWorkspaceSnapshot,
   type FsPort,
   type ParsedFile,
 } from "@agentproto/corpus"
-import type {
-  IKnowledgeProvider,
-  KnowledgeCapabilities,
-  KnowledgeHit,
-  KnowledgeIngestInput,
-  KnowledgeQuery,
-  KnowledgeQueryResult,
-  KnowledgeSource,
-  ListSourcesFilter,
+import {
+  KnowledgeNotSupportedError,
+  type IKnowledgeProvider,
+  type KnowledgeCapabilities,
+  type KnowledgeHit,
+  type KnowledgeIngestInput,
+  type KnowledgeProvenance,
+  type KnowledgeQuery,
+  type KnowledgeQueryResult,
+  type KnowledgeSource,
+  type ListSourcesFilter,
 } from "@agentproto/knowledge-engine"
+import { readCorpusBlock, readCorpusFrontmatter } from "./frontmatter.js"
 import { buildCorpusIndex, hydrateHit, type CorpusIndex } from "./hydrate.js"
 
 export interface CorpusAdapterCoreOptions {
@@ -102,6 +112,12 @@ export interface CorpusAdapterCoreOptions {
    * in which case `internal` fails closed.
    */
   readonly accessContext?: AccessContext
+  /**
+   * Identity ref recorded on the attestation (and `_log.md` event)
+   * written by `supersede()`. Defaults to the caller's most-specific
+   * identity, else `ws://adapters/corpus`.
+   */
+  readonly actor?: string
 }
 
 export const CORPUS_ENGINE_ID = "corpus" as const
@@ -131,6 +147,7 @@ export class CorpusAdapterCore implements IKnowledgeProvider {
   private readonly loadSnapshotImpl: () => Promise<CorpusWorkspaceSnapshot>
   private readonly caller: AccessCaller | undefined
   private readonly accessContext: AccessContext
+  private readonly actor: string
 
   constructor(opts: CorpusAdapterCoreOptions) {
     this.fs = opts.fs
@@ -140,6 +157,8 @@ export class CorpusAdapterCore implements IKnowledgeProvider {
     this.capabilities = makeCapabilities(opts.backing.capabilities)
     this.caller = opts.caller
     this.accessContext = opts.accessContext ?? {}
+    this.actor =
+      opts.actor ?? opts.caller?.identityTree[0] ?? `ws://adapters/${CORPUS_ENGINE_ID}`
 
     const reader = new CorpusWorkspaceReader({ fs: this.fs })
     this.loadSnapshotImpl =
@@ -201,6 +220,157 @@ export class CorpusAdapterCore implements IKnowledgeProvider {
         "GDPR erasure goes through corpus.erase_personal_data which " +
         "preserves attestation hashes via content tombstoning)."
     )
+  }
+
+  /**
+   * Mark an AIP-10 entry (by slug) as superseded: flips
+   * `metadata.corpus.status` to `deprecated`, records `supersededBy`, and
+   * appends a `deprecated` attestation. The entry file and its audit chain
+   * survive — this is not `deleteSource()`. Written through
+   * `CorpusWorkspaceWriter` with a version-token CAS, so a stale snapshot
+   * surfaces as `CorpusVersionConflictError` rather than a lost update.
+   *
+   * With a `caller` set, requires the `curate` capability and a visible
+   * entry; an entry the caller can't see reads as "not found".
+   */
+  async supersede(id: string, by?: string): Promise<void> {
+    const snapshot = await this.loadSnapshotImpl()
+    const index = buildCorpusIndex(snapshot)
+
+    if (!index.entryBySlug.has(id) && index.sourceById.has(id)) {
+      throw new KnowledgeNotSupportedError(
+        this.id,
+        "supersede",
+        "AIP-10 sources are immutable; supersede the entry that cites them",
+      )
+    }
+    const entry = this.visibleEntry(index, id)
+    if (!entry) throw new Error(`CorpusAdapterCore: entry "${id}" not found`)
+    if (this.caller) {
+      const modes = snapshot.workspace
+        ? readAccessModes(snapshot.workspace.frontmatter)
+        : undefined
+      if (!evaluateCapability("curate", modes, this.caller).permitted) {
+        throw new Error(
+          `CorpusAdapterCore: caller lacks the "curate" capability required to supersede "${id}"`,
+        )
+      }
+    }
+    if (by !== undefined) {
+      if (by === id) {
+        throw new Error(`CorpusAdapterCore: entry "${id}" cannot supersede itself`)
+      }
+      if (!this.visibleEntry(index, by)) {
+        throw new Error(`CorpusAdapterCore: superseding entry "${by}" not found`)
+      }
+    }
+
+    const corpus = readCorpusFrontmatter(entry.frontmatter) as {
+      status?: string
+      supersededBy?: string
+    }
+    if (corpus.status === "archived") {
+      throw new Error(`CorpusAdapterCore: entry "${id}" is archived and cannot be superseded`)
+    }
+    if (
+      corpus.status === "deprecated" &&
+      (by === undefined || by === corpus.supersededBy)
+    ) {
+      return
+    }
+
+    const at = new Date(this.nowMs()).toISOString()
+    const metaIn = (entry.frontmatter.metadata as Record<string, unknown> | undefined) ?? {}
+    const corpusIn = (metaIn.corpus as Record<string, unknown> | undefined) ?? {}
+    const withStatus: Record<string, unknown> = {
+      ...entry.frontmatter,
+      updated_at: at,
+      metadata: {
+        ...metaIn,
+        corpus: {
+          ...corpusIn,
+          status: "deprecated",
+          ...(by !== undefined ? { supersededBy: by } : {}),
+        },
+      },
+    }
+    const frontmatter = appendAttestation(
+      withStatus,
+      makeAttestation({
+        kind: "deprecated",
+        identity: this.actor,
+        at,
+        note: by !== undefined ? `superseded by ${by}` : "superseded",
+      }),
+    )
+
+    const writer = new CorpusWorkspaceWriter({ fs: this.fs })
+    await writer.writeMarkdown(
+      this.workspacePath ? `${this.workspacePath}/${entry.path}` : entry.path,
+      { frontmatter, body: entry.body },
+      entry.versionToken,
+    )
+
+    // The attestation above is the canonical record; the log line is a
+    // rollup, so a failed append must not turn a committed write into an error.
+    try {
+      await new CorpusEventEmitter({
+        fs: this.fs,
+        clock: { now: () => new Date(at), nowMs: () => Date.parse(at) },
+        identity: {
+          resolve: async () => ({
+            principal: this.actor,
+            identityTree: this.caller?.identityTree ?? [this.actor],
+          }),
+        },
+        workspaceRoot: this.workspacePath,
+      }).emit("corpus.entry.deprecated", {
+        slug: id,
+        ...(by !== undefined ? { supersededBy: by } : {}),
+      })
+    } catch {
+      // intentionally ignored
+    }
+  }
+
+  /**
+   * Provenance for an AIP-10 entry slug, an AIP-10 source id, or a
+   * backing-engine source id that resolves (via its `metadata.corpus.entrySlug`)
+   * to an entry. Anything the caller isn't allowed to see — or that doesn't
+   * exist — is `null`, so existence never leaks.
+   */
+  async explain(id: string): Promise<KnowledgeProvenance | null> {
+    const snapshot = await this.loadSnapshotImpl()
+    const index = buildCorpusIndex(snapshot)
+
+    let entry = this.visibleEntry(index, id)
+    if (!entry && !index.sourceById.has(id) && !index.entryBySlug.has(id)) {
+      entry = await this.resolveViaBacking(id, index)
+    }
+    if (entry) return entryProvenance(entry)
+
+    const source = index.sourceById.get(id)
+    if (source && this.callerCanSeeFile(source)) return sourceProvenance(source, id)
+    return null
+  }
+
+  private visibleEntry(index: CorpusIndex, slug: string): ParsedFile | undefined {
+    const entry = index.entryBySlug.get(slug)
+    return entry && this.callerCanSeeFile(entry) ? entry : undefined
+  }
+
+  private async resolveViaBacking(
+    id: string,
+    index: CorpusIndex,
+  ): Promise<ParsedFile | undefined> {
+    let slug: unknown
+    try {
+      const backed = await this.backing.getSource(id)
+      slug = backed ? readCorpusBlock(backed.metadata).entrySlug : undefined
+    } catch {
+      return undefined
+    }
+    return typeof slug === "string" ? this.visibleEntry(index, slug) : undefined
   }
 
   async query(q: KnowledgeQuery): Promise<KnowledgeQueryResult> {
@@ -363,6 +533,53 @@ function sourceFromParsedFile(
       language: fm.language,
       tags: fm.tags,
       ...(metaRecord ?? {}),
+    },
+  }
+}
+
+function entryProvenance(entry: ParsedFile): KnowledgeProvenance {
+  const fm = entry.frontmatter
+  const corpus = readCorpusFrontmatter(fm) as {
+    status?: string
+    supersededBy?: string
+  }
+  const derivedFrom = Array.isArray(fm.sources)
+    ? fm.sources.filter((s): s is string => typeof s === "string")
+    : []
+  return {
+    sourceId: typeof fm.slug === "string" ? fm.slug : entry.path,
+    derivedFrom: Object.freeze(derivedFrom),
+    ...(corpus.supersededBy ? { supersededBy: corpus.supersededBy } : {}),
+    attestations: Object.freeze(
+      readAttestations(fm).map(a => ({
+        kind: a.kind,
+        identity: a.identity,
+        at: a.at,
+        ...(a.note ? { note: a.note } : {}),
+      })),
+    ),
+    metadata: {
+      type: "entry",
+      entryPath: entry.path,
+      status: corpus.status ?? "active",
+      supersedes: Array.isArray(fm.supersedes) ? fm.supersedes : [],
+    },
+  }
+}
+
+function sourceProvenance(file: ParsedFile, id: string): KnowledgeProvenance {
+  const fm = file.frontmatter
+  return {
+    sourceId: id,
+    derivedFrom: Object.freeze([]),
+    ...(typeof fm.superseded_by === "string" ? { supersededBy: fm.superseded_by } : {}),
+    metadata: {
+      type: "source",
+      sourcePath: file.path,
+      contentHash: fm.content_hash,
+      authority: fm.authority,
+      capturedAt: fm.captured_at,
+      capturedBy: fm.captured_by,
     },
   }
 }

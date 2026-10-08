@@ -13,6 +13,7 @@ import type {
   KnowledgeCapabilities,
   KnowledgeHit,
   KnowledgeIngestInput,
+  KnowledgeProvenance,
   KnowledgeQuery,
   KnowledgeQueryResult,
   KnowledgeSource,
@@ -28,6 +29,9 @@ interface StubOptions {
   failQuery?: boolean
   failIngest?: boolean
   deleteThrows?: boolean
+  supersedeThrows?: boolean
+  /** explain() result: a provenance, null (unknown id), or "throw". */
+  explain?: KnowledgeProvenance | null | "throw"
   modeUsed?: KnowledgeQueryMode
   engine?: string
   weight?: number
@@ -43,6 +47,7 @@ interface StubState {
   readonly health: boolean
   readonly ingested: KnowledgeIngestInput[]
   readonly deleted: string[]
+  readonly superseded: Array<{ id: string; by?: string }>
   disposed: number
 }
 
@@ -54,6 +59,7 @@ function makeStub(id: string, opts: StubOptions = {}) {
     health: opts.health ?? true,
     ingested: [],
     deleted: [],
+    superseded: [],
     disposed: 0,
   }
   const hits: KnowledgeHit[] = (opts.scores ?? []).map((score, i) => ({
@@ -106,6 +112,14 @@ function makeStub(id: string, opts: StubOptions = {}) {
     async deleteSource(sourceId: string) {
       if (opts.deleteThrows) throw new Error(`${id} delete failed`)
       state.deleted.push(sourceId)
+    },
+    async supersede(sourceId: string, by?: string) {
+      if (opts.supersedeThrows) throw new Error(`${id} supersede failed`)
+      state.superseded.push({ id: sourceId, ...(by !== undefined ? { by } : {}) })
+    },
+    async explain() {
+      if (opts.explain === "throw") throw new Error(`${id} explain failed`)
+      return opts.explain ?? null
     },
     async healthCheck() {
       return state.health
@@ -308,6 +322,52 @@ describe("FederatedKnowledgeProvider admin + lifecycle verbs", () => {
     const a = makeStub("a", { deleteThrows: true })
     const fed = new FederatedKnowledgeProvider({ providers: [a.resolved] })
     await expect(fed.deleteSource("src-1")).rejects.toThrow(/a delete failed/)
+  })
+
+  it("supersede: fans out to every provider and tolerates partial failure", async () => {
+    const a = makeStub("a", { supersedeThrows: true })
+    const b = makeStub("b")
+    const c = makeStub("c")
+    const fed = new FederatedKnowledgeProvider({
+      providers: [a.resolved, b.resolved, c.resolved],
+    })
+    await expect(fed.supersede("src-1", "src-2")).resolves.toBeUndefined()
+    expect(b.state.superseded).toEqual([{ id: "src-1", by: "src-2" }])
+    expect(c.state.superseded).toEqual([{ id: "src-1", by: "src-2" }])
+  })
+
+  it("supersede: throws when every provider rejects", async () => {
+    const a = makeStub("a", { supersedeThrows: true })
+    const fed = new FederatedKnowledgeProvider({ providers: [a.resolved] })
+    await expect(fed.supersede("src-1")).rejects.toThrow(/a supersede failed/)
+  })
+
+  it("explain: returns the first non-null provenance, skipping nulls and failures", async () => {
+    const prov: KnowledgeProvenance = {
+      sourceId: "src-1",
+      derivedFrom: ["raw-1"],
+      metadata: {},
+    }
+    const a = makeStub("a", { explain: "throw" })
+    const b = makeStub("b", { explain: null })
+    const c = makeStub("c", { explain: prov })
+    const fed = new FederatedKnowledgeProvider({
+      providers: [a.resolved, b.resolved, c.resolved],
+    })
+    expect(await fed.explain("src-1")).toEqual(prov)
+  })
+
+  it("explain: null when no provider knows the id", async () => {
+    const a = makeStub("a", { explain: null })
+    const b = makeStub("b", { explain: "throw" })
+    const fed = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    expect(await fed.explain("nope")).toBeNull()
+  })
+
+  it("explain: throws when every provider rejects", async () => {
+    const a = makeStub("a", { explain: "throw" })
+    const fed = new FederatedKnowledgeProvider({ providers: [a.resolved] })
+    await expect(fed.explain("src-1")).rejects.toThrow(/a explain failed/)
   })
 
   it("dispose: fans out to all providers", async () => {

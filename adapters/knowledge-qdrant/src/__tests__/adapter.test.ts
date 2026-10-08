@@ -427,3 +427,19 @@ describe("error surfacing", () => {
     )
   })
 })
+
+describe("supersede() + explain()", () => {
+  it("both throw a typed not-supported error without touching the network", async () => {
+    const { calls } = installFetchMock(() => ({ json: {} }))
+    const adapter = new QdrantKnowledgeAdapter(baseConfig())
+    await expect(adapter.supersede("a", "b")).rejects.toMatchObject({
+      name: "KnowledgeNotSupportedError",
+      operation: "supersede",
+    })
+    await expect(adapter.explain("a")).rejects.toMatchObject({
+      name: "KnowledgeNotSupportedError",
+      operation: "explain",
+    })
+    expect(calls).toHaveLength(0)
+  })
+})

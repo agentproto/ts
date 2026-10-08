@@ -22,6 +22,7 @@ import type {
   KnowledgeCapabilities,
   KnowledgeHit,
   KnowledgeIngestInput,
+  KnowledgeProvenance,
   KnowledgeQuery,
   KnowledgeQueryResult,
   KnowledgeSource,
@@ -76,6 +77,7 @@ export function createFakeKnowledgeProvider(
   const id = options.id ?? "fake-knowledge"
   const indexedAt = options.indexedAt ?? new Date(0)
   const store = new Map<string, StoredSource>()
+  const supersededBy = new Map<string, string | undefined>()
   let seq = 0
 
   return {
@@ -160,6 +162,28 @@ export function createFakeKnowledgeProvider(
 
     async deleteSource(sourceId: string): Promise<void> {
       store.delete(sourceId)
+    },
+
+    async supersede(sourceId: string, by?: string): Promise<void> {
+      if (!store.has(sourceId)) {
+        throw new Error(`${id}: unknown source "${sourceId}"`)
+      }
+      supersededBy.set(sourceId, by)
+    },
+
+    async explain(sourceId: string): Promise<KnowledgeProvenance | null> {
+      const stored = store.get(sourceId)
+      if (!stored) return null
+      const by = supersededBy.get(sourceId)
+      return {
+        sourceId,
+        derivedFrom: [],
+        ...(by !== undefined ? { supersededBy: by } : {}),
+        metadata: {
+          uri: stored.source.uri,
+          superseded: supersededBy.has(sourceId),
+        },
+      }
     },
 
     async healthCheck(): Promise<boolean> {

@@ -381,6 +381,49 @@ describe("getSource() + deleteSource()", () => {
   })
 })
 
+describe("supersede() + explain()", () => {
+  it("supersede throws a typed not-supported error (gbrain has no such verb)", async () => {
+    const { calls } = installFetchMock(() => ({}))
+    const adapter = new GbrainDocKnowledgeAdapter(baseConfig())
+    await expect(adapter.supersede("a", "b")).rejects.toMatchObject({
+      name: "KnowledgeNotSupportedError",
+      operation: "supersede",
+    })
+    expect(calls).toHaveLength(0)
+  })
+
+  it("explain maps get_page into provenance (source_uri → derivedFrom)", async () => {
+    const { calls } = installFetchMock(() => ({
+      slug: "doc",
+      type: "note",
+      source_uri: "https://example.com/raw",
+      created_at: "2026-07-01T00:00:00.000Z",
+      updated_at: "2026-07-24T10:11:18.122Z",
+    }))
+    const adapter = new GbrainDocKnowledgeAdapter(baseConfig())
+    const prov = await adapter.explain("doc")
+    expect(toolCallOf(calls, "get_page").args).toEqual({ slug: "doc" })
+    expect(prov).toEqual({
+      sourceId: "doc",
+      derivedFrom: ["https://example.com/raw"],
+      metadata: {
+        type: "note",
+        sourceUri: "https://example.com/raw",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-24T10:11:18.122Z",
+      },
+    })
+  })
+
+  it("explain folds page_not_found to null", async () => {
+    installFetchMock(() =>
+      toolError({ error: "page_not_found", message: "Page not found: nope" }),
+    )
+    const adapter = new GbrainDocKnowledgeAdapter(baseConfig())
+    expect(await adapter.explain("nope")).toBeNull()
+  })
+})
+
 describe("healthCheck()", () => {
   it("returns true when GET /health is ok", async () => {
     const { calls } = installFetchMock(() => ({}), { healthOk: true })

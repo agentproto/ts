@@ -46,16 +46,18 @@
  */
 
 import { z } from "zod"
-import type {
-  IKnowledgeProvider,
-  KnowledgeCapabilities,
-  KnowledgeHit,
-  KnowledgeIngestInput,
-  KnowledgeQuery,
-  KnowledgeQueryResult,
-  KnowledgeSource,
-  KnowledgeSourceKind,
-  ListSourcesFilter,
+import {
+  KnowledgeNotSupportedError,
+  type IKnowledgeProvider,
+  type KnowledgeCapabilities,
+  type KnowledgeHit,
+  type KnowledgeIngestInput,
+  type KnowledgeQuery,
+  type KnowledgeQueryResult,
+  type KnowledgeSource,
+  type KnowledgeSourceKind,
+  type ListSourcesFilter,
+  type KnowledgeProvenance,
 } from "@agentproto/knowledge-engine"
 
 export const GBRAIN_DOC_ENGINE_ID = "gbrain-doc" as const
@@ -322,6 +324,37 @@ export class GbrainDocKnowledgeAdapter implements IKnowledgeProvider {
     } catch (err) {
       // Deleting an already-absent page is a no-op, not an error.
       if (isNotFound(err)) return
+      throw err
+    }
+  }
+
+  async supersede(_id: string, _by?: string): Promise<void> {
+    // The documented doc surface is put_page / get_page / list_pages /
+    // delete_page / search — no status or supersede verb, and put_page can't
+    // carry one (source_uri is server-stamped).
+    throw new KnowledgeNotSupportedError(
+      this.id,
+      "supersede",
+      "gbrain's page API has no supersede/status verb (only put_page/delete_page)",
+    )
+  }
+
+  async explain(id: string): Promise<KnowledgeProvenance | null> {
+    try {
+      const result = await this.callTool("get_page", { slug: id })
+      const page = pageSchema.parse(parseToolJson(result))
+      return {
+        sourceId: page.slug,
+        derivedFrom: page.source_uri ? [page.source_uri] : [],
+        metadata: {
+          type: page.type ?? "note",
+          ...(page.source_uri ? { sourceUri: page.source_uri } : {}),
+          ...(page.created_at ? { createdAt: page.created_at } : {}),
+          ...(page.updated_at ? { updatedAt: page.updated_at } : {}),
+        },
+      }
+    } catch (err) {
+      if (isNotFound(err)) return null
       throw err
     }
   }

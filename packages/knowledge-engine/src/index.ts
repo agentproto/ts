@@ -26,6 +26,10 @@ export {
   type KnowledgeQueryResult,
   type ListSourcesFilter,
   type CorpusFilter,
+  type KnowledgeAttestation,
+  type KnowledgeProvenance,
+  knowledgeAttestationSchema,
+  knowledgeProvenanceSchema,
   knowledgeSourceKindSchema,
   knowledgeSourceStatusSchema,
   knowledgeQueryModeSchema,
@@ -34,6 +38,9 @@ export {
   knowledgeHitSchema,
   knowledgeQueryResultSchema,
 } from "./types.js"
+
+// Typed "this backend can't do that" error.
+export { KnowledgeNotSupportedError } from "./errors.js"
 
 // Provider contract + tool context schema.
 export {

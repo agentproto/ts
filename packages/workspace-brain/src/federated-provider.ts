@@ -20,6 +20,7 @@ import type {
   KnowledgeCapabilities,
   KnowledgeHit,
   KnowledgeIngestInput,
+  KnowledgeProvenance,
   KnowledgeQuery,
   KnowledgeQueryMode,
   KnowledgeQueryResult,
@@ -182,6 +183,33 @@ export class FederatedKnowledgeProvider implements IKnowledgeProvider {
       if (rejected[0]?.reason instanceof Error) throw rejected[0].reason
       throw new Error("federated provider: all providers failed to delete the source")
     }
+  }
+
+  async supersede(id: string, by?: string): Promise<void> {
+    const settled = await Promise.allSettled(
+      this.providers.map(p => p.provider.supersede(id, by)),
+    )
+    const rejected = settled.filter(r => r.status === "rejected")
+    if (rejected.length === settled.length && settled.length > 0) {
+      if (rejected[0]?.reason instanceof Error) throw rejected[0].reason
+      throw new Error("federated provider: all providers failed to supersede the source")
+    }
+  }
+
+  async explain(id: string): Promise<KnowledgeProvenance | null> {
+    const settled = await Promise.allSettled(
+      this.providers.map(p => p.provider.explain(id)),
+    )
+    for (const r of settled) {
+      if (r.status === "fulfilled" && r.value !== null) return r.value
+    }
+    // null means "unknown id"; if no provider could answer at all, surface why.
+    const rejected = settled.filter(r => r.status === "rejected")
+    if (rejected.length === settled.length && settled.length > 0) {
+      if (rejected[0]?.reason instanceof Error) throw rejected[0].reason
+      throw new Error("federated provider: all providers failed to explain the source")
+    }
+    return null
   }
 
   async healthCheck(): Promise<boolean> {

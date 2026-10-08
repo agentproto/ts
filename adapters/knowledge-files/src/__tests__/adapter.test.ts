@@ -129,6 +129,21 @@ describe("FilesKnowledgeAdapter", () => {
     expect(res.hits.map(h => h.sourceId)).not.toContain(`${WS}/pricing.md`)
   })
 
+  it("supersede throws a typed not-supported error (never a silent no-op)", async () => {
+    await expect(adapter.supersede(`${WS}/pricing.md`, `${WS}/onboarding.md`)).rejects.toMatchObject({
+      name: "KnowledgeNotSupportedError",
+      operation: "supersede",
+    })
+  })
+
+  it("explain returns file-level provenance, null for an unknown id", async () => {
+    const prov = await adapter.explain(`${WS}/pricing.md`)
+    expect(prov?.sourceId).toBe(`${WS}/pricing.md`)
+    expect(prov?.derivedFrom).toEqual([])
+    expect(prov?.metadata).toMatchObject({ uri: `${WS}/pricing.md`, title: "Pricing" })
+    expect(await adapter.explain(`${WS}/missing.md`)).toBeNull()
+  })
+
   it("reports healthy when the workspace path is reachable", async () => {
     expect(await adapter.healthCheck()).toBe(true)
   })
