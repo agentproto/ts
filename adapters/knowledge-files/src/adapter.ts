@@ -26,15 +26,17 @@
  */
 
 import type { FsPort } from "@agentproto/corpus"
-import type {
-  IKnowledgeProvider,
-  KnowledgeCapabilities,
-  KnowledgeHit,
-  KnowledgeIngestInput,
-  KnowledgeQuery,
-  KnowledgeQueryResult,
-  KnowledgeSource,
-  ListSourcesFilter,
+import {
+  KnowledgeNotSupportedError,
+  type IKnowledgeProvider,
+  type KnowledgeCapabilities,
+  type KnowledgeHit,
+  type KnowledgeIngestInput,
+  type KnowledgeQuery,
+  type KnowledgeQueryResult,
+  type KnowledgeSource,
+  type ListSourcesFilter,
+  type KnowledgeProvenance,
 } from "@agentproto/knowledge-engine"
 import {
   buildIndexYielding as buildBm25IndexYielding,
@@ -291,6 +293,26 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
       await this.fs.writeFile(id, "")
     }
     this.invalidate()
+  }
+
+  async supersede(_id: string, _by?: string): Promise<void> {
+    throw new KnowledgeNotSupportedError(
+      this.id,
+      "supersede",
+      "plain files carry no lifecycle status; use the corpus adapter over an AIP-10 workspace",
+    )
+  }
+
+  async explain(id: string): Promise<KnowledgeProvenance | null> {
+    const source = await this.getSource(id)
+    if (!source) return null
+    // A file's provenance is its path and own frontmatter; there is no
+    // upstream-derivation or audit chain at this layer.
+    return {
+      sourceId: source.id,
+      derivedFrom: [],
+      metadata: { uri: source.uri, ...source.metadata },
+    }
   }
 
   async healthCheck(): Promise<boolean> {

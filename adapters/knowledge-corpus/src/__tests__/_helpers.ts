@@ -215,6 +215,12 @@ export function makeStubProvider(opts: StubProviderOptions = {}): {
     async deleteSource(id) {
       state.deletedIds.push(id)
     },
+    async supersede() {
+      throw new Error("stub: supersede not supported")
+    },
+    async explain() {
+      throw new Error("stub: explain not supported")
+    },
     async healthCheck() {
       return true
     },

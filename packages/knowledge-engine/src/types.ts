@@ -119,6 +119,33 @@ export interface ListSourcesFilter {
   readonly status?: KnowledgeSourceStatus
 }
 
+/** One entry of a source's audit chain (mirrors the AIP-10 `Attestation`). */
+export interface KnowledgeAttestation {
+  /** Transition kind, e.g. "created" | "promoted" | "deprecated" | "tombstoned". */
+  readonly kind: string
+  /** Identity ref of whoever made the transition. */
+  readonly identity: string
+  /** ISO timestamp. */
+  readonly at: string
+  readonly note?: string
+}
+
+/**
+ * Where a source actually came from — the answer to
+ * {@link IKnowledgeProvider.explain}. `TMeta` lets adapters narrow the
+ * engine-specific blob (content hash, status, …) to their own shape.
+ */
+export interface KnowledgeProvenance<TMeta = Record<string, unknown>> {
+  readonly sourceId: string
+  /** Ids of the upstream sources/documents this one was derived from. */
+  readonly derivedFrom: readonly string[]
+  /** Id of the source that replaced this one, when it has been superseded. */
+  readonly supersededBy?: string
+  /** Audit chain, oldest first, for backends that keep one. */
+  readonly attestations?: readonly KnowledgeAttestation[]
+  readonly metadata: Readonly<TMeta>
+}
+
 /**
  * Convention for the corpus engine + adapters that opt in to corpus
  * provenance round-tripping. Used as the value of `KnowledgeQuery.filter`
@@ -214,4 +241,21 @@ export const knowledgeQueryResultSchema = z.object({
   tookMs: z.number().nonnegative(),
   engine: z.string(),
   modeUsed: knowledgeQueryModeSchema,
+})
+
+/** Zod mirror of {@link KnowledgeAttestation}. */
+export const knowledgeAttestationSchema = z.object({
+  kind: z.string(),
+  identity: z.string(),
+  at: z.string(),
+  note: z.string().optional(),
+})
+
+/** Zod mirror of {@link KnowledgeProvenance} (default metadata shape). */
+export const knowledgeProvenanceSchema = z.object({
+  sourceId: z.string(),
+  derivedFrom: z.array(z.string()).readonly(),
+  supersededBy: z.string().optional(),
+  attestations: z.array(knowledgeAttestationSchema).readonly().optional(),
+  metadata: knowledgeMetadataSchema,
 })

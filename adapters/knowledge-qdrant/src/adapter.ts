@@ -37,12 +37,14 @@
 
 import { z } from "zod"
 import {
+  KnowledgeNotSupportedError,
   knowledgeMetadataSchema,
   knowledgeSourceKindSchema,
   type IKnowledgeProvider,
   type KnowledgeCapabilities,
   type KnowledgeHit,
   type KnowledgeIngestInput,
+  type KnowledgeProvenance,
   type KnowledgeQuery,
   type KnowledgeQueryResult,
   type KnowledgeSource,
@@ -400,6 +402,22 @@ export class QdrantKnowledgeAdapter implements IKnowledgeProvider {
     await this.qdrantWrite(
       `/collections/${this.collection}/points/delete?wait=true`,
       { method: "POST", body: { filter: { must: this.sourceIdClause(id) } } },
+    )
+  }
+
+  async supersede(_id: string, _by?: string): Promise<void> {
+    throw new KnowledgeNotSupportedError(
+      this.id,
+      "supersede",
+      "a vector collection has no lifecycle status; delete the source or use the corpus adapter",
+    )
+  }
+
+  async explain(_id: string): Promise<KnowledgeProvenance | null> {
+    throw new KnowledgeNotSupportedError(
+      this.id,
+      "explain",
+      "points carry no provenance chain, only the source payload returned by getSource()",
     )
   }
 

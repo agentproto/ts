@@ -13,6 +13,7 @@
 import type {
   KnowledgeCapabilities,
   KnowledgeIngestInput,
+  KnowledgeProvenance,
   KnowledgeQuery,
   KnowledgeQueryResult,
   KnowledgeSource,
@@ -34,6 +35,21 @@ export interface IKnowledgeProvider {
   listSources(filter?: ListSourcesFilter): Promise<readonly KnowledgeSource[]>
   getSource(id: string): Promise<KnowledgeSource | null>
   deleteSource(id: string): Promise<void>
+
+  /**
+   * Mark a source as superseded by another (`by`), or by nothing specific
+   * when omitted. Unlike {@link deleteSource} this is not a hard delete: the
+   * record and its audit trail survive. Adapters with no native concept of
+   * this MUST throw `KnowledgeNotSupportedError` rather than no-op.
+   */
+  supersede(id: string, by?: string): Promise<void>
+
+  /**
+   * Where did this source (or a hit's `sourceId`) come from? Resolves `null`
+   * when the id is unknown; throws `KnowledgeNotSupportedError` when the
+   * backend has no provenance concept at all (`null` means "unknown id").
+   */
+  explain(id: string): Promise<KnowledgeProvenance | null>
 
   healthCheck(): Promise<boolean>
   dispose(): Promise<void>

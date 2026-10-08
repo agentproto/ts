@@ -18,14 +18,15 @@
  * the health probe.
  */
 
-import type {
-  IKnowledgeProvider,
-  KnowledgeCapabilities,
-  KnowledgeIngestInput,
-  KnowledgeQuery,
-  KnowledgeQueryResult,
-  KnowledgeSource,
-  ListSourcesFilter,
+import {
+  KnowledgeNotSupportedError,
+  type IKnowledgeProvider,
+  type KnowledgeCapabilities,
+  type KnowledgeIngestInput,
+  type KnowledgeQuery,
+  type KnowledgeQueryResult,
+  type KnowledgeSource,
+  type ListSourcesFilter,
 } from "@agentproto/knowledge-engine"
 
 export const EMPTY_BACKING_ID = "corpus-empty-backing" as const
@@ -96,6 +97,12 @@ export function createEmptyBacking(): IKnowledgeProvider {
     },
     async deleteSource(id: string): Promise<void> {
       sources.delete(id)
+    },
+    async supersede(): Promise<void> {
+      throw new KnowledgeNotSupportedError(EMPTY_BACKING_ID, "supersede")
+    },
+    async explain(): Promise<null> {
+      throw new KnowledgeNotSupportedError(EMPTY_BACKING_ID, "explain")
     },
     async healthCheck(): Promise<boolean> {
       return true

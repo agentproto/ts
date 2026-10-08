@@ -334,6 +334,10 @@ function stubProvider(query: () => Promise<{
       return null
     },
     async deleteSource() {},
+    async supersede() {},
+    async explain() {
+      return null
+    },
     async healthCheck() {
       return true
     },
