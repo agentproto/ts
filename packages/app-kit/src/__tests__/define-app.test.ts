@@ -581,3 +581,24 @@ describe("defineApp — ui.extensions.openai v1 contract", () => {
     expect(Object.isFrozen(ext.mentions)).toBe(true)
   })
 })
+
+describe("defineApp — ui.renders", () => {
+  it("accepts renders that are a subset of ui.tools", () => {
+    const app = defineApp({
+      ui: { html: "<html></html>", tools: ["search", "get", "cats"], renders: ["search", "get"] },
+    })
+    expect(app.ui?.renders).toEqual(["search", "get"])
+  })
+
+  it("throws when a renders id is not in ui.tools", () => {
+    expect(() =>
+      defineApp({ ui: { html: "<html></html>", tools: ["search"], renders: ["get"] } }),
+    ).toThrow(AppDefinitionError)
+  })
+
+  it("throws on a duplicate renders id", () => {
+    expect(() =>
+      defineApp({ ui: { html: "<html></html>", tools: ["search"], renders: ["search", "search"] } }),
+    ).toThrow(AppDefinitionError)
+  })
+})

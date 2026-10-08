@@ -130,6 +130,21 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
             ),
           ),
         }) as { readonly openai?: OpenAIAppUiExtension })
+  if (def.ui?.renders !== undefined) {
+    const allowed = new Set(def.ui.tools ?? [])
+    const seen = new Set<string>()
+    for (const id of def.ui.renders) {
+      if (!allowed.has(id)) {
+        throw new AppDefinitionError(
+          `\`ui.renders\` entry '${id}' is not in \`ui.tools\` — a rendered tool must also be callable by the UI.`,
+        )
+      }
+      if (seen.has(id)) {
+        throw new AppDefinitionError(`\`ui.renders\` lists '${id}' twice.`)
+      }
+      seen.add(id)
+    }
+  }
   const ui = def.ui
     ? Object.freeze({
         ...def.ui,
