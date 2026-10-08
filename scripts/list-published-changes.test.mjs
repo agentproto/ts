@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isPublishedPath, filterPublishedChanges } from './list-published-changes.mjs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { isPublishedPath, filterPublishedChanges, buildPackageIndex } from './list-published-changes.mjs'
 
 const index = [
   {
@@ -107,4 +110,30 @@ test('a test-only edit under src/ does not reach the published surface (the #177
 
 test('isPublishedPath: a src/ test still counts if files[] ships src itself', () => {
   assert.equal(isPublishedPath('src/__tests__/x.test.ts', ['src'], { hasSrcDir: true }), true)
+})
+
+test('buildPackageIndex: nested packages are indexed; a template inside a package belongs to that package', () => {
+  const root = mkdtempSync(join(tmpdir(), 'published-changes-'))
+  const pkgs = {
+    'packages/driver/agent-cli': { name: '@agentproto/driver-agent-cli', files: ['dist'] },
+    'packages/create-app': { name: 'create-app', files: ['dist', 'templates'] },
+    'packages/create-app/templates/react-ts': { name: '__APP_SLUG__', private: true },
+  }
+  for (const [dir, pj] of Object.entries(pkgs)) {
+    mkdirSync(join(root, dir, 'src'), { recursive: true })
+    writeFileSync(join(root, dir, 'package.json'), JSON.stringify(pj))
+  }
+  try {
+    const index = buildPackageIndex(root)
+    assert.deepEqual(index.map((p) => p.dir).sort(), ['packages/create-app', 'packages/driver/agent-cli'])
+    assert.deepEqual(
+      filterPublishedChanges(
+        ['packages/driver/agent-cli/src/x.ts', 'packages/create-app/templates/react-ts/src/App.tsx'],
+        index,
+      ),
+      ['packages/driver/agent-cli/src/x.ts', 'packages/create-app/templates/react-ts/src/App.tsx'],
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

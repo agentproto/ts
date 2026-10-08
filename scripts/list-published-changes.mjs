@@ -52,11 +52,11 @@
  * Prints the subset of stdin's paths that land in some package's published
  * npm surface, one per line. Empty output = no changeset required.
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
-import { resolve, dirname, relative } from 'node:path'
+import { existsSync } from 'node:fs'
+import { resolve, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { isTestPath } from './check-changeset-coverage.mjs'
+import { isTestPath, workspacePackageDirs } from './check-changeset-coverage.mjs'
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..')
 
@@ -69,38 +69,22 @@ const IMPLICIT_ROOT_RE = /^(readme|license|licence|changelog)(\..+)?$/i
  * `files` is the raw `package.json` `files[]` array (or `null` if absent),
  * and `hasSrcDir` records whether the package has a committed `src/`
  * directory (see the file header — that's the build input `files[]` usually
- * names only the output of). Mirrors `list-changed-packages.mjs`'s
- * `buildPackageIndex`, plus `files`/`hasSrcDir`.
+ * names only the output of). Built on the coverage gate's
+ * `workspacePackageDirs`, so both gates see the same packages: nested ones
+ * (`packages/driver/agent-cli`) included, and a package's own content (e.g.
+ * `create-agentproto-app/templates/*`, which carry their own private
+ * package.json) owned by the package that ships it.
  */
 export function buildPackageIndex(root = ROOT) {
-  const out = []
-  const walk = (dir, depth = 0) => {
-    if (depth > 3 || !existsSync(dir)) return
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
-      const full = resolve(dir, entry.name)
-      if (entry.isDirectory()) {
-        walk(full, depth + 1)
-      } else if (entry.name === 'package.json') {
-        try {
-          const pkg = JSON.parse(readFileSync(full, 'utf8'))
-          if (pkg.name) {
-            out.push({
-              dir: relative(root, dir),
-              name: pkg.name,
-              private: pkg.private === true,
-              files: Array.isArray(pkg.files) ? pkg.files : null,
-              hasSrcDir: existsSync(resolve(dir, 'src')),
-            })
-          }
-        } catch {
-          /* unparseable package.json is not this script's problem */
-        }
-      }
-    }
-  }
-  for (const g of ['packages', 'adapters']) walk(resolve(root, g))
-  return out
+  return workspacePackageDirs(root)
+    .filter(({ pkg }) => pkg.name)
+    .map(({ dir, pkg }) => ({
+      dir,
+      name: pkg.name,
+      private: pkg.private === true,
+      files: Array.isArray(pkg.files) ? pkg.files : null,
+      hasSrcDir: existsSync(resolve(root, dir, 'src')),
+    }))
 }
 
 /**
