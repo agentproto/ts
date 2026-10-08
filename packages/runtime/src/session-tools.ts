@@ -1099,6 +1099,8 @@ export function registerSessionTools(
     project: (item: TItem) => object
     keyOf: (item: TItem) => string | number | null
     itemKey: string
+    /** Row cap for a call with no `limit`/`cursor` (default: unbounded). */
+    defaultLimit?: number
   }): void => {
     registerBuiltinTool<TInput, TItem[]>(server, {
       id: args.id,
@@ -1112,6 +1114,7 @@ export function registerSessionTools(
           keyOf: args.keyOf,
           maxLimit: 200,
           itemKey: args.itemKey,
+          ...(args.defaultLimit !== undefined ? { defaultLimit: args.defaultLimit } : {}),
         }),
       ],
     })
@@ -2270,7 +2273,10 @@ export function registerSessionTools(
       "Each entry includes `kind`, `pty`, `status`, age, etc. Use this when you only want " +
       "the terminal subset. COMPACT BY DEFAULT: each entry is session_list's slim " +
       "projection; pass `full: true` (or `compact: false`) for the complete, " +
-      "unprojected per-session record.",
+      "unprojected per-session record. Without `limit`/`cursor` at most 50 rows " +
+      "come back; when there are more the reply carries `total`, " +
+      "`truncated: true` and a `nextCursor` — pass it as `cursor` (with a " +
+      "`limit`) for the rest, or filter with `onlyAlive` / `status`.",
     schema: terminalSessionsListSchema,
     body: async input => {
       // Full list (includeArchived) for subtree correctness — see
@@ -2298,6 +2304,9 @@ export function registerSessionTools(
     project: compactSessionItemWithProvenance,
     keyOf: s => s.id,
     itemKey: "sessions",
+    // Dead terminals pile up: an unpaged call used to return every row
+    // (65k+ chars, over the MCP output cap). Cap it and say so.
+    defaultLimit: 50,
   })
 
   // ── command_list ────────────────────────────────────────────────
