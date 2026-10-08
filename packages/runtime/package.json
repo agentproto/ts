@@ -32,6 +32,11 @@
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
     },
+    "./app-mcp-server": {
+      "types": "./dist/app-mcp-server.d.ts",
+      "import": "./dist/app-mcp-server.mjs",
+      "default": "./dist/app-mcp-server.mjs"
+    },
     "./catalog-models": {
       "types": "./dist/catalog-models.d.ts",
       "import": "./dist/catalog-models.mjs",

@@ -389,3 +389,151 @@ describe("toMcpTool MCP Apps + structuredContent", () => {
     await client.close()
   })
 })
+
+describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
+  // A manifest-only tool: IO declared via JSON Schema (`inputs`/`outputs`),
+  // no zod inputSchema — exactly what toolFromManifestOnly/TOOL.md produce
+  // (app-bundled .agentproto/tools/<id>/TOOL.md through loadAppBundledTools).
+  const shoutTool = defineTool({
+    id: "demo.shout",
+    description: "Echo the message, uppercased by the driver.",
+    inputs: {
+      type: "object",
+      required: ["message"],
+      properties: {
+        message: { type: "string" },
+        times: { type: "integer" },
+      },
+    },
+    outputs: {
+      type: "object",
+      required: ["shout"],
+      properties: { shout: { type: "string" } },
+    },
+  })
+  const shoutDriver = defineDriver({
+    id: "shout-builtin",
+    name: "Shout",
+    description: "Uppercases the message, repeated per `times`.",
+    kind: "builtin",
+    implements: [{ tool: "demo.shout", version: "0.1.0" }],
+    implementations: [
+      implementTool(shoutTool, ({ input }) => {
+        const { message } = input as { message: string }
+        const times = (input as { times?: number }).times ?? 1
+        return { shout: message.toUpperCase().repeat(times) }
+      }),
+    ],
+  })
+  const lenTool = defineTool({
+    id: "demo.jslen",
+    description: "Length of a string.",
+    inputs: { type: "string" },
+    outputs: { type: "object", required: ["n"], properties: { n: { type: "integer" } } },
+  })
+  const lenDriver = defineDriver({
+    id: "jslen-builtin",
+    name: "JsLen",
+    description: "String length.",
+    kind: "builtin",
+    implements: [{ tool: "demo.jslen", version: "0.1.0" }],
+    implementations: [
+      implementTool(lenTool, ({ input }) => ({ n: (input as string).length })),
+    ],
+  })
+
+  async function connect(server: McpServer): Promise<Client> {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    const client = new Client({ name: "test", version: "0.0.0" })
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+    return client
+  }
+
+  it("maps a manifest-only object tool's fields flat to MCP params", async () => {
+    const reg = buildMcpTool({ tool: shoutTool, candidates: [shoutDriver] })
+    expect(Object.keys(reg.inputShape).sort()).toEqual(["message", "times"])
+
+    // Flat call, exactly like a zod-authored tool — no `input` wrapper.
+    const res = await reg.handler({ message: "salut", times: 2 })
+    expect(parse(res)).toEqual({ shout: "SALUTSALUT" })
+
+    // A non-required param may be omitted.
+    const withoutOptional = await reg.handler({ message: "salut" })
+    expect(parse(withoutOptional)).toEqual({ shout: "SALUT" })
+  })
+
+  it("reflects required vs optional params in tools/list, and calls flat through a real client", async () => {
+    const server = new McpServer({ name: "t", version: "0.0.0" })
+    toMcpTool(server, { tool: shoutTool, candidates: [shoutDriver] })
+    const client = await connect(server)
+
+    const { tools } = await client.listTools()
+    const listed = tools.find((t) => t.name === "demo_shout")
+    expect(Object.keys(listed?.inputSchema.properties ?? {}).sort()).toEqual([
+      "message",
+      "times",
+    ])
+    expect(listed?.inputSchema.required).toEqual(["message"])
+
+    const res = await client.callTool({
+      name: "demo_shout",
+      arguments: { message: "salut" },
+    })
+    expect(res.structuredContent).toEqual({ shout: "SALUT" })
+    expect(res.isError).toBeUndefined()
+    await client.close()
+  })
+
+  it("wraps a manifest-only non-object tool under a single `input` param", async () => {
+    const reg = buildMcpTool({ tool: lenTool, candidates: [lenDriver] })
+    expect(Object.keys(reg.inputShape)).toEqual(["input"])
+
+    const res = await reg.handler({ input: "abcd" })
+    expect(parse(res)).toEqual({ n: 4 })
+
+    const server = new McpServer({ name: "t", version: "0.0.0" })
+    toMcpTool(server, { tool: lenTool, candidates: [lenDriver] })
+    const client = await connect(server)
+    const { tools } = await client.listTools()
+    expect(Object.keys(tools.find((t) => t.name === "demo_jslen")?.inputSchema.properties ?? {})).toEqual(["input"])
+    const res2 = await client.callTool({ name: "demo_jslen", arguments: { input: "abcd" } })
+    expect(res2.structuredContent).toEqual({ n: 4 })
+    await client.close()
+  })
+
+  it("still fails input validation (runTool → ajv) when a required flat param is missing", async () => {
+    const server = new McpServer({ name: "t", version: "0.0.0" })
+    toMcpTool(server, { tool: shoutTool, candidates: [shoutDriver] })
+    const client = await connect(server)
+    const res = await client.callTool({ name: "demo_shout", arguments: {} })
+    expect(res.isError).toBe(true)
+    expect(JSON.stringify(res.content)).toContain("message")
+    await client.close()
+  })
+
+  it("leaves a zod inputSchema untouched when both are declared", async () => {
+    const mixedTool = defineTool({
+      id: "demo.mixed",
+      description: "Zod wins.",
+      inputSchema: z.object({ message: z.string() }),
+      // This JSON Schema is ignored for the MCP surface (it still backs
+      // nothing at validation time — zod does) but must not change the shape.
+      inputs: { type: "object", required: ["other"], properties: { other: { type: "string" } } },
+      outputSchema: z.object({ shout: z.string() }),
+    })
+    const reg = buildMcpTool({ tool: mixedTool, candidates: [shoutDriver] })
+    expect(Object.keys(reg.inputShape)).toEqual(["message"])
+  })
+
+  it("falls back to a no-params shape when `inputs` is not convertible", () => {
+    const weird = defineTool({
+      id: "demo.weird",
+      description: "Unconvertible JSON Schema.",
+      // `type` must be a string/array of strings; a number makes fromJSONSchema throw.
+      inputs: { type: 42 } as never,
+      outputs: { type: "object", properties: {} },
+    })
+    const reg = buildMcpTool({ tool: weird, candidates: [] })
+    expect(reg.inputShape).toEqual({})
+  })
+})

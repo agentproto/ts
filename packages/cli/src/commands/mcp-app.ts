@@ -42,11 +42,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { loadConfig } from "@agentproto/runtime/config"
 import { findInstalledAppDir, readDeclaredUITools } from "../app-serve.js"
+import { runMcpAppHttp } from "./mcp-app-http.js"
 
 const USAGE = `agentproto mcp-app <appId> — stdio MCP server scoped to one installed app
 
 Usage:
   agentproto mcp-app <appId>
+  agentproto mcp-app --http <appDir> [--port N] [--host H] [--tenants <file.json>]
+      standalone streamable-HTTP MCP App: the app's own bundled tools + its UI, no daemon
 
 Registers one MCP tool per the app's declared \`ui.tools\` allowlist
 (APP.md frontmatter), each forwarding to the daemon's
@@ -60,6 +63,7 @@ process — only to actually dispatch a tool call.
 `
 
 export async function runMcpApp(args: readonly string[]): Promise<number> {
+  if (args[0] === "--http") return runMcpAppHttp(args.slice(1))
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(USAGE)
     return 0
