@@ -72,6 +72,13 @@ export interface McpObservationStore {
   observe(transport: Transport, ctx: { sessionId: string; clientProtocolVersion?: string }): void
   /** Record an HTTP-level rejection that produced no JSON-RPC message. */
   recordHttpError(sessionId: string, status: number): void
+  /** Record a response produced WITHOUT a transport the observer could wrap (the modern-era in-process bridge). */
+  recordResult(
+    sessionId: string,
+    method: ObservedMethod,
+    message: { result?: unknown; error?: { code?: unknown; message?: unknown } },
+    clientProtocolVersion?: string,
+  ): void
   get(sessionId: string): McpSessionObservation | undefined
   delete(sessionId: string): void
 }
@@ -184,6 +191,13 @@ export function createMcpObservationStore(
     recordHttpError(sessionId, status) {
       const obs = touch(sessionId)
       obs.httpError = { at: obs.lastSeenAt, status }
+    },
+    recordResult(sessionId, method, message, clientProtocolVersion) {
+      try {
+        record(sessionId, method, message, clientProtocolVersion)
+      } catch {
+        // observation must never break the request
+      }
     },
     get: sessionId => bySession.get(sessionId),
     delete: sessionId => {
