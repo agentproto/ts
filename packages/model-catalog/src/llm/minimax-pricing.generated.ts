@@ -1,18 +1,17 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-minimax.mjs
-// (ids: committed PascalCase native list from catalog.ts, pricing: OpenRouter /v1/models (minimax/*), synced 2026-10-08T08:43:42.578Z)
-// Normalization: lowercase → prepend "minimax-" when missing
-// Known native ids: MiniMax-M2, M2-her, MiniMax-M2.1, MiniMax-M2.5, MiniMax-M2.7
-//
-// ⚠ cacheReadMultiplier is derived from OpenRouter's input_cache_read where
-// present; OpenRouter's minimax/* routes carry NO input_cache_write field at
-// all, for any id — cacheWriteMultiplier can never be derived from this
-// source. See the PR body for the consequence on ids that had a manual
-// cacheWriteMultiplier.
+// (ids: MiniMax pricing page + committed PascalCase list, pricing: platform.minimax.io pay-as-you-go pricing page, OpenRouter /v1/models (minimax/*) fallback per row, synced 2026-10-08T11:16:08.608Z)
+// OpenRouter fallback rows: normalization lowercase → prepend "minimax-" when
+// missing; OpenRouter's minimax/* routes carry no input_cache_write, so those
+// rows have no cacheWriteMultiplier.
 
 export const MINIMAX_GENERATED_PRICING = {
-  "M2-her": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, vendor: "minimax", provider: "minimax" },
-  "MiniMax-M2": { inputPer1M: 0.3, outputPer1M: 1.2, vendor: "minimax", provider: "minimax" },
-  "MiniMax-M2.1": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, vendor: "minimax", provider: "minimax" },
-  "MiniMax-M2.5": { inputPer1M: 0.27, outputPer1M: 1.08, cacheReadMultiplier: 0.1, vendor: "minimax", provider: "minimax" },
-  "MiniMax-M2.7": { inputPer1M: 0.21, outputPer1M: 0.84, cacheReadMultiplier: 0.2, vendor: "minimax", provider: "minimax" },
+  "M2-her": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, priceSource: "openrouter", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2.1": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2.1-highspeed": { inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.05, cacheWriteMultiplier: 0.625, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2.5": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2.5-highspeed": { inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.05, cacheWriteMultiplier: 0.625, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2.7": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.2, cacheWriteMultiplier: 1.25, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2.7-highspeed": { inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 0.625, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
+  "MiniMax-M3": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.2, tiers: [{ aboveInputTokens: 512000, inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.2 }], priceSource: "minimax", vendor: "minimax", provider: "minimax" },
 } as const

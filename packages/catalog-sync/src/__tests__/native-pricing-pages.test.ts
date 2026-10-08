@@ -5,12 +5,15 @@ import { fileURLToPath } from "node:url"
 
 import { checkAnthropicPricingUsable, parseAnthropicPricingPage } from "../sources/anthropic-pricing-page.mjs"
 import { checkKimiPricingUsable, parseKimiPricingPage } from "../sources/kimi-pricing-page.mjs"
+import { checkMiniMaxPricingUsable, parseMiniMaxPricingPage } from "../sources/minimax-pricing-page.mjs"
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures")
 // Verbatim `.md` renderings fetched 2026-10-08 (Anthropic: the page head
 // through the "Model pricing" table).
 const KIMI_PAGE = readFileSync(join(FIXTURES, "kimi-pricing-chat.md"), "utf8")
 const ANTHROPIC_PAGE = readFileSync(join(FIXTURES, "anthropic-pricing.md"), "utf8")
+// MiniMax: the page head through the "## LLM" section.
+const MINIMAX_PAGE = readFileSync(join(FIXTURES, "minimax-pricing-paygo.md"), "utf8")
 
 describe("parseKimiPricingPage", () => {
   const prices = parseKimiPricingPage(KIMI_PAGE)
@@ -71,5 +74,42 @@ describe("parseAnthropicPricingPage", () => {
 
   it("rejects a page whose table is gone", () => {
     expect(checkAnthropicPricingUsable(parseAnthropicPricingPage("## Model pricing\n\nSee claude.com"))).toMatch(/only 0 priced rows/)
+  })
+})
+
+describe("parseMiniMaxPricingPage", () => {
+  const prices = parseMiniMaxPricingPage(MINIMAX_PAGE)
+
+  it("reads MiniMax's own rates, cache writes included", () => {
+    expect(prices.get("MiniMax-M2.7")).toEqual({ inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.2, cacheWriteMultiplier: 1.25 })
+    expect(prices.get("MiniMax-M2.5-highspeed")).toEqual({ inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.05, cacheWriteMultiplier: 0.625 })
+    expect(checkMiniMaxPricingUsable(prices)).toBeNull()
+  })
+
+  it("bills the sale price, keeps the Standard tab and folds the >512k row into a tier", () => {
+    // Standard: ~~$0.60~~ $0.30; the Priority tab ($0.45) is opt-in and skipped.
+    expect(prices.get("MiniMax-M3")).toEqual({
+      inputPer1M: 0.3,
+      outputPer1M: 1.2,
+      cacheReadMultiplier: 0.2,
+      tiers: [{ aboveInputTokens: 512000, inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.2 }],
+    })
+  })
+
+  it("lists every model on the page, legacy accordion included", () => {
+    expect([...prices.keys()].sort()).toEqual([
+      "MiniMax-M2",
+      "MiniMax-M2.1",
+      "MiniMax-M2.1-highspeed",
+      "MiniMax-M2.5",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.7",
+      "MiniMax-M2.7-highspeed",
+      "MiniMax-M3",
+    ])
+  })
+
+  it("rejects a page without an LLM table", () => {
+    expect(checkMiniMaxPricingUsable(parseMiniMaxPricingPage("# Pay as You Go\n\n## Audio"))).toMatch(/no priced rows/)
   })
 })

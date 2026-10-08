@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 /**
- * MiniMax pricing sync — native ids from the committed PascalCase catalog
- * (the only known native id list while MINIMAX_API_KEY is unavailable),
- * prices from OpenRouter.
+ * MiniMax pricing sync — prices AND ids from MiniMax's own pay-as-you-go
+ * pricing page (platform.minimax.io/docs/guides/pricing-paygo.md, keyless),
+ * parsed by packages/catalog-sync/src/sources/minimax-pricing-page.mjs:
+ * base, cache-read, cache-write and prompt-length tiers (MiniMax-M3 > 512k).
+ * The ids below (the committed PascalCase list, from before the page was
+ * read) are kept as a floor; OpenRouter prices an id the page doesn't list
+ * (M2-her) and is the whole-file fallback when the page is unusable. Each
+ * row records its `priceSource`.
  *
  * Regenerates `packages/model-catalog/src/llm/minimax-pricing.generated.ts`.
  *
@@ -24,6 +29,29 @@
  */
 import { writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+
+import {
+  checkMiniMaxPricingUsable,
+  parseMiniMaxPricingPage,
+} from "../../packages/catalog-sync/src/sources/minimax-pricing-page.mjs"
+import { serializeTiers } from "../../packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs"
+
+const MINIMAX_PRICING_URL = "https://platform.minimax.io/docs/guides/pricing-paygo.md"
+
+/** MiniMax's own prices — `{ prices, reason }`, `prices` null if unusable. */
+async function fetchMiniMaxPricing() {
+  try {
+    const res = await fetch(MINIMAX_PRICING_URL, {
+      headers: { Accept: "text/markdown, text/plain;q=0.9, */*;q=0.1" },
+    })
+    if (!res.ok) return { prices: null, reason: `pricing page returned ${res.status} ${res.statusText}` }
+    const prices = parseMiniMaxPricingPage(await res.text())
+    const problem = checkMiniMaxPricingUsable(prices)
+    return problem ? { prices: null, reason: problem } : { prices, reason: null }
+  } catch (err) {
+    return { prices: null, reason: `pricing page fetch failed: ${err.message}` }
+  }
+}
 
 const OUTPUT_PATH = resolve(
   import.meta.dirname,
@@ -95,14 +123,31 @@ async function main() {
   }
   console.log(`  ${Object.keys(orPricingMap).length} minimax/* models with pricing in OpenRouter`)
 
-  // ── Match known native ids with OpenRouter pricing ─────────────────
+  console.log("→ Fetching MiniMax's own pricing page…")
+  const { prices: officialPrices, reason: officialProblem } = await fetchMiniMaxPricing()
+  if (officialPrices) {
+    console.log(`  ${officialPrices.size} priced rows parsed`)
+    for (const id of officialPrices.keys()) {
+      if (!NATIVE_IDS.includes(id)) NATIVE_IDS.push(id)
+    }
+  } else {
+    console.warn(`  ⚠ official pricing unusable (${officialProblem}) — every price from OpenRouter`)
+  }
+
+  // ── Price every native id: MiniMax's page first, OpenRouter fallback ──
   const priced = []
   const missing = []
   for (const nativeId of NATIVE_IDS) {
+    const official = officialPrices?.get(nativeId)
+    if (official) {
+      priced.push({ id: nativeId, ...official, priceSource: "minimax" })
+      console.log(`  ✓ ${nativeId}: MiniMax pricing page`)
+      continue
+    }
     const orSuffix = nativeIdToOrSuffix(nativeId)
     const pricing = orPricingMap[orSuffix]
     if (pricing) {
-      priced.push({ id: nativeId, ...pricing })
+      priced.push({ id: nativeId, ...pricing, priceSource: "openrouter" })
       console.log(`  ✓ ${nativeId}: matched OpenRouter ${orSuffix}`)
     } else {
       missing.push(nativeId)
@@ -129,24 +174,26 @@ async function main() {
   // ── Emit generated file ─────────────────────────────────────────────
   const date = new Date().toISOString()
 
+  const priceSourceLabel = officialPrices
+    ? "platform.minimax.io pay-as-you-go pricing page, OpenRouter /v1/models (minimax/*) fallback per row"
+    : `OpenRouter /v1/models (minimax/*) — MiniMax pricing page unusable: ${officialProblem}`
   const banner = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-minimax.mjs
-// (ids: committed PascalCase native list from catalog.ts, pricing: OpenRouter /v1/models (minimax/*), synced ${date})
-// Normalization: lowercase → prepend "minimax-" when missing
-// Known native ids: MiniMax-M2, M2-her, MiniMax-M2.1, MiniMax-M2.5, MiniMax-M2.7
-//
-// ⚠ cacheReadMultiplier is derived from OpenRouter's input_cache_read where
-// present; OpenRouter's minimax/* routes carry NO input_cache_write field at
-// all, for any id — cacheWriteMultiplier can never be derived from this
-// source. See the PR body for the consequence on ids that had a manual
-// cacheWriteMultiplier.
+// (ids: MiniMax pricing page + committed PascalCase list, pricing: ${priceSourceLabel}, synced ${date})
+// OpenRouter fallback rows: normalization lowercase → prepend "minimax-" when
+// missing; OpenRouter's minimax/* routes carry no input_cache_write, so those
+// rows have no cacheWriteMultiplier.
 
 `
 
   const body = priced
     .map((e) => {
       const pricing = `inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}`
-      const cache = e.cacheReadMultiplier !== undefined ? `, cacheReadMultiplier: ${e.cacheReadMultiplier}` : ""
-      return `  ${JSON.stringify(e.id)}: { ${pricing}${cache}, vendor: "minimax", provider: "minimax" },`
+      const parts = []
+      if (e.cacheReadMultiplier !== undefined) parts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)
+      if (e.cacheWriteMultiplier !== undefined) parts.push(`cacheWriteMultiplier: ${e.cacheWriteMultiplier}`)
+      if (e.tiers) parts.push(serializeTiers(e.tiers))
+      const extra = parts.length > 0 ? `, ${parts.join(", ")}` : ""
+      return `  ${JSON.stringify(e.id)}: { ${pricing}${extra}, priceSource: ${JSON.stringify(e.priceSource)}, vendor: "minimax", provider: "minimax" },`
     })
     .join("\n")
 

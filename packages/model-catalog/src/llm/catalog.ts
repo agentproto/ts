@@ -112,11 +112,13 @@ export interface LLMPricing {
    *     (`sync-anthropic.mjs`).
    *   - `"moonshot"` — `platform.kimi.ai/docs/pricing/chat.md`
    *     (`sync-moonshot.mjs`).
+   *   - `"minimax"` — `platform.minimax.io/docs/guides/pricing-paygo.md`
+   *     (`sync-minimax.mjs`).
    *   - `"openrouter"` — OpenRouter's rate, used where the vendor's page
    *     does not list the id. For Moonshot that is the price of whichever
    *     host OpenRouter routes to, not Moonshot's own.
    */
-  priceSource?: "openai" | "anthropic" | "moonshot" | "openrouter"
+  priceSource?: "openai" | "anthropic" | "moonshot" | "minimax" | "openrouter"
   /**
    * Which list this row's ID came from. Also generator-owned and
    * informational. `"openrouter"` marks an id that the provider's own

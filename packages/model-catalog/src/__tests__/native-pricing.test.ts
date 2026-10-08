@@ -22,4 +22,12 @@ describe("first-party priced rows", () => {
       10
     )
   })
+
+  it("MiniMax-M2.7 bills at MiniMax's $0.30 / $1.20 with its cache-write price", () => {
+    expect(resolvePricing("MiniMax-M2.7")).toMatchObject({ priceSource: "minimax", cacheWriteMultiplier: 1.25 })
+    expect(calculateLLMCreditCost("MiniMax-M2.7", { inputTokens: 1_000_000, outputTokens: 1_000_000 }).productionCost).toBeCloseTo(
+      1.5,
+      10
+    )
+  })
 })
