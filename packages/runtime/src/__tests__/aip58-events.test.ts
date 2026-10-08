@@ -294,8 +294,8 @@ steps:
         else bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
       },
       kill: () => true,
-      archiveSession: () => true,
-    } as Partial<SessionsRegistry>)
+      archiveSession: () => ({ archived: true }) as SessionDescriptor,
+    })
     const runner = createWorkflowRunner({
       registry,
       sessionEvents: bus,
