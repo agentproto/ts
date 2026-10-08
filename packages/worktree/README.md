@@ -234,7 +234,10 @@ in place rather than silently cleaned up.
 merged worktrees on a schedule, so a long-running workspace doesn't accumulate
 stale `_worktrees/*` trees and dead `wt/*` branches. It fires the `worktree_gc`
 tool (the daemon's MCP/HTTP surface over `planGc` / `applyGc` in `src/gc.ts`)
-with `apply: true`, `salvageDirty: false` on a daily cron (`0 4 * * *`, UTC).
+with `apply: true`, `salvageDirty: false`, `wait: true` on a daily cron (`0 4 * * *`, UTC).
+`wait: true` makes the cron run block for the real outcomes; without it a big
+repo outlasts the tool's 25 s default `waitMs`, the run records a bare jobId
+as success, and a failed apply never reaches `on_failure`.
 
 **It ships disabled (`enabled: false`)** — it registers but never fires until
 you turn it on. To activate it in a workspace:

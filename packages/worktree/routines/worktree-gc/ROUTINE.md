@@ -21,6 +21,10 @@ target:
   inputs:
     apply: true
     salvageDirty: false
+    # Block for the real outcomes: without it worktree_gc returns a bare
+    # jobId after 25 s on a big repo, the cron run records that as success,
+    # and a failed apply never reaches on_failure.
+    wait: true
 retry:
   max_attempts: 1
   backoff: fixed

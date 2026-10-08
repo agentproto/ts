@@ -89,6 +89,7 @@ describe("ops-panel UI panel", () => {
       "cron_delete",
       "cron_run",
       "worktree_gc",
+      "worktree_gc_status",
     ])
     for (const tool of OPS_PANEL_TOOLS) {
       expect(OPS_PANEL_HTML).toContain(tool)

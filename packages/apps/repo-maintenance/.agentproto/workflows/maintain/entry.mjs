@@ -510,7 +510,11 @@ export default {
       id: "worktreeGcPlan",
       kind: "tool",
       tool: "worktree_gc",
-      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false },
+      // `wait: true` — without it worktree_gc returns `{ jobId, status:
+      // "running" }` after its 25 s default `waitMs`, and on a repo with
+      // dozens of worktrees the report would count 0 classified. branch_gc
+      // already blocks by default.
+      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, wait: true },
     },
     {
       id: "branchGcPlan",
@@ -629,6 +633,9 @@ export default {
         workspaceSlug: "$input.workspaceSlug",
         apply: "$input.applyMerged",
         salvageDirty: false,
+        // Same as worktreeGcPlan: block for the real outcomes, or an apply
+        // would run unreported in the background after the workflow ends.
+        wait: true,
       },
     },
     {

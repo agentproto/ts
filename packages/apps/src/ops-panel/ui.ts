@@ -41,6 +41,7 @@ export const OPS_PANEL_TOOLS = [
   "cron_delete",
   "cron_run",
   "worktree_gc",
+  "worktree_gc_status",
 ] as const
 
 const APP_ID = "@agentproto/ops-panel"
@@ -376,10 +377,26 @@ function updateHousekeepingNums() {
     + '<div class="num"><b>' + terminal + '</b><span>terminal</span></div>';
 }
 
+// worktree_gc falls back to a background job after its 25 s default waitMs
+// and returns { jobId, status: "running" } — poll worktree_gc_status until
+// the real plan / outcomes land instead of reading the jobId as a result.
+function worktreeGc(args) {
+  return callApp("worktree_gc", args).then(function poll(d) {
+    if (typeof d === "string") throw new Error(d);
+    if (!d || !d.jobId) return d;
+    if (d.status === "done") return d.result;
+    if (d.status === "failed") throw new Error(d.error || "worktree_gc job failed");
+    var after = (d.followUp && d.followUp.pollAfterMs) || 3000;
+    return new Promise(function (r) { setTimeout(r, after); })
+      .then(function () { return callApp("worktree_gc_status", { jobId: d.jobId }); })
+      .then(poll);
+  });
+}
+
 function worktreePlan(apply) {
   var el = document.getElementById("wt-plan");
   el.textContent = apply ? "reclaiming\\u2026" : "planning\\u2026";
-  callApp("worktree_gc", apply ? { apply: true } : {}).then(function (d) {
+  worktreeGc(apply ? { apply: true } : {}).then(function (d) {
     var entries = (d && (d.plan || d.entries || d.worktrees)) || [];
     var counts = { reclaim: 0, salvage: 0, hold: 0 };
     for (var i = 0; i < entries.length; i++) {

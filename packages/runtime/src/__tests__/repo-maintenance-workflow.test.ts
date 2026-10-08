@@ -176,6 +176,16 @@ function worktreeGcPlanFixture() {
   return { mode: "plan", plan: [wt("a", "reclaim"), wt("b", "reclaim"), wt("c", "salvage"), wt("d", "hold")] }
 }
 
+/** A fake `worktree_gc` that falls back like the real tool: without
+ *  `wait: true` a big repo outlasts the 25 s default `waitMs`, so the caller
+ *  gets a bare running job instead of the plan / outcomes. */
+function fakeWorktreeGc(inputs: Record<string, unknown>, applyOutcomes: Array<Record<string, unknown>> = []) {
+  if (inputs.wait !== true) {
+    return mcpResult({ jobId: "wgc_test", status: "running", followUp: { tool: "worktree_gc_status", pollAfterMs: 5000 } })
+  }
+  return mcpResult(inputs.apply ? { mode: "apply", outcomes: applyOutcomes } : worktreeGcPlanFixture())
+}
+
 /**
  * A mock host that behaves like `SessionsRegistryAgentHost` where the retry
  * path cares: every spawn is indexed under its `stepKey` (`reviewOne[0]`), so
@@ -243,7 +253,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       calls.push({ name, inputs })
       if (name === "worktree_gc") {
-        return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
+        return fakeWorktreeGc(inputs)
       }
       if (name === "branch_gc") {
         branchGcCallCount++
@@ -307,7 +317,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
 
     const worktreeGcCalls = calls.filter(c => c.name === "worktree_gc")
     expect(worktreeGcCalls).toHaveLength(2)
-    expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: false })
+    expect(worktreeGcCalls[0]!.inputs).toMatchObject({ apply: false, wait: true })
+    expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: false, wait: true })
 
     // command_execute (the notify step) is never dispatched — no notify
     // input was given at all.
@@ -332,7 +343,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       calls.push({ name, inputs })
       if (name === "worktree_gc") {
-        return mcpResult({ mode: inputs.apply ? "apply" : "plan", outcomes: [] })
+        return fakeWorktreeGc(inputs, [{ path: "/repo/_wt/a", branch: "wt/a", result: "reclaimed" }])
       }
       if (name === "branch_gc") {
         branchGcCallCount++
@@ -377,7 +388,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const branchGcCalls = calls.filter(c => c.name === "branch_gc")
     expect(branchGcCalls[2]!.inputs).toMatchObject({ apply: true, includeReviewed: false })
     const worktreeGcCalls = calls.filter(c => c.name === "worktree_gc")
-    expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: true, salvageDirty: false })
+    expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: true, salvageDirty: false, wait: true })
 
     const notifyCall = calls.find(c => c.name === "command_execute")
     expect(notifyCall).toBeDefined()
@@ -386,8 +397,10 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(body.to).toEqual({ channel: "telegram", address: "chat-1" })
     expect(body.content.text).toMatch(/wt\/large-residual/)
 
-    const result = output as { applyMerged: boolean }
+    const result = output as { applyMerged: boolean; report: string }
     expect(result.applyMerged).toBe(true)
+    // The apply's real outcomes reach the report, not a background jobId.
+    expect(result.report).toContain("worktree_gc: 1 outcome(s) — reclaimed=1")
   })
 })
 
@@ -398,7 +411,7 @@ describe("repo-maintenance maintain workflow — missing-verdict retry", () => {
     const checksOfB = { n: 0 }
     let branchGcCallCount = 0
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
-      if (name === "worktree_gc") return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
       if (name === "branch_gc") {
         branchGcCallCount++
         return mcpResult(
@@ -726,7 +739,7 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
     lastCalls = calls
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       calls.push({ name, inputs })
-      if (name === "worktree_gc") return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
       if (name === "branch_gc") {
         opts.onBranchGc?.()
         return mcpResult(opts.plan)
@@ -906,7 +919,7 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
   async function reviewerModels(input: Record<string, unknown>) {
     let branchGcCallCount = 0
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
-      if (name === "worktree_gc") return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
       if (name === "branch_gc") {
         branchGcCallCount++
         return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
