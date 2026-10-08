@@ -179,11 +179,10 @@ describe("forwarded methods and result decoration", () => {
     const r = await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, {}, deps)
     expect(r.status).toBe(200)
     const err = json(r).error
-    // ADJUSTED vs brief: the SDK wraps the handler's McpError TWICE (server serializes the error with its
-    // "MCP error <code>: " prefix, then the bridge client wraps the incoming error again), so after the core's
-    // single strip exactly one prefix remains. `data` still arrives intact.
+    // The SDK wraps the handler's McpError twice ("MCP error <code>: " on the server, again in the bridge client);
+    // the core strips every stacked prefix. `data` still arrives intact.
     expect(err?.code).toBe(-32015)
-    expect(err?.message).toBe("MCP error -32015: callback unreachable")
+    expect(err?.message).toBe("callback unreachable")
     expect(err?.data).toEqual({ reason: "x" })
   })
 
@@ -396,6 +395,40 @@ describe("lifecycle", () => {
     const r = await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, {}, deps)
     expect(r.status).toBe(499)
     expect(r.body).toBeUndefined()
+    expect(closes.count).toBe(1)
+  })
+
+  it("forwards the abort signal to the handler and answers 499 even if the handler returns", async () => {
+    const controller = new AbortController()
+    const seen = { aborted: false, started: false }
+    const { deps: inner, closes } = rig()
+    const deps: ModernDeps = {
+      ...inner,
+      signal: controller.signal,
+      createServer: async () => {
+        const { server } = await createMcpServer({ specs: [], name: "main", version: "1.2.3" })
+        server.tool("slow", "slow tool", {}, async (_args, extra) => {
+          seen.started = true
+          controller.abort()
+          await new Promise<void>((resolve) => {
+            if (extra.signal.aborted) return resolve()
+            extra.signal.addEventListener("abort", () => resolve(), { once: true })
+          })
+          seen.aborted = extra.signal.aborted
+          return { content: [{ type: "text", text: "done" }] }
+        })
+        const close = server.close.bind(server)
+        server.close = async () => {
+          closes.count += 1
+          return close()
+        }
+        return server
+      },
+    }
+    const r = await call("tools/call", { name: "slow", arguments: {} }, { headers: { "mcp-name": "slow" } }, deps)
+    expect(seen.started).toBe(true)
+    expect(seen.aborted).toBe(true)
+    expect(r.status).toBe(499)
     expect(closes.count).toBe(1)
   })
 

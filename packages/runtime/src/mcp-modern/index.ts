@@ -102,7 +102,7 @@ function decorate(
 
 function fromThrown(error: unknown, id: string | number): ModernResponse {
   if (error instanceof McpError) {
-    const message = error.message.replace(/^MCP error -?\d+: /, "")
+    const message = error.message.replace(/^(MCP error -?\d+: )+/, "")
     // An unknown method is a protocol error (404). Any other JSON-RPC error raised by a handler keeps HTTP 200,
     // exactly as the legacy transport answers it (events adapter codes -32011..-32016 included).
     const status = error.code === ERR_METHOD_NOT_FOUND ? 404 : 200
@@ -116,6 +116,7 @@ async function answer(
   bridge: Bridge,
   supported: readonly string[],
   hints: CacheHints,
+  signal: AbortSignal | undefined,
 ): Promise<Record<string, unknown>> {
   if (request.method === "server/discover") {
     const capabilities = { ...bridge.capabilities }
@@ -131,7 +132,7 @@ async function answer(
       hints,
     )
   }
-  return decorate(request.method, await bridge.request(request.method, forwardParams(request.params)), bridge.serverInfo, hints)
+  return decorate(request.method, await bridge.request(request.method, forwardParams(request.params), signal), bridge.serverInfo, hints)
 }
 
 /**
@@ -164,7 +165,8 @@ export async function handleModernRequest(input: ModernRequestInput, deps: Moder
   let bridge: Bridge | undefined
   try {
     bridge = await openBridge(await deps.createServer())
-    const result = await answer({ ...request, id }, bridge, supported, cachePolicy(request.method))
+    const result = await answer({ ...request, id }, bridge, supported, cachePolicy(request.method), deps.signal)
+    if (deps.signal?.aborted) return { status: 499, headers: {} }
     const response = okResponse(id, result)
     if ((request.method === "server/discover" || request.method === "tools/list") && deps.onObserved) {
       try {
