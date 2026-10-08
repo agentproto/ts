@@ -110,6 +110,8 @@ Usage:
   agentproto conversation locate <sessionId | native-jsonl-path> [--json]
                                            session ↔ native transcript, either direction
   agentproto host     load [--full] [--json] [--watch <s>] [--budget <ms>]   host load report + warnings
+  agentproto host     health [--json] [--watch <s>] [--warn-load <x>] [--crit-load <x>]
+                                           OK/WARN/CRIT verdict: ok to spawn more agents? (exit 0/1/2)
   agentproto usage    rollup --window <5h|7d|P7D> [--profile <ref>] [--json]
                                            local spend estimate over a rolling window
   agentproto brain    query "<query>" [--workspace <slug>] [--topk <n>] [--json]
