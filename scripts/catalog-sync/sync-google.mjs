@@ -16,12 +16,21 @@
  * `packages/catalog-sync/src/generators/google-native-model-ids.mjs`) are
  * emitted — everything else under `google/` on OpenRouter is logged and
  * skipped (see skip rules in the source).
+ *
+ * `tiers` (prompt-length pricing — Gemini Pro bills prompts over 200k tokens
+ * at a higher rate) come from the route's `pricing.overrides`
+ * (`min_prompt_tokens`), parsed by the shared
+ * packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs.
  */
 
 import { writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { GOOGLE_NATIVE_MODEL_IDS } from "../../packages/catalog-sync/src/generators/google-native-model-ids.mjs"
+import {
+  promptLengthTiers,
+  serializeTiers,
+} from "../../packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs"
 
 const OUTPUT_PATH = resolve(
   import.meta.dirname,
@@ -98,6 +107,9 @@ async function main() {
       }
     }
 
+    const tiers = promptLengthTiers(model.pricing)
+    if (tiers) entry.tiers = tiers
+
     entries.push(entry)
     console.log(`  ✓ ${nativeId}: $${inputPer1M}/1M in, $${outputPer1M}/1M out`)
   }
@@ -117,7 +129,8 @@ async function main() {
         e.cacheReadMultiplier !== undefined
           ? `, cacheReadMultiplier: ${e.cacheReadMultiplier}`
           : ""
-      return `  ${JSON.stringify(e.id)}: { ${pricing}${cache}, vendor: "google", provider: "google" },`
+      const tiers = e.tiers ? `, ${serializeTiers(e.tiers)}` : ""
+      return `  ${JSON.stringify(e.id)}: { ${pricing}${cache}${tiers}, vendor: "google", provider: "google" },`
     })
     .join("\n")
 

@@ -7,9 +7,11 @@
  * Unlike Moonshot/Mistral there is NO OpenRouter fallback: the xAI payload
  * carries its own prices (`prompt_text_token_price`,
  * `completion_text_token_price`, `cached_prompt_text_token_price`, in units
- * per 1 token → $ per 1M = raw / 10000). Long-context tier fields
- * (`*_long_context`, `long_context_threshold`) are captured verbatim but NOT
- * yet consumed by the billing engine.
+ * per 1 token → $ per 1M = raw / 10000). The cached price becomes the
+ * catalog's `cacheReadMultiplier` (cached / input), and the long-context
+ * fields (`*_long_context`, `long_context_threshold`) become a prompt-length
+ * `tiers` entry — both are what the billing engine reads
+ * (`selectPricingTier` / `calculateLLMCreditCost` in model-catalog).
  *
  * Needs XAI_API_KEY. Exits 2 (skip, not a hard failure) when the key isn't
  * set. Excludes non-text models (null `context_length` or null token prices,
@@ -19,18 +21,13 @@
 import { writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { serializeTiers } from "../../packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs"
+import { xaiPricingRow } from "../../packages/catalog-sync/src/sources/xai-pricing.mjs"
+
 const OUTPUT_PATH = resolve(
   import.meta.dirname,
   "../../packages/model-catalog/src/llm/xai-pricing.generated.ts"
 )
-
-/** Raw prices are per 1 token; catalog prices are $ per 1M tokens. */
-const PER_1M = 10_000
-
-/** Round to 4 decimal places to avoid floating point artifacts */
-function round4(num) {
-  return Math.round(num * 10000) / 10000
-}
 
 async function fetchXaiModels(apiKey) {
   const res = await fetch("https://api.x.ai/v1/models", {
@@ -51,20 +48,11 @@ function renderEntry(e) {
     `inputPer1M: ${e.inputPer1M}`,
     `outputPer1M: ${e.outputPer1M}`,
   ]
-  if (e.cachedInputPer1M != null) {
-    parts.push(`cachedInputPer1M: ${e.cachedInputPer1M}`)
+  if (e.cacheReadMultiplier !== undefined) {
+    parts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)
   }
-  if (e.longContext) {
-    const lc = e.longContext
-    const lcParts = [
-      `inputPer1M: ${lc.inputPer1M}`,
-      `outputPer1M: ${lc.outputPer1M}`,
-    ]
-    if (lc.cachedInputPer1M != null) {
-      lcParts.push(`cachedInputPer1M: ${lc.cachedInputPer1M}`)
-    }
-    lcParts.push(`thresholdTokens: ${lc.thresholdTokens}`)
-    parts.push(`longContext: { ${lcParts.join(", ")} }`)
+  if (e.tiers) {
+    parts.push(serializeTiers(e.tiers))
   }
   parts.push(`vendor: "xai"`, `provider: "xai"`)
   return `  ${JSON.stringify(e.id)}: { ${parts.join(", ")} },`
@@ -89,43 +77,10 @@ async function main() {
     if (!m.id) continue
     // Non-text models (grok-imagine-*): no meaningful token pricing —
     // exclude cleanly instead of crashing on nulls.
-    if (
-      m.context_length == null ||
-      m.prompt_text_token_price == null ||
-      m.completion_text_token_price == null
-    ) {
+    const entry = xaiPricingRow(m)
+    if (!entry) {
       excluded.push(m.id)
       continue
-    }
-    const entry = {
-      id: m.id,
-      inputPer1M: round4(m.prompt_text_token_price / PER_1M),
-      outputPer1M: round4(m.completion_text_token_price / PER_1M),
-    }
-    if (m.cached_prompt_text_token_price != null) {
-      entry.cachedInputPer1M = round4(
-        m.cached_prompt_text_token_price / PER_1M
-      )
-    }
-    // Long-context tier: captured for reference only (see generated-file
-    // banner) — the billing engine does not model it yet.
-    if (
-      m.prompt_text_token_price_long_context != null &&
-      m.completion_text_token_price_long_context != null &&
-      m.long_context_threshold != null
-    ) {
-      entry.longContext = {
-        inputPer1M: round4(m.prompt_text_token_price_long_context / PER_1M),
-        outputPer1M: round4(
-          m.completion_text_token_price_long_context / PER_1M
-        ),
-        thresholdTokens: m.long_context_threshold,
-      }
-      if (m.cached_prompt_text_token_price_long_context != null) {
-        entry.longContext.cachedInputPer1M = round4(
-          m.cached_prompt_text_token_price_long_context / PER_1M
-        )
-      }
     }
     entries.push(entry)
   }
@@ -170,30 +125,20 @@ async function main() {
 // Prices are xAI's NATIVE rates (no OpenRouter passthrough): raw
 // \`prompt_text_token_price\` / \`completion_text_token_price\` /
 // \`cached_prompt_text_token_price\` are per 1 token → $ per 1M = raw / 10000.
-//
-// ⚠ \`longContext\` (tier pricing above \`thresholdTokens\` tokens) is captured
-// for reference only — the billing engine does NOT model long-context tiers
-// yet (same gap as the Gemini >200k tiers: see \`catalog.ts:172\` and
-// \`catalog.ts:204\`).
+// The cached price is emitted as \`cacheReadMultiplier\` (cached / input) and
+// the long-context price (prompts over \`long_context_threshold\`) as \`tiers\`.
+
+import type { LLMPricingTier } from "./catalog.js"
 
 export interface XAIPricingEntry {
   /** $ per 1M input tokens (short-context tier). */
   inputPer1M: number
   /** $ per 1M output tokens (short-context tier). */
   outputPer1M: number
-  /** $ per 1M cached input tokens. */
-  cachedInputPer1M?: number
-  /**
-   * Long-context tier (prompts above \`thresholdTokens\`). CAPTURED BUT NOT
-   * YET CONSUMED — the billing engine applies a single price regardless of
-   * prompt size (see \`catalog.ts:172\`, \`catalog.ts:204\`).
-   */
-  longContext?: {
-    inputPer1M: number
-    outputPer1M: number
-    cachedInputPer1M?: number
-    thresholdTokens: number
-  }
+  /** Cached-input price as a multiplier on \`inputPer1M\`. */
+  cacheReadMultiplier?: number
+  /** Long-context tier: prompts over \`aboveInputTokens\` bill at these rates. */
+  tiers?: readonly LLMPricingTier[]
   /** Who authored the model (always "xai"). */
   vendor: "xai"
   /** Route used to call the model (always "xai" — direct SDK). */

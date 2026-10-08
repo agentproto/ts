@@ -48,9 +48,9 @@ const MODELS_DEV_URL = "https://models.dev/api.json"
 // numbers, so there is no ×1e6 conversion here. `cost.cache_read` /
 // `cost.cache_write` are absolute per-1M prices too, from which the
 // multipliers are derived. `cost.tiers` / `cost.context_over_200k` exist on
-// some entries and are deliberately NOT modelled: LLMPricing has no tiered
-// shape, and inventing one from an un-consumed field would be fabricated
-// pricing.
+// some models.dev entries but on none of the opencode go/zen routes in the
+// pinned snapshots, so they are not read here. If they ever appear, map them
+// to `LLMPricing.tiers` (see ../sources/openrouter-prompt-tiers.mjs).
 
 const ModelSchema = z
   .object({
