@@ -60,6 +60,20 @@ describe("retry-new-signature", () => {
     expect(first.body).toBe(second.body)
   })
 
+  it("every attempt carries X-MCP-Subscription-Id equal to replay.subId", async () => {
+    const seen: Array<string | undefined> = []
+    let call = 0
+    await deliverEventEnvelope(replay, event, {
+      sleep: async () => {},
+      fetch: async (_url: string, init: SsrfFetchArgs) => {
+        seen.push((init.headers as Record<string, string>)["X-MCP-Subscription-Id"])
+        call += 1
+        return call === 2 ? { status: 200, body: "" } : { status: 502, body: "" }
+      },
+    })
+    expect(seen).toEqual(["sub_freshsig", "sub_freshsig"])
+  })
+
   it("signatures are recomputed from secret key material, not merely re-randomized: both verify independently", async () => {
     const seen: Record<string, string>[] = []
     const decode = Buffer.from("freshsig-key-0123456789abcdef01", "utf8")

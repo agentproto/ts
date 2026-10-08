@@ -23,8 +23,8 @@ describe("ssrf-same-fn-both-paths", () => {
   it("challenge AND delivery both emerge through the same dispatcher gate", async () => {
     const calls: Array<string> = []
     const dispatcher: EgressDispatcher = async (req) => {
-      const isChallenge = req.headers["X-MCP-Subscription-Id"] !== undefined
       const challengeBody = JSON.parse(new TextDecoder().decode(req.body ?? new Uint8Array())) as { challenge?: string }
+      const isChallenge = challengeBody.challenge !== undefined
       if (isChallenge) {
         calls.push(`challenge:${req.url}`)
         return { status: 200, body: JSON.stringify({ challenge: challengeBody.challenge }) }

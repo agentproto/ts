@@ -8,8 +8,8 @@
  * `runtime/index.ts`.
  *
  * INVARIANTS v1 (plan §2, code-verified):
- *   - every event is NON-REPLAYABLE → `cursor` is always `null`, `truncated`
- *     is never set;
+ *   - every event is NON-REPLAYABLE → `cursor` is always `null`; subscribe
+ *     results carry `truncated: false`, events never set `truncated`;
  *   - no `read` tool, no separate package, no batching.
  *
  * Subscription ids are deterministic (`subscription-id.ts`): subscribe upserts
@@ -335,7 +335,7 @@ export async function eventsSubscribe(
       const ref = ctx.store.materializeWebhookTargetRef(target)
       if (ref !== undefined) ctx.store.putSentinelSecret(ref, { secret })
       ctx.store.update(id, { spec: { ...existing.spec, until }, handle, status: "active" })
-      return { id, refreshBefore: computeRefreshBefore(until), cursor: null }
+      return { id, refreshBefore: computeRefreshBefore(until), cursor: null, truncated: false }
     }
 
     // CREATE
@@ -353,7 +353,7 @@ export async function eventsSubscribe(
       sentinelId: id,
     })
     ctx.store.create({ id, spec, provider: mapped.providerSlug, handle })
-    return { id, refreshBefore: computeRefreshBefore(until), cursor: null }
+    return { id, refreshBefore: computeRefreshBefore(until), cursor: null, truncated: false }
   })
 }
 

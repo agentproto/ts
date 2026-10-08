@@ -104,15 +104,15 @@ describe("events/subscribe", () => {
     expect(store.get(first.id)?.spec.target.kind).toBe("webhook")
   })
 
-  it("unreplayable-cursor-null: cursor is always null, truncated never set", async () => {
+  it("unreplayable-cursor-null: cursor is always null, subscribe results carry truncated:false", async () => {
     const store = makeStore()
     const provider = createFakeSentinelProvider({ slug: "local-gh" })
     const created = await eventsSubscribe({ ...SUB, cursor: "provider-cursor-abc" }, subscribeCtx(store, provider))
     expect(created.cursor).toBeNull()
-    expect(created.truncated).toBeUndefined()
+    expect(created.truncated).toBe(false)
     const refreshed = await eventsSubscribe({ ...SUB, cursor: "provider-cursor-abc" }, subscribeCtx(store, provider))
     expect(refreshed.cursor).toBeNull()
-    expect(refreshed.truncated).toBeUndefined()
+    expect(refreshed.truncated).toBe(false)
   })
 
   it("ttl-clamp: default 7d, number capped at 30d, floored at 60s", async () => {

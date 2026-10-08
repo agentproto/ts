@@ -39,7 +39,6 @@ import {
   type MessageUrgency,
   type SessionMessage,
 } from "./session-message.js"
-import { createHash } from "node:crypto"
 
 import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
@@ -382,10 +381,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (stored.prevSecret && stored.rotatedAt !== undefined && nowMs() - stored.rotatedAt < windowMs) {
         secretsOut.push(stored.prevSecret)
       }
-      // Deterministic subscription identity for the replay path (W-C owns
-      // the canonical-JSON `subscriptionId()`; the wire `webhook-id` header
-      // carries the EVENT id — this subId never enters a signature).
-      const subId = `sub_${createHash("sha256").update(`${sentinelId}:${target.url}`).digest("hex").slice(0, 32)}`
+      // The subscription id IS the sentinel id (what `events/subscribe` returned to the client).
+      const subId = sentinelId
       return { subId, callbackUrl: target.url, secrets: secretsOut }
     },
     /** Expiry gate consulted BEFORE every dispatch (plan §4 W-B task 2b). */
