@@ -1,0 +1,19 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/discover",
+  "_note": "Body copied from the 'Request' section. The page shows no HTTP headers for this example.",
+  "body": {
+    "jsonrpc": "2.0",
+    "id": "discover-1",
+    "method": "server/discover",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "ExampleClient",
+          "version": "1.0.0"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  }
+}
