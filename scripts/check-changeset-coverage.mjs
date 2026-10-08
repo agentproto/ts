@@ -43,25 +43,51 @@ import { declaredPackages } from './check-changesets.mjs'
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..')
 
-/** Map each publishable package dir-prefix → its npm name. */
-export function publishablePackageMap(root = ROOT) {
-  const map = new Map() // "packages/foo/" → "@agentproto/foo"
-  for (const group of ['packages', 'adapters']) {
-    const base = resolve(root, group)
-    if (!existsSync(base)) continue
-    for (const entry of readdirSync(base, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
-      const pj = resolve(base, entry.name, 'package.json')
-      if (!existsSync(pj)) continue
+const SKIP_DIRS = new Set(['node_modules', 'dist'])
+
+/**
+ * `[{ dir, pkg }]` for every workspace package under `packages/` and
+ * `adapters/`, at any depth: `dir` is relative to `root` (no trailing slash),
+ * `pkg` is the parsed package.json. Grouping dirs without a package.json
+ * (`packages/driver/`, `packages/governance/`) are walked through, so their
+ * nested packages (`packages/driver/agent-cli`) are found. Descent STOPS at a
+ * dir that has its own package.json: anything below it (a scaffold template,
+ * a test fixture) is that package's content, not a separate package.
+ * node_modules, dist and dot-dirs are skipped.
+ */
+export function workspacePackageDirs(root = ROOT) {
+  const out = []
+  const walk = (rel) => {
+    const abs = resolve(root, rel)
+    const pj = resolve(abs, 'package.json')
+    if (existsSync(pj)) {
       try {
-        const { name, private: priv } = JSON.parse(readFileSync(pj, 'utf8'))
-        if (name && name.startsWith('@agentproto/') && priv !== true) {
-          map.set(`${group}/${entry.name}/`, name)
-        }
+        out.push({ dir: rel, pkg: JSON.parse(readFileSync(pj, 'utf8')) })
       } catch {
         /* unparseable package.json is not this script's problem */
       }
+      return
     }
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue
+      walk(`${rel}/${entry.name}`)
+    }
+  }
+  for (const group of ['packages', 'adapters']) {
+    if (!existsSync(resolve(root, group))) continue
+    for (const entry of readdirSync(resolve(root, group), { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue
+      walk(`${group}/${entry.name}`)
+    }
+  }
+  return out
+}
+
+/** Map each publishable package dir-prefix → its npm name. */
+export function publishablePackageMap(root = ROOT) {
+  const map = new Map() // "packages/foo/" → "@agentproto/foo"
+  for (const { dir, pkg } of workspacePackageDirs(root)) {
+    if (pkg.name && pkg.name.startsWith('@agentproto/') && pkg.private !== true) map.set(`${dir}/`, pkg.name)
   }
   return map
 }

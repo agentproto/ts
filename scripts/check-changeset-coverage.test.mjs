@@ -1,10 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   changedPublishablePackages,
   isPublishAffecting,
   publishablePackageMap,
+  workspacePackageDirs,
   publishedFileEntries,
 } from './check-changeset-coverage.mjs'
 
@@ -147,4 +151,61 @@ test('publishablePackageMap excludes private packages and finds real ones', () =
   assert.ok(names.includes('@agentproto/auth'), 'auth should be discovered')
   assert.ok(!names.includes('agentproto-vscode'), 'private vscode must be excluded')
   assert.ok(names.every((n) => n.startsWith('@agentproto/')))
+})
+
+test('publishablePackageMap finds nested packages under a grouping dir (packages/driver/agent-cli)', () => {
+  const map = publishablePackageMap()
+  assert.equal(map.get('packages/driver/agent-cli/'), '@agentproto/driver-agent-cli')
+  const touched = changedPublishablePackages(['packages/driver/agent-cli/src/index.ts'], map)
+  assert.deepEqual([...touched], ['@agentproto/driver-agent-cli'])
+})
+
+/** Lay out a throwaway workspace: `{ "rel/dir": packageJsonObject }`. */
+function fixtureWorkspace(pkgs) {
+  const root = mkdtempSync(join(tmpdir(), 'cs-coverage-'))
+  for (const [dir, pj] of Object.entries(pkgs)) {
+    mkdirSync(join(root, dir), { recursive: true })
+    writeFileSync(join(root, dir, 'package.json'), JSON.stringify(pj))
+  }
+  return root
+}
+
+test('workspacePackageDirs walks grouping dirs, stops at package dirs, skips node_modules/dist/dot-dirs', () => {
+  const root = fixtureWorkspace({
+    'packages/top': { name: '@agentproto/top' },
+    'packages/group/nested': { name: '@agentproto/nested' },
+    'packages/group/deeper/leaf': { name: '@agentproto/leaf' },
+    'packages/top/templates/app': { name: '__APP__', private: true },
+    'packages/top/node_modules/dep': { name: 'dep' },
+    'packages/group/dist/x': { name: '@agentproto/built' },
+    'packages/.hidden/x': { name: '@agentproto/hidden' },
+    'packages/group/node_modules/y': { name: '@agentproto/vendored' },
+    'packages/group/private-one': { name: '@agentproto/priv', private: true },
+    'adapters/hermes': { name: '@agentproto/adapter-hermes' },
+  })
+  try {
+    const dirs = workspacePackageDirs(root).map((p) => p.dir).sort()
+    assert.deepEqual(dirs, [
+      'adapters/hermes',
+      'packages/group/deeper/leaf',
+      'packages/group/nested',
+      'packages/group/private-one',
+      'packages/top',
+    ])
+    const map = publishablePackageMap(root)
+    assert.deepEqual(Object.fromEntries(map), {
+      'packages/top/': '@agentproto/top',
+      'packages/group/nested/': '@agentproto/nested',
+      'packages/group/deeper/leaf/': '@agentproto/leaf',
+      'adapters/hermes/': '@agentproto/adapter-hermes',
+    })
+    const touched = changedPublishablePackages(
+      ['packages/group/nested/src/a.ts', 'packages/group/deeper/leaf/package.json'],
+      map,
+      { filesOf: () => ['dist'] },
+    )
+    assert.deepEqual([...touched].sort(), ['@agentproto/leaf', '@agentproto/nested'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
