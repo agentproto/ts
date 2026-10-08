@@ -1038,7 +1038,10 @@ export default {
           id: "autoApplyOne",
           kind: "tool",
           tool: "session_wrapup_apply",
-          inputs: { sessionIds: ["$item.sessionId"], verdict: "$item.verdict", note: "$item.note" },
+          // `wait: true` — past its 25 s default `waitMs` the tool returns a
+          // bare `{ jobId, status: "running" }` and the report would show no
+          // outcome for a session that did get closed.
+          inputs: { sessionIds: ["$item.sessionId"], verdict: "$item.verdict", note: "$item.note", wait: true },
         },
       ],
     },
@@ -1229,7 +1232,8 @@ export default {
           id: "judgedApplyOne",
           kind: "tool",
           tool: "session_wrapup_apply",
-          inputs: { sessionIds: ["$item.sessionId"], verdict: "$item.verdict", judgedBy: "$item.judgedBy", note: "$item.note" },
+          // `wait: true`: same as autoApplyOne.
+          inputs: { sessionIds: ["$item.sessionId"], verdict: "$item.verdict", judgedBy: "$item.judgedBy", note: "$item.note", wait: true },
         },
       ],
     },
