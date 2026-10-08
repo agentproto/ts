@@ -28,9 +28,11 @@
  */
 
 import { createHash } from "node:crypto"
-import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
-import { resolve, dirname, join } from "node:path"
+import { readFileSync } from "node:fs"
+import { resolve, join } from "node:path"
 import { homedir } from "node:os"
+
+import { writeFileDurable, writeFileDurableSync } from "./durable-file.js"
 
 import {
   deliverEventEnvelope,
@@ -81,12 +83,16 @@ export type PersistedOutboxRow = SentinelWebhookOutboxRow & {
 }
 
 export interface SentinelWebhookOutbox {
-  /** Append a row for a matched webhook-delivery event. Idempotent per
-   *  `(sentinelId, eventId)`: an existing row (pending OR terminal) is never
-   *  duplicated — returns `undefined`, and for a terminal existing row
-   *  re-fires `onTerminal` so a lost ack (crash between the terminal
-   *  transition and the store write) still lands. Kicks dispatch off
-   *  asynchronously. */
+  /** Append a row for a matched webhook-delivery event. Resolves ONLY after
+   *  the row is crash-durable (atomic write + fsync + rename + dir fsync) —
+   *  callers ack the upstream (Agentpush cursor, push HTTP 2xx) on resolve.
+   *  A persistence failure rejects and rolls the row back, so the caller
+   *  leaves the upstream un-acked. Idempotent per `(sentinelId, eventId)`: an
+   *  existing row (pending OR terminal) is never duplicated — returns
+   *  `undefined` (after waiting for any in-flight write that carries it), and
+   *  for a terminal existing row re-fires `onTerminal` so a lost ack (crash
+   *  between the terminal transition and the store write) still lands. Kicks
+   *  dispatch off asynchronously once durable. */
   enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>
   /** Dispatch every `pending` row (serialized, one POST in flight). Consults
    *  `isExpired` per row AND the secrets sidecar BEFORE dispatch — an
@@ -108,7 +114,8 @@ export interface SentinelWebhookOutboxOptions {
   filePath?: string
   /** Injectable clock. */
   nowMs?: () => number
-  /** Debounce interval for disk persistence. Default 1500 ms. */
+  /** Debounce interval for the non-critical (status-transition) disk writes.
+   *  Enqueue never debounces. Default 1500 ms. */
   debounceMs?: number
   /** Disable disk persistence (unit tests). Default false unless filePath. */
   persist?: boolean
@@ -145,8 +152,6 @@ const PENDING_AGE_OUT_MS = 7 * 24 * 60 * 60 * 1000
 
 /** Bounded row file — the oldest terminal row is evicted beyond this. */
 const ROW_CAP = 2_000
-
-let tmpSeq = 0
 
 /** `sub_<hex32>` — deterministic over (sentinelId, eventId). */
 export function webhookRequestId(sentinelId: string, eventId: string): `sub_${string}` {
@@ -208,7 +213,13 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
 
   const rows = load()
 
-  // ── Persistence (atomic tmp+rename, 0600, same idiom as the store) ───
+  // ── Persistence (atomic tmp+fsync+rename+dir fsync, 0600) ────────────
+  //
+  // All writes ride ONE serialized chain so a slow older snapshot can never
+  // land after a newer one; each write snapshots the rows when it STARTS.
+  // `enqueue` awaits its write (durable-before-ack); status transitions use
+  // the debounced, best-effort variant — losing one only re-delivers a row
+  // (at-least-once), never loses it.
 
   const snapshot = (): Record<string, PersistedOutboxRow> => {
     const out: Record<string, PersistedOutboxRow> = {}
@@ -217,22 +228,31 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
   }
 
   let persistTimer: ReturnType<typeof setTimeout> | null = null
+  let writeTail: Promise<void> = Promise.resolve()
+  /** Bumped by `flushSync` so an in-flight async write that started earlier
+   *  cannot rename an older snapshot over the newer synchronous one. */
+  let syncGeneration = 0
+
+  const persistNow = (): Promise<void> => {
+    if (!persist) return Promise.resolve()
+    const run = async (): Promise<void> => {
+      const generation = syncGeneration
+      const body = JSON.stringify(snapshot(), null, 2) + "\n"
+      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })
+    }
+    const next = writeTail.then(run, run)
+    writeTail = next.catch(() => undefined)
+    return next
+  }
 
   const schedulePersist = (): void => {
     if (!persist) return
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
-      void (async () => {
-        try {
-          await fsp.mkdir(dirname(filePath), { recursive: true })
-          const tmp = `${filePath}.tmp.${process.pid}.${++tmpSeq}`
-          await fsp.writeFile(tmp, JSON.stringify(snapshot(), null, 2) + "\n", { mode: 0o600 })
-          await fsp.chmod(tmp, 0o600)
-          await fsp.rename(tmp, filePath)
-        } catch (err) {
-          log(`[sentinel-webhook-outbox] persist failed: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      })()
+      persistTimer = null
+      persistNow().catch(err => {
+        log(`[sentinel-webhook-outbox] persist failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
     }, debounceMs)
   }
 
@@ -242,12 +262,9 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       clearTimeout(persistTimer)
       persistTimer = null
     }
+    syncGeneration++
     try {
-      mkdirSync(dirname(filePath), { recursive: true })
-      const tmp = `${filePath}.tmp.${process.pid}.${++tmpSeq}`
-      writeFileSync(tmp, JSON.stringify(snapshot(), null, 2) + "\n", { mode: 0o600 })
-      chmodSync(tmp, 0o600)
-      renameSync(tmp, filePath)
+      writeFileDurableSync(filePath, JSON.stringify(snapshot(), null, 2) + "\n")
     } catch {
       // best-effort — never throw in the shutdown path
     }
@@ -349,7 +366,16 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
         // Dedup (I1): a second row is never created. A terminal existing row
         // means the original dispatch completed while the store-side ack was
         // lost — re-fire it (idempotent).
-        if (existing.status !== "pending") opts.onTerminal(sentinelId, existing)
+        if (existing.status !== "pending") {
+          opts.onTerminal(sentinelId, existing)
+          return undefined
+        }
+        // A pending duplicate may be the in-flight enqueue of the same event
+        // whose write has not landed: the caller must not ack before it does.
+        await writeTail
+        if (rows.get(key) !== existing) {
+          throw new Error(`webhook outbox row ${key} was not persisted`)
+        }
         return undefined
       }
 
@@ -368,13 +394,27 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       }
 
       // Bounded file: evict beyond the cap.
+      let evicted: [string, PersistedOutboxRow] | undefined
       if (rows.size >= ROW_CAP) {
         const oldest = oldestTerminalRowKey()
-        if (oldest) rows.delete(oldest)
+        const evictedRow = oldest ? rows.get(oldest) : undefined
+        if (oldest && evictedRow) {
+          evicted = [oldest, evictedRow]
+          rows.delete(oldest)
+        }
       }
 
       rows.set(key, row)
-      schedulePersist()
+      try {
+        await persistNow()
+      } catch (err) {
+        // Not durable ⇒ not accepted: roll back so nothing dispatches a row
+        // the disk does not hold, and let the caller leave the upstream
+        // un-acked.
+        if (rows.get(key) === row) rows.delete(key)
+        if (evicted && !rows.has(evicted[0])) rows.set(evicted[0], evicted[1])
+        throw err
+      }
       enqueueDispatch()
       return row
     },

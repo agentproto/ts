@@ -804,6 +804,13 @@ export type {
   SentinelTarget,
 } from "./sentinel-providers/types.js"
 export type { SentinelView } from "./sentinel-tools.js"
+export type {
+  SentinelMalformedItem,
+  SentinelPollResult,
+} from "./sentinel-providers/types.js"
+export { SentinelBackingExpiredError } from "./sentinel-providers/types.js"
+export type { SentinelQuarantine, SentinelQuarantineRecord } from "./sentinel-quarantine.js"
+export type { CancelTombstone, CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
 // Session-follow (wake a session on other sessions' events).
 export {
   createSessionFollowStore,
@@ -2722,7 +2729,14 @@ export async function createGateway(
     followStore: sessionFollowStore,
     sentinelStore,
     cancelSentinel: id =>
-      cancelSentinelWatch({ store: sentinelStore, resolveProvider: resolveSentinelProviderResolved }, id),
+      cancelSentinelWatch(
+        {
+          store: sentinelStore,
+          resolveProvider: resolveSentinelProviderResolved,
+          tombstones: sentinelRuntime.cancelTombstones,
+        },
+        id,
+      ),
   })
 
   // Inbound watcher — polls an agentpush source on a timer and spawns
@@ -3383,6 +3397,7 @@ export async function createGateway(
     registerSentinelTools(server, {
       store: sentinelStore,
       runtime: sentinelRuntime,
+      tombstones: sentinelRuntime.cancelTombstones,
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
       ...(callerSessionId ? { callerSessionId } : {}),
@@ -3440,6 +3455,7 @@ export async function createGateway(
           principal: eventsPrincipal,
           store: sentinelStore,
           resolveProvider: resolveSentinelProviderResolved,
+          tombstones: sentinelRuntime.cancelTombstones,
         }),
     })
     return server
@@ -3558,6 +3574,7 @@ export async function createGateway(
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
       runtime: sentinelRuntime,
+      tombstones: sentinelRuntime.cancelTombstones,
     },
     follows: {
       store: sessionFollowStore,

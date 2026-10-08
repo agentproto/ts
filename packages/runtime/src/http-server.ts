@@ -101,10 +101,13 @@ export interface SentinelHttpDeps {
   resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
   isSessionAlive: (sessionId: string) => boolean
   activeIntervalMs?: number
+  /** Persisted remote-cancel store (the runtime's `cancelTombstones`). */
+  tombstones?: CancelTombstoneStore
   /** Enables `POST /inbound/sentinel-<hookKey>` (push providers). Without it
    *  that path falls through to the ordinary inbound-endpoint lookup. */
   runtime?: SentinelInboundDeps["runtime"]
 }
+import type { CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
@@ -8471,7 +8474,10 @@ async function handleSentinels(
   }
 
   if (req.method === "DELETE") {
-    const removed = await cancelSentinelWatch({ store: deps.store, resolveProvider: deps.resolveProvider }, id)
+    const removed = await cancelSentinelWatch(
+      { store: deps.store, resolveProvider: deps.resolveProvider, ...(deps.tombstones ? { tombstones: deps.tombstones } : {}) },
+      id,
+    )
     if (!removed) {
       json(404, { error: "sentinel_not_found", id })
       return true

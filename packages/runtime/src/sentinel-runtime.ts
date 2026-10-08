@@ -54,6 +54,16 @@ import type {
 // A VALUE import (not `import type`): the runtime scopes the rotation window.
 import { WEBHOOK_SECRET_ROTATION_WINDOW_MS } from "./sentinel-store.js"
 import {
+  createCancelTombstoneStore,
+  defaultCancelTombstonePath,
+  type CancelTombstoneStore,
+} from "./sentinel-cancel-tombstones.js"
+import {
+  createSentinelQuarantine,
+  defaultSentinelQuarantinePath,
+  type SentinelQuarantine,
+} from "./sentinel-quarantine.js"
+import {
   createSentinelWebhookOutbox,
   type SentinelWebhookOutboxOptions,
   type SentinelWebhookOutbox,
@@ -64,6 +74,7 @@ import {
   deliveryPreferenceFor,
   type SentinelEvent,
   type SentinelMatchClause,
+  type SentinelPollResult,
   type SentinelProviderHandle,
 } from "./sentinel-providers/types.js"
 
@@ -214,6 +225,14 @@ export interface SentinelRuntimeOptions {
   outboxPersist?: boolean
   /** Rotation window for the dual-sign delivery. Default 10 min. */
   secretRotationWindowMs?: number
+  /** Poison-item quarantine JSONL (tests). Default
+   *  `~/.agentproto/sentinel-quarantine.jsonl`; in-memory when the outbox is
+   *  non-persistent (`deliverEvent` without `outboxPath`, or
+   *  `outboxPersist: false`) so tests never touch the operator's file. */
+  quarantinePath?: string
+  /** Cancel-tombstone file (tests). Same default/persistence rule as
+   *  `quarantinePath`: `~/.agentproto/sentinel-cancel-tombstones.json`. */
+  cancelTombstonePath?: string
 }
 
 export interface SentinelRuntime {
@@ -234,6 +253,12 @@ export interface SentinelRuntime {
   /** The persisted outbox behind every `target.kind === "webhook"` sentinel —
    *  rows in, terminal-state acks out (see `sentinel-webhook-outbox.ts`). */
   readonly webhookOutbox: SentinelWebhookOutbox
+  /** Poison polled items (could not be parsed into events) recorded before
+   *  their cursor was acknowledged. Identifiers + error only — no payload. */
+  readonly quarantine: SentinelQuarantine
+  /** Persisted remote-deletion intents (keyed by provider + remote id) behind
+   *  every unwatch/unsubscribe/expiry; swept each tick and at start. */
+  readonly cancelTombstones: CancelTombstoneStore
 }
 
 export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRuntime {
@@ -305,10 +330,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     if (store.get(sentinel.id)?.status !== "expired") {
       store.update(sentinel.id, { status: "expired" })
     }
-    const provider = await opts.resolveProvider(sentinel.provider)
-    if (!provider) return
     try {
-      await provider.cancel(sentinel.handle)
+      // Persisted intent + retry: a failed remote delete converges in the sweep.
+      await cancelTombstones.cancel(sentinel.handle)
     } catch (err) {
       log(`[sentinel-runtime] expiry cancel failed for ${sentinel.id}: ${describeError(err)}`)
     }
@@ -316,6 +340,26 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
 
   // ── Webhook fire path (plan §4 W-B task 3 — persisted outbox owns the
   // delivery; ack-after-terminal only) ────────────────────────────────
+
+  const outboxPersistent =
+    opts.outboxPersist ?? (opts.outboxPath !== undefined || opts.deliverEvent === undefined)
+  const quarantinePath = opts.quarantinePath ?? (outboxPersistent ? defaultSentinelQuarantinePath() : undefined)
+  const quarantine = createSentinelQuarantine({
+    ...(quarantinePath !== undefined ? { filePath: quarantinePath } : {}),
+    nowMs,
+  })
+
+  const cancelTombstonePath =
+    opts.cancelTombstonePath ?? (outboxPersistent ? defaultCancelTombstonePath() : undefined)
+  const cancelTombstones = createCancelTombstoneStore({
+    ...(cancelTombstonePath !== undefined ? { filePath: cancelTombstonePath } : {}),
+    resolveProvider: opts.resolveProvider,
+    // A live local watch that owns the remote makes the tombstone stale.
+    isRemoteInUse: (provider, remoteId) =>
+      store.list().some(s => s.provider === provider && s.handle.remoteId === remoteId && s.status !== "expired"),
+    nowMs,
+    log,
+  })
 
   const outbox = createSentinelWebhookOutbox({
     ...(opts.outboxPath !== undefined ? { filePath: opts.outboxPath } : {}),
@@ -627,20 +671,28 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     sentinelId: string,
     provider: SentinelProviderHandle,
     events: readonly SentinelEvent[],
-  ): Promise<{ haltedOnError: boolean; delivered: number }> {
+  ): Promise<{ haltedOnError: boolean; delivered: number; stoppedEarly: boolean }> {
     let haltedOnError = false
+    let stoppedEarly = false
     let delivered = 0
 
     for (const event of events) {
       const current = store.get(sentinelId)
-      if (!current) break // removed mid-batch
-      if (!POLLABLE_STATUSES.has(current.status)) break // paused/expired/error — stop watching
+      if (!current) {
+        stoppedEarly = true // removed mid-batch
+        break
+      }
+      if (!POLLABLE_STATUSES.has(current.status)) {
+        stoppedEarly = true // paused/expired/error — stop watching
+        break
+      }
 
       // Ingress expiry gate (poll and push alike) — plan §4 W-B task 2a:
       // an event that arrives after `until.at` must not create a
       // delivery-capable row (or a parked notice); flip first, then stop.
       if (isExpiredSpec(current)) {
         await expireSentinel(current)
+        stoppedEarly = true
         break
       }
 
@@ -700,7 +752,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (updated) await applyLifetime(updated, event, provider)
     }
 
-    return { haltedOnError, delivered }
+    return { haltedOnError, delivered, stoppedEarly }
   }
 
   // ── Poll ──────────────────────────────────────────────────────────
@@ -709,7 +761,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     const provider = await opts.resolveProvider(sentinel.provider)
     if (!provider || !provider.poll) return
 
-    let result: { events: SentinelEvent[]; cursor: string }
+    let result: SentinelPollResult
     try {
       result = await provider.poll(sentinel.handle, POLL_BATCH_LIMIT)
     } catch (err) {
@@ -717,20 +769,46 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       return
     }
 
-    const { haltedOnError } = await processEvents(sentinel.id, provider, result.events)
-
-    if (!haltedOnError) {
-      const latest = store.get(sentinel.id)
-      if (latest) {
-        if (provider.ack) {
-          try {
-            await provider.ack(latest.handle, result.cursor)
-          } catch (err) {
-            log(`[sentinel-runtime] ack failed for ${sentinel.id}: ${describeError(err)}`)
-          }
-        }
-        store.update(sentinel.id, { handle: { ...latest.handle, cursor: result.cursor } })
+    // Every poison item in the batch is durably quarantined BEFORE the cursor
+    // can be acknowledged: an ack lets the remote drop the row, so an
+    // unrecorded one would be lost. If the quarantine write fails, the batch
+    // is left un-acked and re-served next tick (a poison item must neither be
+    // lost nor stall the later valid events — those still deliver below).
+    let quarantineFailed = false
+    for (const item of result.malformed ?? []) {
+      try {
+        quarantine.record({
+          sentinelId: sentinel.id,
+          provider: sentinel.provider,
+          ...(sentinel.handle.remoteId !== undefined ? { remoteId: sentinel.handle.remoteId } : {}),
+          item,
+        })
+      } catch (err) {
+        quarantineFailed = true
+        log(`[sentinel-runtime] quarantine write failed for ${sentinel.id}: ${describeError(err)}`)
       }
+    }
+
+    const { haltedOnError, stoppedEarly } = await processEvents(sentinel.id, provider, result.events)
+
+    // Ack only a fully-handled batch: every item at or before `cursor` is
+    // delivered (outbox/session) or quarantined. A halted/stopped batch, or a
+    // failed quarantine write, keeps the cursor where it was.
+    if (haltedOnError || stoppedEarly || quarantineFailed) {
+      if (quarantineFailed) store.update(sentinel.id, { lastError: "quarantine write failed; batch not acknowledged" })
+      return
+    }
+
+    const latest = store.get(sentinel.id)
+    if (latest) {
+      if (provider.ack) {
+        try {
+          await provider.ack(latest.handle, result.cursor)
+        } catch (err) {
+          log(`[sentinel-runtime] ack failed for ${sentinel.id}: ${describeError(err)}`)
+        }
+      }
+      store.update(sentinel.id, { handle: { ...latest.handle, cursor: result.cursor } })
     }
   }
 
@@ -741,6 +819,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       // Periodic sweep (plan §4 W-B task 2c): flip expired sentinels and
       // reap delivered / age-out pending webhook outbox rows.
       await sweepExpiredSentinels()
+      await cancelTombstones.sweep().catch(err => log(`[sentinel-runtime] tombstone sweep failed: ${describeError(err)}`))
       outbox.sweep()
       const pollable = store.list().filter(s => POLLABLE_STATUSES.has(s.status))
       for (const sentinel of pollable) {
@@ -839,6 +918,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       // past its `until.at`, then re-dispatch every persisted outbox row
       // by its exact stored bytes.
       await sweepExpiredSentinels()
+      await cancelTombstones.sweep().catch(err => log(`[sentinel-runtime] tombstone sweep failed: ${describeError(err)}`))
       await outbox.dispatch()
       if (!timer) scheduleNext()
     },
@@ -851,5 +931,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     pollOnce,
     deliverPushed,
     webhookOutbox: outbox,
+    quarantine,
+    cancelTombstones,
   }
 }

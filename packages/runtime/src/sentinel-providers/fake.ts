@@ -15,14 +15,22 @@ import type {
   DeliveryPreference,
   SentinelEvent,
   SentinelHandle,
+  SentinelMalformedItem,
+  SentinelPollResult,
   SentinelProviderHandle,
   SentinelSpec,
+  SentinelUntil,
 } from "./types.js"
 
 export interface FakeSentinelProvider extends SentinelProviderHandle {
   /** Test hook: append an event to the shared stream every attached handle
    *  polls from. */
   emit(event: SentinelEvent): void
+  /** Test hook: append a poison item (one the provider cannot parse into an
+   *  event) to the stream. It occupies one cursor position. */
+  emitMalformed(item: SentinelMalformedItem): void
+  /** Every `renew(handle, until)` call, in order. */
+  readonly renewCalls: Array<{ handle: SentinelHandle; until: SentinelUntil }>
   /** Handles passed to `cancel()`, by remoteId — for assertions. */
   readonly canceled: ReadonlySet<string>
   /** Every `create`/`attach` call's delivery preference, in order — lets a
@@ -35,6 +43,9 @@ export interface CreateFakeSentinelProviderOptions {
   /** Ack calls are recorded but otherwise no-ops (the fake keeps full
    *  history for test inspection) unless this throws. */
   onAck?: (handle: SentinelHandle, cursor: string) => void
+  /** Makes `renew` available; may throw (e.g. `SentinelBackingExpiredError`)
+   *  to simulate an expired/unreachable remote. Omit = no `renew` method. */
+  onRenew?: (handle: SentinelHandle, until: SentinelUntil) => void
 }
 
 /** Build a fresh {@link SentinelEvent} with sane defaults — the pure event
@@ -60,7 +71,8 @@ export function createFakeSentinelProvider(
   opts?: CreateFakeSentinelProviderOptions,
 ): FakeSentinelProvider {
   const slug = opts?.slug ?? "fake"
-  const stream: SentinelEvent[] = []
+  const stream: Array<SentinelEvent | { malformed: SentinelMalformedItem }> = []
+  const renewCalls: Array<{ handle: SentinelHandle; until: SentinelUntil }> = []
   const canceled = new Set<string>()
   const attachCalls: DeliveryPreference[] = []
 
@@ -70,6 +82,7 @@ export function createFakeSentinelProvider(
     version: "0.0.0-test",
     description: "In-memory sentinel provider for tests — never a real built-in.",
     requiresSetup: false,
+    exclusiveRemote: true,
     capabilities: {
       subjects: ["*"],
       push: false,
@@ -81,6 +94,7 @@ export function createFakeSentinelProvider(
     },
     canceled,
     attachCalls,
+    renewCalls,
 
     async check(): Promise<boolean> {
       return true
@@ -102,17 +116,34 @@ export function createFakeSentinelProvider(
       if (handle.remoteId) canceled.add(handle.remoteId)
     },
 
+    ...(opts?.onRenew
+      ? {
+          async renew(handle: SentinelHandle, until: SentinelUntil): Promise<SentinelHandle> {
+            renewCalls.push({ handle, until })
+            opts.onRenew!(handle, until)
+            return { ...handle }
+          },
+        }
+      : {}),
+
     async status(handle: SentinelHandle): Promise<{ ok: boolean; pending?: number }> {
       return { ok: !canceled.has(handle.remoteId ?? ""), pending: stream.length }
     },
 
-    async poll(
-      handle: SentinelHandle,
-      limit: number,
-    ): Promise<{ events: SentinelEvent[]; cursor: string }> {
+    async poll(handle: SentinelHandle, limit: number): Promise<SentinelPollResult> {
       const cursor = handle.cursor ? Number(handle.cursor) : 0
       const slice = stream.slice(cursor, cursor + limit)
-      return { events: slice, cursor: String(cursor + slice.length) }
+      const events: SentinelEvent[] = []
+      const malformed: SentinelMalformedItem[] = []
+      for (const entry of slice) {
+        if ("malformed" in entry) malformed.push(entry.malformed)
+        else events.push(entry)
+      }
+      return {
+        events,
+        cursor: String(cursor + slice.length),
+        ...(malformed.length > 0 ? { malformed } : {}),
+      }
     },
 
     async ack(handle: SentinelHandle, cursor: string): Promise<void> {
@@ -125,6 +156,10 @@ export function createFakeSentinelProvider(
 
     emit(event: SentinelEvent): void {
       stream.push(event)
+    },
+
+    emitMalformed(item: SentinelMalformedItem): void {
+      stream.push({ malformed: item })
     },
   }
 

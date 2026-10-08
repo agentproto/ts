@@ -15,8 +15,11 @@
  *   - push (opt-in via the `delivery: push` credential, needs a public https
  *     daemon URL): agentpush POSTs each envelope to
  *     `/inbound/sentinel-<hookKey>`; {@link parseInbound} verifies signature
- *     v2 (or the legacy `sha256=` header) with the per-sentinel callback
- *     secret. `poll` is then a no-op — agentpush owns retry/dead-lettering.
+ *     v2 with the per-sentinel callback secret. Subscriptions created here
+ *     are stamped `state.signature = "v2"` and REJECT the legacy body-only
+ *     `sha256=` header (no timestamp, so replayable); only handles persisted
+ *     before the stamp existed still accept it. `poll` is then a no-op —
+ *     agentpush owns retry/dead-lettering.
  *
  * The agentpush envelope IS `SentinelEvent` (design §4), passed through
  * unchanged. Signature verification mirrors agentpush's `verifySignatureV2`
@@ -30,21 +33,25 @@
  * is 0600), never in tool output.
  */
 
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 
 import { verifyInboundSignature } from "../inbound-adapters.js"
 import { loadImportedMcps } from "../mcp-imports.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "../sentinel-github-normalize.js"
 import { resolveSentinelPublicUrl, type SentinelPublicUrl } from "../sentinel-public-url.js"
 import { WEBHOOK_ROUTE_PREFIX } from "./webhook.js"
-import type {
-  DeliveryPreference,
-  SentinelCreateContext,
-  SentinelEvent,
-  SentinelHandle,
-  SentinelProviderHandle,
-  SentinelProviderReadiness,
-  SentinelSpec,
+import {
+  SentinelBackingExpiredError,
+  type DeliveryPreference,
+  type SentinelCreateContext,
+  type SentinelEvent,
+  type SentinelHandle,
+  type SentinelMalformedItem,
+  type SentinelPollResult,
+  type SentinelProviderHandle,
+  type SentinelProviderReadiness,
+  type SentinelSpec,
+  type SentinelUntil,
 } from "./types.js"
 
 export const AGENTPUSH_SLUG = "agentpush"
@@ -197,6 +204,8 @@ interface AgentpushState {
   consumerRef?: string
   hookKey?: string
   callbackSecret?: string
+  /** `"v2"` = created by a build that requires timestamped v2 signatures. */
+  signature?: "v2"
 }
 
 function stateOf(handle: SentinelHandle): AgentpushState {
@@ -206,7 +215,38 @@ function stateOf(handle: SentinelHandle): AgentpushState {
     ...(typeof s.consumerRef === "string" ? { consumerRef: s.consumerRef } : {}),
     ...(typeof s.hookKey === "string" ? { hookKey: s.hookKey } : {}),
     ...(typeof s.callbackSecret === "string" ? { callbackSecret: s.callbackSecret } : {}),
+    ...(s.signature === "v2" ? { signature: "v2" as const } : {}),
   }
+}
+
+/** Identifiers lifted from a poison envelope for the quarantine record —
+ *  strings only, length-capped, never the payload `data`. */
+function excerptOf(envelope: unknown): SentinelMalformedItem["excerpt"] | undefined {
+  if (!isRecord(envelope)) return undefined
+  const cap = (v: unknown): string | undefined => (typeof v === "string" ? v.slice(0, 200) : undefined)
+  const out: NonNullable<SentinelMalformedItem["excerpt"]> = {}
+  const id = cap(envelope.id)
+  const type = cap(envelope.type)
+  const subject = cap(envelope.subject)
+  const source = cap(envelope.source)
+  if (id !== undefined) out.id = id
+  if (type !== undefined) out.type = type
+  if (subject !== undefined) out.subject = subject
+  if (source !== undefined) out.source = source
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+function whyNotEnvelope(envelope: unknown): string {
+  if (envelope === undefined || envelope === null) return "item has no envelope"
+  if (!isRecord(envelope)) return "envelope is not a JSON object"
+  const missing: string[] = []
+  if (envelope.specversion !== "1.0") missing.push("specversion")
+  for (const k of ["id", "type", "subject"] as const) if (typeof envelope[k] !== "string" || envelope[k] === "") missing.push(k)
+  for (const k of ["source", "time", "summary"] as const) if (typeof envelope[k] !== "string") missing.push(k)
+  if (!isRecord(envelope.data)) missing.push("data")
+  if (!Array.isArray(envelope.subjects) || !envelope.subjects.every(x => typeof x === "string")) missing.push("subjects")
+  if (typeof envelope.terminal !== "boolean") missing.push("terminal")
+  return `envelope failed validation (invalid or missing: ${missing.join(", ") || "unknown"})`
 }
 
 const SUBJECT_SCHEME_RE = /^([A-Za-z][A-Za-z0-9_-]*):/
@@ -339,6 +379,7 @@ export function agentpushSentinelProvider(opts: AgentpushProviderOptions = {}): 
     // Credentials come from `setup_sentinel_provider` OR an imported alias, so
     // "set up" is decided by `readiness()`, not the kit's ledger/creds check.
     requiresSetup: false,
+    exclusiveRemote: true,
     capabilities: {
       subjects: ["*"],
       push: true,
@@ -410,6 +451,7 @@ export function agentpushSentinelProvider(opts: AgentpushProviderOptions = {}): 
         state: {
           mode: push ? "push" : "poll",
           consumerRef,
+          signature: "v2",
           ...(push ? { hookKey, callbackSecret } : {}),
         },
       }
@@ -460,6 +502,31 @@ export function agentpushSentinelProvider(opts: AgentpushProviderOptions = {}): 
       }
     },
 
+    /**
+     * Extend the remote subscription's lifetime. `PATCH` accepts `until`
+     * without rejecting an already-expired row, so the returned `status` is
+     * checked: anything but `active` (or a 404) means the backing subscription
+     * is gone and must be recreated — never silently re-provisioned here.
+     */
+    async renew(handle: SentinelHandle, until: SentinelUntil): Promise<SentinelHandle> {
+      if (!handle.remoteId) throw new SentinelBackingExpiredError("agentpush: handle has no subscription id")
+      let json: unknown
+      try {
+        json = await api("PATCH", subPath(handle), { body: { until } })
+      } catch (err) {
+        if (isHttp(err, 404)) {
+          throw new SentinelBackingExpiredError(`the agentpush subscription ${handle.remoteId} was deleted`, handle.remoteId)
+        }
+        throw err
+      }
+      const sub = isRecord(json) && isRecord(json.subscription) ? json.subscription : undefined
+      const status = sub && typeof sub.status === "string" ? sub.status : undefined
+      if (status === "expired" || status === "deleted") {
+        throw new SentinelBackingExpiredError(`the agentpush subscription ${handle.remoteId} is ${status}`, handle.remoteId)
+      }
+      return { ...handle }
+    },
+
     async status(handle: SentinelHandle): Promise<{ ok: boolean; detail?: string; pending?: number }> {
       try {
         const json = await api("GET", subPath(handle))
@@ -472,7 +539,7 @@ export function agentpushSentinelProvider(opts: AgentpushProviderOptions = {}): 
       }
     },
 
-    async poll(handle: SentinelHandle, limit: number): Promise<{ events: SentinelEvent[]; cursor: string }> {
+    async poll(handle: SentinelHandle, limit: number): Promise<SentinelPollResult> {
       const after = handle.cursor ?? "0"
       // Push subscriptions are drained by agentpush's own dispatcher (with
       // retry + dead-lettering); polling them too would race it.
@@ -481,16 +548,36 @@ export function agentpushSentinelProvider(opts: AgentpushProviderOptions = {}): 
       const json = await api("GET", `${subPath(handle)}/events`, { query: { after, limit: Math.max(1, Math.min(limit, 1000)) } })
       const items = isRecord(json) && Array.isArray(json.items) ? json.items : []
       const events: SentinelEvent[] = []
+      const malformed: SentinelMalformedItem[] = []
       let cursor = Number(after)
       if (!Number.isFinite(cursor)) cursor = 0
       for (const item of items) {
-        if (!isRecord(item)) continue
-        const seq = typeof item.seq === "number" ? item.seq : undefined
+        const seq = isRecord(item) && typeof item.seq === "number" ? item.seq : undefined
         if (seq !== undefined && seq > cursor) cursor = seq
-        const event = toSentinelEvent(item.envelope, seq)
-        if (event) events.push(event)
+        const envelope = isRecord(item) ? item.envelope : undefined
+        const event = toSentinelEvent(envelope, seq)
+        if (event) {
+          events.push(event)
+          continue
+        }
+        // Poison item: surface it so the runtime quarantines it BEFORE the
+        // cursor moves past it (a silent skip would lose it on ack).
+        let serialized = ""
+        try {
+          serialized = JSON.stringify(item) ?? ""
+        } catch {
+          // unserializable — digest stays empty
+        }
+        const excerpt = excerptOf(envelope)
+        malformed.push({
+          ...(seq !== undefined ? { seq } : {}),
+          ...(isRecord(item) && typeof item.delivery_id === "string" ? { remoteDeliveryId: item.delivery_id } : {}),
+          error: isRecord(item) ? whyNotEnvelope(envelope) : "poll item is not a JSON object",
+          ...(excerpt ? { excerpt } : {}),
+          ...(serialized ? { digest: createHash("sha256").update(serialized).digest("hex"), bytes: Buffer.byteLength(serialized) } : {}),
+        })
       }
-      return { events, cursor: String(cursor) }
+      return { events, cursor: String(cursor), ...(malformed.length > 0 ? { malformed } : {}) }
     },
 
     /** Called by the runtime after a polled batch is delivered. Nothing new
@@ -511,6 +598,7 @@ export function agentpushSentinelProvider(opts: AgentpushProviderOptions = {}): 
       if (!signature || signature.trim() === "") return { ok: false, reason: "missing_signature" }
 
       if (signature.trim().startsWith("sha256=")) {
+        if (st.signature === "v2") return { ok: false, reason: "legacy_signature_rejected" }
         // Legacy header: HMAC of the body alone (no timestamp), kept by
         // agentpush for existing routes until they migrate.
         const legacy = verifyInboundSignature("agentpush", {

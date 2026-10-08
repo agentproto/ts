@@ -103,6 +103,7 @@ they will not work and are not planned for this release.
 |---|---|
 | `-32602` | Invalid params (unknown event, bad args vs `inputSchema`) |
 | `-32015` | `CallbackEndpointError` — challenge verification failed |
+| `-32016` | `BackingSubscriptionError` — a refresh could not renew the backing remote subscription. `data.reason`: `backing_subscription_expired` (remote already expired/deleted: unsubscribe and subscribe again; local state is untouched and no second remote is provisioned) or `backing_renew_failed` (transient: retry the refresh) |
 
 ## 6. Security invariants
 
