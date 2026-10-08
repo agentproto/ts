@@ -204,7 +204,7 @@ describe("ask-mode context question offers a handoff", () => {
     expect(continueAgentSessionFresh).toHaveBeenCalledOnce()
     const [, prev, opts] = vi.mocked(continueAgentSessionFresh).mock.calls[0]!
     expect(prev.id).toBe(desc.id)
-    expect(opts).toEqual({ harness: "codex" })
+    expect(opts).toMatchObject({ harness: "codex" })
     expect(answered).toEqual([expect.objectContaining({ answer: "handoff:codex" })])
     expect(reg.get(desc.id)?.awaitingInput).toBeFalsy()
     expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()

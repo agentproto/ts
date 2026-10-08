@@ -865,8 +865,9 @@ interface TranscriptRecord {
 export async function exportDaemonEventsSession(
   sessionId: string,
   desc?: SessionDescriptor,
+  baseDir?: string,
 ): Promise<ExportedSession> {
-  const filePath = sessionEventsPath(sessionId)
+  const filePath = sessionEventsPath(sessionId, baseDir)
 
   let stream: ReturnType<typeof createReadStream>
   try {

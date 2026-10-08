@@ -1,0 +1,9 @@
+---
+"@agentproto/runtime": patch
+---
+
+A retired session is never revived by an automated path. One `isRetired` predicate (archived, a deliberate `endedReason`, a `continuedTo` successor, or the new `retiredAt` stamp) gates session-follow digests, sentinel notices, cron `prompt-session` (decided by status, tagged `source: "cron"`), the restart sweep, `continue-interrupted`, and the restart helpers, in place and under a new id. The automated-source allowlist now includes `daemon:*` and `workflow:*` (the workflow agent host tags its prompts `workflow:agent-step`). Notices for a retired follower/target go to the end of its `continuedTo` chain (the follow/sentinel is re-pointed there, same id and cursor) or are parked. An inbound message (a human) follows `continuedTo`, otherwise may revive the row in place, but an archived row is never revived under a new id: the message is parked with a log line.
+
+A human prompt to a superseded or retired row fails with HTTP 409 `error: "session_not_alive"` (unchanged code) plus `reason: "superseded" | "retired"` and `continuedTo` when set; the MCP `message_send` / `agent_prompt` errors carry the same fields. `forceResume: true` in the body overrides.
+
+New HTTP-only `POST /sessions/:id/retire { successor?, reason? }` stamps retirement on an alive or terminal row (idempotent), sets `continuedTo`, and re-points follows and sentinels in place. `SessionSummary` now exposes `retiredAt` (and `continuedTo`). Archive stays reversible and no longer touches follows or sentinels; `forget()` / `DELETE /sessions/:id` re-points them to the successor, or deletes follows and cancels sentinels when there is none. Also: a refused restart clears `nextRestartAt`, `continuedTo` is stamped on the prior row only after a pending successor provisions, and the sentinel path decides liveness by status, not `processAlive`.

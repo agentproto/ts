@@ -55,6 +55,7 @@ import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistr
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterLister, AgentAdapterResolver } from "./http-server.js"
 import { restartAgentSession } from "./session-restart-core.js"
+import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { authProfileAsAdapterHint, type AuthProfileLookup } from "./adapter-slug-hint.js"
 import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-schema.js"
 
@@ -657,6 +658,28 @@ export function createCronScheduler(opts: {
           `cron job '${job.id}': session '${action.sessionId}' not found`,
         )
       }
+      if (desc.status !== "running" && desc.status !== "starting" && isRetired(desc)) {
+        // A retired session is never revived — in place or under a new id.
+        // Follow its successor when it is alive; otherwise fail the tick.
+        const successorId = resolveSuccessor(sid => registry.get(sid), desc.id)
+        const successor = successorId ? registry.get(successorId) : undefined
+        if (
+          successorId &&
+          successor &&
+          (successor.status === "running" || successor.status === "starting")
+        ) {
+          action.sessionId = successorId
+          await registry.sendPrompt(successorId, action.prompt, { source: "cron" })
+          return {
+            ok: true,
+            summary: `session '${desc.id}' is retired — re-prompted its successor '${successorId}'`,
+          }
+        }
+        throw new Error(
+          `cron job '${job.id}': session '${desc.id}' is retired and was not revived` +
+            (successorId ? ` (continued as '${successorId}', which is not alive)` : ""),
+        )
+      }
       if (desc.processAlive === false) {
         if (!resolveAgentAdapter) {
           throw new Error(
@@ -678,7 +701,7 @@ export function createCronScheduler(opts: {
           },
         )
         action.sessionId = restarted.desc.id
-        await registry.sendPrompt(restarted.desc.id, action.prompt)
+        await registry.sendPrompt(restarted.desc.id, action.prompt, { source: "cron" })
         return {
           ok: true,
           summary:
@@ -695,7 +718,7 @@ export function createCronScheduler(opts: {
       // Same underlying call as the agent_prompt MCP tool / POST
       // /sessions/:id/prompt — re-prompts the existing session in place
       // rather than spawning a new one.
-      await registry.sendPrompt(action.sessionId, action.prompt)
+      await registry.sendPrompt(action.sessionId, action.prompt, { source: "cron" })
       return {
         ok: true,
         summary: `re-prompted session ${action.sessionId}`,

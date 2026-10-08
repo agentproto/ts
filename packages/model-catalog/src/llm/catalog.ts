@@ -46,6 +46,22 @@ export interface LLMPricing {
    */
   cacheWriteMultiplier?: number
   /**
+   * Prompt-length price tiers, ascending by `aboveInputTokens`. The flat
+   * fields above are the base tier (short prompts); a request whose prompt
+   * is LONGER than a tier's `aboveInputTokens` is billed at that tier's
+   * rates instead — for ALL of its tokens, output included, not just the
+   * part past the threshold. Example: Claude Haiku 5.5 is $0.10/$0.50 up to
+   * 100k prompt tokens and $0.50/$2.50 over it.
+   *
+   * "Prompt length" is the request's whole input: uncached + cache-read +
+   * cache-write tokens. Pick the tier with {@link selectPricingTier}; never
+   * read `inputPer1M` directly for a model that may carry tiers.
+   *
+   * Generator-owned: emitted from the source's `min_prompt_tokens`
+   * overrides (OpenRouter `pricing.overrides`).
+   */
+  tiers?: readonly LLMPricingTier[]
+  /**
    * Router / SDK used to call the model. Same model can be reachable via
    * multiple providers — `claude-sonnet-4-5` is `provider: "anthropic"`
    * when called through the Anthropic SDK and `provider: "openrouter"`
@@ -106,6 +122,59 @@ export interface LLMPricing {
    * precisely so the catalog is not a function of whose key ran the sync.
    */
   idSource?: "openai" | "openrouter"
+}
+
+/**
+ * One prompt-length price tier of an {@link LLMPricing}. Applies when the
+ * request's prompt is strictly longer than `aboveInputTokens`. Cache
+ * multipliers are relative to THIS tier's `inputPer1M`; absent = inherit
+ * the base tier's multiplier.
+ */
+export interface LLMPricingTier {
+  aboveInputTokens: number
+  inputPer1M: number
+  outputPer1M: number
+  cacheReadMultiplier?: number
+  cacheWriteMultiplier?: number
+}
+
+/** The subset of {@link LLMPricing} {@link selectPricingTier} reads. */
+interface TieredTokenPricing {
+  inputPer1M: number
+  outputPer1M: number
+  cacheReadMultiplier?: number
+  cacheWriteMultiplier?: number
+  tiers?: readonly LLMPricingTier[]
+}
+
+/**
+ * Flatten `pricing` to the rates that apply to a request whose prompt is
+ * `promptTokens` long (uncached + cache-read + cache-write input). Returns
+ * `pricing` unchanged when it has no tiers or the prompt is within the base
+ * tier; otherwise a copy with the highest tier whose `aboveInputTokens` the
+ * prompt exceeds spread over the base rates.
+ */
+export function selectPricingTier<T extends TieredTokenPricing>(
+  pricing: T,
+  promptTokens: number
+): T {
+  let selected: LLMPricingTier | undefined
+  for (const tier of pricing.tiers ?? []) {
+    if (
+      promptTokens > tier.aboveInputTokens &&
+      (selected === undefined || tier.aboveInputTokens > selected.aboveInputTokens)
+    ) {
+      selected = tier
+    }
+  }
+  if (!selected) return pricing
+  return {
+    ...pricing,
+    inputPer1M: selected.inputPer1M,
+    outputPer1M: selected.outputPer1M,
+    cacheReadMultiplier: selected.cacheReadMultiplier ?? pricing.cacheReadMultiplier,
+    cacheWriteMultiplier: selected.cacheWriteMultiplier ?? pricing.cacheWriteMultiplier,
+  }
 }
 
 import { OPENROUTER_ROUTES } from "./openrouter-routes.generated.js"
@@ -692,7 +761,8 @@ export interface LLMCreditCostResult {
   cacheWriteCredits: number
   /** Production cost in USD (true provider cost, with cache multipliers applied). */
   productionCost: number
-  /** Model pricing used */
+  /** Model pricing used — already flattened to the request's prompt-length
+   *  tier (see `selectPricingTier`), so its rates are the ones billed. */
   pricing: LLMPricing
   /** Whether fallback pricing was used */
   isFallback: boolean
@@ -781,7 +851,6 @@ export function calculateLLMCreditCost(
       : {}
 
   const resolved = resolvePricing(modelId)
-  const pricing = resolved ?? DEFAULT_PRICING
   const isFallback = !resolved
   if (isFallback) {
     // `isFallback` is returned on `LLMCreditCostResult`/`CostResult` but
@@ -799,11 +868,18 @@ export function calculateLLMCreditCost(
         `higher provider cost, this under-charges until it gets a pricing row.`
     )
   }
-  const cacheRead = pricing.cacheReadMultiplier ?? 1.0
-  const cacheWrite = pricing.cacheWriteMultiplier ?? 1.0
-
   const cacheReadIn = Math.max(0, usage.cacheReadInputTokens ?? 0)
   const cacheCreateIn = Math.max(0, usage.cacheCreationInputTokens ?? 0)
+
+  // Prompt-length tiered models (Claude Haiku 5.5: 5x over 100k) bill the
+  // WHOLE request at the tier its prompt length falls in, and the prompt
+  // counts cached input too.
+  const pricing = selectPricingTier(
+    resolved ?? DEFAULT_PRICING,
+    Math.max(0, usage.inputTokens) + cacheReadIn + cacheCreateIn
+  )
+  const cacheRead = pricing.cacheReadMultiplier ?? 1.0
+  const cacheWrite = pricing.cacheWriteMultiplier ?? 1.0
 
   // ── 1. Provider cost (USD) — single source of truth ──
   // Cache multipliers apply to BOTH the provider cost AND the derived

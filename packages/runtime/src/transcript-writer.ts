@@ -840,6 +840,16 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         durationMs: record.durationMs,
       })
     },
+    drain(sessionId) {
+      const state = states.get(sessionId)
+      if (!state) return Promise.resolve()
+      flushBuffers(sessionId, state)
+      // Writes complete in order: the callback of an empty trailing write
+      // fires once every record queued before it has reached the file.
+      return new Promise<void>(resolve => {
+        state.stream.write("", () => resolve())
+      })
+    },
     close(sessionId) {
       const state = states.get(sessionId)
       if (!state) return Promise.resolve()

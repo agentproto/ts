@@ -2088,7 +2088,15 @@ export function registerSessionTools(
         }
       }
       try {
-        await registry.sendPrompt(desc.id, "/compact")
+        // Attribute the prompt to the calling session (same rule as
+        // `agent_prompt`) so a session whose policy reserves compaction to
+        // the operator (`compactRequiresOperator`) can tell this isn't one.
+        const promptSource = callerScope?.ownerSessionId ?? callerSessionId
+        await registry.sendPrompt(
+          desc.id,
+          "/compact",
+          promptSource ? { source: `agent:${promptSource}` } : undefined,
+        )
         return {
           content: [
             {
