@@ -968,3 +968,135 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
     }
   })
 })
+
+describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorktrees)", () => {
+  const SHA_IDLE = "1".repeat(40)
+  const SHA_LIVE = "2".repeat(40)
+  const SHA_DIRTY = "3".repeat(40)
+  const SHA_YOUNG = "4".repeat(40)
+  const SHA_PR = "5".repeat(40)
+
+  /** branch_gc's real shape for a branch checked out in a worktree: the
+   *  content ladder still ran (status/coverage/residual), then `holdFor`
+   *  won with `holdReason: "worktree"` and the worktree path as detail. */
+  function heldEntry(name: string, sha: string, over: Record<string, unknown> = {}) {
+    return {
+      kind: "local",
+      name,
+      ref: `refs/heads/${name}`,
+      sha,
+      date: "2026-01-01T00:00:00Z",
+      ageDays: 10,
+      author: "dev",
+      subject: `work on ${name}`,
+      status: "unmerged",
+      history: "current",
+      compareBase: BASE_SHA,
+      mergeBase: "9".repeat(40),
+      mergedTree: null,
+      ahead: 2,
+      behind: 7,
+      residualFiles: ["src/x.ts"],
+      residualFileCount: 1,
+      class: "hold",
+      holdReason: "worktree",
+      holdDetail: `/wt/${name}`,
+      ...over,
+    }
+  }
+
+  function branchPlan(withVerdict: boolean) {
+    const verdict = withVerdict ? { verdict: { triage: "obsolete", agree: true, reviewer: "r" } } : {}
+    return {
+      mode: "plan",
+      plan: {
+        repoRoot: "/repo",
+        repoName: "repo",
+        base: "origin/main",
+        baseSha: BASE_SHA,
+        scopes: ["local"],
+        entries: [
+          heldEntry("idle", SHA_IDLE, verdict),
+          heldEntry("live", SHA_LIVE),
+          heldEntry("dirty", SHA_DIRTY),
+          heldEntry("young", SHA_YOUNG, { ageDays: 1 }),
+          heldEntry("pr", SHA_PR),
+          // The main checkout's branch: held for `worktree` too, but worktree_gc
+          // never lists the main checkout, so it is never a candidate.
+          heldEntry("main-co", "6".repeat(40), { holdDetail: "/repo" }),
+        ],
+      },
+      summary: { byClass: { local: { reclaim: 0, review: 0, hold: 6 } }, byStatus: {} },
+    }
+  }
+
+  function worktreePlan() {
+    const wt = (name: string, over: Record<string, unknown> = {}) => ({
+      path: `/wt/${name}`,
+      branch: name,
+      head: "1".repeat(40),
+      class: "hold",
+      tree: { state: "clean" },
+      integration: { state: "diverged" },
+      liveness: { state: "idle", sessions: [] },
+      ...over,
+    })
+    return {
+      mode: "plan",
+      plan: [
+        wt("idle"),
+        wt("live", { liveness: { state: "sessions", sessions: [{ id: "sess_x" }] } }),
+        wt("dirty", { tree: { state: "dirty", modified: 1 } }),
+        wt("young"),
+        wt("pr", { integration: { state: "open", pr: 7 } }),
+      ],
+    }
+  }
+
+  async function run(input: Record<string, unknown>) {
+    let branchGcCalls = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") {
+        if (inputs.wait !== true) return mcpResult({ jobId: "wgc_test", status: "running" })
+        return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreePlan())
+      }
+      if (name === "branch_gc") return mcpResult(branchPlan(++branchGcCalls >= 2))
+      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const { host, spawns, sends } = recordingAgentHost()
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", ...input } })
+    return { spawns, sends, report: (output as { report: string }).report }
+  }
+
+  it("reviews only the idle, clean, no-PR, old-enough worktree branch, telling the reviewer why it was held", async () => {
+    const { spawns, sends } = await run({})
+    expect(spawns.filter(s => s.stepId === "reviewOne")).toHaveLength(1)
+    expect(sends).toHaveLength(1)
+    const prompt = sends[0]!.prompt
+    expect(prompt).toContain(`Review the local branch \`idle\` (tip ${SHA_IDLE})`)
+    expect(prompt).toContain("checked out in the linked worktree /wt/idle")
+    expect(prompt).toContain("Never touch that worktree")
+    for (const sha of [SHA_LIVE, SHA_DIRTY, SHA_YOUNG, SHA_PR]) expect(prompt).not.toContain(sha)
+  })
+
+  it("reports the verdict with the removal command when the reviewer agreed — and removes nothing itself", async () => {
+    const { report } = await run({})
+    expect(report).toContain("## Held worktrees reviewed (1)")
+    expect(report).toContain("- `idle` — obsolete — nothing of value lost: `agentproto worktree rm /wt/idle`")
+    expect(report).toContain("dry run only, nothing was deleted")
+  })
+
+  it("reviewHeldWorktrees:false leaves held worktrees alone", async () => {
+    const { spawns, report } = await run({ reviewHeldWorktrees: false })
+    expect(spawns).toHaveLength(0)
+    expect(report).not.toContain("## Held worktrees reviewed")
+  })
+})

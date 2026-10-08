@@ -41,6 +41,9 @@ const DEFAULT_MAX_REVIEWS = 40
 /** Longest name list the markdown report inlines; the full lists are in the
  *  run output (`gaps`, …). */
 const REPORT_LIST_CAP = 20
+/** A worktree-held branch is reviewed only once its tip is this old — the
+ *  same floor as branch_gc's `minAgeDays` default for `review`. */
+const HELD_WORKTREE_MIN_AGE_DAYS = 3
 
 const REVIEWER_REF = "@agentproto/repo-maintenance-reviewer"
 
@@ -84,6 +87,11 @@ const REVIEW_PROMPT =
   "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
   "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
   "Refs of this branch (across its tips): {{item.refs}}." +
+  "{{#item.worktree}}\n\nThis branch is checked out in the linked worktree {{item.worktree}} — " +
+  "idle (no live session), clean tree, no open PR — which is the only reason branch gc held it. " +
+  "Your verdict decides whether that worktree (and the branch) can be removed: agree only when " +
+  "everything committed on it is in base or not worth keeping. Never touch that worktree; read " +
+  "the branch through its sha like any other.{{/item.worktree}}" +
   "{{#item.otherTips}}\n\nThis branch name has OLDER tip(s) besides {{item.sha}} — " +
   "{{item.otherTips}} (JSON array of { sha, refs }; each sha may carry work the newer tip does " +
   "not). The coverage above describes ONLY the primary tip {{item.sha}}. Inspect EVERY sha " +
@@ -147,6 +155,49 @@ const VERDICT_NEEDS = (id, checkId) => ({
   },
 })
 
+/** Linked worktrees whose branch is worth an LLM review: idle (no live
+ *  session), clean tree, and no open PR — `path → branch`. branch_gc holds
+ *  every branch checked out in a worktree (`holdReason: "worktree"`) and
+ *  worktree_gc holds every worktree whose branch isn't provably merged, so
+ *  without this an abandoned-but-unmerged worktree is held by both forever.
+ *  `worktree_gc`'s dry run never lists the main checkout, so its branch is
+ *  never a candidate. A dirty tree is left out: its WIP isn't on the tip a
+ *  reviewer reads. */
+export function reviewableWorktrees(worktreeGcPlanResult) {
+  const out = new Map()
+  const entries = Array.isArray(worktreeGcPlanResult?.plan) ? worktreeGcPlanResult.plan : []
+  for (const w of entries) {
+    if (w?.class !== "hold" || !w.branch || !w.path) continue
+    if (w.liveness?.state !== "idle" || w.tree?.state !== "clean") continue
+    if (w.integration?.state === "open") continue
+    out.set(w.path, w.branch)
+  }
+  return out
+}
+
+/** The worktree path a branch_gc entry is held by, when that hold is the only
+ *  thing between it and `review`: held for `worktree`, unmerged, old enough,
+ *  and the worktree is one {@link reviewableWorktrees} kept. Else null. */
+function heldWorktreeOf(e, heldWorktrees) {
+  if (e?.class !== "hold" || e.holdReason !== "worktree" || e.status !== "unmerged") return null
+  if ((e.ageDays ?? 0) < HELD_WORKTREE_MIN_AGE_DAYS) return null
+  return heldWorktrees.get(e.holdDetail) === e.name ? e.holdDetail : null
+}
+
+/** One line per reviewed held worktree (from the verify plan's stored
+ *  verdicts): what the reviewer said, and — when it agreed nothing of value
+ *  is lost — the command that removes it. Removal stays a human step. */
+export function heldWorktreeVerdicts(branchGcVerifyResult, worktreeGcPlanResult) {
+  const held = reviewableWorktrees(worktreeGcPlanResult)
+  const byPath = new Map()
+  for (const e of branchGcVerifyResult?.plan?.entries ?? []) {
+    const path = heldWorktreeOf(e, held)
+    if (!path || !e.verdict || byPath.has(path)) continue
+    byPath.set(path, { name: e.name, path, sha: e.sha, triage: e.verdict.triage, agree: e.verdict.agree ?? null })
+  }
+  return [...byPath.values()]
+}
+
 /** One `review`-class branch_gc plan entry per BRANCH NAME — a local branch
  *  and its remote twin share one review instead of costing the reviewer two
  *  turns, whether they share a tip (grouped by sha, as before) or DIVERGED
@@ -167,13 +218,15 @@ const VERDICT_NEEDS = (id, checkId) => ({
  *  queued with only its unreviewed tips. Returns the queue (oldest first,
  *  then the larger residual) plus how many names were skipped as already
  *  reviewed. */
-export function buildReviewQueue(branchGcPlanResult) {
+export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts = {}) {
   const plan = branchGcPlanResult?.plan
   const entries = Array.isArray(plan?.entries) ? plan.entries : []
+  const heldWorktrees = opts.reviewHeldWorktrees === false ? new Map() : reviewableWorktrees(worktreeGcPlanResult)
+  const reviewable = e => e.class === "review" || heldWorktreeOf(e, heldWorktrees) !== null
   const bySha = new Map()
   const dates = new Map()
   for (const e of entries) {
-    if (e.class !== "review") continue
+    if (!reviewable(e)) continue
     dates.set(e.sha, e.date ?? "")
     if (e.verdict) continue
     const seen = bySha.get(e.sha)
@@ -205,6 +258,7 @@ export function buildReviewQueue(branchGcPlanResult) {
       residualFiles: e.residualFiles ?? [],
       residualFileCount: e.residualFileCount ?? 0,
       refs: [e.ref],
+      ...(heldWorktreeOf(e, heldWorktrees) ? { worktree: heldWorktreeOf(e, heldWorktrees) } : {}),
     })
   }
   // Merge candidates whose refs share one branch NAME: `foo` and `origin/foo`
@@ -241,7 +295,7 @@ export function buildReviewQueue(branchGcPlanResult) {
   const pendingNames = new Set(queue.map(c => c.name))
   const fullyReviewed = new Set()
   for (const e of entries) {
-    if (e.class === "review" && e.verdict && !pendingNames.has(e.name)) fullyReviewed.add(e.name)
+    if (reviewable(e) && e.verdict && !pendingNames.has(e.name)) fullyReviewed.add(e.name)
   }
   return { queue, alreadyReviewed: fullyReviewed.size }
 }
@@ -441,6 +495,19 @@ export function buildReport(b) {
   } else if (reviewCandidates.length > 0 && reviewOutcome.skipped === 0) {
     lines.push("- every review candidate has a recorded verdict")
   }
+  const heldVerdicts = b.input?.reviewHeldWorktrees === false ? [] : heldWorktreeVerdicts(b.steps.branchGcVerify, wtPlan)
+  if (heldVerdicts.length > 0) {
+    lines.push("")
+    lines.push(`## Held worktrees reviewed (${heldVerdicts.length})`)
+    lines.push("Idle, clean worktrees whose branch isn't provably merged — gc holds them; the reviewer's verdict says whether they can go. Removal is manual.")
+    for (const v of heldVerdicts.slice(0, REPORT_LIST_CAP)) {
+      lines.push(
+        `- \`${v.name}\` — ${v.triage}` +
+          (v.agree === true ? ` — nothing of value lost: \`agentproto worktree rm ${v.path}\`` : ` — keep (${v.path})`),
+      )
+    }
+    if (heldVerdicts.length > REPORT_LIST_CAP) lines.push(`- … and ${heldVerdicts.length - REPORT_LIST_CAP} more`)
+  }
   lines.push("")
   lines.push("## Apply")
   if (!applyMerged) {
@@ -485,6 +552,7 @@ export default {
     reviewModelSmall: { type: "string", description: `Model for a review candidate with residualFileCount <= 3. Default: the \`${ROLE_REVIEW_SMALL}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     maxReviews: { type: "number", description: `Most review candidates to review this run — newest tip first, then the larger residual. The rest are reported as not reviewed this run; tips with a stored verdict are never re-reviewed, so daily runs walk the backlog. Default ${DEFAULT_MAX_REVIEWS}.`, default: DEFAULT_MAX_REVIEWS },
+    reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). The report lists each verdict and the removal command when the reviewer agreed; nothing is removed automatically. Default true.`, default: true },
     notify: {
       type: "object",
       description: "Optional agentpush `to` target ({ channel, address }) to notify with the report when set. Omit for no notification.",
@@ -525,7 +593,7 @@ export default {
     {
       id: "reviewQueue",
       kind: "transform",
-      compute: b => buildReviewQueue(b.steps.branchGcPlan),
+      compute: b => buildReviewQueue(b.steps.branchGcPlan, b.steps.worktreeGcPlan, { reviewHeldWorktrees: b.input?.reviewHeldWorktrees !== false }),
     },
     {
       id: "reviewCandidates",
