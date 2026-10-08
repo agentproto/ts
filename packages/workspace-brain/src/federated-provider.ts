@@ -61,6 +61,12 @@ function mergeCapabilities(
   })
 }
 
+/** Name check rather than `instanceof` so a second copy of knowledge-engine
+ *  in the tree doesn't turn "unsupported" into a hard failure. */
+function isNotSupported(err: unknown): boolean {
+  return err instanceof Error && err.name === "KnowledgeNotSupportedError"
+}
+
 export class FederatedKnowledgeProvider implements IKnowledgeProvider {
   readonly id = "federated"
   readonly capabilities: KnowledgeCapabilities
@@ -189,11 +195,40 @@ export class FederatedKnowledgeProvider implements IKnowledgeProvider {
     const settled = await Promise.allSettled(
       this.providers.map(p => p.provider.supersede(id, by)),
     )
-    const rejected = settled.filter(r => r.status === "rejected")
-    if (rejected.length === settled.length && settled.length > 0) {
-      if (rejected[0]?.reason instanceof Error) throw rejected[0].reason
-      throw new Error("federated provider: all providers failed to supersede the source")
+    if (settled.length === 0) return
+    const failures: Array<{ id: string; reason: unknown }> = []
+    let succeeded = 0
+    let unsupported: unknown
+    settled.forEach((r, i) => {
+      if (r.status === "fulfilled") {
+        succeeded++
+      } else if (isNotSupported(r.reason)) {
+        unsupported ??= r.reason
+      } else {
+        failures.push({ id: this.providers[i]!.id, reason: r.reason })
+      }
+    })
+    if (failures.length === 0) {
+      // A backend that cannot supersede is not a failure while another can;
+      // when none can, say so rather than pretend it happened.
+      if (succeeded === 0) throw unsupported
+      return
     }
+    const first = failures[0]!.reason
+    if (succeeded === 0) {
+      throw first instanceof Error
+        ? first
+        : new Error("federated provider: all providers failed to supersede the source")
+    }
+    // Some backends superseded the source, others genuinely failed: they now
+    // disagree, so surface it instead of reporting success.
+    const detail = failures
+      .map(f => `${f.id}: ${f.reason instanceof Error ? f.reason.message : String(f.reason)}`)
+      .join("; ")
+    throw new Error(
+      `federated provider: supersede of "${id}" applied on ${succeeded} backend(s) but failed on ${failures.length} (${detail})`,
+      { cause: first },
+    )
   }
 
   async explain(id: string): Promise<KnowledgeProvenance | null> {

@@ -19,6 +19,7 @@ import type {
   KnowledgeSource,
   KnowledgeQueryMode,
 } from "@agentproto/knowledge-engine"
+import { KnowledgeNotSupportedError } from "@agentproto/knowledge-engine"
 import { describe, expect, it } from "vitest"
 import { FederatedKnowledgeProvider } from "../federated-provider.js"
 import type { ResolvedProvider } from "../provider-resolver.js"
@@ -29,7 +30,7 @@ interface StubOptions {
   failQuery?: boolean
   failIngest?: boolean
   deleteThrows?: boolean
-  supersedeThrows?: boolean
+  supersedeThrows?: boolean | "unsupported"
   /** explain() result: a provenance, null (unknown id), or "throw". */
   explain?: KnowledgeProvenance | null | "throw"
   modeUsed?: KnowledgeQueryMode
@@ -114,6 +115,9 @@ function makeStub(id: string, opts: StubOptions = {}) {
       state.deleted.push(sourceId)
     },
     async supersede(sourceId: string, by?: string) {
+      if (opts.supersedeThrows === "unsupported") {
+        throw new KnowledgeNotSupportedError(id, "supersede")
+      }
       if (opts.supersedeThrows) throw new Error(`${id} supersede failed`)
       state.superseded.push({ id: sourceId, ...(by !== undefined ? { by } : {}) })
     },
@@ -324,16 +328,45 @@ describe("FederatedKnowledgeProvider admin + lifecycle verbs", () => {
     await expect(fed.deleteSource("src-1")).rejects.toThrow(/a delete failed/)
   })
 
-  it("supersede: fans out to every provider and tolerates partial failure", async () => {
-    const a = makeStub("a", { supersedeThrows: true })
+  it("supersede: fans out to every provider", async () => {
     const b = makeStub("b")
     const c = makeStub("c")
-    const fed = new FederatedKnowledgeProvider({
-      providers: [a.resolved, b.resolved, c.resolved],
-    })
+    const fed = new FederatedKnowledgeProvider({ providers: [b.resolved, c.resolved] })
     await expect(fed.supersede("src-1", "src-2")).resolves.toBeUndefined()
     expect(b.state.superseded).toEqual([{ id: "src-1", by: "src-2" }])
     expect(c.state.superseded).toEqual([{ id: "src-1", by: "src-2" }])
+  })
+
+  it("supersede: surfaces a real failure when another backend succeeded", async () => {
+    const a = makeStub("a", { supersedeThrows: true })
+    const b = makeStub("b")
+    const fed = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    await expect(fed.supersede("src-1", "src-2")).rejects.toThrow(
+      /applied on 1 backend\(s\) but failed on 1 \(a: a supersede failed\)/,
+    )
+    expect(b.state.superseded).toEqual([{ id: "src-1", by: "src-2" }])
+  })
+
+  it("supersede: a NotSupported backend is tolerated while another succeeds", async () => {
+    const a = makeStub("a", { supersedeThrows: "unsupported" })
+    const b = makeStub("b")
+    const fed = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    await expect(fed.supersede("src-1")).resolves.toBeUndefined()
+    expect(b.state.superseded).toEqual([{ id: "src-1" }])
+  })
+
+  it("supersede: throws NotSupported when no backend can supersede", async () => {
+    const a = makeStub("a", { supersedeThrows: "unsupported" })
+    const b = makeStub("b", { supersedeThrows: "unsupported" })
+    const fed = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    await expect(fed.supersede("src-1")).rejects.toBeInstanceOf(KnowledgeNotSupportedError)
+  })
+
+  it("supersede: a real failure is reported over NotSupported when none succeeded", async () => {
+    const a = makeStub("a", { supersedeThrows: "unsupported" })
+    const b = makeStub("b", { supersedeThrows: true })
+    const fed = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    await expect(fed.supersede("src-1")).rejects.toThrow(/b supersede failed/)
   })
 
   it("supersede: throws when every provider rejects", async () => {
