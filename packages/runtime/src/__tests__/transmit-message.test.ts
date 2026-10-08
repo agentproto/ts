@@ -497,6 +497,65 @@ describe("transmit_message", () => {
     expect(bindingStore.get("agentpush", "+33600000000", "carol")).toBeUndefined()
   })
 
+  it("does not re-point a binding from a revived session back to its dead ancestor", async () => {
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "m" }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+    const spawn = (resumedFrom?: string) =>
+      registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: {
+          sessionId: `acp_${Math.random()}`,
+          // eslint-disable-next-line require-yield
+          async *send() {
+            return
+          },
+          async cancel() {},
+          async close() {},
+        },
+        adapterSlug: "mock-adapter",
+        ...(resumedFrom ? { resumedFrom } : {}),
+      })
+    const original = spawn()
+    registry.kill(original.id)
+    const revived = spawn(original.id)
+    expect(registry.get(revived.id)?.continuedFrom).toBe(original.id)
+
+    bindingStore.upsert({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: revived.id,
+      mode: "route-or-spawn",
+    })
+    const client = await connectTools(registry, mcpProxy, bindingStore)
+    const send = async (sessionId: string): Promise<ToolResult> =>
+      (await client.callTool({
+        name: "transmit_message",
+        arguments: {
+          provider: "agentpush",
+          alias: "agentpush",
+          source: "+33600000000",
+          contact_ref: "alice",
+          text: "hi",
+          sessionId,
+        },
+      })) as ToolResult
+
+    // The revived copy still quotes its ancestor's id: binding must stay put.
+    expect(JSON.parse(textOf(await send(original.id)))).toMatchObject({ sent: true, bound: true })
+    expect(bindingStore.get("agentpush", "+33600000000", "alice")?.sessionId).toBe(revived.id)
+
+    // An unrelated session is still allowed to take the binding over.
+    const other = spawn()
+    await send(other.id)
+    expect(bindingStore.get("agentpush", "+33600000000", "alice")?.sessionId).toBe(other.id)
+  })
+
   it("is not registered when mcpProxy/bindingStore are absent", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const server = new McpServer({ name: "no-transmit-server", version: "0.0.0" })

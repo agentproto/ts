@@ -2521,7 +2521,22 @@ export function registerOrchestrationTools(
         }
 
         const bound = input.bind !== false
-        if (bound) {
+        // A revived session keeps replying with its ancestor's id (the one
+        // in its prompt/transcript). Re-pointing the binding at that dead
+        // ancestor would make the next inbound resurrect yet another copy, so
+        // an ancestor id never overrides a binding already on its descendant.
+        const existing = bound
+          ? bindingStore.get(input.alias ?? "default", input.source, input.contact_ref)
+          : undefined
+        const isAncestorOfExisting = (): boolean => {
+          let id = existing?.sessionId
+          for (let hops = 0; id && hops < 32; hops++) {
+            id = registry.get(id)?.continuedFrom
+            if (id === input.sessionId) return true
+          }
+          return false
+        }
+        if (bound && !isAncestorOfExisting()) {
           bindingStore.upsert({
             alias: input.alias ?? "default",
             source: input.source,
