@@ -87,3 +87,24 @@ test('isPublishedPath: no files[] declared is treated as "everything published" 
 test('filterPublishedChanges: a changed path owned by no indexed package counts as published (in doubt)', () => {
   assert.deepEqual(filterPublishedChanges(['packages/unknown/src/x.ts'], index), ['packages/unknown/src/x.ts'])
 })
+
+test('a test-only edit under src/ does not reach the published surface (the #1770 catalog-sync case)', () => {
+  assert.deepEqual(
+    filterPublishedChanges(
+      [
+        'packages/core/src/__tests__/llm-context-windows.test.ts',
+        'packages/core/src/foo.test.ts',
+        'packages/core/src/bar.spec.mts',
+        'packages/core/src/__snapshots__/foo.test.ts.snap',
+      ],
+      index,
+    ),
+    [],
+  )
+  // Real source next to the tests still counts.
+  assert.deepEqual(filterPublishedChanges(['packages/core/src/testing.ts'], index), ['packages/core/src/testing.ts'])
+})
+
+test('isPublishedPath: a src/ test still counts if files[] ships src itself', () => {
+  assert.equal(isPublishedPath('src/__tests__/x.test.ts', ['src'], { hasSrcDir: true }), true)
+})

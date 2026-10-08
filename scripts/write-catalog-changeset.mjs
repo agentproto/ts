@@ -14,8 +14,10 @@
  *
  * Uses `changedPublishablePackages`, the SAME helper changeset-check uses, so
  * the set written here is exactly the set it will demand — including its rule
- * that only `src/**` and `package.json` are publish-affecting (the refreshed
- * snapshots under `packages/catalog-sync/` are not).
+ * that a package's shipped `files` entries are publish-affecting: the
+ * refreshed `packages/catalog-sync/snapshots/` ship in the tarball, so a
+ * snapshot change bumps `@agentproto/catalog-sync` too. Test-only edits
+ * (`src/` files under `__tests__/`, `*.test.*`) are not publish-affecting.
  *
  * Usage: node scripts/write-catalog-changeset.mjs [--out <path>]
  * Exit 0 always on success, including "nothing to write".

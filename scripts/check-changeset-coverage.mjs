@@ -14,11 +14,18 @@
  * crashed on the missing export.
  *
  * Rule: a package under `packages/**` or `adapters/**` that is publishable
- * (`@agentproto/*`, not `private`) and whose `src/**` (or `package.json`)
- * changed vs the base ref must be named in at least one `.changeset/*.md`.
- * Docs-only / test-only / config-only changes to a package do NOT require a
- * bump (mirrors the presence gate's intent), so only `src/**` + `package.json`
- * count as publish-affecting.
+ * (`@agentproto/*`, not `private`) and whose publish-affecting files changed
+ * vs the base ref must be named in at least one `.changeset/*.md`. A path is
+ * publish-affecting when it is (see `isPublishAffecting`):
+ *   - the package's `package.json`;
+ *   - under `src/` and not a test (`__tests__/`, `__snapshots__/`,
+ *     `*.test.*`, `*.spec.*`) — packages publish `dist`, built from `src`,
+ *     and tests are never part of that build;
+ *   - under one of the package's `files` entries other than `dist` (built
+ *     from `src`, covered above) and README/LICENSE — e.g. catalog-sync's
+ *     `snapshots/`, an adapter's `HERMES.md`, a skill pack's `skills/`.
+ * Docs-only / test-only / config-only changes do NOT require a bump (mirrors
+ * the presence gate's intent).
  *
  * Deliberately lenient on timing: with ZERO changesets present it exits 0 and
  * defers to the presence gate (the reviewer writes changesets after the first
@@ -59,16 +66,76 @@ export function publishablePackageMap(root = ROOT) {
   return map
 }
 
-/** Publishable packages whose publish-affecting files changed vs base. */
-export function changedPublishablePackages(changedFiles, pkgMap) {
+const TEST_PATH = /(^|\/)(__tests__|__snapshots__)\/|\.(test|spec)\.[^/]+$/
+
+/**
+ * A test file or test fixture (`__tests__/`, `__snapshots__/`, `*.test.*`,
+ * `*.spec.*`). Under `src/` these are never compiled into `dist`, so they
+ * don't reach the published package. Shared with `list-published-changes.mjs`
+ * (the presence gate) so both gates agree on what a test is.
+ */
+export function isTestPath(path) {
+  return TEST_PATH.test(path)
+}
+const UNSHIPPED_FILES_ENTRY = /^(dist|readme|license)(\..*)?$/i
+
+/**
+ * The package's `files` entries that ship content not built from `src/`,
+ * normalized to path prefixes. `dist` (the build output of `src/`) and
+ * README/LICENSE are dropped; negations are skipped; a glob is cut back to
+ * its static leading directory (`skills/<glob>` → `skills`).
+ */
+export function publishedFileEntries(files) {
+  const out = []
+  for (const raw of Array.isArray(files) ? files : []) {
+    if (typeof raw !== 'string' || raw.startsWith('!')) continue
+    const segments = []
+    for (const seg of raw.replace(/^\.\//, '').split('/')) {
+      if (/[*?[\]{}]/.test(seg)) break
+      if (seg) segments.push(seg)
+    }
+    const entry = segments.join('/')
+    if (!entry || UNSHIPPED_FILES_ENTRY.test(segments[0])) continue
+    out.push(entry)
+  }
+  return out
+}
+
+/** `files` entries of the package at `prefix`, read from its package.json. */
+function filesFromDisk(root) {
+  return (prefix) => {
+    try {
+      return JSON.parse(readFileSync(resolve(root, prefix, 'package.json'), 'utf8')).files
+    } catch {
+      return undefined
+    }
+  }
+}
+
+/**
+ * Is `rest` (a path relative to the package dir) part of what the package
+ * publishes? `files` is the package.json `files` array.
+ */
+export function isPublishAffecting(rest, files) {
+  if (rest === 'package.json') return true
+  if (rest.startsWith('src/')) return !isTestPath(rest)
+  return publishedFileEntries(files).some((entry) => rest === entry || rest.startsWith(`${entry}/`))
+}
+
+/**
+ * Publishable packages whose publish-affecting files changed vs base.
+ * `filesOf(prefix)` returns a package's `files` array; it defaults to reading
+ * `<root>/<prefix>package.json`, so every caller (coverage check, push gate,
+ * auto-changeset, catalog-sync writer) applies the same rule.
+ */
+export function changedPublishablePackages(changedFiles, pkgMap, { root = ROOT, filesOf = filesFromDisk(root) } = {}) {
   const touched = new Set()
+  const filesCache = new Map()
   for (const file of changedFiles) {
-    // Only src/** and package.json affect the published artifact; a README,
-    // test, or tsconfig change does not need a version bump.
     for (const [prefix, name] of pkgMap) {
       if (!file.startsWith(prefix)) continue
-      const rest = file.slice(prefix.length)
-      if (rest.startsWith('src/') || rest === 'package.json') touched.add(name)
+      if (!filesCache.has(prefix)) filesCache.set(prefix, filesOf(prefix))
+      if (isPublishAffecting(file.slice(prefix.length), filesCache.get(prefix))) touched.add(name)
     }
   }
   return touched
@@ -104,7 +171,7 @@ function main(argv) {
   const pkgMap = publishablePackageMap()
   const touched = changedPublishablePackages(changedFiles, pkgMap)
   if (touched.size === 0) {
-    console.log('No publishable package src changed — coverage not required.')
+    console.log('No publish-affecting package file changed — coverage not required.')
     return 0
   }
 
