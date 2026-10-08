@@ -19,6 +19,15 @@
 import type { LLMPricing } from "./catalog.js"
 
 export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
+  "opencode-go/claude-haiku-5-5": {
+    inputPer1M: 0.1,
+    outputPer1M: 0.5,
+    cacheReadMultiplier: 0.1,
+    cacheWriteMultiplier: 1.25,
+    addedAt: "2026-10-07",
+    vendor: "anthropic",
+    provider: "opencode-go",
+  },
   "opencode-go/deepseek-v4-flash": {
     inputPer1M: 0.15,
     outputPer1M: 0.6,
@@ -310,6 +319,7 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
  * that is what an Anthropic client puts in `ANTHROPIC_MODEL` / on the wire.
  */
 export const OPENCODE_GO_ANTHROPIC_MODELS: readonly string[] = [
+  "claude-haiku-5-5",
   "minimax-m2.7",
   "minimax-m3",
   "qwen3.7-plus",

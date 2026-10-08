@@ -61,7 +61,7 @@ describe("llm:context-windows generator", () => {
     // adapter's native model menu.
     expect(src).toContain('"claude-haiku-4-5": { contextWindow: 200000, maxOutput: 64000')
     expect(src).toContain('"claude-opus-4-5": { contextWindow: 200000, maxOutput: 64000')
-    expect(src).toContain('"claude-sonnet-4-5": { contextWindow: 1000000, maxOutput: 64000')
+    expect(src).toContain('"claude-sonnet-4-5": { contextWindow: 200000, maxOutput: 64000')
 
     // Spot-check one real entry per provider.
     expect(src).toContain('"claude-opus-4-8": { contextWindow: 1000000, maxOutput: 128000')
