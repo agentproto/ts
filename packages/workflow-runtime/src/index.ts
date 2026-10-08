@@ -15,9 +15,15 @@ export {
   AgentInputRequiredError,
   StepOutcomeError,
   AgentSpawnError,
+  AgentSessionLostError,
+  isAgentTransportFailure,
   MissingArtifactError,
 } from "./run-workflow.js"
-export { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES, DEFAULT_STEP_TIMEOUT_MS } from "./types.js"
+export {
+  DEFAULT_AGENT_TRANSPORT_RETRY,
+  DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES,
+  DEFAULT_STEP_TIMEOUT_MS,
+} from "./types.js"
 export {
   compileWorkflow,
   WorkflowCompileError,
@@ -70,6 +76,8 @@ export type {
   GateCommandResult,
   GateCommandRunner,
   GateReportEvent,
+  AgentRetryEvent,
+  AgentStepRetry,
   AgentRefResolution,
   AgentSandboxRef,
   AgentSessionHost,

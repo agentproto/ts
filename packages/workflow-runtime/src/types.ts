@@ -114,6 +114,25 @@ export interface TolerantFanOutResult<T = unknown> {
  *  {@link PipelineStep.maxConsecutiveSpawnFailures}. */
 export const DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES = 3
 
+/** An {@link AgentStep}'s transport-failure retry policy — the same shape as
+ *  {@link GateStep.retry}. `initialMs` is the wait before the first retry;
+ *  `"exponential"` doubles it on each further one. */
+export interface AgentStepRetry {
+  maxAttempts: number
+  backoff: "fixed" | "exponential"
+  initialMs?: number
+}
+
+/** What an {@link AgentStep} without its own `retry` gets: two attempts —
+ *  one retry after a 1 s pause — so a single dropped connection doesn't fail
+ *  a long run. Applies to a session lost mid-turn only, never to a spawn
+ *  failure or a completed turn (see {@link AgentStep.retry}). */
+export const DEFAULT_AGENT_TRANSPORT_RETRY: Readonly<AgentStepRetry> = Object.freeze({
+  maxAttempts: 2,
+  backoff: "fixed",
+  initialMs: 1_000,
+})
+
 /** Default for {@link ToolStep.timeoutMs} / {@link GateStep.timeoutMs} when
  *  the step declares none — 10 minutes. Bounds an otherwise-unbounded `tool`
  *  or `gate` step dispatch (F45). */
@@ -407,6 +426,22 @@ export interface AgentStep {
   outputSchema?: OutputSchemaLike
   /** Re-prompt-and-retry attempts on schema mismatch before failing. Default 2. */
   maxRetries?: number
+  /** Re-spawn on a TRANSPORT failure, up to `maxAttempts` total attempts —
+   *  the same shape as {@link GateStep.retry}. Only a failure that is the
+   *  session's plumbing, never its content, is retried: the spawn rejected
+   *  ({@link AgentSpawnError}), or the session died before its FIRST turn
+   *  ended (the host threw an error marked `transport: true`, e.g.
+   *  {@link AgentSessionLostError} for a killed session or a closed ACP
+   *  connection). A step whose turn completed — including one that then
+   *  failed its `outputSchema` re-prompts, or died during one — is never
+   *  retried, nor is a cancelled run or a `sessionRef` reuse (there is no
+   *  fresh session to spawn). Each retry spawns a NEW session with the same
+   *  resolved prompt, cwd and harness, in the same run workspace.
+   *  Unset ⇒ {@link DEFAULT_AGENT_TRANSPORT_RETRY} (one retry), and then
+   *  for a session lost mid-turn ONLY — a spawn failure is usually
+   *  deterministic (bad cwd, missing adapter), so it is re-spawned past only
+   *  when the step declares `retry` itself. `maxAttempts: 1` disables it. */
+  retry?: AgentStepRetry
   /** Cache this step's output under the run's cacheKey; the resolved prompt +
    *  adapter + model + sessionRef are hashed. Default false — most agent steps have
    *  side effects. */
@@ -563,6 +598,21 @@ export interface GateReportEvent {
   exitCode: number
   report: unknown
   attempt: number
+}
+
+/** One transport-failure retry of a `kind: "agent"` step, reported right
+ *  before the fresh session is spawned — the `step.retrying` event. */
+export interface AgentRetryEvent {
+  stepId: string
+  /** The attempt that is about to start (2 for the first retry). */
+  attempt: number
+  maxAttempts: number
+  /** The failed attempt's error message. */
+  error: string
+  /** The failed attempt's session, when it got far enough to have one. */
+  sessionId?: string
+  /** How long the runtime waits before spawning the next attempt. */
+  delayMs: number
 }
 
 /** What a declarative agent-step's `agent.ref` resolves to — the adapter to
@@ -894,6 +944,9 @@ export interface RunWorkflowArgs {
   /** Called once per `kind: "gate"` command attempt (every attempt, not just
    *  the last) — the `gate-report` lifecycle event. */
   onGateReport?: (ev: GateReportEvent) => void
+  /** Called before each transport-failure retry of a `kind: "agent"` step
+   *  (see {@link AgentStep.retry}) — never for the first attempt. */
+  onAgentRetry?: (ev: AgentRetryEvent) => void
 }
 
 export interface WorkflowRunResult {

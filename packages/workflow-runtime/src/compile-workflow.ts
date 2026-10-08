@@ -36,7 +36,7 @@ import type { WorkflowHandle } from "@agentproto/workflow"
 import { assertKnownStepRefs } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
-import type { AgentRefResolution, AgentStep, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow, Selector } from "./types.js"
+import type { AgentRefResolution, AgentStep, AgentStepRetry, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow, Selector } from "./types.js"
 import { buildAgentStep } from "./build-agent-step.js"
 import { resolveRefString } from "./ref-string.js"
 import { isCompilableJsonSchema, validateAgainstJsonSchema } from "./validate-input.js"
@@ -706,7 +706,7 @@ function compileOutputSchema(schema: unknown, stepId: string): OutputSchemaLike 
 /**
  * Compile a declarative `kind:"agent"` manifest step — `{ agent: { ref },
  * prompt, adapter?, sessionRef?, sandbox?, cacheable?, policy?, outputSchema?,
- * maxRetries? }` — into a real {@link AgentStep}. `prompt` runs through the
+ * maxRetries?, retry? }` — into a real {@link AgentStep}. `prompt` runs through the
  * same `$input`/`$steps.<id>` ref grammar as a `tool` step's `inputs`.
  * `agent.ref` resolves via `opts.agentRefs` — unresolvable (no map, or an id
  * the map doesn't have) fails HERE, at compile time, never at the runtime
@@ -794,6 +794,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
         ? (b: Bindings) => resolveRefString(id, "cwd", rawCwd, b, "error")
         : undefined
 
+  const retry = compileAgentRetry(step.retry, id)
   return buildAgentStep(id, {
     prompt: (b: Bindings) => renderPrompt(prompt, b),
     ...(adapter !== undefined ? { adapter } : {}),
@@ -806,9 +807,39 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     policy: step.policy,
     ...(outputSchema !== undefined ? { outputSchema } : {}),
     ...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
+    ...(retry !== undefined ? { retry } : {}),
     ...(step.harness !== undefined ? { harness: step.harness } : {}),
     ...(agentTools !== undefined ? { agentTools } : {}),
   })
+}
+
+/**
+ * Compile an agent step's manifest `retry: { max_attempts, backoff?,
+ * initial_ms? }` (snake_case, the same shape a gate's takes) into
+ * {@link AgentStep.retry}. A camelCase object (a TS-authored or
+ * `entry.mjs` step) passes through. Unset ⇒ `undefined` — the runtime's
+ * {@link DEFAULT_AGENT_TRANSPORT_RETRY} then applies. Malformed values fail
+ * HERE, at compile time, not on the first flake.
+ */
+function compileAgentRetry(raw: unknown, id: string): AgentStepRetry | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== "object" || raw === null) {
+    throw new WorkflowCompileError(`agent step '${id}': 'retry' must be an object { max_attempts, backoff?, initial_ms? }`)
+  }
+  const r = raw as Record<string, unknown>
+  const maxAttempts = r.max_attempts ?? r.maxAttempts
+  if (typeof maxAttempts !== "number" || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20) {
+    throw new WorkflowCompileError(`agent step '${id}': 'retry.max_attempts' must be an integer between 1 and 20`)
+  }
+  const backoff = r.backoff ?? "fixed"
+  if (backoff !== "fixed" && backoff !== "exponential") {
+    throw new WorkflowCompileError(`agent step '${id}': 'retry.backoff' must be "fixed" or "exponential"`)
+  }
+  const initialMs = r.initial_ms ?? r.initialMs
+  if (initialMs !== undefined && (typeof initialMs !== "number" || !Number.isInteger(initialMs) || initialMs < 0)) {
+    throw new WorkflowCompileError(`agent step '${id}': 'retry.initial_ms' must be a non-negative integer`)
+  }
+  return { maxAttempts, backoff, ...(initialMs !== undefined ? { initialMs } : {}) }
 }
 
 /**

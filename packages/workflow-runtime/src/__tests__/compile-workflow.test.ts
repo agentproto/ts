@@ -1774,6 +1774,59 @@ describe("compileWorkflow — declarative gate step (AIP-15 P3)", () => {
     expect(step.onFail).toEqual({ reprompt: "implement", with: { note: "fix it" } })
   })
 
+  it("maps an agent step's retry.max_attempts/backoff/initial_ms to camelCase (same shape as a gate)", () => {
+    const wf = defineWorkflow({
+      name: "Agent retry",
+      id: "agent-retry",
+      description: "An agent step with a transport retry policy.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "a",
+          kind: "agent",
+          adapter: "mock",
+          prompt: "hi",
+          retry: { max_attempts: 3, backoff: "exponential", initial_ms: 250 },
+        },
+        { id: "b", kind: "agent", adapter: "mock", prompt: "hi" },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    expect((compiled.steps[0] as AgentStep).retry).toEqual({ maxAttempts: 3, backoff: "exponential", initialMs: 250 })
+    // No `retry` ⇒ left unset; the runtime applies DEFAULT_AGENT_TRANSPORT_RETRY.
+    expect((compiled.steps[1] as AgentStep).retry).toBeUndefined()
+  })
+
+  it("defaults an agent step's retry.backoff to fixed", () => {
+    const handle = {
+      id: "agent-retry-backoff",
+      description: "demo",
+      steps: [{ kind: "agent", id: "a", adapter: "mock", prompt: "hi", retry: { max_attempts: 2 } }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    const compiled = compileWorkflow(handle, { tools, candidates })
+    expect((compiled.steps[0] as AgentStep).retry).toEqual({ maxAttempts: 2, backoff: "fixed" })
+  })
+
+  it.each([
+    [{ max_attempts: 0 }, /'retry.max_attempts' must be an integer between 1 and 20/],
+    [{ max_attempts: 1.5 }, /'retry.max_attempts' must be an integer between 1 and 20/],
+    [{ max_attempts: 2, backoff: "linear" }, /'retry.backoff' must be "fixed" or "exponential"/],
+    [{ max_attempts: 2, initial_ms: -5 }, /'retry.initial_ms' must be a non-negative integer/],
+    ["twice", /'retry' must be an object/],
+  ])("rejects a malformed agent step retry %j at compile time", (retry, message) => {
+    const handle = {
+      id: "agent-retry-bad",
+      description: "demo",
+      steps: [{ kind: "agent", id: "a", adapter: "mock", prompt: "hi", retry }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(WorkflowCompileError)
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(message)
+  })
+
   it("rejects a gate step with an empty command at compile time too (ENTRY bypass of the loader check)", () => {
     const handle = {
       id: "entry-gate",

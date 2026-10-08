@@ -55,6 +55,20 @@ workflow_run_file({
 
 Loads the AIP-15 file via the workflow-loader and runs it through the same runner as `workflow_start`, in the background. With a `cacheKey`, cacheable steps replay unchanged output on re-invocation instead of re-spawning.
 
+### Agent-step retry on a dropped session (AIP-15)
+
+An `agent` step whose session dies before its turn ends (killed or crashed mid-turn, "ACP connection closed") is re-spawned automatically: **one retry by default**, a fresh session with the same prompt in the same run workspace. Tune or disable it per step with the same `retry` block a `gate` takes:
+
+```yaml
+- id: apply-fact-fixes
+  kind: agent
+  agent: { ref: reviser }
+  prompt: Apply the fixes in {{run.workspace}}/fact-check.md
+  retry: { max_attempts: 3, backoff: exponential, initial_ms: 2000 }   # max_attempts: 1 = off
+```
+
+It only covers transport failures. A turn that ended (even with an empty/errored reply or a schema mismatch), a deliberate kill (`agent_kill`, cost cap, provider limit), a cancelled run and a `sessionRef` reuse are never retried. A spawn failure is retried only when the step declares `retry` itself. Each retry shows in `run_events` as `step.retrying` (`attempt`, `error`, the lost `sessionId`). The lost session may have left partial edits in the workspace, so prompts should be safe to re-run.
+
 ### Retry a failed run (AIP-58 §6)
 
 ```json
