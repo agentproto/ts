@@ -3478,7 +3478,7 @@ export async function createGateway(
             .map(s => s.trim())
             .filter(Boolean),
           createServer: async () => {
-            const principal = daemonBearerPrincipal()
+            const principal = sessionPrincipal("mcp-events-origin")
             return createEventsSurfaceServer({
               version: opts.version ?? "0.1.0-alpha",
               repoAllowlist: eventsRepos,

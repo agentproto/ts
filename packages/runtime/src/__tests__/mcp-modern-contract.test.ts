@@ -1,19 +1,14 @@
 /**
  * Pins the MCP 2026-07-28 HTTP contract for the daemon's `/mcp` endpoint.
  *
- * Three blocks:
- *  - `current behaviour (characterization)`: real tests that record what `/mcp`
- *    answers TODAY (2025-11-25 SDK transport, `2026-07-28` header coerced down),
- *    so the modern adapter work cannot change root `/mcp` by accident.
- *  - `modern contract (target for P1)`: one `test.todo` per row the spec text
- *    settles, to be flipped by the adapter.
- *  - `local policy (decided 2026-10-08)`: `test.todo` rows the spec leaves open
- *    (or only SHOULDs); our own decisions for the events-only route.
+ * This file keeps the `current behaviour (characterization)` tests: real tests that record what root `/mcp` answers
+ * TODAY (2025-11-25 SDK transport, `2026-07-28` header coerced down), so the modern adapter work cannot change root
+ * `/mcp` by accident. The 2026-07-28 contract itself is pinned in `mcp-modern-contract-live.test.ts`.
  *
  * Spec fixtures live in `./fixtures/mcp-2026-07-28/` (see its README).
  */
 
-import { describe, it, test, expect, beforeAll, afterAll } from "vitest"
+import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { createServer, request as httpRequest } from "node:http"
 import type { IncomingHttpHeaders } from "node:http"
 import { AddressInfo } from "node:net"
@@ -463,108 +458,9 @@ describe("current behaviour (characterization)", () => {
   })
 })
 
-describe("modern contract (target for P1)", () => {
-  // Every case below is mounted on the P1 events-only route (`/mcp/events`), never on root `/mcp`.
-  // Rows here are settled by the 2026-07-28 spec text (see SPEC-NOTES.md); P1 flips each to a real test.
-  // Spec pages: https://modelcontextprotocol.io/specification/2026-07-28/
-  //   basic/transports/streamable-http, basic/versioning, basic/index,
-  //   server/discover, server/tools, server/utilities/caching
-  // The "headers the 2026-07-28 spec validates are ignored today" characterization tests above are the
-  // safety net for the validation rows below: when P1 rejects them on the new route, root `/mcp` must keep serving them.
-
-  describe("result shapes", () => {
-    // Fixtures: discover-response, tools-list-response, tools-call-response
-    test.todo("discover result shape (supportedVersions, capabilities, serverInfo, resultType, ttlMs, cacheScope)")
-    test.todo("`events` is declared top-level in discover `capabilities` (capabilities.events, not capabilities.extensions)")
-    test.todo("tools/list carries resultType+ttlMs+cacheScope")
-    test.todo("tools/list returns tools in a stable order across consecutive requests")
-    test.todo("tools/call carries resultType and no ttlMs or cacheScope")
-    // No events/* page exists in the 2026-07-28 spec index; the generic rule
-    // "every result carries resultType" (basic/index) pins these rows.
-    test.todo("events/list|subscribe|unsubscribe carry resultType \"complete\" and no ttlMs or cacheScope")
-    test.todo("events/unsubscribe returns `{}` plus resultType (not `{ ok: true }`)")
-    test.todo("a result's `resultType` is \"complete\" or \"input_required\", never absent")
-  })
-
-  describe("request validation", () => {
-    // spec: streamable-http 'Protocol Version Header' and 'Server Validation'.
-    // The spec lets a server that still serves pre-2025-06-18 clients treat a missing header as
-    // 2025-03-26; this route does not take that branch, so a missing header is rejected.
-    test.todo("missing MCP-Protocol-Version header (`-32020`, HTTP 400)")
-    test.todo("header differs from `_meta` version (`-32020`, HTTP 400)")
-    test.todo("`Mcp-Method` missing or different from `method` (`-32020`, HTTP 400)")
-    test.todo("`Mcp-Method` value is case-sensitive (`TOOLS/LIST` is `-32020`, HTTP 400)")
-    test.todo("`Mcp-Name` missing or different on `tools/call` (`-32020`, HTTP 400)")
-    test.todo("`Mcp-Name` missing or different on `resources/read` and `prompts/get` (`-32020`, HTTP 400)")
-    test.todo("`Mcp-Name` Base64 sentinel `=?base64?...?=` is decoded before comparison with params.name")
-    test.todo("`Mcp-Name` plain ASCII value that looks like the sentinel (`=?base64?...?=`) is compared as-is and mismatches (`-32020`)")
-    test.todo("optional whitespace around `Mcp-Name` and `Mcp-Method` values is trimmed (RFC 9110 5.5)")
-    test.todo("header names are case-insensitive")
-    test.todo("unsupported version (`-32022`, HTTP 400, `data.supported` and `data.requested`)")
-    test.todo("`-32022` `data.supported` is a non-empty subset of discover `supportedVersions` (one shared constant)")
-    test.todo("missing required `_meta` field (`-32602`, HTTP 400) for `protocolVersion` and for `clientCapabilities`")
-    test.todo("missing `_meta` entirely (`-32602`, HTTP 400)")
-    test.todo("`io.modelcontextprotocol/clientInfo` is optional (request without it is served, HTTP 200)")
-    test.todo("required client capability not declared (`-32021`, HTTP 400, `data.requiredCapabilities`)")
-    test.todo("unknown method (HTTP 404, `-32601`)")
-    test.todo("removed legacy methods `initialize`, `ping`, `logging/setLevel`, `resources/subscribe`, `resources/unsubscribe` (HTTP 404, `-32601`)")
-    test.todo("a JSON-RPC error response carries the request `id`")
-  })
-
-  describe("transport", () => {
-    // spec: streamable-http 'Backward Compatibility' > 'Earlier Streamable HTTP Revisions' (GET/DELETE 405 is a SHOULD)
-    test.todo("GET and DELETE (405)")
-    test.todo("`Mcp-Session-Id` and `Last-Event-ID` ignored; no `Mcp-Session-Id` response header")
-    test.todo("untrusted `Origin` present (403, even with a valid bearer)")
-    test.todo("notification without `id` that the server accepts (202 Accepted, no body)")
-    test.todo("a notification the server refuses gets a 4xx, optionally with a JSON-RPC error without `id`")
-    test.todo("response `Content-Type` is `application/json` or `text/event-stream`")
-    test.todo("the POST body is a single JSON-RPC request or notification, never a response")
-  })
-
-  describe("caching hints", () => {
-    // spec: server/utilities/caching. Hints are required ONLY on results with resultType "complete" from
-    // server/discover, tools/list, prompts/list, resources/list, resources/templates/list, resources/read.
-    // tools/call, prompts/get and events/* carry none (the plan's "ttlMs 0 for tools/call" is dropped: absent is the spec shape).
-    test.todo("ttlMs and cacheScope are present on server/discover, tools/list, prompts/list, resources/list, resources/templates/list and resources/read")
-    test.todo("ttlMs and cacheScope are absent on tools/call, prompts/get and events/*")
-    test.todo("`ttlMs` is an integer >= 0")
-    test.todo("`cacheScope` accepts only \"public\" or \"private\"")
-    test.todo("all pages of one paginated list share the same `cacheScope`")
-    test.todo("an `input_required` result carries no caching hints")
-  })
-})
-
-describe("local policy (decided 2026-10-08)", () => {
-  // The spec is silent on these (SPEC-NOTES.md), or only says SHOULD. They are OUR decisions for the P1 events-only
-  // route, with no upstream conformance oracle; P1 flips them to real tests.
-
-  describe("verbs", () => {
-    // Today OPTIONS is a 204 from the CORS layer before routing and GET opens an idle 200 SSE stream
-    // (both pinned in "verbs and session headers" above). The events-only route must override both.
-    test.todo("OPTIONS is 405 with `Allow: POST` (the CORS layer's 204 must not answer it)")
-    test.todo("HEAD is 405 with `Allow: POST`")
-    test.todo("GET is 405 with `Allow: POST` (no idle SSE stream)")
-    test.todo("DELETE is 405 with `Allow: POST`")
-  })
-
-  describe("content negotiation and body", () => {
-    test.todo("missing or wrong `Accept` is 406")
-    test.todo("`Content-Type` other than application/json is 415")
-    test.todo("malformed JSON is 400 with `-32700` and `id: null`")
-    test.todo("a JSON-RPC response body or a batch body is 400 with `-32600`")
-    test.todo("a body over the size limit is 413 (keeps today's behaviour; the spec defines no limit)")
-  })
-
-  describe("origin and auth", () => {
-    test.todo("an ABSENT `Origin` stays allowed (non-browser clients carry none)")
-    test.todo("an invalid `Origin` is 403 even when the bearer token is valid")
-  })
-
-  describe("headers and metadata", () => {
-    test.todo("request `_meta` is not echoed into results")
-    test.todo("header requirements on a notification POST are not enforced (the spec leaves them undefined)")
-    // Neither the spec nor SPEC-NOTES.md decides repeated headers; P1 picks reject vs first-wins. Today they are joined and coerced.
-    test.todo("duplicate MCP-Protocol-Version, Mcp-Method or Mcp-Name values (spec silent; policy for P1 to choose)")
-  })
-})
+// The "modern contract" and "local policy" rows that used to be `test.todo` here now run for real, through
+// `handleModernRequest`, in `mcp-modern-contract-live.test.ts`. Rows deliberately NOT carried over:
+//  - `-32021` (undeclared required client capability): the events-only server declares no required-capability checks.
+//  - "a notification the server refuses gets a 4xx": notifications are accepted with 202 (spec-legal, SPEC-NOTES Q2).
+// HTTP-level rows are covered by `mcp-events-route.test.ts`: untrusted/absent `Origin` (403 even with a valid bearer;
+// absent allowed), the request body size cap (413), and OPTIONS/HEAD/GET/DELETE answering 405 with `Allow: POST`.

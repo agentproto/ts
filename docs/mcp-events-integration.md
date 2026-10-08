@@ -113,3 +113,57 @@ they will not work and are not planned for this release.
 - **I4** — subscription rows survive daemon restart (store life is persistent; `attach()` path exercised).
 - **I5** — ordering is never assumed between two events of the same subscription; consumers must be idempotent.
 - **I6** — no prompt-injection surface: `data` is data; the dagger applied to inbox text (`summary` prefixing via "sentinel") is the only place model-directed text is synthesized.
+
+## 7. Serving ChatGPT (2026-07-28 events origin)
+
+The daemon can expose a second, public MCP origin that speaks only the stateless 2026-07-28 protocol and only the
+events surface, for clients such as ChatGPT that cannot reach the operator's authenticated `/mcp`. It is off unless
+configured. Whether ChatGPT accepts this origin end to end is **not yet proven**: validation against ChatGPT is pending
+(P2/P3 of the 2026-07-28 plan).
+
+### Configuration
+
+| Env var | Meaning |
+|---|---|
+| `AGENTPROTO_MCP_EVENTS_SECRET` | Path secret. At least 32 characters or the route is not mounted. |
+| `AGENTPROTO_MCP_EVENTS_REPOS` | Comma-separated `owner/repo` allowlist. A subscribe whose `arguments.repo` is not listed is refused (`-32602`); empty = every subscribe is refused. |
+| `AGENTPROTO_MCP_EVENTS_ORIGINS` | Comma-separated browser `Origin` values to accept. Default none: any request carrying an `Origin` header is a 403. A request with no `Origin` is allowed. |
+
+URL shape: `https://<host>/mcp/events/<secret>`. A wrong, missing or malformed secret segment answers `404`
+`{"error":"not_found"}` with `cache-control: no-store`.
+
+### Surface
+
+Exactly `server/discover`, the `events/*` methods (`events/list`, `events/subscribe`, `events/unsubscribe`) and one
+probe tool, `events_ping`. No other tools, resources or prompts are reachable here; the server is built from scratch for
+this origin (`packages/runtime/src/mcp-events-surface.ts`). Each request is served by a fresh in-process server
+(stateless, no `Mcp-Session-Id`).
+
+### Isolation
+
+- **Repo allowlist.** Subscriptions are limited to the repos in `AGENTPROTO_MCP_EVENTS_REPOS`.
+- **Principal isolation.** The origin acts as its own principal, `sessionPrincipal("mcp-events-origin")`, never the
+  operator's daemon-bearer principal. Subscription ids derive from the principal, so the origin can only see and
+  cancel subscriptions it created itself; the operator's subscriptions (made on `/mcp`) are untouched, and the other way
+  round.
+- **Credential.** The path secret is the only credential on this route; it grants nothing on `/mcp` or any other route.
+
+### Tunnel ingress
+
+A tunnel connects to the daemon from loopback, so any route it forwards would inherit the loopback bypass of the daemon
+bearer. The tunnel ingress MUST forward only `^/mcp/events/`. cloudflared example:
+
+```yaml
+ingress:
+  - hostname: <host>
+    path: ^/mcp/events/
+    service: http://127.0.0.1:18790
+  - service: http_status:404
+```
+
+### Known limits
+
+- JSON responses only (`Content-Type: application/json`); no SSE streams.
+- No `subscriptions/listen` and no resource subscriptions (`resources/subscribe` is a 404 `-32601`).
+- Only POST is accepted (OPTIONS, HEAD, GET, DELETE answer 405 with `Allow: POST`); request bodies are capped at 1 MiB.
+- The root `/mcp` endpoint is unchanged: it still speaks the 2025-11-25 transport.
