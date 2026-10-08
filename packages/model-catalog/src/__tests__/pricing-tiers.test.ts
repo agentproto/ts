@@ -94,3 +94,25 @@ describe("calculateLLMCreditCost — Claude Haiku 5.5 prompt-length tiers", () =
     expect(stats.providerCostSavedUsd).toBeCloseTo(0.2 * 0.5 * 0.9, 10)
   })
 })
+
+describe("calculateLLMCreditCost — generated native tiers (xAI, Google)", () => {
+  it("grok-4.20: cache hits at xAI's cached rate, long prompts at the >200k rate", () => {
+    // 100k cache-read tokens at $1.25 × 0.16 (were billed at the full $1.25).
+    expect(
+      calculateLLMCreditCost("grok-4.20", { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 100_000 }).productionCost
+    ).toBeCloseTo(0.1 * 1.25 * 0.16, 10)
+    // 300k prompt → $2.50 in / $5 out.
+    expect(
+      calculateLLMCreditCost("grok-4.20", { inputTokens: 300_000, outputTokens: 10_000 }).productionCost
+    ).toBeCloseTo(0.3 * 2.5 + 0.01 * 5, 10)
+  })
+
+  it("gemini-2.5-pro: prompts over 200k bill at $2.50 / $15", () => {
+    expect(
+      calculateLLMCreditCost("gemini-2.5-pro", { inputTokens: 100_000, outputTokens: 10_000 }).productionCost
+    ).toBeCloseTo(0.1 * 1.25 + 0.01 * 10, 10)
+    expect(
+      calculateLLMCreditCost("gemini-2.5-pro", { inputTokens: 300_000, outputTokens: 10_000 }).productionCost
+    ).toBeCloseTo(0.3 * 2.5 + 0.01 * 15, 10)
+  })
+})
