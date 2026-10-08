@@ -157,12 +157,14 @@ import {
   timedOutWaiting,
   type BackgroundJob,
 } from "./background-jobs.js"
-import type {
-  BranchGcResult,
-  BranchGcRunInput,
-  BranchGcRunner,
-  BranchGcVerdictRecorder,
-  BranchGcVerdictReader,
+import {
+  summarizeBranchGcApply,
+  withBranchGcApplySummary,
+  type BranchGcResult,
+  type BranchGcRunInput,
+  type BranchGcRunner,
+  type BranchGcVerdictRecorder,
+  type BranchGcVerdictReader,
 } from "./branch-gc.js"
 import { basename, join } from "node:path"
 import { homedir } from "node:os"
@@ -958,9 +960,10 @@ const branchGcDoneView = (
   ...(endedAt !== undefined ? { endedAt } : {}),
   ...(resultPath !== undefined ? { resultPath } : {}),
   summary: result.summary,
-  // Apply results carry the restore log path and a per-outcome tally —
-  // exactly what a caller needs to decide "safe?" without fetching the
-  // full ~MB result with `full: true`.
+  // Apply results carry the restore log path, a per-outcome tally and the
+  // per-scope deleted/skipped/failed summary — exactly what a caller needs
+  // to decide "safe?" without fetching the full ~MB result with `full: true`.
+  // Result files written before `applySummary` existed are summarised here.
   ...(result.mode === "apply"
     ? {
         restoreLog: result.restoreLog ?? null,
@@ -968,6 +971,7 @@ const branchGcDoneView = (
           acc[o.result] = (acc[o.result] ?? 0) + 1
           return acc
         }, {}),
+        applySummary: result.applySummary ?? summarizeBranchGcApply(result),
       }
     : {}),
   ...(full ? { result } : {}),
@@ -3657,7 +3661,9 @@ export function registerSessionTools(
       "open PR head, PR check unavailable, or younger than `minAgeDays`). " +
       "`apply: true` (requires explicit `scopes`) deletes only `reclaim` " +
       "entries, re-classifying each right before deleting it, and returns " +
-      "the path of a restore log (sha + re-create command per deleted ref). " +
+      "the path of a restore log (sha + re-create command per deleted ref) " +
+      "plus a top-level `status` and an `applySummary` (deleted / skipped / " +
+      "failed counts per scope, and the restore log path). " +
       "A plan can take minutes on a big repo: as an MCP caller, pass " +
       "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
       "the returned jobId instead of blocking. A `wait: false` (or `waitMs` " +
@@ -3728,7 +3734,7 @@ export function registerSessionTools(
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
         }
-        const { job, promise } = branchGcJobs.start(() => runBranchGc(runInput))
+        const { job, promise } = branchGcJobs.start(async () => withBranchGcApplySummary(await runBranchGc(runInput)))
         if (input.wait === false) {
           return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job)) }] }
         }

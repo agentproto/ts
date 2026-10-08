@@ -290,7 +290,10 @@ export type {
   BranchGcVerdictRecorder,
   BranchGcVerdictLookupInput,
   BranchGcVerdictReader,
+  BranchGcApplySummary,
+  BranchGcApplyScopeCounts,
 } from "./branch-gc.js"
+export { summarizeBranchGcApply, withBranchGcApplySummary } from "./branch-gc.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { createActivityProjector } from "./activities.js"

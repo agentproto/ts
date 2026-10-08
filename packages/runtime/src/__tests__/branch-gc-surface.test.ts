@@ -34,6 +34,7 @@ import type {
   BranchGcVerdictReader,
   BranchGcPlanView,
 } from "../branch-gc.js"
+import { summarizeBranchGcApply, withBranchGcApplySummary } from "../branch-gc.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -214,7 +215,7 @@ describe("POST /branches/gc + /branches/gc/verdict — HTTP routes", () => {
       expect(seen()).toBeUndefined()
       const ok = await post(http, "/branches/gc", { repoRoot: "/repo", apply: "true", scopes: ["local"] })
       expect(ok.status).toBe(200)
-      expect(await ok.json()).toEqual(APPLY_RESULT)
+      expect(await ok.json()).toEqual(withBranchGcApplySummary(APPLY_RESULT))
       expect(seen()).toMatchObject({ apply: true, scopes: ["local"] })
     } finally {
       await http.stop()
@@ -303,7 +304,11 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(isError(bad)).toBe(true)
       expect(seen()).toBeUndefined()
       const ok = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", apply: "true", scopes: ["local", "orphan"] } })
-      expect(JSON.parse(text(ok))).toEqual(APPLY_RESULT)
+      expect(JSON.parse(text(ok))).toEqual(withBranchGcApplySummary(APPLY_RESULT))
+      expect(JSON.parse(text(ok))).toMatchObject({
+        status: "ok",
+        applySummary: { status: "ok", totals: { deleted: 1, skipped: 0, failed: 0 }, restoreLog: APPLY_RESULT.mode === "apply" ? APPLY_RESULT.restoreLog : null },
+      })
       expect(seen()).toMatchObject({ apply: true, scopes: ["local", "orphan"] })
     } finally {
       await client.close()
@@ -473,6 +478,17 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(done!.status).toBe("done")
       expect(done!.restoreLog).toBe("/state/branch-gc/repo/restore-fake.json")
       expect(done!.outcomeCounts).toEqual({ deleted: 2, held: 1 })
+      expect((done as { applySummary?: unknown }).applySummary).toEqual({
+        status: "ok",
+        totals: { deleted: 2, skipped: 1, failed: 0 },
+        byScope: {
+          local: { deleted: 1, skipped: 0, failed: 0 },
+          remote: { deleted: 0, skipped: 1, failed: 0 },
+          orphan: { deleted: 1, skipped: 0, failed: 0 },
+        },
+        byResult: { deleted: 2, held: 1 },
+        restoreLog: "/state/branch-gc/repo/restore-fake.json",
+      })
     } finally {
       await client.close()
     }
@@ -523,6 +539,11 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(view.resultPath).toBe(join(jobsDir, `${FAKE_ID}.json`))
       expect(view.restoreLog).toBe("/state/branch-gc/repo/restore-x.json")
       expect(view.outcomeCounts).toEqual({ deleted: 1 })
+      // A result file written before applySummary existed is summarised on read.
+      expect((view as { applySummary?: { status: string; totals: unknown } }).applySummary).toMatchObject({
+        status: "ok",
+        totals: { deleted: 1, skipped: 0, failed: 0 },
+      })
       // full: true includes the parsed result
       const full = JSON.parse(text(await client.callTool({ name: "branch_gc_status", arguments: { jobId: FAKE_ID, full: true } }))) as { status: string; result: unknown }
       expect(full.result).toEqual(APPLY_RESULT)
@@ -581,5 +602,51 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     } finally {
       await unknown.close()
     }
+  })
+})
+
+describe("summarizeBranchGcApply", () => {
+  const out = (kind: "local" | "remote" | "orphan", result: string): never =>
+    ({ kind, name: `${kind}/${result}`, sha: "c".repeat(40), result }) as never
+  const apply = (outcomes: unknown[], restoreLog: string | null = null): Extract<BranchGcResult, { mode: "apply" }> => ({
+    mode: "apply",
+    plan: PLAN,
+    summary: SUMMARY,
+    outcomes: outcomes as never,
+    restoreLog,
+  })
+
+  it("counts deleted / skipped / failed per scope and in total, with the restore log path", () => {
+    const s = summarizeBranchGcApply(
+      apply(
+        [out("local", "deleted"), out("local", "deleted"), out("local", "held"), out("remote", "failed"), out("remote", "deleted"), out("orphan", "skipped-review")],
+        "/r/restore.json",
+      ),
+    )
+    expect(s.totals).toEqual({ deleted: 3, skipped: 2, failed: 1 })
+    expect(s.byScope).toEqual({
+      local: { deleted: 2, skipped: 1, failed: 0 },
+      remote: { deleted: 1, skipped: 0, failed: 1 },
+      orphan: { deleted: 0, skipped: 1, failed: 0 },
+    })
+    expect(s.restoreLog).toBe("/r/restore.json")
+    expect(s.status).toBe("partial")
+  })
+
+  it("status: ok when only deletes/holds, partial on an abort, failed when nothing was deleted but something failed, noop when nothing happened", () => {
+    expect(summarizeBranchGcApply(apply([out("local", "deleted"), out("local", "held")])).status).toBe("ok")
+    expect(summarizeBranchGcApply(apply([out("local", "deleted"), out("local", "aborted-moved")])).status).toBe("partial")
+    expect(summarizeBranchGcApply(apply([out("local", "failed"), out("remote", "held")])).status).toBe("failed")
+    expect(summarizeBranchGcApply(apply([])).status).toBe("noop")
+    expect(summarizeBranchGcApply(apply([out("local", "aborted-vanished")])).status).toBe("noop")
+  })
+
+  it("withBranchGcApplySummary hoists status, leaves plans untouched, and doesn't mutate its input", () => {
+    expect(withBranchGcApplySummary(PLAN_RESULT)).toBe(PLAN_RESULT)
+    const input = apply([out("local", "deleted")], "/r.json")
+    const withSummary = withBranchGcApplySummary(input) as Extract<BranchGcResult, { mode: "apply" }>
+    expect(withSummary.status).toBe("ok")
+    expect(withSummary.applySummary?.restoreLog).toBe("/r.json")
+    expect(input).not.toHaveProperty("applySummary")
   })
 })
