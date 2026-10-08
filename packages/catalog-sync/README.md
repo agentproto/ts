@@ -135,6 +135,11 @@ Source: `https://openrouter.ai/api/v1/models` (pinned snapshot:
   file omits these; this generator emits them when the source carries them
   (P3 spec: "plus cache fields if the source has them") — additive and
   `LLMPricing`-compatible.
+- Prompt-length pricing tiers (OpenRouter's `pricing.overrides` entries with
+  `min_prompt_tokens`) → `tiers: [{ aboveInputTokens, inputPer1M,
+  outputPer1M, cacheReadMultiplier?, cacheWriteMultiplier? }]`. Time-of-day
+  discounts are ignored. `calculateLLMCreditCost` bills the whole request at
+  the tier its prompt length falls in.
 - Unpriced routes (`openrouter/auto`) are skipped.
 - `addedAt` (ISO date, first-seen, never mutated) is stamped per id via the
   `ledger/llm-openrouter.json` ledger — see "`addedAt` convention" above.

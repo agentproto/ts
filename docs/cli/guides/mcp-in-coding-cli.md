@@ -227,7 +227,7 @@ coding-CLI orchestration:
 | `session_events_poll` | Drain runtime events |
 | `adapter_list` | List installed adapter CLIs |
 | `mcp_discovered_list` | MCPs discovered from other CLIs on this machine |
-| `tunnel_create` / `tunnel_list` | Manage reverse tunnels |
+| `tunnel_create` / `tunnel_list` / `tunnel_revoke` | Manage reverse tunnels (private by default; `tunnel_revoke` invalidates the signed link) |
 | `file_read` / `file_write` / `file_list` | Workspace filesystem |
 | `start_browser` / `stop_browser` | Browser session lifecycle |
 | `session_usage` | Per-session cost + token usage, live |

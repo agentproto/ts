@@ -36,7 +36,7 @@ tunnel_status({ "tunnelId": "uuid" })
 tunnel_stop({ "tunnelId": "uuid" })
 ```
 
-`tunnel_create` does **NOT** gate traffic with auth — it is a pure passthrough; whatever service is on `targetPort` handles its own authentication. `list_tunnel_adapters` enumerates the installed tunnel backends and their capabilities. Providers with credentials (e.g. ngrok authtokens, named-tunnel ids) are configured once, stored sensitively, and never echoed.
+`tunnel_create` is **private by default**: an access guard (signed `?t=` token link, 24h TTL by default via `ttl`, `X-Robots-Tag: noindex`, blocks `/@fs/` and source maps) sits in front of the port. Share the returned `url`, not `publicUrl` alone — `publicUrl` rejects every request without the token or cookie. Pass `public: true` only for content meant to be public; that skips the guard entirely (no token, no TTL, no revoke). `tunnel_revoke({ "tunnelId": "uuid" })` instantly invalidates the current link without stopping the tunnel and returns a fresh `url`. `list_tunnel_adapters` enumerates the installed tunnel backends and their capabilities. Providers with credentials (e.g. ngrok authtokens, named-tunnel ids) are configured once, stored sensitively, and never echoed.
 
 ## remote_enable: publish the gateway itself
 
@@ -54,7 +54,8 @@ remote_disable({})                                 // tear down + drop bearer au
 - Quick tunnels get a **NEW URL every relaunch** (daemon restart, tunnel_stop/create). For anything that must survive, use a named tunnel with `autostart: true`.
 - `tunnel_list` before `tunnel_create` — creating a second tunnel for the same port is a silent no-op at best and a confusing duplicate at worst.
 - `tunnel_stop` and `tunnel_status` accept either the tunnel id or the friendly `name` set at create time.
-- A tunnel exposes the whole port, not just one route — make sure the service behind it has its own auth before sharing the URL.
+- A tunnel exposes the whole port, not just one route — with `public: true` there is no guard at all, so make sure the service behind it has its own auth before sharing the URL.
+- A leaked private link: `tunnel_revoke` (keeps the tunnel up, issues a new `url`); `tunnel_revoke` errors for `public: true` tunnels.
 
 ## Pointers
 
