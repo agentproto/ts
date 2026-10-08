@@ -73,7 +73,11 @@ const { hits } = await kb.query({ query: "how do I ship", topK: 5 })
 Supported: `ingest` (`put_page` a markdown doc), `query` (`search` — stamps
 `modeUsed: "hybrid"`; `minScore` is applied client-side since gbrain `search`
 has no server-side score floor), `listSources` / `getSource` / `deleteSource`
-(via `list_pages` / `get_page` / `delete_page`), `healthCheck` (`GET /health`).
+(via `list_pages` / `get_page` / `delete_page`), `explain` (provenance from
+`get_page`: the page's `source_uri` as `derivedFrom`, plus type and timestamps in
+`metadata`; `null` for an unknown slug), `healthCheck` (`GET /health`).
+`supersede` throws `KnowledgeNotSupportedError` — gbrain's page API has no
+supersede/status verb.
 
 ## Testing
 

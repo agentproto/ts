@@ -156,7 +156,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (BM25) |
 | `conversation_export` | Export a daemon transcript to a target adapter's native store (claude-code today) |
 | `llm_endpoint_start` / `llm_endpoint_stop` / `llm_endpoint_status` / `llm_endpoint_set_upstream_link` / `llm_endpoint_list_links` | Local LLM Endpoint proxy sidecar (requires `features.llmEndpoint`) |
-| `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_revoke` / `tunnel_status` | Public URL tunnels for local ports (private by default behind a signed link; `public: true` opts out) |
+| `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_revoke` / `tunnel_status` | Public URL tunnels for local ports (private signed link by default; `public: true` opts out; `tunnel_revoke` invalidates the link) |
 | `list_provider_presets` | Gateway presets (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI) |
 | `adapter_install` | Install a not-yet-installed agent-CLI harness by slug |
 | `harness_capabilities` | Discover what an installed adapter can do on this host |

@@ -19,7 +19,9 @@ tunnel_list({ "onlyActive": true })
 
 // 2. Quick tunnel: no account, ephemeral URL, ready in seconds
 tunnel_create({ "targetPort": 3000, "provider": "cloudflare-quick", "label": "vite-preview" })
-// → { "tunnelId": "uuid", "url": "https://random-words.trycloudflare.com", ... }
+// → { "id": "uuid", "publicUrl": "https://random-words.trycloudflare.com",
+//     "url": "https://random-words.trycloudflare.com/?t=<signed token>", "access": "private", ... }
+// Share `url`, not `publicUrl` — the bare host rejects requests without the token.
 
 // 3. Named tunnel: stable hostname you provisioned once
 tunnel_create({
@@ -31,12 +33,13 @@ tunnel_create({
   "autostart": true
 })
 
-// 4. Inspect / stop (stop is idempotent)
+// 4. Inspect / revoke the link / stop (stop is idempotent)
 tunnel_status({ "tunnelId": "uuid" })
+tunnel_revoke({ "tunnelId": "uuid" })   // invalidate the current link, get a fresh `url`; tunnel keeps running
 tunnel_stop({ "tunnelId": "uuid" })
 ```
 
-`tunnel_create` is **private by default**: an access guard (signed `?t=` token link, 24h TTL by default via `ttl`, `X-Robots-Tag: noindex`, blocks `/@fs/` and source maps) sits in front of the port. Share the returned `url`, not `publicUrl` alone — `publicUrl` rejects every request without the token or cookie. Pass `public: true` only for content meant to be public; that skips the guard entirely (no token, no TTL, no revoke). `tunnel_revoke({ "tunnelId": "uuid" })` instantly invalidates the current link without stopping the tunnel and returns a fresh `url`. `list_tunnel_adapters` enumerates the installed tunnel backends and their capabilities. Providers with credentials (e.g. ngrok authtokens, named-tunnel ids) are configured once, stored sensitively, and never echoed.
+`tunnel_create` is **private by default**: an access guard (random bearer token, `ttl` default 24h, `X-Robots-Tag: noindex`, blocks `/@fs/` and `*.map`) sits in front of `targetPort`, and the returned `url` carries the signed token. Pass `"public": true` only for content meant to be public — it skips the guard entirely (no token, no TTL, no revoke) and the descriptor carries a `warning`. `list_tunnel_adapters` enumerates the installed tunnel backends and their capabilities. Providers with credentials (e.g. ngrok authtokens, named-tunnel ids) are configured once, stored sensitively, and never echoed.
 
 ## remote_enable: publish the gateway itself
 
@@ -54,8 +57,8 @@ remote_disable({})                                 // tear down + drop bearer au
 - Quick tunnels get a **NEW URL every relaunch** (daemon restart, tunnel_stop/create). For anything that must survive, use a named tunnel with `autostart: true`.
 - `tunnel_list` before `tunnel_create` — creating a second tunnel for the same port is a silent no-op at best and a confusing duplicate at worst.
 - `tunnel_stop` and `tunnel_status` accept either the tunnel id or the friendly `name` set at create time.
-- A tunnel exposes the whole port, not just one route — with `public: true` there is no guard at all, so make sure the service behind it has its own auth before sharing the URL.
-- A leaked private link: `tunnel_revoke` (keeps the tunnel up, issues a new `url`); `tunnel_revoke` errors for `public: true` tunnels.
+- A tunnel exposes the whole port, not just one route. The default access guard limits it to holders of the signed `url`; with `public: true` make sure the service behind it has its own auth before sharing the URL.
+- `tunnel_revoke` errors on a `public: true` tunnel (no guard to revoke).
 
 ## Pointers
 

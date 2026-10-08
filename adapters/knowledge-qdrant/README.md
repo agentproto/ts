@@ -71,7 +71,9 @@ const { hits } = await kb.query({ query: "how do I ship", topK: 5 })
 
 Supported: `ingest({ kind: "text" | "url" })`, `query` (vector), `listSources`,
 `getSource`, `deleteSource`, `healthCheck`. Out of scope (throws a clean
-error): `kind: "file" | "connector"` ingestion (needs a host-side resolver);
+error): `supersede()` and `explain()` (a `KnowledgeNotSupportedError` — a vector
+collection has no lifecycle status or provenance chain; use the corpus adapter
+for those); `kind: "file" | "connector"` ingestion (needs a host-side resolver);
 `graph` / `hybrid` query modes (Qdrant is vector-only here — the adapter falls
 back to vector and stamps `modeUsed: "vector"`).
 

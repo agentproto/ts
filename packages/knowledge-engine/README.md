@@ -35,20 +35,22 @@ interface IKnowledgeProvider {
 }
 ```
 
+`supersede` marks a source as replaced (optionally by `by`) without hard-deleting
+it, so the record and its audit trail survive. `explain` returns a source's
+provenance (`derivedFrom`, `supersededBy`, attestation chain, engine metadata),
+or `null` for an unknown id. A backend with no native concept of either throws
+`KnowledgeNotSupportedError` rather than no-op'ing. Both are **required**
+members: a custom provider must implement them (throwing
+`KnowledgeNotSupportedError` is a valid body) to keep compiling.
+
 It is deliberately idiom-free: no backend's query dialect appears in these
 types. `KnowledgeQuery.mode` (`vector | graph | hybrid | none`) is a *hint* —
 an engine that can't serve the requested mode falls back and echoes the mode
 it actually used in `KnowledgeQueryResult.modeUsed`. `"none"` is the
 cold-start sentinel (no recall this turn). Data types: `KnowledgeCapabilities`,
 `KnowledgeSource`, `KnowledgeIngestInput`, `KnowledgeQuery`, `KnowledgeHit`,
-`KnowledgeQueryResult`, `ListSourcesFilter`, `CorpusFilter`,
-`KnowledgeProvenance`.
-
-`supersede` and `explain` are required members. `supersede` marks a source as
-superseded (optionally by another id) without hard-deleting it; `explain`
-returns a source's provenance, or `null` for an unknown id. A backend with no
-native concept of either must throw `KnowledgeNotSupportedError` rather than
-no-op.
+`KnowledgeQueryResult`, `KnowledgeProvenance`, `ListSourcesFilter`,
+`CorpusFilter`, plus the `KnowledgeNotSupportedError` class.
 
 ## The tools — `kb_query` / `kb_ingest`
 

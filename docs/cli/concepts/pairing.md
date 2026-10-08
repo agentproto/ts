@@ -24,7 +24,7 @@ Every remote path into a daemon today trusts an intermediary with plaintext:
 
 | Surface | Intermediary sees | Auth |
 | --- | --- | --- |
-| `tunnel_create` (cloudflare/ngrok) | everything (TLS terminates at their edge) | signed link token (private by default; none with `public: true`) |
+| `tunnel_create` (cloudflare/ngrok) | everything (TLS terminates at their edge) | signed-link token (private by default; none with `public: true`) |
 | `remote_enable` (quick tunnel) | everything | per-enable bearer |
 | `serve --connect` reverse tunnel | everything (host terminates the WS, frames are plaintext) | `apt_` token at upgrade |
 
