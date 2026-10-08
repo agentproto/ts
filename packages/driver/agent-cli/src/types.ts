@@ -1342,6 +1342,14 @@ export interface AgentCliStateHome {
    * auth works and a token refresh lands in the operator's real login.
    */
   share?: string[]
+  /**
+   * Files written into the isolated home on every confined spawn, keyed by
+   * name relative to it, overwriting what is there. Codex: a `config.toml`
+   * with `project_root_markers = []`, so it treats the cwd as the project root
+   * instead of walking up to the git root, which an app boundary hides (codex
+   * aborts on the EPERM: "failed to load workspace requirements").
+   */
+  seed?: Record<string, string>
 }
 
 /** Filesystem zones handed to the driver — see {@link AgentCliStartOptions.fsZones}. */

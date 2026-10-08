@@ -4,10 +4,12 @@ import { EventEmitter } from "node:events"
 import {
   lstatSync,
   mkdirSync,
+  readFileSync,
   mkdtempSync,
   readlinkSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -138,6 +140,25 @@ describe("stateHome: isolated adapter home for confined spawns", () => {
     expect(lstatSync(join(configDir, "auth.json")).isSymbolicLink()).toBe(true)
   })
 
+  it.runIf(backendAvailable)(
+    "writes seed files into the isolated home, never through a link into the real one",
+    async () => {
+      const configDir = join(base, "adapter-config", "sess_4")
+      mkdirSync(configDir, { recursive: true })
+      // A reused dir holding a link to the operator's config must not be written through.
+      symlinkSync(join(realHome, "config.toml"), join(configDir, "config.toml"))
+      const def = codexLike()
+      def.stateHome = { ...def.stateHome!, seed: { "config.toml": "project_root_markers = []\n" } }
+      const runtime = createAgentCliRuntime(defineAgentCli(def))
+      await runtime.start({ cwd: app, configDir, fsZones: { readOnly: [], writable: [runWs] } })
+
+      const seeded = join(configDir, "config.toml")
+      expect(lstatSync(seeded).isSymbolicLink()).toBe(false)
+      expect(readFileSync(seeded, "utf8")).toBe("project_root_markers = []\n")
+      expect(readFileSync(join(realHome, "config.toml"), "utf8")).toBe('model = "x"')
+    },
+  )
+
   it("leaves an unconfined spawn on the operator's own home", async () => {
     const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
     await runtime.start({ cwd: app, configDir: join(base, "adapter-config", "sess_3") })
@@ -153,11 +174,16 @@ describe("stateHome schema", () => {
 
   it("accepts the codex declaration", () => {
     expect(parse({ env: "CODEX_HOME", defaultDir: ".codex", share: ["auth.json"] })).toBe(true)
+    expect(
+      parse({ env: "CODEX_HOME", defaultDir: ".codex", share: ["auth.json"], seed: { "config.toml": "project_root_markers = []\n" } }),
+    ).toBe(true)
   })
 
   it("rejects a home outside $HOME and nested share paths", () => {
     expect(parse({ env: "CODEX_HOME", defaultDir: "../etc" })).toBe(false)
     expect(parse({ env: "CODEX_HOME", defaultDir: "/etc" })).toBe(false)
     expect(parse({ env: "CODEX_HOME", defaultDir: ".codex", share: ["../x"] })).toBe(false)
+    expect(parse({ env: "CODEX_HOME", defaultDir: ".codex", seed: { "a/config.toml": "" } })).toBe(false)
+    expect(parse({ env: "CODEX_HOME", defaultDir: ".codex", seed: { "..": "" } })).toBe(false)
   })
 })

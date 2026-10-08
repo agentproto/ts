@@ -23,6 +23,8 @@ stateHome:
   env: CODEX_HOME
   defaultDir: .codex
   share: [auth.json]
+  seed:
+    config.toml: "project_root_markers = []\n"
 protocol: acp
 acp: ./codex-acp.ACP.md
 session:

@@ -497,6 +497,7 @@ export const agentCliFrontmatterSchema = z
         message: "defaultDir must be relative to $HOME and stay inside it",
       }),
       share: z.array(z.string().regex(/^[^/]+$/)).optional(),
+      seed: z.record(z.string().regex(/^[^/]+$/).refine(n => n !== "." && n !== "..", { message: "seed names a file of the home" }), z.string()).optional(),
     }).strict().optional(),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),

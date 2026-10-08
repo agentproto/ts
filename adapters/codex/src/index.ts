@@ -87,7 +87,14 @@ export const codex: AgentCliHandle = defineAgentCli({
   // Codex keeps a sqlite state db, PATH aliases and rollouts under CODEX_HOME
   // and fails to start when it can't write there. An OS-confined spawn (app
   // boundary) gets a per-session CODEX_HOME with only the login linked back.
-  stateHome: { env: "CODEX_HOME", defaultDir: ".codex", share: ["auth.json"] },
+  stateHome: {
+    env: "CODEX_HOME",
+    defaultDir: ".codex",
+    share: ["auth.json"],
+    // Cwd = project root: codex never reads `.codex/` layers above it, which
+    // an app boundary hides (the host git root) and codex aborts on.
+    seed: { "config.toml": "project_root_markers = []\n" },
+  },
   protocol: "acp",
   acp: "./codex-acp.ACP.md",
   session: {
