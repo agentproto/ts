@@ -20,7 +20,11 @@
  * unit-testable without building the whole model catalog.
  */
 
-import { resolvePricing } from "@agentproto/model-catalog/llm"
+import {
+  resolvePricing,
+  selectPricingTier,
+  type LLMPricingTier,
+} from "@agentproto/model-catalog/llm"
 
 /** Where a session's `costUsd` came from — see the module doc. */
 export type UsageSource = "adapter" | "computed" | "no-pricing" | "none"
@@ -36,6 +40,8 @@ export interface TokenPricing {
   /** Multiplier on `inputPer1M` for cache-creation tokens (Anthropic:
    *  ~1.25). Absent = 1. */
   cacheWriteMultiplier?: number
+  /** Prompt-length price tiers (catalog `LLMPricing.tiers`). */
+  tiers?: readonly LLMPricingTier[]
 }
 
 /**
@@ -206,12 +212,21 @@ export function deriveSessionUsage(
     input.cacheReadTokens !== undefined ||
     input.cacheWriteTokens !== undefined
   if (hasTokens) {
-    const pricing = input.model !== undefined ? resolve(input.model) : undefined
-    if (!pricing) {
+    const basePricing = input.model !== undefined ? resolve(input.model) : undefined
+    if (!basePricing) {
       // Model absent from the catalog — surface the tokens, but NEVER
       // invent a dollar figure.
       return { ...base, source: "no-pricing" }
     }
+    // Prompt-length tiered models (Claude Haiku 5.5: 5x over 100k) are
+    // billed per request by that request's prompt length. The counts here
+    // are session-cumulative, so the only per-request signal is
+    // `contextUsed` — the latest request's prompt occupancy — and the whole
+    // session is priced at ITS tier: exact for a session that stayed on one
+    // side of the threshold, an approximation for one that crossed it.
+    // Without `contextUsed`, the base tier.
+    const pricing =
+      contextUsed !== undefined ? selectPricingTier(basePricing, contextUsed) : basePricing
     // Cache tokens are priced off the input rate with the catalog's
     // multipliers (default 1, i.e. no discount) — they're disjoint from
     // `tokensIn`, so this adds, never double counts.

@@ -15,10 +15,20 @@
  * cacheReadMultiplier and cacheWriteMultiplier are derived per model from
  * OpenRouter's input_cache_read / input_cache_write fields (ratio to base
  * prompt price), following the same pattern as sync-google.mjs.
+ *
+ * `tiers` (prompt-length pricing — Claude Haiku 5.5 is billed 5x for prompts
+ * over 100k tokens) come from OpenRouter's `pricing.overrides`
+ * (`min_prompt_tokens`), parsed by the shared
+ * packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs.
  */
 
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+
+import {
+  promptLengthTiers,
+  serializeTiers,
+} from "../../packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs"
 
 const OUTPUT_PATH = resolve(
   import.meta.dirname,
@@ -177,6 +187,7 @@ async function main() {
       inputCacheWrite: model.pricing.input_cache_write
         ? parseFloat(model.pricing.input_cache_write)
         : undefined,
+      tiers: promptLengthTiers(model.pricing),
     }
   }
   console.log(`  ${Object.keys(openRouterMap).length} Anthropic models with pricing found in OpenRouter`)
@@ -216,6 +227,8 @@ async function main() {
         }
       }
 
+      if (orEntry.tiers) entry.tiers = orEntry.tiers
+
       entries.push(entry)
     } else {
       console.log(`  No pricing found for: ${model.id}`)
@@ -250,14 +263,17 @@ async function main() {
   const body = entries
     .map((e) => {
       const pricing = `inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}`
-      const cacheParts = []
+      const extraParts = []
       if (e.cacheReadMultiplier !== undefined) {
-        cacheParts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)
+        extraParts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)
       }
       if (e.cacheWriteMultiplier !== undefined) {
-        cacheParts.push(`cacheWriteMultiplier: ${e.cacheWriteMultiplier}`)
+        extraParts.push(`cacheWriteMultiplier: ${e.cacheWriteMultiplier}`)
       }
-      const cache = cacheParts.length > 0 ? `, ${cacheParts.join(", ")}` : ""
+      if (e.tiers) {
+        extraParts.push(serializeTiers(e.tiers))
+      }
+      const cache = extraParts.length > 0 ? `, ${extraParts.join(", ")}` : ""
       return `  ${JSON.stringify(e.id)}: { ${pricing}${cache}, vendor: "anthropic", provider: "anthropic" },`
     })
     .join("\n")

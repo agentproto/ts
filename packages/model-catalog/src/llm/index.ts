@@ -20,9 +20,11 @@ export {
   resolveModelRoute,
   calculateLLMCreditCost,
   getCacheStats,
+  selectPricingTier,
 } from "./catalog.js"
 export type {
   LLMPricing,
+  LLMPricingTier,
   LLMUsageBreakdown,
   LLMCreditCostResult,
   CalculateLLMCreditCostOptions,

@@ -260,3 +260,31 @@ describe("usage detail fields (cache / reasoning / activity)", () => {
     expect(out).toEqual({ source: "none" })
   })
 })
+
+describe("deriveSessionUsage — prompt-length pricing tiers", () => {
+  // Claude Haiku 5.5's shape: 5x over 100k prompt tokens.
+  const tieredResolver: PricingResolver = () => ({
+    inputPer1M: 0.1,
+    outputPer1M: 0.5,
+    cacheReadMultiplier: 0.1,
+    tiers: [{ aboveInputTokens: 100_000, inputPer1M: 0.5, outputPer1M: 2.5 }],
+  })
+  const tokens = { model: "tiered", tokensIn: 1_000_000, tokensOut: 100_000, cacheReadTokens: 1_000_000 }
+
+  it("prices at the base tier while the latest request's prompt is ≤100k", () => {
+    const usage = deriveSessionUsage({ ...tokens, contextSize: 1_000_000, contextUsed: 80_000 }, tieredResolver)
+    // 1M × $0.10 + 0.1M × $0.50 + 1M × $0.10 × 0.1
+    expect(usage.costUsd).toBeCloseTo(0.1 + 0.05 + 0.01, 10)
+  })
+
+  it("prices at the >100k tier once the latest request's prompt is over it", () => {
+    const usage = deriveSessionUsage({ ...tokens, contextSize: 1_000_000, contextUsed: 150_000 }, tieredResolver)
+    // 1M × $0.50 + 0.1M × $2.50 + 1M × $0.50 × 0.1 (base cache ratio inherited)
+    expect(usage.costUsd).toBeCloseTo(0.5 + 0.25 + 0.05, 10)
+  })
+
+  it("falls back to the base tier without a contextUsed signal", () => {
+    const usage = deriveSessionUsage(tokens, tieredResolver)
+    expect(usage.costUsd).toBeCloseTo(0.16, 10)
+  })
+})

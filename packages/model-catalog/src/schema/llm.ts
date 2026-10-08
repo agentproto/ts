@@ -13,6 +13,18 @@ export const LlmPricingSchema = z.object({
   creditOutputPer1M: z.number().nonnegative(),
   cacheReadMultiplier: z.number().nonnegative().optional(),
   cacheWriteMultiplier: z.number().nonnegative().optional(),
+  // Prompt-length tiers (Claude Haiku 5.5 over 100k, …). See `LLMPricing.tiers`.
+  tiers: z
+    .array(
+      z.object({
+        aboveInputTokens: z.number().int().nonnegative(),
+        inputPer1M: z.number().nonnegative(),
+        outputPer1M: z.number().nonnegative(),
+        cacheReadMultiplier: z.number().nonnegative().optional(),
+        cacheWriteMultiplier: z.number().nonnegative().optional(),
+      })
+    )
+    .optional(),
   // Router (how we call the model) vs vendor (who made it). See
   // `LLMPricing` in ../llm/catalog.ts for the contract.
   provider: z.string().optional(),
