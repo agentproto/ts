@@ -304,7 +304,9 @@ describe("resolveSessionPricing", () => {
     expect(pricing).toEqual(resolveLlmModelRoute("opencode-go/kimi-k3")?.pricing)
     // The bug shape: the substring fallback lands on the direct Moonshot row.
     expect(resolvePricing("opencode-go/kimi-k3")?.provider).toBe("moonshot")
-    expect(pricing?.inputPer1M).not.toBe(resolvePricing("kimi-k3")?.inputPer1M)
+    // Not the direct row, whatever the two prices happen to be (they can
+    // coincide after a catalog sync): the row's own provider differs.
+    expect(pricing).not.toEqual(resolvePricing("kimi-k3"))
   })
 
   it("prices an OpenCode Zen id on the opencode route, not direct Anthropic", () => {
