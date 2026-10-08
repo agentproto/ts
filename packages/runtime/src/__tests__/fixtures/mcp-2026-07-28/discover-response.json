@@ -1,0 +1,25 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/discover",
+  "_note": "Body copied from the 'Response' section.",
+  "body": {
+    "jsonrpc": "2.0",
+    "id": "discover-1",
+    "result": {
+      "resultType": "complete",
+      "supportedVersions": ["2026-07-28"],
+      "capabilities": {
+        "tools": {},
+        "resources": {}
+      },
+      "_meta": {
+        "io.modelcontextprotocol/serverInfo": {
+          "name": "ExampleServer",
+          "version": "1.0.0"
+        }
+      },
+      "instructions": "This server provides weather and resource utilities.",
+      "ttlMs": 3600000,
+      "cacheScope": "public"
+    }
+  }
+}

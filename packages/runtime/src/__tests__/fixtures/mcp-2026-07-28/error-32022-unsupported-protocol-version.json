@@ -1,0 +1,17 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning",
+  "_note": "Section 'Protocol Version Negotiation'. Same body on https://modelcontextprotocol.io/specification/2026-07-28/schema (UnsupportedProtocolVersionError). The schema page says the HTTP status MUST be 400 Bad Request.",
+  "httpStatus": 400,
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32022,
+      "message": "Unsupported protocol version",
+      "data": {
+        "supported": ["2026-07-28", "2025-11-25"],
+        "requested": "1900-01-01"
+      }
+    }
+  }
+}

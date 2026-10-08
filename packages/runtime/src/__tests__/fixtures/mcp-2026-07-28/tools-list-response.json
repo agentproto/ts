@@ -1,0 +1,38 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
+  "_note": "Section 'Listing Tools', 'Response'. The matching request example on that page omits the required _meta, so no tools/list request fixture exists.",
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "complete",
+      "tools": [
+        {
+          "name": "get_weather",
+          "title": "Weather Information Provider",
+          "description": "Get current weather information for a location",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City name or zip code"
+              }
+            },
+            "required": ["location"]
+          },
+          "icons": [
+            {
+              "src": "https://example.com/weather-icon.png",
+              "mimeType": "image/png",
+              "sizes": ["48x48"]
+            }
+          ]
+        }
+      ],
+      "nextCursor": "next-page-cursor",
+      "ttlMs": 300000,
+      "cacheScope": "public"
+    }
+  }
+}
