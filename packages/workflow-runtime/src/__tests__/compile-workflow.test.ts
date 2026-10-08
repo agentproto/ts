@@ -133,6 +133,21 @@ describe("compileWorkflow", () => {
     expect((output as { n: number }).n).toBe(20)
   })
 
+  it("marks a workflow with no sessionRef step reusesSessions:false", () => {
+    const mk = (extra: Record<string, unknown>[]) =>
+      defineWorkflow({
+        name: "Sessions",
+        id: "sessions",
+        description: "Agent steps.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [{ id: "a", kind: "agent", adapter: "mock", prompt: "go" }, ...extra],
+      } as never)
+    expect(compileWorkflow(mk([{ id: "b", kind: "agent", adapter: "mock", prompt: "again" }]), { tools, candidates }).reusesSessions).toBe(false)
+    expect(compileWorkflow(mk([{ id: "b", kind: "agent", sessionRef: "a", prompt: "again" }]), { tools, candidates }).reusesSessions).toBeUndefined()
+  })
+
   it("compiles a map-over manifest using $item", async () => {
     const wf = defineWorkflow({
       name: "Double each",

@@ -1748,6 +1748,9 @@ async function runWorkflowInner(
       const out = await execStep(step, ctx, undefined, undefined)
       state.steps[step.id] = out
       completeStep(ctx, step.id, out)
+      // No later step can `sessionRef` this one's sessions: release them now
+      // rather than holding them until the run ends (or an approval resolves).
+      if (ownsScope && workflow.reusesSessions === false) await releaseScope(ctx)
       lastId = step.id
     }
     await checkOutputsFiles(workflow.outputsFiles, ctx, workflow.id, lastId)
