@@ -20,6 +20,15 @@
  * over 100k tokens) come from OpenRouter's `pricing.overrides`
  * (`min_prompt_tokens`), parsed by the shared
  * packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs.
+ *
+ * PRICES come first from Anthropic's own pricing page
+ * (platform.claude.com/docs/en/about-claude/pricing.md, no key needed),
+ * parsed by packages/catalog-sync/src/sources/anthropic-pricing-page.mjs:
+ * base, cache-hit and 5m cache-write rates and prompt-length tiers, all
+ * first-party. OpenRouter is the per-row fallback for an id the page doesn't
+ * list, and the whole-file fallback when the page is unreachable or parses
+ * into something `checkAnthropicPricingUsable` rejects. Each row records
+ * which one priced it in `priceSource`.
  */
 
 import { readFileSync, writeFileSync } from "node:fs"
@@ -29,6 +38,27 @@ import {
   promptLengthTiers,
   serializeTiers,
 } from "../../packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs"
+import {
+  checkAnthropicPricingUsable,
+  parseAnthropicPricingPage,
+} from "../../packages/catalog-sync/src/sources/anthropic-pricing-page.mjs"
+
+const ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
+
+/** Anthropic's own prices — `{ prices, reason }`, `prices` null if unusable. */
+async function fetchAnthropicPricing() {
+  try {
+    const res = await fetch(ANTHROPIC_PRICING_URL, {
+      headers: { Accept: "text/markdown, text/plain;q=0.9, */*;q=0.1" },
+    })
+    if (!res.ok) return { prices: null, reason: `pricing page returned ${res.status} ${res.statusText}` }
+    const prices = parseAnthropicPricingPage(await res.text())
+    const problem = checkAnthropicPricingUsable(prices)
+    return problem ? { prices: null, reason: problem } : { prices, reason: null }
+  } catch (err) {
+    return { prices: null, reason: `pricing page fetch failed: ${err.message}` }
+  }
+}
 
 const OUTPUT_PATH = resolve(
   import.meta.dirname,
@@ -194,13 +224,26 @@ async function main() {
 
   // Match native Anthropic model ids with OpenRouter pricing.
   // Output uses native Anthropic ids (DASHES), NOT OpenRouter dotted ids.
+  console.log("→ Fetching Anthropic's own pricing page…")
+  const { prices: officialPrices, reason: officialProblem } = await fetchAnthropicPricing()
+  if (officialPrices) console.log(`  ${officialPrices.size} priced rows parsed`)
+  else console.warn(`  ⚠ official pricing unusable (${officialProblem}) — every price from OpenRouter`)
+
   const entries = []
   for (const model of anthropicIds) {
     if (!model.id) continue
+    // The page lists marketing names → bare ids; a dated id is its bare model.
+    const official =
+      officialPrices?.get(model.id) ?? officialPrices?.get(model.id.replace(/-\d{8}$/, ""))
+    if (official) {
+      entries.push({ id: model.id, ...official, priceSource: "anthropic" })
+      continue
+    }
     const orEntry = resolveOpenRouterEntry(model.id, openRouterMap)
     if (orEntry) {
       const entry = {
         id: model.id,
+        priceSource: "openrouter",
         inputPer1M: orEntry.inputPer1M,
         outputPer1M: orEntry.outputPer1M,
       }
@@ -258,7 +301,10 @@ async function main() {
   entries.sort((a, b) => a.id.localeCompare(b.id))
 
   const date = new Date().toISOString()
-  const banner = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-anthropic.mjs (data: ${idSource} + OpenRouter pricing, synced ${date})\n\n`
+  const priceSourceLabel = officialPrices
+    ? "platform.claude.com pricing page, OpenRouter fallback per row"
+    : `OpenRouter pricing — Anthropic pricing page unusable: ${officialProblem}`
+  const banner = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-anthropic.mjs (data: ${idSource} + ${priceSourceLabel}, synced ${date})\n\n`
 
   const body = entries
     .map((e) => {
@@ -274,7 +320,7 @@ async function main() {
         extraParts.push(serializeTiers(e.tiers))
       }
       const cache = extraParts.length > 0 ? `, ${extraParts.join(", ")}` : ""
-      return `  ${JSON.stringify(e.id)}: { ${pricing}${cache}, vendor: "anthropic", provider: "anthropic" },`
+      return `  ${JSON.stringify(e.id)}: { ${pricing}${cache}, priceSource: ${JSON.stringify(e.priceSource)}, vendor: "anthropic", provider: "anthropic" },`
     })
     .join("\n")
 

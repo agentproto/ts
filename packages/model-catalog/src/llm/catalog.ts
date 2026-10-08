@@ -104,14 +104,19 @@ export interface LLMPricing {
    * reading a sync diff can tell a first-party price change from a router's
    * passthrough rate drifting.
    *
-   * Currently emitted only by `scripts/catalog-sync/sync-openai.mjs`, where
-   * the two sources genuinely disagree on some rows:
-   *   - `"openai"` — OpenAI's own published pricing
-   *     (`platform.openai.com/docs/pricing.md`).
-   *   - `"openrouter"` — OpenRouter's passthrough rate, used where OpenAI's
-   *     page does not list the id.
+   * Emitted by the native syncs that read the vendor's own pricing page,
+   * where that page and OpenRouter genuinely disagree on some rows:
+   *   - `"openai"` — `platform.openai.com/docs/pricing.md`
+   *     (`scripts/catalog-sync/sync-openai.mjs`).
+   *   - `"anthropic"` — `platform.claude.com/docs/en/about-claude/pricing.md`
+   *     (`sync-anthropic.mjs`).
+   *   - `"moonshot"` — `platform.kimi.ai/docs/pricing/chat.md`
+   *     (`sync-moonshot.mjs`).
+   *   - `"openrouter"` — OpenRouter's rate, used where the vendor's page
+   *     does not list the id. For Moonshot that is the price of whichever
+   *     host OpenRouter routes to, not Moonshot's own.
    */
-  priceSource?: "openai" | "openrouter"
+  priceSource?: "openai" | "anthropic" | "moonshot" | "openrouter"
   /**
    * Which list this row's ID came from. Also generator-owned and
    * informational. `"openrouter"` marks an id that the provider's own
