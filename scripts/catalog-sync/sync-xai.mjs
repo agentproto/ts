@@ -13,12 +13,16 @@
  * `tiers` entry — both are what the billing engine reads
  * (`selectPricingTier` / `calculateLLMCreditCost` in model-catalog).
  *
- * Needs XAI_API_KEY. Exits 2 (skip, not a hard failure) when the key isn't
- * set. Excludes non-text models (null `context_length` or null token prices,
+ * Uses the live API when XAI_API_KEY is set and the call succeeds; otherwise
+ * (no key, or the call fails — the xAI team key has been answering 403 since
+ * it ran out of credits) it regenerates from the committed snapshot
+ * packages/catalog-sync/snapshots/llm-xai.json, the same `/v1/models`
+ * payload `catalog-sync generate --refresh` pins, exactly as
+ * sync-anthropic.mjs does. Excludes non-text models (null `context_length` or null token prices,
  * e.g. `grok-imagine-*`).
  */
 
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { serializeTiers } from "../../packages/catalog-sync/src/sources/openrouter-prompt-tiers.mjs"
@@ -28,6 +32,15 @@ const OUTPUT_PATH = resolve(
   import.meta.dirname,
   "../../packages/model-catalog/src/llm/xai-pricing.generated.ts"
 )
+
+const SNAPSHOT_PATH = resolve(
+  import.meta.dirname,
+  "../../packages/catalog-sync/snapshots/llm-xai.json"
+)
+
+function readSnapshotModels() {
+  return JSON.parse(readFileSync(SNAPSHOT_PATH, "utf-8")).data || []
+}
 
 async function fetchXaiModels(apiKey) {
   const res = await fetch("https://api.x.ai/v1/models", {
@@ -60,16 +73,23 @@ function renderEntry(e) {
 
 async function main() {
   const apiKey = process.env.XAI_API_KEY
-  if (!apiKey) {
-    console.log(
-      "  XAI_API_KEY not set — skipping xAI pricing sync."
-    )
-    process.exit(2)
+  let models
+  let dataSource
+  if (apiKey) {
+    try {
+      console.log("→ Fetching xAI model list (native pricing)…")
+      models = await fetchXaiModels(apiKey)
+      dataSource = "xAI /v1/models native pricing"
+    } catch (err) {
+      console.log(`  xAI API failed: ${err.message} — using committed snapshot`)
+      dataSource = "llm-xai.json snapshot (xAI API fetch failed)"
+    }
+  } else {
+    console.log("  XAI_API_KEY not set — using committed snapshot")
+    dataSource = "llm-xai.json snapshot (XAI_API_KEY unavailable)"
   }
-
-  console.log("→ Fetching xAI model list (native pricing)…")
-  const models = await fetchXaiModels(apiKey)
-  console.log(`  ${models.length} models received`)
+  if (!models) models = readSnapshotModels()
+  console.log(`  ${models.length} models from ${dataSource}`)
 
   const excluded = []
   const entries = []
@@ -120,7 +140,7 @@ async function main() {
   entries.sort((a, b) => a.id.localeCompare(b.id))
 
   const date = new Date().toISOString()
-  const header = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-xai.mjs (data: xAI /v1/models native pricing, synced ${date})
+  const header = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-xai.mjs (data: ${dataSource}, synced ${date})
 //
 // Prices are xAI's NATIVE rates (no OpenRouter passthrough): raw
 // \`prompt_text_token_price\` / \`completion_text_token_price\` /
