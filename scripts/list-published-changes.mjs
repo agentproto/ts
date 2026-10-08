@@ -30,7 +30,10 @@
  *   edits never touch the published surface, which is backwards. Checked
  *   across the workspace: every package with a `src/` directory ships
  *   something built from it (`dist`, or the skill-pack pair) — there is no
- *   case here where `src/` exists but isn't a build input.
+ *   case here where `src/` exists but isn't a build input. Test files under
+ *   `src/` (`__tests__/`, `__snapshots__/`, `*.test.*`, `*.spec.*`) are the
+ *   exception: they never compile into the output, so a test-only edit (the
+ *   bot catalog-sync PR #1770's one-line test fix) needs no changeset.
  *
  * This deliberately does NOT reimplement npm-packlist's glob/`.npmignore`/
  * negation handling: none of that is in use in this workspace today (checked:
@@ -52,6 +55,8 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { resolve, dirname, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
+
+import { isTestPath } from './check-changeset-coverage.mjs'
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..')
 
@@ -111,7 +116,9 @@ export function buildPackageIndex(root = ROOT) {
 export function isPublishedPath(relPath, files, { hasSrcDir = false } = {}) {
   if (relPath === 'package.json') return true
   if (!relPath.includes('/') && IMPLICIT_ROOT_RE.test(relPath)) return true
-  if (hasSrcDir && (relPath === 'src' || relPath.startsWith('src/'))) return true
+  // Tests under src/ are not build input; they only ship if `files[]` names
+  // `src` itself, which the checks below still catch.
+  if (hasSrcDir && (relPath === 'src' || relPath.startsWith('src/')) && !isTestPath(relPath)) return true
   // No `files[]` declared: npm ships everything (minus its own default
   // ignores) — safest to treat every path as published rather than guess.
   if (!files) return true
