@@ -144,6 +144,7 @@ import {
 } from "./mcp-events/adapter.js"
 import { daemonBearerPrincipal, sessionPrincipal } from "./mcp-events/events-registry.js"
 import { createSentinelAutoLinker } from "./sentinel-autolink.js"
+import { createEventsSurfaceServer } from "./mcp-events-surface.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -3462,6 +3463,46 @@ export async function createGateway(
     return server
   }
 
+  // Public events origin (see RuntimeHttpServerOptions.eventsMcp). Off unless a >= 32 char secret is configured.
+  const eventsSecret = process.env.AGENTPROTO_MCP_EVENTS_SECRET ?? ""
+  const eventsRepos = (process.env.AGENTPROTO_MCP_EVENTS_REPOS ?? "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+  const eventsMcp =
+    eventsSecret.length >= 32
+      ? {
+          secret: eventsSecret,
+          allowedOrigins: (process.env.AGENTPROTO_MCP_EVENTS_ORIGINS ?? "")
+            .split(",")
+            .map(s => s.trim())
+            .filter(Boolean),
+          createServer: async () => {
+            const principal = daemonBearerPrincipal()
+            return createEventsSurfaceServer({
+              version: opts.version ?? "0.1.0-alpha",
+              repoAllowlist: eventsRepos,
+              handlers: {
+                list: params => eventsList(params as EventsListRequest, { principal }),
+                subscribe: params =>
+                  eventsSubscribe(params as unknown as EventsSubscribeInput, {
+                    principal,
+                    store: sentinelStore,
+                    resolveProvider: resolveSentinelProviderResolved,
+                  }),
+                unsubscribe: params =>
+                  eventsUnsubscribe(params as unknown as EventsUnsubscribeInput, {
+                    principal,
+                    store: sentinelStore,
+                    resolveProvider: resolveSentinelProviderResolved,
+                    tombstones: sentinelRuntime.cancelTombstones,
+                  }),
+              },
+            })
+          },
+        }
+      : undefined
+
   // Wire `dispatchTool` to a real in-process McpServer now that
   // `mcpServerFactory` exists. Lazily built + cached on first use (not
   // here) so a daemon that never fires a `kind:"tool"` cron/routine job
@@ -3557,6 +3598,7 @@ export async function createGateway(
     },
     mcpServerFactory,
     orchestratorMcpServerFactory,
+    ...(eventsMcp ? { eventsMcp } : {}),
     verifyOrchestratorScope: scopeTokens.verify,
     conversations,
     events,

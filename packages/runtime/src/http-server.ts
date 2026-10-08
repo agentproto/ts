@@ -24,7 +24,8 @@ import { buildLabeledStatsReport } from "./process-stats.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
-import { randomUUID, randomBytes } from "node:crypto"
+import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto"
+import { handleModernRequest } from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { Readable, type Duplex } from "node:stream"
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
@@ -886,6 +887,18 @@ export interface RuntimeHttpServerOptions {
    * point a child agent at the daemon (WP3 auto-injects the URL).
    */
   orchestratorMcpServerFactory?: OrchestratorMcpServerFactory
+  /**
+   * Public events origin (`POST /mcp/events/<secret>`), MCP 2026-07-28 only. Absent = route not mounted. Own auth: the
+   * path secret. The daemon bearer and the loopback bypass of `authorizeMcp` do NOT apply here. The ingress in front of
+   * a tunnel MUST forward only `^/mcp/events/` (a tunnel connects from loopback, so any other forwarded route would
+   * inherit the loopback bypass).
+   */
+  eventsMcp?: {
+    secret: string
+    createServer: () => Promise<McpServer>
+    /** Origins allowed to call (default none: any request carrying an Origin header is 403). */
+    allowedOrigins?: readonly string[]
+  }
   /** Resolve a presented scope-token to its scope, or null when
    *  unknown/missing. Paired with `orchestratorMcpServerFactory`. */
   verifyOrchestratorScope?: (
@@ -1425,6 +1438,7 @@ export async function startHttpServer(
     const auth = readAuth()
     if (auth.mode !== "bearer") return true
     if (path === "/health") return true
+    if (opts.eventsMcp && path.startsWith("/mcp/events/")) return true
     if (/^\/inbound\/[^/]+$/.test(path)) return true
     if (isAppUiShellRequest(method, path)) return true
     const header = req.headers.authorization
@@ -1915,6 +1929,49 @@ export async function startHttpServer(
     await serveMcp(req, res, server)
   }
 
+  const EVENTS_BODY_CAP = 1024 * 1024
+
+  async function handleEventsMcp(req: IncomingMessage, res: ServerResponse, presented: string): Promise<void> {
+    const cfg = opts.eventsMcp
+    const send = (status: number, headers: Record<string, string>, body?: string): void => {
+      res.writeHead(status, { "cache-control": "no-store", ...headers })
+      res.end(body)
+    }
+    if (!cfg) return send(404, { "content-type": "application/json" }, JSON.stringify({ error: "not_found" }))
+    const want = Buffer.from(cfg.secret)
+    const got = Buffer.from(presented)
+    if (got.length !== want.length || !timingSafeEqual(got, want)) {
+      return send(404, { "content-type": "application/json" }, JSON.stringify({ error: "not_found" }))
+    }
+    const origin = req.headers.origin
+    if (typeof origin === "string" && !(cfg.allowedOrigins ?? []).includes(origin)) {
+      return send(403, { "content-type": "application/json" }, JSON.stringify({ error: "origin_not_allowed" }))
+    }
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of req) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buf.length
+      if (size > EVENTS_BODY_CAP) {
+        return send(413, { "content-type": "application/json" }, JSON.stringify({ error: "body_too_large" }))
+      }
+      chunks.push(buf)
+    }
+    const controller = new AbortController()
+    res.on("close", () => {
+      if (!res.writableEnded) controller.abort()
+    })
+    const out = await handleModernRequest(
+      {
+        method: req.method ?? "GET",
+        headers: req.headers as Record<string, string | string[] | undefined>,
+        body: Buffer.concat(chunks).toString("utf8"),
+      },
+      { createServer: cfg.createServer, signal: controller.signal },
+    )
+    send(out.status, out.headers, out.body)
+  }
+
   /**
    * Per-import passthrough (PLAN D phase 1). Mounted at
    * `/mcp/imported/<importId>` — a streamable-HTTP MCP server that proxies
@@ -2357,6 +2414,10 @@ export async function startHttpServer(
         }
         if (path === "/events" && req.method === "GET") {
           handleEvents(req, res)
+          return
+        }
+        if (path.startsWith("/mcp/events/")) {
+          await handleEventsMcp(req, res, decodeURIComponent(path.slice("/mcp/events/".length)))
           return
         }
         if (path === "/mcp/orchestrator") {
