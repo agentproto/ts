@@ -12,7 +12,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
-import type { ZodRawShape, ZodType } from "zod"
+import { z, type ZodRawShape, type ZodType } from "zod"
 import { runTool, type DriverHandle, type ResolverContext } from "@agentproto/driver"
 import type {
   ToolContext,
@@ -110,6 +110,22 @@ function asObjectShape(schema: ZodType): ZodRawShape | undefined {
     : undefined
 }
 
+/**
+ * Zod schema derived from a manifest-only tool's JSON-Schema `inputs`, so the
+ * MCP surface advertises real parameters. Returns `undefined` when `inputs` is
+ * absent or not convertible — the caller keeps the no-params passthrough.
+ * `runTool` still validates against the JSON Schema (ajv), so this only types
+ * the wire surface.
+ */
+function zodFromJsonInputs(inputs: unknown): ZodType | undefined {
+  if (typeof inputs !== "object" || inputs === null) return undefined
+  try {
+    return z.fromJSONSchema(inputs as Parameters<typeof z.fromJSONSchema>[0])
+  } catch {
+    return undefined
+  }
+}
+
 function mcpName(id: string): string {
   return id.replace(/[-:.]/g, "_")
 }
@@ -147,8 +163,11 @@ function resolveAnnotations(
 /**
  * Build (but do not register) the MCP tool. When the contract's `inputSchema`
  * is an object schema, its fields become the MCP tool's parameters directly;
- * otherwise the input is taken under a single `input` parameter carrying the
- * whole schema.
+ * a non-object zod schema is taken under a single `input` parameter carrying
+ * the whole schema. A manifest-only tool (no zod schema, a JSON-Schema
+ * `inputs`) gets the same treatment: an object schema maps flat — each
+ * property becomes an MCP param — and anything else falls back to a single
+ * `input` parameter.
  */
 export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
   opts: ToMcpToolOptions<TInput, TOutput, TContext>,
@@ -157,11 +176,16 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
   // `inputSchema` is optional (manifest-only tools declare IO via JSON Schema,
   // not a zod schema). Guard against undefined: a zod object → its shape; a
   // non-object zod schema → a single `input` field; no zod schema → no declared
-  // MCP params (`{}`).
+  // MCP params (`{}`), or — for a manifest-only tool — the JSON-Schema
+  // `inputs` converted to a proper MCP input shape (flat params for an
+  // object schema, a single `input` param otherwise).
+  const declaredSchema: ZodType | undefined =
+    tool.inputSchema ?? zodFromJsonInputs(tool.inputs)
   const objectShape =
-    tool.inputSchema != null ? asObjectShape(tool.inputSchema) : undefined
+    declaredSchema != null ? asObjectShape(declaredSchema) : undefined
   let inputShape: ZodRawShape =
-    objectShape ?? (tool.inputSchema != null ? { input: tool.inputSchema } : {})
+    objectShape ?? (declaredSchema != null ? { input: declaredSchema } : {})
+  const flatArgs = objectShape != null
 
   // Transformers (this option overrides the contract's own list), composed
   // LEFT-TO-RIGHT in declared order: the first transformer listed ends up
@@ -219,7 +243,7 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
       : {}),
     ...(annotations ? { annotations } : {}),
     handler: async (args) => {
-      const input = objectShape ? args : (args.input as unknown)
+      const input = flatArgs ? args : (args.input as unknown)
       const output = await handler(input)
       // A transformer that terminates the pipeline returns a pre-serialized
       // MCP text result — pass it through verbatim. Anything else (the
