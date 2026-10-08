@@ -124,6 +124,8 @@ describe("origin policy — classifyOrigin", () => {
   it.each([
     ["cron:*", CRON, "closable"],
     ["gate", GATE, "closable"],
+    ["workflow step session (root)", { origin: "workflow" }, "closable"],
+    ["review lane (root)", { origin: "review" }, "closable"],
     ["executor (parent, no origin)", EXECUTOR, "closable"],
     ["executor with an unknown origin", EXECUTOR_UNKNOWN_ORIGIN, "closable"],
     ["chat-starter", CHAT, "user"],

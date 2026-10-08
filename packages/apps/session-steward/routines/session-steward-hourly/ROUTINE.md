@@ -23,10 +23,10 @@ target:
     askSessions: false
     # Origin policy (the committed default): never close a human's session.
     # `chat-starter`/`vscode` (and any root with no origin and no parent) are
-    # FLAG-ONLY; `cron:*` jobs, `gate` sessions, and executors (a session with
+    # FLAG-ONLY; `cron:*` jobs, `gate`, `workflow` and `review` sessions, and executors (a session with
     # a parentSessionId) stay closeable. A trailing `*` is a prefix wildcard.
     userOrigins: ["chat-starter", "vscode"]
-    closableOrigins: ["cron:*", "gate"]
+    closableOrigins: ["cron:*", "gate", "workflow", "review"]
 retry:
   max_attempts: 1
   backoff: fixed
@@ -68,7 +68,7 @@ The steward bounds every action by the candidate's `origin` (pure
   `origin` and no `parentSessionId` (a human launched it). A would-be close —
   even a rule-certain `close`/`stuck`, even a confident `done` — becomes a
   `needs-input` flag with reason `flag (origine utilisateur)`.
-- **Close allowed:** `cron:*` (any cron job), `gate`, and executors (a
+- **Close allowed:** `cron:*` (any cron job), `gate`, `workflow` (workflow-step sessions), `review` (reviewer lanes), and executors (a
   session with a `parentSessionId`).
 
 Both lists are workflow inputs (`userOrigins`, `closableOrigins`); the values
