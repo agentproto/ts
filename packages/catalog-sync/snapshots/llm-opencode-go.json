@@ -9,6 +9,21 @@
     ],
     "npm": "@ai-sdk/openai-compatible",
     "models": {
+      "claude-haiku-5-5": {
+        "id": "claude-haiku-5-5",
+        "name": "Claude Haiku 5.5",
+        "family": "claude-haiku",
+        "release_date": "2026-10-07",
+        "provider": {
+          "npm": "@ai-sdk/anthropic"
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.01,
+          "cache_write": 0.125
+        }
+      },
       "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",

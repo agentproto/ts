@@ -1,4 +1,4 @@
-// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-google.mjs (data: OpenRouter remap — Google native API blocked, see llm-context-windows.ts, synced 2026-10-06T09:02:19.392Z)
+// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-google.mjs (data: OpenRouter remap — Google native API blocked, see llm-context-windows.ts, synced 2026-10-08T08:43:42.394Z)
 
 export const GOOGLE_GENERATED_PRICING = {
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5, cacheReadMultiplier: 0.1, vendor: "google", provider: "google" },
