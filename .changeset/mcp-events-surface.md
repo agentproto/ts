@@ -1,5 +1,5 @@
 ---
-"@agentproto/runtime": patch
+"@agentproto/runtime": minor
 ---
 
 Add an opt-in public events origin, `POST /mcp/events/<secret>`, that serves a dedicated events-only MCP surface
