@@ -129,6 +129,7 @@ import type {
 } from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
 import {
+  CONTEXT_CONTINUITY_DEFAULTS,
   computeContextContinuityStatus,
   computeContextPct,
   contextContinuityNextAction,
@@ -137,7 +138,12 @@ import {
   type ContextContinuityPolicy,
   type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
-import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
+import {
+  buildContextCheckpoint,
+  persistCheckpoint,
+  renderCheckpointPrompt,
+  type ContextCheckpoint,
+} from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import {
   compactOutcome,
@@ -7446,11 +7452,78 @@ export function createSessionsRegistry(opts?: {
   }
 
 
+  /**
+   * Write a checkpoint (goal, plan, decisions, changed files, tests, errors,
+   * risks, next step) BEFORE a step that discards conversation context —
+   * runtime compaction, a `/compact` prompt, a hard stop. Throws when the
+   * checkpoint can't be built or persisted; the caller decides whether the
+   * step may proceed without it (compaction: no; hard stop: yes, loudly).
+   *
+   * `askSource` puts a handoff turn to the live session so the checkpoint
+   * carries its own decisions/risks. That needs the session idle, so only the
+   * pre-turn `/compact` gate can ask; the turn-boundary paths run while the
+   * finishing turn still holds `busy` and extract from the transcript alone
+   * (the checkpoint's `handoffTurn` says which happened).
+   */
+  async function checkpointBeforeContextLoss(
+    rt: SessionRuntime,
+    reason: string,
+    askSource: boolean,
+  ): Promise<ContextCheckpoint> {
+    const policy = rt.desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed) ?? policy.continueFreshAtPct
+    // The checkpoint reads events.jsonl: make the turn that just ended durable first.
+    await transcriptWriter.drain?.(rt.desc.id)
+    const checkpoint = await buildContextCheckpoint(
+      rt.desc.contextContinuity ? rt.desc : { ...rt.desc, contextContinuity: policy },
+      { contextPct: pct, baseDir: transcriptBaseDir, registry, askSource },
+    )
+    await persistCheckpoint(checkpoint)
+    const line = `[context] checkpoint ${checkpoint.checkpointId} written to ${checkpoint.checkpointPath} before ${reason}`
+    appendLine(rt, line, "stdout")
+    transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+    return checkpoint
+  }
+
+  /** Compaction slash commands a harness acts on: `/compact` (claude-code,
+   *  opencode, codex) and `/compress` (hermes). Harness-specific aliases
+   *  beyond these are not recognised. */
+  const COMPACT_PROMPT_RE = /^\s*\/(?:compact|compress)(?=\s|$)/i
+
+  function isCompactPrompt(message: unknown): boolean {
+    let text: unknown = message
+    if (Array.isArray(text)) text = text[0]
+    if (text && typeof text === "object") text = (text as { text?: unknown }).text
+    return typeof text === "string" && COMPACT_PROMPT_RE.test(text)
+  }
+
+  /** Synchronous admission check for a compaction prompt: a session whose
+   *  policy sets `compactRequiresOperator` takes it only from the operator
+   *  (a source-less prompt), never from a session — itself included. */
+  function assertCompactionAllowed(rt: SessionRuntime, message: unknown, source: string | undefined, caller: string): void {
+    if (!rt.desc.contextContinuity?.compactRequiresOperator) return
+    if (!isCompactPrompt(message)) return
+    if (source === undefined || !source.startsWith("agent:")) return
+    throw new Error(
+      `${caller}: session "${rt.desc.id}" requires the operator's agreement to compact its context — a compaction prompt from ${source} is refused`,
+    )
+  }
+
   async function attemptContextCompact(rt: SessionRuntime): Promise<void> {
     if (!adapterSupportsCompact(rt.agentSession)) {
       appendLine(
         rt,
         "[context] compact threshold reached but harness does not advertise compact support; waiting for continue-fresh threshold",
+        "stderr",
+      )
+      return
+    }
+    try {
+      await checkpointBeforeContextLoss(rt, "runtime compaction", false)
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] compact skipped: no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,
         "stderr",
       )
       return
@@ -7555,6 +7628,7 @@ export function createSessionsRegistry(opts?: {
     try {
       const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
         harness,
+        baseDir: transcriptBaseDir,
       })
       appendLine(
         rt,
@@ -7572,6 +7646,21 @@ export function createSessionsRegistry(opts?: {
   }
 
   async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
+    // The stop itself is not optional (a prompt into a full window is
+    // truncated or rejected), but the work done so far must survive it:
+    // checkpoint first, while the transcript is still open. A failure here
+    // is reported, never silent — the operator then knows to recover from
+    // `events.jsonl` by hand.
+    try {
+      await checkpointBeforeContextLoss(rt, "hard stop", false)
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context-hard-stop] WARNING: stopping WITHOUT a checkpoint — it could not be written (${err instanceof Error ? err.message : String(err)}). The transcript at ${sessionEventsPath(rt.desc.id, transcriptBaseDir)} is the only record.`,
+        "stderr",
+      )
+    }
+    if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
     appendLine(
       rt,
       `[context-hard-stop] context at ${pct}% — no new prompts will be admitted. Use continue fresh.`,
@@ -7607,7 +7696,7 @@ export function createSessionsRegistry(opts?: {
         rt.desc,
         // The session is at its context limit: don't spend another turn on
         // a handoff question, extract from the transcript instead.
-        { askSource: false },
+        { askSource: false, baseDir: transcriptBaseDir },
       )
       appendLine(
         rt,
@@ -8020,6 +8109,24 @@ export function createSessionsRegistry(opts?: {
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
+    }
+    // A compaction prompt discards context: refuse it where the policy
+    // reserves compaction to the operator, and otherwise checkpoint BEFORE
+    // it reaches the harness. This is the single choke point every prompt
+    // path funnels through (sendPrompt, enqueuePrompt, the queue drain), and
+    // it must run before `busy` is taken — a throw inside the turn would mark
+    // the session errored. No checkpoint, no compaction.
+    if (isCompactPrompt(message)) {
+      assertCompactionAllowed(rt, message, turnOpts?.promptSource, "runAgentTurn")
+      try {
+        await checkpointBeforeContextLoss(rt, "compaction", true)
+      } catch (err) {
+        throw new Error(
+          `runAgentTurn: compaction refused — no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,
+        )
+      }
+      // The checkpoint awaited a handoff turn: the session may have moved on.
+      validateAgentTurn(rt.desc.id, "runAgentTurn")
     }
     const messageTurn = turnOpts?.messages !== undefined && turnOpts.messages.length > 0
     if (messageTurn) {
@@ -10085,6 +10192,7 @@ export function createSessionsRegistry(opts?: {
     },
     async sendPrompt(id, message, opts) {
       const rtPre = sessions.get(id)
+      if (rtPre) assertCompactionAllowed(rtPre, message, opts?.source, "sendPrompt")
       // Same mid-turn arm as enqueuePrompt: cancel + await settle BEFORE
       // admission, so `validateAgentTurn` finds the session idle instead
       // of throwing the busy rejection. Without this, `interrupt` was
@@ -10125,6 +10233,7 @@ export function createSessionsRegistry(opts?: {
       if (!rtPre) {
         throw new Error(`enqueuePrompt: no session "${id}"`)
       }
+      assertCompactionAllowed(rtPre, message, opts?.source, "enqueuePrompt")
       // `interrupt` only ever changes behavior on a mid-turn session —
       // an idle session falls straight through to the normal admission
       // path below, byte-identical to `interrupt` omitted/false. Cancel

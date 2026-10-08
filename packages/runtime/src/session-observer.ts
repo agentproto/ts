@@ -45,6 +45,11 @@ export interface SessionObserver {
   recordEvent(sessionId: string, evt: AgentStreamEvent): void
   /** Record the durable turn-boundary / exit usage snapshot. */
   recordUsageSnapshot(sessionId: string, usage: SessionUsage): void
+  /** Resolve once everything recorded so far for `sessionId` is readable
+   *  from the observer's durable store — without closing the stream. Lets a
+   *  reader (a checkpoint) see the turn that just ended. Optional: an
+   *  observer with no read-back store has nothing to flush. */
+  drain?(sessionId: string): Promise<void>
   /** Flush and close this session's stream. Idempotent, fire-and-forget. */
   close(sessionId: string): Promise<void>
   /** Close every open session stream (synchronous shutdown path). */
@@ -102,6 +107,11 @@ export function composeSessionObservers(
     },
     recordUsageSnapshot(sessionId, usage) {
       forEachSafe((o) => o.recordUsageSnapshot(sessionId, usage))
+    },
+    async drain(sessionId) {
+      await closeSafe(async (o) => {
+        await o.drain?.(sessionId)
+      })
     },
     async close(sessionId) {
       await closeSafe((o) => o.close(sessionId))
@@ -166,6 +176,14 @@ export function filterSessionObserver(
         inner.recordUsageSnapshot(sessionId, usage)
       } catch {
         // isolate: a failing observer must not break the turn loop
+      }
+    },
+    async drain(sessionId) {
+      if (!shouldObserve(sessionId)) return
+      try {
+        await inner.drain?.(sessionId)
+      } catch {
+        // isolate: a failing observer must not break the checkpoint
       }
     },
     async close(sessionId) {

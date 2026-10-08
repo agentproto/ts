@@ -46,6 +46,7 @@ export const contextContinuityInputSchema = z.object({
   continueFreshAtPct: z.number().int().min(0).max(100).optional(),
   hardStopAtPct: z.number().int().min(0).max(100).optional(),
   handoffAtQuotaRemaining: z.number().min(0).optional(),
+  compactRequiresOperator: z.boolean().optional(),
   goal: z.boolean().optional(),
   plan: z.boolean().optional(),
   decisions: z.boolean().optional(),

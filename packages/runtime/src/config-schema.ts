@@ -71,6 +71,7 @@ const contextContinuityPolicySchema: z.ZodType<ContextContinuityPolicy> = z
     continueFreshAtPct: z.number().optional(),
     hardStopAtPct: z.number().optional(),
     handoffAtQuotaRemaining: z.number().min(0).optional(),
+    compactRequiresOperator: z.boolean().optional(),
     goal: z.boolean().optional(),
     plan: z.boolean().optional(),
     decisions: z.boolean().optional(),

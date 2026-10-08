@@ -64,6 +64,14 @@ export interface ContextContinuityPolicy
    *  header — a count, not a percentage: the header carries no limit to
    *  divide by). Unset = disabled. Suggestion only, never a switch. */
   handoffAtQuotaRemaining?: number
+  /** When true, a context-losing compaction prompt (`/compact`, `/compress`)
+   *  is admitted only from the operator (a source-less prompt: HTTP, CLI,
+   *  UI). One attributed to a session (`agent:<id>` — `agent_prompt`,
+   *  `session_compact`, including the session itself) is refused. For a
+   *  session whose compaction needs a human's agreement (the Pygmalion
+   *  brain), so it can't be bypassed by a prompt-level self-compact. Unset
+   *  = false. */
+  compactRequiresOperator?: boolean
 }
 
 /**
@@ -78,6 +86,8 @@ export interface ResolvedContextContinuityPolicy
   label: string
   /** See {@link ContextContinuityPolicy.handoffAtQuotaRemaining}. */
   handoffAtQuotaRemaining?: number
+  /** See {@link ContextContinuityPolicy.compactRequiresOperator}. */
+  compactRequiresOperator?: boolean
 }
 
 export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
@@ -212,6 +222,9 @@ function mergePolicyLayer(
     label: override.label ?? base.label,
     ...((override.handoffAtQuotaRemaining ?? base.handoffAtQuotaRemaining) !== undefined
       ? { handoffAtQuotaRemaining: (override.handoffAtQuotaRemaining ?? base.handoffAtQuotaRemaining)! }
+      : {}),
+    ...((override.compactRequiresOperator ?? base.compactRequiresOperator) !== undefined
+      ? { compactRequiresOperator: (override.compactRequiresOperator ?? base.compactRequiresOperator)! }
       : {}),
   }
 }
