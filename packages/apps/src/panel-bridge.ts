@@ -194,18 +194,31 @@ function openLink(url){
   if (_standaloneApp && typeof _standaloneApp.openLink === 'function') return _standaloneApp.openLink(url);
   return rpcRequest('ui/open-link', {url: url});
 }
+// An MCP tool-result envelope: {content: [{type: 'text', text}, ...]}.
+function _isEnvelope(v){
+  return !!v && typeof v === 'object' && Array.isArray(v.content) &&
+    !!v.content[0] && v.content[0].type === 'text' && typeof v.content[0].text === 'string';
+}
+// Peels every envelope layer. The standalone path (POST /apps/:id/tool-call,
+// runtime app-tools.ts dispatchAllowlistedAppTool) wraps an already-wrapped
+// builtin result a second time, and an inner isError rides inside that outer
+// success — so isError is honoured at each layer, not just the first.
+function _unwrapToolResult(result){
+  var env = result;
+  while (true){
+    var first = env && env.content && env.content[0];
+    var text = (first && first.text) || '';
+    if (env && env.isError) throw new Error(text || 'tool error');
+    try { var value = JSON.parse(text || '{}'); } catch(_) { return text; }
+    if (!_isEnvelope(value)) return value;
+    env = value;
+  }
+}
 function callTool(name, args){
   var raw = _standaloneApp
     ? _standaloneApp.callTool(name, args || {})
     : rpcRequest('tools/call', {name: name, arguments: args || {}});
-  return raw.then(function(result){
-    if (result.isError){
-      var e = (result.content && result.content[0] && result.content[0].text) || 'tool error';
-      throw new Error(e);
-    }
-    var text = (result.content && result.content[0] && result.content[0].text) || '{}';
-    return JSON.parse(text);
-  });
+  return raw.then(_unwrapToolResult);
 }
 
 // ── Display-mode toggle (shared: @agentproto/app-client/display-mode) ──
