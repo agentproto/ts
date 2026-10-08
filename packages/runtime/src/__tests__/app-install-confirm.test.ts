@@ -19,6 +19,7 @@ import {
   performBuiltinPanelToolCall,
   performAppToolCall,
 } from "../app-tools.js"
+import { appInstallInputSchema } from "../app-remote-install.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 
 const STORE_UI_TOOLS = [
@@ -167,8 +168,8 @@ describe("panel-path install guard (dispatchAllowlistedAppTool)", () => {
     expect(JSON.parse((rejected as { content: { text: string }[] }).content[0]!.text).needsConfirmation).toBe(true)
   })
 
-  it("second call with the preview's confirm token dispatches app_install verbatim", async () => {
-    const dispatchTool = vi.fn(async () => ({ installed: true }))
+  it("second call with the preview's confirm token dispatches app_install with the nonce STRIPPED (strict schema)", async () => {
+    const dispatchTool = vi.fn(async (_tool: string, _args: Record<string, unknown>) => ({ installed: true }))
     const first = await performBuiltinPanelToolCall(
       STORE_UI_TOOLS,
       { appId: "@agentproto/store", tool: "app_install", args: payload },
@@ -180,7 +181,8 @@ describe("panel-path install guard (dispatchAllowlistedAppTool)", () => {
       { appId: "@agentproto/store", tool: "app_install", args: { ...payload, confirm: preview.confirm } },
       { dispatchTool },
     )
-    expect(dispatchTool).toHaveBeenCalledWith("app_install", { ...payload, confirm: preview.confirm })
+    expect(dispatchTool).toHaveBeenCalledWith("app_install", payload)
+    expect(appInstallInputSchema.safeParse(dispatchTool.mock.calls[0]![1]).success).toBe(true)
     const body = JSON.parse((result as { content: { text: string }[] }).content[0]!.text)
     expect(body).toEqual({ installed: true })
   })

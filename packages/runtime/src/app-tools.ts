@@ -419,7 +419,8 @@ export interface AppToolCallDeps {
  *   kind, url, sha256|sha, ref?, subdir?, runsBuildCommand }` — an
  *   actionable install preview; NOTHING is installed, nothing is staged.
  *   2nd call with the SAME payload PLUS `confirm: <that token>` → the
- *   normal install path, verbatim.
+ *   normal install path (nonce key stripped first — the tool's
+ *   `appInstallInputSchema` is strict and doesn't declare it).
  *
  * The guard classifies by URL suffix ONLY (`isAgentappUrl`): a `.agentapp`
  * bundle never runs the app's ui.build (app-tools's `allowUiBuild`
@@ -607,11 +608,18 @@ async function dispatchAllowlistedAppTool(
   // tool-call surface (`window.McpApp` bridge → this dispatcher) needs an
   // EXPLICIT confirmation — first call (no `confirm`) answers a preview
   // and installs nothing; only a second call echoing the preview's
-  // `confirm` token proceeds. Direct MCP/CLI callers enter through the
-  // registered `server.tool("app_install")` handler, never this
-  // dispatcher, and are unaffected.
-  if (input.tool === "app_install" && appInstallConfirmationClass(args)?.confirmed === false) {
-    return textResult(buildAppInstallPreview(args))
+  // `confirm` token proceeds (then stripped before dispatch — the tool's
+  // own schema is strict and doesn't know the nonce key). Direct MCP/CLI
+  // callers enter through the registered `server.tool("app_install")`
+  // handler, never this dispatcher, and are unaffected.
+  let dispatchArgs = args
+  if (input.tool === "app_install") {
+    const cls = appInstallConfirmationClass(args)
+    if (cls?.confirmed === false) return textResult(buildAppInstallPreview(args))
+    if (cls?.confirmed === true) {
+      const { confirm: _confirmNonce, ...rest } = args
+      dispatchArgs = rest
+    }
   }
   try {
     if (input.tool.startsWith("imported:")) {
@@ -623,7 +631,7 @@ async function dispatchAllowlistedAppTool(
           `app_tool_call: malformed imported tool id "${input.tool}" — expected "imported:<alias>/<toolName>".`,
         )
       }
-      const result = await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), args)
+      const result = await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), dispatchArgs)
       return textResult(result)
     }
     // G1: an allowlisted id that names one of the app's OWN bundled TOOL.md
@@ -640,7 +648,7 @@ async function dispatchAllowlistedAppTool(
       }
     }
     if (!deps.dispatchTool) return notEnabled("app_tool_call")
-    const result = await deps.dispatchTool(input.tool, args)
+    const result = await deps.dispatchTool(input.tool, dispatchArgs)
     // `result` is usually already an MCP envelope, so this wraps it a second
     // time. Installed apps and the builtin panel bridge
     // (packages/apps/src/panel-bridge.ts `_unwrapToolResult`) unwrap
