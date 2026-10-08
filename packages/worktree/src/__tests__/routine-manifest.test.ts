@@ -31,7 +31,7 @@ const cronScheduleSchema = z.object({
 
 const toolTargetSchema = z.object({
   tool: z.string(),
-  inputs: z.object({ apply: z.boolean(), salvageDirty: z.boolean() }),
+  inputs: z.object({ apply: z.boolean(), salvageDirty: z.boolean(), wait: z.boolean() }),
 })
 
 describe("worktree-gc ROUTINE.md", () => {
@@ -59,6 +59,7 @@ describe("worktree-gc ROUTINE.md", () => {
     expect(target.tool).toBe("worktree_gc")
     expect(target.inputs.apply).toBe(true)
     expect(target.inputs.salvageDirty).toBe(false)
+    expect(target.inputs.wait).toBe(true)
   })
 
   it("routes failures and declares its lifecycle events", () => {
