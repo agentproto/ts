@@ -401,6 +401,8 @@ describe("mcp-events e2e — full user story", () => {
     const delivery = h!.fake.deliveries[0]!
     expect(delivery.signatureOk).toBe(true)
     expect(delivery.headers["webhook-id"]).toBe("evt_pr_1428_closed")
+    // The subscription id the client received rides on every event delivery.
+    expect(delivery.headers["x-mcp-subscription-id"]).toBe(sub.id)
     const envelope = JSON.parse(delivery.body) as Record<string, unknown>
     expect(envelope).toMatchObject({
       eventId: "evt_pr_1428_closed",

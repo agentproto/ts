@@ -133,7 +133,7 @@ export async function deliverEventEnvelope(
     try {
       response = await fetcher(replay.callbackUrl, {
         method: "POST",
-        headers: { ...signed, "content-type": "application/json" },
+        headers: { ...signed, "content-type": "application/json", "X-MCP-Subscription-Id": replay.subId },
         body: payloadBytes,
         timeoutMs: 15_000, // delivery default (challenge uses 10_000)
       })
