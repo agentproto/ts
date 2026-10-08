@@ -3,7 +3,8 @@
  *
  * `createDeliveryHandler` is transport-free (headers + raw body in, status
  * out) so it is testable without binding a port; `startReceiver` is the thin
- * node:http wrapper that gates on the secret path before anything is read.
+ * node:http wrapper that gates on the secret path and caps the body before
+ * anything is read or verified.
  */
 
 import { createServer, type Server } from "node:http"
@@ -34,7 +35,14 @@ export interface DeliveryHandlerOptions {
   /** Called once per new, verified event. A throw yields a 500 so the daemon retries. */
   onEvent: (event: McpEventEnvelope, subscriptionId: string) => Promise<void>
   nowSeconds?: () => number
+  /** How many delivered event ids to remember for dedupe (oldest evicted first). */
+  maxSeen?: number
 }
+
+/** Request bodies above this are refused before any parsing (a webhook envelope is a few KiB). */
+export const MAX_BODY_BYTES = 1024 * 1024
+
+const DEFAULT_MAX_SEEN = 5000
 
 const header = (headers: DeliveryInput["headers"], name: string): string => {
   const value = headers[name]
@@ -42,7 +50,17 @@ const header = (headers: DeliveryInput["headers"], name: string): string => {
 }
 
 export function createDeliveryHandler(opts: DeliveryHandlerOptions): (input: DeliveryInput) => Promise<DeliveryResult> {
+  const maxSeen = opts.maxSeen ?? DEFAULT_MAX_SEEN
+  // Insertion-ordered, so the first key is the oldest. Bounded: a long-lived session must not grow without limit.
   const seen = new Set<string>()
+  const remember = (eventId: string) => {
+    seen.add(eventId)
+    if (seen.size > maxSeen) seen.delete(seen.values().next().value as string)
+  }
+  // A redelivery that arrives while the first copy is still being pushed waits for it and gets the same status,
+  // so the session sees the event once even under concurrent retries.
+  const inflight = new Map<string, Promise<DeliveryResult>>()
+
   return async ({ headers, body }) => {
     const ok = verifyWebhook(
       opts.secret,
@@ -68,17 +86,47 @@ export function createDeliveryHandler(opts: DeliveryHandlerOptions): (input: Del
     }
 
     if (typeof record.eventId !== "string" || typeof record.name !== "string") return { status: 400 }
+    const eventId = record.eventId
     // Ack duplicates (the daemon redelivers on any non-2xx) without pushing them to the session again.
-    if (seen.has(record.eventId)) return { status: 200, body: "ok" }
+    if (seen.has(eventId)) return { status: 200, body: "ok" }
+    const pending = inflight.get(eventId)
+    if (pending) return pending
 
+    const work = (async (): Promise<DeliveryResult> => {
+      try {
+        await opts.onEvent(record as unknown as McpEventEnvelope, header(headers, "x-mcp-subscription-id"))
+      } catch {
+        return { status: 500 }
+      }
+      remember(eventId)
+      return { status: 200, body: "ok" }
+    })()
+    inflight.set(eventId, work)
     try {
-      await opts.onEvent(record as unknown as McpEventEnvelope, header(headers, "x-mcp-subscription-id"))
-    } catch {
-      return { status: 500 }
+      return await work
+    } finally {
+      inflight.delete(eventId)
     }
-    seen.add(record.eventId)
-    return { status: 200, body: "ok" }
   }
+}
+
+export class BodyTooLargeError extends Error {
+  constructor(limit: number) {
+    super(`request body exceeds ${limit} bytes`)
+  }
+}
+
+/** Collect a request body as UTF-8, failing as soon as it exceeds `limit` bytes. */
+export async function readCappedBody(stream: AsyncIterable<Buffer | string>, limit: number = MAX_BODY_BYTES): Promise<string> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of stream) {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk
+    size += buffer.length
+    if (size > limit) throw new BodyTooLargeError(limit)
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks).toString("utf8")
 }
 
 export interface Receiver {
@@ -89,6 +137,7 @@ export interface Receiver {
 export async function startReceiver(opts: {
   hookPath: string
   port?: number
+  maxBodyBytes?: number
   handle: (input: DeliveryInput) => Promise<DeliveryResult>
 }): Promise<Receiver> {
   const server: Server = createServer((req, res) => {
@@ -96,14 +145,17 @@ export async function startReceiver(opts: {
       res.writeHead(404).end()
       return
     }
-    const chunks: Buffer[] = []
-    req.on("data", (chunk: Buffer) => chunks.push(chunk))
-    req.on("end", () => {
-      opts
-        .handle({ headers: req.headers, body: Buffer.concat(chunks).toString("utf8") })
-        .then(result => res.writeHead(result.status, result.body ? { "content-type": "application/json" } : {}).end(result.body))
-        .catch(() => res.writeHead(500).end())
-    })
+    readCappedBody(req, opts.maxBodyBytes ?? MAX_BODY_BYTES)
+      .then(body => opts.handle({ headers: req.headers, body }))
+      .then(result => res.writeHead(result.status, result.body ? { "content-type": "application/json" } : {}).end(result.body))
+      .catch(error => {
+        if (error instanceof BodyTooLargeError) {
+          res.writeHead(413, { connection: "close" }).end()
+          req.destroy()
+          return
+        }
+        res.writeHead(500).end()
+      })
   })
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)

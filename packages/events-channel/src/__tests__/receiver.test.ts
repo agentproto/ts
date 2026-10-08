@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { createDeliveryHandler, type McpEventEnvelope } from "../receiver.js"
+import { Readable } from "node:stream"
+import { BodyTooLargeError, createDeliveryHandler, readCappedBody, type McpEventEnvelope } from "../receiver.js"
 import { generateSecret, signWebhook } from "../webhook.js"
 
 const secret = generateSecret()
@@ -73,5 +74,51 @@ describe("delivery handler", () => {
     expect((await handle(signed(event("evt_1")))).status).toBe(500)
     expect((await handle(signed(event("evt_1")))).status).toBe(200)
     expect(onEvent).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("delivery handler: concurrency and bounds", () => {
+  it("pushes once when two copies of the same event arrive while the first is still being pushed", async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => (release = resolve))
+    const onEvent = vi.fn<(e: McpEventEnvelope, sub: string) => Promise<void>>(() => gate)
+    const handle = createDeliveryHandler({ secret, onEvent, nowSeconds: () => NOW })
+    const first = handle(signed(event("evt_1")))
+    const second = handle(signed(event("evt_1")))
+    release()
+    expect((await first).status).toBe(200)
+    expect((await second).status).toBe(200)
+    expect(onEvent).toHaveBeenCalledTimes(1)
+  })
+
+  it("a concurrent duplicate shares the first copy's failure, and the retry then succeeds", async () => {
+    const onEvent = vi.fn<(e: McpEventEnvelope, sub: string) => Promise<void>>()
+    onEvent.mockRejectedValueOnce(new Error("transport closed"))
+    const handle = createDeliveryHandler({ secret, onEvent, nowSeconds: () => NOW })
+    const [a, b] = await Promise.all([handle(signed(event("evt_1"))), handle(signed(event("evt_1")))])
+    expect([a.status, b.status]).toEqual([500, 500])
+    expect((await handle(signed(event("evt_1")))).status).toBe(200)
+    expect(onEvent).toHaveBeenCalledTimes(2)
+  })
+
+  it("remembers only the most recent event ids (bounded memory)", async () => {
+    const onEvent = vi.fn<(e: McpEventEnvelope, sub: string) => Promise<void>>(async () => {})
+    const handle = createDeliveryHandler({ secret, onEvent, nowSeconds: () => NOW, maxSeen: 2 })
+    for (const id of ["evt_1", "evt_2", "evt_3"]) await handle(signed(event(id)))
+    expect(onEvent).toHaveBeenCalledTimes(3)
+    await handle(signed(event("evt_3")))
+    expect(onEvent).toHaveBeenCalledTimes(3) // recent id still deduped
+    await handle(signed(event("evt_1")))
+    expect(onEvent).toHaveBeenCalledTimes(4) // evicted id is no longer remembered
+  })
+})
+
+describe("readCappedBody", () => {
+  it("returns the body when it is within the limit, whatever the chunking", async () => {
+    expect(await readCappedBody(Readable.from([Buffer.from("he"), "llo"]), 5)).toBe("hello")
+  })
+
+  it("fails as soon as the limit is exceeded", async () => {
+    await expect(readCappedBody(Readable.from([Buffer.alloc(4), Buffer.alloc(4)]), 5)).rejects.toBeInstanceOf(BodyTooLargeError)
   })
 })

@@ -10,6 +10,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import { z } from "zod"
 import { createDeliveryHandler, type DeliveryInput, type DeliveryResult, type McpEventEnvelope } from "./receiver.js"
 import { generateSecret } from "./webhook.js"
 
@@ -33,6 +34,9 @@ export interface EventsChannelOptions {
   secret?: string
   /** Re-subscribe at this fraction of the granted lifetime. */
   refreshFraction?: number
+  /** First retry delay after a failed refresh; doubles per attempt up to `retryMaxMs`. */
+  retryBaseMs?: number
+  retryMaxMs?: number
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
@@ -40,10 +44,39 @@ export interface EventsChannelOptions {
 }
 
 interface Entry {
+  /** Stable identity: event name + canonical arguments (the daemon's own id is not trusted to stay the same). */
+  key: string
+  /** Latest subscription id the daemon returned. */
   id: string
   args: SubscribeArgs
   timer?: unknown
 }
+
+const SubscribeSchema = z
+  .object({
+    name: z.string().min(1),
+    arguments: z.record(z.string(), z.unknown()),
+    ttlMs: z.number().int().positive().optional(),
+  })
+  .strict()
+const UnsubscribeSchema = SubscribeSchema.omit({ ttlMs: true })
+
+const MIN_REFRESH_MS = 30_000
+
+/** JSON with sorted object keys, so equal arguments always produce the same key. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record)
+      .sort()
+      .map(k => `${JSON.stringify(k)}:${canonical(record[k])}`)
+      .join(",")}}`
+  }
+  return JSON.stringify(value) ?? "null"
+}
+
+const keyOf = (args: Pick<SubscribeArgs, "name" | "arguments">) => `${args.name}\u0000${canonical(args.arguments)}`
 
 export interface EventsChannel {
   /** The MCP server to connect to a stdio transport. */
@@ -63,8 +96,6 @@ const INSTRUCTIONS =
 
 const text = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] })
 
-const sameArgs = (a: Record<string, unknown>, b: Record<string, unknown>) => JSON.stringify(a) === JSON.stringify(b)
-
 export function createEventsChannel(opts: EventsChannelOptions): EventsChannel {
   const secret = opts.secret ?? generateSecret()
   const now = opts.now ?? Date.now
@@ -75,6 +106,8 @@ export function createEventsChannel(opts: EventsChannelOptions): EventsChannel {
   })
   const clearTimer = opts.clearTimer ?? (handle => clearTimeout(handle as NodeJS.Timeout))
   const refreshFraction = opts.refreshFraction ?? 0.8
+  const retryBaseMs = opts.retryBaseMs ?? 15_000
+  const retryMaxMs = opts.retryMaxMs ?? 300_000
   const log = opts.log ?? (() => {})
   const entries = new Map<string, Entry>()
 
@@ -107,19 +140,34 @@ export function createEventsChannel(opts: EventsChannelOptions): EventsChannel {
       delivery: { mode: "webhook", url: `${base}${opts.hookPath}`, secret },
       ...(args.ttlMs ? { ttlMs: args.ttlMs } : {}),
     })
-    const id = String(result.id ?? "")
-    const previous = entries.get(id)
+    const key = keyOf(args)
+    // One live entry per name+arguments, whatever id the daemon hands back: a replaced entry's timer must die with it.
+    const previous = entries.get(key)
     if (previous?.timer) clearTimer(previous.timer)
-    const entry: Entry = { id, args }
+    const entry: Entry = { key, id: String(result.id ?? ""), args }
     const refreshBefore = typeof result.refreshBefore === "string" ? Date.parse(result.refreshBefore) : NaN
     if (Number.isFinite(refreshBefore)) {
-      const delay = Math.max(30_000, (refreshBefore - now()) * refreshFraction)
-      entry.timer = setTimer(() => {
-        subscribe(args).catch(error => log(`refresh of ${id} failed: ${error instanceof Error ? error.message : String(error)}`))
-      }, delay)
+      const delay = Math.max(MIN_REFRESH_MS, (refreshBefore - now()) * refreshFraction)
+      entry.timer = setTimer(() => void refresh(entry, refreshBefore, 0), delay)
     }
-    entries.set(id, entry)
+    entries.set(key, entry)
     return result
+  }
+
+  /** Re-subscribe before expiry; on failure retry with backoff until the granted lifetime runs out. */
+  async function refresh(entry: Entry, deadline: number, attempt: number): Promise<void> {
+    try {
+      await subscribe(entry.args) // success replaces this entry and schedules the next refresh
+    } catch (error) {
+      log(`refresh of ${entry.id} failed (attempt ${attempt + 1}): ${error instanceof Error ? error.message : String(error)}`)
+      const wait = Math.min(retryBaseMs * 2 ** attempt, retryMaxMs)
+      if (entries.get(entry.key) !== entry) return // unsubscribed or replaced meanwhile
+      if (now() + wait >= deadline) {
+        log(`giving up on ${entry.id}: the subscription lapses at ${new Date(deadline).toISOString()}`)
+        return
+      }
+      entry.timer = setTimer(() => void refresh(entry, deadline, attempt + 1), wait)
+    }
   }
 
   async function unsubscribe(args: Pick<SubscribeArgs, "name" | "arguments">): Promise<Record<string, unknown>> {
@@ -129,12 +177,10 @@ export function createEventsChannel(opts: EventsChannelOptions): EventsChannel {
       arguments: args.arguments,
       delivery: { mode: "webhook", url: `${base}${opts.hookPath}` },
     })
-    for (const [id, entry] of entries) {
-      if (entry.args.name === args.name && sameArgs(entry.args.arguments, args.arguments)) {
-        if (entry.timer) clearTimer(entry.timer)
-        entries.delete(id)
-      }
-    }
+    const key = keyOf(args)
+    const entry = entries.get(key)
+    if (entry?.timer) clearTimer(entry.timer)
+    entries.delete(key)
     return result
   }
 
@@ -174,12 +220,15 @@ export function createEventsChannel(opts: EventsChannelOptions): EventsChannel {
   }))
 
   server.setRequestHandler(CallToolRequestSchema, async request => {
-    const params = (request.params.arguments ?? {}) as Record<string, unknown>
+    const params = request.params.arguments ?? {}
     try {
       if (request.params.name === "events_list") return text(await opts.daemon.request("events/list", {}))
-      if (request.params.name === "events_subscribe") return text(await subscribe(params as unknown as SubscribeArgs))
-      if (request.params.name === "events_unsubscribe") return text(await unsubscribe(params as unknown as SubscribeArgs))
+      if (request.params.name === "events_subscribe") return text(await subscribe(SubscribeSchema.parse(params)))
+      if (request.params.name === "events_unsubscribe") return text(await unsubscribe(UnsubscribeSchema.parse(params)))
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        return { isError: true, content: [{ type: "text" as const, text: `invalid arguments: ${error.issues.map(i => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}` }] }
+      }
       return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }
     }
     throw new Error(`unknown tool: ${request.params.name}`)

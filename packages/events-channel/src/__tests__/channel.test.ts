@@ -166,3 +166,74 @@ describe("events channel", () => {
     expect(r.daemon.request.mock.calls.filter(([m]) => m === "events/unsubscribe")).toHaveLength(1)
   })
 })
+
+describe("events channel: robustness", () => {
+  it("rejects invalid tool arguments without calling the daemon", async () => {
+    const r = await rig()
+    const calls = () => r.daemon.request.mock.calls.length
+    const before = calls()
+    for (const bad of [{ arguments: ARGS }, { name: "x" }, { name: "x", arguments: ARGS, ttlMs: "soon" }, { name: "x", arguments: ARGS, extra: 1 }]) {
+      const result = await callTool(r, "events_subscribe", bad)
+      expect(result.isError).toBe(true)
+      expect(result.content[0]?.text).toContain("invalid arguments")
+    }
+    expect(calls()).toBe(before)
+  })
+
+  it("retries a failed refresh with backoff, then resumes the normal refresh schedule", async () => {
+    let subscribes = 0
+    const r = await rig(async method => {
+      if (method !== "events/subscribe") return {}
+      subscribes += 1
+      if (subscribes === 2) throw new Error("tunnel down")
+      return { id: "sub_1", refreshBefore: new Date(NOW_MS + 1_800_000).toISOString(), cursor: null }
+    })
+    await callTool(r, "events_subscribe", { name: "github.pull_request.closed", arguments: ARGS })
+    r.timers[0]?.fn() // refresh fires and fails
+    await vi.waitFor(() => expect(r.timers).toHaveLength(2))
+    expect(r.timers[1]?.ms).toBe(15_000) // first retry
+    r.timers[1]?.fn() // retry succeeds
+    await vi.waitFor(() => expect(r.timers).toHaveLength(3))
+    expect(r.timers[2]?.ms).toBe(1_800_000 * 0.8) // back on the normal schedule
+    expect(subscribes).toBe(3)
+  })
+
+  it("doubles the retry delay and gives up once the granted lifetime would be exceeded", async () => {
+    let subscribes = 0
+    const r = await rig(async method => {
+      if (method !== "events/subscribe") return {}
+      subscribes += 1
+      if (subscribes > 1) throw new Error("tunnel down")
+      return { id: "sub_1", refreshBefore: new Date(NOW_MS + 100_000).toISOString(), cursor: null }
+    })
+    await callTool(r, "events_subscribe", { name: "github.pull_request.closed", arguments: ARGS })
+    const delays: number[] = []
+    for (let i = 0; i < 6; i++) {
+      const timer = r.timers[i]
+      if (!timer) break
+      timer.fn()
+      await new Promise(resolve => setTimeout(resolve, 10))
+      delays.push(r.timers[i + 1]?.ms ?? -1)
+    }
+    expect(delays.slice(0, 3)).toEqual([15_000, 30_000, 60_000])
+    expect(r.timers).toHaveLength(4) // 120s no longer fits before the 100s deadline: no fifth timer
+  })
+
+  it("keeps one entry per name+arguments even when the daemon returns a new id on refresh", async () => {
+    let subscribes = 0
+    const r = await rig(async method => {
+      if (method !== "events/subscribe") return {}
+      subscribes += 1
+      return { id: `sub_${subscribes}`, refreshBefore: new Date(NOW_MS + 1_800_000).toISOString(), cursor: null }
+    })
+    await callTool(r, "events_subscribe", { name: "github.pull_request.closed", arguments: { number: 1, repo: "o/r" } })
+    r.timers[0]?.fn()
+    await vi.waitFor(() => expect(r.timers).toHaveLength(2))
+    expect(r.timers[0]?.cleared).toBe(true) // the replaced entry's timer is dead
+    // Argument key order does not matter for identity.
+    await callTool(r, "events_subscribe", { name: "github.pull_request.closed", arguments: { repo: "o/r", number: 1 } })
+    expect(r.timers[1]?.cleared).toBe(true)
+    await r.channel.close()
+    expect(r.daemon.request.mock.calls.filter(([m]) => m === "events/unsubscribe")).toHaveLength(1)
+  })
+})
