@@ -10,7 +10,8 @@ agentproto daemon --signed webhook (public https)--> events-channel --stdio noti
 
 The channel does the subscriber side of MCP Events: it calls the daemon's `events/subscribe` with a callback URL and a
 `whsec_` secret, answers the daemon's signed challenge, verifies the Standard Webhooks signature on every delivery,
-drops duplicates by `eventId`, and refreshes each subscription before it expires.
+drops duplicates by `eventId` (also when two copies arrive at once), and refreshes each subscription before it
+expires, retrying with backoff if a refresh fails.
 
 ## Use
 
@@ -67,7 +68,8 @@ config: a global `~/.cloudflared/config.yml` that ends in a catch-all `http_stat
 ## Security
 
 An open channel is a prompt-injection vector, so the receiver serves only an unguessable path and drops anything
-without a valid Standard Webhooks signature (5 minute timestamp window) before it can reach the session. The daemon
+without a valid Standard Webhooks signature (5 minute timestamp window) before it can reach the session. Bodies over
+1 MiB are refused before any parsing, and tool arguments are validated before they reach the daemon. The daemon
 bearer token never leaves the process. One-way: Claude acts on events but nothing is sent back to the webhook.
 
 ## API
