@@ -4,14 +4,17 @@
  * gets its own writable CODEX_HOME (the session's adapter config dir) with
  * only the login linked back, and the sandbox grants it. Without that codex
  * dies at startup ("failed to initialize sqlite state runtime under
- * ~/.codex", run wfrun_8f082d0d, 2026-10-08).
+ * ~/.codex", run wfrun_8f082d0d, 2026-10-08). That home also carries a
+ * config.toml with `project_root_markers = []`: without it codex walks up to
+ * the git root the boundary hides and aborts ("failed to load workspace
+ * requirements", run wfrun_36678ac0).
  *
  * The real `createAgentCliRuntime` runs; only the child process and the ACP
  * handshake are faked, so no real codex is spawned.
  */
 
 import { EventEmitter } from "node:events"
-import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
@@ -76,7 +79,12 @@ const codexDefinition = (): AgentCliDefinition => ({
   install: [{ method: "npm", package: CODEX_MARKER }],
   version_check: { cmd: "npm view x", parse: "(\\d+)", range: ">=0.0.0" },
   sandbox: "./SANDBOX.md",
-  stateHome: { env: "CODEX_HOME", defaultDir: ".codex", share: ["auth.json"] },
+  stateHome: {
+    env: "CODEX_HOME",
+    defaultDir: ".codex",
+    share: ["auth.json"],
+    seed: { "config.toml": "project_root_markers = []\n" },
+  },
   protocol: "acp",
   acp: "./codex-acp.ACP.md",
 })
@@ -253,7 +261,11 @@ describe("codex step in a parallel branch of an app workflow", () => {
       const link = join(sessionHome, "auth.json")
       expect(lstatSync(link).isSymbolicLink()).toBe(true)
       expect(readlinkSync(link)).toBe(join(realCodexHome, "auth.json"))
-      expect(() => lstatSync(join(sessionHome, "config.toml"))).toThrow()
+      // The session's own config stops codex at the cwd: the boundary hides the
+      // host git root, and codex aborts reading `.codex/` layers there.
+      const config = join(sessionHome, "config.toml")
+      expect(lstatSync(config).isSymbolicLink()).toBe(false)
+      expect(readFileSync(config, "utf8")).toBe("project_root_markers = []\n")
 
       // The sandbox grants the session home and the login file, never the real home.
       const argv = call.args.join("\n")

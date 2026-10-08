@@ -18,7 +18,7 @@
  * lands in the operator's real login rather than a diverging copy.
  */
 
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import type { AgentCliStateHome } from "./types.js"
@@ -65,6 +65,17 @@ export function prepareIsolatedStateHome(
     symlinkSync(target, link)
     // The sandbox checks the resolved path, so grant the real file.
     writePaths.push(realpathSync(target))
+  }
+  for (const [name, content] of Object.entries(stateHome.seed ?? {})) {
+    const file = join(dir, name)
+    // Unlink first so a link left in a reused dir is never written through
+    // into the real home.
+    try {
+      unlinkSync(file)
+    } catch {
+      // absent
+    }
+    writeFileSync(file, content)
   }
   return { dir, writePaths }
 }
