@@ -33,7 +33,8 @@ export interface BackgroundJob<T> {
   endedAt?: string
   result?: T
   /** Set only once the result file was actually written (the write is
-   *  best-effort); views point at `resultPathFor(id)` regardless. */
+   *  best-effort). The sole source of a `resultPath` a view may announce:
+   *  while a job runs — or when the write failed — no such file exists. */
   resultPath?: string
   error?: string
 }
@@ -50,7 +51,9 @@ export interface BackgroundJobRegistry<T> {
    *  filesystem, so a crafted id like `../x` can never escape the jobs dir.
    *  `undefined` when the id is malformed or the file is missing. */
   readResultFile(id: string): Promise<T | undefined>
-  /** The fire-and-drop payload for `wait: false` / a `waitMs` timeout. */
+  /** The fire-and-drop payload for `wait: false` / a `waitMs` timeout. Carries
+   *  no `resultPath`: the result file only exists once the job is done, and
+   *  the done view announces it. */
   backgroundView(job: BackgroundJob<T>, followUp: { tool: string; hint: string }): object
   /** The `*_status` view for a still-running or failed job. */
   progressView(job: BackgroundJob<T>): object
@@ -146,7 +149,6 @@ export function createBackgroundJobRegistry<T>(opts: { idPrefix: string; default
       jobId: job.id,
       status: "running",
       startedAt: job.startedAt,
-      resultPath: resultPathFor(job.id),
       followUp: { tool: followUp.tool, args: { jobId: job.id }, pollAfterMs: JOB_POLL_AFTER_MS, hint: followUp.hint },
     }),
     progressView: job =>
@@ -157,7 +159,6 @@ export function createBackgroundJobRegistry<T>(opts: { idPrefix: string; default
             status: job.status,
             startedAt: job.startedAt,
             elapsedMs: Date.now() - job.startedMs,
-            resultPath: resultPathFor(job.id),
             followUp: { pollAfterMs: JOB_POLL_AFTER_MS },
           },
   }

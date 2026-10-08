@@ -488,17 +488,20 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     try {
       const start = JSON.parse(
         text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })),
-      ) as { jobId: string; resultPath: string; followUp: { tool: string; args: { jobId: string }; pollAfterMs: number; hint: string } }
+      ) as { jobId: string; resultPath?: string; followUp: { tool: string; args: { jobId: string }; pollAfterMs: number; hint: string } }
       expect(start.followUp.tool).toBe("branch_gc_status")
       expect(start.followUp.args.jobId).toBe(start.jobId)
       expect(start.followUp.pollAfterMs).toBe(30000)
       expect(start.followUp.hint).toContain("branch_gc_status")
-      expect(start.resultPath.endsWith(`${start.jobId}.json`)).toBe(true)
+      // The result file does not exist until the job finishes, so a running
+      // job must not announce a path that would 404.
+      expect(start).not.toHaveProperty("resultPath")
 
       const running = JSON.parse(
         text(await client.callTool({ name: "branch_gc_status", arguments: { jobId: start.jobId } })),
-      ) as { resultPath: string; followUp: { pollAfterMs: number } }
-      expect(running.resultPath.endsWith(`${start.jobId}.json`)).toBe(true)
+      ) as { status: string; resultPath?: string; followUp: { pollAfterMs: number } }
+      expect(running.status).toBe("running")
+      expect(running).not.toHaveProperty("resultPath")
       expect(running.followUp.pollAfterMs).toBe(30000)
     } finally {
       release(PLAN_RESULT)

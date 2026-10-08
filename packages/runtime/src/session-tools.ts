@@ -939,8 +939,8 @@ const branchGcBackgroundView = (job: BackgroundJob<BranchGcResult>): object =>
     hint:
       "Running in the background; a plan on a large repo takes a few minutes. " +
       "Call branch_gc_status with this jobId about every 30 s. When done it " +
-      "returns the summary; the full result is written to resultPath (pass " +
-      "full: true to get it inline).",
+      "returns the summary and, once the file exists, a resultPath holding " +
+      "the full result (pass full: true to get a filtered/paged slice inline).",
   })
 
 /** The `done` view `branch_gc_status` returns — identical for an in-memory
@@ -948,7 +948,7 @@ const branchGcBackgroundView = (job: BackgroundJob<BranchGcResult>): object =>
  *  disk-fallback contract: callers see the same shape either way). */
 const branchGcDoneView = (
   jobId: string,
-  resultPath: string,
+  resultPath: string | undefined,
   result: BranchGcResult,
   full: boolean,
   endedAt?: string,
@@ -956,7 +956,7 @@ const branchGcDoneView = (
   jobId,
   status: "done",
   ...(endedAt !== undefined ? { endedAt } : {}),
-  resultPath,
+  ...(resultPath !== undefined ? { resultPath } : {}),
   summary: result.summary,
   // Apply results carry the restore log path and a per-outcome tally —
   // exactly what a caller needs to decide "safe?" without fetching the
@@ -1032,7 +1032,7 @@ const backgroundStatusResult = async <T>(
           jobId: job.id,
           status: "done",
           endedAt: job.endedAt,
-          resultPath: jobs.resultPathFor(job.id),
+          ...(job.resultPath !== undefined ? { resultPath: job.resultPath } : {}),
           result: job.result,
         }),
       },
@@ -3783,7 +3783,7 @@ export function registerSessionTools(
       if (job.status !== "done") {
         return { content: [{ type: "text", text: JSON.stringify(branchGcJobs.progressView(job)) }] }
       }
-      const view = branchGcDoneView(job.id, branchGcJobs.resultPathFor(job.id), job.result!, input.full === true, job.endedAt)
+      const view = branchGcDoneView(job.id, job.resultPath, job.result!, input.full === true, job.endedAt)
       return { content: [{ type: "text", text: JSON.stringify(view) }] }
     },
   )
