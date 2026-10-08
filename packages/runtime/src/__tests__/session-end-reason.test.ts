@@ -474,7 +474,7 @@ describe("POST /sessions/:id/prompt — superseded session", () => {
     stopServer = undefined
   })
 
-  it("a human prompt to a continuedTo row is refused with 409 session_superseded naming the successor", async () => {
+  it("a human prompt to a continuedTo row is refused with 409 session_not_alive + reason superseded naming the successor", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const port = await freePort()
     const http = await startHttpServer({
@@ -508,8 +508,9 @@ describe("POST /sessions/:id/prompt — superseded session", () => {
         body: JSON.stringify({ prompt: "hello" }),
       })
       expect(res.status).toBe(409)
-      const body = (await res.json()) as { error: string; continuedTo: string }
-      expect(body.error).toBe("session_superseded")
+      const body = (await res.json()) as { error: string; reason: string; continuedTo: string }
+      expect(body.error).toBe("session_not_alive")
+      expect(body.reason).toBe("superseded")
       expect(body.continuedTo).toBe(successor.id)
     }
     expect(registry.get(oldRow.id)?.status).toBe("killed")

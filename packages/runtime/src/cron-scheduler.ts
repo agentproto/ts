@@ -658,7 +658,7 @@ export function createCronScheduler(opts: {
           `cron job '${job.id}': session '${action.sessionId}' not found`,
         )
       }
-      if (desc.processAlive === false && isRetired(desc)) {
+      if (desc.status !== "running" && desc.status !== "starting" && isRetired(desc)) {
         // A retired session is never revived — in place or under a new id.
         // Follow its successor when it is alive; otherwise fail the tick.
         const successorId = resolveSuccessor(sid => registry.get(sid), desc.id)
@@ -701,7 +701,7 @@ export function createCronScheduler(opts: {
           },
         )
         action.sessionId = restarted.desc.id
-        await registry.sendPrompt(restarted.desc.id, action.prompt)
+        await registry.sendPrompt(restarted.desc.id, action.prompt, { source: "cron" })
         return {
           ok: true,
           summary:
@@ -718,7 +718,7 @@ export function createCronScheduler(opts: {
       // Same underlying call as the agent_prompt MCP tool / POST
       // /sessions/:id/prompt — re-prompts the existing session in place
       // rather than spawning a new one.
-      await registry.sendPrompt(action.sessionId, action.prompt)
+      await registry.sendPrompt(action.sessionId, action.prompt, { source: "cron" })
       return {
         ok: true,
         summary: `re-prompted session ${action.sessionId}`,

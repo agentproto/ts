@@ -543,7 +543,7 @@ describe("CronScheduler", () => {
       expect(result).toBeDefined()
       expect(result!.ok).toBe(true)
       expect(result!.summary).toContain("sess_abc")
-      expect(sendPrompt).toHaveBeenCalledWith("sess_abc", "status?")
+      expect(sendPrompt).toHaveBeenCalledWith("sess_abc", "status?", { source: "cron" })
     } finally {
       scheduler.shutdown()
     }
@@ -689,7 +689,7 @@ describe("CronScheduler", () => {
       expect(startSession).toHaveBeenCalledOnce()
 
       // sendPrompt was called on the NEW session id, not the dead one.
-      expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!")
+      expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!", { source: "cron" })
 
       // action.sessionId was self-healed in-place on the job object.
       const updated = scheduler.get(job.id)!
@@ -762,7 +762,7 @@ describe("CronScheduler", () => {
       expect(startSession).toHaveBeenCalledOnce()
       expect(startSession.mock.calls[0]![0]).not.toHaveProperty("resumeSessionId")
 
-      expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!")
+      expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!", { source: "cron" })
     } finally {
       scheduler.shutdown()
     }

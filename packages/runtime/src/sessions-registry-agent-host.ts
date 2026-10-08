@@ -32,6 +32,10 @@ import {
 } from "./app-boundary.js"
 import { reviewWorktreeReadZones } from "./review-worktree.js"
 
+/** Prompt provenance for workflow steps — classified as automated (`isAutomatedPromptSource`)
+ *  so a step never revives a retired session. */
+const WORKFLOW_PROMPT_SOURCE = "workflow:agent-step"
+
 /**
  * A step spawned IN a review worktree (`branch_gc_review_worktree`, the
  * maintain workflow's reviewers) gets that worktree and its repo's git common
@@ -512,7 +516,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
    * synchronously, before the event bus can fire the rejection asynchronously.
    */
   async sendPromptAndWait(sessionId: string, prompt: string): Promise<void> {
-    await Promise.all([this.waitTurnEnd(sessionId), this.registry.sendPrompt(sessionId, prompt)])
+    await Promise.all([this.waitTurnEnd(sessionId), this.registry.sendPrompt(sessionId, prompt, { source: WORKFLOW_PROMPT_SOURCE })])
   }
 
   resolveByLabel(stepId: string): string | undefined {

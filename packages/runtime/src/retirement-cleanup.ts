@@ -4,11 +4,15 @@
  *   - with a successor (`continuedTo`, followed transitively) every follow
  *     whose follower is the retired row, and every sentinel targeting it, is
  *     re-pointed at the successor;
- *   - an archived/forgotten row with no successor can never be written to
- *     again, so its follows are deleted and its sentinels cancelled;
- *   - a `killed` row with no successor is left alone (its replacement may be
- *     about to be minted and migrate them); delivery to it parks instead of
- *     reviving it — see `session-follow.ts` / `sentinel-runtime.ts`.
+ *   - a FORGOTTEN row (removed from the registry; `DELETE /sessions/:id`, gc
+ *     with `forget`) with no successor can never be written to again, so its
+ *     follows are deleted and its sentinels cancelled;
+ *   - an archived or `killed` row with no successor is left alone: archive is
+ *     reversible (unarchive) and a client may be about to migrate the wiring
+ *     to a replacement (`POST /sessions/:id/retire`). Delivery to it parks
+ *     instead of reviving it — see `session-follow.ts` / `sentinel-runtime.ts`.
+ *     (Operator-stopped rows with no successor therefore keep their sentinels
+ *     until the row is forgotten.)
  */
 
 import type { SentinelStore } from "./sentinel-store.js"
@@ -28,8 +32,9 @@ export interface RetirementCleanupDeps {
 export function wireRetirementCleanup(deps: RetirementCleanupDeps): () => void {
   const log = deps.log ?? ((line: string): void => console.warn(line))
   return deps.registry.onSessionRetired(ev => {
-    const successor = resolveSuccessor(id => deps.registry.get(id), ev.sessionId) ?? ev.continuedTo
-    const hopeless = !successor && (ev.cause === "archived" || ev.cause === "forgotten")
+    const successor = resolveSuccessor(id => deps.registry.get(id), ev.sessionId) ??
+      (ev.continuedTo && deps.registry.get(ev.continuedTo) ? ev.continuedTo : undefined)
+    const hopeless = !successor && ev.cause === "forgotten"
     if (!successor && !hopeless) return
 
     for (const follow of deps.followStore.list({ follower: ev.sessionId })) {

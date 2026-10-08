@@ -49,7 +49,8 @@ import { isValidAppEmbedToken } from "./embed-tokens.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
-import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap } from "./sessions.js"
+import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire } from "./sessions.js"
+import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   createSessionMessage,
@@ -6676,12 +6677,7 @@ async function handleSessions(
       }
     } catch (err) {
       if (err instanceof SessionRetiredError) {
-        json(409, {
-          error: err.code,
-          message: err.message,
-          status: err.status,
-          ...(err.continuedTo ? { continuedTo: err.continuedTo } : {}),
-        })
+        json(409, retiredErrorWire(err))
         return true
       }
       if (err instanceof SessionNotAliveError) {
@@ -6827,6 +6823,10 @@ async function handleSessions(
       })
       json(200, { ok: true, id, relation, ...r })
     } catch (err) {
+      if (err instanceof SessionRetiredError) {
+        json(409, retiredErrorWire(err))
+        return true
+      }
       if (err instanceof SessionNotAliveError) {
         json(409, { error: "session_not_alive", status: err.status })
         return true
@@ -7631,7 +7631,7 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/retire|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -7933,11 +7933,7 @@ async function handleSessions(
       })
     } catch (err) {
       if (err instanceof SessionRetiredError) {
-        json(409, {
-          error: err.code,
-          message: err.message,
-          ...(err.continuedTo ? { continuedTo: err.continuedTo } : {}),
-        })
+        json(409, retiredErrorWire(err))
         return true
       }
       if (err instanceof SessionNotAliveError) {
@@ -8104,6 +8100,36 @@ async function handleSessions(
     const reason = parseOperatorKillReason(body)
     const ok = registry.kill(id, undefined, reason)
     json(ok ? 200 : 404, { ok, sessionId: id })
+    return true
+  }
+
+  // Retire (HTTP-only) — deliberately end a session and, with `successor`,
+  // hand its follows + session-targeted sentinels to the replacement IN PLACE
+  // (same ids, same cursors: no event loss, no re-baseline). Works on alive
+  // and already-ended rows; idempotent. Body: `{ successor?: id|name,
+  // reason?: "completed"|"stopped" }`. Live children keep their
+  // `parentSessionId` (their `message_parent` reports to a superseded parent
+  // are refused with `reason: "superseded"` + `continuedTo`).
+  if (suffix === "/retire" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    if (b.successor !== undefined && (typeof b.successor !== "string" || b.successor.length === 0)) {
+      json(400, { error: "invalid_body", message: "`successor` must be a non-empty string" })
+      return true
+    }
+    if (b.reason !== undefined && typeof b.reason !== "string") {
+      json(400, { error: "invalid_body", message: "`reason` must be a string" })
+      return true
+    }
+    const result = retireSession(registry, id, {
+      ...(typeof b.successor === "string" ? { successor: b.successor } : {}),
+      ...(typeof b.reason === "string" ? { reason: b.reason } : {}),
+    })
+    if (!result.ok) {
+      json(result.status, { error: result.error, message: result.message })
+      return true
+    }
+    json(200, result)
     return true
   }
 

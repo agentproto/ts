@@ -705,6 +705,35 @@ describe("SentinelRuntime", () => {
       expect(target?.kind === "session" && target.sessionId).toBe("sess_new")
     })
 
+    it("a pid-less superseded target (isSessionAlive reads true) still goes to its successor instead of parking", async () => {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      const sentinel = newSentinel(store, { sessionId: "sess_old" })
+      provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+      const restart = vi.fn(async (id: string) => id)
+      const registry = stubRegistry(async msg => {
+        if (msg.to === "sess_old") throw new SessionNotAliveError(msg.to, "killed", "sendMessage")
+        return okResult()
+      })
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => true,
+        restartSession: restart,
+        sessionInfo: id =>
+          id === "sess_old"
+            ? { endedReason: "restarted", continuedTo: "sess_new", successorId: "sess_new" }
+            : undefined,
+      })
+      await runtime.pollOnce()
+      expect(restart).not.toHaveBeenCalled()
+      expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_old", "sess_new"])
+      const target = store.get(sentinel.id)?.spec.target
+      expect(target?.kind === "session" && target.sessionId).toBe("sess_new")
+      expect(store.get(sentinel.id)?.status).not.toBe("orphaned")
+    })
+
     it("a superseded target whose successor is dead revives the SUCCESSOR (not the retired row) unless it is retired too", async () => {
       const make = async (succInfo: { endedReason?: string }) => {
         const dir = mkdtempSync(join(tmpdir(), "sentinel-succ-"))

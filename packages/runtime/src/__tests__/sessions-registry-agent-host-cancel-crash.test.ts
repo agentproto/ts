@@ -23,12 +23,13 @@ import { createSessionEventBus } from "../session-event-bus.js"
 import { SessionsRegistryAgentHost } from "../sessions-registry-agent-host.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import { isAutomatedPromptSource } from "../session-retirement.js"
 
 function makeFakeRegistry(sessionId: string): {
   registry: SessionsRegistry
-  sendPromptCalls: Array<{ id: string; prompt: string }>
+  sendPromptCalls: Array<{ id: string; prompt: string; source?: string }>
 } {
-  const sendPromptCalls: Array<{ id: string; prompt: string }> = []
+  const sendPromptCalls: Array<{ id: string; prompt: string; source?: string }> = []
   const descriptors = new Map<string, SessionDescriptor>([
     [
       sessionId,
@@ -47,8 +48,8 @@ function makeFakeRegistry(sessionId: string): {
     get: (id: string) => descriptors.get(id),
     // Stays pending for the whole "turn" — the same shape as a real
     // claude-code `sendPrompt`, which doesn't resolve until the turn ends.
-    sendPrompt: (id: string, prompt: string) => {
-      sendPromptCalls.push({ id, prompt })
+    sendPrompt: (id: string, prompt: string, opts?: { source?: string }) => {
+      sendPromptCalls.push({ id, prompt, source: opts?.source })
       return new Promise<void>(() => {})
     },
   } as unknown as SessionsRegistry
@@ -104,7 +105,10 @@ describe("SessionsRegistryAgentHost — cancel-during-turn crash (F44)", () => {
       return caught
     })
 
-    expect(sendPromptCalls).toEqual([{ id: "sess_midturn", prompt: "do the thing" }])
+    // Workflow steps carry an automated prompt source so they can never
+    // revive a retired session.
+    expect(sendPromptCalls).toEqual([{ id: "sess_midturn", prompt: "do the thing", source: "workflow:agent-step" }])
+    expect(isAutomatedPromptSource(sendPromptCalls[0]!.source)).toBe(true)
     expect(err).toBeInstanceOf(Error)
     expect((err as Error).message).toMatch(/ended with status 'killed'/)
     expect(unhandled).toEqual([])

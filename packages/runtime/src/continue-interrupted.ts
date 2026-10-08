@@ -54,6 +54,7 @@ import {
   type SessionsRegistry,
 } from "./sessions.js"
 import { byLastActivityDesc } from "./eager-resume.js"
+import { isRetired } from "./session-retirement.js"
 
 /** The prompt sent when the caller doesn't supply one. */
 export const DEFAULT_CONTINUE_PROMPT =
@@ -77,6 +78,9 @@ export type ContinueInterruptedSkipReason =
   | "not-interrupted"
   /** Interrupted by an EARLIER restart, not the last one. */
   | "stale-interrupt"
+  /** Retired (`isRetired`: archived, deliberately ended, superseded) — never
+   *  revived by an automatic pass. */
+  | "retired"
   /** Not in-place resumable (not agent-cli / missing adapter session / archived). */
   | "not-resumable"
   /** Already burned through `MAX_RESUME_ATTEMPTS` failed resumes. */
@@ -129,6 +133,7 @@ export function continueSkipReason(
     return "not-interrupted"
   }
   if (desc.interruptedAtBoot !== bootId) return "stale-interrupt"
+  if (isRetired(desc)) return "retired"
   if (!isResumable(desc)) return "not-resumable"
   if (!canResume(desc)) return "resume-cap-exhausted"
   if (desc.busy === true) return "busy"

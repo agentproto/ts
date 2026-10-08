@@ -11,6 +11,7 @@
  */
 
 import type { TransmitterBindingStore } from "./transmitter-bindings.js"
+import { SessionRetiredError } from "./sessions.js"
 
 export type InboundRouteMode = "spawn" | "route" | "route-or-spawn"
 
@@ -144,6 +145,22 @@ export async function routeInboundMessage(
     return routeInto(binding.sessionId)
   }
 
-  const restartedSessionId = await deps.restartSession(binding.sessionId)
+  let restartedSessionId: string
+  try {
+    restartedSessionId = await deps.restartSession(binding.sessionId)
+  } catch (err) {
+    if (err instanceof SessionRetiredError) {
+      // The bound session is retired and cannot be revived (archived, or its
+      // whole `continuedTo` chain is retired): park the message rather than
+      // resurrecting a zombie under a new id.
+      log(
+        `[inbound-router] bound session ${binding.sessionId} is retired (${err.code}` +
+          `${err.continuedTo ? `, continued as ${err.continuedTo}` : ""}) — parking ` +
+          `${msg.alias}:${msg.source}:${msg.contactRef}`,
+      )
+      return { action: "skipped" }
+    }
+    throw err
+  }
   return routeInto(restartedSessionId)
 }

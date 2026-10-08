@@ -814,21 +814,46 @@ export class SessionNotAliveError extends Error {
 /**
  * A prompt / revival aimed at a RETIRED row (see `isRetired`). Extends
  * {@link SessionNotAliveError} so every existing "dead target" catch (sentinel,
- * follow, inbound) keeps routing it to its dead-session handler. `code` is
- * `session_superseded` (with `continuedTo` naming the successor) when the row
- * has a living replacement, else `session_retired`.
+ * follow, inbound) keeps routing it to its dead-session handler. `code` is the
+ * internal discriminator: `session_superseded` (with `continuedTo` naming the
+ * successor) when the row has a replacement, else `session_retired`.
+ *
+ * On the wire it is still `session_not_alive` (clients already handle that
+ * code); {@link retiredErrorWire} adds `reason: "superseded" | "retired"` and
+ * `continuedTo` so a client can tell "dead" from "replaced" and where to go.
  */
 export class SessionRetiredError extends SessionNotAliveError {
   readonly code: "session_superseded" | "session_retired"
+  readonly reason: "superseded" | "retired"
   readonly continuedTo?: string
   constructor(sessionId: string, status: SessionStatus, caller: string, continuedTo?: string) {
     super(sessionId, status, caller)
     this.name = "SessionRetiredError"
     this.code = continuedTo ? "session_superseded" : "session_retired"
+    this.reason = continuedTo ? "superseded" : "retired"
     if (continuedTo) this.continuedTo = continuedTo
     this.message = continuedTo
       ? `${caller}: session "${sessionId}" was superseded by "${continuedTo}" (session_superseded) — prompt "${continuedTo}" instead`
       : `${caller}: session "${sessionId}" is retired (session_retired) and is never revived automatically`
+  }
+}
+
+/** The wire body (HTTP 409 / MCP error JSON) for a refused retired-row
+ *  prompt: `error` stays `session_not_alive`; `reason` + `continuedTo` are the
+ *  additive detail. */
+export function retiredErrorWire(err: SessionRetiredError): {
+  error: "session_not_alive"
+  reason: "superseded" | "retired"
+  message: string
+  status: SessionStatus
+  continuedTo?: string
+} {
+  return {
+    error: "session_not_alive",
+    reason: err.reason,
+    message: err.message,
+    status: err.status,
+    ...(err.continuedTo ? { continuedTo: err.continuedTo } : {}),
   }
 }
 
@@ -2480,6 +2505,10 @@ export interface SessionSummary {
   priorCommandSessionId?: string
   continuedFrom?: string
   continuedTo?: string
+  /** See `SessionDescriptor.retiredAt` — with `continuedTo`/`archived`, lets a
+   *  client tell a retired row from a merely dead one (and feature-detect the
+   *  retire route). */
+  retiredAt?: string
   permissionHold?: boolean
   browserAdapterId?: string
   browserPort?: number
@@ -2585,6 +2614,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     priorCommandSessionId: desc.priorCommandSessionId,
     continuedFrom: desc.continuedFrom,
     continuedTo: desc.continuedTo,
+    ...(desc.retiredAt ? { retiredAt: desc.retiredAt } : {}),
     permissionHold: desc.permissionHold,
     browserAdapterId: desc.browserAdapterId,
     browserPort: desc.browserPort,
@@ -9646,7 +9676,9 @@ export function createSessionsRegistry(opts?: {
       desc.provisioning = { state: "running", phase: "worktree", startedAt: desc.startedAt }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
-      linkContinuedTo(input.resumedFrom, id)
+      // `continuedTo` on the prior row is stamped by `settlePendingAgent` once
+      // this placeholder actually provisions — a failed provision must not
+      // leave the old row pointing at a successor that never came up.
       sessionEvents?.emit({
         type: "session:spawned",
         sessionId: id,
@@ -9736,6 +9768,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.desc.status = "running"
       rt.emitter.emit("status", rt.desc.status)
+      linkContinuedTo(rt.desc.resumedFrom, id)
       // The reader just arrived — arm the live-usage poller now that the
       // session is actually running (a "starting" row would never poll).
       armUsageRefresh(rt)
@@ -10350,6 +10383,9 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
       if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+        if (isRetired(rt.desc)) {
+          throw new SessionRetiredError(msg.to, rt.desc.status, "sendMessage", rt.desc.continuedTo)
+        }
         throw new SessionNotAliveError(msg.to, rt.desc.status, "sendMessage")
       }
       // Waiter first — the recipient is parked in `inbox_wait` for exactly
@@ -11365,7 +11401,13 @@ export function createSessionsRegistry(opts?: {
           source: "restart",
           ...(opts?.force ? { force: true } : {}),
         })
-      } catch {
+      } catch (err) {
+        // Retired rows never revive: drop the landed schedule so the sweep
+        // stops re-picking this row every tick.
+        if (err instanceof SessionRetiredError && rt.desc.nextRestartAt !== undefined) {
+          delete rt.desc.nextRestartAt
+          schedulePersist()
+        }
         // ResumeDisabledError (MAX_RESUME_ATTEMPTS burned) or an adapter
         // throw — either way this row stays dead; the sweep just moves on to
         // the next candidate rather than aborting the whole tick.
@@ -11725,6 +11767,9 @@ export function createSessionsRegistry(opts?: {
       void transcriptWriter.close(id)
       void terminalTranscriptWriter.close(id)
       tracedSessions.delete(id)
+      // Cleanup listeners read the row (to follow its `continuedTo` chain), so
+      // notify BEFORE it leaves the map.
+      retireRow(rt, "forgotten")
       sessions.delete(id)
       schedulePersist()
       return true

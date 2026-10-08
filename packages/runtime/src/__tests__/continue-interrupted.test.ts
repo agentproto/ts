@@ -122,7 +122,9 @@ describe("continueSkipReason (eligibility)", () => {
     expect(continueSkipReason({ ...base, interruptedAtBoot: "boot_old" }, boot, "manual")).toBe("stale-interrupt")
     expect(continueSkipReason({ ...base, interruptedAtBoot: undefined }, boot, "manual")).toBe("stale-interrupt")
     expect(continueSkipReason({ ...base, kind: "terminal", pty: true }, boot, "manual")).toBe("not-resumable")
-    expect(continueSkipReason({ ...base, archived: true }, boot, "manual")).toBe("not-resumable")
+    expect(continueSkipReason({ ...base, archived: true }, boot, "manual")).toBe("retired")
+    expect(continueSkipReason({ ...base, continuedTo: "s2" }, boot, "boot")).toBe("retired")
+    expect(continueSkipReason({ ...base, retiredAt: "2026-09-27T00:00:00Z" }, boot, "manual")).toBe("retired")
     expect(
       continueSkipReason({ ...base, resumeAttempts: MAX_RESUME_ATTEMPTS }, boot, "manual"),
     ).toBe("resume-cap-exhausted")

@@ -1226,6 +1226,13 @@ export function makeRestartForRouting(
       // superseded row, so refuse and name where the conversation went.
       throw new SessionRetiredError(id, desc.status, config.name, successorId)
     }
+    // An archived row is never brought back under a NEW id, even for a human
+    // (inbound) writer: the new-id fallback of `restartPreferInPlace` would
+    // mint a zombie next to whatever replaced it. (In-place resume already
+    // excludes archived rows via `isResumable`.)
+    if (desc.archived === true) {
+      throw new SessionRetiredError(id, desc.status, config.name)
+    }
     const restarted = await restartPreferInPlace(deps.sessions, deps.resolveAgentAdapter, desc, {
       forceAgentResume: true,
       allowDeliberateEnd: config.allowDeliberateEnd,
@@ -2639,16 +2646,14 @@ export async function createGateway(
   // Adapts SessionsRegistry to InboundRouterDeps' liveness/restart
   // shape (inbound-router.ts) — same primitives cron-scheduler.ts's
   // `prompt-session` action uses (`desc.processAlive`, forceAgentResume).
-  // `processAlive` is only stamped for a pid-bearing session (sessions.ts
-  // `stampProcessAlive`) — it's `undefined`, not `false`, for a pid-less
-  // ACP-native/remote session, and cron-scheduler.ts's own dead check
-  // (`desc.processAlive === false`) treats that as "still fine, don't
-  // restart". Mirror that exactly: only a MISSING session or an explicit
-  // `false` counts as not-alive.
+  // Liveness is decided by STATUS (what `sendMessage` itself checks), with an
+  // explicit `processAlive === false` as an extra veto. `processAlive` alone is
+  // `undefined` for a pid-less ACP-native/remote row — even a dead one — so it
+  // cannot be the sole signal.
   const isSessionAlive = (id: string): boolean => {
     const desc = sessions.get(id)
     if (!desc) return false
-    return desc.processAlive !== false
+    return (desc.status === "running" || desc.status === "starting") && desc.processAlive !== false
   }
   // Shared restart core (PR C): an ended-but-resumable agent-cli row is
   // revived IN PLACE (same id) via the registry's resume primitive instead

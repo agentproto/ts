@@ -12,6 +12,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { createMcpServer } from "@agentproto/mcp-server"
+import { registerAgentTools } from "../agent-tools.js"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -26,7 +30,7 @@ import {
   type SessionRetiredEvent,
   type SessionsRegistry,
 } from "../sessions.js"
-import { isAutomatedPromptSource, resolveSuccessor } from "../session-retirement.js"
+import { isAutomatedPromptSource, resolveSuccessor, retireSession } from "../session-retirement.js"
 import { restartPreferInPlace } from "../session-restart-core.js"
 import { makeRestartForRouting } from "../index.js"
 import { createCronScheduler } from "../cron-scheduler.js"
@@ -97,7 +101,10 @@ describe("isRetired / helpers", () => {
   })
 
   it("only daemon/agent-driven prompt sources count as automated", () => {
-    for (const s of ["session-follow", "sentinel", "restart", "boot", "cron", "child:sess_x", "agent:sess_x"]) {
+    for (const s of [
+      "session-follow", "sentinel", "restart", "boot", "cron", "child:sess_x", "agent:sess_x",
+      "daemon:continue-interrupted", "daemon:handoff", "workflow:agent-step", "policy",
+    ]) {
       expect(isAutomatedPromptSource(s)).toBe(true)
     }
     for (const s of [undefined, "user", "http:chat", "telegram"]) {
@@ -230,6 +237,26 @@ describe("registry: retired rows are not revived", () => {
     reg.shutdown()
   })
 
+  it("a refused triggerResume on a retired row clears its landed nextRestartAt so the sweep stops re-picking it", async () => {
+    writeSessions(persistPath, [
+      {
+        id: "sess_old",
+        endedReason: "crashed",
+        continuedTo: "sess_new",
+        nextRestartAt: "2026-10-05T00:00:00Z",
+        restartAttempts: 1,
+      },
+      { id: "sess_new", status: "running" },
+    ])
+    const resumer = healthyResumer()
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+    expect(reg.get("sess_old")?.nextRestartAt).toBeDefined()
+    await expect(reg.triggerResume("sess_old")).resolves.toBe(false)
+    expect(resumer).not.toHaveBeenCalled()
+    expect(reg.get("sess_old")?.nextRestartAt).toBeUndefined()
+    reg.shutdown()
+  })
+
   it("boot-time eager resume skips retired rows", async () => {
     writeSessions(persistPath, [
       { id: "sess_old", status: "running", continuedTo: "sess_new" },
@@ -299,6 +326,54 @@ describe("registry: retirement stamping + events", () => {
     const marked = reg.markRetired(b.id, { continuedTo: a.id, cause: "continued" })
     expect(marked?.continuedTo).toBe(a.id)
     expect(events[1]).toEqual({ sessionId: b.id, cause: "continued", continuedTo: a.id })
+    reg.shutdown()
+  })
+})
+
+describe("continuedTo is stamped only once the successor is provisioned (pending spawn)", () => {
+  const agentSession = (): AgentSessionLike => ({
+    sessionId: "acp_new",
+    async *send() {},
+    async cancel() {},
+    async close() {},
+  })
+
+  const prior = (reg: SessionsRegistry): SessionDescriptor => {
+    const d = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      adapterSlug: "fake",
+      label: "prior",
+      agentSession: { sessionId: "acp_prior", async *send() {}, async cancel() {}, async close() {} },
+    })
+    reg.kill(d.id)
+    return d
+  }
+
+  it("a placeholder that is still provisioning does not yet supersede the prior row", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const old = prior(reg)
+    reg.spawnAgentPending({ workspaceSlug: "default", cwd: "/tmp", adapterSlug: "fake", resumedFrom: old.id })
+    expect(reg.get(old.id)?.continuedTo).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("a failed provision never leaves the prior row pointing at a successor that did not come up", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const old = prior(reg)
+    const pending = reg.spawnAgentPending({ workspaceSlug: "default", cwd: "/tmp", adapterSlug: "fake", resumedFrom: old.id })
+    reg.settlePendingAgent(pending.id, { ok: false, message: "worktree add failed" })
+    expect(reg.get(pending.id)?.status).toBe("error")
+    expect(reg.get(old.id)?.continuedTo).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("a successful provision stamps continuedTo on the prior row", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const old = prior(reg)
+    const pending = reg.spawnAgentPending({ workspaceSlug: "default", cwd: "/tmp", adapterSlug: "fake", resumedFrom: old.id })
+    reg.settlePendingAgent(pending.id, { ok: true, agentSession: agentSession(), cwd: "/tmp" } as never)
+    expect(reg.get(old.id)?.continuedTo).toBe(pending.id)
     reg.shutdown()
   })
 })
@@ -424,20 +499,12 @@ describe("cron prompt-session on a retired session", () => {
     writeSessions(persistPath, rows)
     const sessionEvents = createSessionEventBus()
     const reg = createSessionsRegistry({ persistPath, sessionEvents, resumeAgent: healthyResumer() })
-    // A persisted pid-less ACP row never reads `processAlive: false`; project it.
-    const view = {
-      ...reg,
-      get: (id: string) => {
-        const d = reg.get(id)
-        return d && d.status !== "running" ? { ...d, processAlive: false } : d
-      },
-    } as SessionsRegistry
     const startSession = vi.fn()
     const resolveAgentAdapter: AgentAdapterResolver = async () => ({
       startSession: startSession as never,
       commandPreview: "mock",
     })
-    const scheduler = createCronScheduler({ sessionEvents, registry: view, resolveAgentAdapter, workspace: tmp })
+    const scheduler = createCronScheduler({ sessionEvents, registry: reg, resolveAgentAdapter, workspace: tmp })
     return {
       reg,
       scheduler,
@@ -459,6 +526,82 @@ describe("cron prompt-session on a retired session", () => {
       expect(startSession).not.toHaveBeenCalled()
       expect(reg.list()).toHaveLength(1)
       expect(reg.get("sess_stopped")?.status).toBe("killed")
+    } finally {
+      cleanup()
+    }
+  })
+
+  it("a pid-less retired row (processAlive undefined) is not revived, with or without a successor", async () => {
+    const { reg, scheduler, startSession, cleanup } = setup([
+      { id: "sess_archived", archived: true },
+      { id: "sess_superseded" },
+    ])
+    try {
+      const head = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        adapterSlug: "fake",
+        agentSession: { sessionId: "acp_head", async *send() {}, async cancel() {}, async close() {} },
+      })
+      reg.markRetired("sess_superseded", { continuedTo: head.id, cause: "continued" })
+      expect(reg.get("sess_archived")?.processAlive).toBeUndefined()
+      const spy = vi.spyOn(reg, "sendPrompt").mockResolvedValue(undefined)
+      const archivedJob = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_archived", prompt: "wake" },
+      })
+      expect((await scheduler.run(archivedJob.id))?.ok).toBe(false)
+      expect(spy).not.toHaveBeenCalled()
+      const supersededJob = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_superseded", prompt: "wake" },
+      })
+      expect((await scheduler.run(supersededJob.id))?.ok).toBe(true)
+      expect(spy).toHaveBeenCalledWith(head.id, "wake", { source: "cron" })
+      expect(startSession).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+    }
+  })
+
+  it("a retired row whose pid probes as alive (pid reuse) is still not prompted", async () => {
+    const { reg, scheduler, cleanup } = setup([
+      { id: "sess_reused", endedReason: "operator-stopped", pid: process.pid },
+    ])
+    try {
+      const spy = vi.spyOn(reg, "sendPrompt").mockResolvedValue(undefined)
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_reused", prompt: "wake" },
+      })
+      expect(reg.get("sess_reused")?.processAlive).toBe(true)
+      expect((await scheduler.run(job.id))?.ok).toBe(false)
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+    }
+  })
+
+  it("prompts to a live session are tagged source: cron", async () => {
+    const { reg, scheduler, cleanup } = setup([])
+    try {
+      const live = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        adapterSlug: "fake",
+        agentSession: { sessionId: "acp_live", async *send() {}, async cancel() {}, async close() {} },
+      })
+      const spy = vi.spyOn(reg, "sendPrompt").mockResolvedValue(undefined)
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: live.id, prompt: "wake" },
+      })
+      await scheduler.run(job.id)
+      expect(spy).toHaveBeenCalledWith(live.id, "wake", { source: "cron" })
     } finally {
       cleanup()
     }
@@ -508,15 +651,99 @@ describe("wireRetirementCleanup", () => {
     expect(target.kind === "session" && target.sessionId).toBe(newId)
   })
 
-  it("archiving a session with no successor deletes its follows and cancels its sentinels", () => {
+  it("archiving a session with no successor leaves its follows and sentinels alone (archive stays reversible)", () => {
     const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup([{ id: "old" }])
     const [oldId] = ids as [string]
     followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 0 })
     const s = watch(sentinelStore, oldId)
     reg.kill(oldId)
     reg.archiveSession(oldId)
+    expect(followStore.list()).toHaveLength(1)
+    expect(sentinelStore.get(s.id)).toBeDefined()
+    expect(cancelSentinel).not.toHaveBeenCalled()
+  })
+
+  it("forgetting a session with no successor deletes its follows and cancels its sentinels", () => {
+    const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup([{ id: "old" }])
+    const [oldId] = ids as [string]
+    followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 0 })
+    const s = watch(sentinelStore, oldId)
+    reg.kill(oldId)
+    expect(reg.forget(oldId)).toBe(true)
     expect(followStore.list()).toHaveLength(0)
     expect(cancelSentinel).toHaveBeenCalledWith(s.id)
+  })
+
+  it("forgetting a superseded session re-points its follows and sentinels at the successor instead of destroying them", () => {
+    const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup([{ id: "old" }, { id: "new" }])
+    const [oldId, newId] = ids as [string, string]
+    followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 0 })
+    const s = watch(sentinelStore, oldId)
+    reg.kill(oldId)
+    reg.markRetired(oldId, { continuedTo: newId, cause: "continued" })
+    // Simulate wiring made after the supersede (a stale client re-attaching).
+    followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 5 })
+    reg.forget(oldId)
+    expect(followStore.list().every(f => f.follower === newId)).toBe(true)
+    const target = sentinelStore.get(s.id)!.spec.target
+    expect(target.kind === "session" && target.sessionId).toBe(newId)
+    expect(cancelSentinel).not.toHaveBeenCalled()
+  })
+
+  it("retireSession with a successor re-points IN PLACE: same sentinel id and cursor, works on an alive row, idempotent", () => {
+    const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup([{ id: "old" }, { id: "new" }])
+    const [oldId, newId] = ids as [string, string]
+    followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 0 })
+    const s = watch(sentinelStore, oldId)
+    sentinelStore.update(s.id, { handle: { ...s.handle, cursor: "42" } } as never)
+
+    expect(reg.get(oldId)?.status).toBe("running")
+    const first = retireSession(reg, oldId, { successor: newId })
+    expect(first).toMatchObject({ ok: true, id: oldId, killed: true, continuedTo: newId, endedReason: "operator-stopped" })
+    expect(reg.get(oldId)?.status).toBe("killed")
+    expect(isRetired(reg.get(oldId)!)).toBe(true)
+
+    const after = sentinelStore.get(s.id)!
+    expect(after.id).toBe(s.id)
+    expect(after.handle.cursor).toBe("42")
+    expect(after.spec.target.kind === "session" && after.spec.target.sessionId).toBe(newId)
+    expect(followStore.list().map(f => f.follower)).toEqual([newId])
+    expect(cancelSentinel).not.toHaveBeenCalled()
+
+    const second = retireSession(reg, oldId, { successor: newId })
+    expect(second).toMatchObject({ ok: true, killed: false, continuedTo: newId })
+    expect(followStore.list().map(f => f.follower)).toEqual([newId])
+    expect(sentinelStore.list()).toHaveLength(1)
+  })
+
+  it("retireSession works on a terminal row and honours reason: completed", () => {
+    const { reg, ids } = setup([{ id: "old" }, { id: "new" }])
+    const [oldId, newId] = ids as [string, string]
+    reg.kill(oldId, undefined, "idle-reaped")
+    const res = retireSession(reg, oldId, { successor: newId, reason: "completed" })
+    expect(res).toMatchObject({ ok: true, killed: false, continuedTo: newId })
+    expect(isRetired(reg.get(oldId)!)).toBe(true)
+    expect(reg.get(oldId)?.retiredAt).toEqual(expect.any(String))
+  })
+
+  it("retireSession without a successor stamps retirement but leaves wiring untouched", () => {
+    const { reg, followStore, ids } = setup([{ id: "old" }])
+    const [oldId] = ids as [string]
+    followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 0 })
+    const res = retireSession(reg, oldId)
+    expect(res).toMatchObject({ ok: true, killed: true })
+    expect(res.ok && res.continuedTo).toBeFalsy()
+    expect(followStore.list()).toHaveLength(1)
+  })
+
+  it("retireSession rejects unknown rows, unknown successors, self-succession and cycles", () => {
+    const { reg, ids } = setup([{ id: "a" }, { id: "b" }])
+    const [a, b] = ids as [string, string]
+    expect(retireSession(reg, "nope")).toMatchObject({ ok: false, status: 404, error: "session_not_found" })
+    expect(retireSession(reg, a, { successor: "ghost" })).toMatchObject({ ok: false, status: 404, error: "successor_not_found" })
+    expect(retireSession(reg, a, { successor: a })).toMatchObject({ ok: false, status: 400, error: "invalid_successor" })
+    expect(retireSession(reg, a, { successor: b })).toMatchObject({ ok: true })
+    expect(retireSession(reg, b, { successor: a })).toMatchObject({ ok: false, status: 400, error: "successor_cycle" })
   })
 
   it("killing (without a successor yet) leaves follows/sentinels in place so a replacement can migrate them", () => {
@@ -527,5 +754,56 @@ describe("wireRetirementCleanup", () => {
     reg.kill(oldId, undefined, "operator-stopped")
     expect(followStore.list()).toHaveLength(1)
     expect(cancelSentinel).not.toHaveBeenCalled()
+  })
+})
+
+describe("MCP error shape for a superseded target", () => {
+  it("message_send and agent_prompt to a superseded row return error session_not_alive + reason superseded + continuedTo", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const agent = (id: string): AgentSessionLike => ({ sessionId: id, async *send() {}, async cancel() {}, async close() {} })
+    const parent = reg.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", adapterSlug: "fake", agentSession: agent("acp_p") })
+    const spawnKid = (label: string) =>
+      reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        adapterSlug: "fake",
+        label,
+        parentSessionId: parent.id,
+        depth: 1,
+        agentSession: agent(`acp_${label}`),
+      })
+    const oldKid = spawnKid("old")
+    const newKid = spawnKid("new")
+    reg.kill(oldKid.id)
+    reg.markRetired(oldKid.id, { continuedTo: newKid.id, cause: "continued" })
+
+    const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
+    registerAgentTools(server, { registry: reg, callerSessionId: parent.id })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "t", version: "0" })
+    await client.connect(ct)
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ text: string }>; isError?: boolean }
+      return { isError: r.isError === true, body: JSON.parse(r.content[0]!.text) as Record<string, unknown> }
+    }
+    try {
+      for (const [name, args] of [
+        ["message_send", { to: oldKid.id, text: "hi", urgency: "next-turn" }],
+        ["agent_prompt", { sessionId: oldKid.id, prompt: "hi" }],
+      ] as const) {
+        const r = await call(name, args)
+        expect(r.isError).toBe(true)
+        expect(r.body).toMatchObject({
+          ok: false,
+          error: "session_not_alive",
+          reason: "superseded",
+          continuedTo: newKid.id,
+        })
+      }
+    } finally {
+      await client.close()
+      reg.shutdown()
+    }
   })
 })

@@ -477,14 +477,6 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     if (target.kind !== "session") return
     const sessionId = target.sessionId
 
-    if (opts.isSessionAlive(sessionId)) {
-      // sendMessage reported not-alive on a session our own liveness check
-      // still sees as alive (a race) — park rather than spin retrying.
-      parkEvent(sentinel, event, "session reported alive but sendMessage rejected it")
-      markOrphaned(sentinel)
-      return
-    }
-
     const info = opts.sessionInfo?.(sessionId)
     if (info && isRetired(info)) {
       // Retired (closed on purpose / archived / superseded): never revived,
@@ -495,6 +487,18 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         return
       }
       await routeAroundClosedSession(sentinel, event, msg, sessionId, info)
+      return
+    }
+
+    // The retirement check above runs first on purpose: sendMessage already
+    // decided by STATUS that the target is dead, and `isSessionAlive` is a
+    // pid probe that reads "alive" for a pid-less row — consulting it first
+    // would park a superseded target instead of forwarding to its successor.
+    if (opts.isSessionAlive(sessionId)) {
+      // sendMessage reported not-alive on a session our own liveness check
+      // still sees as alive (a race) — park rather than spin retrying.
+      parkEvent(sentinel, event, "session reported alive but sendMessage rejected it")
+      markOrphaned(sentinel)
       return
     }
 
