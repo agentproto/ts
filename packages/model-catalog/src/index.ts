@@ -24,9 +24,11 @@ export {
   DEFAULT_PRICING,
   resolvePricing,
   calculateLLMCreditCost,
+  selectPricingTier,
 } from "./llm/index.js"
 export type {
   LLMPricing,
+  LLMPricingTier,
   LLMUsageBreakdown,
   LLMCreditCostResult,
 } from "./llm/index.js"

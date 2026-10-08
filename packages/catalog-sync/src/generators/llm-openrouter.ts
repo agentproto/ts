@@ -9,6 +9,11 @@ import {
   serializeLedger,
   todayIso,
 } from "../added-at.js"
+import {
+  promptLengthTiers,
+  serializeTiers,
+  type PromptLengthTier,
+} from "../sources/openrouter-prompt-tiers.mjs"
 
 /**
  * PINNED source. The OpenRouter `/api/v1/models` payload lists every route
@@ -30,6 +35,8 @@ const OUTPUT_PATH = "packages/model-catalog/src/llm/openrouter-routes.generated.
 // multipliers were silently always absent. passthrough() keeps the other live
 // keys (web_search, image, audio, internal_reasoning, input_cache_write_1h)
 // forward-compatible without a regenerate — we only read what we model.
+// `overrides` (prompt-length tiers, time-of-day discounts) rides through
+// passthrough() and is read by `promptLengthTiers`.
 
 const PricingSchema = z
   .object({
@@ -69,6 +76,8 @@ interface LLMPricingEntry {
   outputPer1M: number
   cacheReadMultiplier?: number
   cacheWriteMultiplier?: number
+  /** Prompt-length tiers from `pricing.overrides`. See `../sources/openrouter-prompt-tiers.mjs`. */
+  tiers?: PromptLengthTier[]
   /** ISO date this id was first seen by a sync run. See `../added-at.ts`. */
   addedAt?: string
   vendor: string
@@ -115,6 +124,9 @@ function serializeEntry(e: LLMPricingEntry): string {
   if (e.cacheWriteMultiplier !== undefined) {
     fields.push(`cacheWriteMultiplier: ${fmt(e.cacheWriteMultiplier)}`)
   }
+  if (e.tiers !== undefined) {
+    fields.push(serializeTiers(e.tiers))
+  }
   if (e.addedAt !== undefined) {
     fields.push(`addedAt: ${JSON.stringify(e.addedAt)}`)
   }
@@ -134,6 +146,7 @@ function serializeFile(entries: Record<string, LLMPricingEntry>): string {
     "// Pricing carries provider USD (inputPer1M / outputPer1M) plus cache",
     "// multipliers (cacheReadMultiplier / cacheWriteMultiplier) derived from the",
     "// source's input_cache_read / input_cache_write per-token fields when present.",
+    "// tiers are the source's prompt-length price overrides (min_prompt_tokens).",
     "// addedAt is the ISO date this id was first seen by a sync run — backfilled",
     "// from the source's own `created` timestamp, then NEVER mutated; see",
     "// packages/catalog-sync/src/added-at.ts and the package README.",
@@ -192,6 +205,8 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
     if (cacheWritePer1M !== undefined && cacheWritePer1M > 0 && inputPer1M > 0) {
       entry.cacheWriteMultiplier = round6(cacheWritePer1M / inputPer1M)
     }
+    const tiers = promptLengthTiers(pricing)
+    if (tiers) entry.tiers = tiers
 
     entries[model.id] = entry
     if (model.created !== undefined) createdAt[model.id] = isoDateFromUnixSeconds(model.created)
