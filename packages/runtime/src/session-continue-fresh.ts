@@ -238,11 +238,8 @@ export async function continueAgentSessionFresh(
   }
 
   // Link provenance on the original descriptor too.
-  const prevUpdated = registry.get(prev.id)
-  if (prevUpdated) {
-    prevUpdated.continuedTo = fresh.id
-    prevUpdated.checkpointId = checkpoint.checkpointId
-  }
+  const prevUpdated = registry.markRetired(prev.id, { continuedTo: fresh.id, cause: "continued" })
+  if (prevUpdated) prevUpdated.checkpointId = checkpoint.checkpointId
 
   return {
     ok: true,

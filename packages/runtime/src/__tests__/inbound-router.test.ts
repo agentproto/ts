@@ -514,3 +514,47 @@ describe("attributeInboundText", () => {
     expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", "hello from alice", { queue: true })
   })
 })
+
+describe("routeInboundMessage — archived bound session", () => {
+  it("never revives an archived row under a new id: the message is parked with a log line", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn()
+    const resolver: AgentAdapterResolver = async () => ({
+      startSession: startSession as never,
+      commandPreview: "mock",
+    })
+    const restartSession = makeRestartForRouting(
+      { sessions: registry, resolveAgentAdapter: resolver },
+      { name: "restartInboundSession", allowDeliberateEnd: true },
+    )
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: { sessionId: "acp_orig", async *send() {}, async cancel() {}, async close() {} },
+      adapterSlug: "hermes",
+    })
+    registry.kill(prev.id)
+    registry.archiveSession(prev.id)
+
+    const { store } = makeBindingStore({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: prev.id,
+      mode: "route",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const log = vi.fn()
+    const deps = makeDeps({ bindings: store, enqueuePrompt, isSessionAlive: vi.fn(() => false), restartSession, log })
+
+    const result = await routeInboundMessage(deps, makeMsg(), "route")
+
+    expect(result).toEqual({ action: "skipped" })
+    expect(startSession).not.toHaveBeenCalled()
+    expect(enqueuePrompt).not.toHaveBeenCalled()
+    expect(registry.list({ includeArchived: true })).toHaveLength(1)
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("is retired"))
+    registry.shutdown()
+  })
+})

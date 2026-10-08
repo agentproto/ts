@@ -483,6 +483,96 @@ describe("session-follow", () => {
       expect(parked.text).toContain("[session-follow]")
     })
 
+    it("an ARCHIVED dead follower is never revived or re-minted; the digest is parked", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const parkedPath = join(tmp, "parked-archived.jsonl")
+      const { sent } = setup(
+        [running("chief", { status: "exited", archived: true }), running("a")],
+        { selector: { all: true } },
+        { restartSession, parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain("archived")
+    })
+
+    it("a follower killed AFTER it already ended (retiredAt, no deliberate endedReason) is never revived", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const parkedPath = join(tmp, "parked-retiredat.jsonl")
+      const { sent } = setup(
+        [
+          running("chief", { status: "killed", endedReason: "idle-reaped", retiredAt: NOW }),
+          running("a"),
+        ],
+        { selector: { all: true } },
+        { restartSession, parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain("retired")
+    })
+
+    it("a superseded follower's digest goes to the END of its continuedTo chain (transitive) and re-points the follow", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const { sent, store } = setup(
+        [
+          running("chief", { status: "killed", endedReason: "restarted", continuedTo: "chief-2" }),
+          running("chief-2", { status: "killed", endedReason: "restarted", continuedTo: "chief-3" }),
+          running("chief-3"),
+          running("a"),
+        ],
+        { selector: { all: true } },
+        { restartSession },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent.map(m => m.to)).toEqual(["chief-3"])
+      expect(store.list()[0]!.follower).toBe("chief-3")
+    })
+
+    it("a superseded follower whose successor is dead (not retired) revives the SUCCESSOR, never the retired row", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const { sent, store } = setup(
+        [
+          running("chief", { status: "killed", endedReason: "restarted", continuedTo: "chief-2" }),
+          running("chief-2", { status: "exited", endedReason: "idle-reaped" }),
+          running("a"),
+        ],
+        { selector: { all: true } },
+        { restartSession },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).toHaveBeenCalledTimes(1)
+      expect(restartSession).toHaveBeenCalledWith("chief-2")
+      expect(sent.map(m => m.to)).toEqual(["chief-2"])
+      expect(store.list()[0]!.follower).toBe("chief-2")
+    })
+
+    it("a superseded follower whose whole chain is retired parks the digest", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const parkedPath = join(tmp, "parked-chain.jsonl")
+      const { sent } = setup(
+        [
+          running("chief", { status: "killed", endedReason: "restarted", continuedTo: "chief-2" }),
+          running("chief-2", { status: "killed", endedReason: "operator-stopped" }),
+          running("a"),
+        ],
+        { selector: { all: true } },
+        { restartSession, parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain("superseded")
+    })
+
     it("no restart hook: the digest is parked, not lost silently", async () => {
       const parkedPath = join(tmp, "parked-2.jsonl")
       const { sent } = setup(

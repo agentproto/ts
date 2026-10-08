@@ -155,7 +155,9 @@ import {
   type SessionOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
-import { isProviderLimitError, type SessionEndReason } from "./session-end-reason.js"
+import { DELIBERATE_END_REASONS, isProviderLimitError, type SessionEndReason } from "./session-end-reason.js"
+import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
+export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
   INDEX_TAIL_BYTES,
   indexEntryFromDescriptor,
@@ -812,6 +814,52 @@ export class SessionNotAliveError extends Error {
     this.name = "SessionNotAliveError"
     this.sessionId = sessionId
     this.status = status
+  }
+}
+
+/**
+ * A prompt / revival aimed at a RETIRED row (see `isRetired`). Extends
+ * {@link SessionNotAliveError} so every existing "dead target" catch (sentinel,
+ * follow, inbound) keeps routing it to its dead-session handler. `code` is the
+ * internal discriminator: `session_superseded` (with `continuedTo` naming the
+ * successor) when the row has a replacement, else `session_retired`.
+ *
+ * On the wire it is still `session_not_alive` (clients already handle that
+ * code); {@link retiredErrorWire} adds `reason: "superseded" | "retired"` and
+ * `continuedTo` so a client can tell "dead" from "replaced" and where to go.
+ */
+export class SessionRetiredError extends SessionNotAliveError {
+  readonly code: "session_superseded" | "session_retired"
+  readonly reason: "superseded" | "retired"
+  readonly continuedTo?: string
+  constructor(sessionId: string, status: SessionStatus, caller: string, continuedTo?: string) {
+    super(sessionId, status, caller)
+    this.name = "SessionRetiredError"
+    this.code = continuedTo ? "session_superseded" : "session_retired"
+    this.reason = continuedTo ? "superseded" : "retired"
+    if (continuedTo) this.continuedTo = continuedTo
+    this.message = continuedTo
+      ? `${caller}: session "${sessionId}" was superseded by "${continuedTo}" (session_superseded) — prompt "${continuedTo}" instead`
+      : `${caller}: session "${sessionId}" is retired (session_retired) and is never revived automatically`
+  }
+}
+
+/** The wire body (HTTP 409 / MCP error JSON) for a refused retired-row
+ *  prompt: `error` stays `session_not_alive`; `reason` + `continuedTo` are the
+ *  additive detail. */
+export function retiredErrorWire(err: SessionRetiredError): {
+  error: "session_not_alive"
+  reason: "superseded" | "retired"
+  message: string
+  status: SessionStatus
+  continuedTo?: string
+} {
+  return {
+    error: "session_not_alive",
+    reason: err.reason,
+    message: err.message,
+    status: err.status,
+    ...(err.continuedTo ? { continuedTo: err.continuedTo } : {}),
   }
 }
 
@@ -1646,6 +1694,12 @@ export interface SessionDescriptor {
   /** ISO-8601 instant `archiveSession` set `archived: true`; cleared by
    *  `unarchiveSession`. Absent on rows archived before this field existed. */
   archivedAt?: string
+  /** ISO-8601 instant this row was deliberately retired AFTER it had already
+   *  ended (e.g. `kill(id, sig, "operator-stopped")` on a row the idle-reaper
+   *  or a crash had already ended, `markOutcomeCompleted`) — `endedReason`
+   *  can't always record that, so this stamp is the second half of
+   *  {@link isRetired}. Cleared by an explicit (forced) revival. */
+  retiredAt?: string
   /** When `true`, the idle-reaper (`isReapable`, `idle-reaper.ts`) never
    *  retires this session regardless of how long it's sat idle. For a
    *  supervisor that legitimately parks — waiting on a child, waiting on a
@@ -2457,6 +2511,10 @@ export interface SessionSummary {
   priorCommandSessionId?: string
   continuedFrom?: string
   continuedTo?: string
+  /** See `SessionDescriptor.retiredAt` — with `continuedTo`/`archived`, lets a
+   *  client tell a retired row from a merely dead one (and feature-detect the
+   *  retire route). */
+  retiredAt?: string
   permissionHold?: boolean
   browserAdapterId?: string
   browserPort?: number
@@ -2562,6 +2620,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     priorCommandSessionId: desc.priorCommandSessionId,
     continuedFrom: desc.continuedFrom,
     continuedTo: desc.continuedTo,
+    ...(desc.retiredAt ? { retiredAt: desc.retiredAt } : {}),
     permissionHold: desc.permissionHold,
     browserAdapterId: desc.browserAdapterId,
     browserPort: desc.browserPort,
@@ -3320,6 +3379,9 @@ export type EagerResumeSkipReason =
   /** `worktreeId` is pinned but the marker at `cwd` names a different
    *  generation (or is gone) — refuse to resume into the wrong worktree (§5). */
   | "worktree-generation-mismatch"
+  /** Retired (`isRetired`): archived, deliberately ended, superseded or
+   *  `retiredAt`-stamped — never revived by an automatic pass. */
+  | "retired"
 
 /** Why an eager in-place resume of one row failed after being attempted. */
 export type EagerResumeFailReason =
@@ -3332,6 +3394,18 @@ export type EagerResumeFailReason =
    *  fresh spawn burns tokens for nothing; that fallback is `session_restart`
    *  territory only). */
   | "resume-failed"
+
+/** Why a row was retired — lets cleanup tell "gone for good" (archived /
+ *  forgotten: drop its follows/sentinels) from "closed but keep the wiring so
+ *  the supervisor can migrate it" (killed). */
+export type SessionRetiredCause = "killed" | "archived" | "forgotten" | "continued"
+
+export interface SessionRetiredEvent {
+  sessionId: string
+  cause: SessionRetiredCause
+  /** Direct successor, when there is one. */
+  continuedTo?: string
+}
 
 /** Outcome of a single eager (boot-time) in-place resume — the per-row result
  *  the bounded boot pass tallies into its summary. */
@@ -3668,7 +3742,7 @@ export interface SessionsRegistry {
   sendPrompt(
     id: string,
     message: unknown,
-    opts?: { interrupt?: boolean; source?: string; system?: string }
+    opts?: { interrupt?: boolean; source?: string; system?: string; forceResume?: boolean }
   ): Promise<void>
   /** Fire-and-forget variant of `sendPrompt` for the TURN ITSELF only.
    *  Admission (resume attempt + the missing/wrong-kind/dead/busy
@@ -3730,6 +3804,10 @@ export interface SessionsRegistry {
        *  structured-question answer, and noted in the SENDER's transcript
        *  as `session-message-sent`. */
       envelope?: SessionMessage
+      /** Explicitly revive a RETIRED row (`isRetired`) that this prompt
+       *  would otherwise be refused on (`session_superseded` /
+       *  `session_retired`). Operator override; never set by automation. */
+      forceResume?: boolean
       /** On the queue arm, inject this prompt into the target's RUNNING turn
        *  at the next safe point (ACP steering) instead of waiting for the
        *  turn to end — when the agent advertises steering. FIFO among steered
@@ -4346,7 +4424,16 @@ export interface SessionsRegistry {
    *  `session:exited`-triggered re-schedule. Returns true iff the session is
    *  live (`agentSession` bound) afterward; false for an unknown id or a
    *  resume that didn't take. */
-  triggerResume(id: string): Promise<boolean>
+  triggerResume(id: string, opts?: { force?: boolean }): Promise<boolean>
+  /** Stamp a row as deliberately retired (`retiredAt`, optionally `continuedTo`)
+   *  and notify `onSessionRetired` listeners. Idempotent. Unknown id → undefined. */
+  markRetired(
+    id: string,
+    opts?: { continuedTo?: string; cause?: SessionRetiredCause }
+  ): SessionDescriptor | undefined
+  /** Subscribe to retirement (kill-with-deliberate-reason, steward close,
+   *  archive, gc, continuation/superseding restart). Returns an unsubscribe. */
+  onSessionRetired(listener: (ev: SessionRetiredEvent) => void): () => void
   /** Stamp a restart-scheduler (PR-2) schedule onto a row: the next sweep
    *  landing time plus the rolling-window bookkeeping (`restartAttempts`/
    *  `recentRestartAts`/`lastRestartAt`) the crash-loop cap reads on the
@@ -5761,10 +5848,36 @@ export function createSessionsRegistry(opts?: {
   ): { resumedFrom?: string; continuedFrom?: string } =>
     resumedFrom ? { resumedFrom, continuedFrom: resumedFrom } : {}
 
+  const retiredListeners = new Set<(ev: SessionRetiredEvent) => void>()
+
+  /** Stamp a row retired (see `isRetired`) and tell the cleanup listeners.
+   *  `killed` also stamps `retiredAt` (the only retirement signal a row that
+   *  had already ended can carry); archive/forget/continue are already carried
+   *  by `archived` / the row's absence / `continuedTo`. */
+  const retireRow = (rt: SessionRuntime, cause: SessionRetiredCause, continuedTo?: string): void => {
+    if (continuedTo) rt.desc.continuedTo = continuedTo
+    if (cause === "killed" && rt.desc.retiredAt === undefined) {
+      rt.desc.retiredAt = new Date().toISOString()
+    }
+    schedulePersist()
+    const ev: SessionRetiredEvent = {
+      sessionId: rt.desc.id,
+      cause,
+      ...(rt.desc.continuedTo ? { continuedTo: rt.desc.continuedTo } : {}),
+    }
+    for (const listener of retiredListeners) {
+      try {
+        listener(ev)
+      } catch {
+        // A cleanup listener must never break the retirement itself.
+      }
+    }
+  }
+
   const linkContinuedTo = (resumedFrom: string | undefined, newId: string): void => {
     if (!resumedFrom || resumedFrom === newId) return
     const prevRt = sessions.get(resumedFrom)
-    if (prevRt) prevRt.desc.continuedTo = newId
+    if (prevRt) retireRow(prevRt, "continued", newId)
   }
 
   const schedulePersist = (): void => {
@@ -6837,7 +6950,7 @@ export function createSessionsRegistry(opts?: {
     schedulePersist()
     void (async () => {
       try {
-        await maybeResumeAgent(rt)
+        await maybeResumeAgent(rt, "daemon-restart", next.source ? { source: next.source } : {})
         const liveRt = validateAgentTurn(rt.desc.id, "queue-drain")
         if (next.envelope) {
           await runMessageTurn(
@@ -6910,7 +7023,20 @@ export function createSessionsRegistry(opts?: {
   const maybeResumeAgent = async (
     rt: SessionRuntime,
     resumedFrom: "daemon-restart" | "restarted" = "daemon-restart",
+    intent: { source?: string; force?: boolean } = {},
   ): Promise<void> => {
+    // A RETIRED dead row is never revived by an automated path, and never by
+    // anyone once it has a successor (`session_superseded`) — unless the
+    // caller explicitly forces it. Checked FIRST so a stale `kill()` binding
+    // can't mask it behind a generic "not alive".
+    if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+      if (!intent.force && isRetired(rt.desc)) {
+        const { continuedTo } = rt.desc
+        if (continuedTo || isAutomatedPromptSource(intent.source)) {
+          throw new SessionRetiredError(rt.desc.id, rt.desc.status, "maybeResumeAgent", continuedTo)
+        }
+      }
+    }
     if (rt.agentSession) {
       // A bound session is normally proof of life — but a bound session whose
       // TRANSPORT is provably dead is the exact shape this whole path used to
@@ -7006,6 +7132,12 @@ export function createSessionsRegistry(opts?: {
         rt.desc.pid = fresh.pid ?? null
         if (rt.desc.status !== "running") {
           rt.desc.status = "running"
+          // An explicit revival lifts a deliberate retirement — otherwise the
+          // row would read as retired while alive.
+          delete rt.desc.retiredAt
+          if (rt.desc.endedReason && DELIBERATE_END_REASONS.has(rt.desc.endedReason)) {
+            delete rt.desc.endedReason
+          }
           delete rt.desc.endedAt
           delete rt.desc.exitCode
           // Alive again — the next death records its own outcome.
@@ -7707,12 +7839,12 @@ export function createSessionsRegistry(opts?: {
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
       rt.desc.contextContinuityHardStopped = true
-      rt.desc.continuedTo = result.descriptor.id
       void rt.agentSession?.close().catch(() => undefined)
       void transcriptWriter.close(rt.desc.id)
       tracedSessions.delete(rt.desc.id)
       schedulePersist()
       emitExited(rt)
+      retireRow(rt, "continued", result.descriptor.id)
     } catch (err) {
       appendLine(
         rt,
@@ -9651,7 +9783,9 @@ export function createSessionsRegistry(opts?: {
       desc.provisioning = { state: "running", phase: "worktree", startedAt: desc.startedAt }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
-      linkContinuedTo(input.resumedFrom, id)
+      // `continuedTo` on the prior row is stamped by `settlePendingAgent` once
+      // this placeholder actually provisions — a failed provision must not
+      // leave the old row pointing at a successor that never came up.
       sessionEvents?.emit({
         type: "session:spawned",
         sessionId: id,
@@ -9741,6 +9875,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.desc.status = "running"
       rt.emitter.emit("status", rt.desc.status)
+      linkContinuedTo(rt.desc.resumedFrom, id)
       // The reader just arrived — arm the live-usage poller now that the
       // session is actually running (a "starting" row would never poll).
       armUsageRefresh(rt)
@@ -10201,7 +10336,12 @@ export function createSessionsRegistry(opts?: {
       if (opts?.interrupt && rtPre?.busy) {
         await interruptInFlightTurn(rtPre, id, "sendPrompt", undefined, promptOriginLabel({ source: opts.source }))
       }
-      if (rtPre) await maybeResumeAgent(rtPre)
+      if (rtPre) {
+        await maybeResumeAgent(rtPre, "daemon-restart", {
+          ...(opts?.source ? { source: opts.source } : {}),
+          ...(opts?.forceResume ? { force: true } : {}),
+        })
+      }
       const rt = validateAgentTurn(id, "sendPrompt")
       const structuredAnswer = isChildPromptSource(opts?.source)
         ? undefined
@@ -10308,7 +10448,10 @@ export function createSessionsRegistry(opts?: {
         // so the caller can surface the "queued, not delivered yet" hint.
         return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: item.id }
       }
-      await maybeResumeAgent(rtPre)
+      await maybeResumeAgent(rtPre, "daemon-restart", {
+        ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.forceResume ? { force: true } : {}),
+      })
       const rt = validateAgentTurn(id, "enqueuePrompt")
       if (envelope) {
         void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
@@ -10349,6 +10492,9 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
       if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+        if (isRetired(rt.desc)) {
+          throw new SessionRetiredError(msg.to, rt.desc.status, "sendMessage", rt.desc.continuedTo)
+        }
         throw new SessionNotAliveError(msg.to, rt.desc.status, "sendMessage")
       }
       // Waiter first — the recipient is parked in `inbox_wait` for exactly
@@ -10554,6 +10700,7 @@ export function createSessionsRegistry(opts?: {
       // Base eligibility (§5): agent-cli with the resume essentials and not
       // archived. PTY/command/archived rows are never in-place resumable.
       if (!isResumable(rt.desc)) return { status: "skipped", reason: "not-resumable" }
+      if (isRetired(rt.desc)) return { status: "skipped", reason: "retired" }
       // Eager-only clause layered on top of the base predicate (§5): the boot
       // pass resurrects ONLY rows the daemon restart itself killed. Operator
       // kills, natural exits, and errors keep the base `isResumable` shape but
@@ -10606,7 +10753,7 @@ export function createSessionsRegistry(opts?: {
       // true above so it won't throw ResumeDisabledError; on adapter refusal it
       // records a failed attempt and returns WITHOUT fresh-spawning, exactly the
       // no-fresh-spawn rule the eager pass needs.
-      await maybeResumeAgent(rt)
+      await maybeResumeAgent(rt, "daemon-restart", { source: "boot" })
       return rt.agentSession
         ? { status: "resumed" }
         : { status: "failed", reason: "resume-failed" }
@@ -11110,6 +11257,18 @@ export function createSessionsRegistry(opts?: {
         // exactly today's no-op refusal.
         if (reason === "operator-completed") {
           markOutcomeCompleted(rt)
+          retireRow(rt, "killed")
+          return true
+        }
+        // Any other deliberate reason on a row that already ended (idle-reap,
+        // crash, daemon restart) stamps the retirement after the fact instead
+        // of silently no-oping — otherwise a stopped brain that had already
+        // died could never be marked dead. The original `endedReason` stays
+        // when there is one (it is the true cause of death); `retiredAt`
+        // carries the retirement.
+        if (reason && DELIBERATE_END_REASONS.has(reason)) {
+          if (rt.desc.endedReason === undefined) rt.desc.endedReason = reason
+          retireRow(rt, "killed")
           return true
         }
         return false
@@ -11157,6 +11316,7 @@ export function createSessionsRegistry(opts?: {
       // Child/PTY sessions emit from their exit handlers; the
       // exitedEmitted guard prevents a duplicate from kill() AND exit.
       emitExited(rt)
+      if (reason && DELIBERATE_END_REASONS.has(reason)) retireRow(rt, "killed")
       return true
     },
     closeWithOutcome(id, input) {
@@ -11214,6 +11374,7 @@ export function createSessionsRegistry(opts?: {
       // Derives + records the Level 1 outcome first (source:"derived") —
       // same one exit funnel every terminal path goes through.
       emitExited(rt)
+      retireRow(rt, "killed")
 
       // Layer the Level 2 fields on top of what emitExited just derived —
       // same "merge after the termination fields are set" shape as
@@ -11341,12 +11502,21 @@ export function createSessionsRegistry(opts?: {
     isResuming(id) {
       return !!sessions.get(id)?.resumePromise
     },
-    async triggerResume(id) {
+    async triggerResume(id, opts) {
       const rt = sessions.get(id)
       if (!rt) return false
       try {
-        await maybeResumeAgent(rt, "restarted")
-      } catch {
+        await maybeResumeAgent(rt, "restarted", {
+          source: "restart",
+          ...(opts?.force ? { force: true } : {}),
+        })
+      } catch (err) {
+        // Retired rows never revive: drop the landed schedule so the sweep
+        // stops re-picking this row every tick.
+        if (err instanceof SessionRetiredError && rt.desc.nextRestartAt !== undefined) {
+          delete rt.desc.nextRestartAt
+          schedulePersist()
+        }
         // ResumeDisabledError (MAX_RESUME_ATTEMPTS burned) or an adapter
         // throw — either way this row stays dead; the sweep just moves on to
         // the next candidate rather than aborting the whole tick.
@@ -11431,8 +11601,21 @@ export function createSessionsRegistry(opts?: {
       rt.desc.archived = true
       rt.desc.archivedAt = new Date().toISOString()
       schedulePersist()
+      retireRow(rt, "archived")
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    markRetired(id, opts) {
+      const rt = sessions.get(id)
+      if (!rt) return undefined
+      retireRow(rt, opts?.cause ?? "killed", opts?.continuedTo)
+      return rt.desc
+    },
+    onSessionRetired(listener) {
+      retiredListeners.add(listener)
+      return () => {
+        retiredListeners.delete(listener)
+      }
     },
     unarchiveSession(id) {
       const rt = sessions.get(id)
@@ -11458,8 +11641,13 @@ export function createSessionsRegistry(opts?: {
           const ts = tsStr ? Date.parse(tsStr) : Number.NaN
           if (Number.isFinite(ts) && ts > cutoff) continue // too recent — keep
         }
-        if (opts.forget) sessions.delete(id)
-        else rt.desc.archived = true
+        if (opts.forget) {
+          retireRow(rt, "forgotten")
+          sessions.delete(id)
+        } else {
+          rt.desc.archived = true
+          retireRow(rt, "archived")
+        }
         ids.push(id)
       }
       if (ids.length > 0) schedulePersist()
@@ -11688,6 +11876,9 @@ export function createSessionsRegistry(opts?: {
       void transcriptWriter.close(id)
       void terminalTranscriptWriter.close(id)
       tracedSessions.delete(id)
+      // Cleanup listeners read the row (to follow its `continuedTo` chain), so
+      // notify BEFORE it leaves the map.
+      retireRow(rt, "forgotten")
       sessions.delete(id)
       schedulePersist()
       return true

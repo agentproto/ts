@@ -77,3 +77,16 @@ const PROVIDER_LIMIT_ERROR_RE = /\bhit your (?:session|usage) limit\b/i
 export function isProviderLimitError(message: string | undefined): boolean {
   return message !== undefined && PROVIDER_LIMIT_ERROR_RE.test(message)
 }
+
+/** End reasons that mean a human/steward closed the session on purpose (or
+ *  that it was superseded by a living replacement) — no AUTOMATED path
+ *  (sentinel, follow, cron) may revive such a row. An explicit
+ *  `session_restart` / human prompt still may. */
+export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
+  "operator-completed",
+  "operator-stopped",
+  "steward-completed",
+  "steward-abandoned",
+  // Superseded by a fresh-id restart continuation while still alive.
+  "restarted",
+])

@@ -23,7 +23,7 @@ import { z } from "zod"
 import type { AcpMcpServer } from "@agentproto/acp"
 import { catchErrors, pageParamsShape, paginated } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
-import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
+import { SessionRetiredError, retiredErrorWire, type SessionsRegistry, type SessionDescriptor } from "./sessions.js"
 import {
   exportAgentSession,
   type ExportAgentSessionInput,
@@ -658,6 +658,12 @@ export function registerAgentTools(
           ],
         }
       } catch (err) {
+        if (err instanceof SessionRetiredError) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: false, ...retiredErrorWire(err) }) }],
+            isError: true,
+          }
+        }
         // With `queue: false` explicitly set, a mid-turn rejection must
         // name the caller's alternatives verbatim — the old bare
         // "wait for it to finish or cancel" gave no actionable path.

@@ -14,7 +14,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import {
   createSessionMessage,
   isMessageAllowed,
@@ -63,6 +63,11 @@ const ok = (body: Record<string, unknown>): ToolResult => ({
 })
 const fail = (code: string, text: string): ToolResult => ({
   content: [{ type: "text", text: JSON.stringify({ ok: false, error: code, message: text }) }],
+  isError: true,
+})
+
+const failRetired = (err: SessionRetiredError): ToolResult => ({
+  content: [{ type: "text", text: JSON.stringify({ ok: false, ...retiredErrorWire(err) }) }],
   isError: true,
 })
 
@@ -179,6 +184,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           : {}),
       })
     } catch (err) {
+      if (err instanceof SessionRetiredError) return failRetired(err)
       return fail("not_delivered", `${tool}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
