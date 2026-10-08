@@ -9,6 +9,16 @@
  *
  * Multi-tenant: `startAppMcpHttp({ tenants })` serves `/mcp/<tenant>`, each
  * tenant with its own resolved secrets (e.g. one shop's API key per tenant).
+ *
+ * NO BUILT-IN AUTHENTICATION. Anyone who can reach the port can call the
+ * served tools with the (tenant's) secrets. The tenant slug in the URL only
+ * SELECTS which secrets apply; it is not a credential and must not be treated
+ * as one. For anything beyond loopback, put a front proxy in front that
+ * terminates TLS and authenticates the caller (and maps caller -> tenant slug).
+ *
+ * Built-in hardening: Host/Origin are checked against an allowlist when bound
+ * to loopback (DNS-rebinding guard) or when `allowedHosts` is set, request
+ * bodies are capped (`maxBodyBytes`), and only POST is served.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
@@ -103,6 +113,15 @@ export interface StartAppMcpHttpOptions {
   secrets?: Record<string, string>
   /** Multi-tenant: tenant slug → its secrets, served at `/mcp/<tenant>`. */
   tenants?: Record<string, Record<string, string>>
+  /**
+   * Hostnames (no port) accepted in the `Host` header and, when present, the
+   * `Origin` header. Defaults to the loopback names when bound to a loopback
+   * address; when bound elsewhere and unset, no Host/Origin check is applied
+   * (the front proxy owns that). DNS-rebinding guard.
+   */
+  allowedHosts?: readonly string[]
+  /** Max request body in bytes (default 1 MiB). Larger → 413. */
+  maxBodyBytes?: number
 }
 
 export interface AppMcpHttpHandle {
@@ -111,12 +130,69 @@ export interface AppMcpHttpHandle {
   close(): Promise<void>
 }
 
+const TENANT_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 const TENANT_PATH = /^\/mcp\/([a-z0-9][a-z0-9-]{0,62})$/
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1"]
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024
+
+export function isValidTenantSlug(slug: string): boolean {
+  return TENANT_SLUG.test(slug)
+}
+
+function isLoopbackBind(host: string): boolean {
+  return host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host)
+}
+
+function hostnameOfHostHeader(value: string): string | undefined {
+  try {
+    return new URL(`http://${value}`).hostname
+  } catch {
+    return undefined
+  }
+}
+
+class BodyTooLargeError extends Error {}
+
+async function readJsonBody(req: IncomingMessage, limit: number): Promise<unknown> {
+  const declared = Number(req.headers["content-length"])
+  if (Number.isFinite(declared) && declared > limit) throw new BodyTooLargeError()
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buf = chunk as Buffer
+    size += buf.length
+    if (size > limit) throw new BodyTooLargeError()
+    chunks.push(buf)
+  }
+  if (size === 0) return undefined
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"))
+}
 
 export async function startAppMcpHttp(opts: StartAppMcpHttpOptions): Promise<AppMcpHttpHandle> {
   const host = opts.host ?? "127.0.0.1"
+  const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
+  const allowed = new Set(
+    (opts.allowedHosts ?? (isLoopbackBind(host) ? LOOPBACK_HOSTS : [])).map(h => h.toLowerCase()),
+  )
+
+  function hostAllowed(req: IncomingMessage): boolean {
+    if (allowed.size === 0) return true
+    const hostHeader = req.headers.host
+    const hostname = hostHeader ? hostnameOfHostHeader(hostHeader) : undefined
+    if (hostname === undefined || !(allowed.has(hostname) || allowed.has(`[${hostname}]`))) return false
+    const origin = req.headers.origin
+    if (origin !== undefined) {
+      const originHost = hostnameOfHostHeader(origin.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""))
+      if (originHost === undefined || !(allowed.has(originHost) || allowed.has(`[${originHost}]`))) return false
+    }
+    return true
+  }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!hostAllowed(req)) {
+      res.writeHead(403, { "content-type": "text/plain" }).end("forbidden host or origin")
+      return
+    }
     const path = (req.url ?? "/").split("?")[0] ?? "/"
     let secrets: Record<string, string> | undefined
     if (opts.tenants) {
@@ -138,6 +214,17 @@ export async function startAppMcpHttp(opts: StartAppMcpHttpOptions): Promise<App
       res.writeHead(405, { "allow": "POST", "content-type": "text/plain" }).end("method not allowed")
       return
     }
+    let body: unknown
+    try {
+      body = await readJsonBody(req, maxBody)
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        res.writeHead(413, { "content-type": "text/plain", connection: "close" }).end("request body too large")
+      } else {
+        res.writeHead(400, { "content-type": "text/plain" }).end("invalid JSON body")
+      }
+      return
+    }
     const server = opts.app.build(secrets)
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     res.on("close", () => {
@@ -146,7 +233,7 @@ export async function startAppMcpHttp(opts: StartAppMcpHttpOptions): Promise<App
     })
     try {
       await server.connect(transport)
-      await transport.handleRequest(req, res)
+      await transport.handleRequest(req, res, body)
     } catch (err) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "text/plain" }).end(err instanceof Error ? err.message : String(err))
@@ -165,6 +252,10 @@ export async function startAppMcpHttp(opts: StartAppMcpHttpOptions): Promise<App
   return {
     url: `http://${host}:${port}`,
     server: http,
-    close: () => new Promise<void>(resolve => http.close(() => resolve())),
+    close: () =>
+      new Promise<void>(resolve => {
+        http.close(() => resolve())
+        http.closeAllConnections()
+      }),
   }
 }

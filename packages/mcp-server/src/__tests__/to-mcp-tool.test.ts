@@ -524,4 +524,16 @@ describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
     const reg = buildMcpTool({ tool: mixedTool, candidates: [shoutDriver] })
     expect(Object.keys(reg.inputShape)).toEqual(["message"])
   })
+
+  it("falls back to a no-params shape when `inputs` is not convertible", () => {
+    const weird = defineTool({
+      id: "demo.weird",
+      description: "Unconvertible JSON Schema.",
+      // `type` must be a string/array of strings; a number makes fromJSONSchema throw.
+      inputs: { type: 42 } as never,
+      outputs: { type: "object", properties: {} },
+    })
+    const reg = buildMcpTool({ tool: weird, candidates: [] })
+    expect(reg.inputShape).toEqual({})
+  })
 })

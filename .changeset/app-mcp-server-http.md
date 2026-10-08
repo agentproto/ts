@@ -1,6 +1,6 @@
 ---
-"@agentproto/runtime": patch
-"@agentproto/cli": patch
+"@agentproto/runtime": minor
+"@agentproto/cli": minor
 "@agentproto/mcp-server": patch
 ---
 

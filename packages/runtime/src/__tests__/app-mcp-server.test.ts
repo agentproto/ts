@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Agent as HttpAgent, request as httpRequest } from "node:http"
 import matter from "gray-matter"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -109,5 +110,91 @@ describe("app-mcp-server: publish one app as a standalone MCP App", () => {
     } finally {
       await http.close()
     }
+  })
+
+  it("answers 404 for a wrong path and 405 for a non-POST method", async () => {
+    await buildCatalogApp(dir, ["greet"])
+    const app = await loadPublishedApp(dir)
+    const single = await startAppMcpHttp({ app })
+    const multi = await startAppMcpHttp({ app, tenants: { "shop-a": {} } })
+    try {
+      expect((await fetch(`${single.url}/elsewhere`, { method: "POST" })).status).toBe(404)
+      const get = await fetch(`${single.url}/mcp`, { method: "GET" })
+      expect(get.status).toBe(405)
+      expect(get.headers.get("allow")).toBe("POST")
+      expect((await fetch(`${multi.url}/mcp`, { method: "POST" })).status).toBe(404)
+      expect((await fetch(`${multi.url}/mcp/shop-a`, { method: "DELETE" })).status).toBe(405)
+    } finally {
+      await single.close()
+      await multi.close()
+    }
+  })
+
+  it("rejects a foreign Host or Origin on a loopback bind (DNS rebinding) and accepts loopback", async () => {
+    await buildCatalogApp(dir, ["greet"])
+    const app = await loadPublishedApp(dir)
+    const http = await startAppMcpHttp({ app })
+    const url = new URL(http.url)
+    const post = (headers: Record<string, string>) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpRequest(
+          { host: "127.0.0.1", port: url.port, path: "/mcp", method: "POST", headers: { "content-type": "application/json", ...headers } },
+          res => {
+            res.resume()
+            resolve(res.statusCode ?? 0)
+          },
+        )
+        req.on("error", reject)
+        req.end("{}")
+      })
+    try {
+      expect(await post({ host: "evil.example.com" })).toBe(403)
+      expect(await post({ host: `127.0.0.1:${url.port}`, origin: "http://evil.example.com" })).toBe(403)
+      expect(await post({ host: `localhost:${url.port}`, origin: "null" })).toBe(403)
+      expect(await post({ host: `127.0.0.1:${url.port}` })).not.toBe(403)
+      expect(await post({ host: `localhost:${url.port}`, origin: `http://localhost:${url.port}` })).not.toBe(403)
+    } finally {
+      await http.close()
+    }
+  })
+
+  it("caps the request body (413) and rejects invalid JSON (400)", async () => {
+    await buildCatalogApp(dir, ["greet"])
+    const app = await loadPublishedApp(dir)
+    const http = await startAppMcpHttp({ app, maxBodyBytes: 64 })
+    try {
+      const big = await fetch(`${http.url}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pad: "x".repeat(200) }),
+      })
+      expect(big.status).toBe(413)
+      const bad = await fetch(`${http.url}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{nope",
+      })
+      expect(bad.status).toBe(400)
+    } finally {
+      await http.close()
+    }
+  })
+
+  it("close() resolves even with an open keep-alive connection", async () => {
+    await buildCatalogApp(dir, ["greet"])
+    const app = await loadPublishedApp(dir)
+    const http = await startAppMcpHttp({ app })
+    const agent = new HttpAgent({ keepAlive: true })
+    const url = new URL(http.url)
+    await new Promise<void>((resolve, reject) => {
+      httpRequest({ host: "127.0.0.1", port: url.port, path: "/nope", method: "POST", agent }, res => {
+        res.resume()
+        res.on("end", resolve)
+      })
+        .on("error", reject)
+        .end()
+    })
+    await expect(http.close()).resolves.toBeUndefined()
+    agent.destroy()
   })
 })
