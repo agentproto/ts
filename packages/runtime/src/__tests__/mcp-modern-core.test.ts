@@ -78,14 +78,16 @@ describe("server/discover", () => {
     expect(body.result?.resultType).toBe("complete")
     expect(body.result?.supportedVersions).toEqual(["2026-07-28"])
     expect(body.result?.capabilities?.tools).toBeDefined()
-    // ADJUSTED vs brief: the legacy server advertises `events` methods via server/discover but does NOT
-    // advertise an `events` capability through the in-process initialize handshake (getServerCapabilities()),
-    // so capabilities.events is undefined here.
-    expect(body.result?.capabilities?.events).toBeUndefined()
+    expect(body.result?.capabilities?.events).toEqual({})
     expect(body.result?.capabilities?.logging).toBeUndefined()
     expect(body.result?._meta?.["io.modelcontextprotocol/serverInfo"]).toEqual({ name: "main", version: "1.2.3" })
     expect(body.result?.ttlMs).toBe(0)
     expect(body.result?.cacheScope).toBe("private")
+  })
+
+  it("keeps capability keys the SDK client would strip", async () => {
+    const body = json(await call("server/discover"))
+    expect(Object.keys(body.result?.capabilities ?? {})).toContain("events")
   })
 
   it("uses the injected cache policy", async () => {
@@ -179,8 +181,6 @@ describe("forwarded methods and result decoration", () => {
     const r = await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, {}, deps)
     expect(r.status).toBe(200)
     const err = json(r).error
-    // The SDK wraps the handler's McpError twice ("MCP error <code>: " on the server, again in the bridge client);
-    // the core strips every stacked prefix. `data` still arrives intact.
     expect(err?.code).toBe(-32015)
     expect(err?.message).toBe("callback unreachable")
     expect(err?.data).toEqual({ reason: "x" })

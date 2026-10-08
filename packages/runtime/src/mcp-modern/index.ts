@@ -1,6 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { McpError } from "@modelcontextprotocol/sdk/types.js"
-import { forwardParams, openBridge, type Bridge } from "./bridge.js"
+import { BridgeError, forwardParams, openBridge, type Bridge } from "./bridge.js"
 import {
   ALLOWED_METHODS,
   CACHE_HINT_METHODS,
@@ -101,8 +100,9 @@ function decorate(
 }
 
 function fromThrown(error: unknown, id: string | number): ModernResponse {
-  if (error instanceof McpError) {
-    const message = error.message.replace(/^(MCP error -?\d+: )+/, "")
+  if (error instanceof BridgeError) {
+    // `McpError` serializes its message with an "MCP error <code>: " prefix; strip it (possibly repeated).
+    const message = error.message.replace(/^(?:MCP error -?\d+: )+/, "")
     // An unknown method is a protocol error (404). Any other JSON-RPC error raised by a handler keeps HTTP 200,
     // exactly as the legacy transport answers it (events adapter codes -32011..-32016 included).
     const status = error.code === ERR_METHOD_NOT_FOUND ? 404 : 200
