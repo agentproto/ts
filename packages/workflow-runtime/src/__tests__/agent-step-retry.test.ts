@@ -144,14 +144,14 @@ describe("agent step transport retry", () => {
 
   it("a spawn failure is NOT retried by the default policy (the fan-out breaker wants it at once)", async () => {
     const { host } = retryHost()
-    host.spawn.mockRejectedValue(new Error("adapter 'mock' not installed"))
+    vi.mocked(host.spawn).mockRejectedValue(new Error("adapter 'mock' not installed"))
     await expect(runWorkflow({ workflow: oneStep(), agents: host })).rejects.toBeInstanceOf(AgentSpawnError)
     expect(host.spawn).toHaveBeenCalledTimes(1)
   })
 
   it("a declared retry also covers spawn failures", async () => {
     const { host } = retryHost()
-    host.spawn
+    vi.mocked(host.spawn)
       .mockRejectedValueOnce(new Error("EAGAIN"))
       .mockRejectedValueOnce(new Error("EAGAIN"))
       .mockResolvedValueOnce("sess_ok")
@@ -182,7 +182,7 @@ describe("agent step transport retry", () => {
     const { host } = retryHost((sid) => {
       throw lost(sid)
     })
-    host.resolveByLabel.mockReturnValue("sess_prior")
+    vi.mocked(host.resolveByLabel).mockReturnValue("sess_prior")
     const wf: RuntimeWorkflow = {
       id: "reuse",
       steps: [{ kind: "agent", id: "again", sessionRef: "apply", prompt: () => "more", retry: fast(3) }],
