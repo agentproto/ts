@@ -266,3 +266,25 @@ for that.
 
 ### llm:openai
 - Added: gpt-6.1-sol, gpt-6.1-sol-pro
+
+## 2026-10-08
+
+### llm:openrouter
+- Added: anthropic/claude-haiku-5.5, anthropic/claude-haiku-5.5:batch, google/gemini-nano-banana-2.1, mistralai/mistral-large-4-0
+- Removed: kwaipilot/kat-coder-pro-v2.5
+
+### llm:opencode-go
+- Added: opencode-go/claude-haiku-5-5
+
+### llm:opencode-zen
+- Added: opencode/claude-haiku-5-5, opencode/exo-free, opencode/mistral-large-4
+
+### llm:huggingface
+- Added: XiaomiMiMo/MiMo-V2.6-Pro-RL
+- Removed: zai-org/GLM-4.5
+
+### llm:context-windows
+- Added: claude-haiku-5-5
+
+### llm:anthropic
+- Added: claude-haiku-5-5

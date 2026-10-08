@@ -62,6 +62,15 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "anthropic",
     provider: "opencode",
   },
+  "opencode/claude-haiku-5-5": {
+    inputPer1M: 0.1,
+    outputPer1M: 0.5,
+    cacheReadMultiplier: 0.1,
+    cacheWriteMultiplier: 1.25,
+    addedAt: "2026-10-07",
+    vendor: "anthropic",
+    provider: "opencode",
+  },
   "opencode/claude-opus-4-1": {
     inputPer1M: 15,
     outputPer1M: 75,
@@ -207,6 +216,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     cacheReadMultiplier: 0.02,
     addedAt: "2026-09-10",
     vendor: "deepseek",
+    provider: "opencode",
+  },
+  "opencode/exo-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-10-06",
+    vendor: "opencode",
     provider: "opencode",
   },
   "opencode/fledge-alpha-free": {
@@ -801,6 +817,14 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "minimax",
     provider: "opencode",
   },
+  "opencode/mistral-large-4": {
+    inputPer1M: 0.68,
+    outputPer1M: 2.09,
+    cacheReadMultiplier: 0.102941,
+    addedAt: "2026-10-06",
+    vendor: "opencode",
+    provider: "opencode",
+  },
   "opencode/muse-spark-1.2": {
     inputPer1M: 1.25,
     outputPer1M: 4.25,
@@ -953,6 +977,7 @@ export const OPENCODE_ZEN_ANTHROPIC_MODELS: readonly string[] = [
   "claude-fable-5",
   "claude-fable-5-1",
   "claude-haiku-4-5",
+  "claude-haiku-5-5",
   "claude-opus-4-1",
   "claude-opus-4-5",
   "claude-opus-4-6",
