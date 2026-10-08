@@ -53,7 +53,16 @@ const makePrev = (): SessionDescriptor =>
 
 const fakeRegistry = {
   get: vi.fn(),
+  markRetired: vi.fn(),
 } as unknown as SpawnAgentSessionDeps["registry"]
+
+const wireMarkRetired = (): void => {
+  fakeRegistry.markRetired = vi.fn((id: string, opts?: { continuedTo?: string }) => {
+    const d = fakeRegistry.get(id)
+    if (d && opts?.continuedTo) d.continuedTo = opts.continuedTo
+    return d
+  })
+}
 
 const fakeResolveAdapter = vi.fn()
 
@@ -62,6 +71,7 @@ describe("continueAgentSessionFresh", () => {
     vi.mocked(spawnAgentSession).mockReset()
     vi.mocked(fakeResolveAdapter).mockReset()
     fakeRegistry.get = vi.fn()
+    wireMarkRetired()
   })
 
   it("spawns a new session without resumeSessionId", async () => {

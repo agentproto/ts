@@ -41,7 +41,8 @@ import { createSessionMessage, type SessionMessage } from "./session-message.js"
 import type { SessionEvent, SessionEventBus } from "./session-event-bus.js"
 import type { FollowEvent, SessionFollow, SessionFollowStore } from "./session-follow-store.js"
 import { SessionNotAliveError, type SessionDescriptor } from "./sessions.js"
-import { DELIBERATE_END_REASONS } from "./sentinel-runtime.js"
+import { isRetired, resolveSuccessor } from "./session-retirement.js"
+import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
 
 /** Max characters of the per-line excerpt. */
 export const FOLLOW_EXCERPT_MAX = 300
@@ -376,10 +377,15 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       const desc = registry.get(follower)
       if (desc && isAlive(desc)) return follower
     }
-    const continuedTo = registry.get(followerId)?.continuedTo
-    if (continuedTo) {
-      const desc = registry.get(continuedTo)
-      if (desc && isAlive(desc)) return continuedTo
+    const successor = resolveSuccessor(id => registry.get(id), followerId)
+    if (successor) {
+      const desc = registry.get(successor)
+      if (desc && isAlive(desc)) {
+        // The conversation moved on: the follow follows it, so the next
+        // digest doesn't go through the dead row again.
+        for (const f of store.list({ follower: followerId })) store.setFollower(f.id, successor)
+        return successor
+      }
     }
     return undefined
   }
@@ -405,8 +411,32 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       return
     }
     const desc = registry.get(followerId)
-    if (desc?.endedReason && DELIBERATE_END_REASONS.has(desc.endedReason)) {
-      park(followerId, text, `follower was closed on purpose (${desc.endedReason}); not resuming`)
+    // The follower was superseded by a successor that is itself dead but not
+    // retired: resume THAT row (the conversation's current head), never the
+    // retired one.
+    const headId = desc && isRetired(desc) ? resolveSuccessor(id => registry.get(id), followerId) : undefined
+    const head = headId ? registry.get(headId) : undefined
+    if (headId && head && !isRetired(head) && opts.restartSession) {
+      try {
+        const resumed = await reviveOnce(headId)
+        for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
+        await sendOnce(resumed, text, resumed)
+      } catch (err) {
+        park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`)
+      }
+      return
+    }
+    if (desc && isRetired(desc)) {
+      // Retired (closed on purpose / archived / superseded) with no live
+      // successor: never revived, in place or under a new id.
+      const why = desc.continuedTo
+        ? `superseded by ${desc.continuedTo}, which is not alive`
+        : desc.archived
+          ? "archived"
+          : desc.endedReason && DELIBERATE_END_REASONS.has(desc.endedReason)
+            ? `closed on purpose (${desc.endedReason})`
+            : "retired"
+      park(followerId, text, `follower is retired (${why}); not resuming`)
       return
     }
     if (!opts.restartSession) {

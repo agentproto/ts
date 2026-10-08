@@ -52,12 +52,13 @@ import {
   WORKSPACE_SLUG_ENV,
   isResumable,
   canResume,
+  SessionRetiredError,
   type SessionDescriptor,
   type SessionsRegistry,
   type SessionAuthEcho,
   type SessionAccessProfileEcho,
 } from "./sessions.js"
-import { DELIBERATE_END_REASONS } from "./sentinel-runtime.js"
+import { isRetired } from "./session-retirement.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
@@ -599,12 +600,10 @@ export function restartInPlaceEligible(
 ): boolean {
   const hasOverrides = Object.keys(opts.overrides ?? {}).length > 0
   const ended = desc.status !== "running" && desc.status !== "starting"
-  const deliberateEnd =
-    desc.endedReason !== undefined && DELIBERATE_END_REASONS.has(desc.endedReason)
   return (
     ended &&
     !hasOverrides &&
-    (opts.allowDeliberateEnd === true || !deliberateEnd) &&
+    (opts.allowDeliberateEnd === true || !isRetired(desc)) &&
     isResumable(desc) &&
     canResume(desc)
   )
@@ -624,7 +623,9 @@ export async function tryRestartInPlace(
   if (!restartInPlaceEligible(desc, opts)) return undefined
   let resumed = false
   try {
-    resumed = await registry.triggerResume(desc.id)
+    resumed = await registry.triggerResume(desc.id, {
+      force: opts.allowDeliberateEnd === true,
+    })
   } catch {
     resumed = false
   }
@@ -652,6 +653,11 @@ export async function restartPreferInPlace(
   prev: SessionDescriptor,
   opts: RestartPreferInPlaceOptions = {},
 ): Promise<RestartPreferInPlaceResult> {
+  // A retired row must not fall through to the new-id restart either: that
+  // is the same revival, just under a fresh id (the "zombie brain" shape).
+  if (opts.allowDeliberateEnd !== true && isRetired(prev)) {
+    throw new SessionRetiredError(prev.id, prev.status, "restartPreferInPlace", prev.continuedTo)
+  }
   const inPlace = await tryRestartInPlace(registry, prev, opts)
   if (inPlace) {
     return {

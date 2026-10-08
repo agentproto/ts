@@ -49,7 +49,7 @@ import { isValidAppEmbedToken } from "./embed-tokens.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
-import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
+import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap } from "./sessions.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   createSessionMessage,
@@ -6598,6 +6598,7 @@ async function handleSessions(
     const interrupt = (body as { interrupt?: unknown } | null)?.interrupt === true
     const queue = (body as { queue?: unknown } | null)?.queue === true
     const force = (body as { force?: unknown } | null)?.force === true
+    const forceResume = (body as { forceResume?: unknown } | null)?.forceResume === true
     const validPrompt =
       (typeof prompt === "string" && prompt.length > 0) ||
       (Array.isArray(prompt) &&
@@ -6643,6 +6644,7 @@ async function handleSessions(
           force,
           queueId,
           origin: "user",
+          ...(forceResume ? { forceResume: true } : {}),
           ...(queue && !force ? { steer: true } : {}),
         })
         const promptQueue = queueId ? registry.get(id)?.promptQueue : undefined
@@ -6669,10 +6671,19 @@ async function handleSessions(
         // not to get. Both arms now honour it identically. `queue`/`force`
         // are NOT supported here — a blocking caller can't be told "your
         // prompt is waiting" without a second read; use ?wait=false.
-        await registry.sendPrompt(id, prompt, { interrupt })
+        await registry.sendPrompt(id, prompt, { interrupt, ...(forceResume ? { forceResume: true } : {}) })
         json(200, { ok: true, id })
       }
     } catch (err) {
+      if (err instanceof SessionRetiredError) {
+        json(409, {
+          error: err.code,
+          message: err.message,
+          status: err.status,
+          ...(err.continuedTo ? { continuedTo: err.continuedTo } : {}),
+        })
+        return true
+      }
       if (err instanceof SessionNotAliveError) {
         json(409, { error: "session_not_alive", status: err.status })
         return true
@@ -7921,6 +7932,14 @@ async function handleSessions(
         ...(source ? { source } : {}),
       })
     } catch (err) {
+      if (err instanceof SessionRetiredError) {
+        json(409, {
+          error: err.code,
+          message: err.message,
+          ...(err.continuedTo ? { continuedTo: err.continuedTo } : {}),
+        })
+        return true
+      }
       if (err instanceof SessionNotAliveError) {
         json(409, { error: "session_not_alive", message: `session "${id}" not alive` })
         return true

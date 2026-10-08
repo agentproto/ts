@@ -42,6 +42,8 @@ import {
 import { createHash } from "node:crypto"
 
 import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
+import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
+import { isRetired, type RetirementFields } from "./session-retirement.js"
 import type {
   Sentinel,
   SentinelStatus,
@@ -72,28 +74,14 @@ const DEFAULT_IDLE_INTERVAL_MS = 60_000
 const DEFAULT_HOT_WINDOW_MS = 10 * 60 * 1000
 const POLL_BATCH_LIMIT = 50
 
-/** Statuses whose provider-side watch stays live — the sentinel keeps
- *  polling even while `orphaned` (design §2: "the provider-side watch is
- *  never cancelled just because a session died"). */
-/** End reasons that mean a human/steward closed the session on purpose —
- *  a sentinel notice must never resurrect it. Exported for the shared
- *  restart core (session-restart-core.ts): the in-place resume path gates on
- *  the same set so an AUTOMATIC restart (sentinel / inbound) never revives a
- *  deliberate end, while an explicit `session_restart` (operator action)
- *  still may. */
-export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
-  "operator-completed",
-  "operator-stopped",
-  "steward-completed",
-  "steward-abandoned",
-  // Superseded by a fresh-id restart continuation (session-restart-core.ts)
-  // while still alive — never auto-revive the OLD row, it already has a
-  // living replacement (`continuedTo`).
-  "restarted",
-])
+// Defined in session-end-reason.ts (cycle-free) so sessions.ts can share it.
+export { DELIBERATE_END_REASONS }
 
 const CLOSED_SUBJECTS_CAP = 500
 
+/** Statuses whose provider-side watch stays live — the sentinel keeps
+ *  polling even while `orphaned` (design §2: "the provider-side watch is
+ *  never cancelled just because a session died"). */
 const POLLABLE_STATUSES: ReadonlySet<SentinelStatus> = new Set(["active", "orphaned"])
 
 function agentprotoHome(): string {
@@ -176,6 +164,16 @@ export interface SentinelRuntimeRegistry {
   ): Promise<SendMessageResult>
 }
 
+/** What the sentinel needs to know about a target session to decide whether
+ *  it may be revived: the retirement fields (see `isRetired`), its parent,
+ *  and the end of its `continuedTo` chain when one exists. */
+export interface SentinelSessionInfo extends Omit<RetirementFields, "endedReason"> {
+  endedReason?: string
+  parentSessionId?: string
+  /** End of the target's `continuedTo` chain (a row that still exists). */
+  successorId?: string
+}
+
 export interface SentinelRuntimeOptions {
   store: SentinelStore
   registry: SentinelRuntimeRegistry
@@ -191,7 +189,7 @@ export interface SentinelRuntimeOptions {
    *  deliberate outcome (`operator-completed`, `steward-*`, `operator-stopped`)
    *  the sentinel never resumes it — the notice goes to the parent (if alive)
    *  or is parked. Omitted → every dead target is resumed (legacy). */
-  sessionInfo?: (sessionId: string) => { endedReason?: string; parentSessionId?: string } | undefined
+  sessionInfo?: (sessionId: string) => SentinelSessionInfo | undefined
   /** Poll cadence while "hot" (an event landed within `hotWindowMs`).
    *  Default 15s. */
   activeIntervalMs?: number
@@ -413,7 +411,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     event: SentinelEvent,
     msg: SessionMessage,
     sessionId: string,
-    info: { endedReason?: string; parentSessionId?: string },
+    info: SentinelSessionInfo,
   ): Promise<void> {
     const parentId = info.parentSessionId
     if (parentId && opts.isSessionAlive(parentId)) {
@@ -427,8 +425,47 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         if (!(err instanceof SessionNotAliveError)) throw err
       }
     }
-    parkEvent(sentinel, event, `session ${sessionId} closed (${info.endedReason}); not resuming, no live parent`)
+    parkEvent(
+      sentinel,
+      event,
+      `session ${sessionId} retired (${info.endedReason ?? (info.archived ? "archived" : "superseded")}); not resuming, no live parent`,
+    )
     markOrphaned(sentinel)
+  }
+
+  /** The target was superseded: deliver to the end of its `continuedTo`
+   *  chain and re-target the sentinel there. A dead successor is revived only
+   *  if it is not itself retired. */
+  async function deliverToSuccessor(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    msg: SessionMessage,
+    sessionId: string,
+    successorId: string,
+  ): Promise<void> {
+    const target = sentinel.spec.target
+    if (target.kind !== "session") return
+    try {
+      let to = successorId
+      if (!opts.isSessionAlive(successorId)) {
+        const succInfo = opts.sessionInfo?.(successorId)
+        if (!succInfo || isRetired(succInfo)) {
+          parkEvent(sentinel, event, `session ${sessionId} superseded by ${successorId}, which is not alive`)
+          markOrphaned(sentinel)
+          return
+        }
+        to = await opts.restartSession(successorId)
+      }
+      await opts.registry.sendMessage({ ...msg, to }, { source: "sentinel", origin: sentinel.id })
+      store.update(sentinel.id, {
+        spec: { ...sentinel.spec, target: { ...target, sessionId: to } },
+      })
+      const current = store.get(sentinel.id)
+      if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
+    } catch (err) {
+      parkEvent(sentinel, event, describeError(err))
+      markOrphaned(sentinel)
+    }
   }
 
   async function handleDeadSession(
@@ -449,7 +486,14 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
 
     const info = opts.sessionInfo?.(sessionId)
-    if (info?.endedReason && DELIBERATE_END_REASONS.has(info.endedReason)) {
+    if (info && isRetired(info)) {
+      // Retired (closed on purpose / archived / superseded): never revived,
+      // in place or under a new id. Its notices go to the successor when
+      // there is one, else to the parent / the parking journal.
+      if (info.successorId) {
+        await deliverToSuccessor(sentinel, event, msg, sessionId, info.successorId)
+        return
+      }
       await routeAroundClosedSession(sentinel, event, msg, sessionId, info)
       return
     }

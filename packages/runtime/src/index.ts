@@ -97,10 +97,13 @@ import {
   createSessionsRegistry,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
+  SessionRetiredError,
   type SessionsRegistry,
   type SessionDescriptor,
   type PtyFactory,
 } from "./sessions.js"
+import { isRetired, resolveSuccessor } from "./session-retirement.js"
+import { wireRetirementCleanup } from "./retirement-cleanup.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import {
   runContinueOnBootPass,
@@ -126,7 +129,7 @@ import { makePublicUrlResolver, setSentinelPublicUrlSource } from "./sentinel-pu
 import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
-import { registerSentinelTools } from "./sentinel-tools.js"
+import { registerSentinelTools, cancelSentinelWatch } from "./sentinel-tools.js"
 import { createSessionFollowStore } from "./session-follow-store.js"
 import { wireSessionFollow } from "./session-follow.js"
 import { registerSessionFollowTools } from "./session-follow-tools.js"
@@ -592,7 +595,8 @@ export type {
 } from "./sessions.js"
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
 // PR-4's eager pass) — not a type-only export like the block above.
-export { ResumeDisabledError } from "./sessions.js"
+export { ResumeDisabledError, SessionRetiredError } from "./sessions.js"
+export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 // Session identity env var names injected into every spawned process
 // (assigned last, after caller-supplied env, so they cannot be forged).
 export { SESSION_ID_ENV, WORKSPACE_SLUG_ENV } from "./sessions.js"
@@ -1200,6 +1204,27 @@ export function makeRestartForRouting(
       throw new Error(
         `${config.name}: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
       )
+    }
+    // A retired row with a successor never restarts: route to the successor
+    // (end of the `continuedTo` chain) — alive → use as-is, dead → revive
+    // THAT one (unless it is retired itself, which throws below).
+    const successorId = resolveSuccessor(sid => deps.sessions.get(sid), id)
+    if (successorId) {
+      const successor = deps.sessions.get(successorId)
+      if (successor && (successor.status === "running" || successor.status === "starting")) {
+        return successorId
+      }
+      if (successor && !isRetired(successor)) {
+        const revived = await restartPreferInPlace(deps.sessions, deps.resolveAgentAdapter, successor, {
+          forceAgentResume: true,
+          allowDeliberateEnd: config.allowDeliberateEnd,
+          ...(deps.daemonMcpUrl ? { daemonMcpUrl: deps.daemonMcpUrl } : {}),
+        })
+        return revived.desc.id
+      }
+      // The whole chain is retired: reviving the original would resurrect a
+      // superseded row, so refuse and name where the conversation went.
+      throw new SessionRetiredError(id, desc.status, config.name, successorId)
     }
     const restarted = await restartPreferInPlace(deps.sessions, deps.resolveAgentAdapter, desc, {
       forceAgentResume: true,
@@ -2660,7 +2685,16 @@ export async function createGateway(
     restartSession: restartSentinelSession,
     sessionInfo: id => {
       const desc = sessions.get(id)
-      return desc ? { endedReason: desc.endedReason, parentSessionId: desc.parentSessionId } : undefined
+      if (!desc) return undefined
+      const successorId = resolveSuccessor(sid => sessions.get(sid), id)
+      return {
+        endedReason: desc.endedReason,
+        parentSessionId: desc.parentSessionId,
+        archived: desc.archived,
+        continuedTo: desc.continuedTo,
+        retiredAt: desc.retiredAt,
+        ...(successorId ? { successorId } : {}),
+      }
     },
   })
 
@@ -2674,6 +2708,16 @@ export async function createGateway(
     sessionEvents,
     store: sessionFollowStore,
     restartSession: restartSentinelSession,
+  })
+
+  // Retirement cleanup — re-point follows/sentinels of a superseded session
+  // at its successor; drop those of an archived/forgotten one.
+  wireRetirementCleanup({
+    registry: sessions,
+    followStore: sessionFollowStore,
+    sentinelStore,
+    cancelSentinel: id =>
+      cancelSentinelWatch({ store: sentinelStore, resolveProvider: resolveSentinelProviderResolved }, id),
   })
 
   // Inbound watcher — polls an agentpush source on a timer and spawns

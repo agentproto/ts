@@ -176,7 +176,7 @@ describe("kill(id, signal, 'operator-completed') on an already-terminal session"
     reg.shutdown()
   })
 
-  it("reason:'operator-stopped' (or omitted) on a terminal row stays today's no-op", () => {
+  it("a PLAIN kill (no reason) on a terminal row stays a no-op", () => {
     const reg = createSessionsRegistry({ persist: false })
     const desc = reg.spawnAgent({
       workspaceSlug: "default",
@@ -185,12 +185,46 @@ describe("kill(id, signal, 'operator-completed') on an already-terminal session"
       adapterSlug: "fake",
     })
     expect(reg.kill(desc.id)).toBe(true) // ordinary kill → terminal
-    const before = reg.get(desc.id)
+    const before = structuredClone(reg.get(desc.id))
 
-    expect(reg.kill(desc.id, undefined, "operator-stopped")).toBe(false)
     expect(reg.kill(desc.id)).toBe(false)
 
     expect(reg.get(desc.id)).toEqual(before)
+    expect(reg.get(desc.id)?.retiredAt).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("reason:'operator-stopped' on an already-ended row RETIRES it (stamps retiredAt, keeps the original end reason)", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+    expect(reg.kill(desc.id, undefined, "daemon-restart")).toBe(true)
+    expect(reg.get(desc.id)?.retiredAt).toBeUndefined()
+
+    expect(reg.kill(desc.id, undefined, "operator-stopped")).toBe(true)
+
+    const after = reg.get(desc.id)
+    expect(after?.retiredAt).toEqual(expect.any(String))
+    expect(after?.endedReason).toBe("daemon-restart")
+    reg.shutdown()
+  })
+
+  it("reason:'operator-stopped' on an ended row with no end reason records it", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+    expect(reg.kill(desc.id)).toBe(true)
+    expect(reg.kill(desc.id, undefined, "operator-stopped")).toBe(true)
+    expect(reg.get(desc.id)?.endedReason).toBe("operator-stopped")
+    expect(reg.get(desc.id)?.retiredAt).toEqual(expect.any(String))
     reg.shutdown()
   })
 })
@@ -412,7 +446,7 @@ describe("POST /sessions/:id/kill — reason body", () => {
     })
   })
 
-  it("{ reason: 'stopped' } on an ALREADY-ENDED session stays a 404 no-op", async () => {
+  it("{ reason: 'stopped' } on an ALREADY-ENDED session retires it (200, retiredAt stamped)", async () => {
     await withServer(async (port, registry) => {
       const desc = registry.spawnAgent({
         workspaceSlug: "default",
@@ -421,18 +455,64 @@ describe("POST /sessions/:id/kill — reason body", () => {
         adapterSlug: "fake",
       })
       expect(registry.kill(desc.id)).toBe(true)
-      const before = registry.get(desc.id)
 
       const res = await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}/kill`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ reason: "stopped" }),
       })
-      expect(res.status).toBe(404)
-      const body = (await res.json()) as { ok: boolean; sessionId: string }
-      expect(body.ok).toBe(false)
-      expect(registry.get(desc.id)).toEqual(before)
+      expect(res.status).toBe(200)
+      expect(registry.get(desc.id)?.retiredAt).toEqual(expect.any(String))
     })
+  })
+})
+
+describe("POST /sessions/:id/prompt — superseded session", () => {
+  let stopServer: (() => Promise<void>) | undefined
+  afterEach(async () => {
+    await stopServer?.()
+    stopServer = undefined
+  })
+
+  it("a human prompt to a continuedTo row is refused with 409 session_superseded naming the successor", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    stopServer = () => http.stop()
+    const spawn = () =>
+      registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: instantAgentSession(),
+        adapterSlug: "fake",
+      })
+    const oldRow = spawn()
+    const successor = spawn()
+    registry.kill(oldRow.id)
+    registry.markRetired(oldRow.id, { continuedTo: successor.id, cause: "continued" })
+
+    for (const suffix of ["", "?wait=false"]) {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/${oldRow.id}/prompt${suffix}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "hello" }),
+      })
+      expect(res.status).toBe(409)
+      const body = (await res.json()) as { error: string; continuedTo: string }
+      expect(body.error).toBe("session_superseded")
+      expect(body.continuedTo).toBe(successor.id)
+    }
+    expect(registry.get(oldRow.id)?.status).toBe("killed")
   })
 })
 
