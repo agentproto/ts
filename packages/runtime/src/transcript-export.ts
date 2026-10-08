@@ -23,7 +23,7 @@
  * model so every source produces identical rendering logic.
  */
 
-import { createReadStream, promises as fs, type Dirent } from "node:fs"
+import { createReadStream, existsSync, promises as fs, type Dirent } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
@@ -1166,7 +1166,13 @@ async function readFirstJsonLine(path: string): Promise<string | undefined> {
 function codexHome(): string {
   return process.env.CODEX_HOME ?? join(homedir(), ".codex")
 }
-function codexSessionsDir(): string {
+// An OS-confined codex spawn (app boundary) runs with CODEX_HOME = its
+// `adapterConfigDir` (driver `stateHome`), so its rollouts live there.
+function codexSessionsDir(configDir?: string): string {
+  if (configDir) {
+    const isolated = join(configDir, "sessions")
+    if (existsSync(isolated)) return isolated
+  }
   return join(codexHome(), "sessions")
 }
 
@@ -1228,8 +1234,8 @@ function codexBlocksText(content: unknown): string {
   return acc
 }
 
-async function findCodexRolloutFile(conversationId: string): Promise<string | undefined> {
-  const files = await walkCodexRollouts(codexSessionsDir())
+async function findCodexRolloutFile(conversationId: string, configDir?: string): Promise<string | undefined> {
+  const files = await walkCodexRollouts(codexSessionsDir(configDir))
   // Fast path: the uuid is the filename suffix.
   const byName = files.find(f => f.endsWith(`-${conversationId}.jsonl`))
   if (byName) return byName
@@ -1250,11 +1256,11 @@ async function findCodexRolloutFile(conversationId: string): Promise<string | un
   return undefined
 }
 
-export async function exportCodexSession(conversationId: string): Promise<ExportedSession> {
-  const file = await findCodexRolloutFile(conversationId)
+export async function exportCodexSession(conversationId: string, configDir?: string): Promise<ExportedSession> {
+  const file = await findCodexRolloutFile(conversationId, configDir)
   if (!file) {
     throw new Error(
-      `codex: no rollout file for conversation "${conversationId}" under ${codexSessionsDir()}.\n` +
+      `codex: no rollout file for conversation "${conversationId}" under ${codexSessionsDir(configDir)}.\n` +
         `The session may predate persistence, or CODEX_HOME points elsewhere.`,
     )
   }
@@ -2021,7 +2027,7 @@ const EXPORT_STRATEGIES: Record<string, ExportStrategy> = {
     exportSession: (id: string) => exportHermesSession(id),
   },
   codex: {
-    exportSession: (id: string) => exportCodexSession(id),
+    exportSession: (id: string, _cwd?: string, configDir?: string) => exportCodexSession(id, configDir),
   },
   opencode: {
     exportSession: (id: string) => exportOpenCodeSession(id),

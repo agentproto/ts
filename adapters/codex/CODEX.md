@@ -19,6 +19,10 @@ auth:
   state:
     env: [OPENAI_API_KEY, CODEX_API_KEY]
 sandbox: ./SANDBOX.md
+stateHome:
+  env: CODEX_HOME
+  defaultDir: .codex
+  share: [auth.json]
 protocol: acp
 acp: ./codex-acp.ACP.md
 session:

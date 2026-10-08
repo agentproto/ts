@@ -491,6 +491,13 @@ export const agentCliFrontmatterSchema = z
     routeSelection: z.enum(["free", "derived-from-model"]).optional(),
     authEnforce: z.enum(["always", "when-configured"]).optional(),
     sandbox: z.union([z.string(), z.record(z.string(), z.unknown())]),
+    stateHome: z.object({
+      env: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+      defaultDir: z.string().min(1).refine(d => !d.startsWith("/") && !d.split("/").includes(".."), {
+        message: "defaultDir must be relative to $HOME and stay inside it",
+      }),
+      share: z.array(z.string().regex(/^[^/]+$/)).optional(),
+    }).strict().optional(),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),
     acp: z.string().optional(),

@@ -141,6 +141,27 @@ export interface WrapAgentCliSpawnOptions {
   label: string
 }
 
+function effectiveSpawnSandboxMode(
+  opts: Pick<WrapAgentCliSpawnOptions, "mode" | "zones">,
+  configured: SandboxMode | undefined,
+): SandboxMode | undefined {
+  return opts.zones ? (opts.mode ?? "workspace") : (opts.mode ?? configured)
+}
+
+/**
+ * Will {@link wrapAgentCliSpawn} confine this spawn? Same mode resolution
+ * (zones force it on; an explicit mode wins over the workspace config file),
+ * so callers can prepare confinement-only state BEFORE the env is frozen —
+ * e.g. an isolated adapter state home the sandbox would otherwise deny.
+ */
+export async function willConfineAgentCliSpawn(
+  opts: Pick<WrapAgentCliSpawnOptions, "mode" | "zones" | "cwd">,
+): Promise<boolean> {
+  const cfg = await loadAdapterSpawnSandboxConfig(opts.cwd)
+  const mode = effectiveSpawnSandboxMode(opts, cfg.mode)
+  return mode !== undefined && mode !== "off"
+}
+
 /**
  * Wrap `[bin, ...args]` for confined execution, or return it unchanged when
  * unconfined. FAIL-CLOSED when a mode IS configured but no backend exists
@@ -177,7 +198,7 @@ export async function wrapAgentCliSpawn(
   opts: WrapAgentCliSpawnOptions,
 ): Promise<[string, string[]]> {
   const cfg = await loadAdapterSpawnSandboxConfig(opts.cwd)
-  const mode = opts.zones ? (opts.mode ?? "workspace") : (opts.mode ?? cfg.mode)
+  const mode = effectiveSpawnSandboxMode(opts, cfg.mode)
   if (mode === undefined) return [bin, args]
   if (mode === "off" && opts.zones) {
     throw new Error(
