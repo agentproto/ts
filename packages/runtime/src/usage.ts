@@ -31,7 +31,7 @@ import {
   resolveLlmModelRoute,
   tryParseModelRef,
 } from "@agentproto/model-catalog/route-identity"
-import { WIDENING_ROUTES, normalizeRouterPrefixedId } from "./catalog-models.js"
+import { WIDENING_ROUTES, normalizeRouterPrefixedId } from "./router-routes.js"
 
 /** Where a session's `costUsd` came from — see the module doc. */
 export type UsageSource = "adapter" | "computed" | "no-pricing" | "none"
