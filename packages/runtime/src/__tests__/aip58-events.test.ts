@@ -295,7 +295,7 @@ steps:
       },
       kill: () => true,
       archiveSession: () => true,
-    } as unknown as Partial<SessionsRegistry>)
+    } as Partial<SessionsRegistry>)
     const runner = createWorkflowRunner({
       registry,
       sessionEvents: bus,
