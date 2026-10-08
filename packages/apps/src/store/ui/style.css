@@ -199,3 +199,103 @@ html, body {
   background: var(--st-surface);
   flex-shrink: 0;
 }
+
+[hidden] { display: none !important; }
+
+/* ── search + category chips ─────────────────────────────────────── */
+#store-filter {
+  padding: 8px 12px 0;
+  flex-shrink: 0;
+}
+#store-search {
+  width: 100%;
+  background: var(--st-bg);
+  border: 1px solid var(--st-border);
+  color: var(--st-ink);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+#store-cats { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.store-cat-chip {
+  background: var(--st-bg);
+  border: 1px solid var(--st-border);
+  color: var(--st-ink-muted);
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.store-cat-chip:hover { background: var(--st-border); }
+.store-cat-chip.active { background: var(--st-accent); border-color: var(--st-accent); color: var(--st-ink-on-accent); }
+.store-no-results {
+  border: 1px dashed var(--st-border);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+/* ── icons ───────────────────────────────────────────────────────── */
+.store-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--st-ink-muted) 15%, transparent);
+  color: var(--st-ink-muted);
+  font-weight: 700;
+}
+.store-icon-sm { width: 32px; height: 32px; font-size: 14px; }
+.store-icon-lg { width: 64px; height: 64px; font-size: 28px; border-radius: 10px; }
+.store-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.store-icon-link, .store-app-link { color: inherit; text-decoration: none; }
+.store-app-link:hover { text-decoration: underline; color: var(--st-accent); }
+.card-head { display: flex; gap: 10px; align-items: flex-start; }
+.card-body { flex: 1; min-width: 0; }
+.store-builtin-item .store-icon { margin-right: 4px; }
+
+/* ── detail view ─────────────────────────────────────────────────── */
+.store-back { display: inline-block; font-size: 12px; color: var(--st-accent); text-decoration: none; margin-bottom: 10px; }
+.store-back:hover { text-decoration: underline; }
+.store-detail-head { display: flex; gap: 14px; align-items: center; margin-bottom: 10px; }
+.store-detail-title { min-width: 0; }
+.store-detail-name { font-size: 18px; font-weight: 600; word-break: break-word; }
+.store-detail-id { font-size: 11px; color: var(--st-ink-muted); margin: 2px 0 6px; word-break: break-all; }
+.store-detail-actions { margin-bottom: 12px; }
+.store-detail-desc { font-size: 12px; line-height: 1.5; white-space: pre-wrap; margin-bottom: 12px; }
+.store-detail-section {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--st-ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 16px 0 6px;
+}
+.store-detail-more { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.store-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12px; }
+.store-kv dt { color: var(--st-ink-muted); }
+.store-kv dd { min-width: 0; word-break: break-all; }
+.store-detail-list { list-style: none; font-size: 12px; }
+.store-detail-list li { padding: 2px 0; }
+.store-dir-missing { background: color-mix(in srgb, var(--st-warn) 25%, transparent); white-space: normal; }
+.store-runs { width: 100%; border-collapse: collapse; font-size: 11px; }
+.store-runs th, .store-runs td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--st-border); }
+.store-runs th { color: var(--st-ink-muted); font-weight: 600; }
+.store-copy-item { margin-bottom: 8px; }
+.store-copy-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
+.store-copy-label { font-size: 11px; color: var(--st-ink-muted); }
+.store-copy-text {
+  background: var(--st-surface);
+  border: 1px solid var(--st-border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}

@@ -1,6 +1,14 @@
 import "./style.css"
-import { render, isAgentappUrl, isBuiltin } from "./render.js"
-import type { CatalogRow, InstalledRow, StoreSnapshot, UpdateRow, InstallConfirmationRequest } from "./types.js"
+import {
+  buildInstallPayload,
+  isAgentappUrl,
+  isBuiltin,
+  parseView,
+  render,
+  renderCategoryChips,
+  renderDetail,
+} from "./render.js"
+import type { CatalogRow, InstalledRow, StoreSnapshot, UpdateRow, InstallConfirmationRequest, ViewState } from "./types.js"
 
 function getEl(id: string): HTMLElement {
   const el = document.getElementById(id)
@@ -9,6 +17,12 @@ function getEl(id: string): HTMLElement {
 }
 
 let snapshot: StoreSnapshot = { catalog: [], installed: [], updates: [] }
+
+/** ?app= / ?q= / ?cat= — the URL is the source of truth at boot and on
+ *  popstate; in between, navigate() updates this and mirrors it to the URL
+ *  best-effort (a sandboxed host iframe may refuse history writes, in which
+ *  case in-panel navigation still works, just without browser back). */
+let view: ViewState = parseView(window.location.search)
 
 function setStatus(msg: string): void {
   getEl("statusbar").textContent = msg
@@ -55,30 +69,6 @@ function runInstallConfirm(
       }
     })
     .catch((e: Error) => setStatus(`Install failed: ${e.message}`))
-}
-
-function buildInstallPayload(entry: CatalogRow): Record<string, unknown> | undefined {
-  const source = entry.source
-  if (!source || typeof source !== "object") return undefined
-  const s = source as {
-    kind: string
-    url?: string
-    sha256?: string
-    sha?: string
-    ref?: string
-    subdir?: string
-  }
-  const payload: Record<string, unknown> = { url: s.url }
-  if (s.kind === "agentapp") {
-    payload.sha256 = s.sha256
-  } else {
-    if (s.ref) payload.ref = s.ref
-    if (s.subdir) payload.subdir = s.subdir
-    if (s.sha) payload.sha = s.sha
-    payload.allowBuild = false
-  }
-  if (entry.catalogUrl) payload.catalogUrl = entry.catalogUrl
-  return payload
 }
 
 function describePreview(preview: InstallConfirmationRequest): string {
@@ -154,7 +144,65 @@ function openUi(appId: string): void {
     .map(encodeURIComponent)
     .join("/")
     .replace(/%40/g, "@")
-  window.open(`/apps/${encoded}/ui`, "_blank", "noopener")
+  const path = `/apps/${encoded}/ui`
+  try {
+    window.open(path, "_blank", "noopener")
+  } catch (e) {
+    setStatus(`Cannot open a tab from this host — visit ${path} on the daemon.`)
+  }
+}
+
+function urlFor(v: ViewState): string {
+  const params = new URLSearchParams(window.location.search)
+  const set = (key: string, value: string): void => {
+    if (value === "") params.delete(key)
+    else params.set(key, value)
+  }
+  set("app", v.app)
+  set("q", v.q)
+  set("cat", v.cat)
+  const search = params.toString()
+  return window.location.pathname + (search === "" ? "" : "?" + search)
+}
+
+function navigate(next: ViewState, mode: "push" | "replace"): void {
+  const appChanged = next.app !== view.app
+  view = next
+  try {
+    if (mode === "push") window.history.pushState(null, "", urlFor(next))
+    else window.history.replaceState(null, "", urlFor(next))
+  } catch (e) {
+    // history is restricted in this host — the in-memory view still drives the panel
+  }
+  renderBody()
+  if (appChanged) getEl("content").scrollTop = 0
+}
+
+function copyText(id: string): void {
+  const pre = document.getElementById(id)
+  if (!pre) return
+  const value = pre.textContent || ""
+  const selectFallback = (): void => {
+    const selection = window.getSelection()
+    if (selection) {
+      const range = document.createRange()
+      range.selectNodeContents(pre)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+    let copied = false
+    try {
+      copied = typeof document.execCommand === "function" && document.execCommand("copy")
+    } catch (e) {
+      copied = false
+    }
+    setStatus(copied ? "Copied" : "Selected — press Ctrl/Cmd+C to copy")
+  }
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    navigator.clipboard.writeText(value).then(() => setStatus("Copied"), selectFallback)
+  } else {
+    selectFallback()
+  }
 }
 
 /** The ?install=<appId> deep link: once the catalog rows are in, scroll to
@@ -222,8 +270,15 @@ function summarize(snap: StoreSnapshot): string {
 }
 
 function renderBody(): void {
-  const content = getEl("content")
-  content.innerHTML = render(snapshot)
+  const detail = view.app !== ""
+  getEl("store-filter").hidden = detail
+  getEl("url-install-static").hidden = detail
+  if (!detail) {
+    const search = getEl("store-search") as HTMLInputElement
+    if (search.value !== view.q) search.value = view.q
+    getEl("store-cats").innerHTML = renderCategoryChips(snapshot, view)
+  }
+  getEl("content").innerHTML = detail ? renderDetail(snapshot, view) : render(snapshot, view)
 }
 
 function boot(): void {
@@ -249,13 +304,36 @@ function boot(): void {
     })
   }
 
+  const search = document.getElementById("store-search") as HTMLInputElement | null
+  if (search) {
+    search.addEventListener("input", () => navigate({ ...view, q: search.value }, "replace"))
+  }
+  getEl("store-cats").addEventListener("click", evt => {
+    if (!(evt.target instanceof Element)) return
+    const chip = evt.target.closest("button[data-cat]")
+    if (chip) navigate({ ...view, cat: chip.getAttribute("data-cat") || "" }, "replace")
+  })
+
   content.addEventListener("click", evt => {
     if (!(evt.target instanceof Element)) return
+    const mouse = evt as MouseEvent
+    const link = evt.target.closest("a[data-open-app], a[data-nav]")
+    if (link && !(mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.button > 0)) {
+      evt.preventDefault()
+      const openApp = link.getAttribute("data-open-app")
+      navigate({ ...view, app: openApp || "" }, "push")
+      return
+    }
     const btn = evt.target.closest("button[data-decision]")
     if (!(btn instanceof HTMLButtonElement)) return
+    const decision = btn.getAttribute("data-decision")
+    if (decision === "copy") {
+      const copyId = btn.getAttribute("data-copy-id")
+      if (copyId) copyText(copyId)
+      return
+    }
     const appId = btn.getAttribute("data-appid")
     if (!appId) return
-    const decision = btn.getAttribute("data-decision")
     if (decision === "install") {
       const entry = snapshot.catalog.find(c => c.appId === appId)
       if (entry) armInstall(entry)
@@ -266,6 +344,27 @@ function boot(): void {
     } else if (decision === "open") {
       openUi(appId)
     }
+  })
+
+  // A catalog icon the host's CSP (img-src) or the network refuses falls
+  // back to the same initial-letter tile a missing icon gets. `error` does
+  // not bubble, hence the capture phase.
+  document.addEventListener(
+    "error",
+    evt => {
+      const img = evt.target
+      if (!(img instanceof HTMLImageElement)) return
+      const tile = img.closest(".store-icon")
+      if (!tile) return
+      tile.classList.add("store-icon-fallback")
+      tile.textContent = tile.getAttribute("data-initial") || "?"
+    },
+    true,
+  )
+
+  window.addEventListener("popstate", () => {
+    view = parseView(window.location.search)
+    renderBody()
   })
 
   void initBridge()
