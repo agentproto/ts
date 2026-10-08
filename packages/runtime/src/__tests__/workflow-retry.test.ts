@@ -769,4 +769,26 @@ steps:
     expect(runner.status(original.runId)?.status).toBe("failed")
     expect(result.run.runId).not.toBe(original.runId)
   })
+
+  it("persist throttle: a status change is on disk at once, even inside the coalescing window", async () => {
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+      persistMinIntervalMs: 60_000,
+    })
+    const run = await runner.start({
+      workflowId: "youtube-transcriber",
+      stages: [{ steps: [{ label: "transcribe", adapter: "mock", prompt: "go" }] }],
+    })
+    const onDisk = (): WorkflowRun | undefined =>
+      (JSON.parse(readFileSync(persistPath, "utf8")) as WorkflowRun[]).find(r => r.runId === run.runId)
+    expect(onDisk()?.status).toBe("running")
+    runner.cancel(run.runId)
+    expect(onDisk()?.status).toBe("cancelled")
+  })
+
 })
