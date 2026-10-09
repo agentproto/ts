@@ -33,10 +33,18 @@ loader path can carry.
      judge session is released (killed + archived) when its item settles.
    Verdicts: `done|abandoned|blocked|needs-input|active`. A judge error never
    closes anything.
-5. `ask` (only with `askSessions`) — low-confidence, idle, non-keepAlive,
-   not-awaiting-input sessions get ONE prompt asking them to reply
+5. `ask` (only with `askSessions`) — low-confidence, idle, not-awaiting-input
+   sessions get ONE prompt asking them to reply
    `STEWARD: DONE …` / `STEWARD: NOT-DONE …`; a ~3 min bounded wait; the
-   answer becomes a `declared` verdict.
+   answer becomes a `declared` verdict. `keepAlive` only re-lights a session
+   after a daemon restart, so it does not exempt one from the ask: a keepAlive
+   session whose worktree is merged or clean (nothing uncommitted, nothing
+   ahead of base; no worktree info counts as not clean) is asked too. Closing
+   is an active act: an on-demand run (`agentproto steward --ask-sessions`)
+   adds no idle delay beyond `--idle`. Only a scheduled run (`recurring: true`,
+   as the hourly routine sets) waits `keepAliveAskAfterMinutes` (default 1440,
+   24 h; 0 turns it off), so a session you meant to resume is not closed
+   overnight.
 6. `judgedApply` (only with `apply`) — confident `done`/`abandoned` close
    (resumable, with a recorded outcome); confident `blocked`/`needs-input`
    only flag. Everything else is left alone and reported.

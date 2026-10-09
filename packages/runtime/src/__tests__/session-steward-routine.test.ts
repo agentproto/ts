@@ -33,6 +33,7 @@ describe("session-steward-hourly routine", () => {
     expect(target.inputs).toEqual({
       apply: true,
       askSessions: false,
+      recurring: true,
       userOrigins: ["chat-starter", "vscode"],
       closableOrigins: ["cron:*", "gate", "workflow", "review"],
     })

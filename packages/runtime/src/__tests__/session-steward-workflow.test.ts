@@ -31,7 +31,15 @@ const CRON_RULES_PATH = join(
 let cronRules: { evidenceFingerprint: (evidence: unknown) => string }
 beforeAll(async () => {
   cronRules = (await import(CRON_RULES_PATH)) as never
+  stewardEntry = (await import(ENTRY_PATH)) as never
 })
+
+const ENTRY_PATH = join(dirname(CRON_RULES_PATH), "entry.mjs")
+let stewardEntry: {
+  resolveSettings: (input: Record<string, unknown>) => Record<string, unknown>
+  worktreeHasNothingToLose: (evidence: unknown) => boolean
+  buildAskQueue: (verdicts: unknown[], settings: Record<string, unknown>) => Array<{ sessionId: string }>
+}
 
 const WORKFLOW_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -508,6 +516,129 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     expect(apply.inputs).toMatchObject({ verdict: "done", judgedBy: "steward-ask:abandoned_lo" })
     // No STEWARD line → no declaration → still untouched.
     expect(calls.some(c => c.name === "session_wrapup_apply" && (c.inputs.sessionIds as string[])[0] === "malformed")).toBe(false)
+  })
+
+  describe("keepAlive sessions and the ask path", () => {
+    const CLEAN = { worktree: { branch: "wt/x", dirty: false, ahead: 0, behind: 3, pr: { state: "fresh" } } }
+    const lowActive = (id: string) => verdict(id, "active", 0.3)
+
+    async function runAsk(
+      sessions: Array<{ id: string; idle: number; extra?: Record<string, unknown>; keepAlive?: boolean }>,
+      input: Record<string, unknown> = {},
+    ) {
+      const entries = sessions.map(x => entry(x.id, "judge", 100, { idleMinutes: x.idle }))
+      const { dispatchTool, calls } = fakeTools({
+        entries,
+        keepAlive: new Set(sessions.filter(x => x.keepAlive !== false).map(x => x.id)),
+        evidenceExtra: Object.fromEntries(sessions.filter(x => x.extra).map(x => [x.id, x.extra!])),
+        askReplies: Object.fromEntries(sessions.map(x => [x.id, "STEWARD: DONE shipped"])),
+      })
+      const j = judgeHost(Object.fromEntries(sessions.map(x => [x.id, lowActive(x.id)])))
+      const out = await run(dispatchTool, j.host, { apply: true, askSessions: true, ...input })
+      const asked = calls.filter(c => c.name === "agent_prompt").map(c => c.inputs.sessionId as string).sort()
+      return { out, calls, asked }
+    }
+
+    it("on demand, asks a clean keepAlive session with no idle delay, and a declared DONE closes it", async () => {
+      const { calls, asked } = await runAsk([{ id: "ka_clean", idle: 45, extra: CLEAN }])
+      expect(asked).toEqual(["ka_clean"])
+      const apply = calls.find(c => c.name === "session_wrapup_apply" && (c.inputs.sessionIds as string[])[0] === "ka_clean")!
+      expect(apply.inputs).toMatchObject({ verdict: "done", judgedBy: "steward-ask:ka_clean" })
+    })
+
+    it("asks a keepAlive session whose PR is merged (the signal that already makes a plain session close)", async () => {
+      const merged = { worktree: { branch: "wt/x", dirty: true, ahead: 4, pr: { state: "merged" } } }
+      expect((await runAsk([{ id: "ka_merged", idle: 300, extra: merged }])).asked).toEqual(["ka_merged"])
+    })
+
+    it("never asks a keepAlive session with uncommitted work, commits ahead of base, or no worktree info", async () => {
+      const dirty = { worktree: { branch: "wt/x", dirty: true, ahead: 0, pr: { state: "local-only" } } }
+      const ahead = { worktree: { branch: "wt/x", dirty: false, ahead: 10, pr: { state: "local-only" } } }
+      const { asked, calls } = await runAsk([
+        { id: "ka_dirty", idle: 300, extra: dirty },
+        { id: "ka_ahead", idle: 300, extra: ahead },
+        { id: "ka_nowt", idle: 300 },
+      ])
+      expect(asked).toEqual([])
+      expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
+    })
+
+    it("a recurring run waits keepAliveAskAfterMinutes (default 24 h) before asking a keepAlive session", async () => {
+      expect((await runAsk([{ id: "ka_night", idle: 600, extra: CLEAN }], { recurring: true })).asked).toEqual([])
+      expect((await runAsk([{ id: "ka_old", idle: 1500, extra: CLEAN }], { recurring: true })).asked).toEqual(["ka_old"])
+    })
+
+    it("a recurring run honors a configured keepAliveAskAfterMinutes, and 0 disables the keepAlive ask", async () => {
+      const sessions = [{ id: "ka_mid", idle: 180, extra: CLEAN }]
+      expect((await runAsk(sessions, { recurring: true, keepAliveAskAfterMinutes: 120 })).asked).toEqual(["ka_mid"])
+      expect((await runAsk(sessions, { recurring: true, keepAliveAskAfterMinutes: 240 })).asked).toEqual([])
+      expect((await runAsk([{ id: "ka_ancient", idle: 99999, extra: CLEAN }], { recurring: true, keepAliveAskAfterMinutes: 0 })).asked).toEqual([])
+    })
+
+    it("an on-demand run ignores keepAliveAskAfterMinutes entirely", async () => {
+      const sessions = [{ id: "ka_recent", idle: 40, extra: CLEAN }]
+      expect((await runAsk(sessions, { keepAliveAskAfterMinutes: 0 })).asked).toEqual(["ka_recent"])
+      expect((await runAsk(sessions, { keepAliveAskAfterMinutes: 5000 })).asked).toEqual(["ka_recent"])
+    })
+
+    it("the worktree guard applies to recurring runs too", async () => {
+      const dirty = { worktree: { branch: "wt/x", dirty: true, ahead: 0, pr: { state: "local-only" } } }
+      expect((await runAsk([{ id: "ka_dirty", idle: 5000, extra: dirty }], { recurring: true })).asked).toEqual([])
+    })
+
+    it("does not widen a plain session's ask: a non-keepAlive session is asked regardless of idle or worktree", async () => {
+      const dirty = { worktree: { branch: "wt/x", dirty: true, ahead: 2, pr: { state: "local-only" } } }
+      const { asked } = await runAsk([{ id: "plain", idle: 60, extra: dirty, keepAlive: false }])
+      expect(asked).toEqual(["plain"])
+    })
+
+    it("without askSessions a keepAlive session is never asked, however idle and clean", async () => {
+      const { asked } = await runAsk([{ id: "ka_clean", idle: 900, extra: CLEAN }], { askSessions: false })
+      expect(asked).toEqual([])
+    })
+
+    it("a keepAlive session answering NOT-DONE stays open", async () => {
+      const entries = [entry("ka_busy", "judge", 100, { idleMinutes: 300 })]
+      const { dispatchTool, calls } = fakeTools({
+        entries,
+        keepAlive: new Set(["ka_busy"]),
+        evidenceExtra: { ka_busy: CLEAN },
+        askReplies: { ka_busy: "STEWARD: NOT-DONE still supervising" },
+      })
+      await run(dispatchTool, judgeHost({ ka_busy: lowActive("ka_busy") }).host, { apply: true, askSessions: true })
+      expect(calls.filter(c => c.name === "agent_prompt")).toHaveLength(1)
+      expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
+    })
+
+    it("worktreeHasNothingToLose: merged signal, merged PR, or clean+level; unknown is not clean", () => {
+      const f = stewardEntry.worktreeHasNothingToLose
+      expect(f({ signals: { worktreeMerged: true } })).toBe(true)
+      expect(f({ worktree: { dirty: true, ahead: 3, pr: { state: "merged" } } })).toBe(true)
+      expect(f({ worktree: { dirty: false, ahead: 0, pr: null } })).toBe(true)
+      expect(f({ worktree: { dirty: false, pr: null } })).toBe(false)
+      expect(f({ worktree: { dirty: false, ahead: 1, pr: { state: "open" } } })).toBe(false)
+      expect(f({ worktree: null })).toBe(false)
+      expect(f({})).toBe(false)
+    })
+
+    it("buildAskQueue still skips a busy or awaiting-input keepAlive session that otherwise qualifies", () => {
+      const settings = stewardEntry.resolveSettings({ askSessions: true })
+      const row = (id: string, extra: Record<string, unknown>) => ({
+        entry: { sessionId: id },
+        confidence: 0.2,
+        evidence: { keepAlive: true, idleMinutes: 600, worktree: { dirty: false, ahead: 0, pr: null }, ...extra },
+      })
+      const queue = stewardEntry.buildAskQueue(
+        [row("ok", {}), row("busy", { busy: true }), row("waiting", { awaitingInput: true })],
+        settings,
+      )
+      expect(queue).toEqual([{ sessionId: "ok" }])
+      expect(settings.recurring).toBe(false)
+      expect(settings.keepAliveAskAfterMinutes).toBe(1440)
+      const recurring = stewardEntry.resolveSettings({ askSessions: true, recurring: true })
+      expect(stewardEntry.buildAskQueue([row("ok", { idleMinutes: 600 })], recurring)).toEqual([])
+      expect(stewardEntry.buildAskQueue([row("ok", { idleMinutes: 1440 })], recurring)).toEqual([{ sessionId: "ok" }])
+    })
   })
 
   it("a judge turn that fails outright reads as active / 0 and is never acted on", async () => {

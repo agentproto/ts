@@ -56,6 +56,24 @@ inputs:
       Ask low-confidence idle sessions directly whether they're done. Off by
       default — it spends a turn in someone else's conversation.
     default: false
+  recurring:
+    type: boolean
+    description: >-
+      Set by scheduled runs (the hourly routine). A recurring run closes
+      sessions nobody asked about, so a keepAlive session must also have been
+      idle `keepAliveAskAfterMinutes`. Default false = an on-demand run, which
+      applies no such delay.
+    default: false
+  keepAliveAskAfterMinutes:
+    type: number
+    description: >-
+      With `askSessions`, for `recurring` runs only: a keepAlive session whose
+      worktree is merged or clean (nothing uncommitted, nothing ahead of base)
+      is asked only once idle this many minutes; 0 disables the recurring
+      keepAlive ask. On-demand runs ignore it. keepAlive only re-lights a
+      session after a daemon restart; it does not stop a declared DONE from
+      closing it.
+    default: 1440
   callerSessionId:
     type: string
     description: The calling session's id — never a candidate.
@@ -342,7 +360,10 @@ steps:
   - id: askQueue
     kind: transform
     name: Low-confidence idle sessions to ask directly
-    description: Entry-based. Empty unless `askSessions`.
+    description: >-
+      Entry-based. Empty unless `askSessions`. A keepAlive session is included
+      only with a merged/clean worktree, and on a `recurring` run only once
+      idle `keepAliveAskAfterMinutes` (default 1440, 0 = never).
 
   - id: ask
     kind: map
@@ -488,8 +509,16 @@ as observed, never nudged.
 - `session_wrapup_apply` re-classifies each id right before acting and always
   refuses `keep`-class ids; this workflow never feeds it one.
 - Rules only ever close `close`/`stuck` ids; a `keepAlive` session is never
-  in those classes, so only a confident judge verdict (with `judgedBy`) can
-  close it — as FIX-9A allows.
+  in those classes, so only a confident judge verdict or a declared DONE (with
+  `judgedBy`) can close it — as FIX-9A allows. `keepAlive` means "re-light
+  after a daemon restart", not "never close": with `askSessions`, a keepAlive
+  session whose worktree is merged or clean (no uncommitted change, nothing
+  ahead of base; unknown worktree is not clean) is asked like any other. Closing
+  is an active act, so an on-demand run (`recurring: false`, e.g. `agentproto
+  steward --ask-sessions`) applies no idle delay to it beyond `idleMinutes`; only
+  a `recurring` run waits `keepAliveAskAfterMinutes` (default 1440 = 24 h, 0
+  disables), so nobody wakes up to find a session closed that they meant to
+  resume. A steward close is a deliberate end, so the sentinel never revives it.
 - A malformed judge reply is `active` with confidence 0 — never acted on.
 - The caller's own session (`callerSessionId`) is dropped from every list.
 - `blocked` / `needs-input` only FLAG a session; it keeps running.
