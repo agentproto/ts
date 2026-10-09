@@ -265,6 +265,15 @@ runtime fails the spawn loudly rather than falling back to the account's default
 scope. Providers ship with their adapter and the host registers them (the CLI
 does so for the built-ins).
 
+The registry is process-global and starts EMPTY: a host that uses
+`@agentproto/auth` outside the CLI must call `registerSubaccountProvider` for
+each provider it needs BEFORE creating, reading or spawning pinned profiles.
+Until then, creating a profile with a legacy `opencode-console:<orgId>` source is
+rejected, and a spawn on a pinned profile whose provider is not registered fails
+with `auth_source_unresolved` (it never runs on the account's default scope). A
+pin on a credential-backed profile is accepted at create time even when no
+provider owns its endpoint yet; the clear error comes at spawn time.
+
 ## API surface
 
 | Export | Purpose |
