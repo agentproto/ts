@@ -66,6 +66,43 @@ export interface DeliverEventDeps {
   sleep?: (ms: number) => Promise<void>
   /** Clock (tests only). Default: real wall clock. */
   now?: () => number
+  /** Observability hook: one call per attempt outcome. Carries NO url, body or
+   *  secret — only the attempt number, HTTP status / redacted error reason,
+   *  and whether the attempt ended the delivery (`delivered`/`dead`) or will
+   *  be retried. A throwing hook never affects delivery. */
+  onAttempt?: (info: DeliveryAttemptInfo) => void
+}
+
+export interface DeliveryAttemptInfo {
+  attempt: number
+  /** HTTP status when the receiver answered. */
+  status?: number
+  /** Redacted failure reason (no URL) when there is no usable status. */
+  error?: string
+  outcome: "delivered" | "retry" | "dead"
+}
+
+/** Host (and port) of a callback URL only — never path, query or userinfo,
+ *  which can carry a bearer token. `"invalid-url"` when unparseable. */
+export function callbackHost(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return "invalid-url"
+  }
+}
+
+/** Replace any `http(s)://…` run in free text with `<scheme>://<host>` so a
+ *  network-error message cannot leak a token-bearing URL path. */
+export function redactUrls(text: string): string {
+  return text.replace(/https?:\/\/[^\s'"<>)]+/gi, m => {
+    try {
+      const u = new URL(m)
+      return `${u.protocol}//${u.host}`
+    } catch {
+      return "<url>"
+    }
+  })
 }
 
 export const CLAMP_LIMIT_BYTES = 262_144
@@ -116,6 +153,13 @@ export async function deliverEventEnvelope(
   // Serialize ONCE (I2) — clamp BEFORE any signature; the loop keeps THESE bytes.
   const { bytes: payloadBytes } = envelopeClampedBytes(event)
 
+  const note = (info: DeliveryAttemptInfo): void => {
+    try {
+      deps.onAttempt?.(info)
+    } catch {
+      // observability must never alter delivery
+    }
+  }
   const delivery: DeliveryState = { attempts: 0 }
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) await sleep(deliveryBackoffDelay(attempt))
@@ -127,6 +171,7 @@ export async function deliverEventEnvelope(
       signed = signWebhook({ msgId: event.eventId, timestamp, payload: payloadBytes, secrets: replay.secrets })
     } catch (err) {
       delivery.lastError = `signing failed: ${(err as Error).message}`
+      note({ attempt: delivery.attempts, error: "invalid_secret", outcome: "dead" })
       return { ok: false, reason: "invalid_secret", delivery }
     }
     let response: { status: number; body: string }
@@ -138,18 +183,27 @@ export async function deliverEventEnvelope(
         timeoutMs: 15_000, // delivery default (challenge uses 10_000)
       })
     } catch (err) {
-      delivery.lastError = err instanceof Error ? err.message : String(err)
-      if (attempt < MAX_ATTEMPTS - 1) continue
+      delivery.lastError = redactUrls(err instanceof Error ? err.message : String(err))
+      const last = attempt >= MAX_ATTEMPTS - 1
+      note({ attempt: delivery.attempts, error: delivery.lastError, outcome: last ? "dead" : "retry" })
+      if (!last) continue
       return { ok: false, reason: "network", delivery }
     }
     if (response.status >= 200 && response.status <= 299) {
+      note({ attempt: delivery.attempts, status: response.status, outcome: "delivered" })
       return { ok: true, delivery }
     }
     if (TERMINAL_NO_RETRY_STATUSES.has(response.status)) {
       delivery.lastError = `terminal status ${response.status}`
+      note({ attempt: delivery.attempts, status: response.status, outcome: "dead" })
       return { ok: false, reason: `http_${response.status}`, delivery }
     }
     delivery.lastError = `retryable status ${response.status}` // 3xx/other 4xx/5xx → next attempt
+    note({
+      attempt: delivery.attempts,
+      status: response.status,
+      outcome: attempt >= MAX_ATTEMPTS - 1 ? "dead" : "retry",
+    })
   }
   return { ok: false, reason: "retries_exhausted", delivery }
 }

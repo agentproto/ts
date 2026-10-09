@@ -35,8 +35,11 @@ import { homedir } from "node:os"
 import { writeFileDurable, writeFileDurableSync } from "./durable-file.js"
 
 import {
+  callbackHost,
   deliverEventEnvelope,
+  redactUrls,
   serializeEnvelope,
+  type DeliverEventDeps,
   type DeliveryOutcome,
   type DeliveryReplay,
   type McpEventEnvelope,
@@ -82,7 +85,26 @@ export type PersistedOutboxRow = SentinelWebhookOutboxRow & {
   event?: SentinelEvent
 }
 
+/** Per-sentinel delivery health, derived from the outbox rows. Carries no
+ *  URL, body or secret — `lastError` is URL-redacted. */
+export interface SentinelDeliveryStatus {
+  /** At least one row is still `pending` (being delivered / retried). */
+  active: boolean
+  /** ISO time of the most recent delivery attempt, when any ran. */
+  lastDeliveryAt?: string
+  /** Status of the most recent row. */
+  lastStatus: SentinelWebhookOutboxStatus
+  lastError?: string
+  /** Attempts spent on the most recent row. */
+  attempts: number
+  /** Count of `dead` rows still held by the outbox. */
+  dead: number
+}
+
 export interface SentinelWebhookOutbox {
+  /** Delivery health for one sentinel, or `undefined` when the outbox holds no
+   *  row for it (never delivered anything / reaped). */
+  deliveryStatus(sentinelId: string): SentinelDeliveryStatus | undefined
   /** Append a row for a matched webhook-delivery event. Resolves ONLY after
    *  the row is crash-durable (atomic write + fsync + rename + dir fsync) —
    *  callers ack the upstream (Agentpush cursor, push HTTP 2xx) on resolve.
@@ -123,6 +145,8 @@ export interface SentinelWebhookOutboxOptions {
    *  as the POST boundary. Throws = dispatch did not complete (row stays
    *  pending, event stays un-acked). Default: the real deliverer. */
   deliverEvent?: (input: { replay: DeliveryReplay; row: PersistedOutboxRow }) => Promise<DeliveryOutcome>
+  /** Test seam for the DEFAULT deliverer only (fetch / sleep / clock). */
+  deliverDeps?: Pick<DeliverEventDeps, "fetch" | "sleep" | "now">
   /** Signing secrets for a sentinel — `{subId, callbackUrl, secrets[]}`, or
    *  null when the sentinel/secret sidecar is gone (row goes dead, never
    *  silently lost). */
@@ -177,10 +201,25 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
   const debounceMs = opts.debounceMs ?? PERSIST_DEBOUNCE_MS
   const log = opts.log ?? ((line: string): void => console.warn(line))
   const persist = opts.persist ?? opts.filePath !== undefined
+  // One concise line per attempt. Host only: the URL path can carry a bearer
+  // token, and neither body nor secret is ever passed in here.
+  const deliveryLog = (row: PersistedOutboxRow, host: string, detail: string): void => {
+    log(`[sentinel-webhook-outbox] sentinel=${row.sentinelId} event=${row.eventId} host=${host} ${detail}`)
+  }
   const deliverEvent =
     opts.deliverEvent ??
-    (async (input: { replay: DeliveryReplay; row: PersistedOutboxRow }) =>
-      deliverEventEnvelope(input.replay, input.row.envelope as McpEventEnvelope))
+    (async (input: { replay: DeliveryReplay; row: PersistedOutboxRow }) => {
+      const host = callbackHost(input.replay.callbackUrl)
+      return deliverEventEnvelope(input.replay, input.row.envelope as McpEventEnvelope, {
+        ...opts.deliverDeps,
+        onAttempt: a =>
+          deliveryLog(
+            input.row,
+            host,
+            `attempt=${a.attempt} ${a.status !== undefined ? `http=${a.status}` : `error="${a.error ?? "unknown"}"`} ${a.outcome}`,
+          ),
+      })
+    })
 
   const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}`
 
@@ -325,17 +364,23 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
         row.failReason = outcome.reason
       }
       row.terminalAt = nowMs()
+      deliveryLog(
+        row,
+        callbackHost(replay.callbackUrl),
+        `final=${row.status} attempts=${outcome.delivery.attempts}` +
+          (outcome.ok ? "" : ` reason=${outcome.reason}`),
+      )
     } catch (err) {
       // Crash-shaped: the dispatch did NOT complete — the row stays
       // pending, the event stays UN-acked (no markSeen), and
       // `resumeDeliveries()` re-runs it by exact bytes next startup.
       row.deliveryState = {
         ...(row.deliveryState ?? { attempts: 0 }),
-        lastError: err instanceof Error ? err.message : String(err),
+        lastError: redactUrls(err instanceof Error ? err.message : String(err)),
         lastAt: new Date(nowMs()).toISOString(),
       }
       row.status = "pending"
-      log(`[sentinel-webhook-outbox] dispatch failed, row left pending: ${row.sentinelId} ${row.eventId}`)
+      deliveryLog(row, callbackHost(replay.callbackUrl), "dispatch failed, row left pending")
     }
     schedulePersist()
     if (row.status === "delivered" || row.status === "dead") {
@@ -452,6 +497,28 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
 
     rows(): PersistedOutboxRow[] {
       return Array.from(rows.values())
+    },
+
+    deliveryStatus(sentinelId: string): SentinelDeliveryStatus | undefined {
+      let latest: PersistedOutboxRow | undefined
+      let active = false
+      let dead = 0
+      for (const row of rows.values()) {
+        if (row.sentinelId !== sentinelId) continue
+        if (row.status === "pending") active = true
+        if (row.status === "dead") dead++
+        if (!latest || (row.terminalAt ?? row.createdAt) >= (latest.terminalAt ?? latest.createdAt)) latest = row
+      }
+      if (!latest) return undefined
+      const lastError = latest.deliveryState.lastError ?? latest.failReason ?? latest.deadReason
+      return {
+        active,
+        ...(latest.deliveryState.lastAt ? { lastDeliveryAt: latest.deliveryState.lastAt } : {}),
+        lastStatus: latest.status,
+        ...(lastError && latest.status !== "delivered" ? { lastError: redactUrls(lastError) } : {}),
+        attempts: latest.deliveryState.attempts,
+        dead,
+      }
     },
 
     flushSync,

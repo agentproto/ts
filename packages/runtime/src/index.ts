@@ -3403,6 +3403,7 @@ export async function createGateway(
       store: sentinelStore,
       runtime: sentinelRuntime,
       tombstones: sentinelRuntime.cancelTombstones,
+      deliveryStatus: id => sentinelRuntime.webhookOutbox.deliveryStatus(id),
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
       ...(callerSessionId ? { callerSessionId } : {}),
@@ -3621,6 +3622,7 @@ export async function createGateway(
       isSessionAlive,
       runtime: sentinelRuntime,
       tombstones: sentinelRuntime.cancelTombstones,
+      deliveryStatus: id => sentinelRuntime.webhookOutbox.deliveryStatus(id),
     },
     follows: {
       store: sessionFollowStore,

@@ -84,6 +84,7 @@ import {
   createSentinelWatch,
   cancelSentinelWatch,
   sentinelView,
+  sentinelViewWithDelivery,
   type SentinelWatchInput,
 } from "./sentinel-tools.js"
 import {
@@ -104,11 +105,14 @@ export interface SentinelHttpDeps {
   activeIntervalMs?: number
   /** Persisted remote-cancel store (the runtime's `cancelTombstones`). */
   tombstones?: CancelTombstoneStore
+  /** Per-sentinel webhook delivery health for `GET /sentinels`. */
+  deliveryStatus?: (sentinelId: string) => SentinelDeliveryStatus | undefined
   /** Enables `POST /inbound/sentinel-<hookKey>` (push providers). Without it
    *  that path falls through to the ordinary inbound-endpoint lookup. */
   runtime?: SentinelInboundDeps["runtime"]
 }
 import type { CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
+import type { SentinelDeliveryStatus } from "./sentinel-webhook-outbox.js"
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
@@ -8485,7 +8489,7 @@ async function handleSentinels(
   }
 
   if (path === "/sentinels" && req.method === "GET") {
-    json(200, { sentinels: deps.store.list().map(sentinelView) })
+    json(200, { sentinels: deps.store.list().map(s => sentinelViewWithDelivery(s, deps.deliveryStatus?.(s.id))) })
     return true
   }
 
