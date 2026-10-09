@@ -146,7 +146,10 @@ window.McpApp.connect().then(bridge => {
 
 Every tool id the UI calls **must** be in `APP.md`'s `ui.tools` allowlist —
 `app_tool_call` (what the bridge actually dispatches through) refuses
-anything not listed there, server-side, no exceptions.
+anything not listed there, server-side, no exceptions. An allowlisted id can be
+a daemon tool, an `imported:<alias>/<tool>` tool, or one of the app's own
+bundled tools (`.agentproto/tools/<id>/TOOL.md`), which runs through the app's
+`.agentproto/drivers/*/DRIVER.md` implementations.
 
 Three ways to run this during development, in increasing fidelity:
 

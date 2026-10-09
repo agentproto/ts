@@ -22,10 +22,26 @@ sessions panel: nothing to install, and it always shows up under
 - **Featured** and **Available**: uninstalled catalog entries grouped by
   category, with tier / placement / requires chips and an **Install** button
   that pins the entry's own sha (`sha256` for a bundle, `sha` for git).
+- **Search and categories**: a search box (name, app id, description,
+  publisher) and category chips filter every section. State lives in the URL
+  as `?q=` and `?cat=`.
+- **Icons**: cards show the catalog entry's `icon`, falling back to an
+  initial-letter tile when the image is missing or blocked.
 - **Install from URL**: paste a `.agentapp` URL or a git repo URL; git
   entries take an optional ref and subdir.
 - **Sources**: warnings from unreachable catalog sources and offline state.
 - **Builtin panels**: the daemon's own panels, collapsed.
+
+## App detail view
+
+Click a card's title or icon to open `?app=<appId>` (with a "← Back to store"
+link). It shows the icon, publisher, version and update badge, license, tier,
+size, origin and catalog, requires, the pinned source, the install and data
+dirs (with a warning when one is missing), the app's agents and workflows, and
+its last 10 runs. Install (with the same confirmation below), Update,
+Uninstall and Open are available from there. A Copy block gives the equivalent
+CLI commands and the exact `app_install` MCP arguments (builtin panels show
+their MCP tool id / resource URI instead).
 
 ## Install confirmation
 

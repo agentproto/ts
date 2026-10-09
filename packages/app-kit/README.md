@@ -269,6 +269,10 @@ export const dashboardApp = defineApp({
     html: "<!doctype html><html>…</html>",
     title: "Ops Dashboard",
     tools: ["terminal_start", "agent_start"],
+    // Optional: the subset of `tools` whose results this UI displays. A server
+    // publishing the app as an MCP App links only these to the `ui://`
+    // resource. Every id must also be in `tools`; no duplicates.
+    renders: ["terminal_start"],
     // Only needed when `ui.path`'s bundle isn't committed to the repo —
     // the daemon/CLI build it on demand before serving. See the APP.md
     // frontmatter equivalent below.
