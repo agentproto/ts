@@ -394,6 +394,8 @@ export const STALE_TURN_AFTER_MS = 10 * 60_000
  */
 export interface ActivityTurnSession {
   id: string
+  title?: string
+  label?: string
   kind?: string
   status?: string
   startedAt: string
@@ -403,6 +405,16 @@ export interface ActivityTurnSession {
   turnsCompleted?: number
   killedMidTurn?: boolean
   lastActivityAt?: string
+}
+
+const TURN_NAME_MAX = 60
+
+/** Human name for a session in turn titles: title, else label, else the raw id. */
+function sessionDisplayName(session: ActivityTurnSession): string {
+  const name = session.title?.trim() || session.label?.trim()
+  if (!name) return session.id
+  const clipped = name.length > TURN_NAME_MAX ? `${name.slice(0, TURN_NAME_MAX - 1).trimEnd()}…` : name
+  return `"${clipped}"`
 }
 
 /**
@@ -425,6 +437,7 @@ export function turnToActivities(
   if (session.kind !== "agent-cli") return []
 
   const completed = session.turnsCompleted ?? 0
+  const name = sessionDisplayName(session)
   const base = (turn: number, title: string): ActivityRecordBase => ({
     id: `turn:${session.id}:${turn}`,
     kind: "turn",
@@ -441,13 +454,13 @@ export function turnToActivities(
     if (session.killedMidTurn === true) {
       // The in-flight turn (n = completed+1) died with the session.
       const rec = record(
-        base(completed + 1, `Turn ${completed + 1} interrupted on ${session.id}`),
+        base(completed + 1, `Turn ${completed + 1} interrupted on ${name}`),
         session.status === "error" ? "failed" : "cancelled",
       )
       return [{ ...rec, ...(session.lastActivityAt ? { endedAt: session.lastActivityAt } : {}) }]
     }
     if (completed > 0) {
-      const rec = record(base(completed, `Turn ${completed} completed on ${session.id}`), "done")
+      const rec = record(base(completed, `Turn ${completed} completed on ${name}`), "done")
       return [{ ...rec, ...(session.lastActivityAt ? { endedAt: session.lastActivityAt } : {}) }]
     }
     return []
@@ -457,7 +470,7 @@ export function turnToActivities(
   // executing until a human/orchestrator answers `permissions_respond`.
   if (session.awaitingPermission === true) {
     return [
-      pendingRecord(base(completed + 1, `Turn ${completed + 1} on ${session.id} held on a permission`), {
+      pendingRecord(base(completed + 1, `Turn ${completed + 1} on ${name} held on a permission`), {
         kind: "human-ack",
         refs: [session.id],
         detail: "permission request parked for permissions_respond",
@@ -466,7 +479,7 @@ export function turnToActivities(
   }
 
   if (session.busy === true) {
-    const rec = record(base(completed + 1, `Turn ${completed + 1} running on ${session.id}`), "active")
+    const rec = record(base(completed + 1, `Turn ${completed + 1} running on ${name}`), "active")
     // Staleness flag: active but silent for longer than the threshold.
     if (opts.now && session.lastActivityAt) {
       const nowMs = Date.parse(opts.now)
@@ -482,7 +495,7 @@ export function turnToActivities(
     // The previous turn ended awaiting-input (and bumped turnsCompleted);
     // the NEXT turn is what's pending on the human's reply.
     return [
-      pendingRecord(base(completed + 1, `Awaiting human input on ${session.id}`), {
+      pendingRecord(base(completed + 1, `Awaiting human input on ${name}`), {
         kind: "human-ack",
         refs: [session.id],
         detail: "session asked a question; next turn needs a human prompt",
@@ -492,7 +505,7 @@ export function turnToActivities(
 
   // Idle after at least one completed turn: the last turn, settled.
   if (completed > 0) {
-    const rec = record(base(completed, `Turn ${completed} completed on ${session.id}`), "done")
+    const rec = record(base(completed, `Turn ${completed} completed on ${name}`), "done")
     return [{ ...rec, ...(session.lastActivityAt ? { endedAt: session.lastActivityAt } : {}) }]
   }
 

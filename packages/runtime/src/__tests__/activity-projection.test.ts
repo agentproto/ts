@@ -340,6 +340,55 @@ describe("turnToActivities", () => {
     expect(turnToActivities(turnSession({ status: "exited" }))).toEqual([])
   })
 
+  describe("session name in titles", () => {
+    it("uses the quoted title in all five title formats", () => {
+      const t = "Add VAT and discounts"
+      const title = (over: Partial<ActivityTurnSession>): string | undefined =>
+        turnToActivities(turnSession({ title: t, ...over }))[0]?.title
+      expect(title({ busy: true, turnsCompleted: 2 })).toBe(`Turn 3 running on "${t}"`)
+      expect(title({ turnsCompleted: 3 })).toBe(`Turn 3 completed on "${t}"`)
+      expect(title({ status: "exited", turnsCompleted: 3 })).toBe(`Turn 3 completed on "${t}"`)
+      expect(title({ awaitingPermission: true, turnsCompleted: 1 })).toBe(
+        `Turn 2 on "${t}" held on a permission`,
+      )
+      expect(title({ awaitingInput: true, turnsCompleted: 1 })).toBe(`Awaiting human input on "${t}"`)
+      expect(title({ status: "killed", killedMidTurn: true, turnsCompleted: 1 })).toBe(
+        `Turn 2 interrupted on "${t}"`,
+      )
+    })
+
+    it("keeps ids and refs on the session id", () => {
+      const [rec] = turnToActivities(turnSession({ title: "Named", busy: true }))
+      expect(rec?.id).toBe("turn:sess_a:1")
+      expect(rec?.sessionId).toBe("sess_a")
+      expect(rec?.sourceRef).toBe("sess_a")
+    })
+
+    it("falls back to the label when there is no title", () => {
+      const [rec] = turnToActivities(turnSession({ busy: true, label: " nightly build " }))
+      expect(rec?.title).toBe('Turn 1 running on "nightly build"')
+    })
+
+    it("falls back to the bare id, unquoted", () => {
+      const [rec] = turnToActivities(turnSession({ busy: true }))
+      expect(rec?.title).toBe("Turn 1 running on sess_a")
+    })
+
+    it("ignores a whitespace-only title (uses label, then id)", () => {
+      const [withLabel] = turnToActivities(turnSession({ busy: true, title: "   ", label: "lbl" }))
+      expect(withLabel?.title).toBe('Turn 1 running on "lbl"')
+      const [bare] = turnToActivities(turnSession({ busy: true, title: "  ", label: " " }))
+      expect(bare?.title).toBe("Turn 1 running on sess_a")
+    })
+
+    it("truncates names longer than 60 characters with an ellipsis", () => {
+      const [rec] = turnToActivities(turnSession({ busy: true, title: "x".repeat(80) }))
+      expect(rec?.title).toBe(`Turn 1 running on "${"x".repeat(59)}…"`)
+      const [exact] = turnToActivities(turnSession({ busy: true, title: "y".repeat(60) }))
+      expect(exact?.title).toBe(`Turn 1 running on "${"y".repeat(60)}"`)
+    })
+  })
+
   it("flags staleSince on an active turn silent past the threshold — state untouched", () => {
     const lastActivityAt = T0
     const staleNow = new Date(Date.parse(T0) + STALE_TURN_AFTER_MS + 1).toISOString()
