@@ -54,6 +54,7 @@ export type SessionEventType =
   | "activity:changed"
   | "task:changed"
   | "workflow:gate-report"
+  | "workflow:approval-requested"
   | "workflow:suspended"
   | "workflow:suspend-resumed"
   | "session:harness-warning"

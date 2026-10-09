@@ -1227,6 +1227,11 @@ export function makeRestartForRouting(
     if (!desc) {
       throw new Error(`${config.name}: no session "${id}"`)
     }
+    if (desc.kind === "external") {
+      throw new Error(
+        `${config.name}: session "${id}" is an external session (no process the daemon can restart)`,
+      )
+    }
     if (!deps.resolveAgentAdapter) {
       throw new Error(
         `${config.name}: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
@@ -1334,6 +1339,10 @@ export interface CreateGatewayOptions {
    *  ⇒ the sweep never runs. Detects only; never kills or restarts. Surfaced
    *  in `daemon_health` / `GET /health`. */
   turnStallAfterMs?: number
+  /** Liveness window (ms) of an `external` session after its last MCP request
+   *  / inbox poll. Mirrors `daemon.externalSessionLivenessMs`; unset or
+   *  non-positive ⇒ the registry default (30 min). */
+  externalSessionLivenessMs?: number
   /**
    * Resolves a heartbeat-runnable agent from its workspace id.
    * Required for HEARTBEAT.md to do anything; without it ticks emit
@@ -2110,9 +2119,14 @@ export async function createGateway(
   // startHttpServer for the /sessions HTTP routes. Declared here
   // (above the factory) so its identifier is visible at closure-
   // build time, even though the factory only invokes later.
+  const externalSessionLivenessMs =
+    opts.externalSessionLivenessMs ?? daemonConfig.daemon?.externalSessionLivenessMs
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    ...(typeof externalSessionLivenessMs === "number" && externalSessionLivenessMs > 0
+      ? { externalSessionLivenessMs }
+      : {}),
     onOpenedPr: sentinelAutoLinker.onOpenedPr,
     ...(daemonConfig.sessions?.eventsDir
       ? { transcriptDir: defaultTranscriptBaseDir() }
@@ -3247,7 +3261,7 @@ export async function createGateway(
       // session-story panels) either wants the live-able agent/PTY set or
       // filters to a specific non-command kind of its own, so they're
       // excluded here too, matching `session_list`'s default-view semantics.
-      let rows = sessions.list().filter(s => s.kind !== "command")
+      let rows = sessions.list().filter(s => s.kind !== "command" && s.kind !== "external")
       if (filter === "running") {
         rows = rows.filter(s => s.status === "running" || s.status === "starting")
       }

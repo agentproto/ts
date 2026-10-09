@@ -127,6 +127,8 @@ export function isNoiseSession(s: NoiseView): boolean {
   const label = s.label ?? ""
   if (label.startsWith(REVIEW_LABEL_PREFIX) || label.startsWith(WORKFLOW_LABEL_PREFIX)) return true
   if (s.origin !== undefined && NOISE_ORIGINS.has(s.origin)) return true
+  // Inbox-only rows (Desktop / CLI sessions the daemon doesn't run) are not agents.
+  if (s.kind === "external") return true
   const ended = s.status === "exited" || s.status === "killed"
   if (ended && (s.kind === "command" || (s.kind === "terminal" && !s.adapterSlug))) return true
   return false

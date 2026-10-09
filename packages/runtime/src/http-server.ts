@@ -1855,8 +1855,40 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
+  /** `?host=<label>` on an `/mcp` URL: the connecting client's product
+   *  (`claude-desktop`, `claude-cli`). Present only on connections the
+   *  daemon did not spawn — it is what lets an unknown `callerSessionId`
+   *  register as an `external` session instead of failing `no_caller_identity`. */
+  function parseHostQuery(url: string): string | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("host")
+    return raw && /^[A-Za-z0-9._-]{1,64}$/.test(raw) ? raw : undefined
+  }
+
+  /** The `?callerSessionId=` / `?host=` pair is an identity CLAIM, not proof:
+   *  any local process can assert any id. It is honoured only where that
+   *  claim is already as trustworthy as the rest of the MCP surface — a true
+   *  loopback socket (no proxy headers) or a valid daemon bearer. A request
+   *  that arrived through a tunnel without the bearer never registers or
+   *  refreshes an external session. */
+  function externalClaimTrusted(req: IncomingMessage): boolean {
+    if (isLoopback(req)) return true
+    const auth = readAuth()
+    if (auth.mode !== "bearer") return false
+    if (req.headers.authorization === `Bearer ${auth.token}`) return true
+    const qsToken = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("token")
+    return !!qsToken && qsToken === auth.token
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
+    {
+      const claimed = parseCallerSessionIdQuery(req.url ?? "")
+      if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
+        opts.sessions.touchExternal({ id: claimed, host: parseHostQuery(req.url ?? "") })
+      }
+    }
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
     const allowTools = parseToolListQuery(req.url ?? "", "allowTools")
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
@@ -6106,6 +6138,7 @@ async function handleSessions(
     const fields = parseSessionFields(params)
     const matchesFilter = (s: SessionDescriptor): boolean => {
       if (kindParam && kindParam !== "all") return s.kind === kindParam
+      if (s.kind === "external") return false
       return includeCommands || s.kind !== "command"
     }
     // Same server-side narrowing as the `session_list` MCP tool (q,
@@ -6982,6 +7015,8 @@ async function handleSessions(
       json(404, { error: "no_such_session", id })
       return true
     }
+    // An inbox poll is a sign of life for an `external` session (no-op for any other kind).
+    registry.touchExternal({ id })
     json(200, { ok: true, id, inbox })
     return true
   }

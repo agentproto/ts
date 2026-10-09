@@ -34,6 +34,7 @@ import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
+import { createSessionMessage } from "./session-message.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
@@ -131,6 +132,13 @@ export interface WorkflowRun {
   appId?: string
   /** The app_run this run belongs to, when started through an app. */
   appRunId?: string
+  /** The session that started this run (`workflow_start` / `workflow_run_file`
+   *  over an MCP connection carrying `callerSessionId`). The runner posts ONE
+   *  AIP-46 inbox item to it when the run succeeds, fails, or parks for an
+   *  approval / input — so a caller that is not a daemon-spawned agent (an
+   *  `external` Desktop session) still hears about its run. Inherited by
+   *  `retry()`. */
+  callerSessionId?: string
   /** AIP-58 §4 Run workspace — `<runsRoot>/<runId>/`, this run's own
    *  allocation (never shared with another run). Steps see the `scratch/`
    *  subdirectory as `$run.workspace` / `{{run.workspace}}`; every
@@ -234,6 +242,8 @@ export interface WorkflowRunner {
     appRunId?: string
     /** Ledger `item` stamped on every ledger event this run appends. */
     item?: string
+    /** Session to notify (inbox item) on success / failure / approval. */
+    callerSessionId?: string
   }): Promise<WorkflowRun>
 
   startFromFile(input: {
@@ -246,6 +256,8 @@ export interface WorkflowRunner {
     appId?: string
     appRunId?: string
     item?: string
+    /** Session to notify (inbox item) on success / failure / approval. */
+    callerSessionId?: string
   }): Promise<WorkflowRun>
 
   status(runId: string): WorkflowRun | undefined
@@ -2229,6 +2241,70 @@ export function createWorkflowRunner(opts: {
   }
   reRegisterReloadedSuspends()
 
+  // ── Caller notifications ───────────────────────────────────────────
+  //
+  // One inbox item per milestone to the session that started the run. `fyi`
+  // urgency: it lands in the durable inbox without waking the caller — a
+  // daemon-spawned agent finds it on its next `inbox_list`, and an `external`
+  // Desktop session (which has no turn the daemon could start) is reached the
+  // same way. A delivery failure (caller gone / expired) must never affect
+  // the run, so it is swallowed.
+  const notifyCaller = (
+    runId: string,
+    milestone: "succeeded" | "failed" | "approval" | "input",
+    detail: { text: string; data?: Record<string, unknown> },
+  ): void => {
+    const run = runs.get(runId)?.run
+    const to = run?.callerSessionId
+    if (!run || !to) return
+    try {
+      const msg = createSessionMessage({
+        to,
+        from: { relation: "system" },
+        kind: "notice",
+        urgency: "fyi",
+        correlationId: `workflow:${runId}`,
+        text: detail.text,
+        data: { runId, workflowId: run.workflowId, milestone, ...(detail.data ?? {}) },
+      })
+      void registry.sendMessage(msg, { source: "workflow", origin: runId }).catch(() => {})
+    } catch {
+      /* oversized data / bad message — best-effort */
+    }
+  }
+
+  const clip = (v: string, max = 500): string => (v.length > max ? `${v.slice(0, max)}…` : v)
+
+  const notifyCallerOfOutcome = (runId: string): void => {
+    const run = runs.get(runId)?.run
+    if (!run || !run.callerSessionId) return
+    if (run.status === "done") {
+      notifyCaller(runId, "succeeded", {
+        text: `Workflow "${run.workflowId}" (run ${runId}) succeeded.`,
+      })
+    } else if (run.status === "failed") {
+      notifyCaller(runId, "failed", {
+        text: `Workflow "${run.workflowId}" (run ${runId}) failed${run.error ? `: ${clip(run.error)}` : "."}`,
+        ...(run.error !== undefined ? { data: { error: clip(run.error, 2000) } } : {}),
+      })
+    }
+  }
+
+  sessionEvents.on("workflow:approval-requested", (ev) => {
+    notifyCaller(ev.runId, "approval", {
+      text: `Workflow run ${ev.runId} is waiting for approval at step "${ev.stepId}": ${clip(ev.prompt)}`,
+      data: { stepId: ev.stepId, approvalId: ev.approvalId },
+    })
+  })
+  sessionEvents.on("workflow:suspended", (ev) => {
+    notifyCaller(ev.runId, "input", {
+      text:
+        `Workflow run ${ev.runId} is suspended at step "${ev.stepId}"` +
+        (ev.prompt ? `, waiting for input: ${clip(ev.prompt)}` : ev.on?.length ? `, waiting for: ${ev.on.join(", ")}` : "."),
+      data: { stepId: ev.stepId },
+    })
+  })
+
   // ── Public interface ───────────────────────────────────────────────
 
   return {
@@ -2260,6 +2336,7 @@ export function createWorkflowRunner(opts: {
         // a daemon restart (see `WorkflowRun.startStages`'s own doc comment).
         startStages: input.stages,
         ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+        ...(input.callerSessionId !== undefined ? { callerSessionId: input.callerSessionId } : {}),
         ...resolveAppProvenance(opts.appRegistry, input.workflowId, {
           ...(input.appId !== undefined ? { appId: input.appId } : {}),
           ...(input.appRunId !== undefined ? { appRunId: input.appRunId } : {}),
@@ -2339,6 +2416,7 @@ export function createWorkflowRunner(opts: {
         }
         delete state.agents
         persist()
+        notifyCallerOfOutcome(runId)
       })
 
       return run
@@ -2431,6 +2509,7 @@ export function createWorkflowRunner(opts: {
         path: args.path,
         ...(args.input !== undefined ? { input: args.input } : {}),
         ...(args.workspaceSlug !== undefined ? { workspaceSlug: args.workspaceSlug } : {}),
+        ...(args.callerSessionId !== undefined ? { callerSessionId: args.callerSessionId } : {}),
         ...resolveAppProvenance(opts.appRegistry, handle.id, {
           ...(args.appId !== undefined ? { appId: args.appId } : {}),
           ...(args.appRunId !== undefined ? { appRunId: args.appRunId } : {}),
@@ -2516,6 +2595,7 @@ export function createWorkflowRunner(opts: {
         }
         delete state.agents
         persist()
+        notifyCallerOfOutcome(runId)
       })
 
       return run
@@ -2784,6 +2864,7 @@ export function createWorkflowRunner(opts: {
         ...(orig.appId !== undefined ? { appId: orig.appId } : {}),
         ...(orig.appRunId !== undefined ? { appRunId: orig.appRunId } : {}),
         ...(orig.item !== undefined ? { item: orig.item } : {}),
+        ...(orig.callerSessionId !== undefined ? { callerSessionId: orig.callerSessionId } : {}),
       }
       const abort = new AbortController()
       const eventLog = newEventLog(runId)
@@ -2857,6 +2938,7 @@ export function createWorkflowRunner(opts: {
         }
         delete state.agents
         persist()
+        notifyCallerOfOutcome(runId)
       })
 
       return { ok: true, run }

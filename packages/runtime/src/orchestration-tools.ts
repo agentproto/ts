@@ -1132,7 +1132,7 @@ export function registerOrchestrationTools(
         item: z.string().optional().describe("Optional ledger item — stamped as `item` on every app-ledger event this run appends, scoping them to one sub-key inside each stage."),
       },
       async input => {
-        const run = await workflowRunner.start(input)
+        const run = await workflowRunner.start({ ...input, ...(callerSessionId ? { callerSessionId } : {}) })
         return {
           content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
         }
@@ -1153,7 +1153,7 @@ export function registerOrchestrationTools(
       },
       async input => {
         try {
-          const run = await workflowRunner.startFromFile(input)
+          const run = await workflowRunner.startFromFile({ ...input, ...(callerSessionId ? { callerSessionId } : {}) })
           return {
             content: [
               {

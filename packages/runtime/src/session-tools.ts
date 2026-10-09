@@ -1214,6 +1214,8 @@ export function registerSessionTools(
         // sessions this tool exists to surface.
         rows = rows.filter(s => s.kind !== "command")
       }
+      // Inbox-only external rows are not agents; they never appear in this list.
+      rows = rows.filter(s => s.kind !== "external")
       if (input.status) {
         rows = rows.filter(s => s.status === input.status)
       } else if (input.onlyAlive) {
