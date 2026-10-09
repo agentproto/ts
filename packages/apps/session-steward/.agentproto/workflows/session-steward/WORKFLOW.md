@@ -172,6 +172,7 @@ steps:
           sessionIds: [$item.sessionId]
           verdict: $item.verdict
           note: $item.note
+          wait: true
 
   - id: installedApps
     kind: tool
@@ -388,6 +389,7 @@ steps:
           verdict: $item.verdict
           judgedBy: $item.judgedBy
           note: $item.note
+          wait: true
 
   - id: memoryWriteQueue
     kind: transform

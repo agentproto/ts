@@ -192,6 +192,9 @@ function fakeTools(opts: {
       })
     }
     if (name === "session_wrapup_apply") {
+      // Like the real tool: no `wait: true` ⇒ a slow close outlasts the 25 s
+      // default `waitMs` and only a running jobId comes back.
+      if (inputs.wait !== true) return mcpResult({ jobId: "swa_test", status: "running" })
       const ids = inputs.sessionIds as string[]
       const closes = inputs.verdict === "done" || inputs.verdict === "abandoned"
       return mcpResult({ results: ids.map(sessionId => ({ sessionId, ok: true, class: "x", action: closes ? "closed" : "flagged" })) })
@@ -391,8 +394,8 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     const byId = new Map(applies.map(a => [(a.sessionIds as string[])[0], a]))
 
     // Rules pass — no judgedBy.
-    expect(byId.get("close_1")).toEqual({ sessionIds: ["close_1"], verdict: "done", note: "steward-rules: idle 90m; worktree merged" })
-    expect(byId.get("stuck_1")).toEqual({ sessionIds: ["stuck_1"], verdict: "abandoned", note: "stuck starting, never ran" })
+    expect(byId.get("close_1")).toEqual({ sessionIds: ["close_1"], verdict: "done", note: "steward-rules: idle 90m; worktree merged", wait: true })
+    expect(byId.get("stuck_1")).toEqual({ sessionIds: ["stuck_1"], verdict: "abandoned", note: "stuck starting, never ran", wait: true })
 
     // Judged pass — carries the judge's own session id.
     const judgeOf = (candidate: string) => [...j.prompts.keys()].find(k => j.candidateOf(k) === candidate)
