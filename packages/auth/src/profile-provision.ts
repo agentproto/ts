@@ -25,11 +25,16 @@ import type { AuthMethod, AuthProfile, CostBudget, ModelCuration } from "./profi
 import { costBudgetSchema } from "./profile-store.js"
 import type { CredentialStore } from "./store/types.js"
 
+/** The one api-key source kind: an opencode console org
+ *  (`opencode-console:<orgId>`), resolved fresh at spawn from opencode's own
+ *  console login — the profile stores no secret. */
+const API_KEY_SOURCE_PREFIX = "opencode-console:"
+
 /** Input to {@link createAuthProfile}. `credential` is the raw secret — it is
  *  written to the store and NEVER returned. Exactly one of `credential` /
- *  `source` must be given for an `oauth-bearer` profile; `api-key` always
- *  requires `credential` (a source-backed profile only makes sense for a
- *  self-refreshing subscription bearer). */
+ *  `source` must be given for an `oauth-bearer` profile; `api-key` requires
+ *  `credential`, except for an `opencode-console:<orgId>` source (an opencode
+ *  console org, resolved at spawn). */
 export interface CreateAuthProfileInput {
   /** Stable id, unique across all profiles. */
   id: string
@@ -162,11 +167,19 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
 
   if (method === "api-key") {
     if (source) {
-      throw new AuthProfileValidationError(
-        "source is only supported for oauth-bearer profiles — api-key profiles require a credential",
-      )
+      if (!source.startsWith(API_KEY_SOURCE_PREFIX) || source.length === API_KEY_SOURCE_PREFIX.length) {
+        throw new AuthProfileValidationError(
+          `source is only supported for oauth-bearer profiles (and "${API_KEY_SOURCE_PREFIX}<orgId>" api-key profiles) — api-key profiles otherwise require a credential`,
+        )
+      }
+      if (credential) {
+        throw new AuthProfileValidationError(
+          "give either credential or source, not both — a source-backed profile stores no secret",
+        )
+      }
+    } else if (!credential) {
+      throw new AuthProfileValidationError("credential is required")
     }
-    if (!credential) throw new AuthProfileValidationError("credential is required")
   } else {
     if (credential && source) {
       throw new AuthProfileValidationError(

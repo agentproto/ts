@@ -255,6 +255,35 @@ describe("readOpenCodeUsage", () => {
     })
   })
 
+  it("prefers the session's isolated data dir (credentialDataHome) over the global db", async () => {
+    await seedOpenCodeDb([{ id: "ses_iso", cost: 9, tokens_input: 1, tokens_output: 1 }])
+    const { mkdirSync } = await import("node:fs")
+    const configDir = join(tmp, "adapter-config", "sess_1")
+    const isoDir = join(configDir, "auth-data", "opencode")
+    mkdirSync(isoDir, { recursive: true })
+    const sqliteSpecifier = ["node", "sqlite"].join(":")
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as {
+      DatabaseSync: new (p: string) => { exec(sql: string): void; close(): void }
+    }
+    const db = new DatabaseSync(join(isoDir, "opencode.db"))
+    db.exec(
+      "CREATE TABLE session (id TEXT PRIMARY KEY, cost REAL, tokens_input INTEGER, tokens_output INTEGER);" +
+        "INSERT INTO session VALUES ('ses_iso', 0, 140903, 5);",
+    )
+    db.close()
+    expect(await readOpenCodeUsage("ses_iso", { configDir })).toEqual({
+      costUsd: 0,
+      tokensIn: 140903,
+      tokensOut: 5,
+    })
+    // No isolated db yet (ambient spawn) ⇒ the global one.
+    expect(await readOpenCodeUsage("ses_iso", { configDir: join(tmp, "nope") })).toMatchObject({ costUsd: 9 })
+  })
+
+  it("declares the credential data home so an engaged credential can't be overridden by opencode's stored console login", () => {
+    expect(opencode.credentialDataHome).toEqual({ env: "XDG_DATA_HOME" })
+  })
+
   it("returns null when the session id is not found", async () => {
     await seedOpenCodeDb([{ id: "ses_other", cost: 1, tokens_input: 1, tokens_output: 1 }])
     const usage = await readOpenCodeUsage("ses_missing")

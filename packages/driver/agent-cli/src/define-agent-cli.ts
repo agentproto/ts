@@ -10,7 +10,7 @@ import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
-import { prepareIsolatedStateHome } from "./state-home.js"
+import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
@@ -146,6 +146,31 @@ function ensureExecDirOnPath(
   env.PATH = [...parts, execDir].join(delimiter)
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+
+function deepMergeJson(base: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base }
+  for (const [k, v] of Object.entries(over)) {
+    const prev = out[k]
+    out[k] = isPlainObject(prev) && isPlainObject(v) ? deepMergeJson(prev, v) : v
+  }
+  return out
+}
+
+/** `over` wins; when both parse as JSON objects they are deep-merged, else `over` replaces `base`. */
+export function mergeJsonEnvValue(base: string, over: string): string {
+  try {
+    const a = JSON.parse(base) as unknown
+    const b = JSON.parse(over) as unknown
+    if (isPlainObject(a) && isPlainObject(b)) return JSON.stringify(deepMergeJson(a, b))
+  } catch {
+    // not JSON — fall through to replace
+  }
+  return over
+}
+
 export function createAgentCliRuntime(
   definition: AgentCliHandle,
 ): AgentCliRuntime {
@@ -201,6 +226,7 @@ export function createAgentCliRuntime(
       // (`explicit`). An unconfigured `when-configured` adapter (codex/hermes/
       // claude-sdk with no auth) does NOT engage → runs ambient, unchanged.
       const authSpec = opts?.auth
+      let credentialDataDir: string | undefined
       // A gateway mode (moonshot/openrouter) or an explicit `auth_token`
       // option already injected ANTHROPIC_AUTH_TOKEN into composed.env for
       // Bearer auth against a non-Anthropic endpoint. Billing-auth
@@ -305,6 +331,22 @@ export function createAgentCliRuntime(
           throw new RuntimeConfigError("missing_auth_credential", "opts.auth.credential", message)
         }
         env[authSpec.setEnv] = authSpec.credential
+        if (authSpec.extraEnv) {
+          for (const [key, value] of Object.entries(authSpec.extraEnv)) {
+            // A mode (e.g. opencode `lean`) may already carry a JSON config
+            // under the same key; layer the credential's block over it rather
+            // than clobbering it. Ambient env is never merged in.
+            env[key] = key in composed.env ? mergeJsonEnvValue(composed.env[key]!, value) : value
+          }
+        }
+        // A CLI whose own stored login (opencode's console account in its
+        // data dir) overrides an env credential gets a login-less data dir
+        // for exactly this credential-injecting spawn, so the credential it
+        // was handed is the one that bills.
+        if (definition.credentialDataHome) {
+          credentialDataDir = isolatedCredentialDataHome(opts?.configDir)
+          env[definition.credentialDataHome.env] = credentialDataDir
+        }
         }
       }
 
@@ -476,6 +518,7 @@ export function createAgentCliRuntime(
       // start once the OS sandbox denies `$HOME` — give a confined spawn its
       // own home instead of opening the operator's (see `state-home.ts`).
       const extraWritePaths = claudeConfigDir ? [claudeConfigDir] : []
+      if (credentialDataDir) extraWritePaths.push(credentialDataDir)
       if (
         definition.stateHome &&
         definition.protocol !== "proprietary" &&

@@ -66,6 +66,10 @@ import {
   type DiscoveredCredential,
 } from "@agentproto/runtime/credential-discovery"
 import {
+  listOpencodeConsoleOrgs,
+  opencodeConsoleSource,
+} from "@agentproto/runtime/opencode-console-source"
+import {
   authProvidersPath,
   buildBrokerProvider,
   defaultTokenStore,
@@ -140,6 +144,7 @@ Usage:
                           list [--endpoint <e>] [--json]
                           rm <id>
                           import <origin> <endpoint> [--id <id>] [--label <text>]
+                          opencode-orgs [--create] [--prefix <p>] [--endpoint <e>] [--json]
                           set-models <id> <all|allow> [<ids…>]
                           set-enabled <id> <true|false>
                           refresh-models <id> [--json]
@@ -563,6 +568,8 @@ Usage:
   agentproto auth profile list|ls [--endpoint <e>] [--json]
   agentproto auth profile rm|remove|delete <id>
   agentproto auth profile import <origin> <endpoint> [--id <id>] [--label <text>]
+  agentproto auth profile opencode-orgs [--create] [--endpoint <opencode-go|opencode>]
+                                        [--prefix <p>] [--json]
   agentproto auth profile set-models <id> <all|allow> [<ids…>]
   agentproto auth profile set-enabled <id> <true|false>
   agentproto auth profile refresh-models <id> [--json]
@@ -579,7 +586,9 @@ create:
                          is re-resolved from the local Claude Code login at
                          every spawn (exactly one of a piped credential or
                          --source).
-  --method api-key       a vendor/gateway key — requires a credential.
+  --method api-key       a vendor/gateway key — requires a credential. The one
+                         exception is --source opencode-console:<orgId>, an
+                         opencode console workspace (see opencode-orgs below).
 
   --credential-ref       explicit keychain slot; omitted ⇒ derived from
                          endpoint + method (qualified with <id> on collision).
@@ -592,6 +601,13 @@ import <origin> materializes a credential discovered by
 \`agentproto auth discover\` (origins: claude-code, hermes-config, env, codex,
 gemini) into a named profile — source-backed where the origin self-refreshes,
 a keychain COPY otherwise. The method is fixed by the origin.
+
+opencode-orgs lists the console orgs ("workspaces") the opencode login on this
+host can use (read-only on opencode's own db; the token never leaves it). With
+--create it makes one source-backed profile per org
+(\`<prefix>-<org name>\`, default prefix "opencode") — each its own selectable
+wallet: a spawn on it bills THAT org's Go/Zen quota, in an isolated opencode
+data dir, whatever org opencode's own login has active.
 
 set-models "all" services every eligible model and clears any allowlist;
 "allow" narrows the profile to exactly the listed model ids (space- or
@@ -636,6 +652,8 @@ async function runAuthProfile(args: readonly string[]): Promise<number> {
       return runProfileRm(rest)
     case "import":
       return runProfileImport(rest)
+    case "opencode-orgs":
+      return runProfileOpencodeOrgs(rest)
     case "set-models":
       return runProfileSetModels(rest)
     case "set-enabled":
@@ -836,9 +854,10 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
   let credential: string | undefined
   let source: string | undefined
   if (values.source) {
-    if (method !== "oauth-bearer") {
+    if (method !== "oauth-bearer" && !values.source.startsWith("opencode-console:")) {
       process.stderr.write(
-        `agentproto auth profile create: --source is only supported for --method oauth-bearer\n`,
+        `agentproto auth profile create: --source is only supported for --method oauth-bearer ` +
+          `(or --source opencode-console:<orgId> with --method api-key)\n`,
       )
       return 2
     }
@@ -883,6 +902,96 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
     }
     throw err
   }
+}
+
+function orgSlug(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "org"
+  )
+}
+
+async function runProfileOpencodeOrgs(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: {
+      create: { type: "boolean" },
+      endpoint: { type: "string" },
+      prefix: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const endpoint = values.endpoint ?? "opencode-go"
+  const prefix = values.prefix ?? "opencode"
+  let listing: Awaited<ReturnType<typeof listOpencodeConsoleOrgs>>
+  try {
+    listing = await listOpencodeConsoleOrgs()
+  } catch (err) {
+    process.stderr.write(`agentproto auth profile opencode-orgs: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+  const existing = await listAuthProfiles()
+  const rows = listing.orgs.map(org => {
+    const source = opencodeConsoleSource(org.id)
+    const have = existing.find(p => p.source === source && p.endpoint === endpoint)
+    return { ...org, source, profile: have?.id as string | undefined, proposedId: `${prefix}-${orgSlug(org.name)}` }
+  })
+  const created: string[] = []
+  if (values.create) {
+    for (const row of rows) {
+      if (row.profile) continue
+      try {
+        const made = await createAuthProfile(
+          {
+            id: row.proposedId,
+            endpoint,
+            method: "api-key",
+            source: row.source,
+            label: `opencode console: ${row.name}`,
+            origin: "opencode-console",
+          },
+          localProfileProvisionDeps(),
+        )
+        row.profile = made.id
+        created.push(made.id)
+      } catch (err) {
+        if (err instanceof AuthProfileValidationError) {
+          process.stderr.write(`agentproto auth profile opencode-orgs: ${row.proposedId}: ${err.message}\n`)
+          continue
+        }
+        throw err
+      }
+    }
+  }
+  if (values.json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          account: { id: listing.account.id, email: listing.account.email },
+          orgs: rows.map(r => ({ id: r.id, name: r.name, source: r.source, profile: r.profile ?? null })),
+          created,
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+    return 0
+  }
+  process.stdout.write(
+    `opencode console login: ${listing.account.email ?? listing.account.id}  (${rows.length} org${rows.length === 1 ? "" : "s"})\n`,
+  )
+  for (const r of rows) {
+    process.stdout.write(
+      `  ${r.id}  ${r.name}  ${r.profile ? `→ profile "${r.profile}"` : `(no profile; --create would make "${r.proposedId}")`}\n`,
+    )
+  }
+  if (created.length > 0) {
+    process.stdout.write(`created: ${created.join(", ")}\n  bill a spawn through one: agentproto sessions start opencode --access-profile ${created[0]}\n`)
+  }
+  return 0
 }
 
 async function runProfileList(args: readonly string[]): Promise<number> {

@@ -94,6 +94,11 @@
       "import": "./dist/credential-discovery.mjs",
       "default": "./dist/credential-discovery.mjs"
     },
+    "./opencode-console-source": {
+      "types": "./dist/opencode-console-source.d.ts",
+      "import": "./dist/opencode-console-source.mjs",
+      "default": "./dist/opencode-console-source.mjs"
+    },
     "./release-check": {
       "types": "./dist/release-check.d.ts",
       "import": "./dist/release-check.mjs",

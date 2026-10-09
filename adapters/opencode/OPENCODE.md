@@ -127,3 +127,34 @@ Neither endpoint is a login: **Go and Zen are API keys, not OAuth**. The
 adapter's two `authSubscription` surfaces remain opencode's own
 `opencode auth login` flows for Claude Pro/Max and ChatGPT, untouched by these
 routes.
+
+### Console workspaces (orgs) as separate wallets
+
+opencode keeps one console login (an `account` row in
+`~/.local/share/opencode/opencode.db`). At every start it calls
+`<account.url>/api/config` for the **active org** and merges the returned
+`provider` block over all other config — env keys and inline config included.
+With that login present, every spawn bills the active org no matter which
+agentproto profile it names.
+
+The adapter therefore declares `credentialDataHome: { env: "XDG_DATA_HOME" }`:
+whenever a spawn engages a profile credential, opencode runs with a login-less
+data dir (`<configDir>/auth-data`, or a throwaway temp dir), so a plain
+api-key profile really bills its own key. Session usage and transcripts are read
+from that isolated `opencode.db` when it exists.
+
+A console org is a source-backed profile — no token is stored:
+
+```bash
+agentproto auth profile opencode-orgs                     # list orgs of the logged-in console account
+agentproto auth profile opencode-orgs --create --prefix opencode   # -> opencode-<org-name> profiles
+agentproto auth profile create opencode-ws01 --endpoint opencode-go \
+  --method api-key --source opencode-console:<orgId>
+```
+
+At spawn the runtime reads the console session read-only from `opencode.db`,
+fetches that org's provider block (`/api/config` with `x-org-id`), and injects
+the bearer (`OPENCODE_CONSOLE_TOKEN`) plus the block (`OPENCODE_CONFIG_CONTENT`).
+The session is never refreshed here (the refresh token rotates); an expired
+session fails loud with a re-login hint. A `Go usage limit exceeded` turn
+failure is tagged with the wallet profile that hit it.

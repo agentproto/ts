@@ -464,6 +464,9 @@ export interface ResolvedAuthSpec {
   /** When a gateway preset or custom route was matched, the `base_url` to
    *  inject into adapter options so the client hits the gateway endpoint. */
   baseUrl?: string
+  /** Extra env the driver sets when it injects the credential (opencode
+   *  console org: the org's provider config next to its token). */
+  extraEnv?: Record<string, string>
 }
 
 /** Where the resolved credential came from — the observable billing axis
@@ -477,6 +480,7 @@ export type CredentialSource =
   | "explicit-config"
   | "providers-store"
   | "claude-code-oauth"
+  | "opencode-console"
   | "cli-local-login"
   | "none"
 
@@ -540,6 +544,14 @@ export interface ResolveAuthSpecInput {
   apiKeyConfigCredential?: string
   /** api-key credential from `providers.json` (fetched by the caller). */
   apiKeyStoreCredential?: string
+  /** Origin label for `apiKeyConfigCredential` when a source-backed profile
+   *  resolved it (opencode console org); omitted ⇒ `"explicit-config"`. */
+  apiKeyCredentialSource?: CredentialSource
+  /** Env var the api-key credential is set into INSTEAD of the provider's
+   *  conventional key env (the provider's own var is then scrubbed). */
+  credentialEnvOverride?: string
+  /** Passed through to {@link ResolvedAuthSpec.extraEnv}. */
+  extraEnv?: Record<string, string>
   /** Explicit gateway route from `SessionConfig.route.gateway`. When this
    *  matches a `ProviderPreset` or a registered custom route, the route's
    *  `baseUrl`/`keyEnv`/`scrubEnv` drive resolution instead of the model-
@@ -793,9 +805,10 @@ export function resolveAuthSpec(
       gatewayRoute && input.descriptor.gatewayAuth?.setEnv
         ? input.descriptor.gatewayAuth.setEnv
         : apiKeyEnv
+    if (input.credentialEnvOverride) setEnv = input.credentialEnvOverride
     if (input.apiKeyConfigCredential !== undefined) {
       credential = input.apiKeyConfigCredential
-      credentialSource = "explicit-config"
+      credentialSource = input.apiKeyCredentialSource ?? "explicit-config"
     } else if (input.apiKeyStoreCredential !== undefined) {
       credential = input.apiKeyStoreCredential
       credentialSource = "providers-store"
@@ -836,6 +849,7 @@ export function resolveAuthSpec(
     ...(externalCredential ? { externalCredential: true } : {}),
     ...(neitherConfigured ? { neitherConfigured } : {}),
     ...(baseUrl !== undefined ? { baseUrl } : {}),
+    ...(input.extraEnv && credential !== undefined ? { extraEnv: input.extraEnv } : {}),
   }
   const echo: AuthEcho = {
     provider,

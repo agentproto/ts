@@ -16,9 +16,11 @@
  *   await session.close()
  */
 
+import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import {
+  CREDENTIAL_DATA_SUBDIR,
   createAgentCliRuntime,
   defineAgentCli,
   type AgentCliHandle,
@@ -123,6 +125,12 @@ export const opencode: AgentCliHandle = defineAgentCli({
       ],
     },
   },
+  // opencode keeps a console login (`account` row) in <XDG_DATA_HOME>/opencode/
+  // opencode.db and, at every start, merges that login's active-org provider
+  // block over env keys and inline config — so an engaged profile would bill
+  // the ACTIVE ORG, not its own credential. An engaged spawn therefore runs in
+  // a login-less data dir (`<configDir>/auth-data`).
+  credentialDataHome: { env: "XDG_DATA_HOME" },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./opencode-acp.ACP.md",
@@ -301,6 +309,7 @@ export function opencodeRuntime(): AgentCliRuntime {
  */
 export async function readOpenCodeUsage(
   sessionId: string,
+  ctx?: { cwd?: string; configDir?: string },
 ): Promise<{
   costUsd?: number
   tokensIn?: number
@@ -321,8 +330,14 @@ export async function readOpenCodeUsage(
         close(): void
       }
     }
+    // An engaged-credential spawn ran with an isolated data home (see
+    // `credentialDataHome`); its sessions live there, not in the global db.
+    const isolatedDb = ctx?.configDir
+      ? join(ctx.configDir, CREDENTIAL_DATA_SUBDIR, "opencode", "opencode.db")
+      : undefined
     const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")
-    const dbPath = join(dataHome, "opencode", "opencode.db")
+    const dbPath =
+      isolatedDb && existsSync(isolatedDb) ? isolatedDb : join(dataHome, "opencode", "opencode.db")
     const db = new DatabaseSync(dbPath, { readOnly: true })
     try {
       // `SELECT *` so an older opencode.db without the cache/reasoning
