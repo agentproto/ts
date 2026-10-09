@@ -1059,6 +1059,24 @@ jobs:
             echo "No CLAUDE_CODE_OAUTH_TOKEN_FALLBACK secret configured — the cross-account retry step will no-op if the primary account fails."
           fi
 
+          # Cross-ACCOUNT tier 3: an OpenCode Go subscription's API key
+          # (secrets.OPENCODE_API_KEY) driving the `opencode` adapter with the
+          # glm-5.3-flash model. Unlike the fallback-account tier (which
+          # re-runs the SAME claude adapter against a second Claude account and
+          # dies with it when the lane's underlying subscription family is
+          # broken), this tier changes BOTH the adapter AND the billing
+          # provider, so a primary that is rate-limited (429) or has its
+          # org-level subscription access disabled still reviews. The
+          # fail-closed rule is preserved: this is still flat/subscription-tier
+          # billing through OpenCode's own Go plan — never a metered
+          # ANTHROPIC_API_KEY or OPENROUTER_API_KEY.
+          if [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+            echo "has-opencode-fallback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-opencode-fallback=false" >> "$GITHUB_OUTPUT"
+            echo "No OPENCODE_API_KEY secret configured — the opencode-go retry step will no-op if both Claude accounts fail."
+          fi
+
       - name: Resolve agentproto CLI source/version
         id: cliver
         if: steps.prstate.outputs.skip != 'true'
@@ -1098,7 +1116,14 @@ jobs:
           steps.cliver.outputs.cli-source == 'workspace'
         run: |
           pnpm install --frozen-lockfile
-          pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ steps.cliver.outputs.adapter }}..."
+          FILTERS="--filter @agentproto/cli... --filter @agentproto/adapter-${{ steps.cliver.outputs.adapter }}..."
+          # The opencode-go fallback tier spawns a DIFFERENT adapter than this
+          # job's primary lane — build its package too when the secret is set,
+          # or the tier's box daemon can't resolve `@agentproto/adapter-opencode`.
+          if [ "${{ steps.mode.outputs.has-opencode-fallback }}" = "true" ]; then
+            FILTERS="$FILTERS --filter @agentproto/adapter-opencode..."
+          fi
+          pnpm build $FILTERS
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
@@ -1523,6 +1548,175 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Build the reviewConfig override the opencode-go fallback tier runs on:
+      # the global agentic-review.json is written for the Claude lane, so the
+      # tier needs `reviewerAdapter`/`reviewerModel`/`reviewerSandboxEnv`
+      # overridden (adapter=opencode, model=opencode-go/glm-5.3-flash, and the
+      # sandbox passthrough list carries the OPENCODE_API_KEY NAME the box
+      # daemon must see — see the opencode adapter's `models.env` map in
+      # adapters/opencode/src/index.ts). Everything else in the config —
+      # blocking, botMention, skills, merge escalation — stays identical so a
+      # review posted here is in-substance the same as the primary's.
+      - name: Build opencode-go fallback review config
+        id: opencode-config
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.mode.outputs.has-opencode-fallback == 'true'
+        env:
+          BASE_CONFIG: ${{ steps.config.outputs.json }}
+        run: |
+          OVERRIDE=$(printf '%s' "$BASE_CONFIG" \
+            | jq -c '. + {
+                reviewerAdapter: "opencode",
+                reviewerModel: "opencode-go/glm-5.3",
+                reviewerSandboxEnv: ["OPENCODE_API_KEY", "GITHUB_TOKEN"]
+              }')
+          {
+            echo "json<<__OPENCODE_CONFIG_EOF__"
+            echo "$OVERRIDE"
+            echo "__OPENCODE_CONFIG_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "$OVERRIDE" | jq -r '"adapter=\(.reviewerAdapter) model=\(.reviewerModel)"'
+
+      # opencode-go tier — runs only when BOTH Claude tiers failed to post.
+      # adapter=opencode, billing=OpenCode Go subscription key. The provider
+      # key is injected BOTH ways on purpose: `api-key` writes it into
+      # defaults.adapters.opencode.auth (the config surface the runtime's
+      # model-derived auth presents to opencode), and provider-key-env puts
+      # the same value onto the runner daemon's process env as
+      # OPENCODE_API_KEY — which is what makes the tier's own reviewerSandboxEnv
+      # passthrough resolvable when the e2b box daemon boots (a strict
+      # passthrough slug whose env var is absent fails the boot loudly).
+      - name: Run agentic PR reviewer (agentproto lane, opencode-go fallback)
+        id: reviewer-agentproto-opencode
+        # Same "posted != 'unknown'" blindness rule as the fallback-account
+        # tier: if the LAST postcheck couldn't reach the API it can't prove
+        # the previous tier didn't post — don't arm another posting tier on
+        # that blind spot.
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.postcheck-fallback.outputs.posted != 'true' &&
+          steps.postcheck-fallback.outputs.posted != 'unknown' &&
+          steps.mode.outputs.has-opencode-fallback == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/agentproto-run
+        env:
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
+          AGENTPROTO_JOIN_PROVIDER: e2b
+          AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        with:
+          adapter: opencode
+          auth-mode: api-key
+          api-key: ${{ secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ secrets.OPENCODE_API_KEY }}
+          provider-key-env: OPENCODE_API_KEY
+          model: opencode-go/glm-5.3
+          e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
+          langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
+          workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          cli-source: ${{ steps.cliver.outputs.cli-source }}
+          cli-version: ${{ steps.cliver.outputs.cli-version }}
+          workflow-input: |
+            {
+              "prNumber": ${{ github.event.pull_request.number }},
+              "baseRef": "${{ github.base_ref }}",
+              "repo": "${{ github.repository }}",
+              "lastReviewedSha": "${{ steps.lastreview.outputs.sha }}",
+              "priorReviewBody": ${{ toJSON(steps.lastreview.outputs.body) }},
+              "githubToken": "${{ steps.setup.outputs.token }}",
+              "reviewConfig": ${{ toJSON(fromJSON(steps.opencode-config.outputs.json || '{}')) }}
+            }
+          timeout-minutes: 15
+
+      # Third tier of the same guard as postcheck / postcheck-fallback: the
+      # opencode-go tier's session can also post successfully and then fail
+      # during wind-down, so the gate downstream must not arm off its
+      # self-report alone. Mirrors the two earlier checks exactly (see their
+      # comments for the duplicate-review reasoning).
+      - name: Check whether a review was already posted (post-opencode-go check)
+        id: postcheck-opencode
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.postcheck-fallback.outputs.posted != 'true' &&
+          steps.postcheck-fallback.outputs.posted != 'unknown' &&
+          steps.mode.outputs.has-opencode-fallback == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEWER_ARTIFACTS: ${{ steps.reviewer-agentproto-opencode.outputs.artifacts }}
+          JOB_START: ${{ steps.headsha.outputs.job-start }}
+        run: |
+          if node -e '
+            import("./scripts/lib/artifact-ledger.mjs").then(({ parseArtifacts, pickArtifact }) => {
+              const artifacts = parseArtifacts(process.env.REVIEWER_ARTIFACTS)
+              process.exit(pickArtifact(artifacts, "review") ? 0 : 1)
+            })
+          '; then
+            echo "opencode-go artifact ledger already records a posted review — trusting it over a live-head recount."
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          resolve_sha() {
+            gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid
+          }
+          count_reviews() {
+            gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+              | jq -s --arg since "$JOB_START" 'add | [.[] | select(.user.type=="Bot" and .submitted_at >= $since)] | length'
+          }
+          COUNT=""
+          for attempt in 1 2 3; do
+            if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then break; fi
+            COUNT=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "::warning::postcheck-opencode: GitHub API unreachable after 3 attempts — posted=unknown (downstream tiers stay disarmed; verify decides)."
+            echo "posted=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          settle_recount() {
+            SHA=""
+            COUNT=""
+            local attempt
+            for attempt in 1 2 3; do
+              if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then return 0; fi
+              COUNT=""
+              [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+            done
+            return 1
+          }
+          SETTLE_PASSES=0
+          while [ "$COUNT" -eq 0 ] 2>/dev/null && [ "$SETTLE_PASSES" -lt 2 ]; do
+            SETTLE_PASSES=$((SETTLE_PASSES + 1))
+            echo "Zero bot reviews since job start $JOB_START so far (live head $SHA) — settle pass $SETTLE_PASSES/2 (post-opencode-go check)…"
+            sleep 10
+            if ! settle_recount; then
+              echo "::warning::postcheck-opencode: GitHub API unreachable during a settle pass — posted=unknown (downstream tiers stay disarmed; verify decides)."
+              echo "posted=unknown" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "Bot reviews posted since job start $JOB_START (live head $SHA, post-opencode-go check): $COUNT"
+          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Propagate reviewer outcome for gate
         id: reviewer
         if: |
@@ -1536,11 +1730,13 @@ jobs:
           # above documents for PR_TITLE.
           PRIMARY_PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
           FALLBACK_PROVENANCE: ${{ steps.reviewer-agentproto-fallback.outputs.provenance }}
+          OPENCODE_PROVENANCE: ${{ steps.reviewer-agentproto-opencode.outputs.provenance }}
           # The artifact ledger (review id recorded at creation time) travels the
           # same tier-selection path as provenance below, so the review-footer
           # stamp keys off the id the winning account actually posted under.
           PRIMARY_ARTIFACTS: ${{ steps.reviewer-agentproto.outputs.artifacts }}
           FALLBACK_ARTIFACTS: ${{ steps.reviewer-agentproto-fallback.outputs.artifacts }}
+          OPENCODE_ARTIFACTS: ${{ steps.reviewer-agentproto-opencode.outputs.artifacts }}
         run: |
           # A posted review IS lane success, even when the native session
           # errored after posting (post-review wind-down — see the postcheck
@@ -1552,7 +1748,9 @@ jobs:
           if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ] \
             || [ "${{ steps.postcheck.outputs.posted }}" = "true" ] \
             || [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ] \
-            || [ "${{ steps.postcheck-fallback.outputs.posted }}" = "true" ]; then
+            || [ "${{ steps.postcheck-fallback.outputs.posted }}" = "true" ] \
+            || [ "${{ steps.reviewer-agentproto-opencode.outputs.status }}" = "done" ] \
+            || [ "${{ steps.postcheck-opencode.outputs.posted }}" = "true" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
           else
@@ -1571,6 +1769,9 @@ jobs:
           elif [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ]; then
             PROVENANCE="$FALLBACK_PROVENANCE"
             ARTIFACTS="$FALLBACK_ARTIFACTS"
+          elif [ "${{ steps.reviewer-agentproto-opencode.outputs.status }}" = "done" ]; then
+            PROVENANCE="$OPENCODE_PROVENANCE"
+            ARTIFACTS="$OPENCODE_ARTIFACTS"
           else
             PROVENANCE="$PRIMARY_PROVENANCE"
             ARTIFACTS="$PRIMARY_ARTIFACTS"
