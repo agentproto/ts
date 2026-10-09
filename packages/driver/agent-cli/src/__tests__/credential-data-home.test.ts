@@ -121,6 +121,46 @@ describe("credentialDataHome", () => {
     expect(env.OPENCODE_CONFIG_CONTENT).toBe("{}")
   })
 
+  it("deep-merges the credential's inline config over a mode's own config under the same key; ambient env is never merged", async () => {
+    const withMode = defineAgentCli({
+      ...opencodeLike(),
+      modes: [
+        {
+          id: "lean",
+          kind: "context",
+          env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: { agentproto: { enabled: false } } }) },
+        },
+      ],
+    })
+    const runtime = createAgentCliRuntime(withMode)
+    await runtime.start({
+      cwd: "/scratch",
+      configDir: join(base, "sess_4"),
+      contextProfile: "lean",
+      auth: apiKeySpec({
+        setEnv: "OPENCODE_CONSOLE_TOKEN",
+        extraEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { "opencode-go": { options: { a: 1 } } } }) },
+      }),
+    })
+    expect(JSON.parse(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT!)).toEqual({
+      mcp: { agentproto: { enabled: false } },
+      provider: { "opencode-go": { options: { a: 1 } } },
+    })
+
+    spawnCalls.length = 0
+    process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ambient: true })
+    try {
+      await createAgentCliRuntime(defineAgentCli(opencodeLike())).start({
+        cwd: "/scratch",
+        configDir: join(base, "sess_5"),
+        auth: apiKeySpec({ extraEnv: { OPENCODE_CONFIG_CONTENT: "{\"provider\":{}}" } }),
+      })
+      expect(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT).toBe('{"provider":{}}')
+    } finally {
+      delete process.env.OPENCODE_CONFIG_CONTENT
+    }
+  })
+
   it("leaves the data home alone when no credential is engaged (ambient)", async () => {
     const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
     await runtime.start({ cwd: "/scratch", configDir: join(base, "sess_3") })

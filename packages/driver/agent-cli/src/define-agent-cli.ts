@@ -146,6 +146,31 @@ function ensureExecDirOnPath(
   env.PATH = [...parts, execDir].join(delimiter)
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+
+function deepMergeJson(base: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base }
+  for (const [k, v] of Object.entries(over)) {
+    const prev = out[k]
+    out[k] = isPlainObject(prev) && isPlainObject(v) ? deepMergeJson(prev, v) : v
+  }
+  return out
+}
+
+/** `over` wins; when both parse as JSON objects they are deep-merged, else `over` replaces `base`. */
+export function mergeJsonEnvValue(base: string, over: string): string {
+  try {
+    const a = JSON.parse(base) as unknown
+    const b = JSON.parse(over) as unknown
+    if (isPlainObject(a) && isPlainObject(b)) return JSON.stringify(deepMergeJson(a, b))
+  } catch {
+    // not JSON — fall through to replace
+  }
+  return over
+}
+
 export function createAgentCliRuntime(
   definition: AgentCliHandle,
 ): AgentCliRuntime {
@@ -306,7 +331,14 @@ export function createAgentCliRuntime(
           throw new RuntimeConfigError("missing_auth_credential", "opts.auth.credential", message)
         }
         env[authSpec.setEnv] = authSpec.credential
-        if (authSpec.extraEnv) Object.assign(env, authSpec.extraEnv)
+        if (authSpec.extraEnv) {
+          for (const [key, value] of Object.entries(authSpec.extraEnv)) {
+            // A mode (e.g. opencode `lean`) may already carry a JSON config
+            // under the same key; layer the credential's block over it rather
+            // than clobbering it. Ambient env is never merged in.
+            env[key] = key in composed.env ? mergeJsonEnvValue(composed.env[key]!, value) : value
+          }
+        }
         // A CLI whose own stored login (opencode's console account in its
         // data dir) overrides an env credential gets a login-less data dir
         // for exactly this credential-injecting spawn, so the credential it
