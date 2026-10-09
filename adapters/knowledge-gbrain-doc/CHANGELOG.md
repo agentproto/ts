@@ -1,5 +1,14 @@
 # @agentproto/adapter-knowledge-gbrain-doc
 
+## 0.3.1
+
+### Patch Changes
+
+- e927cb2: Docs: document tunnel private-by-default and revoke, knowledge supersede/explain, pricing tiers, and compaction checkpoint/compactRequiresOperator.
+- Updated dependencies [dbf571c]
+- Updated dependencies [e927cb2]
+  - @agentproto/knowledge-engine@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes

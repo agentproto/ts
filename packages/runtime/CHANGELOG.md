@@ -1,5 +1,70 @@
 # @agentproto/runtime
 
+## 5.14.0
+
+### Minor Changes
+
+- 4a833e9: Agent steps retry transport failures. A `kind: agent` step whose session dies before its first turn ends (killed or crashed mid-turn, "ACP connection closed") is re-spawned with the same prompt in the same run workspace, instead of failing the run. By default that is one retry after 1 s. A step can set `retry: { max_attempts, backoff, initial_ms }` in WORKFLOW.md, the same block gates take; `max_attempts: 1` turns it off, and a declared `retry` also covers spawn failures. A turn that ended is never retried (empty or errored reply, schema mismatch, input request), and neither is a deliberately ended session, a cancelled run or a `sessionRef` reuse. Each retry is logged as a `step.retrying` run event. New exports: `AgentSessionLostError`, `isAgentTransportFailure`, `DEFAULT_AGENT_TRANSPORT_RETRY`, and the `onAgentRetry` run hook.
+- 19a1c97: Serve an app's bundled tools as an HTTP MCP server (`agentproto mcp-app` over HTTP, `@agentproto/runtime/app-mcp-server`). toMcpTool advertises real parameters for manifest-only (TOOL.md, JSON Schema) tools instead of an empty shape that made them uncallable.
+- a8df730: `app_tool_call` (and `POST /apps/:appId/tool-call`) can now run an app's own bundled tools: an id in the app's `ui.tools` allowlist that matches one of its `.agentproto/tools/<id>/TOOL.md` contracts is executed through the app's `.agentproto/drivers/*/DRIVER.md` implementations (AIP-30 `runTool`), the same pair workflows already use. Other ids still go to the daemon tool dispatch or `imported:<alias>/<tool>`.
+- 5b021a8: `branch_gc` / `worktree_gc` daemon tools: smaller, truthful responses and a faster plan. `branch_gc_status` takes `classes`, `scopes`, `section`, `results`, `limit` and `cursor`, and `full: true` now returns one filtered page (default 100 rows, with `page.nextCursor`) instead of the whole 65k+ character result. An apply result carries a top-level `status` and an `applySummary` (deleted / skipped / failed per scope, plus the restore log path). A running job no longer announces a `resultPath` that does not exist yet. `terminal_sessions_list` called without `limit` is capped at 50 rows with `total` / `truncated` / `nextCursor`; `paginated()` gains a `defaultLimit` option for this. The branch gc ladder computes `git patch-id`s once per commit and reuses merge-bases instead of running `git cherry` per tip (about 2.5x faster on a 374-ref repo, identical classification).
+- ca14bc2: Add an opt-in public events origin, `POST /mcp/events/<secret>`, that serves a dedicated events-only MCP surface
+  (`events/*` plus one probe tool) over the 2026-07-28 protocol. Disabled unless `AGENTPROTO_MCP_EVENTS_SECRET`
+  (32+ chars) is set; subscriptions are limited to `AGENTPROTO_MCP_EVENTS_REPOS`.
+- ca14bc2: Add opt-in public `POST /mcp/events/<secret>` events-only MCP surface (`eventsMcp` option) with a repo allowlist on subscribe.
+
+### Patch Changes
+
+- 1dedaaa: Confirming an `app_install` from an app panel's `window.McpApp` bridge no longer fails with an unknown-key error. The second call echoes the preview's `confirm` nonce, and `appInstallInputSchema` is strict, so `dispatchAllowlistedAppTool` now strips `confirm` from the args before dispatching to `dispatchTool` or an imported tool. Direct MCP/CLI `app_install` calls are unaffected.
+- e190733: The public MCP events origin now runs as its own principal (`sessionPrincipal("mcp-events-origin")`) instead of the operator's daemon-bearer principal, so a holder of the events URL can no longer see or cancel the operator's subscriptions. A malformed percent-encoding in `/mcp/events/<secret>` answers 404, and OPTIONS on that route answers 405 with `Allow: POST`. `initialize` on the modern core is now a 404 `-32601` (naming the supported versions in `data`). The 2026-07-28 contract rows run as real tests, and `docs/mcp-events-integration.md` documents the events origin.
+- 6bcecee: Send `X-MCP-Subscription-Id` (the sentinel id returned by `events/subscribe`) on every signed event delivery attempt; OpenAI rejected deliveries without it (found against ChatGPT).
+  `events/subscribe` results now carry `truncated: false` alongside `cursor: null`.
+- 36425c9: MCP Events: Agentpush sentinel deliveries are now durable. The webhook outbox enqueue is atomic, synced and awaited before a poll ack or push 2xx; a poll batch ack covers only items that were delivered or quarantined (malformed items are quarantined, not skipped). Providers can `renew(handle, until)` and `events/subscribe` refresh renews the remote subscription, with typed handling for an already expired or deleted backing subscription. Cancellation is tracked in remote-id keyed tombstones that retry until the remote is gone, so an immediate re-subscribe cannot race a cancel. New Agentpush subscriptions reject legacy body-only sha256 signatures.
+- 9c8996e: Add a transport-free core for the stateless MCP 2026-07-28 era (not served on any route yet): request validation, an in-process bridge to a fresh legacy server, `server/discover`, result decoration, and `recordResult` on the MCP session observer.
+- a116799: Bridge the MCP 2026-07-28 core to the in-process server over raw JSON-RPC instead of an SDK client, so `server/discover` keeps the `events` capability and handler errors keep their exact message.
+- e927cb2: Docs: document tunnel private-by-default and revoke, knowledge supersede/explain, pricing tiers, and compaction checkpoint/compactRequiresOperator.
+- 8987507: Stabilize session-steward workflow test ordering by using a single shared timestamp for fixture rows.
+- 66d076a: Add MCP 2026-07-28 contract fixtures and characterization tests for the `/mcp` endpoint.
+- 2eeeb57: Add tests covering codex's confined CODEX_HOME in parallel workflow branches.
+- 4c9745d: Add optional `stateHome.seed` (name → content) to the agent-cli driver, written into the isolated per-session home on confined spawns. The codex adapter uses it to ship `project_root_markers = []`. Runtime change is test-only.
+- 91630ea: Codex now starts inside an app boundary. Adapters can declare a `stateHome`; an OS-confined spawn gets an isolated per-session home (the session's adapter config dir) with only the declared login files linked back from the real one. Codex declares `CODEX_HOME` / `.codex` sharing `auth.json`, and the codex transcript exporter reads a confined session's rollouts from its own home.
+- ef1fb49: Fix the builtin App Store panel showing "No apps installed, and the app catalog is empty" when opened standalone at `/apps/@agentproto/store/ui`. The standalone `tool-call` route wraps a builtin tool's MCP result a second time, and the panel bridge's `callTool` peeled only one layer. It now unwraps nested envelopes recursively, honours `isError` at every layer, and returns non-JSON text as a string, which fixes every builtin panel opened standalone. The store lists builtin panels from the catalog's `category: "builtin"` rows (open by default, each with an Open button, never counted as Available or toward the empty state), and its status bar shows installed / available / builtin counts. `@agentproto/runtime` only gains a comment on the double-wrap; the wire shape is unchanged.
+- 81196cb: Stop the workflow runner from starving the event loop. Every step transition rewrote the entire runs file synchronously (228 MB with a few hundred retained runs), which blocked the loop for minutes across a long run so the lease heartbeat never fired and the liveness sweep orphaned healthy runs. Writes that don't change any run's status are now coalesced to at most one per `persistMinIntervalMs` (default 2s, trailing flush, flush on exit); status changes still flush immediately and the file is written compact. The daemon's liveness sweep also skips a tick that fired seconds late, since overdue renewals mean a starved loop rather than dead owners.
+- Updated dependencies [4a833e9]
+- Updated dependencies [19a1c97]
+- Updated dependencies [b7ddf13]
+- Updated dependencies [5b021a8]
+- Updated dependencies [1645a51]
+- Updated dependencies [6cf7140]
+- Updated dependencies [e927cb2]
+- Updated dependencies [4c9745d]
+- Updated dependencies [3e61035]
+- Updated dependencies [754a694]
+- Updated dependencies [6a86cd8]
+- Updated dependencies [91630ea]
+- Updated dependencies [2e7d918]
+- Updated dependencies [ef1fb49]
+  - @agentproto/workflow-runtime@0.17.0
+  - @agentproto/mcp-server@0.6.2
+  - @agentproto/app-kit@1.7.0
+  - @agentproto/tool@0.5.0
+  - @agentproto/apps@0.21.0
+  - @agentproto/model-catalog@0.12.1
+  - @agentproto/driver-agent-cli@2.9.0
+  - @agentproto/review@0.5.0
+  - @agentproto/sandbox@0.8.4
+  - @agentproto/driver-browser@0.2.1
+  - @agentproto/driver@0.3.1
+  - @agentproto/driver-http@0.1.11
+  - @agentproto/governance-engine@0.1.11
+  - @agentproto/workspace-brain@0.5.1
+  - @agentproto/providers-store@0.3.24
+  - @agentproto/eval-reporters@0.2.21
+  - @agentproto/telemetry-langfuse@0.2.19
+  - @agentproto/plugin-local-browser@0.3.3
+  - @agentproto/adapter-browser@0.3.1
+  - @agentproto/llm-endpoint@0.11.6
+
 ## 5.13.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver-browser",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Browser provider kit: defineBrowser (manifest + launch), the BrowserInstance and BrowserDriver ports, a provider registry, a provider-kit lister, and a typed capability gate (browser:unsupported).",
   "keywords": [
     "agentproto",

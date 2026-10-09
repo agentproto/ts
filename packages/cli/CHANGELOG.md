@@ -1,5 +1,38 @@
 # @agentproto/cli
 
+## 1.15.0
+
+### Minor Changes
+
+- 19a1c97: Serve an app's bundled tools as an HTTP MCP server (`agentproto mcp-app` over HTTP, `@agentproto/runtime/app-mcp-server`). toMcpTool advertises real parameters for manifest-only (TOOL.md, JSON Schema) tools instead of an empty shape that made them uncallable.
+- f26efaa: New `agentproto host health`: a verdict on whether the host can take more agents. It prints `OK`, `WARN` or `CRIT` with the reasons, then a table of checks (load per core, RAM and swap pressure, daemon reachability and uptime, live and busy sessions, orphan processes, free disk under the sessions dir), and exits 0, 1 or 2 so cron and scripts can gate on it. Thresholds are named constants (`DEFAULT_HEALTH_THRESHOLDS`) with `--warn-*` / `--crit-*` overrides such as `--warn-load` and `--crit-load`. It supports `--json`, `--watch`, `--local` and `--no-color`, reuses the `host load` sampler (daemon first, in-process fallback), and stays read-only. An unreachable daemon is CRIT but the other checks are still reported.
+
+### Patch Changes
+
+- 36425c9: MCP Events: Agentpush sentinel deliveries are now durable. The webhook outbox enqueue is atomic, synced and awaited before a poll ack or push 2xx; a poll batch ack covers only items that were delivered or quarantined (malformed items are quarantined, not skipped). Providers can `renew(handle, until)` and `events/subscribe` refresh renews the remote subscription, with typed handling for an already expired or deleted backing subscription. Cancellation is tracked in remote-id keyed tombstones that retry until the remote is gone, so an immediate re-subscribe cannot race a cancel. New Agentpush subscriptions reject legacy body-only sha256 signatures.
+- dbf571c: Documentation updates: tunnel privacy/revoke docs, OpenRouter pricing tiers, and knowledge provider supersede/explain.
+- Updated dependencies [b7ddf13]
+- Updated dependencies [5b021a8]
+- Updated dependencies [1645a51]
+- Updated dependencies [6cf7140]
+- Updated dependencies [e927cb2]
+- Updated dependencies [4c9745d]
+- Updated dependencies [754a694]
+- Updated dependencies [6a86cd8]
+- Updated dependencies [91630ea]
+- Updated dependencies [2e7d918]
+- Updated dependencies [ef1fb49]
+  - @agentproto/app-kit@1.7.0
+  - @agentproto/worktree@0.14.4
+  - @agentproto/apps@0.21.0
+  - @agentproto/model-catalog@0.12.1
+  - @agentproto/driver-agent-cli@2.9.0
+  - @agentproto/driver@0.3.1
+  - @agentproto/sandbox-box@0.2.26
+  - @agentproto/sandbox-e2b@0.5.16
+  - @agentproto/adapter-browser@0.3.1
+  - @agentproto/llm-endpoint@0.11.6
+
 ## 1.14.0
 
 ### Minor Changes

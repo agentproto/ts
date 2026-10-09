@@ -1,5 +1,14 @@
 # @agentproto/catalog-sync
 
+## 0.8.1
+
+### Patch Changes
+
+- dbf571c: Documentation updates: tunnel privacy/revoke docs, OpenRouter pricing tiers, and knowledge provider supersede/explain.
+- e927cb2: Docs: document tunnel private-by-default and revoke, knowledge supersede/explain, pricing tiers, and compaction checkpoint/compactRequiresOperator.
+- Updated dependencies [e927cb2]
+  - @agentproto/model-catalog@0.12.1
+
 ## 0.8.0
 
 ### Minor Changes

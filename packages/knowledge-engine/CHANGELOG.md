@@ -1,5 +1,18 @@
 # @agentproto/knowledge-engine
 
+## 0.3.1
+
+### Patch Changes
+
+- dbf571c: Documentation updates: tunnel privacy/revoke docs, OpenRouter pricing tiers, and knowledge provider supersede/explain.
+- e927cb2: Docs: document tunnel private-by-default and revoke, knowledge supersede/explain, pricing tiers, and compaction checkpoint/compactRequiresOperator.
+- Updated dependencies [5b021a8]
+  - @agentproto/tool@0.5.0
+  - @agentproto/driver-cli@0.2.3
+  - @agentproto/driver@0.3.1
+  - @agentproto/driver-http@0.1.11
+  - @agentproto/driver-mcp@0.1.11
+
 ## 0.3.0
 
 ### Minor Changes

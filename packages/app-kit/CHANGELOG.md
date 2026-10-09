@@ -1,5 +1,19 @@
 # @agentproto/app-kit
 
+## 1.7.0
+
+### Minor Changes
+
+- b7ddf13: New optional `ui.renders`: the subset of `ui.tools` whose results the host displays in the app's UI. A server publishing the app as an MCP App links those tools to the app's `ui://` resource. `defineApp` rejects ids missing from `ui.tools` and duplicates; the field round-trips through `emit` and `loadAppHandle`.
+
+### Patch Changes
+
+- Updated dependencies [5b021a8]
+  - @agentproto/tool@0.5.0
+  - @agentproto/driver-cli@0.2.3
+  - @agentproto/driver@0.3.1
+  - @agentproto/driver-http@0.1.11
+
 ## 1.6.2
 
 ### Patch Changes

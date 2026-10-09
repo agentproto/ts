@@ -1,5 +1,29 @@
 # @agentproto/apps
 
+## 0.21.0
+
+### Minor Changes
+
+- 1645a51: The repo-maintenance `maintain` workflow now also reviews branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip at least 3 days old). Until now `worktree_gc` held such a worktree because its branch wasn't provably merged, and `branch_gc` held the branch because a worktree had it checked out, so an abandoned worktree was never reviewed and stayed forever. These branches now join the existing reviewer queue (same small/large model roles, verdict store, re-prompt and retry). The reviewer prompt says why the branch was held. The report gains a "Held worktrees reviewed" section listing each verdict, plus the `agentproto worktree rm <path>` command when the reviewer agreed nothing of value is lost. Nothing is removed automatically. The new `reviewHeldWorktrees` input (default `true`) turns it off.
+- 2e7d918: App Store panel: add an app detail view, icons and search. Clicking a card title or icon opens `?app=<appId>` (pushState/popstate, "← Back to store") showing icon, publisher, version and update badge, license, tier, size, origin/catalog (+ stale), requires, pinned source, install/data dirs (with a missing-dir warning), agents, workflows and the last 10 runs, with Install (existing two-step confirmation), Update, Uninstall and Open. A Copy block gives the equivalent CLI commands and the exact `app_install` MCP arguments (builtins show their MCP tool id / resource URI instead). Cards show the catalog `icon` and fall back to an initial-letter tile when the image is missing, unsafe or blocked by the host's CSP. A search box (name / appId / description / publisher) and category chips filter every section, with state in `?q=` / `?cat=` and an empty-result message. History writes refused by a host iframe degrade to in-panel navigation.
+
+### Patch Changes
+
+- 6cf7140: Every shipped `worktree_gc` caller now gets the real result instead of a background jobId. Without `wait: true`, the tool falls back to a background job after its 25 s default `waitMs` and returns only `{ jobId, status: "running" }`. On a repo with dozens of worktrees:
+
+  - The repo-maintenance `maintain` workflow counted "0 worktree(s) classified", and an `applyMerged: true` apply ran in the background, unreported, after the workflow had finished. Both of its `worktree_gc` steps now pass `wait: true`.
+  - The `worktree-gc-notify` workflow reported no outcomes. Its `gc` step now passes `wait: true`.
+  - A `worktree-gc` routine cron run recorded the bare jobId as success, so a failed apply never reached `on_failure`. The routine template now passes `wait: true`.
+  - The ops panel's Worktrees card showed "0 reclaim … (no linked worktrees)". It now polls `worktree_gc_status` (added to the panel's tool allowlist) until the plan lands, and shows a failed job as an error.
+
+  `branch_gc` already blocks by default and is unchanged.
+
+- 754a694: session-steward: `workflow` (workflow-step sessions) and `review` (reviewer lanes) are now closable origins by default. They are one-shot sessions spawned by the engine, never by a human, but an unrecognized root origin was treated as user-origin and therefore flag-only, so finished ones piled up. Still gated by idle time and a confident `done`/`abandoned` verdict.
+- 6a86cd8: The `session-steward` workflow's two `session_wrapup_apply` steps (`autoApplyOne`, `judgedApplyOne`) now pass `wait: true`. Without it the tool falls back to a background job after its 25 s default `waitMs` and returns only `{ jobId, status: "running" }`. A slow close then came back as that bare jobId, and the report showed no outcome for a session that was in fact closed.
+- ef1fb49: Fix the builtin App Store panel showing "No apps installed, and the app catalog is empty" when opened standalone at `/apps/@agentproto/store/ui`. The standalone `tool-call` route wraps a builtin tool's MCP result a second time, and the panel bridge's `callTool` peeled only one layer. It now unwraps nested envelopes recursively, honours `isError` at every layer, and returns non-JSON text as a string, which fixes every builtin panel opened standalone. The store lists builtin panels from the catalog's `category: "builtin"` rows (open by default, each with an Open button, never counted as Available or toward the empty state), and its status bar shows installed / available / builtin counts. `@agentproto/runtime` only gains a comment on the double-wrap; the wire shape is unchanged.
+- Updated dependencies [b7ddf13]
+  - @agentproto/app-kit@1.7.0
+
 ## 0.20.3
 
 ### Patch Changes

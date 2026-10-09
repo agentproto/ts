@@ -1,5 +1,15 @@
 # @agentproto/driver-agent-cli
 
+## 2.9.0
+
+### Minor Changes
+
+- 4c9745d: Add optional `stateHome.seed` (name → content) to the agent-cli driver, written into the isolated per-session home on confined spawns. The codex adapter uses it to ship `project_root_markers = []`. Runtime change is test-only.
+
+### Patch Changes
+
+- 91630ea: Codex now starts inside an app boundary. Adapters can declare a `stateHome`; an OS-confined spawn gets an isolated per-session home (the session's adapter config dir) with only the declared login files linked back from the real one. Codex declares `CODEX_HOME` / `.codex` sharing `auth.json`, and the codex transcript exporter reads a confined session's rollouts from its own home.
+
 ## 2.8.0
 
 ### Minor Changes
