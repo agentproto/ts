@@ -25,8 +25,8 @@
 
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
-import { join, dirname, isAbsolute, resolve as resolvePath } from "node:path"
-import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
+import { join, dirname, basename, isAbsolute, resolve as resolvePath } from "node:path"
+import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync, cpSync, rmSync } from "node:fs"
 import { buildAgentStep, runWorkflow, validateWorkflowInput, validateAgainstJsonSchema, StepOutcomeError, MissingArtifactError } from "@agentproto/workflow-runtime"
 import type { AgentSandboxRef, ApprovalDecision, ArtifactEntry, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
@@ -46,7 +46,7 @@ import type { AppStateEventInput } from "./app-state.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import { createRunEventLog, readRunEvents, DEFAULT_RUNS_ROOT, type RunEventLog, type RunEventEnvelope } from "./run-event-log.js"
 import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
-import { ensureRunWorkspace, runWorkspacePaths } from "./run-workspace.js"
+import { ensureRunWorkspace, runWorkspacePaths, type RunWorkspacePaths } from "./run-workspace.js"
 import { buildAppBoundary, isPathWithin, type AppBoundary } from "./app-boundary.js"
 import { copyFile, mkdir, readFile } from "node:fs/promises"
 
@@ -326,8 +326,10 @@ export interface WorkflowRunner {
 
   /**
    * AIP-58 §6 Journal `run.retry` — given a `failed`/`cancelled` runId,
-   * starts a NEW run (fresh runId, fresh AIP-58 §4 workspace, `retryOf`
-   * pointing at the original) that replays every step the original run
+   * starts a NEW run (fresh runId, its own AIP-58 §4 workspace seeded with
+   * a copy of the original's `scratch/` + `artifacts/` — including any fix
+   * made there after the failure — `retryOf` pointing at the original)
+   * that replays every step the original run
    * already completed from its own journal — no re-execution, no re-spawn —
    * and re-executes only from the first step that never succeeded onward.
    * "The original run's journal is the source": this works whether or not
@@ -702,6 +704,34 @@ function forceCacheableStep(step: RuntimeStep): RuntimeStep {
 
 function forceCacheableWorkflow(workflow: RuntimeWorkflow): RuntimeWorkflow {
   return { ...workflow, steps: workflow.steps.map(forceCacheableStep) }
+}
+
+/**
+ * AIP-58 §6 `run.retry` — copy a failed/cancelled run's `scratch/` and
+ * `artifacts/` into its retry's (still non-existent) workspace, so steps
+ * replayed from the journal find the files they wrote the first time
+ * (a downstream gate reading `$run.workspace/draft.md` would otherwise fail
+ * at once). The copy, not a shared directory, keeps §4's "two runs never
+ * share a workspace": the original stays as it was. Symlinks are copied
+ * verbatim so relative links inside `scratch/` stay inside the copy. A
+ * failed copy removes the partial destination — the caller refuses the
+ * retry rather than run it against half a workspace.
+ */
+function seedRetryWorkspace(
+  origRoot: string | undefined,
+  dest: RunWorkspacePaths,
+): { ok: true } | { ok: false; message: string } {
+  if (origRoot === undefined) return { ok: true }
+  const src = runWorkspacePaths(dirname(origRoot), basename(origRoot))
+  try {
+    for (const [from, to] of [[src.scratch, dest.scratch], [src.artifactsDir, dest.artifactsDir]] as const) {
+      if (existsSync(from)) cpSync(from, to, { recursive: true, verbatimSymlinks: true, preserveTimestamps: true })
+    }
+    return { ok: true }
+  } catch (err) {
+    rmSync(dest.root, { recursive: true, force: true })
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /**
@@ -2837,7 +2867,23 @@ export function createWorkflowRunner(opts: {
       const rootRunId = resolveLineageRoot(runs, originalRunId)
       const runId = `wfrun_${randomUUID()}`
       const workspace = workspaceRunsRoot()
-      if (workspace !== undefined) ensureRunWorkspace(workspace, runId)
+      if (workspace !== undefined) {
+        // Replayed steps are NOT re-executed, so whatever files they wrote
+        // never reappear on their own — seed the new workspace from the
+        // ORIGINAL run's `scratch/` + `artifacts/` (not the lineage root's:
+        // the parent already carries everything its own ancestors left, plus
+        // any fix a supervisor made in it between the failure and this
+        // retry — the main reason to retry at all).
+        const seeded = seedRetryWorkspace(orig.workspace, runWorkspacePaths(workspace, runId))
+        if (!seeded.ok) {
+          return {
+            ok: false,
+            error: "not_retryable",
+            message: `could not copy run "${originalRunId}"'s workspace into the retry: ${seeded.message}`,
+          }
+        }
+        ensureRunWorkspace(workspace, runId)
+      }
 
       // Always the internal journal, keyed to the LINEAGE ROOT so a
       // retry-of-a-retry still sees every step any earlier attempt in the

@@ -1339,6 +1339,9 @@ export function registerOrchestrationTools(
         "the original run never passed a `cacheKey`: every run journals its own " +
         "steps internally for exactly this purpose. Refused on a `done` " +
         "(succeeded) or still in-flight run — there's nothing to retry FROM. " +
+        "The new workspace starts as a copy of the original run's `scratch/` and " +
+        "`artifacts/`, so files the replayed steps wrote are there — and so is any " +
+        "fix you made in the original workspace after the failure (fix a file, retry). " +
         "An `input` override re-resolves every step against it; a step whose " +
         "resolved input changes as a result naturally misses the journal and " +
         "re-executes (same as any other downstream step it feeds).",
