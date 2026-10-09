@@ -65,7 +65,7 @@ export function isKnownSessionEndReason(reason: string | undefined): reason is S
 // limit …") rather than any error mentioning "limit" in passing (a rate
 // limit on one tool call, a context-window limit, etc.) — those are
 // ordinary turn errors, not "this session is dead until the cap resets".
-// opencode's hosted plans phrase the same cap as "Go usage limit exceeded"
+// hosted plans (e.g. opencode Go) phrase the same cap as "Go usage limit exceeded"
 // (AI_APICallError on its stderr stream).
 const PROVIDER_LIMIT_ERROR_RE = /\bhit your (?:session|usage) limit\b|\busage limit exceeded\b/i
 
@@ -82,17 +82,21 @@ export function isProviderLimitError(message: string | undefined): boolean {
 
 /**
  * Name the wallet a usage-cap error was billed to. The adapter only says
- * "Go usage limit exceeded"; with several profiles/workspaces the operator
- * needs to know WHICH one is spent. Non-limit messages and sessions with no
+ * e.g. "usage limit exceeded"; with several profiles/sub-accounts the operator
+ * needs to know WHICH one is spent (profile, plus the pinned sub-account). Non-limit messages and sessions with no
  * named profile pass through untouched.
  */
 export function tagLimitErrorWithWallet(
   message: string,
-  accessProfile: { profileRef: string; label?: string } | undefined,
+  accessProfile:
+    | { profileRef: string; label?: string; subaccount?: { kind: string; id: string; name?: string } }
+    | undefined,
 ): string {
   if (!accessProfile || !isProviderLimitError(message) || message.includes("[wallet:")) return message
   const label = accessProfile.label ? ` — ${accessProfile.label}` : ""
-  return `${message} [wallet: profile "${accessProfile.profileRef}"${label}]`
+  const sub = accessProfile.subaccount
+  const scope = sub ? `, ${sub.kind} "${sub.name ?? sub.id}"` : ""
+  return `${message} [wallet: profile "${accessProfile.profileRef}"${label}${scope}]`
 }
 
 /** End reasons that mean a human/steward closed the session on purpose (or

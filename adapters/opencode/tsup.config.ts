@@ -9,6 +9,6 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["@agentproto/driver-agent-cli", "@agentproto/model-catalog"],
+  external: ["@agentproto/auth", "@agentproto/driver-agent-cli", "@agentproto/model-catalog"],
   noExternal: [],
 })

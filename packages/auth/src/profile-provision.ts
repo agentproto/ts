@@ -21,20 +21,26 @@
  */
 
 import { createHash } from "node:crypto"
-import type { AuthMethod, AuthProfile, CostBudget, ModelCuration } from "./profile-types.js"
+import type {
+  AuthMethod,
+  AuthProfile,
+  CostBudget,
+  ModelCuration,
+  SubaccountPin,
+} from "./profile-types.js"
 import { costBudgetSchema } from "./profile-store.js"
+import {
+  findSubaccountProvider,
+  migrateLegacySubaccountProfile,
+  SUBACCOUNT_KIND_RE,
+} from "./subaccounts.js"
 import type { CredentialStore } from "./store/types.js"
-
-/** The one api-key source kind: an opencode console org
- *  (`opencode-console:<orgId>`), resolved fresh at spawn from opencode's own
- *  console login — the profile stores no secret. */
-const API_KEY_SOURCE_PREFIX = "opencode-console:"
 
 /** Input to {@link createAuthProfile}. `credential` is the raw secret — it is
  *  written to the store and NEVER returned. Exactly one of `credential` /
  *  `source` must be given for an `oauth-bearer` profile; `api-key` requires
- *  `credential`, except for an `opencode-console:<orgId>` source (an opencode
- *  console org, resolved at spawn). */
+ *  `credential`, except for a `source` owned by a registered sub-account
+ *  provider (an account resolved at spawn, pinned to a `subaccount`). */
 export interface CreateAuthProfileInput {
   /** Stable id, unique across all profiles. */
   id: string
@@ -51,6 +57,9 @@ export interface CreateAuthProfileInput {
    *  resolved fresh at spawn time instead. Mutually exclusive with
    *  `credential`. */
   source?: string
+  /** Pin one sub-account (org / workspace / project) of the account — the
+   *  `credential` or the `source`. See `subaccounts.ts`. */
+  subaccount?: SubaccountPin
   /** Optional human-readable name. */
   label?: string
   /** Optional explicit credential-store slot. Omitted ⇒ derived from
@@ -73,6 +82,8 @@ export interface CreatedAuthProfile {
   credentialRef?: string
   /** Set for a source-backed profile; absent for a credential-backed one. */
   source?: string
+  /** The pinned sub-account, when the profile has one. */
+  subaccount?: SubaccountPin
   label?: string
   /** Provenance stamped at import time, when given. */
   origin?: string
@@ -125,6 +136,7 @@ export interface ValidatedCreateInput {
   method: AuthMethod
   credential?: string
   source?: string
+  subaccount?: SubaccountPin
   label?: string
   credentialRef?: string
   origin?: string
@@ -165,11 +177,42 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
   const credential = input.credential !== undefined ? input.credential.trim() : undefined
   const source = input.source?.trim()
 
+  let subaccount: SubaccountPin | undefined
+  if (input.subaccount !== undefined) {
+    const kind = (input.subaccount.kind ?? "").trim()
+    const subId = (input.subaccount.id ?? "").trim()
+    const subName = input.subaccount.name?.trim()
+    if (!SUBACCOUNT_KIND_RE.test(kind) || !subId) {
+      throw new AuthProfileValidationError(
+        `subaccount must be "<kind>:<id>" with a lowercase kind (org, workspace, project, …) and a non-empty id`,
+      )
+    }
+    subaccount = { kind, id: subId, ...(subName ? { name: subName } : {}) }
+    if (!credential && !source) {
+      throw new AuthProfileValidationError(
+        "a subaccount pin needs a parent account — give a credential or a source",
+      )
+    }
+  }
+  // A source-backed api-key profile is only meaningful when a sub-account
+  // provider owns that source (it resolves the credential at spawn).
+  const provider = source ? findSubaccountProvider({ source }) : undefined
+  if (subaccount && provider && !provider.kinds.includes(subaccount.kind)) {
+    throw new AuthProfileValidationError(
+      `subaccount kind "${subaccount.kind}" is not supported by "${provider.id}" (supported: ${provider.kinds.join(", ")})`,
+    )
+  }
+
   if (method === "api-key") {
     if (source) {
-      if (!source.startsWith(API_KEY_SOURCE_PREFIX) || source.length === API_KEY_SOURCE_PREFIX.length) {
+      if (!provider) {
         throw new AuthProfileValidationError(
-          `source is only supported for oauth-bearer profiles (and "${API_KEY_SOURCE_PREFIX}<orgId>" api-key profiles) — api-key profiles otherwise require a credential`,
+          `source is only supported for oauth-bearer profiles and for accounts owned by a registered sub-account provider — api-key profiles otherwise require a credential`,
+        )
+      }
+      if (!subaccount && provider.migrateLegacySource?.(source) === undefined) {
+        throw new AuthProfileValidationError(
+          `source "${source}" resolves an account with sub-accounts — pin one with a subaccount ("<kind>:<id>")`,
         )
       }
       if (credential) {
@@ -207,6 +250,7 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
     method,
     ...(credential ? { credential } : {}),
     ...(source ? { source } : {}),
+    ...(subaccount ? { subaccount } : {}),
     ...(label ? { label } : {}),
     ...(credentialRef ? { credentialRef } : {}),
     ...(origin ? { origin } : {}),
@@ -292,20 +336,23 @@ export async function createAuthProfile(
 
   // Source-backed: no secret, nothing written to the credential store.
   if (v.source !== undefined) {
-    const profile: AuthProfile = {
+    // A legacy provider-encoded source is stored in the generic shape.
+    const profile = migrateLegacySubaccountProfile({
       id: v.id,
       endpoint: v.endpoint,
       method: v.method,
       source: v.source,
+      ...(v.subaccount ? { subaccount: v.subaccount } : {}),
       ...(v.label ? { label: v.label } : {}),
       ...(v.origin ? { origin: v.origin } : {}),
-    }
+    })
     await deps.addProfile(profile)
     return {
       id: profile.id,
       endpoint: profile.endpoint,
       method: profile.method,
-      source: v.source,
+      source: profile.source,
+      ...(profile.subaccount ? { subaccount: profile.subaccount } : {}),
       ...(profile.label ? { label: profile.label } : {}),
       ...(profile.origin ? { origin: profile.origin } : {}),
     }
@@ -334,6 +381,7 @@ export async function createAuthProfile(
     endpoint: v.endpoint,
     method: v.method,
     credentialRef,
+    ...(v.subaccount ? { subaccount: v.subaccount } : {}),
     ...(v.label ? { label: v.label } : {}),
     ...(v.origin ? { origin: v.origin } : {}),
   }
@@ -344,6 +392,7 @@ export async function createAuthProfile(
     endpoint: profile.endpoint,
     method: profile.method,
     credentialRef,
+    ...(v.subaccount ? { subaccount: v.subaccount } : {}),
     ...(profile.label ? { label: profile.label } : {}),
     ...(profile.origin ? { origin: profile.origin } : {}),
     fingerprint: fingerprintCredential(credential),

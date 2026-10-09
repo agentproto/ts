@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { AuthProfile } from "../profile-types.js"
+import {
+  registerSubaccountProvider,
+  unregisterSubaccountProvider,
+  type SubaccountProvider,
+} from "../subaccounts.js"
 import { MemoryStore } from "../store/memory-store.js"
 import {
   AuthProfileValidationError,
@@ -127,23 +132,89 @@ describe("validateCreateInput", () => {
     ).toThrow(/source is only supported for oauth-bearer/)
   })
 
-  it("accepts an opencode-console source on an api-key profile, with no credential", () => {
-    const v = validateCreateInput({
-      id: "opencode-ws01",
-      endpoint: "opencode-go",
-      method: "api-key",
-      source: "opencode-console:org_01ABC",
-    })
-    expect(v.source).toBe("opencode-console:org_01ABC")
-    expect(v.credential).toBeUndefined()
-  })
+  describe("sub-account pins (fake provider)", () => {
+    const fake: SubaccountProvider = {
+      id: "fake-vendor",
+      source: "fake-login",
+      endpoints: ["fake-api"],
+      kinds: ["workspace"],
+      list: async () => ({ account: { id: "acct" }, subaccounts: [] }),
+      resolve: async () => ({}),
+      migrateLegacySource: src => {
+        const m = /^fake-login:(.+)$/.exec(src)
+        return m ? { kind: "workspace", id: m[1]! } : undefined
+      },
+    }
+    beforeEach(() => registerSubaccountProvider(fake))
+    afterEach(() => unregisterSubaccountProvider("fake-vendor"))
 
-  it("rejects an opencode-console source with no org id, or combined with a credential", () => {
-    const base = { id: "x", endpoint: "opencode-go", method: "api-key" as const }
-    expect(() => validateCreateInput({ ...base, source: "opencode-console:" })).toThrow(/only supported/)
-    expect(() =>
-      validateCreateInput({ ...base, source: "opencode-console:org_1", credential: "k" }),
-    ).toThrow(/not both/)
+    it("accepts a provider-owned source + subaccount on an api-key profile, no credential", () => {
+      const v = validateCreateInput({
+        id: "w1",
+        endpoint: "fake-api",
+        method: "api-key",
+        source: "fake-login",
+        subaccount: { kind: "workspace", id: "ws_1", name: "One" },
+      })
+      expect(v.source).toBe("fake-login")
+      expect(v.subaccount).toEqual({ kind: "workspace", id: "ws_1", name: "One" })
+      expect(v.credential).toBeUndefined()
+    })
+
+    it("rejects an unknown source, an unsupported kind, a missing pin, and credential+source", () => {
+      const base = { id: "x", endpoint: "fake-api", method: "api-key" as const }
+      expect(() => validateCreateInput({ ...base, source: "nobody" })).toThrow(/only supported/)
+      expect(() =>
+        validateCreateInput({ ...base, source: "fake-login", subaccount: { kind: "org", id: "o" } }),
+      ).toThrow(/not supported by "fake-vendor"/)
+      expect(() => validateCreateInput({ ...base, source: "fake-login" })).toThrow(/pin one/)
+      expect(() =>
+        validateCreateInput({
+          ...base,
+          source: "fake-login",
+          credential: "k",
+          subaccount: { kind: "workspace", id: "w" },
+        }),
+      ).toThrow(/not both/)
+    })
+
+    it("rejects a malformed pin and a pin with no parent account", () => {
+      const base = { id: "x", endpoint: "fake-api", method: "api-key" as const }
+      expect(() =>
+        validateCreateInput({ ...base, credential: "k", subaccount: { kind: "Bad Kind", id: "o" } }),
+      ).toThrow(/lowercase kind/)
+      expect(() =>
+        validateCreateInput({ ...base, subaccount: { kind: "workspace", id: "w" } }),
+      ).toThrow(/parent account/)
+    })
+
+    it("stores a credential-backed pinned profile with the pin and no extra secret copies", async () => {
+      const { deps, profiles } = makeDeps()
+      const out = await createAuthProfile(
+        {
+          id: "w-key",
+          endpoint: "fake-api",
+          method: "api-key",
+          credential: "sk-fake-123456",
+          subaccount: { kind: "workspace", id: "ws_9" },
+        },
+        deps,
+      )
+      expect(out.subaccount).toEqual({ kind: "workspace", id: "ws_9" })
+      expect(profiles.get("w-key")?.subaccount).toEqual({ kind: "workspace", id: "ws_9" })
+      expect(JSON.stringify(profiles.get("w-key"))).not.toContain("sk-fake-123456")
+    })
+
+    it("stores a legacy provider-encoded source in the generic shape", async () => {
+      const { deps, profiles } = makeDeps()
+      const out = await createAuthProfile(
+        { id: "legacy", endpoint: "fake-api", method: "api-key", source: "fake-login:ws_7" },
+        deps,
+      )
+      expect(out.source).toBe("fake-login")
+      expect(out.subaccount).toEqual({ kind: "workspace", id: "ws_7" })
+      expect(profiles.get("legacy")?.source).toBe("fake-login")
+    })
   })
 })
 

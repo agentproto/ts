@@ -464,9 +464,13 @@ export interface ResolvedAuthSpec {
   /** When a gateway preset or custom route was matched, the `base_url` to
    *  inject into adapter options so the client hits the gateway endpoint. */
   baseUrl?: string
-  /** Extra env the driver sets when it injects the credential (opencode
-   *  console org: the org's provider config next to its token). */
+  /** Extra env the driver sets when it injects the credential (a pinned
+   *  sub-account: the provider's scoping config next to its token). */
   extraEnv?: Record<string, string>
+  /** `false` opts out of the adapter's isolated, login-less credential data
+   *  home for this spawn (a sub-account provider that needs the adapter's own
+   *  login). Omitted ⇒ the adapter's declaration applies. */
+  isolateDataHome?: boolean
 }
 
 /** Where the resolved credential came from — the observable billing axis
@@ -480,7 +484,7 @@ export type CredentialSource =
   | "explicit-config"
   | "providers-store"
   | "claude-code-oauth"
-  | "opencode-console"
+  | "subaccount"
   | "cli-local-login"
   | "none"
 
@@ -545,13 +549,15 @@ export interface ResolveAuthSpecInput {
   /** api-key credential from `providers.json` (fetched by the caller). */
   apiKeyStoreCredential?: string
   /** Origin label for `apiKeyConfigCredential` when a source-backed profile
-   *  resolved it (opencode console org); omitted ⇒ `"explicit-config"`. */
+   *  resolved it (a sub-account provider's scoped token); omitted ⇒ `"explicit-config"`. */
   apiKeyCredentialSource?: CredentialSource
   /** Env var the api-key credential is set into INSTEAD of the provider's
    *  conventional key env (the provider's own var is then scrubbed). */
   credentialEnvOverride?: string
   /** Passed through to {@link ResolvedAuthSpec.extraEnv}. */
   extraEnv?: Record<string, string>
+  /** Passed through to {@link ResolvedAuthSpec.isolateDataHome}. */
+  isolateDataHome?: boolean
   /** Explicit gateway route from `SessionConfig.route.gateway`. When this
    *  matches a `ProviderPreset` or a registered custom route, the route's
    *  `baseUrl`/`keyEnv`/`scrubEnv` drive resolution instead of the model-
@@ -850,6 +856,7 @@ export function resolveAuthSpec(
     ...(neitherConfigured ? { neitherConfigured } : {}),
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(input.extraEnv && credential !== undefined ? { extraEnv: input.extraEnv } : {}),
+    ...(input.isolateDataHome === false ? { isolateDataHome: false } : {}),
   }
   const echo: AuthEcho = {
     provider,

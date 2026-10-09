@@ -19,6 +19,7 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { z } from "zod"
 import type { AuthMethod, AuthProfile } from "./profile-types.js"
+import { migrateLegacySubaccountProfile } from "./subaccounts.js"
 
 const authMethodSchema = z.enum(["oauth-bearer", "api-key"]) satisfies z.ZodType<AuthMethod>
 
@@ -35,12 +36,19 @@ export const costBudgetSchema = z.object({
   scope: z.enum(["session", "profile"]),
 })
 
+const subaccountPinSchema = z.object({
+  kind: z.string(),
+  id: z.string(),
+  name: z.string().optional(),
+})
+
 const authProfileSchema = z.object({
   id: z.string(),
   vendor: z.string(),
   method: authMethodSchema,
   credentialRef: z.string().optional(),
   source: z.string().optional(),
+  subaccount: subaccountPinSchema.optional(),
   label: z.string().optional(),
   // Additive, back-compat fields — an entry that predates them parses
   // unchanged (both optional), and `endpoint` still shadows the on-disk
@@ -100,14 +108,15 @@ async function writeAuthProfiles(file: AuthProfilesFile): Promise<void> {
 /** List all profiles, optionally filtered to one billing endpoint. */
 export async function listAuthProfiles(endpoint?: string): Promise<AuthProfile[]> {
   const file = await loadAuthProfiles()
-  const all = Object.values(file.profiles)
+  const all = Object.values(file.profiles).map(migrateLegacySubaccountProfile)
   return endpoint === undefined ? all : all.filter(p => p.endpoint === endpoint)
 }
 
 /** Look up a single profile by id, or undefined if none exists. */
 export async function getAuthProfile(id: string): Promise<AuthProfile | undefined> {
   const file = await loadAuthProfiles()
-  return file.profiles[id]
+  const profile = file.profiles[id]
+  return profile ? migrateLegacySubaccountProfile(profile) : undefined
 }
 
 /** Add (or replace) a profile, keyed by its `id`. */

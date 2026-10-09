@@ -1,5 +1,5 @@
 /**
- * Source-backed auth profile for an opencode console org ("workspace").
+ * Sub-account provider for opencode console orgs ("workspaces").
  *
  * opencode keeps ONE console login (`account` row + `account_state.active_org_id`
  * in its sqlite db) and, on every start, fetches `<account.url>/api/config`
@@ -13,17 +13,24 @@
  * (`AgentCliDefinition.credentialDataHome`) so the stored login can't re-point
  * the providers back.
  *
- * The profile stores only `source: "opencode-console:<orgId>"` — no token. The
- * token is read fresh from opencode.db at every spawn. It is NOT refreshed
+ * The profile stores only `source: "opencode-console"` + `subaccount: {kind:
+ * "org", id}` — no token. The token is read fresh from opencode.db at every
+ * spawn. Legacy profiles (`source: "opencode-console:<orgId>"`) are migrated on
+ * read. It is NOT refreshed
  * here: the refresh token rotates, and rotating it behind opencode's back would
  * log the operator out of opencode itself. An expired session fails loud.
  */
 
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { SubscriptionSourceError } from "./spawn-defaults.js"
+import {
+  SubaccountError,
+  type SubaccountProvider,
+  type SubaccountPin,
+} from "@agentproto/auth"
 
 export const OPENCODE_CONSOLE_SOURCE = "opencode-console"
+export const OPENCODE_CONSOLE_ORG_KIND = "org"
 
 /** Env var opencode's console provider block reads its bearer from. */
 export const OPENCODE_CONSOLE_TOKEN_ENV = "OPENCODE_CONSOLE_TOKEN"
@@ -32,15 +39,11 @@ const FETCH_TIMEOUT_MS = 10_000
 /** A session expiring inside this window is treated as expired. */
 const EXPIRY_SKEW_MS = 60_000
 
-export function opencodeConsoleSource(orgId: string): string {
-  return `${OPENCODE_CONSOLE_SOURCE}:${orgId}`
-}
-
-/** `"opencode-console:<orgId>"` → the pinned org id; undefined for any other source. */
-export function parseOpencodeConsoleSource(source: string | undefined): { orgId: string } | undefined {
+/** Legacy `"opencode-console:<orgId>"` → the org pin it encoded; undefined for any other source. */
+export function parseLegacyOpencodeConsoleSource(source: string | undefined): SubaccountPin | undefined {
   if (!source?.startsWith(`${OPENCODE_CONSOLE_SOURCE}:`)) return undefined
   const orgId = source.slice(OPENCODE_CONSOLE_SOURCE.length + 1)
-  return orgId.length > 0 ? { orgId } : undefined
+  return orgId.length > 0 ? { kind: OPENCODE_CONSOLE_ORG_KIND, id: orgId } : undefined
 }
 
 export function opencodeDbPath(env: Record<string, string | undefined> = process.env): string {
@@ -83,7 +86,7 @@ function loginHint(): string {
 
 /**
  * Read the logged-in console account from opencode.db, read-only. The active
- * account wins when several are stored. Throws {@link SubscriptionSourceError}
+ * account wins when several are stored. Throws {@link SubaccountError}
  * when there is no login, or when the session is expired.
  */
 export async function readOpencodeConsoleAccount(
@@ -104,9 +107,7 @@ export async function readOpencodeConsoleAccount(
       ? db.prepare("SELECT * FROM account WHERE id = ?").get(active.active_account_id)
       : db.prepare("SELECT * FROM account LIMIT 1").get()) as typeof row
   } catch (err) {
-    throw new SubscriptionSourceError(
-      "auth_source_unresolved",
-      `opencode console login unreadable at ${dbPath} (${err instanceof Error ? err.message : String(err)}). ${loginHint()}`,
+    throw new SubaccountError(`opencode console login unreadable at ${dbPath} (${err instanceof Error ? err.message : String(err)}). ${loginHint()}`,
     )
   } finally {
     try {
@@ -116,16 +117,12 @@ export async function readOpencodeConsoleAccount(
     }
   }
   if (!row || !row.access_token) {
-    throw new SubscriptionSourceError(
-      "auth_source_unresolved",
-      `no opencode console account in ${dbPath}. ${loginHint()}`,
+    throw new SubaccountError(`no opencode console account in ${dbPath}. ${loginHint()}`,
     )
   }
   const expiresAt = typeof row.token_expiry === "number" ? row.token_expiry : undefined
   if (expiresAt !== undefined && expiresAt - now() < EXPIRY_SKEW_MS) {
-    throw new SubscriptionSourceError(
-      "auth_source_unresolved",
-      `the opencode console session for ${row.email ?? row.id} expired at ${new Date(expiresAt).toISOString()}. ${loginHint()}`,
+    throw new SubaccountError(`the opencode console session for ${row.email ?? row.id} expired at ${new Date(expiresAt).toISOString()}. ${loginHint()}`,
     )
   }
   return {
@@ -170,9 +167,7 @@ export async function listOpencodeConsoleOrgs(
   try {
     body = await consoleGet(account, "/api/orgs", deps)
   } catch (err) {
-    throw new SubscriptionSourceError(
-      "auth_source_unresolved",
-      `opencode console org listing failed (${err instanceof Error ? err.message : String(err)}). ${loginHint()}`,
+    throw new SubaccountError(`opencode console org listing failed (${err instanceof Error ? err.message : String(err)}). ${loginHint()}`,
     )
   }
   const orgs = (Array.isArray(body) ? body : [])
@@ -207,16 +202,12 @@ export async function resolveOpencodeConsoleOrg(
     }
     provider = body?.config?.provider
   } catch (err) {
-    throw new SubscriptionSourceError(
-      "auth_source_unresolved",
-      `profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
+    throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
         `— the console account ${account.email ?? account.id} may not belong to that org. ${loginHint()}`,
     )
   }
   if (!provider || typeof provider !== "object" || Object.keys(provider).length === 0) {
-    throw new SubscriptionSourceError(
-      "auth_source_unresolved",
-      `profile "${profileId}": opencode org ${orgId} returned no provider config.`,
+    throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} returned no provider config.`,
     )
   }
   return {
@@ -225,3 +216,35 @@ export async function resolveOpencodeConsoleOrg(
     extraEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) },
   }
 }
+
+/**
+ * The registry entry. `deps` is injectable for tests (db path, fetch, clock).
+ */
+export function createOpencodeSubaccountProvider(deps: OpencodeConsoleDeps = {}): SubaccountProvider {
+  return {
+    id: "opencode-console",
+    source: OPENCODE_CONSOLE_SOURCE,
+    kinds: [OPENCODE_CONSOLE_ORG_KIND],
+    defaultEndpoint: "opencode-go",
+    profilePrefix: "opencode",
+    migrateLegacySource: parseLegacyOpencodeConsoleSource,
+    async list() {
+      const { account, orgs } = await listOpencodeConsoleOrgs(deps)
+      return {
+        account: { id: account.id, ...(account.email ? { label: account.email } : {}) },
+        subaccounts: orgs.map(o => ({ kind: OPENCODE_CONSOLE_ORG_KIND, id: o.id, name: o.name })),
+      }
+    },
+    async resolve(profile) {
+      const resolved = await resolveOpencodeConsoleOrg(profile.subaccount.id, profile.id, deps)
+      return {
+        credential: resolved.credential,
+        credentialEnvOverride: OPENCODE_CONSOLE_TOKEN_ENV,
+        env: resolved.extraEnv,
+      }
+    },
+  }
+}
+
+/** The default instance, reading the operator's own opencode.db. */
+export const opencodeSubaccounts: SubaccountProvider = createOpencodeSubaccountProvider()

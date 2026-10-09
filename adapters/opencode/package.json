@@ -49,6 +49,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/auth": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/model-catalog": "workspace:*"
   },

@@ -10,6 +10,7 @@ import {
   loadAuthProfiles,
   removeAuthProfile,
 } from "../profile-store.js"
+import { registerSubaccountProvider, unregisterSubaccountProvider } from "../subaccounts.js"
 
 // authProfilesPath() resolves under os.homedir() → $HOME on POSIX, so a temp
 // HOME fully isolates these tests (same isolation providers-store's own
@@ -198,5 +199,40 @@ describe("auth profile store", () => {
     const raw = JSON.stringify(file)
     expect(raw).toContain("keychain:anthropic:p1")
     expect(raw).not.toMatch(/sk-ant-|sk-or-/)
+  })
+})
+
+describe("sub-account pins", () => {
+  it("round-trips a pin and migrates a legacy provider-encoded source on read", async () => {
+    registerSubaccountProvider({
+      id: "fake",
+      source: "fake-login",
+      kinds: ["project"],
+      list: async () => ({ account: { id: "a" }, subaccounts: [] }),
+      resolve: async () => ({}),
+      migrateLegacySource: src => (src.startsWith("fake-login:") ? { kind: "project", id: src.slice(11) } : undefined),
+    })
+    try {
+      await addAuthProfile({
+        id: "pinned",
+        endpoint: "fake-api",
+        method: "api-key",
+        source: "fake-login",
+        subaccount: { kind: "project", id: "p1", name: "One" },
+      })
+      await addAuthProfile({ id: "old", endpoint: "fake-api", method: "api-key", source: "fake-login:p2" })
+      await expect(getAuthProfile("pinned")).resolves.toMatchObject({ subaccount: { kind: "project", id: "p1", name: "One" } })
+      await expect(getAuthProfile("old")).resolves.toMatchObject({
+        source: "fake-login",
+        subaccount: { kind: "project", id: "p2" },
+      })
+      const listed = await listAuthProfiles()
+      expect(listed.find(p => p.id === "old")?.subaccount).toEqual({ kind: "project", id: "p2" })
+      // Migration is on read only — the file keeps the legacy string.
+      const raw = await readFile(authProfilesPath(), "utf8")
+      expect(raw).toContain("fake-login:p2")
+    } finally {
+      unregisterSubaccountProvider("fake")
+    }
   })
 })

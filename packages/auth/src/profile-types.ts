@@ -62,6 +62,16 @@ export interface CostBudget {
   scope: CostBudgetScope
 }
 
+/** A pinned sub-account of the profile's account: `kind` is free-form (`org`,
+ *  `workspace`, `project`, …) and only meaningful to the provider that owns the
+ *  account (see `subaccounts.ts`). */
+export interface SubaccountPin {
+  kind: string
+  id: string
+  /** Human-readable name captured at discovery time; informational only. */
+  name?: string
+}
+
 /** A named, billing-endpoint-scoped credential reference. */
 export interface AuthProfile {
   /** Stable id, unique across all profiles (the `profileRef` a session
@@ -88,6 +98,13 @@ export interface AuthProfile {
    *  fresh at spawn time instead. Mutually exclusive with
    *  {@link credentialRef}. */
   source?: string
+  /** Pins one SUB-ACCOUNT (org / workspace / project / team) of the account this
+   *  profile authenticates as — the account being the {@link credentialRef}'d
+   *  secret or the {@link source}. Each pin is its own wallet; how it is
+   *  applied at spawn is the registered provider's business (`subaccounts.ts`).
+   *  ABSENT ⇒ the account's default scope, byte-identical to a profile that
+   *  predates this field. */
+  subaccount?: SubaccountPin
   /** Optional human-readable name ("Jeremy Max", "work OpenRouter"). */
   label?: string
   /** Whole-profile enable/disable. ABSENT (or `false`) ⇒ enabled (today's

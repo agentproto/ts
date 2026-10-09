@@ -1421,8 +1421,11 @@ export interface ResolvedAuthSpec {
   baseUrl?: string
   /** Extra env set verbatim (after {@link setEnv}) when a credential is
    *  injected — a source-backed profile that needs more than one variable
-   *  (opencode console org: the token AND the org's provider config). */
+   *  (a pinned sub-account: the token AND the provider's scoping config). */
   extraEnv?: Record<string, string>
+  /** `false` opts out of the adapter's `credentialDataHome` isolation for this
+   *  spawn. Omitted ⇒ the adapter's declaration applies. */
+  isolateDataHome?: boolean
 }
 
 /**

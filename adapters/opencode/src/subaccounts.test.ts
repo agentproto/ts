@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { migrateLegacySubaccountProfile, registerSubaccountProvider, SubaccountError, unregisterSubaccountProvider } from "@agentproto/auth"
 import {
+  createOpencodeSubaccountProvider,
   listOpencodeConsoleOrgs,
-  opencodeConsoleSource,
-  parseOpencodeConsoleSource,
+  parseLegacyOpencodeConsoleSource,
   readOpencodeConsoleAccount,
   resolveOpencodeConsoleOrg,
-} from "../opencode-console-source.js"
-import { resolveAuthSpec, SubscriptionSourceError, type AdapterAuthDescriptor } from "../spawn-defaults.js"
+} from "./subaccounts.js"
 
 const NOW = 1_800_000_000_000
 const TOKEN = "st_FAKE_ACCESS_TOKEN_0123456789"
@@ -59,7 +59,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 }
 
-describe("opencode console source", () => {
+describe("opencode console sub-account provider", () => {
   const dirs: string[] = []
   const track = (f: Fixture) => {
     dirs.push(f.dir)
@@ -72,12 +72,28 @@ describe("opencode console source", () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
   })
 
-  it("encodes and parses the profile source", () => {
-    expect(opencodeConsoleSource("org_01ABC")).toBe("opencode-console:org_01ABC")
-    expect(parseOpencodeConsoleSource("opencode-console:org_01ABC")).toEqual({ orgId: "org_01ABC" })
-    expect(parseOpencodeConsoleSource("opencode-console:")).toBeUndefined()
-    expect(parseOpencodeConsoleSource("claude-code-oauth")).toBeUndefined()
-    expect(parseOpencodeConsoleSource(undefined)).toBeUndefined()
+  it("parses the legacy profile source into an org pin", () => {
+    expect(parseLegacyOpencodeConsoleSource("opencode-console:org_01ABC")).toEqual({ kind: "org", id: "org_01ABC" })
+    expect(parseLegacyOpencodeConsoleSource("opencode-console:")).toBeUndefined()
+    expect(parseLegacyOpencodeConsoleSource("opencode-console")).toBeUndefined()
+    expect(parseLegacyOpencodeConsoleSource("claude-code-oauth")).toBeUndefined()
+    expect(parseLegacyOpencodeConsoleSource(undefined)).toBeUndefined()
+  })
+
+  it("migrates a legacy source-encoded profile to the generic shape on read", () => {
+    registerSubaccountProvider(createOpencodeSubaccountProvider())
+    try {
+      const migrated = migrateLegacySubaccountProfile({
+        id: "opencode-ws01",
+        endpoint: "opencode-go",
+        method: "api-key",
+        source: "opencode-console:org_01ABC",
+      })
+      expect(migrated.source).toBe("opencode-console")
+      expect(migrated.subaccount).toEqual({ kind: "org", id: "org_01ABC" })
+    } finally {
+      unregisterSubaccountProvider("opencode-console")
+    }
   })
 
   it("reads the active console account from opencode.db", async () => {
@@ -106,7 +122,7 @@ describe("opencode console source", () => {
   it("fails loud when there is no login or no db", async () => {
     const f = track(await makeDb({ accounts: 0 }))
     await expect(readOpencodeConsoleAccount({ dbPath: f.dbPath, now: () => NOW })).rejects.toBeInstanceOf(
-      SubscriptionSourceError,
+      SubaccountError,
     )
     await expect(
       readOpencodeConsoleAccount({ dbPath: join(f.dir, "missing.db"), now: () => NOW }),
@@ -179,7 +195,7 @@ describe("opencode console source", () => {
       now: () => NOW,
       fetch: fetchMock as unknown as typeof fetch,
     }).catch((e: unknown) => e as Error)) as Error
-    expect(err).toBeInstanceOf(SubscriptionSourceError)
+    expect(err).toBeInstanceOf(SubaccountError)
     expect(err.message).toMatch(/opencode-ws09/)
     expect(err.message).toMatch(/org_zzz/)
     expect(err.message).toMatch(/403/)
@@ -197,41 +213,42 @@ describe("opencode console source", () => {
       }),
     ).rejects.toThrow(/no provider config/)
   })
-})
 
-describe("resolveAuthSpec with an opencode console org", () => {
-  const descriptor: AdapterAuthDescriptor = { authEnforce: "always" }
-  it("injects the bearer under OPENCODE_CONSOLE_TOKEN, scrubs the key env, carries extraEnv and the echo source", () => {
-    const result = resolveAuthSpec({
-      descriptor,
-      requestedProvider: "opencode-go" as never,
-      requestedMode: "api-key",
-      explicit: true,
-      apiKeyConfigCredential: TOKEN,
-      credentialEnvOverride: "OPENCODE_CONSOLE_TOKEN",
-      apiKeyCredentialSource: "opencode-console",
-      extraEnv: { OPENCODE_CONFIG_CONTENT: "{}" },
+  it("provider.list maps the console orgs to org sub-accounts and names the login, not the token", async () => {
+    const f = track(await makeDb())
+    const fetchMock = vi.fn(async () => jsonResponse([{ id: "org_a", name: "Ws01" }]))
+    const provider = createOpencodeSubaccountProvider({
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
     })
-    expect(result).toBeDefined()
-    const { spec, echo } = result!
-    expect(spec.setEnv).toBe("OPENCODE_CONSOLE_TOKEN")
-    expect(spec.credential).toBe(TOKEN)
-    expect(spec.extraEnv).toEqual({ OPENCODE_CONFIG_CONTENT: "{}" })
-    expect(spec.unsetEnv).toContain("OPENCODE_API_KEY")
-    expect(echo.credentialSource).toBe("opencode-console")
-    expect(echo.fingerprint).not.toContain(TOKEN)
+    const listing = await provider.list({ endpoint: "opencode-go", source: "opencode-console" })
+    expect(listing.account).toEqual({ id: "acc_1", label: "user1@example.test" })
+    expect(listing.subaccounts).toEqual([{ kind: "org", id: "org_a", name: "Ws01" }])
+    expect(JSON.stringify(listing)).not.toContain(TOKEN)
   })
 
-  it("a plain api-key profile still sets the provider's own key env and carries no extraEnv", () => {
-    const { spec } = resolveAuthSpec({
-      descriptor,
-      requestedProvider: "opencode-go" as never,
-      requestedMode: "api-key",
-      explicit: true,
-      apiKeyConfigCredential: "k-plain",
-    })!
-    expect(spec.setEnv).toBe("OPENCODE_API_KEY")
-    expect(spec.credential).toBe("k-plain")
-    expect(spec.extraEnv).toBeUndefined()
+  it("provider.resolve returns the token under its own env var plus the org's provider block", async () => {
+    const f = track(await makeDb())
+    const provider = { "opencode-go": { options: { headers: { "x-opencode-org-id": "org_b" } } } }
+    const fetchMock = vi.fn(async () => jsonResponse({ config: { provider } }))
+    const out = await createOpencodeSubaccountProvider({
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    }).resolve(
+      {
+        id: "opencode-ws02",
+        endpoint: "opencode-go",
+        method: "api-key",
+        source: "opencode-console",
+        subaccount: { kind: "org", id: "org_b" },
+      },
+      {},
+    )
+    expect(out.credential).toBe(TOKEN)
+    expect(out.credentialEnvOverride).toBe("OPENCODE_CONSOLE_TOKEN")
+    expect(JSON.parse(out.env!.OPENCODE_CONFIG_CONTENT!)).toEqual({ provider })
+    expect(JSON.stringify(out.env)).not.toContain(TOKEN)
   })
 })

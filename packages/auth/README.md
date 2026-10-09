@@ -233,6 +233,38 @@ exposure and have `resolveMcpHeaderExposure(exposure, broker)` lay brokered
 headers onto the transport. `secrets` keeps **zero dependency** on `auth`
 through that structural seam. See `@agentproto/secrets`' README.
 
+## Sub-accounts
+
+An *account* (a login or billing identity) can have *sub-accounts* — orgs,
+workspaces, projects — each with its own quota. A profile pins one with the
+optional `subaccount` field, so every pin is a distinct, truthful wallet:
+
+```jsonc
+{ "id": "acme-ws01", "endpoint": "<endpoint>", "method": "api-key",
+  "source": "<account-source>", "subaccount": { "kind": "org", "id": "org_01ABC", "name": "Ws01" } }
+```
+
+`kind` is `[a-z][a-z0-9-]*`; `id` is opaque; `name` is a display label used in
+usage-limit tags. The field is optional and the on-disk store format is
+unchanged. CLI: `agentproto auth profile create <id> --subaccount <kind>:<id>`
+and `agentproto auth subaccounts list <profile|account> [--create [--prefix]]`.
+
+How a pin is *applied* belongs to a provider, never to this package or the
+runtime. A provider implements `SubaccountProvider` and is added with
+`registerSubaccountProvider`:
+
+| Member | Purpose |
+| --- | --- |
+| `id`, `source?`, `endpoints?`, `kinds` | identity, and which accounts it owns (by `source` name, else by endpoint) |
+| `list(account)` | discovery: `{ account, subaccounts: [{kind, id, name}] }` |
+| `resolve(profile, { credential? })` | spawn time: `{ credential?, credentialEnvOverride?, env?, isolateDataHome? }` |
+| `migrateLegacySource?(source)` | read-time migration of a pre-pin provider-encoded `source` into the pin |
+
+A provider throws `SubaccountError` when a pin cannot be listed or resolved; the
+runtime fails the spawn loudly rather than falling back to the account's default
+scope. Providers ship with their adapter and the host registers them (the CLI
+does so for the built-ins).
+
 ## API surface
 
 | Export | Purpose |
@@ -249,6 +281,8 @@ through that structural seam. See `@agentproto/secrets`' README.
 | `KeychainStore` / `MemoryStore` / `FileStore` / `resolveStoreRef` | built-in backends + ref resolver |
 | `readKeychainToken` / `writeKeychainToken` / `resolveAccount` | Keychain helpers |
 | `guildeAuthProvider` / `BUILTIN_AUTH_PROVIDERS` | shipped builtins |
+| `registerSubaccountProvider` / `findSubaccountProvider` / `listSubaccountProviders` | sub-account provider registry |
+| `SubaccountProvider` / `SubaccountPin` / `SubaccountError` / `parseSubaccountPin` | sub-account contract |
 
 ## License
 

@@ -95,6 +95,7 @@ export const compactAuthProfileRow = (p: AuthProfileListRow) => ({
   method: p.method,
   ...(p.credentialRef !== undefined ? { credentialRef: p.credentialRef } : {}),
   ...(p.source !== undefined ? { source: p.source } : {}),
+  ...(p.subaccount !== undefined ? { subaccount: p.subaccount } : {}),
   ...(p.label !== undefined ? { label: p.label } : {}),
   ...(p.disabled !== undefined ? { disabled: p.disabled } : {}),
   ...(p.models !== undefined ? { models: p.models } : {}),
@@ -240,6 +241,18 @@ export function registerAuthProfileTools(server: McpServer): void {
           "Self-refreshing credential source (oauth-bearer only, e.g. " +
             "\"claude-code-oauth\") — no secret is stored. Mutually exclusive with credential.",
         ),
+      subaccount: z
+        .object({
+          kind: z.string().describe("Sub-account kind (org, workspace, project…)."),
+          id: z.string().describe("The sub-account's id at its provider."),
+          name: z.string().optional().describe("Display name (non-authoritative)."),
+        })
+        .optional()
+        .describe(
+          "Pin the profile to one sub-account of its account, so a spawn bills that " +
+            "sub-account. Needs a credential or source as the parent account; the kind " +
+            "must be one the account's registered provider supports.",
+        ),
       label: z.string().optional().describe("Optional human-readable name."),
       credentialRef: z
         .string()
@@ -249,7 +262,7 @@ export function registerAuthProfileTools(server: McpServer): void {
             "Ignored for a source-backed profile.",
         ),
     },
-    async ({ id, endpoint, method, credential, source, label, credentialRef }) => {
+    async ({ id, endpoint, method, credential, source, subaccount, label, credentialRef }) => {
       try {
         const created = await createAuthProfile(
           {
@@ -258,6 +271,7 @@ export function registerAuthProfileTools(server: McpServer): void {
             method,
             ...(credential !== undefined ? { credential } : {}),
             ...(source !== undefined ? { source } : {}),
+            ...(subaccount ? { subaccount } : {}),
             ...(label ? { label } : {}),
             ...(credentialRef ? { credentialRef } : {}),
           },
