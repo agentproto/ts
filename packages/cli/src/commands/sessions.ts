@@ -100,9 +100,23 @@ import type { AcpMcpServer } from "@agentproto/acp"
 const USAGE = `agentproto sessions — browse and control daemon sessions
 
 Usage:
-  agentproto sessions [--watch] [--simple] [--json]
+  agentproto sessions [list] [--watch] [--simple] [--json]
                               (--simple: with --watch, the flat-table picker
                                instead of the 3-pane dashboard)
+  agentproto sessions [list] [--q <text>] [--exclude-noise]
+                              [--exclude-label-prefix <p>]... [--exclude-label <l>]...
+                              [--exclude-kind <k>]... [--root-only] [--parent <id-or-name>]
+                              [--updated-since <iso|24h>] [--started-since <iso|7d>]
+                              [--status <s>] [--alive] [--limit N] [--fields a,b] [--json]
+                              (daemon-side narrowing, newest activity first.
+                               --q: case-insensitive substring over id, name,
+                               label, title, cwd. --exclude-noise drops review:*
+                               lanes, wf:* workflow stages and ended one-shot
+                               command runs (exited/killed terminals with no
+                               adapter). Times are ISO-8601 or relative: 30m,
+                               24h, 7d, 2w. Repeat --exclude-* flags or comma-
+                               separate. Not combinable with --watch. Text mode
+                               prints "N of TOTAL"; --json stays a bare array.)
   agentproto sessions board [--json] [--watch] [--all] [--no-color]
                               (at-a-glance status board: every session
                                classified ACTIVE / IDLE / STALE / AWAITING /
@@ -398,6 +412,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
 
   // Route `start` / `stop` / `terminal` subverbs before the flag
   // parser — they take positionals the flag parser would reject.
+  if (args[0] === "list") return runSessions(args.slice(1))
   const sub = args[0]
   if (sub === "start") return runStart(args.slice(1))
   if (sub === "prompt") return runPrompt(args.slice(1))
@@ -447,8 +462,26 @@ export async function runSessions(args: readonly string[]): Promise<number> {
       attach: { type: "string" },
       simple: { type: "boolean" },
       "no-color": { type: "boolean" },
+      q: { type: "string" },
+      "exclude-noise": { type: "boolean" },
+      "exclude-label-prefix": { type: "string", multiple: true },
+      "exclude-label": { type: "string", multiple: true },
+      "exclude-kind": { type: "string", multiple: true },
+      "root-only": { type: "boolean" },
+      parent: { type: "string" },
+      "updated-since": { type: "string" },
+      "started-since": { type: "string" },
+      status: { type: "string" },
+      alive: { type: "boolean" },
+      limit: { type: "string" },
+      fields: { type: "string" },
     },
   })
+  const listQuery = buildSessionListQuery(values)
+  if (listQuery && values.watch) {
+    process.stderr.write("agentproto sessions: list filters can't be combined with --watch\n")
+    return 2
+  }
 
   const report = await discoverDaemon()
   if (!report.found) {
@@ -478,7 +511,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   }
 
   if (values.json) {
-    const list = await fetchSessions(endpoint.url)
+    const list = await fetchSessions(endpoint.url, listQuery)
     process.stdout.write(JSON.stringify(list, null, 2) + "\n")
     return 0
   }
@@ -493,9 +526,54 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   }
 
   // One-shot
-  const list = await fetchSessions(endpoint.url)
-  printTable(list, await resolveAttentionDelaySec())
+  const page = await fetchSessionsPage(endpoint.url, listQuery)
+  printTable(page.sessions, await resolveAttentionDelaySec())
+  if (listQuery && page.total !== undefined) {
+    process.stdout.write(`\x1b[2m${page.sessions.length} of ${page.total} matching sessions\x1b[0m\n`)
+  }
   return 0
+}
+
+type SessionListFlags = {
+  q?: string | undefined
+  "exclude-noise"?: boolean | undefined
+  "exclude-label-prefix"?: string[] | undefined
+  "exclude-label"?: string[] | undefined
+  "exclude-kind"?: string[] | undefined
+  "root-only"?: boolean | undefined
+  parent?: string | undefined
+  "updated-since"?: string | undefined
+  "started-since"?: string | undefined
+  status?: string | undefined
+  alive?: boolean | undefined
+  limit?: string | undefined
+  fields?: string | undefined
+}
+
+/** `GET /sessions` query string for the list flags, or undefined when none were passed. */
+function buildSessionListQuery(v: SessionListFlags): string | undefined {
+  const qs = new URLSearchParams()
+  const put = (k: string, val: string | undefined): void => {
+    if (val !== undefined && val !== "") qs.set(k, val)
+  }
+  const putAll = (k: string, vals: string[] | undefined): void => {
+    for (const val of vals ?? []) qs.append(k, val)
+  }
+  put("q", v.q)
+  putAll("excludeLabelPrefix", v["exclude-label-prefix"])
+  putAll("excludeLabels", v["exclude-label"])
+  putAll("excludeKinds", v["exclude-kind"])
+  if (v["root-only"]) qs.set("rootOnly", "true")
+  put("parentSessionId", v.parent)
+  put("updatedSince", v["updated-since"])
+  put("startedSince", v["started-since"])
+  if (v["exclude-noise"]) qs.set("excludeNoise", "true")
+  put("status", v.status)
+  if (v.alive) qs.set("onlyAlive", "true")
+  put("limit", v.limit)
+  put("fields", v.fields)
+  const text = qs.toString()
+  return text === "" ? undefined : text
 }
 
 /** `agentproto sessions --stats[=full]` - see sessions-stats.ts. */
@@ -3089,12 +3167,20 @@ async function readRuntimeJson(workspacePath: string): Promise<DaemonEndpoint | 
   return out.endpoint
 }
 
-async function fetchSessions(baseUrl: string): Promise<SessionDescriptor[]> {
-  const body = await httpGetJson(`${baseUrl}/sessions`)
+async function fetchSessionsPage(
+  baseUrl: string,
+  query?: string,
+): Promise<{ sessions: SessionDescriptor[]; total?: number }> {
+  const body = await httpGetJson(`${baseUrl}/sessions${query ? `?${query}` : ""}`)
   if (!body || !Array.isArray((body as { sessions?: unknown }).sessions)) {
-    return []
+    return { sessions: [] }
   }
-  return (body as { sessions: SessionDescriptor[] }).sessions
+  const { sessions, total } = body as { sessions: SessionDescriptor[]; total?: unknown }
+  return typeof total === "number" ? { sessions, total } : { sessions }
+}
+
+async function fetchSessions(baseUrl: string, query?: string): Promise<SessionDescriptor[]> {
+  return (await fetchSessionsPage(baseUrl, query)).sessions
 }
 
 /** Wide enough for a realistic branch-shaped worktree name

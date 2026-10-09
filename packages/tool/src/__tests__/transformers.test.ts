@@ -201,6 +201,34 @@ describe("paginated", () => {
     })
   })
 
+  describe("includeTotal + fields on the legacy wrapper", () => {
+    it("includeTotal adds total to the plain wrapper only when asked", async () => {
+      const on = paginated<Item>({ project: compact, itemKey: "things", includeTotal: true })
+      const parsed = JSON.parse(textOf((await on.wrapHandler(async () => items)({})) as McpTextResult)) as Record<string, unknown>
+      expect(parsed.total).toBe(3)
+      expect(parsed).not.toHaveProperty("nextCursor")
+      const off = paginated<Item>({ project: compact, itemKey: "things" })
+      const plain = JSON.parse(textOf((await off.wrapHandler(async () => items)({})) as McpTextResult)) as Record<string, unknown>
+      expect(plain).not.toHaveProperty("total")
+    })
+
+    it("fields applies without limit/cursor (plain wrapper) and on the defaultLimit-truncated wrapper", async () => {
+      const t = paginated<Item>({ project: compact, itemKey: "things" })
+      const plain = JSON.parse(textOf((await t.wrapHandler(async () => items)({ fields: ["id", "bulky"] })) as McpTextResult)) as {
+        things: Array<Record<string, unknown>>
+      }
+      expect(Object.keys(plain.things[0]!).sort()).toEqual(["bulky", "id"])
+
+      const capped = paginated<Item>({ project: compact, itemKey: "things", defaultLimit: 2 })
+      const trunc = JSON.parse(textOf((await capped.wrapHandler(async () => items)({ fields: ["id"] })) as McpTextResult)) as {
+        things: Array<Record<string, unknown>>
+        truncated: boolean
+      }
+      expect(trunc.truncated).toBe(true)
+      expect(trunc.things).toEqual([{ id: "a" }, { id: "b" }])
+    })
+  })
+
   it("defaults itemKey to 'items'", async () => {
     const t = paginated<Item>({ project: compact })
     const w = t.wrapHandler(async () => items)

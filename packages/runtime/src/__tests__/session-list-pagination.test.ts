@@ -268,11 +268,11 @@ describe("session list pagination (PR-2, additive)", () => {
       expect(row).not.toHaveProperty("accessProfile")
       expect(row).not.toHaveProperty("adapterConfigDir")
 
-      // No pagination fields in the wrapper.
+      // No cursor in the wrapper; `total` is the one additive field.
       const text = textOf(result)
       expect(text).not.toContain("\n")
       expect(text).not.toContain('"nextCursor"')
-      expect(text).not.toContain('"total"')
+      expect(JSON.parse(text).total).toBe(1)
     } finally {
       await close()
       registry.shutdown()

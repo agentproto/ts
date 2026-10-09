@@ -560,6 +560,21 @@ export {
   isProviderLimitError,
   type SessionEndReason,
 } from "./session-end-reason.js"
+export {
+  SESSION_LIST_FILTER_KEYS,
+  SessionListFilterError,
+  applySessionListFilters,
+  compileSessionListFilters,
+  hasSessionListFilters,
+  isNoiseSession,
+  parseSessionListFilterParams,
+  parseTimeBound,
+  pickSessionListFilters,
+  sessionActivityMs,
+  sessionListFilterShape,
+  sortNewestActivityFirst,
+  type SessionListFilterInput,
+} from "./session-list-filters.js"
 export { defaultTranscriptBaseDir, sessionEventsPath, sessionTranscriptDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 export {
   INDEX_DEFAULT_LIMIT,
