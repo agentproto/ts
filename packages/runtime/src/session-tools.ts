@@ -89,6 +89,12 @@ import {
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
 import { processTreeRss } from "./process-memory.js"
+import {
+  applySessionListFilters,
+  pickSessionListFilters,
+  sessionListFilterShape,
+  sortNewestActivityFirst,
+} from "./session-list-filters.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import {
   INDEX_DEFAULT_LIMIT,
@@ -1140,21 +1146,11 @@ export function registerSessionTools(
     kind: z
       .enum(["terminal", "agent-cli", "command", "all"])
       .optional()
-      .describe(
-        "Filter by session kind. `all` (default) returns every " +
-          "live-able kind (terminal + agent-cli) but excludes `command` " +
-          "unless `includeCommands` is set. Use `terminal` to list only " +
-          "PTY sessions, `agent-cli` for structured ACP agents, or " +
-          "`command` to list only raw shell-command runs.",
-      ),
+      .describe("Filter by kind. `all` (default) = terminal + agent-cli, without `command` unless `includeCommands`."),
     includeCommands: z
       .boolean()
       .optional()
-      .describe(
-        "When true and `kind` is unset/`all`, also include `kind:'command'` " +
-          "rows in the result (they're excluded by default — see `kind`). " +
-          "No effect when `kind` is set explicitly. Default false.",
-      ),
+      .describe("With kind unset/`all`, also include `kind:'command'` rows. Default false."),
     onlyAlive: z
       .boolean()
       .optional()
@@ -1166,51 +1162,30 @@ export function registerSessionTools(
     includeArchived: z
       .boolean()
       .optional()
-      .describe(
-        "When true, also include archived sessions (hidden from every " +
-          "other view by `session_archive`). Default false.",
-      ),
+      .describe("Also include archived sessions. Default false."),
     withMemory: z
       .boolean()
       .optional()
-      .describe(
-        "When true, add `rssBytes` (summed RSS in bytes of the process tree, " +
-          "via `ps`) to every live session that has a pid. Default false — " +
-          "a distinct opt-in from `full`/`compact` since it costs one `ps` " +
-          "spawn per call; omitted otherwise, so a plain listing never pays " +
-          "for it.",
-      ),
+      .describe("Add `rssBytes` (process-tree RSS) to live sessions with a pid; one `ps` per call. Default false."),
     stats: statsParamSchema.describe(
-      "Resource stats per live session - process-tree RSS, %CPU, process " +
-        "count and the top commands by RSS (normalized: `pnpm install`, " +
-        "`vitest`, `tsc`, `git`, …), under each row's `stats`. `true` = " +
-        "summary; `\"full\"` = also every process (pid, ppid, command, RSS, " +
-        "CPU, elapsed). Sampled on demand and cached ~3s; rows with no live " +
-        "process carry no `stats`. Use `session_stats` for the host-level " +
-        "view (daemon / provisioning / orphan buckets, load, free memory).",
+      "Per-live-session RSS, %CPU, process count and top commands under `stats`; `true` = summary, " +
+        "`\"full\"` = every process. Cached ~3s. Host-level view: `session_stats`.",
     ),
+    ...sessionListFilterShape,
     ...pageParamsShape,
   })
   type SessionListInput = z.infer<typeof sessionListSchema>
 
   registerBuiltinTool<SessionListInput, Array<Omit<SessionDescriptor, "ptyResumeEnv">>>(server, {
     id: "session_list",
-    description: "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
-      "hermes, …) and terminal/PTY sessions (claude TUI, bash, …). Each " +
-      "entry includes `kind`, `pty` (true for real PTYs), `name` (when set " +
-      "at spawn), `status`, `command`, age + exit code. Use this when you " +
-      "need to know what's already running before spawning anything new, " +
-      "or to discover a session id by name. COMPACT BY DEFAULT: each entry " +
-      "is a slim projection (id/kind/name/label/status/command/cwd/model/" +
-      "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId/" +
-      "continuedFrom/lastTurnErroredAt/interrupted); `interrupted: true` marks a " +
-      "session a daemon restart cut off mid-turn (see " +
-      "`session_continue_interrupted`); " +
-      "pass `full: true` (or `compact: false`) for the complete, unprojected " +
-      "per-session record. Raw shell-command runs " +
-      "(`kind:'command'`) are a log, not a resumable session, so they're " +
-      "excluded from the default view — pass `kind:'command'` or " +
-      "`includeCommands:true` to see them, or use `command_list`.",
+    description: "List sessions tracked by the daemon (agent-CLI and terminal/PTY). " +
+      "Use it to see what's already running before spawning, or to find a session id by name. " +
+      "NARROW BEFORE YOU READ: hundreds of sessions are mostly noise and without `limit` all " +
+      "come back. Filter (`q`, `excludeNoise`, `rootOnly`, `updatedSince`, …) and/or pass " +
+      "`limit`; rows are newest-activity first, `total` is the filtered count. " +
+      "E.g. `{q:'X', excludeNoise:true, limit:10}`. " +
+      "Rows are COMPACT by default (`fields:[…]` picks keys, `full:true` returns everything). " +
+      "Detail: tool_help {name:\"session_list\"}; ranked text search: `session_search`.",
     inputSchema: sessionListSchema,
     handler: async (input) => {
       // Always pull the FULL list (archived included) — subtree scoping
@@ -1246,6 +1221,14 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
+      // Narrow + order BEFORE the per-row `ps` sampling below, so
+      // `withMemory`/`stats` only pay for rows that survive.
+      const { parentSessionId, ...filterRest } = pickSessionListFilters(input)
+      rows = applySessionListFilters(rows, {
+        ...filterRest,
+        ...(parentSessionId ? { parentSessionId: registry.findByIdOrName(parentSessionId)?.id ?? parentSessionId } : {}),
+      })
+      rows = sortNewestActivityFirst(rows)
       if (input.withMemory) {
         const live = rows.filter(
           (s): s is SessionDescriptor & { pid: number } =>
@@ -1271,11 +1254,13 @@ export function registerSessionTools(
       return rows.map(publicSessionDescriptor)
     },
     transformers: [
+      catchErrors(),
       paginated({
         project: compactSessionItem,
         keyOf: s => s.id,
         maxLimit: 200,
         itemKey: "sessions",
+        includeTotal: true,
       }),
     ],
   })

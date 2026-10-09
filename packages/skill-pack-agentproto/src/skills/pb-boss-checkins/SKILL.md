@@ -22,7 +22,7 @@ supervision playbook.
 ### 1. Get your own session id
 
 The boss targets a session id, so know yours (from your spawn descriptor or
-`session_list` on the daemon).
+`session_list {q:'<label>', excludeNoise:true, limit:10}` on the daemon).
 
 ### 2. Create the boss
 

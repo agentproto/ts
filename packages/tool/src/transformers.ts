@@ -2,7 +2,6 @@ import type { ZodRawShape } from "zod"
 import {
   paginate,
   pageParamsShape,
-  toolText,
   type PageParams,
 } from "./envelope.js"
 import type { ToolTransformer } from "./types.js"
@@ -49,6 +48,12 @@ export interface PaginatedOptions<TItem> {
    * keeps a tool whose rows pile up (terminals) under the MCP output cap.
    */
   defaultLimit?: number
+  /**
+   * Add `total` (the size of the list the handler returned, i.e. after any
+   * filtering) to the NON-paginated wrapper too. Default off: the legacy
+   * `{ [itemKey]: [...] }` shape stays byte-identical for existing tools.
+   */
+  includeTotal?: boolean
 }
 
 /**
@@ -57,14 +62,14 @@ export interface PaginatedOptions<TItem> {
  * array) with the shared cursor/limit semantics:
  *
  *  - `limit`/`cursor` present → the `{ items, nextCursor?, total }` page
- *    envelope via `paginate` + `toolText` (cursor/limit semantics are the
+ *    envelope via `paginate` (cursor/limit semantics are the
  *    exact ones the daemon's list tools already depend on).
  *  - neither present → the legacy `{ [itemKey]: [...] }` wrapper, no
- *    envelope fields.
+ *    envelope fields (unless `includeTotal` adds `total`).
  *
  * Rows are COMPACT by default (`project`); `full: true` / `compact: false`
  * returns the unprojected records. `fields` is a per-item allowlist
- * applied on the paginated envelope branch (matching existing behavior).
+ * applied on every branch (paginated, truncated and plain wrapper).
  * An explicit `fields` list is itself a projection, bounded by what the
  * caller names, so on that branch it is applied to the FULL record and the
  * compact projection is skipped (unless `compact: true` is explicit) —
@@ -73,7 +78,7 @@ export interface PaginatedOptions<TItem> {
 export function paginated<TItem extends object>(
   opts: PaginatedOptions<TItem>,
 ): ToolTransformer<unknown, readonly TItem[], McpTextResult> {
-  const { project, keyOf, maxLimit = 200, itemKey = "items", defaultLimit } = opts
+  const { project, keyOf, maxLimit = 200, itemKey = "items", defaultLimit, includeTotal } = opts
   return {
     name: "paginated",
     wrapShape: (shape: ZodRawShape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
@@ -82,22 +87,32 @@ export function paginated<TItem extends object>(
       const items = (await handler(input)) as readonly TItem[]
       const full = params.full === true
       const compact = full ? false : params.compact !== false
+      const projectRows = compact && (params.fields === undefined || params.compact === true)
+      const render = (rows: readonly TItem[]): object[] => {
+        const projected = projectRows ? rows.map(project) : [...rows]
+        const fields = params.fields
+        return fields === undefined
+          ? projected
+          : projected.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => fields.includes(key))))
+      }
       if (params.limit !== undefined || params.cursor !== undefined) {
         const page = paginate(items, params, { maxLimit, keyOf })
-        const projectRows = compact && (params.fields === undefined || params.compact === true)
-        return projectRows
-          ? textResult(toolText({ ...page, items: page.items.map(project) }, params))
-          : textResult(toolText(page, params))
+        return textResult(JSON.stringify({ ...page, items: render(page.items) }))
       }
       if (defaultLimit !== undefined && items.length > defaultLimit) {
         const page = paginate(items, { limit: defaultLimit }, { maxLimit: Math.max(maxLimit, defaultLimit), keyOf })
-        const rows = compact ? page.items.map(project) : page.items
         return textResult(
-          JSON.stringify({ [itemKey]: rows, total: page.total, truncated: true, nextCursor: page.nextCursor }),
+          JSON.stringify({
+            [itemKey]: render(page.items),
+            total: page.total,
+            truncated: true,
+            nextCursor: page.nextCursor,
+          }),
         )
       }
-      const rows = compact ? items.map(project) : items
-      return textResult(JSON.stringify({ [itemKey]: rows }))
+      return textResult(
+        JSON.stringify({ [itemKey]: render(items), ...(includeTotal ? { total: items.length } : {}) }),
+      )
     },
   }
 }

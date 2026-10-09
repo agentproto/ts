@@ -398,7 +398,7 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 
 | Tool                          | Purpose                                                   |
 |-------------------------------|-----------------------------------------------------------|
-| **`session_list`**            | List sessions with `kind` / `status` / `onlyAlive` filters (canonical lister) |
+| **`session_list`**            | List sessions; narrow with `q` / `excludeNoise` / `excludeLabelPrefix` / `rootOnly` / `parentSessionId` / `updatedSince` + `kind` / `status` / `onlyAlive` / `limit` (canonical lister) |
 | `agent_sessions_list`         | Agent-only view; use `session_list` with `kind` for full control |
 | `agent_start`                 | Spawn a long-lived ACP adapter (claude-code/hermes/…)     |
 | `agent_prompt`                | Send a follow-up turn to a live agent session             |

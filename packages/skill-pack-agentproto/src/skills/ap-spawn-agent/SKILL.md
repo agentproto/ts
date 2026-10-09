@@ -82,7 +82,9 @@ route for `agent_start`.
   injection — write a real task with a real goal and scope.
 - Always set a distinct `label` so the session is identifiable later in
   `agent_sessions_list` / `session_list` — unlabeled sessions are hard to
-  tell apart once several are running.
+  tell apart once several are running. When you list them back, narrow
+  server-side (`session_list {q:'<label>', excludeNoise:true, limit:10}`)
+  instead of reading every session on the daemon.
 - `dedupe` + `idempotencyKey`: calling `agent_start` again with the same
   key + adapter + cwd within ~10 minutes returns the **same session**
   (`deduped:true`) instead of forking a second process — safe to retry a

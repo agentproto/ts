@@ -5,6 +5,11 @@ agentproto sessions                                one-shot table dump
 agentproto sessions --watch [--simple] [--no-color]
 agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
+agentproto sessions [list] [--q <text>] [--exclude-noise] [--exclude-label-prefix <p>]...
+                       [--exclude-label <l>]... [--exclude-kind <k>]... [--root-only]
+                       [--parent <id>] [--updated-since <t>] [--started-since <t>]
+                       [--status <s>] [--alive] [--limit <n>] [--fields <a,b>]
+                                                   narrowed list, newest activity first
 agentproto sessions --stats[=full] [--verbose] [--json] [--no-color]
                                                    per-session RAM / CPU / process counts
 agentproto sessions board    [--json] [--watch] [--all]
@@ -117,6 +122,42 @@ PIN ID         KIND       WORKSPACE  STATUS    AGE       COMMAND
     ses_def34  pty        my-proj    running   1m        bash
     ses_ghi56  agent-cli  my-proj    exited    1h        claude --print …
 ```
+
+### Narrowing a long list
+
+On a busy daemon most rows are noise (review lanes, workflow stages, finished
+one-shot commands). Every filter below is optional, filters AND together, and
+the same names work on the CLI (kebab-case flags), `GET /sessions` (query
+params) and the MCP `session_list` tool (arguments). Results come back newest
+activity first, and the response carries `total` (the filtered count before
+`limit`).
+
+| Filter | Meaning |
+|---|---|
+| `q` | case-insensitive substring over id, name, label, title and cwd |
+| `excludeNoise` | preset, see below |
+| `excludeLabelPrefix` | drop sessions whose label starts with any of these (string or list), e.g. `review:`, `wf:` |
+| `excludeLabels` | drop sessions whose label equals any of these exactly (same vocabulary as `session_follow`'s `exclude.labels`) |
+| `excludeKinds` | drop `terminal` / `agent-cli` / `command` |
+| `rootOnly` | only sessions with no parent (as in `session_follow`'s `selector.rootOnly`) |
+| `parentSessionId` | only direct children of this session (id or name) |
+| `updatedSince` | last activity (falling back to start) at or after this instant: ISO-8601 or relative `30m`, `24h`, `7d`, `2w` |
+| `startedSince` | started at or after this instant, same formats |
+
+`excludeNoise: true` drops exactly: sessions labelled `review:*` or `wf:*` (or
+with origin `review` / `workflow`), and **ended** (`exited` / `killed`) one-shot
+sessions that are `kind: "command"` or plain `terminal`s with no agent adapter.
+It keeps running terminals, errored ones, agent sessions (including ended
+ones) and agent TUIs such as `claude`.
+
+```bash
+agentproto sessions --q checkout --exclude-noise --limit 10
+agentproto sessions --root-only --updated-since 24h --json
+```
+
+`--json` stays a bare array. A malformed `updatedSince` / `startedSince` is an
+error (HTTP 400 `invalid_filter`), never a silently empty list. Filters can't
+be combined with `--watch`.
 
 Pinned sessions sort to the top and are marked with `●` in the `PIN`
 column. Pinning is list-visibility only — it does not affect

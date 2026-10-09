@@ -50,6 +50,13 @@ import { isValidAppEmbedToken } from "./embed-tokens.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
+import {
+  SessionListFilterError,
+  compileSessionListFilters,
+  hasSessionListFilters,
+  parseSessionListFilterParams,
+  sortNewestActivityFirst,
+} from "./session-list-filters.js"
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire } from "./sessions.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -6101,13 +6108,57 @@ async function handleSessions(
       if (kindParam && kindParam !== "all") return s.kind === kindParam
       return includeCommands || s.kind !== "command"
     }
+    // Same server-side narrowing as the `session_list` MCP tool (q,
+    // excludeLabelPrefix, excludeLabels, excludeKinds, rootOnly,
+    // parentSessionId, updatedSince, startedSince, excludeNoise, status,
+    // onlyAlive, limit). Absent ⇒ the response is byte-identical to before.
+    const listFilters = parseSessionListFilterParams(params)
+    if (listFilters.parentSessionId) {
+      listFilters.parentSessionId =
+        registry.findByIdOrName(listFilters.parentSessionId)?.id ?? listFilters.parentSessionId
+    }
+    const statusParam = params.get("status")
+    const onlyAlive = params.get("onlyAlive") === "true"
+    const limitParam = params.get("limit")
+    const limit = limitParam === null ? undefined : Number.parseInt(limitParam, 10)
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+      json(400, {
+        error: "invalid_limit",
+        message: `?limit must be a positive integer, got ${JSON.stringify(limitParam)}.`,
+      })
+      return true
+    }
+    const narrowed =
+      hasSessionListFilters(listFilters) || statusParam !== null || onlyAlive || limit !== undefined
+    let narrow: (list: SessionDescriptor[]) => SessionDescriptor[]
+    try {
+      const keep = compileSessionListFilters(listFilters)
+      narrow = list =>
+        list.filter(s => {
+          if (statusParam) {
+            if (s.status !== statusParam) return false
+          } else if (onlyAlive && s.status !== "running" && s.status !== "starting") {
+            return false
+          }
+          return keep(s)
+        })
+    } catch (err) {
+      if (err instanceof SessionListFilterError) {
+        json(400, { error: "invalid_filter", message: err.message })
+        return true
+      }
+      throw err
+    }
     let rows = registry.list({ includeArchived })
     // Same default-view semantics as the `session_list` MCP tool: a
     // `kind:"command"` row is a shell-execution LOG (already reachable via
     // `command_list` / `?kind=command`), not a resumable session, so it's
     // excluded from the default (unfiltered / `?kind=all`) view unless
     // `?includeCommands=true` opts into the union.
-    rows = rows.filter(matchesFilter)
+    rows = narrow(rows.filter(matchesFilter))
+    if (narrowed) rows = sortNewestActivityFirst(rows)
+    const total = rows.length
+    if (limit !== undefined && sinceParam === null) rows = rows.slice(0, limit)
 
     let body: unknown
     if (sinceParam !== null) {
@@ -6137,12 +6188,16 @@ async function handleSessions(
               s =>
                 s.archived &&
                 matchesFilter(s) &&
+                narrow([s]).length > 0 &&
                 (s.archivedAt === undefined || Date.parse(s.archivedAt) >= sinceMs),
             )
             .map(s => s.id)
       body = { sessions: changed.map(s => projectSessionForHttp(s, fields)), removed }
     } else {
-      body = { sessions: rows.map(s => projectSessionForHttp(s, fields)) }
+      body = {
+        sessions: rows.map(s => projectSessionForHttp(s, fields)),
+        ...(narrowed ? { total } : {}),
+      }
     }
 
     // Strong etag over the exact serialized body (app-ui-delivery.ts

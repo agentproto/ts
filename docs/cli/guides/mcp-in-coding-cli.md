@@ -219,7 +219,7 @@ coding-CLI orchestration:
 | `agent_start` | Spawn a new adapter session (claude-code, hermes, opencode, …) |
 | `agent_prompt` | Send a turn to a running session |
 | `agent_output` | Read a session's output |
-| `session_list` | List all sessions (agent + terminal + browser) |
+| `session_list` | List sessions (agent + terminal + browser); narrow with `q`, `excludeNoise`, `rootOnly`, `updatedSince`, `limit` before reading |
 | `agent_sessions_list` | List active agent sessions only |
 | `agent_kill` | Stop a session |
 | `session_tree` | Session hierarchy (parent → children) |
