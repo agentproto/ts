@@ -1,5 +1,26 @@
 # @agentproto/worktree
 
+## 0.14.4
+
+### Patch Changes
+
+- 5b021a8: `branch_gc` / `worktree_gc` daemon tools: smaller, truthful responses and a faster plan. `branch_gc_status` takes `classes`, `scopes`, `section`, `results`, `limit` and `cursor`, and `full: true` now returns one filtered page (default 100 rows, with `page.nextCursor`) instead of the whole 65k+ character result. An apply result carries a top-level `status` and an `applySummary` (deleted / skipped / failed per scope, plus the restore log path). A running job no longer announces a `resultPath` that does not exist yet. `terminal_sessions_list` called without `limit` is capped at 50 rows with `total` / `truncated` / `nextCursor`; `paginated()` gains a `defaultLimit` option for this. The branch gc ladder computes `git patch-id`s once per commit and reuses merge-bases instead of running `git cherry` per tip (about 2.5x faster on a 374-ref repo, identical classification).
+- 6cf7140: Every shipped `worktree_gc` caller now gets the real result instead of a background jobId. Without `wait: true`, the tool falls back to a background job after its 25 s default `waitMs` and returns only `{ jobId, status: "running" }`. On a repo with dozens of worktrees:
+
+  - The repo-maintenance `maintain` workflow counted "0 worktree(s) classified", and an `applyMerged: true` apply ran in the background, unreported, after the workflow had finished. Both of its `worktree_gc` steps now pass `wait: true`.
+  - The `worktree-gc-notify` workflow reported no outcomes. Its `gc` step now passes `wait: true`.
+  - A `worktree-gc` routine cron run recorded the bare jobId as success, so a failed apply never reached `on_failure`. The routine template now passes `wait: true`.
+  - The ops panel's Worktrees card showed "0 reclaim … (no linked worktrees)". It now polls `worktree_gc_status` (added to the panel's tool allowlist) until the plan lands, and shows a failed job as an error.
+
+  `branch_gc` already blocks by default and is unchanged.
+
+- Updated dependencies [4a833e9]
+- Updated dependencies [5b021a8]
+- Updated dependencies [3e61035]
+  - @agentproto/workflow-runtime@0.17.0
+  - @agentproto/tool@0.5.0
+  - @agentproto/driver@0.3.1
+
 ## 0.14.3
 
 ### Patch Changes

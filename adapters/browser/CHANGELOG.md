@@ -1,5 +1,13 @@
 # @agentproto/adapter-browser
 
+## 0.3.1
+
+### Patch Changes
+
+- @agentproto/driver-browser@0.2.1
+- @agentproto/adapter-browser-camofox@0.2.1
+- @agentproto/adapter-browser-chromium@0.2.1
+
 ## 0.3.0
 
 ### Minor Changes

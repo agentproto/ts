@@ -1,5 +1,18 @@
 # @agentproto/workflow-runtime
 
+## 0.17.0
+
+### Minor Changes
+
+- 4a833e9: Agent steps retry transport failures. A `kind: agent` step whose session dies before its first turn ends (killed or crashed mid-turn, "ACP connection closed") is re-spawned with the same prompt in the same run workspace, instead of failing the run. By default that is one retry after 1 s. A step can set `retry: { max_attempts, backoff, initial_ms }` in WORKFLOW.md, the same block gates take; `max_attempts: 1` turns it off, and a declared `retry` also covers spawn failures. A turn that ended is never retried (empty or errored reply, schema mismatch, input request), and neither is a deliberately ended session, a cancelled run or a `sessionRef` reuse. Each retry is logged as a `step.retrying` run event. New exports: `AgentSessionLostError`, `isAgentTransportFailure`, `DEFAULT_AGENT_TRANSPORT_RETRY`, and the `onAgentRetry` run hook.
+
+### Patch Changes
+
+- 3e61035: Release agent-step sessions as soon as their top-level step finishes when no step in the workflow reuses a session (`sessionRef`). Previously every finished step's session stayed live until the run ended, so a run parked on an approval (or a long one) accumulated idle sessions. `compileWorkflow` now sets `RuntimeWorkflow.reusesSessions: false` for such workflows; hand-built workflows keep the old release-at-run-end behavior.
+- Updated dependencies [5b021a8]
+  - @agentproto/tool@0.5.0
+  - @agentproto/driver@0.3.1
+
 ## 0.16.0
 
 ### Minor Changes

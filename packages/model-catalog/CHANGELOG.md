@@ -1,5 +1,11 @@
 # @agentproto/model-catalog
 
+## 0.12.1
+
+### Patch Changes
+
+- e927cb2: Docs: document tunnel private-by-default and revoke, knowledge supersede/explain, pricing tiers, and compaction checkpoint/compactRequiresOperator.
+
 ## 0.12.0
 
 ### Minor Changes

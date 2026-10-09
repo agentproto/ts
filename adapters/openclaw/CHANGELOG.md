@@ -1,5 +1,13 @@
 # @agentproto/adapter-openclaw
 
+## 0.1.29
+
+### Patch Changes
+
+- Updated dependencies [4c9745d]
+- Updated dependencies [91630ea]
+  - @agentproto/driver-agent-cli@2.9.0
+
 ## 0.1.28
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/events-channel",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "@agentproto/events-channel — a Claude Code channel that makes a session a subscriber of agentproto MCP Events (events/subscribe over a signed webhook, delivered into the session as <channel> notifications).",
   "keywords": [
     "agentproto",

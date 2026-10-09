@@ -1,5 +1,14 @@
 # @agentproto/mcp-server
 
+## 0.6.2
+
+### Patch Changes
+
+- 19a1c97: Serve an app's bundled tools as an HTTP MCP server (`agentproto mcp-app` over HTTP, `@agentproto/runtime/app-mcp-server`). toMcpTool advertises real parameters for manifest-only (TOOL.md, JSON Schema) tools instead of an empty shape that made them uncallable.
+- Updated dependencies [5b021a8]
+  - @agentproto/tool@0.5.0
+  - @agentproto/driver@0.3.1
+
 ## 0.6.1
 
 ### Patch Changes
