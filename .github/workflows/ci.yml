@@ -1568,7 +1568,7 @@ jobs:
           OVERRIDE=$(printf '%s' "$BASE_CONFIG" \
             | jq -c '. + {
                 reviewerAdapter: "opencode",
-                reviewerModel: "opencode-go/glm-5.3",
+                reviewerModel: "opencode-go/glm-5.3-flash",
                 reviewerSandboxEnv: ["OPENCODE_API_KEY", "GITHUB_TOKEN"]
               }')
           {
@@ -1615,7 +1615,7 @@ jobs:
           api-key: ${{ secrets.OPENCODE_API_KEY }}
           provider-key: ${{ secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
-          model: opencode-go/glm-5.3
+          model: opencode-go/glm-5.3-flash
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
