@@ -108,12 +108,23 @@ describe("worktree_gc dry run → maintain report", () => {
     const entry = (await import(pathToFileURL(ENTRY).href)) as {
       summarizeWorktreePlan: (r: unknown) => { total: number; byClass: Record<string, number> }
       buildReport: (b: unknown) => string
+      reviewableWorktrees: (r: unknown) => Map<string, string>
     }
     const summary = entry.summarizeWorktreePlan(result)
     expect(summary.total).toBe(3)
     const expected: Record<string, number> = { reclaim: 0, salvage: 0, hold: 0 }
     for (const e of plan) expected[e.class] = (expected[e.class] ?? 0) + 1
     expect(summary.byClass).toEqual(expected)
+
+    // The held-worktree review reads the SAME real result: idle + clean
+    // worktrees qualify, the dirty one doesn't. (It read `tree.state` while
+    // the daemon sends `tree: "clean"` — every worktree was silently dropped.)
+    // These fixture worktrees classify reclaim/salvage, so mark them all
+    // `hold` to exercise exactly the field reads on the real entry shape.
+    const asHeld = { ...result, plan: plan.map(e => ({ ...e, class: "hold" })) }
+    const reviewable = entry.reviewableWorktrees(asHeld)
+    expect([...reviewable.keys()].sort()).toEqual([worktrees[0]!, worktrees[1]!].sort())
+    expect(reviewable.get(worktrees[0]!)).toBe("wt/one")
 
     const report = entry.buildReport({ input: {}, steps: { worktreeGcPlan: result } })
     expect(report).toContain("`plan` — 3 worktree(s) classified")

@@ -168,11 +168,19 @@ export function reviewableWorktrees(worktreeGcPlanResult) {
   const entries = Array.isArray(worktreeGcPlanResult?.plan) ? worktreeGcPlanResult.plan : []
   for (const w of entries) {
     if (w?.class !== "hold" || !w.branch || !w.path) continue
-    if (w.liveness?.state !== "idle" || w.tree?.state !== "clean") continue
+    if (w.liveness?.state !== "idle" || treeState(w.tree) !== "clean") continue
     if (w.integration?.state === "open") continue
     out.set(w.path, w.branch)
   }
   return out
+}
+
+/** A worktree_gc plan entry's tree state. The daemon's `worktree_gc` tool
+ *  flattens it to the bare discriminant (`tree: "clean"`, `toGcPlanEntryView`
+ *  in packages/cli/src/commands/worktree.ts); the engine's own `GcPlanEntry`
+ *  (and `agentproto worktree gc --json`) carries `{ state, … }`. */
+function treeState(tree) {
+  return typeof tree === "string" ? tree : tree?.state
 }
 
 /** The worktree path a branch_gc entry is held by, when that hold is the only
