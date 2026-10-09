@@ -441,6 +441,16 @@
           "cache_read": 0,
           "cache_write": 0
         }
+      },
+      "step-5-preview-free": {
+        "id": "step-5-preview-free",
+        "name": "Step 5 Preview Free",
+        "release_date": "2026-09-16",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
       }
     }
   }

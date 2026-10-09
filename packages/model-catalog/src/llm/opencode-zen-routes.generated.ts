@@ -947,6 +947,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "opencode",
     provider: "opencode",
   },
+  "opencode/step-5-preview-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-09-16",
+    vendor: "opencode",
+    provider: "opencode",
+  },
   "opencode/trinity-large-preview-free": {
     inputPer1M: 0,
     outputPer1M: 0,

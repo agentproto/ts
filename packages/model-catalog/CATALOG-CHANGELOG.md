@@ -288,3 +288,22 @@ for that.
 
 ### llm:anthropic
 - Added: claude-haiku-5-5
+
+## 2026-10-09
+
+### llm:openrouter
+- Added: inclusionai/ling-3.0-flash-sante, openai/gpt-6.1-sol-pro:batch, openai/gpt-6.1-sol:batch, stepfun/step-5-preview
+- Removed: baidu/ernie-4.5-vl-424b-a47b
+
+### llm:opencode-go
+- Added: opencode-go/step-5-preview-free
+
+### llm:opencode-zen
+- Added: opencode/step-5-preview-free
+
+### llm:huggingface
+- Added: CohereLabs/c4ai-command-r7b-arabic-02-2025, zai-org/GLM-5.1-FP8
+- Removed: MiniMaxAI/MiniMax-M2, MiniMaxAI/MiniMax-M2.1, Qwen/Qwen3-Coder-480B-A35B-Instruct, Qwen/Qwen3-Coder-Next, Qwen/Qwen3-VL-235B-A22B-Thinking, Sao10K/L3-8B-Lunaris-v1, baidu/ERNIE-4.5-VL-424B-A47B-Base-PT, zai-org/GLM-4-32B-0414, zai-org/GLM-4.6-FP8
+
+### llm:openai
+- Added: gpt-6.1-sol-pro:batch, gpt-6.1-sol:batch

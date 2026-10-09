@@ -19,15 +19,33 @@ export const FIRST_PARTY_CATALOG_ENTRIES: readonly AppCatalogEntry[] = [
     "description": "View and continue any agentproto daemon session's conversation in the Agentik chat UI (assistant-ui based). Pick a session from the live/recent list or deep-link with ?session=<id>; the page replays the session's full transcript, then follows it live over SSE, and lets you send follow-up prompts into the same session. Built on @agstudio/react-agentproto (SSE transcript projection, permission approval, thread list) and @agstudio/chat-starter's assistant-ui shell, reused almost as-is.",
     "source": {
       "kind": "agentapp",
-      "url": "https://github.com/agentproto/apps/releases/download/session-chat%400.1.0/session-chat-0.1.0.agentapp",
-      "sha256": "12216f65fa3cff9bfb9fcd49c46c9166eb68a790d278d466e07e0a95df5f4eef",
-      "version": "0.1.0",
-      "size": 518621
+      "url": "https://github.com/agentproto/apps/releases/download/session-chat%400.1.1/session-chat-0.1.1.agentapp",
+      "sha256": "e8084a125e335cbc408b0e8dd3371711191f6aa0019dad4907f26b19ec9f344b",
+      "version": "0.1.1",
+      "size": 516437
     },
-    "version": "0.1.0",
+    "icon": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.1/icon.svg",
+    "version": "0.1.1",
     "tier": "bundle",
+    "publisher": "Agentik",
     "license": {
       "kind": "free"
-    }
+    },
+    "tagline": "Read and continue any agentproto session as a chat thread.",
+    "longDescription": "Session Chat turns any agentproto session into a chat thread you can read and continue.\n\nPick a running or recent session, or open one directly with `?session=<id>`. The page replays the full transcript, then follows the session live as the agent works, and lets you send follow-up prompts into the same session.\n\n## What you get\n\n- **Transcript replay and live follow**: the whole conversation, then new turns as they stream in.\n- **Tool activity at a glance**: file reads, commands and edits grouped under each reply, with the files an agent changed.\n- **Reply into the session**: send a follow-up, interrupt a running turn, queue prompts while the agent works.\n- **Approvals**: answer the agent's permission requests from the thread.\n- **Session list**: running and recent sessions, grouped by workspace, with search and pins.\n- **Start a session**: pick a harness and model and start a new chat from the same page.\n\n## Requirements\n\nSession Chat talks to your local agentproto daemon. Its bundled agent runs on the `mastra-agent` adapter: install it first with `agentproto install mastra-agent`.",
+    "screenshots": [
+      {
+        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.1/conversation.png",
+        "alt": "A finished session replayed as a chat thread, with a markdown table in the agent's reply and the composer below",
+        "width": 1280,
+        "height": 800
+      }
+    ],
+    "categories": [
+      "chat",
+      "sessions",
+      "developer-tools"
+    ],
+    "homepage": "https://agentproto.sh/apps/session-chat"
   },
 ]
