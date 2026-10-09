@@ -542,7 +542,9 @@ async function buildCacheEntry(ctx: RunCtx, out: unknown, hash: string): Promise
  *  is copied into the matching path under this run's own (same relocation
  *  spirit as `kind:"artifact"`'s cache hit — "two runs MUST NEVER share a
  *  workspace", AIP-58 §4), then the recorded output's path strings are
- *  rewritten to point there. Best-effort: a source the original run's
+ *  rewritten to point there. A file already present at the destination is
+ *  kept, not overwritten (a retry's seeded workspace — see the comment at
+ *  the copy). Best-effort: a source the original run's
  *  `scratch/` retention already swept is not this run's problem to recover
  *  (same posture `kind:"artifact"`'s relocation takes). A no-op when the
  *  entry predates this field, or this run has no workspace wired at all. */
@@ -554,7 +556,10 @@ async function relocateCachedOutput(ctx: RunCtx, entry: StepCacheEntry): Promise
     const dest = join(to, rel)
     try {
       await mkdir(dirname(dest), { recursive: true })
-      await cp(join(from, rel), dest, { recursive: true })
+      // Never over an existing file: a `run.retry` workspace arrives seeded
+      // with the parent run's scratch, which may hold a supervisor's fix to
+      // this very file — newer than the journal-time copy at `from`.
+      await cp(join(from, rel), dest, { recursive: true, force: false, errorOnExist: false })
     } catch {
       // Best-effort — see doc above.
     }

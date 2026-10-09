@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -791,4 +791,185 @@ steps:
     expect(onDisk()?.status).toBe("cancelled")
   })
 
+})
+
+/** write (draft.md into `$run.workspace`) -> [lint (flaky)] -> check (gate
+ *  requiring draft.md == `expected`) — the editorial-desk `revise` shape
+ *  that failed on 2026-10-09: the retry replayed `write` from the journal
+ *  (no re-dispatch, so no file) and the gate failed on an empty workspace.
+ *  `namesFile: false` (the default) is an agent step's shape — its output
+ *  says nothing about the file it wrote, so the journal's own
+ *  output-path relocation can't bring it back. */
+function makeWriteGateWorkflow(opts: { expected: string; namesFile?: boolean; lint?: boolean }) {
+  let writes = 0
+  const writeTool = defineTool({
+    id: "demo.write",
+    description: "write draft.md into dir",
+    inputSchema: z.object({ dir: z.string(), content: z.string() }),
+    outputSchema: z.object({ ok: z.boolean(), path: z.string().optional() }),
+  })
+  const writeDriver = defineDriver({
+    id: "demo.write-driver",
+    name: "demo.write",
+    description: "write draft.md into dir",
+    kind: "builtin",
+    implements: [{ tool: "demo.write", version: "0.1.0" }],
+    implementations: [
+      implementTool(writeTool, ({ input }) => {
+        writes++
+        const path = join(input.dir, "draft.md")
+        writeFileSync(path, input.content, "utf8")
+        return opts.namesFile ? { ok: true, path } : { ok: true }
+      }),
+    ],
+  })
+  const lint = makeFlakyIncTool("demo.lint")
+  const check = `const c = require("fs").readFileSync("draft.md", "utf8"); process.exit(c === ${JSON.stringify(opts.expected)} ? 0 : 1)`
+  const lintStep = opts.lint === false
+    ? ""
+    : `
+  - id: lint
+    kind: tool
+    tool: demo.lint
+    inputs:
+      n: $input.n`
+  const manifest = `---
+name: Write gate
+id: write-gate
+description: write -> lint(flaky) -> check(gate).
+version: 0.1.0
+inputs:
+  type: object
+  properties:
+    n: { type: number }
+  required: ["n"]
+outputs: {}
+steps:
+  - id: write
+    kind: tool
+    tool: demo.write
+    inputs:
+      dir: $run.workspace
+      content: draft v1${lintStep}
+  - id: check
+    kind: gate
+    cwd: $run.workspace
+    command: node
+    args: [${JSON.stringify("-e")}, ${JSON.stringify(check)}]
+---
+`
+  return {
+    manifest,
+    tools: { "demo.write": writeTool, "demo.lint": lint.tool },
+    candidates: [writeDriver, lint.driver],
+    writes: () => writes,
+    lintCalls: lint.calls,
+  }
+}
+
+describe("AIP-58 §6 Journal — retry carries the original run's workspace", () => {
+  let tmpDir: string
+  let persistPath: string
+  let runsRoot: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "workflow-retry-ws-"))
+    persistPath = join(tmpDir, "workflow-runs.json")
+    runsRoot = join(tmpDir, "runs")
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  function setup(opts: Parameters<typeof makeWriteGateWorkflow>[0]) {
+    const wf = makeWriteGateWorkflow(opts)
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(path, wf.manifest, "utf8")
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: wf.tools, candidates: wf.candidates }),
+    })
+    return { wf, runner, path }
+  }
+
+  async function retryOf(runner: ReturnType<typeof createWorkflowRunner>, runId: string): Promise<WorkflowRun> {
+    const result = await runner.retry(runId)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    return (await waitTerminal(runner, result.run.runId))!
+  }
+
+  const scratchOf = (run: WorkflowRun): string => join(run.workspace!, "scratch")
+
+  it("a replayed step's file (not named in its output) is in the retry's workspace, so a downstream gate reading it passes", async () => {
+    const { wf, runner, path } = setup({ expected: "draft v1" })
+    const original = await runner.startFromFile({ path, input: { n: 1 } })
+    const failed = (await waitTerminal(runner, original.runId))!
+    expect(failed.status).toBe("failed")
+    expect(readFileSync(join(scratchOf(failed), "draft.md"), "utf8")).toBe("draft v1")
+
+    const retried = await retryOf(runner, original.runId)
+    expect(retried.status).toBe("done")
+    expect(wf.writes()).toBe(1) // replayed from the journal, never re-dispatched
+    expect(wf.lintCalls()).toBe(2)
+    const byLabel = new Map(retried.stages[0]!.steps.map(s => [s.label, s]))
+    expect(byLabel.get("write")).toMatchObject({ status: "done", cached: true })
+    expect(byLabel.get("check")?.status).toBe("done")
+    expect(readFileSync(join(scratchOf(retried), "draft.md"), "utf8")).toBe("draft v1")
+  })
+
+  it("a supervisor's fix to the original workspace between failure and retry carries over — and the original keeps its own copy", async () => {
+    const { runner, path } = setup({ expected: "draft v2 (fixed)", lint: false })
+    const original = await runner.startFromFile({ path, input: { n: 1 } })
+    const failed = (await waitTerminal(runner, original.runId))!
+    expect(failed.status).toBe("failed") // the gate rejects "draft v1"
+    const origDraft = join(scratchOf(failed), "draft.md")
+    writeFileSync(origDraft, "draft v2 (fixed)", "utf8")
+
+    const retried = await retryOf(runner, original.runId)
+    expect(retried.status).toBe("done")
+    const retriedDraft = join(scratchOf(retried), "draft.md")
+    expect(readFileSync(retriedDraft, "utf8")).toBe("draft v2 (fixed)")
+    // Two runs never share a workspace (§4): a copy, not the same directory.
+    writeFileSync(retriedDraft, "touched by the retry", "utf8")
+    expect(readFileSync(origDraft, "utf8")).toBe("draft v2 (fixed)")
+  })
+
+  it("retry of a retry: a fix made in the failed retry's workspace survives the journal relocating the first attempt's copy of a file the step's output names", async () => {
+    const { wf, runner, path } = setup({ expected: "draft v2 (fixed)", lint: false, namesFile: true })
+    const first = await runner.startFromFile({ path, input: { n: 1 } })
+    expect((await waitTerminal(runner, first.runId))?.status).toBe("failed")
+
+    // Retried without a fix: fails the same way.
+    const second = await retryOf(runner, first.runId)
+    expect(second.status).toBe("failed")
+    writeFileSync(join(scratchOf(second), "draft.md"), "draft v2 (fixed)", "utf8")
+
+    // The journal entry for `write` still points at the FIRST run's
+    // workspace (draft v1) — relocating it must not clobber the fix.
+    const third = await retryOf(runner, second.runId)
+    expect(third.status).toBe("done")
+    expect(wf.writes()).toBe(1)
+    expect(readFileSync(join(scratchOf(third), "draft.md"), "utf8")).toBe("draft v2 (fixed)")
+  })
+
+  it("still allocates a full workspace when the original's scratch was swept", async () => {
+    const { runner, path } = setup({ expected: "draft v1" })
+    const original = await runner.startFromFile({ path, input: { n: 1 } })
+    const failed = (await waitTerminal(runner, original.runId))!
+    rmSync(scratchOf(failed), { recursive: true, force: true })
+
+    // Nothing to copy: the retry still gets its directories, and the gate
+    // fails honestly on the missing file instead of the retry being refused.
+    const retried = await retryOf(runner, original.runId)
+    expect(existsSync(join(retried.workspace!, "artifacts"))).toBe(true)
+    expect(existsSync(scratchOf(retried))).toBe(true)
+    expect(retried.status).toBe("failed")
+  })
 })
