@@ -6,7 +6,7 @@
   "$ref": "#/$defs/runEvent",
   "$defs": {
     "eventType": {
-      "description": "step.skipped marks a step in an untaken AIP-15 branch arm — terminal, the step never starts in this run; its data carries { reason: \"branch-not-taken\", branchId }.",
+      "description": "step.skipped marks a step in an untaken AIP-15 branch arm — terminal, the step never starts in this run; its data carries { reason: \"branch-not-taken\", branchId }. step.retrying marks a step about to start another attempt after a transport failure (AIP-15 agent-step transport retry) — not terminal; its data carries { attempt, maxAttempts, error, delayMs, sessionId? }.",
       "type": "string",
       "enum": [
         "run.created",
@@ -25,7 +25,8 @@
         "step.succeeded",
         "step.failed",
         "step.skipped",
-        "step.spend"
+        "step.spend",
+        "step.retrying"
       ]
     },
     "runEvent": {
