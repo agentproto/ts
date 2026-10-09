@@ -178,6 +178,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "run_events",
   "run_request_input",
   "sandbox_attach",
+  "sandbox_exec",
   "self_inspect",
   "sentinel_list",
   "sentinel_poll_now",

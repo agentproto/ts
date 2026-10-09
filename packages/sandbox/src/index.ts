@@ -36,6 +36,8 @@ export {
   type SandboxSpec,
   type BootedSandbox,
   type SandboxBootOpts,
+  type SandboxExecOpts,
+  type SandboxExecResult,
   type SandboxProvider,
   type SandboxProbeResult,
   type SandboxSecretsConfig,

@@ -27,8 +27,16 @@
  * overrides either way.
  */
 
-import { Sandbox, SandboxNotFoundError } from "e2b"
-import type { BootedSandbox, SandboxBootOpts, SandboxProvider, SandboxProbeResult, SandboxSpec } from "@agentproto/sandbox"
+import { CommandExitError, Sandbox, SandboxNotFoundError } from "e2b"
+import type {
+  BootedSandbox,
+  SandboxBootOpts,
+  SandboxExecOpts,
+  SandboxExecResult,
+  SandboxProbeResult,
+  SandboxSpec,
+  SandboxProvider,
+} from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
 import { DEFAULT_TEMPLATE, TEMPLATES } from "./template-versions.generated.js"
 
@@ -280,6 +288,42 @@ function toBootedSandbox(
     },
     async pause(): Promise<void> {
       await sandbox.pause({ keepMemory: true })
+    },
+    /**
+     * Run ONE command inside the box (e2b `sandbox.commands.run`, foreground)
+     * and return its exit code + captured streams. A NON-ZERO exit is a
+     * RESULT here, not a rejection: the SDK throws `CommandExitError` carrying
+     * the same `exitCode`/`stdout`/`stderr`, so this unwraps it into the
+     * result shape the runtime's `sandbox_exec` tool reports verbatim.
+     * Everything else (the SDK's own TimeoutError when `opts.timeoutMs`
+     * elapses, transport errors, envd being down) propagates — the caller
+     * turns a throw into a failed exec.
+     */
+    async exec(opts: SandboxExecOpts): Promise<SandboxExecResult> {
+      const startedAt = Date.now()
+      try {
+        const result = await sandbox.commands.run(opts.command, {
+          ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+          ...(opts.env !== undefined ? { envs: opts.env } : {}),
+          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        })
+        return {
+          exitCode: result.exitCode,
+          stdout: result.stdout ?? "",
+          stderr: result.stderr ?? "",
+          durationMs: Date.now() - startedAt,
+        }
+      } catch (err) {
+        if (err instanceof CommandExitError) {
+          return {
+            exitCode: err.exitCode,
+            stdout: err.stdout ?? "",
+            stderr: err.stderr ?? "",
+            durationMs: Date.now() - startedAt,
+          }
+        }
+        throw err
+      }
     },
   }
 }

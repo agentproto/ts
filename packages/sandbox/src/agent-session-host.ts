@@ -98,6 +98,16 @@ export interface BootedSandbox {
    */
   ports?: Record<number, string>
   /**
+   * Run ONE command inside the box and return its exit code + captured
+   * stdout/stderr — the seam behind the runtime's `sandbox_exec` MCP tool
+   * ("run my tests in the box without moving my whole session there").
+   * Optional: providers that cannot shell into the box omit this, and the
+   * tool reports a clear unsupported error. Non-zero exits are RESULTS here
+   * (the method resolves with their exitCode + streams), not throws — only
+   * transport/timeout/setup failures reject.
+   */
+  exec?(opts: SandboxExecOpts): Promise<SandboxExecResult>
+  /**
    * The paired host's identity, present ONLY for the `device` sandbox
    * provider (`device:<fingerprint-or-name>` targets — the provider can
    * never guarantee it for a generic vendor sandbox). `fingerprint` is the
@@ -113,6 +123,37 @@ export interface BootedSandbox {
    *  that can't pause (or don't support reconnect at all) omit it; callers
    *  that want to pause fall back to `stop()` when it's absent. */
   pause?(): Promise<void>
+}
+
+/** One-shot command-execution request, as passed to `BootedSandbox.exec` by
+ *  the runtime's `sandbox_exec` MCP tool. */
+export interface SandboxExecOpts {
+  /** Shell command to run inside the box, passed verbatim to the provider's
+   *  SDK (e.g. e2b's `sandbox.commands.run`, which shells it itself). */
+  command: string
+  /** Absolute path INSIDE the box to run the command from (e.g. e2b's
+   *  `/home/user`). Provider-specific path semantics — callers must pass a
+   *  path that exists in the box, never a HOST path. */
+  cwd?: string
+  /** Extra env vars for THIS command only (merged onto the box's own
+   *  sandbox-level env by the provider's SDK; not persisted). */
+  env?: Record<string, string>
+  /** Per-command timeout in ms — what the box kills the process after when
+   *  exceeded. Provider-dependent error shape on expiry (e.g. e2b throws a
+   *  TimeoutError); the caller treats any throw as a failed exec. */
+  timeoutMs?: number
+}
+
+/** What a successful `BootedSandbox.exec` reports. The caller truncates the
+ *  streams for display — the provider returns them whole. */
+export interface SandboxExecResult {
+  /** Process exit code (0 = success). Non-zero exits are a NORMAL result
+   *  here, not an error: callers decide what to do with them. */
+  exitCode: number
+  stdout: string
+  stderr: string
+  /** Wall-clock duration of the exec call, ms. */
+  durationMs: number
 }
 
 /**

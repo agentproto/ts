@@ -511,6 +511,16 @@ export {
   type SandboxConnectionDescriptor,
 } from "./sandbox-attach.js"
 export {
+  SANDBOX_EXEC_STREAM_MAX_CHARS,
+  execSandboxCommand,
+  registerSandboxExecTool,
+  type ExecSandboxCommandOptions,
+  type RegisterSandboxExecToolOptions,
+  type SandboxExecCommandChoices,
+  type SandboxExecOutput,
+  type SandboxExecResult,
+} from "./sandbox-exec.js"
+export {
   makeSandboxResolver,
   makeSandboxCredsStore,
 } from "./sandbox-adapters.js"
@@ -805,6 +815,7 @@ import {
   type SandboxProviderLister,
 } from "./sandbox-adapters.js"
 import { registerSandboxAttachTool } from "./sandbox-attach.js"
+import { registerSandboxExecTool } from "./sandbox-exec.js"
 import type { WorktreeProvisioner, WorktreeAutoReclaimer } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
@@ -3457,6 +3468,13 @@ export async function createGateway(
     // without tearing it down. Same shared resolver as above so it sees
     // the exact same provider set `list_sandbox_providers` reports ready.
     registerSandboxAttachTool(server, {
+      resolveSandboxProvider: resolveSandboxProviderResolved,
+    })
+    // `sandbox exec` — run ONE command inside a box and get exitCode +
+    // stdout/stderr back (ephemeral box when no sandboxId is given,
+    // attached-and-left-as-found when one is). Same shared resolver as
+    // attach above; the exec capability itself is optional per provider.
+    registerSandboxExecTool(server, {
       resolveSandboxProvider: resolveSandboxProviderResolved,
     })
     // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters
