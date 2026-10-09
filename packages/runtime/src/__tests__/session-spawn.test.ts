@@ -368,9 +368,9 @@ describe("spawnAgentSession", () => {
       adapter: string,
       extra: { role?: "executor" | "supervisor"; contextProfile?: string; defaults?: object },
     ) {
-      const startSession = vi.fn(async () => fakeAgentSession())
+      const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
       const { deps } = baseDeps({
-        resolveAgentAdapter: makeResolver(startSession),
+        resolveAgentAdapter: makeResolver(startSession as never),
         ...(extra.defaults ? { loadDefaultsConfig: async () => extra.defaults as never } : {}),
       })
       const result = await spawnAgentSession(deps, {
