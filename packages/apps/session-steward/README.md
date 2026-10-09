@@ -38,9 +38,13 @@ loader path can carry.
    `STEWARD: DONE …` / `STEWARD: NOT-DONE …`; a ~3 min bounded wait; the
    answer becomes a `declared` verdict. `keepAlive` only re-lights a session
    after a daemon restart, so it does not exempt one from the ask: a keepAlive
-   session idle ≥ `keepAliveAskAfterMinutes` (default 240) whose worktree is
-   merged or clean (nothing uncommitted, nothing ahead of base; no worktree
-   info counts as not clean) is asked too.
+   session whose worktree is merged or clean (nothing uncommitted, nothing
+   ahead of base; no worktree info counts as not clean) is asked too. Closing
+   is an active act: an on-demand run (`agentproto steward --ask-sessions`)
+   adds no idle delay beyond `--idle`. Only a scheduled run (`recurring: true`,
+   as the hourly routine sets) waits `keepAliveAskAfterMinutes` (default 1440,
+   24 h; 0 turns it off), so a session you meant to resume is not closed
+   overnight.
 6. `judgedApply` (only with `apply`) — confident `done`/`abandoned` close
    (resumable, with a recorded outcome); confident `blocked`/`needs-input`
    only flag. Everything else is left alone and reported.

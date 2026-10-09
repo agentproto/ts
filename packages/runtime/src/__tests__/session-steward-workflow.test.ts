@@ -539,8 +539,8 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
       return { out, calls, asked }
     }
 
-    it("asks a keepAlive session idle past the threshold with a clean worktree, and a declared DONE closes it", async () => {
-      const { calls, asked } = await runAsk([{ id: "ka_clean", idle: 300, extra: CLEAN }])
+    it("on demand, asks a clean keepAlive session with no idle delay, and a declared DONE closes it", async () => {
+      const { calls, asked } = await runAsk([{ id: "ka_clean", idle: 45, extra: CLEAN }])
       expect(asked).toEqual(["ka_clean"])
       const apply = calls.find(c => c.name === "session_wrapup_apply" && (c.inputs.sessionIds as string[])[0] === "ka_clean")!
       expect(apply.inputs).toMatchObject({ verdict: "done", judgedBy: "steward-ask:ka_clean" })
@@ -563,10 +563,27 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
       expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
     })
 
-    it("never asks a keepAlive session idle less than keepAliveAskAfterMinutes, and the threshold is an input", async () => {
-      const sessions = [{ id: "ka_recent", idle: 180, extra: CLEAN }]
-      expect((await runAsk(sessions)).asked).toEqual([])
-      expect((await runAsk(sessions, { keepAliveAskAfterMinutes: 120 })).asked).toEqual(["ka_recent"])
+    it("a recurring run waits keepAliveAskAfterMinutes (default 24 h) before asking a keepAlive session", async () => {
+      expect((await runAsk([{ id: "ka_night", idle: 600, extra: CLEAN }], { recurring: true })).asked).toEqual([])
+      expect((await runAsk([{ id: "ka_old", idle: 1500, extra: CLEAN }], { recurring: true })).asked).toEqual(["ka_old"])
+    })
+
+    it("a recurring run honors a configured keepAliveAskAfterMinutes, and 0 disables the keepAlive ask", async () => {
+      const sessions = [{ id: "ka_mid", idle: 180, extra: CLEAN }]
+      expect((await runAsk(sessions, { recurring: true, keepAliveAskAfterMinutes: 120 })).asked).toEqual(["ka_mid"])
+      expect((await runAsk(sessions, { recurring: true, keepAliveAskAfterMinutes: 240 })).asked).toEqual([])
+      expect((await runAsk([{ id: "ka_ancient", idle: 99999, extra: CLEAN }], { recurring: true, keepAliveAskAfterMinutes: 0 })).asked).toEqual([])
+    })
+
+    it("an on-demand run ignores keepAliveAskAfterMinutes entirely", async () => {
+      const sessions = [{ id: "ka_recent", idle: 40, extra: CLEAN }]
+      expect((await runAsk(sessions, { keepAliveAskAfterMinutes: 0 })).asked).toEqual(["ka_recent"])
+      expect((await runAsk(sessions, { keepAliveAskAfterMinutes: 5000 })).asked).toEqual(["ka_recent"])
+    })
+
+    it("the worktree guard applies to recurring runs too", async () => {
+      const dirty = { worktree: { branch: "wt/x", dirty: true, ahead: 0, pr: { state: "local-only" } } }
+      expect((await runAsk([{ id: "ka_dirty", idle: 5000, extra: dirty }], { recurring: true })).asked).toEqual([])
     })
 
     it("does not widen a plain session's ask: a non-keepAlive session is asked regardless of idle or worktree", async () => {
@@ -616,7 +633,11 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
         settings,
       )
       expect(queue).toEqual([{ sessionId: "ok" }])
-      expect(settings.keepAliveAskAfterMinutes).toBe(240)
+      expect(settings.recurring).toBe(false)
+      expect(settings.keepAliveAskAfterMinutes).toBe(1440)
+      const recurring = stewardEntry.resolveSettings({ askSessions: true, recurring: true })
+      expect(stewardEntry.buildAskQueue([row("ok", { idleMinutes: 600 })], recurring)).toEqual([])
+      expect(stewardEntry.buildAskQueue([row("ok", { idleMinutes: 1440 })], recurring)).toEqual([{ sessionId: "ok" }])
     })
   })
 

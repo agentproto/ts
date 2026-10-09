@@ -21,6 +21,9 @@ target:
   inputs:
     apply: true
     askSessions: false
+    # Scheduled run: if askSessions is ever turned on here, a keepAlive session
+    # is asked only after keepAliveAskAfterMinutes idle (default 1440, 0 = never).
+    recurring: true
     # Origin policy (the committed default): never close a human's session.
     # `chat-starter`/`vscode` (and any root with no origin and no parent) are
     # FLAG-ONLY; `cron:*` jobs, `gate`, `workflow` and `review` sessions, and executors (a session with
