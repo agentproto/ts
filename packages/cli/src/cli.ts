@@ -36,6 +36,7 @@ import { runHost } from "./commands/host.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
 import { runSentinel } from "./commands/sentinel.js"
+import { runHook } from "./commands/hook.js"
 import { runRemote } from "./commands/remote.js"
 import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
@@ -130,6 +131,8 @@ Usage:
   agentproto sentinel  list   [--json]
   agentproto sentinel  rm     <id> [--json]
   agentproto sentinel  status <id> [--json]
+  agentproto hook      inbox [--session <id>] [--event <name>] [--max <n>]
+                                           Claude Code hook: inject unread inbox items as untrusted context
   agentproto remote    enable [--qr] [--target-port <n>] [--json]
                                            publish this gateway (or another local port) to the internet
   agentproto remote    disable | status [--json]
@@ -267,6 +270,7 @@ const VERBS = new Set([
   "brain",
   "tunnel",
   "sentinel",
+  "hook",
   "remote",
   "presets",
   "provider-preset",
@@ -388,6 +392,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runTunnel(rest)
     case "sentinel":
       return runSentinel(rest)
+    case "hook":
+      return runHook(rest)
     case "remote":
       return runRemote(rest)
     case "presets":

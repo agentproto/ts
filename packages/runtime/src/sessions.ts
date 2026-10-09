@@ -780,7 +780,13 @@ export const APP_ID_ENV = "AGENTPROTO_APP_ID"
  *  own pointer block, never anything caller- or env-inherited. */
 export const ADDITIONAL_READ_PATHS_ENV = "AGENTPROTO_ADDITIONAL_READ_PATHS"
 
-export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
+/** `external` — an inbox-only row for a session the daemon did NOT spawn (a
+ *  Claude Desktop Code-tab / plain `claude` CLI session connected over MCP).
+ *  It has no process, PTY or adapter: it is never spawned, restarted, reaped
+ *  or prompted, and exists only so the session can own an AIP-46 inbox.
+ *  Liveness is a window over `lastSeenAt` — see
+ *  {@link DEFAULT_EXTERNAL_SESSION_LIVENESS_MS}. */
+export type SessionKind = "terminal" | "agent-cli" | "command" | "browser" | "external"
 export type SessionStatus =
   | "starting"
   | "running"
@@ -1170,6 +1176,10 @@ export interface PendingPromptSweepSummary {
 /** Daemon default for how long a prompt may sit queued before it is
  *  reported stuck (`defaults.messaging.pendingPromptStaleMinutes`). */
 export const DEFAULT_PENDING_PROMPT_STALE_MS = 5 * 60_000
+
+/** Default liveness window for an `external` session (one the daemon did not
+ *  spawn): alive while its last MCP request / inbox poll is this recent. */
+export const DEFAULT_EXTERNAL_SESSION_LIVENESS_MS = 30 * 60_000
 
 /** Project a prompt queue into age-stamped {@link PendingPromptView}s. */
 export function pendingPromptViews(
@@ -2326,6 +2336,13 @@ export interface SessionDescriptor {
   browserBaseUrl?: string
   /** Execution location — "local" (default) or "cloud". */
   browserLocation?: "local" | "cloud"
+  /** `kind: "external"` only: the connecting client's `host` query param
+   *  (e.g. `claude-desktop`). */
+  externalHost?: string
+  /** `kind: "external"` only: ISO instant of the session's last MCP request
+   *  (or inbox poll). The row is alive while `now - lastSeenAt` is inside the
+   *  registry's liveness window; `startedAt` is the first sighting. */
+  lastSeenAt?: string
   /** True when this agent-cli session is running inside a sandbox (`agent_start.sandbox`)
    *  rather than as a local subprocess — there's no local PID to check, so
    *  `processAlive` never applies (it's already absent whenever `pid` is null). */
@@ -3727,6 +3744,15 @@ export interface SessionsRegistry {
    *  mints a fresh session id. The `stop` callback is invoked by
    *  `kill()` best-effort. */
   registerBrowser(input: RegisterBrowserInput): SessionDescriptor
+  /** Record a sighting of a session the daemon did not spawn (a Claude
+   *  Desktop / `claude` CLI session calling `/mcp` with `?callerSessionId=`).
+   *  - unknown `id` + a `host` → registers an `external` row (no process; it
+   *    only owns an inbox) and returns it;
+   *  - an existing `external` row → refreshes `lastSeenAt` (reviving it when
+   *    it expired, unless it was deliberately ended) and returns it;
+   *  - any other existing row, or an unknown `id` without `host` → no-op,
+   *    `undefined` (today's behaviour is unchanged). */
+  touchExternal(input: { id: string; host?: string }): SessionDescriptor | undefined
   /** Send a follow-up turn to a live agent session and AWAIT it. Throws
    *  when the session is missing, not an agent-cli kind, dead (exited/
    *  killed/error and unresumable — `SessionNotAliveError`), or busy
@@ -5005,6 +5031,11 @@ export function computePinnedOrder(
 }
 
 export function createSessionsRegistry(opts?: {
+  /** Liveness window for `external` sessions, ms. Default
+   *  {@link DEFAULT_EXTERNAL_SESSION_LIVENESS_MS}. */
+  externalSessionLivenessMs?: number
+  /** Clock override (ms since epoch) for external-session liveness — tests. */
+  externalNow?: () => number
   /** How long a queued prompt may wait before it is reported stuck
    *  (`pendingPrompts[].stale`, sender notice). Default
    *  {@link DEFAULT_PENDING_PROMPT_STALE_MS}; `sweepPendingPrompts({staleMs})`
@@ -5156,6 +5187,23 @@ export function createSessionsRegistry(opts?: {
   const resolveAgentAdapter = opts?.resolveAgentAdapter
   const runWorktreeAutoReclaim = opts?.runWorktreeAutoReclaim
   const sessions = new Map<string, SessionRuntime>()
+  const externalLivenessMs =
+    typeof opts?.externalSessionLivenessMs === "number" && opts.externalSessionLivenessMs > 0
+      ? opts.externalSessionLivenessMs
+      : DEFAULT_EXTERNAL_SESSION_LIVENESS_MS
+  const externalNowMs = opts?.externalNow ?? Date.now
+  /** Lazily expire an `external` row whose last sighting fell out of the
+   *  liveness window: there is no process whose exit could flip it, so every
+   *  read/deliver path calls this first. Terminal status carries no
+   *  `endedReason` (nothing killed it) — a later sighting revives it. */
+  const expireExternalIfStale = (rt: SessionRuntime): void => {
+    const desc = rt.desc
+    if (desc.kind !== "external" || (desc.status !== "running" && desc.status !== "starting")) return
+    const seen = Date.parse(desc.lastSeenAt ?? desc.startedAt)
+    if (Number.isFinite(seen) && externalNowMs() - seen <= externalLivenessMs) return
+    desc.status = "exited"
+    desc.endedAt = Number.isFinite(seen) ? new Date(seen).toISOString() : new Date(externalNowMs()).toISOString()
+  }
   /** Unique per registry instance (= per daemon boot) — see
    *  `SessionsRegistry.bootId`. Minted before the boot reload so it can stamp
    *  `interruptedAtBoot`. */
@@ -10327,6 +10375,50 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       return desc
     },
+    touchExternal(input) {
+      const nowIso = new Date(externalNowMs()).toISOString()
+      const existing = sessions.get(input.id)
+      if (existing) {
+        const desc = existing.desc
+        if (desc.kind !== "external") return undefined
+        // A deliberately ended row (operator kill / retire) stays ended.
+        const deliberate = desc.endedReason !== undefined || isRetired(desc)
+        if (desc.status !== "running" && desc.status !== "starting" && !deliberate) {
+          desc.status = "running"
+          delete desc.endedAt
+        }
+        desc.lastSeenAt = nowIso
+        if (input.host && !desc.externalHost) desc.externalHost = input.host
+        schedulePersist()
+        return desc
+      }
+      if (!input.host) return undefined
+      const desc: SessionDescriptor = {
+        id: input.id,
+        kind: "external",
+        workspaceSlug: "",
+        command: `${input.host} (external session)`,
+        pid: null,
+        status: "running",
+        startedAt: nowIso,
+        lastSeenAt: nowIso,
+        externalHost: input.host,
+      }
+      const rt: SessionRuntime = {
+        desc,
+        recentLines: [],
+        recentBytes: [],
+        recentBytesSize: 0,
+        emitter: new EventEmitter(),
+        busy: false,
+        textBuf: "",
+        thoughtBuf: "",
+      }
+      rt.emitter.setMaxListeners(50)
+      sessions.set(input.id, rt)
+      schedulePersist()
+      return desc
+    },
     async sendPrompt(id, message, opts) {
       const rtPre = sessions.get(id)
       if (rtPre) assertCompactionAllowed(rtPre, message, opts?.source, "sendPrompt")
@@ -10493,6 +10585,7 @@ export function createSessionsRegistry(opts?: {
     async sendMessage(msg, opts) {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
+      expireExternalIfStale(rt)
       if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
         if (isRetired(rt.desc)) {
           throw new SessionRetiredError(msg.to, rt.desc.status, "sendMessage", rt.desc.continuedTo)
@@ -10512,7 +10605,9 @@ export function createSessionsRegistry(opts?: {
         waiter.resolve([stamped!])
         return { messageId: msg.id, delivered: { via: "wait" }, queued: false, urgencyApplied: msg.urgency }
       }
-      if (msg.urgency === "fyi") {
+      // An external session has no process to start a turn on: every tier
+      // lands in its inbox (the hook / `inbox_list` pulls it from there).
+      if (msg.urgency === "fyi" || rt.desc.kind === "external") {
         const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
         recordSent(parked)
         addToInbox(rt, parked)
@@ -11011,6 +11106,7 @@ export function createSessionsRegistry(opts?: {
         .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
         .map(rt => {
           const desc = rt.desc
+          expireExternalIfStale(rt)
           stampReadLiveness(desc)
           stampInterrupted(desc)
           stampCurrentStatus(rt)
@@ -11049,6 +11145,8 @@ export function createSessionsRegistry(opts?: {
       }
       const all = Array.from(sessions.values())
         .filter(rt => includeArchived || !rt.desc.archived)
+        // Inbox-only rows are not agents: they never show up in a Sessions lane.
+        .filter(rt => rt.desc.kind !== "external")
         .filter(rt => {
           if (!lane) return true
           // Shells and raw commands belong to the Activity panel, not either
@@ -11088,6 +11186,7 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       const desc = rt?.desc
       if (rt && desc) {
+        expireExternalIfStale(rt)
         stampReadLiveness(desc)
         stampInterrupted(desc)
         stampCurrentStatus(rt)
@@ -12130,7 +12229,12 @@ function loadHistorySnapshot(
   for (const desc of sorted) {
     if (sessions.has(desc.id)) continue // collision with a live entry — keep live
     const wasAlive = desc.status === "running" || desc.status === "starting"
-    const reclassified: SessionDescriptor = wasAlive
+    // An external row has no process to have died with the daemon: it simply
+    // expires (lazily) like any other, and a later sighting revives it.
+    const externalAlive = wasAlive && desc.kind === "external"
+    const reclassified: SessionDescriptor = externalAlive
+      ? { ...desc, status: "exited", endedAt: desc.endedAt ?? desc.lastSeenAt ?? now }
+      : wasAlive
       ? {
           ...desc,
           status: "killed",
@@ -12210,7 +12314,7 @@ function loadHistorySnapshot(
       sourceBucketOf?.set(desc.id, bucketSlug)
       if (heldIdsByBucket) markHeldId(heldIdsByBucket, bucketSlug, desc.id)
     }
-    if (wasAlive) {
+    if (wasAlive && !externalAlive) {
       sessionEvents?.emit({
         type: "session:exited",
         sessionId: reclassified.id,

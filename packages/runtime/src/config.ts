@@ -143,6 +143,12 @@ export interface DaemonConfig {
    *  daemon.turnStallAfterMs <ms>`. Surfaced in `daemon_health` /
    *  `GET /health`. */
   turnStallAfterMs?: number
+  /** How long an `external` session (a Claude Desktop / `claude` CLI session
+   *  the daemon did not spawn, registered from `?callerSessionId=&host=` on
+   *  `/mcp`) stays alive after its last MCP request / inbox poll. Default
+   *  30 min; non-positive falls back to the default. Set via `agentproto
+   *  config set daemon.externalSessionLivenessMs <ms>`. */
+  externalSessionLivenessMs?: number
 }
 
 export interface TitlerConfig {
