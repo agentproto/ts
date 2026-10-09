@@ -49,6 +49,11 @@ import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
 } from "./claude-code-oauth-source.js"
+import {
+  OPENCODE_CONSOLE_TOKEN_ENV,
+  parseOpencodeConsoleSource,
+  resolveOpencodeConsoleOrg,
+} from "./opencode-console-source.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
@@ -635,7 +640,29 @@ export async function resolveAccessProfileAuth(input: {
   // opencode) needs it to pick the anthropic vs. openai surface.
   const authSubSurface = subscriptionSurfaceFor(authDescriptor.authSubscription, profile.endpoint)
   const externalSub = authSubSurface?.external === true
-  if (authMode === "subscription" && externalSub) {
+  // opencode console org: an api-key-method profile pinned to one org via
+  // `source: "opencode-console:<orgId>"`. The bearer + the org's provider
+  // block are resolved fresh from opencode.db + the console API every spawn;
+  // nothing is stored on the profile.
+  const consoleOrg = authMode === "api-key" ? parseOpencodeConsoleSource(profile.source) : undefined
+  let consoleExtraEnv: Record<string, string> | undefined
+  if (consoleOrg) {
+    try {
+      const resolved = await resolveOpencodeConsoleOrg(consoleOrg.orgId, profile.id)
+      apiKeyCredential = resolved.credential
+      consoleExtraEnv = resolved.extraEnv
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          details: { adapter, profile: profile.id },
+        }
+      }
+      throw err
+    }
+  } else if (authMode === "subscription" && externalSub) {
     try {
       // The ADAPTER's recipe, never `profile.source`: an external surface
       // verifies the adapter CLI's OWN login file — the profile's source
@@ -715,6 +742,13 @@ export async function resolveAccessProfileAuth(input: {
       ...(subscriptionCredentialSource !== undefined ? { subscriptionCredentialSource } : {}),
       ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
       ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
+      ...(consoleExtraEnv
+        ? {
+            credentialEnvOverride: OPENCODE_CONSOLE_TOKEN_ENV,
+            apiKeyCredentialSource: "opencode-console" as const,
+            extraEnv: consoleExtraEnv,
+          }
+        : {}),
     })
     if (result) {
       authSpec = result.spec

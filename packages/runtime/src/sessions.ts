@@ -155,7 +155,7 @@ import {
   type SessionOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
-import { DELIBERATE_END_REASONS, isProviderLimitError, type SessionEndReason } from "./session-end-reason.js"
+import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
 import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
@@ -885,6 +885,7 @@ export interface SessionAuthEcho {
     | "providers-store"
     | "claude-code-oauth"
     | "cli-local-login"
+    | "opencode-console"
     | "none"
   setEnv?: string
 }
@@ -6630,12 +6631,15 @@ export function createSessionsRegistry(opts?: {
         // "blocked on command · <toolCallId>" while the agent worked on.
         releaseBlockedOn(rt.desc)
         rt.activeToolCalls?.clear()
-        if (evt.error?.message) rt.lastErrorMessage = evt.error.message
+        const errorMessage = evt.error?.message
+          ? tagLimitErrorWithWallet(evt.error.message, rt.desc.accessProfile)
+          : undefined
+        if (errorMessage) rt.lastErrorMessage = errorMessage
         const code =
           typeof evt.error?.code === "number" ? ` (code ${evt.error.code})` : ""
         appendLine(
           rt,
-          `\x1b[31m[error]${code} ${evt.error?.message ?? "unknown"}\x1b[0m`,
+          `\x1b[31m[error]${code} ${errorMessage ?? "unknown"}\x1b[0m`,
           "stderr"
         )
         // Project the child's stderr tail when define-agent-cli
@@ -8501,6 +8505,10 @@ export function createSessionsRegistry(opts?: {
         // only point downstream of the driver where the original
         // shape (tool arguments, plan entries, ...) still exists.
         if (evt.kind === "usage_update") evt = normalizeUsageFrame(rt, evt)
+        if (evt.kind === "error" && evt.error?.message) {
+          const tagged = tagLimitErrorWithWallet(evt.error.message, rt.desc.accessProfile)
+          if (tagged !== evt.error.message) evt = { ...evt, error: { ...evt.error, message: tagged } }
+        }
         transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
         if (switchCandidate && !switchLearned && isModelSwitchAcknowledgement(evt)) {
@@ -8579,7 +8587,10 @@ export function createSessionsRegistry(opts?: {
         abnormalReason = "error"
         rt.desc.status = "error"
         rt.desc.endedAt = new Date().toISOString()
-        const message = err instanceof Error ? err.message : String(err)
+        const message = tagLimitErrorWithWallet(
+          err instanceof Error ? err.message : String(err),
+          rt.desc.accessProfile,
+        )
         appendLine(rt, `[turn error] ${message}`, "stderr")
         // A thrown provider/subscription usage-cap error (or one reported via
         // an `error` stream event just before the generator gave up) gets its

@@ -1432,7 +1432,13 @@ interface OpenCodePartRow {
   time_created: number
 }
 
-function openCodeDbPath(): string {
+/** The session's isolated opencode data dir (`credentialDataHome`) when it
+ *  exists, else the operator's global one. */
+function openCodeDbPath(configDir?: string): string {
+  if (configDir) {
+    const isolated = join(configDir, "auth-data", "opencode", "opencode.db")
+    if (existsSync(isolated)) return isolated
+  }
   const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")
   return join(dataHome, "opencode", "opencode.db")
 }
@@ -1450,8 +1456,11 @@ function openCodeModelLabel(raw: string | undefined): string | undefined {
   }
 }
 
-export async function exportOpenCodeSession(conversationId: string): Promise<ExportedSession> {
-  const dbPath = openCodeDbPath()
+export async function exportOpenCodeSession(
+  conversationId: string,
+  configDir?: string,
+): Promise<ExportedSession> {
+  const dbPath = openCodeDbPath(configDir)
   const db = await openReadonlySqlite(dbPath, "opencode")
   try {
     const session = withRetryOnBusy(
@@ -1571,8 +1580,9 @@ export async function discoverOpenCodeSessions(
   cwd: string,
   since?: string,
   expectedId?: string,
+  configDir?: string,
 ): Promise<ConversationCandidate[]> {
-  const dbPath = openCodeDbPath()
+  const dbPath = openCodeDbPath(configDir)
   let db: HermesDb
   try {
     db = await openReadonlySqlite(dbPath, "opencode")
@@ -2030,7 +2040,7 @@ const EXPORT_STRATEGIES: Record<string, ExportStrategy> = {
     exportSession: (id: string, _cwd?: string, configDir?: string) => exportCodexSession(id, configDir),
   },
   opencode: {
-    exportSession: (id: string) => exportOpenCodeSession(id),
+    exportSession: (id: string, _cwd?: string, configDir?: string) => exportOpenCodeSession(id, configDir),
   },
   "mastracode-inprocess": {
     exportSession: (id: string) => exportMastracodeInprocessSession(id),

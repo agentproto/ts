@@ -10,7 +10,7 @@ import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
-import { prepareIsolatedStateHome } from "./state-home.js"
+import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
@@ -201,6 +201,7 @@ export function createAgentCliRuntime(
       // (`explicit`). An unconfigured `when-configured` adapter (codex/hermes/
       // claude-sdk with no auth) does NOT engage → runs ambient, unchanged.
       const authSpec = opts?.auth
+      let credentialDataDir: string | undefined
       // A gateway mode (moonshot/openrouter) or an explicit `auth_token`
       // option already injected ANTHROPIC_AUTH_TOKEN into composed.env for
       // Bearer auth against a non-Anthropic endpoint. Billing-auth
@@ -305,6 +306,15 @@ export function createAgentCliRuntime(
           throw new RuntimeConfigError("missing_auth_credential", "opts.auth.credential", message)
         }
         env[authSpec.setEnv] = authSpec.credential
+        if (authSpec.extraEnv) Object.assign(env, authSpec.extraEnv)
+        // A CLI whose own stored login (opencode's console account in its
+        // data dir) overrides an env credential gets a login-less data dir
+        // for exactly this credential-injecting spawn, so the credential it
+        // was handed is the one that bills.
+        if (definition.credentialDataHome) {
+          credentialDataDir = isolatedCredentialDataHome(opts?.configDir)
+          env[definition.credentialDataHome.env] = credentialDataDir
+        }
         }
       }
 
@@ -476,6 +486,7 @@ export function createAgentCliRuntime(
       // start once the OS sandbox denies `$HOME` — give a confined spawn its
       // own home instead of opening the operator's (see `state-home.ts`).
       const extraWritePaths = claudeConfigDir ? [claudeConfigDir] : []
+      if (credentialDataDir) extraWritePaths.push(credentialDataDir)
       if (
         definition.stateHome &&
         definition.protocol !== "proprietary" &&

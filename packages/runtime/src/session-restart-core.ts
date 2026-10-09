@@ -71,6 +71,7 @@ import {
 import {
   resolveSpawnDefaults,
   resolveAuthSpec,
+  SubscriptionSourceError,
   modelIdPrefixProvider,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
@@ -86,6 +87,11 @@ import {
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import { spawnEligibilityManifest } from "./eligibility-manifest.js"
+import {
+  OPENCODE_CONSOLE_TOKEN_ENV,
+  parseOpencodeConsoleSource,
+  resolveOpencodeConsoleOrg,
+} from "./opencode-console-source.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
@@ -143,7 +149,7 @@ export type RestartOverrides = Partial<SessionConfig> & {
  */
 export type AccessProfileResolver = (
   profileRef: string,
-) => Promise<{ profile: AuthProfile; credential?: string } | undefined>
+) => Promise<{ profile: AuthProfile; credential?: string; consoleExtraEnv?: Record<string, string> } | undefined>
 
 /**
  * Thrown when a restart override is invalid — an unknown access profile, or a
@@ -169,9 +175,21 @@ export class RestartOverrideError extends Error {
  */
 export async function resolveAccessProfileFromStore(
   profileRef: string,
-): Promise<{ profile: AuthProfile; credential?: string } | undefined> {
+): Promise<
+  { profile: AuthProfile; credential?: string; consoleExtraEnv?: Record<string, string> } | undefined
+> {
   const profile = await getAuthProfile(profileRef)
   if (!profile) return undefined
+  const consoleOrg = parseOpencodeConsoleSource(profile.source)
+  if (consoleOrg) {
+    try {
+      const resolved = await resolveOpencodeConsoleOrg(consoleOrg.orgId, profile.id)
+      return { profile, credential: resolved.credential, consoleExtraEnv: resolved.extraEnv }
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) throw new RestartOverrideError(err.message)
+      throw err
+    }
+  }
   if (profile.credentialRef === undefined) {
     // A source-backed profile (`profile.source`) has no stored secret to read
     // here. Self-refreshing restart is out of scope today — only spawn
@@ -185,6 +203,17 @@ export async function resolveAccessProfileFromStore(
   }
   const stored = await new KeychainStore().read({ path: profile.credentialRef })
   return { profile, ...(stored?.value !== undefined ? { credential: stored.value } : {}) }
+}
+
+/** resolveAuthSpec inputs for an opencode console org profile (token under its own env var + the org's provider block). */
+function consoleOrgAuthInputs(extraEnv: Record<string, string> | undefined) {
+  return extraEnv
+    ? {
+        credentialEnvOverride: OPENCODE_CONSOLE_TOKEN_ENV,
+        apiKeyCredentialSource: "opencode-console" as const,
+        extraEnv,
+      }
+    : {}
 }
 
 /** The auth `method` facet ↔ the billing `mode` the resolver speaks:
@@ -282,7 +311,9 @@ export async function resolveResumeAuth(
   // nothing resolves there.
   if (opts.accessProfileRef !== undefined && resolved.authDescriptor) {
     const resolveProfile = opts.resolveAccessProfile ?? resolveAccessProfileFromStore
-    let found: { profile: AuthProfile; credential?: string } | undefined
+    let found:
+      | { profile: AuthProfile; credential?: string; consoleExtraEnv?: Record<string, string> }
+      | undefined
     try {
       found = await resolveProfile(opts.accessProfileRef)
     } catch (err) {
@@ -293,7 +324,7 @@ export async function resolveResumeAuth(
       found = undefined
     }
     if (found) {
-      const { profile, credential } = found
+      const { profile, credential, consoleExtraEnv } = found
       const projected = spawnEligibilityManifest(
         adapterSlug,
         resolved.authDescriptor,
@@ -333,6 +364,7 @@ export async function resolveResumeAuth(
         ...(mode === "api-key" && credential !== undefined
           ? { apiKeyConfigCredential: credential }
           : {}),
+        ...consoleOrgAuthInputs(consoleExtraEnv),
       })
       return { authSpec: result?.spec, authEcho: result?.echo }
     }
@@ -800,7 +832,7 @@ export async function restartAgentSession(
         `restart access override: no auth profile "${accessOverrideRef}" found.`,
       )
     }
-    const { profile, credential } = found
+    const { profile, credential, consoleExtraEnv } = found
     if (!resolved) {
       throw new RestartOverrideError(
         `restart access override: adapter "${adapterSlug}" is not installed on the host — ` +
@@ -858,6 +890,7 @@ export async function restartAgentSession(
       ...(mode === "api-key" && credential !== undefined
         ? { apiKeyConfigCredential: credential }
         : {}),
+      ...consoleOrgAuthInputs(consoleExtraEnv),
     })
     if (result) {
       authSpec = result.spec

@@ -126,6 +126,25 @@ describe("validateCreateInput", () => {
       }),
     ).toThrow(/source is only supported for oauth-bearer/)
   })
+
+  it("accepts an opencode-console source on an api-key profile, with no credential", () => {
+    const v = validateCreateInput({
+      id: "opencode-ws01",
+      endpoint: "opencode-go",
+      method: "api-key",
+      source: "opencode-console:org_01ABC",
+    })
+    expect(v.source).toBe("opencode-console:org_01ABC")
+    expect(v.credential).toBeUndefined()
+  })
+
+  it("rejects an opencode-console source with no org id, or combined with a credential", () => {
+    const base = { id: "x", endpoint: "opencode-go", method: "api-key" as const }
+    expect(() => validateCreateInput({ ...base, source: "opencode-console:" })).toThrow(/only supported/)
+    expect(() =>
+      validateCreateInput({ ...base, source: "opencode-console:org_1", credential: "k" }),
+    ).toThrow(/not both/)
+  })
 })
 
 describe("deriveCredentialRef", () => {

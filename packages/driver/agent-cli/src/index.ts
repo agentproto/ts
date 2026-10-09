@@ -83,6 +83,7 @@ export {
   agentCliSupportsHostContextIsolation,
   hostContextExcludes,
 } from "./host-context.js"
+export { CREDENTIAL_DATA_SUBDIR } from "./state-home.js"
 export {
   agentCliFrontmatterSchema,
   runtimeConfigSchema,

@@ -499,6 +499,7 @@ export const agentCliFrontmatterSchema = z
       share: z.array(z.string().regex(/^[^/]+$/)).optional(),
       seed: z.record(z.string().regex(/^[^/]+$/).refine(n => n !== "." && n !== "..", { message: "seed names a file of the home" }), z.string()).optional(),
     }).strict().optional(),
+    credentialDataHome: z.object({ env: z.string().regex(/^[A-Z][A-Z0-9_]*$/) }).strict().optional(),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),
     acp: z.string().optional(),

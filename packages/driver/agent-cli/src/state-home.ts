@@ -79,3 +79,20 @@ export function prepareIsolatedStateHome(
   }
   return { dir, writePaths }
 }
+
+/** Subdir of the session `configDir` holding a login-less data home. */
+export const CREDENTIAL_DATA_SUBDIR = "auth-data"
+
+/**
+ * The empty data home a credential-injecting spawn runs in (see
+ * `AgentCliDefinition.credentialDataHome`): `<configDir>/auth-data` when the
+ * host keys a per-session dir (so native resume finds its rows after a
+ * respawn), else a throwaway temp dir.
+ */
+export function isolatedCredentialDataHome(configDir?: string): string {
+  const dir = configDir
+    ? join(configDir, CREDENTIAL_DATA_SUBDIR)
+    : mkdtempSync(join(tmpdir(), "agentproto-data-"))
+  mkdirSync(dir, { recursive: true })
+  return dir
+}

@@ -687,3 +687,29 @@ describe("provider-limit classification", () => {
     })
   })
 })
+
+describe("usage-limit wallet naming", () => {
+  it("classifies opencode's `Go usage limit exceeded` as a provider limit", async () => {
+    const { isProviderLimitError } = await import("../session-end-reason.js")
+    expect(isProviderLimitError("AI_APICallError: Go usage limit exceeded")).toBe(true)
+    expect(isProviderLimitError("rate limit reached for tool")).toBe(false)
+  })
+
+  it("tags a usage-limit error with the profile (and label) that was billed, once", async () => {
+    const { tagLimitErrorWithWallet } = await import("../session-end-reason.js")
+    const tagged = tagLimitErrorWithWallet("Go usage limit exceeded", {
+      profileRef: "opencode-ws01",
+      label: "opencode console: Ws01",
+    })
+    expect(tagged).toBe(
+      'Go usage limit exceeded [wallet: profile "opencode-ws01" — opencode console: Ws01]',
+    )
+    expect(tagLimitErrorWithWallet(tagged, { profileRef: "other" })).toBe(tagged)
+  })
+
+  it("leaves other errors and profile-less sessions untouched", async () => {
+    const { tagLimitErrorWithWallet } = await import("../session-end-reason.js")
+    expect(tagLimitErrorWithWallet("boom", { profileRef: "p" })).toBe("boom")
+    expect(tagLimitErrorWithWallet("Go usage limit exceeded", undefined)).toBe("Go usage limit exceeded")
+  })
+})

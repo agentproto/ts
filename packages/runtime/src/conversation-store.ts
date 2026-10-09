@@ -392,12 +392,16 @@ async function readCodex(conversationId: string): Promise<ExportedSession> {
 
 async function discoverOpenCode(input: DiscoverInput): Promise<ConversationCandidate[]> {
   const { discoverOpenCodeSessions } = await import("./transcript-export.js")
-  return discoverOpenCodeSessions(input.cwd, input.since, input.expectedId)
+  return discoverOpenCodeSessions(input.cwd, input.since, input.expectedId, input.configDir)
 }
 
-async function readOpenCode(conversationId: string): Promise<ExportedSession> {
+async function readOpenCode(
+  conversationId: string,
+  _cwd?: string,
+  configDir?: string,
+): Promise<ExportedSession> {
   const { exportOpenCodeSession } = await import("./transcript-export.js")
-  return exportOpenCodeSession(conversationId)
+  return exportOpenCodeSession(conversationId, configDir)
 }
 
 // ── mastracode-inprocess store ────────────────────────────────────────

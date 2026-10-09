@@ -799,6 +799,16 @@ export interface AgentCliDefinition {
    * the real one. Unconfined spawns are untouched. See `state-home.ts`.
    */
   stateHome?: AgentCliStateHome
+  /**
+   * For a CLI whose own stored login beats an injected env credential
+   * (opencode: the console account in `$XDG_DATA_HOME/opencode/opencode.db`
+   * re-points its providers at the ACTIVE ORG on every start, ignoring
+   * `OPENCODE_API_KEY`). On a spawn that injects a billing credential, `env`
+   * is pointed at an empty per-session data home (`<configDir>/auth-data`) so
+   * the stored login cannot override the credential the spawn was handed.
+   * Never applied to ambient spawns or file-based (external) subscriptions.
+   */
+  credentialDataHome?: { env: string }
   runner?: string | Record<string, unknown>
   protocol: AgentCliProtocol
   /** REQUIRED when protocol=acp. Workspace-relative ref to AIP-44 ACP.md. */
@@ -1409,6 +1419,10 @@ export interface ResolvedAuthSpec {
    *  subscription specs. The driver reads only its presence, not its value
    *  (the value reaches the child via the base_url option). */
   baseUrl?: string
+  /** Extra env set verbatim (after {@link setEnv}) when a credential is
+   *  injected — a source-backed profile that needs more than one variable
+   *  (opencode console org: the token AND the org's provider config). */
+  extraEnv?: Record<string, string>
 }
 
 /**

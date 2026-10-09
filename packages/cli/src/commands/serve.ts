@@ -530,7 +530,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
-        ...(slug === "opencode" ? { readUsage: (sid: string) => readOpenCodeUsage(sid) } : {}),
+        ...(slug === "opencode" ? { readUsage: (sid: string, ctx?: { cwd?: string; configDir?: string }) => readOpenCodeUsage(sid, ctx) } : {}),
         // claude-agent-acp's usage_update carries no input/output/cache
         // split — Claude Code's own transcript JSONL does.
         ...(slug === "claude-code"
