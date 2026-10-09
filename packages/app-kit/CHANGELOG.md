@@ -1,5 +1,16 @@
 # @agentproto/app-kit
 
+## 1.7.1
+
+### Patch Changes
+
+- 68c5ce6: Document ui.renders and terminal session list pagination.
+- Updated dependencies [ab367ec]
+  - @agentproto/tool@0.5.1
+  - @agentproto/driver-cli@0.2.4
+  - @agentproto/driver@0.3.2
+  - @agentproto/driver-http@0.1.12
+
 ## 1.7.0
 
 ### Minor Changes

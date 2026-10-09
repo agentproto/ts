@@ -1,5 +1,43 @@
 # @agentproto/runtime
 
+## 5.15.0
+
+### Minor Changes
+
+- ab367ec: Narrow `session_list` server-side instead of reading hundreds of sessions. New optional filters, shared by the MCP tool, `GET /sessions` and `agentproto sessions [list]`: `q` (substring over id/name/label/title/cwd), `excludeNoise` (drops `review:*`/`wf:*` sessions and ended command / plain-terminal runs), `excludeLabelPrefix`, `excludeLabels`, `excludeKinds`, `rootOnly`, `parentSessionId`, `updatedSince` and `startedSince` (ISO or relative, e.g. `24h`). Rows now come back newest-activity first and the response carries `total` for the filtered set. `fields` is now honoured without `limit`, and `session_list` errors are returned as tool errors. Without any filter the response only gains `total`. `paginated` in `@agentproto/tool` gains an `includeTotal` option; the long-form help moves to `tool_help {name:"session_list"}`.
+
+### Patch Changes
+
+- 66a2708: Sync generated catalog data from the pinned provider sources.
+- 60a1fd2: Session steward: keepAlive sessions idle past `keepAliveAskAfterMinutes` with a merged or clean worktree can now be asked and closed on a declared DONE. Runtime: added tests covering this.
+- 1049264: Name the session in turn activity titles instead of its raw id. The activity feed now reads `Turn 3 completed on "Add VAT and discounts"` (session title, else label, truncated at 60 characters) rather than `Turn 3 completed on sess_a2916375`; a session with neither keeps the bare id. Activity ids, `sessionId` and `sourceRef` are unchanged.
+- 17c17f5: MCP Events webhook deliveries are now observable: one log line per delivery attempt (sentinel, event, callback host only, HTTP status or redacted error, attempt, final delivered/dead), and `sentinel_list` / `GET /sentinels` report a per-sentinel `deliveryStatus` (`active`, `lastDeliveryAt`, `lastStatus`, `lastError`, `attempts`, `dead`). URL paths, tokens, bodies and secrets never reach logs or status. The `events/subscribe` result is unchanged.
+- Updated dependencies [66a2708]
+- Updated dependencies [eee0a3c]
+- Updated dependencies [68c5ce6]
+- Updated dependencies [60a1fd2]
+- Updated dependencies [ab367ec]
+- Updated dependencies [60a1fd2]
+  - @agentproto/model-catalog@0.12.2
+  - @agentproto/apps@0.21.1
+  - @agentproto/app-kit@1.7.1
+  - @agentproto/tool@0.5.1
+  - @agentproto/providers-store@0.3.25
+  - @agentproto/driver-browser@0.2.2
+  - @agentproto/driver@0.3.2
+  - @agentproto/driver-http@0.1.12
+  - @agentproto/governance-engine@0.1.12
+  - @agentproto/mcp-server@0.6.3
+  - @agentproto/workflow-runtime@0.17.1
+  - @agentproto/llm-endpoint@0.11.7
+  - @agentproto/plugin-local-browser@0.3.4
+  - @agentproto/adapter-browser@0.3.2
+  - @agentproto/eval-reporters@0.2.22
+  - @agentproto/telemetry-langfuse@0.2.20
+  - @agentproto/workspace-brain@0.5.2
+  - @agentproto/review@0.5.0
+  - @agentproto/sandbox@0.8.5
+
 ## 5.14.0
 
 ### Minor Changes

@@ -1,5 +1,15 @@
 # @agentproto/apps
 
+## 0.21.1
+
+### Patch Changes
+
+- eee0a3c: Fix the repo-maintenance `maintain` workflow's held-worktree review (0.21.0) never queuing anything. `reviewableWorktrees` read `tree.state`, but the daemon's `worktree_gc` tool flattens the tree to a bare string (`tree: "clean"`), so every idle worktree was silently dropped: a live run on agentproto/ts queued 0 of the eligible held worktrees. It now reads both shapes. The tests use the daemon's real projection, and the real-runner test feeds its output through `reviewableWorktrees`.
+- 60a1fd2: Session steward: keepAlive sessions idle past `keepAliveAskAfterMinutes` with a merged or clean worktree can now be asked and closed on a declared DONE. Runtime: added tests covering this.
+- 60a1fd2: Session steward: a `keepAlive` session can now be closed. With `askSessions`, a keepAlive session whose worktree is merged or clean (nothing uncommitted, nothing ahead of base) is asked `STEWARD: DONE / NOT-DONE` like any other idle session, and a declared DONE closes it through `session_wrapup_apply`. Before, `buildAskQueue` skipped every keepAlive session, so an idle keepAlive session stayed `judge` forever whenever Jev stayed under `minConfidence`. Closing is an active act, so an on-demand run (`agentproto steward --ask-sessions`) applies no idle delay beyond `--idle`. Only a scheduled run (new `recurring` input, set by the hourly routine) waits `keepAliveAskAfterMinutes` (new input, default 1440, 0 disables), so a session its owner meant to resume is not closed overnight. keepAlive keeps meaning "re-light after a daemon restart"; an unknown worktree, uncommitted work or unmerged commits keep the session out.
+- Updated dependencies [68c5ce6]
+  - @agentproto/app-kit@1.7.1
+
 ## 0.21.0
 
 ### Minor Changes
