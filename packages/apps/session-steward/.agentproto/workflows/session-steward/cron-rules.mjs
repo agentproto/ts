@@ -224,7 +224,8 @@ const minutesSince = (ts, nowMs) => {
 
 /**
  * A session that never actually ran: explicit 0 in AND 0 out. `undefined`
- * tokens (not reported) is NOT "never ran" — only a hard 0/0 is. A session
+ * tokens (not reported) is NOT "never ran" — only a hard 0/0 with no cost,
+ * context use or completed turn is. A session
  * that is busy, still starting/provisioning, or has a prompt queued for its
  * first turn is merely young, not stuck. With `opts.nowMs`, the session must
  * also be at least `opts.idleMinutes` old (`startedAt`) AND idle
@@ -232,6 +233,9 @@ const minutesSince = (ts, nowMs) => {
  */
 export function isNeverRan(session, opts = {}) {
   if (!(session?.tokensIn === 0 && session?.tokensOut === 0)) return false
+  // Some adapters (opencode) report 0/0 tokens for a session that ran several
+  // turns; cost, context use or a completed turn prove it ran.
+  if (session.costUsd > 0 || session.contextUsed > 0 || session.lastTurnReason === "completed") return false
   if (session.busy === true || session.status === "starting" || session.provisioning) return false
   if (Array.isArray(session.pendingPrompts) && session.pendingPrompts.length > 0) return false
   if (typeof opts.nowMs === "number") {

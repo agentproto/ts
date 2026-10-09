@@ -249,6 +249,14 @@ describe("cron rules — isNeverRan", () => {
     expect(mod.isNeverRan({})).toBe(false)
   })
 
+  it("0/0 tokens with cost, context use or a completed turn did run (opencode reports 0/0)", () => {
+    const zero = { tokensIn: 0, tokensOut: 0 }
+    expect(mod.isNeverRan({ ...zero, costUsd: 0.0388 })).toBe(false)
+    expect(mod.isNeverRan({ ...zero, contextUsed: 172254 })).toBe(false)
+    expect(mod.isNeverRan({ ...zero, lastTurnReason: "completed" })).toBe(false)
+    expect(mod.isNeverRan({ ...zero, costUsd: 0, lastTurnReason: "error" })).toBe(true)
+  })
+
   const NOW = Date.parse("2026-10-06T16:00:00.000Z")
   const ago = (min: number) => new Date(NOW - min * 60_000).toISOString()
   const zero = { tokensIn: 0, tokensOut: 0 }
