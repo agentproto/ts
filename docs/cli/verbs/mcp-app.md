@@ -95,6 +95,9 @@ MCP App with no daemon behind it: only the app's own bundled
   `POST /mcp/<slug>`. Secret names must be declared by the app; slugs are
   lowercase letters, digits and `-`.
 - `--port` must be an integer in 1..65535; every flag needs a value.
+- By default every served tool is linked to the app's `ui://` resource. An app
+  can narrow that with an optional `ui.renders` list in `APP.md` (a subset of
+  `ui.tools`); only those tools open the UI panel.
 
 **No built-in authentication.** Anyone who can reach the port can call the served
 tools with the (tenant's) secrets. The tenant slug in the URL only selects which

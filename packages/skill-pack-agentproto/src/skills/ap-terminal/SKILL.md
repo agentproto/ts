@@ -63,7 +63,10 @@ Tear down the PTY when done or wedged.
 
 ## MCP tool: terminal_sessions_list
 
-List live terminal sessions.
+List live terminal sessions. Without `limit` at most 50 rows come back; when
+there are more, the reply carries `total`, `truncated: true` and a `nextCursor`
+(pass it as `cursor`, with a `limit`, for the next page), or narrow with
+`onlyAlive` / `status`.
 
 ```json
 { "tool": "terminal_sessions_list", "args": {} }
