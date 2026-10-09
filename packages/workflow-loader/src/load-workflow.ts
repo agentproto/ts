@@ -29,6 +29,7 @@ import {
 import type { WorkflowHandle } from "@agentproto/workflow"
 import { assertKnownStepRefs } from "@agentproto/workflow"
 
+import { ENTRY_GRAPH_VERSION_PARAM, entryGraphVersion, registerEntryGraphHook } from "./entry-graph.js"
 import { reconcileEntry } from "./reconcile.js"
 
 export class WorkflowLoadError extends Error {
@@ -244,10 +245,13 @@ async function importEntryHandle(
 ): Promise<WorkflowHandle> {
   const abs = isAbsolute(entry) ? entry : join(dirname(workflowMdPath), entry)
 
-  // Cache-bust the ESM import by mtime so a long-lived daemon re-reads an edited
-  // entry.mjs instead of serving Node's process-lifetime URL-cached module —
-  // which, because the manifest IS re-read fresh, would otherwise fail
-  // reconcileEntry with a spurious step-count mismatch after an edit. Fresh
+  // Cache-bust the ESM import so a long-lived daemon re-reads an edited entry
+  // AND its relative imports instead of serving Node's process-lifetime
+  // URL-cached modules — which, because the manifest IS re-read fresh, would
+  // otherwise fail reconcileEntry with a spurious step-count mismatch after an
+  // edit, or silently run a new entry against stale helper modules. The
+  // version is the newest mtime in the entry directory; a resolve hook
+  // (entry-graph.ts) propagates it to the entry's relative imports. Fresh
   // daemons / CI boot cold, so they never need it — this only helps the dev loop.
   //
   // Skipped under the Vite/vitest transform (`process.env.VITEST`): Vite owns
@@ -257,11 +261,15 @@ async function importEntryHandle(
   let href = pathToFileURL(abs).href
   if (!process.env.VITEST) {
     try {
-      const url = pathToFileURL(abs)
-      url.searchParams.set("v", String((await stat(abs)).mtimeMs))
-      href = url.href
+      const version = await entryGraphVersion(dirname(abs))
+      if (version > 0) {
+        const url = pathToFileURL(abs)
+        url.searchParams.set(ENTRY_GRAPH_VERSION_PARAM, String(version))
+        registerEntryGraphHook()
+        href = url.href
+      }
     } catch {
-      // stat race with an in-flight edit — fall back to the plain URL.
+      // scan race with an in-flight edit — fall back to the plain URL.
     }
   }
 

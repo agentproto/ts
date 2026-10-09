@@ -67,6 +67,25 @@ the `userOrigins` / `closableOrigins` inputs:
 A trailing `*` in either list is a prefix wildcard. The report carries the
 origin column and the retained action in dry run as well as apply.
 
+## Remaining work (never close a session that still owes something)
+
+A merged worktree, an open or merged PR, or an ended parent says the work
+moved on — not that *this* session finished. Before any rule or judged
+`close`, `decideFor` (`entry.mjs`) runs `remainingWork`
+(`cron-rules.mjs`) over the plan entry's `lastAssistantTail` and
+`worktreePrOpen` signals. A last message that asks a question, proposes a
+next step, announces its next action ("Now drive it…"), recommends something, or waits on someone — or a still-open
+worktree PR — turns the close into a `needs-input` flag whose note quotes the
+session's own last words (`flag (remaining work: …)`). Only a clean final
+report closes. Exceptions: a `stuck` session (it never ran) and a session that
+itself declared `STEWARD: DONE`. Not covered yet: red CI and unanswered review
+comments (the daemon exposes neither).
+
+The terminal-session relabel (report only) follows the same principle: `done`
+only when the session's *own* recorded PR is merged and nothing is pending; an
+open PR or pending work is `needs-follow-up`; a worktree PR the session never
+recorded (shared worktree) credits nobody. PRs are reported as `owner/repo#N`.
+
 ## Running it
 
 ```bash

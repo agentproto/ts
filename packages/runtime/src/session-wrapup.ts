@@ -33,6 +33,9 @@ export interface SessionWrapupSignals {
    *  branch head is a merged PR — from the daemon's worktree-status engine
    *  (`computeWorktreeStatus` / `worktree_status`, `worktree-status.ts`). */
   worktreeMerged?: boolean
+  /** The same worktree's PR is still `open` — a hand-off waiting on review or
+   *  CI, which the steward reads as remaining work (never a reason to close). */
+  worktreePrOpen?: boolean
   /** The session's parent (`parentSessionId`) has already ended. */
   parentEnded?: boolean
   /** Last ~600 chars of the session's last assistant message — same tail a
@@ -159,8 +162,10 @@ export function planSessionWrapup(input: PlanSessionWrapupInput): SessionWrapupE
       reasons.push("stuckStarting")
     } else if (desc.status !== "running") {
       // "starting", not yet 10min old (else stuckStarting above would have
-      // fired) — too early to say anything deterministic.
-      cls = "judge"
+      // fired) — too early to say anything, and a fresh session must not
+      // reach a paid judge before `idleMinutes` could even apply (right
+      // after a daemon restart every resumed session reads `starting`).
+      cls = "keep"
       reasons.push("starting")
     } else if (idleMinutesActual < idleThresholdMinutes) {
       // Not idle long enough to say anything — this is the common case for

@@ -10,6 +10,7 @@
 import { beforeAll, describe, expect, it } from "vitest"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { G11_REAL_TAILS } from "./fixtures/session-steward-g11-tails.js"
 
 const MODULE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -44,6 +45,12 @@ interface CronRules {
   terminalRelabelCandidate: AnyFn
   prNumbersOf: AnyFn
   refineRelabel: AnyFn
+  prReposOf: AnyFn
+  fmtPr: AnyFn
+  repoOfPrUrl: AnyFn
+  pendingWorkReason: AnyFn
+  hasPendingWork: AnyFn
+  remainingWork: AnyFn
   sameCronJob: AnyFn
   isSelfExcluded: AnyFn
   recheckApply: AnyFn
@@ -110,6 +117,22 @@ describe("cron rules — readTargetOf", () => {
   it("targets the path after the read verb, not a leading `cd <dir>` or a trailing `| head`", () => {
     expect(mod.readTargetOf({ tool: "Bash", command: "cd /repo/packages/x && rg -n foo src/a.ts | head -5" })).toBe("src/a.ts")
     expect(mod.readTargetOf({ tool: "Bash", command: "cd /repo/packages/x && git log | head -5" })).toBeNull()
+  })
+  it("G7: a recursive rg/grep over a directory, or its pattern, is not a file re-read", () => {
+    const sweeps = [
+      "rg -n 'proposeFact' /repo/projects/pygmalion -g '!node_modules' | head",
+      "grep -rl 'confirmFact' /repo/projects/pygmalion/packages --include='*.ts'",
+      "rg -ln 'packages/core/src/core' /repo/projects/pygmalion",
+      "ps axo pid,command | grep 'packages/core' | head",
+    ]
+    for (const command of sweeps) expect(mod.readTargetOf({ tool: "Bash", command })).toBeNull()
+    expect(mod.readTargetOf({ tool: "Bash", command: "rg -n foo /repo/src/a.ts" })).toBe("/repo/src/a.ts")
+    const records = Array.from({ length: 6 }, (_, i) => ({
+      ts: new Date(1_000_000 + i * 1000).toISOString(),
+      tool: "Bash",
+      command: `rg -n 'sym${i}' /repo/projects/pygmalion`,
+    }))
+    expect(mod.detectLoop(records, { nowMs: 1_010_000 }).looping).toBe(false)
   })
   it("is null for a non-read call and for an in-agent Read with no command", () => {
     expect(mod.readTargetOf({ tool: "Edit", command: "git commit -m x" })).toBeNull()
@@ -226,6 +249,14 @@ describe("cron rules — isNeverRan", () => {
     expect(mod.isNeverRan({})).toBe(false)
   })
 
+  it("0/0 tokens with cost, context use or a completed turn did run (opencode reports 0/0)", () => {
+    const zero = { tokensIn: 0, tokensOut: 0 }
+    expect(mod.isNeverRan({ ...zero, costUsd: 0.0388 })).toBe(false)
+    expect(mod.isNeverRan({ ...zero, contextUsed: 172254 })).toBe(false)
+    expect(mod.isNeverRan({ ...zero, lastTurnReason: "completed" })).toBe(false)
+    expect(mod.isNeverRan({ ...zero, costUsd: 0, lastTurnReason: "error" })).toBe(true)
+  })
+
   const NOW = Date.parse("2026-10-06T16:00:00.000Z")
   const ago = (min: number) => new Date(NOW - min * 60_000).toISOString()
   const zero = { tokensIn: 0, tokensOut: 0 }
@@ -271,6 +302,7 @@ describe("cron rules — detectFastPathDone", () => {
   })
 
   it("is not done without the done message, or without a commit/PR", () => {
+    expect(mod.detectFastPathDone({ lastToolCall: doneParent, worktree: { pr: { state: "open" } } }).done).toBe(false)
     expect(mod.detectFastPathDone({ toolCalls: [commit] }).done).toBe(false)
     expect(mod.detectFastPathDone({ toolCalls: [{ tool: "message_parent", args: ["needs-input"] }] }).done).toBe(false)
   })
@@ -279,43 +311,85 @@ describe("cron rules — detectFastPathDone", () => {
 // ── terminal relabel (mission item 5) ────────────────────────────────────
 
 describe("cron rules — terminalRelabelCandidate", () => {
-  it("proposes done for a terminal session with a merged PR and no outcome", () => {
+  it("proposes unknown for a terminal session with a merged worktree PR when the session did not record it", () => {
     const r = mod.terminalRelabelCandidate({ status: "killed", worktree: { pr: { state: "merged" } } })
-    expect(r).toMatchObject({ candidate: true, proposedVerdict: "done" })
-  })
-
-  it("proposes done with the PR numbers for a session that opened PRs (row openedPrs / outcome artifacts)", () => {
-    const openedPrs = [{ number: 1740 }, { number: 1738 }]
-    const r = mod.terminalRelabelCandidate({ status: "killed", openedPrs })
-    expect(r).toMatchObject({ candidate: true, proposedVerdict: "done", reason: "PRs #1738, #1740 opened", prs: [1738, 1740] })
-    const art = { status: "exited", outcome: { status: "produced", verdict: null, artifacts: [{ type: "pr", ref: "https://github.com/o/r/pull/1743", title: "#1743" }, { type: "file", ref: "x" }] } }
-    expect(mod.terminalRelabelCandidate(art)).toMatchObject({ proposedVerdict: "done", reason: "PR #1743 opened" })
-    expect(mod.prNumbersOf({ outcome: { artifacts: [{ type: "pr", ref: "https://github.com/o/r/pull/9" }] } })).toEqual([9])
-  })
-
-  it("names the PR when the worktree PR is merged", () => {
-    const r = mod.terminalRelabelCandidate({ status: "killed", worktree: { pr: { state: "merged", number: 12 } } })
-    expect(r).toMatchObject({ proposedVerdict: "done", reason: "PR #12 merged (worktree)" })
-  })
-
-  it("does not credit a shared worktree's merged PR to a session whose last turn errored", () => {
-    const r = mod.terminalRelabelCandidate({ status: "killed", lastTurnErroredAt: "2026-10-06T13:54:38Z", worktree: { pr: { state: "merged", number: 1737 } } })
     expect(r).toMatchObject({ candidate: true, proposedVerdict: "unknown" })
   })
 
-  it("keeps a worktree PR the session recorded itself as plain 'merged'", () => {
-    const r = mod.terminalRelabelCandidate({ status: "killed", lastTurnErroredAt: "2026-10-06T13:54:38Z", openedPrs: [{ number: 12 }], worktree: { pr: { state: "merged", number: 12 } } })
+  it("proposes unknown (never done) for a session that recorded PRs whose state is not known", () => {
+    const openedPrs = [{ number: 1740 }, { number: 1738 }]
+    const r = mod.terminalRelabelCandidate({ status: "killed", openedPrs })
+    expect(r).toMatchObject({ candidate: true, proposedVerdict: "unknown", reason: "PRs #1738, #1740 recorded, state unknown", prs: [1738, 1740] })
+    const art = { status: "exited", outcome: { status: "produced", verdict: null, artifacts: [{ type: "pr", ref: "https://github.com/o/r/pull/1743", title: "#1743" }, { type: "file", ref: "x" }] } }
+    expect(mod.terminalRelabelCandidate(art)).toMatchObject({ proposedVerdict: "unknown", reason: "PR o/r#1743 recorded, state unknown" })
+    expect(mod.prNumbersOf({ outcome: { artifacts: [{ type: "pr", ref: "https://github.com/o/r/pull/9" }] } })).toEqual([9])
+  })
+
+  it("qualifies PR numbers with owner/repo from the outcome artifact refs (G3), plain otherwise", () => {
+    const withRepo = {
+      status: "killed",
+      outcome: {
+        status: "produced",
+        verdict: null,
+        artifacts: [
+          { type: "pr", ref: "https://github.com/agentik/agent-studio/pull/1816", title: "#1816" },
+          { type: "pr", ref: "https://github.com/agentik/agent-studio/pull/1824", title: "#1824 fully" },
+        ],
+      },
+    }
+    const r = mod.terminalRelabelCandidate(withRepo)
+    expect(r.reason).toBe("PRs agentik/agent-studio#1816, agentik/agent-studio#1824 recorded, state unknown")
+    expect(mod.prReposOf(withRepo)).toEqual({ 1816: "agentik/agent-studio", 1824: "agentik/agent-studio" })
+    expect(mod.prReposOf({ status: "killed", openedPrs: [{ number: 1 }] })).toEqual({})
+    expect(mod.fmtPr(504, "agentik/agentik-studio")).toBe("agentik/agentik-studio#504")
+    expect(mod.fmtPr(504)).toBe("#504")
+    expect(mod.repoOfPrUrl("https://github.com/agentik/agentik-studio/pull/504")).toBe("agentik/agentik-studio")
+    expect(mod.repoOfPrUrl("nope")).toBeUndefined()
+  })
+
+  it("names the PR when the session recorded the merged worktree PR itself", () => {
+    const r = mod.terminalRelabelCandidate({ status: "killed", openedPrs: [{ number: 12 }], worktree: { pr: { state: "merged", number: 12 } } })
     expect(r).toMatchObject({ proposedVerdict: "done", reason: "PR #12 merged" })
   })
 
-  it("refineRelabel: merged → done+merged, open/opened → done, nothing → unchanged", () => {
+  it("does not credit a shared worktree's merged PR to a session that never recorded it (G2)", () => {
+    const r = mod.terminalRelabelCandidate({ status: "killed", lastTurnErroredAt: "2026-10-06T13:54:38Z", worktree: { pr: { state: "merged", number: 1737 } } })
+    expect(r).toMatchObject({ candidate: true, proposedVerdict: "unknown" })
+    const other = mod.terminalRelabelCandidate({ status: "killed", openedPrs: [{ number: 99 }], worktree: { pr: { state: "merged", number: 504 } } })
+    expect(other.proposedVerdict).toBe("unknown")
+  })
+
+  it("refineRelabel: merged+own → done; merged, not own → unknown; open+own → needs-follow-up; opened → unknown", () => {
     const base = { sessionId: "s", proposedVerdict: "unknown", reason: "terminal, no PR recorded — outcome unknown", prs: [] }
     expect(mod.refineRelabel(base, undefined)).toBe(base)
     expect(mod.refineRelabel(base, { pullRequests: { opened: 0, merged: 0, state: null } })).toBe(base)
-    expect(mod.refineRelabel(base, { worktree: { pr: { state: "merged", number: 3 } } })).toMatchObject({ proposedVerdict: "done", reason: "PR #3 merged (worktree)" })
-    expect(mod.refineRelabel(base, { pullRequests: { opened: 1, merged: 0, state: null } })).toMatchObject({ proposedVerdict: "done", reason: "1 PR opened" })
-    const opened = { ...base, proposedVerdict: "done", reason: "PR #8 opened", prs: [8] }
-    expect(mod.refineRelabel(opened, { pullRequests: { opened: 1, merged: 1, state: "merged" } })).toMatchObject({ reason: "PR #8 merged" })
+    expect(mod.refineRelabel(base, { worktree: { pr: { state: "merged", number: 3 } } })).toMatchObject({
+      proposedVerdict: "unknown",
+      reason: "worktree PR #3 merged, not recorded by this session (shared worktree)",
+    })
+    expect(mod.refineRelabel(base, { pullRequests: { opened: 1, merged: 0, state: null } })).toMatchObject({ proposedVerdict: "unknown", reason: "1 PR opened, state unknown" })
+    const own = { ...base, reason: "PR #8 recorded, state unknown", prs: [8] }
+    expect(mod.refineRelabel(own, { worktree: { pr: { state: "merged", number: 8, url: "https://github.com/agentik/agentik-studio/pull/8" } } })).toMatchObject({
+      proposedVerdict: "done",
+      reason: "PR agentik/agentik-studio#8 merged",
+      repos: { 8: "agentik/agentik-studio" },
+    })
+    // G1: an OPEN PR is never `done` — and not even "unknown" when it is the session's own.
+    expect(mod.refineRelabel(own, { worktree: { pr: { state: "open", number: 8, url: "https://github.com/agentik/agentik-studio/pull/8" } } })).toMatchObject({
+      proposedVerdict: "needs-follow-up",
+      reason: "PR agentik/agentik-studio#8 open — awaiting review/merge",
+    })
+    expect(mod.refineRelabel(base, { worktree: { pr: { state: "open", number: 505 } } })).toMatchObject({ proposedVerdict: "unknown" })
+  })
+
+  it("refineRelabel: a merged own PR is still `needs-follow-up` when the last assistant turn left work (G1/G11)", () => {
+    const own = { sessionId: "s", proposedVerdict: "unknown", reason: "x", prs: [8] }
+    const ev = (text: string) => ({ worktree: { pr: { state: "merged", number: 8 } }, turns: [{ role: "user", text: "go" }, { role: "assistant", text }] })
+    expect(mod.refineRelabel(own, ev("PR merged, CI green. Nothing left to do."))).toMatchObject({ proposedVerdict: "done", reason: "PR #8 merged" })
+    const r = mod.refineRelabel(own, ev("PR merged. Should I also bump the changelog?"))
+    expect(r).toMatchObject({ proposedVerdict: "needs-follow-up" })
+    expect(r.reason).toContain("remaining work: question to the user")
+    expect(mod.refineRelabel(own, ev("Merged.\n\nNext steps: rotate the token."))).toMatchObject({ proposedVerdict: "needs-follow-up" })
   })
 
   it("proposes unknown (not abandoned) for a terminal session with no PR: absence of a PR is not evidence of abandonment", () => {
@@ -341,6 +415,55 @@ describe("cron rules — terminalRelabelCandidate", () => {
     expect(mod.terminalRelabelCandidate({ status: "running" }).candidate).toBe(false)
     expect(mod.terminalRelabelCandidate({ status: "killed", outcome: { verdict: "done" } }).candidate).toBe(false)
     expect(mod.terminalRelabelCandidate({ status: "killed", wrapupFlag: { verdict: "blocked" } }).candidate).toBe(false)
+  })
+})
+
+// ── remaining work (G11) ─────────────────────────────────────────────────
+
+/** Clean final reports: nothing left, nothing asked. */
+const CLEAN_REPORTS = [
+  "Done. Tests green (412 passed), PR merged, worktree removed. Nothing left to do.",
+  "Terminé : le correctif est mergé et vérifié en production. Rien d'autre à faire.",
+  "Summary: renamed the helper, updated 3 call sites, ran the gate (exit 0). No follow-up needed.",
+  "All 7 files migrated. Let me know if you want anything else.",
+  "Fetched https://example.com/api?page=2 and stored the result in notes.md.",
+]
+
+describe("cron rules — remaining work (G11)", () => {
+  it.each(Object.entries(G11_REAL_TAILS))("sess_%s: its real last message is flagged as pending work", (_id, tail) => {
+    expect(mod.pendingWorkReason(tail)).not.toBeNull()
+    expect(mod.hasPendingWork(tail)).toBe(true)
+    expect(mod.remainingWork({ lastAssistantText: tail }).length).toBeGreaterThan(0)
+  })
+
+  it.each(CLEAN_REPORTS)("clean final report is not pending: %s", text => {
+    expect(mod.pendingWorkReason(text)).toBeNull()
+    expect(mod.remainingWork({ lastAssistantText: text })).toEqual([])
+  })
+
+  it("names the kind of pending work", () => {
+    expect(mod.pendingWorkReason("Merged. Should I also bump the changelog?")).toBe("question to the user")
+    expect(mod.pendingWorkReason("The open question for Jeremy is the bot token.")).toBe("open question")
+    expect(mod.pendingWorkReason("Waiting for the executor to commit and push.")).toBe("waiting")
+    expect(mod.pendingWorkReason("Reste : 1423 Mo à libérer.")).toBe("next step")
+    expect(mod.pendingWorkReason("Test daemon is up (isolated HOME, port 18891). Now drive it with the built CLI.")).toBe("announced next action")
+    expect(mod.pendingWorkReason("Now the supervisor edit (record the shell gate command).")).toBe("announced next action")
+    expect(mod.pendingWorkReason("Fixed the race. Now it works and the suite is green.")).toBeNull()
+    expect(mod.pendingWorkReason("Recommandation : oui, à faire.")).not.toBeNull()
+  })
+
+  it("treats an open PR as remaining work, a merged/closed one as none", () => {
+    expect(mod.remainingWork({ prState: "open" })).toEqual(["open PR awaiting review/merge"])
+    expect(mod.remainingWork({ prState: "merged" })).toEqual([])
+    expect(mod.remainingWork({ prState: "closed", lastAssistantText: "All done." })).toEqual([])
+    expect(mod.remainingWork({ prState: "open", lastAssistantText: "Why?" })).toHaveLength(2)
+  })
+
+  it("is quiet for empty or missing text", () => {
+    expect(mod.pendingWorkReason(undefined)).toBeNull()
+    expect(mod.pendingWorkReason("")).toBeNull()
+    expect(mod.pendingWorkReason("   ")).toBeNull()
+    expect(mod.remainingWork()).toEqual([])
   })
 })
 
@@ -471,6 +594,20 @@ describe("cron rules — zero candidates / fast path", () => {
     expect(s).toContain("4 busy")
     expect(s).toContain("1 need a relabel")
     expect(s).toContain("3 excluded")
+  })
+
+  it("breaks the exclusions down per reason (G6)", () => {
+    const s = mod.explainZeroCandidates({
+      live: 6,
+      busy: 0,
+      idle: 6,
+      terminal: 0,
+      terminalRelabel: 0,
+      excluded: 6,
+      excludedByReason: { "same cron job as caller": 2, pty: 3, archived: 1 },
+    })
+    expect(s).toContain("6 excluded (2 same cron job as caller, 3 pty, 1 archived)")
+    expect(mod.explainZeroCandidates({ live: 0, busy: 0, idle: 0, terminal: 0, terminalRelabel: 0, excluded: 0, excludedByReason: {} })).toContain("0 excluded")
   })
 
   it("fast-paths only when nothing idle/terminal but some busy", () => {

@@ -180,7 +180,7 @@ describe("session_evidence tool", () => {
         changes: { modified: 2, staged: 0, untracked: 1 },
         ahead: 3,
         behind: 1,
-        pr: { state: "open", number: 42 },
+        pr: { state: "open", number: 42, url: "https://example.test/42" },
       },
     })
     expect(ev.idleMinutes).toBeGreaterThanOrEqual(44)
