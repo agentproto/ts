@@ -363,6 +363,51 @@ describe("spawnAgentSession", () => {
     expect(switched).toEqual(["plan"])
   })
 
+  describe("context profile default (opencode executors run lean)", () => {
+    async function spawnWith(
+      adapter: string,
+      extra: { role?: "executor" | "supervisor"; contextProfile?: string; defaults?: object },
+    ) {
+      const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+      const { deps } = baseDeps({
+        resolveAgentAdapter: makeResolver(startSession as never),
+        ...(extra.defaults ? { loadDefaultsConfig: async () => extra.defaults as never } : {}),
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter,
+        cwd: "/tmp",
+        prompt: "hi",
+        ...(extra.role ? { role: extra.role } : {}),
+        ...(extra.contextProfile ? { contextProfile: extra.contextProfile } : {}),
+      })
+      expect(result.ok).toBe(true)
+      return { startSession, result }
+    }
+
+    it("an opencode executor spawns with contextProfile lean and the descriptor echoes it", async () => {
+      const { startSession, result } = await spawnWith("opencode", { role: "executor" })
+      expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ contextProfile: "lean" }))
+      if (result.ok) expect(result.descriptor.contextProfile).toBe("lean")
+    })
+
+    it("an opencode supervisor, and any other adapter's executor, keeps full context", async () => {
+      const sup = await spawnWith("opencode", { role: "supervisor" })
+      expect(sup.startSession.mock.calls[0]?.[0]).not.toHaveProperty("contextProfile")
+      const other = await spawnWith("mock", { role: "executor" })
+      expect(other.startSession.mock.calls[0]?.[0]).not.toHaveProperty("contextProfile")
+    })
+
+    it("an explicit contextProfile (even full) and a config opt-out beat the built-in default", async () => {
+      const full = await spawnWith("opencode", { role: "executor", contextProfile: "full" })
+      expect(full.startSession).toHaveBeenCalledWith(expect.objectContaining({ contextProfile: "full" }))
+      const cfg = await spawnWith("opencode", {
+        role: "executor",
+        defaults: { adapters: { opencode: { contextProfile: "full" } } },
+      })
+      expect(cfg.startSession.mock.calls[0]?.[0]).not.toHaveProperty("contextProfile")
+    })
+  })
+
   it("forwards commandSandbox verbatim to the resolved adapter's startSession — distinct from (and independent of) the AIP-36 `sandbox` field", async () => {
     const startSession = vi.fn(async () => fakeAgentSession())
     const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })

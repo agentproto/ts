@@ -31,6 +31,7 @@ import {
   modelIdPrefixProvider,
   subscriptionSurfaceFor,
   resolveBundleDefaults,
+  resolveDefaultContextProfile,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -2687,6 +2688,17 @@ export async function spawnAgentSession(
       roleRegistry,
       delegationReach,
     )
+  }
+  // Context-intake default (config `defaults.adapters.<slug>.contextProfile`,
+  // else the built-in executor default) — role is final here.
+  const effectiveContextProfile = resolveDefaultContextProfile({
+    defaults: configDefaults,
+    adapterSlug: input.adapter,
+    roleName: role.name,
+    ...(input.contextProfile ? { explicit: input.contextProfile } : {}),
+  })
+  if (effectiveContextProfile !== input.contextProfile) {
+    input = { ...input, ...(effectiveContextProfile ? { contextProfile: effectiveContextProfile } : {}) }
   }
   // ── Per-session headless browser (`browser: "headless"`) ──────────
   // Appended AFTER every `mcpServers === undefined` default above, so asking

@@ -20,6 +20,7 @@ import {
   subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type AdapterAuthDescriptor,
+  resolveDefaultContextProfile,
 } from "../spawn-defaults.js"
 
 // resolveSpawnDefaults now surfaces RAW auth material; with nothing
@@ -1247,5 +1248,26 @@ describe("normalizeSkillsOption", () => {
       { id: "skills", type: "enum" },
     ])
     expect(result).toEqual({})
+  })
+})
+
+describe("resolveDefaultContextProfile", () => {
+  const base = { adapterSlug: "opencode", roleName: "executor", defaults: undefined }
+  it("defaults opencode executors to lean", () => {
+    expect(resolveDefaultContextProfile(base)).toBe("lean")
+  })
+  it("leaves other roles and other adapters on the adapter's full intake", () => {
+    expect(resolveDefaultContextProfile({ ...base, roleName: "supervisor" })).toBeUndefined()
+    expect(resolveDefaultContextProfile({ ...base, adapterSlug: "claude-code" })).toBeUndefined()
+  })
+  it("an explicit profile wins, including an explicit full", () => {
+    expect(resolveDefaultContextProfile({ ...base, explicit: "full" })).toBe("full")
+    expect(resolveDefaultContextProfile({ ...base, roleName: "supervisor", explicit: "lean" })).toBe("lean")
+  })
+  it("config defaults.adapters.<slug>.contextProfile applies to any role and can opt out with full", () => {
+    const lean = { adapters: { opencode: { contextProfile: "lean" } } }
+    expect(resolveDefaultContextProfile({ ...base, roleName: "supervisor", defaults: lean })).toBe("lean")
+    const full = { adapters: { opencode: { contextProfile: "full" } } }
+    expect(resolveDefaultContextProfile({ ...base, defaults: full })).toBeUndefined()
   })
 })

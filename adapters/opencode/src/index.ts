@@ -87,6 +87,9 @@ function buildOpencodeModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
+/** Inline config the `lean` mode layers over the user's global opencode config. */
+export const LEAN_INLINE_CONFIG = { mcp: { agentproto: { enabled: false } } } as const
+
 export const opencode: AgentCliHandle = defineAgentCli({
   name: "opencode",
   id: "opencode",
@@ -218,15 +221,40 @@ export const opencode: AgentCliHandle = defineAgentCli({
     resumable: true,
     bidirectional: true,
   },
-  // No manifest `modes[]`: opencode's operation profiles (default / plan /
-  // build) are POSTURE, which no longer lives in the manifest (SPEC §3.4a).
-  // opencode's own ACP server already advertises these as native session modes
-  // and switches them on the wire via `session/set_config_option`
-  // (configId:"mode") / `session/set_mode` — precisely the harness ACP mode
-  // registry (`SessionModeState.availableModes`) posture is now sourced from,
-  // so declaring them here would only duplicate the harness's own truth. route
-  // comes from the model catalog and opencode has no context mode, so the array
-  // would be empty — omit it.
+  // `modes[]` carries ONE entry, the `context` axis (`lean`). opencode's
+  // operation profiles (default / plan / build) are POSTURE, which no longer
+  // lives in the manifest (SPEC §3.4a): opencode's own ACP server advertises
+  // them as native session modes and switches them on the wire via
+  // `session/set_config_option` (configId:"mode") / `session/set_mode` —
+  // precisely the harness ACP mode registry (`SessionModeState.availableModes`)
+  // posture is sourced from. route comes from the model catalog. What enters
+  // the model's context has no ACP home, so it is the one thing declared here.
+  modes: [
+    {
+      id: "lean",
+      kind: "context",
+      description:
+        "Keep opencode's first request near its own floor (~8k tokens): no auto-discovered " +
+        "skills (`.claude/skills`, `.agents/skills`, `~/.claude/skills` — a repo with 100+ skills " +
+        "lists them all, ~20k tokens), no AGENTS.md / CLAUDE.md / project opencode.json pulled in " +
+        "from the cwd and its parents (agentproto's own AGENTS.md pointer in the first prompt " +
+        "already names the contract), and the user's global `agentproto` MCP bridge " +
+        "(`mcp.agentproto` in ~/.config/opencode/opencode.jsonc — 280+ tool schemas, ~100k tokens " +
+        "on every start) switched off. A daemon mount (`daemonMount`) is unaffected and stays " +
+        "the way to reach daemon tools (deferred by default for executors).",
+      // OPENCODE_DISABLE_EXTERNAL_SKILLS and OPENCODE_DISABLE_PROJECT_CONFIG are
+      // read by the pinned opencode (1.18.x) at startup; measured in
+      // `OPENCODE.md` ("First-request size"). OPENCODE_CONFIG_CONTENT is the
+      // highest-precedence config layer and is deep-merged over the user's
+      // global config, so `enabled:false` turns the global bridge off without
+      // touching the file. Other user-declared global MCP servers are left alone.
+      env: {
+        OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
+        OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify(LEAN_INLINE_CONFIG),
+      },
+    },
+  ],
   options: [
     {
       id: "model",

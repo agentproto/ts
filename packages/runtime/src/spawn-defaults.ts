@@ -101,6 +101,11 @@ export interface DefaultsAdapterConfig {
    *  allowlist (opencode, codex, gemini, …) gets it by default. Overridden
    *  per-spawn by `agent_start.daemonMount`. */
   daemonMount?: boolean
+  /** Context profile (`full` | `lean` | an adapter-declared id) applied to
+   *  spawns of this adapter that name none themselves. `"full"` opts an
+   *  adapter out of a built-in default (see {@link BUILTIN_EXECUTOR_CONTEXT_PROFILE}).
+   *  Overridden per-spawn by `agent_start.contextProfile`. */
+  contextProfile?: string
 }
 
 /** Shape of `config.json`'s top-level `defaults` block. */
@@ -312,6 +317,33 @@ export function resolveBundleDefaults(
       : Array.from(new Set([...(defaults?.bundles ?? []), ...(adapterDefaults?.bundles ?? [])]))
   const daemonMount = input.daemonMount ?? adapterDefaults?.daemonMount
   return { bundleIds, ...(daemonMount !== undefined ? { daemonMount } : {}) }
+}
+
+/**
+ * Adapters whose `executor`-role spawns default to a context profile. opencode's
+ * first request balloons from ~8k tokens to 140k on a developer machine —
+ * auto-discovered skills, parent-tree AGENTS.md, and the user's global
+ * `agentproto` MCP bridge's 280+ tool schemas — and it bills every executor
+ * and bench run; `lean` (declared in `@agentproto/adapter-opencode`) removes
+ * those. Executors only: a supervisor/interactive session keeps full context.
+ */
+export const BUILTIN_EXECUTOR_CONTEXT_PROFILE: Readonly<Record<string, string>> = { opencode: "lean" }
+
+/**
+ * Context profile a spawn runs with: the caller's explicit `contextProfile`,
+ * else `defaults.adapters.<slug>.contextProfile`, else the built-in executor
+ * default. Pure — `undefined` means "no profile" (the adapter's full intake).
+ */
+export function resolveDefaultContextProfile(input: {
+  defaults: SpawnDefaultsConfig | undefined
+  adapterSlug: string
+  roleName: string
+  explicit?: string
+}): string | undefined {
+  if (input.explicit !== undefined && input.explicit !== "") return input.explicit
+  const configured = input.defaults?.adapters?.[input.adapterSlug]?.contextProfile
+  if (configured !== undefined) return configured === "" || configured === "full" ? undefined : configured
+  return input.roleName === "executor" ? BUILTIN_EXECUTOR_CONTEXT_PROFILE[input.adapterSlug] : undefined
 }
 
 /**
