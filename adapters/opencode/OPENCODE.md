@@ -82,6 +82,51 @@ curl -fsSL https://opencode.ai/install | bash
 The npx form `npx -y opencode-ai acp` works without a global install
 — the adapter prefers this for ephemeral / sandboxed spawns.
 
+## First-request size
+
+A bare `opencode` start is not small. Measured on opencode 1.18.32 with a
+capture endpoint that records the first `chat/completions` body (about 4
+characters per token), prompt "Reply with exactly: OK. Do not use any tool.":
+
+| Variant (cwd, mount)                                   | Request body | ~Tokens |
+|--------------------------------------------------------|-------------:|--------:|
+| Before: `model-bench` (under `agentik-studio`), global opencode config | 548,771 chars | ~137k |
+| Before: empty temp dir, global opencode config         | 455,232 | ~114k |
+| Clean `HOME`, `model-bench` (AGENTS.md + skills)       | 129,642 | ~32k |
+| Clean `HOME`, empty temp dir (opencode's own floor)    |  33,379 | ~8.3k |
+| Clean `HOME`, empty dir, `daemonMount` eager (280 tools) | 428,530 | ~107k |
+| Clean `HOME`, empty dir, `daemonMount` + `deferredTools` |  96,608 | ~24k |
+| After: executor default (`lean`), `model-bench`        |  33,751 | ~8.4k |
+| After: executor default (`lean`) + `daemonMount` (deferred) | 67,385 | ~17k |
+
+Real counts, same probe on `opencode-go/longcat-2.5-preview-free` in
+`model-bench` (the provider's reported `tokensIn`): 140,909 with
+`contextProfile: "full"` (reproduces the original 140,903), 7,672 with the
+`lean` default.
+
+Where the 548k went: tool schemas 447k (the *global* `mcp.agentproto`
+bridge in `~/.config/opencode/opencode.jsonc` injects ~280 tool schemas into
+every opencode start), skills list 85k (`.claude/skills`, `.agents/skills`,
+home skill dirs), the repo's `AGENTS.md` ~23k, opencode's base prompt ~9.5k.
+opencode's floor — 9.7k of system prompt plus its 11 built-in tools — is
+about 33k chars, roughly 8k tokens.
+
+The `lean` context mode (`contextProfile: "lean"`) turns off exactly the
+agentproto-side parts: `OPENCODE_DISABLE_EXTERNAL_SKILLS`,
+`OPENCODE_DISABLE_PROJECT_CONFIG` (no `AGENTS.md` autoload, no project
+`opencode.json`) and an inline config disabling the global `agentproto` MCP
+server. It is the default for **executor** sessions (a depth-0 spawn with no
+delegation reach). Opt out per spawn with `contextProfile: "full"`, or
+globally with `defaults.adapters.opencode.contextProfile: "full"`; opt a
+supervisor in with `contextProfile: "lean"`.
+
+Caveats: `lean` drops the repo's `AGENTS.md` and project opencode config, so
+the agent no longer sees repo conventions unless the task prompt carries them.
+Only the global `agentproto` MCP server is disabled — other MCP servers a user
+declared globally stay on (opencode has no flag to drop them). A supervisor
+with a `daemonMount` still gets the eager daemon tool list unless
+`deferredTools: true`.
+
 ## Auth
 
 OpenCode reads provider keys from the environment. Set whichever
