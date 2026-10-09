@@ -41,6 +41,7 @@ import {
   type SentinelUntil,
 } from "./sentinel-providers/types.js"
 import type { CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
+import type { SentinelDeliveryStatus } from "./sentinel-webhook-outbox.js"
 import { mintSentinelId, type Sentinel, type SentinelStatus, type SentinelStore } from "./sentinel-store.js"
 
 // ── Shared create/cancel/view (MCP + HTTP) ───────────────────────────────
@@ -235,6 +236,8 @@ export interface SentinelView {
   eventCount: number
   lastEventTs?: number
   lastError?: string
+  /** Webhook-target sentinels only, once the outbox holds a row for it. */
+  deliveryStatus?: SentinelDeliveryStatus
 }
 
 function targetView(target: SentinelTarget): SentinelTargetView {
@@ -261,6 +264,12 @@ export function sentinelView(s: Sentinel): SentinelView {
   }
 }
 
+/** `sentinelView` plus the outbox-derived `deliveryStatus` (when present).
+ *  Separate from `sentinelView` so `.map(sentinelView)` stays valid. */
+export function sentinelViewWithDelivery(s: Sentinel, deliveryStatus?: SentinelDeliveryStatus): SentinelView {
+  return deliveryStatus ? { ...sentinelView(s), deliveryStatus } : sentinelView(s)
+}
+
 // ── MCP tools ─────────────────────────────────────────────────────────
 
 export interface SentinelRuntimeLike {
@@ -282,6 +291,8 @@ export interface RegisterSentinelToolsOptions {
    *  `DeliveryPreference` — matches `sentinel-runtime.ts`'s
    *  `activeIntervalMs`. Default 15s. */
   activeIntervalMs?: number
+  /** Per-sentinel webhook delivery health (the runtime's outbox). */
+  deliveryStatus?: (sentinelId: string) => SentinelDeliveryStatus | undefined
 }
 
 type ToolResult = {
@@ -354,9 +365,9 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
   server.tool(
     "sentinel_list",
     "List every sentinel this daemon is tracking, with status, match " +
-      "clauses, target, and event counters. Credentials are never returned.",
+      "clauses, target, and event counters (webhook targets also report `deliveryStatus`). Credentials are never returned.",
     {},
-    async () => ok({ sentinels: store.list().map(sentinelView) }),
+    async () => ok({ sentinels: store.list().map(s => sentinelViewWithDelivery(s, opts.deliveryStatus?.(s.id))) }),
   )
 
   server.tool(
