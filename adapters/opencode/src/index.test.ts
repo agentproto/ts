@@ -5,9 +5,28 @@ import { join } from "node:path"
 
 import { composeSpawn, RuntimeConfigError } from "@agentproto/driver-agent-cli"
 
-import { opencode, readOpenCodeUsage } from "./index.js"
+import { LEAN_INLINE_CONFIG, opencode, readOpenCodeUsage } from "./index.js"
 
 describe("@agentproto/adapter-opencode", () => {
+  it("declares a `lean` context mode that drops skills, project instruction files and the global agentproto MCP", () => {
+    const lean = (opencode.modes ?? []).find(m => m.id === "lean")
+    expect(lean?.kind).toBe("context")
+    const composed = composeSpawn(opencode, { mode: "lean" })
+    expect(composed.env.OPENCODE_DISABLE_EXTERNAL_SKILLS).toBe("1")
+    expect(composed.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1")
+    expect(JSON.parse(composed.env.OPENCODE_CONFIG_CONTENT!)).toEqual(LEAN_INLINE_CONFIG)
+    expect(LEAN_INLINE_CONFIG.mcp.agentproto.enabled).toBe(false)
+  })
+
+  it("declares no other mode (posture and route are not manifest modes)", () => {
+    expect((opencode.modes ?? []).map(m => m.id)).toEqual(["lean"])
+  })
+
+  it("leaves the spawn env untouched without a mode (full context is the default)", () => {
+    const composed = composeSpawn(opencode, {})
+    expect(composed.env.OPENCODE_DISABLE_EXTERNAL_SKILLS).toBeUndefined()
+    expect(composed.env.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+  })
   it("declares model-derived api-key auth", () => {
     expect(opencode.modelDerivedApiKey).toBe(true)
     expect(opencode.routeSelection).toBe("derived-from-model")

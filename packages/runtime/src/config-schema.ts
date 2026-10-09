@@ -116,6 +116,7 @@ const defaultsAdapterConfigSchema: z.ZodType<DefaultsAdapterConfig> = z
     contextContinuity: contextContinuityPolicySchema.optional(),
     bundles: z.array(z.string()).optional(),
     daemonMount: z.boolean().optional(),
+    contextProfile: z.string().optional(),
   })
   .passthrough()
 
@@ -1067,6 +1068,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Adapter daemon self-mount opt-in",
     help: "Explicitly mount the daemon's own scoped /mcp for spawns of this adapter, for harnesses outside the default self-mount allowlist (opencode, codex, gemini, …).",
     default: false,
+  },
+  {
+    path: "defaults.adapters.*.contextProfile",
+    schema: z.string(),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Adapter context profile",
+    help: "Context profile (full, lean, …) for spawns of this adapter that name none. opencode executors default to lean; set full to opt out.",
   },
   {
     path: "defaults.adapters.*.contextContinuity",
