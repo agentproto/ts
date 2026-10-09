@@ -11,7 +11,13 @@
 // versions already on npm — and the reconcile step repairs tags, so a
 // re-run converges instead of double-publishing.
 //
-// Non-transient failures exit immediately with the original exit code.
+// Non-transient failures exit immediately with the original exit code —
+// except one: a run whose ONLY failures are npm refusing a version that is
+// already there (E409 "Cannot publish over previously staged version", E403
+// "cannot publish over the previously published version"). That's the
+// registry's read-after-write lag making `changeset publish` think a version
+// it just published is missing (release run 37863877434, 2026-10-09: 58
+// packages, all live). Nothing is left to publish, so it counts as success.
 
 import { spawnSync } from 'node:child_process'
 
@@ -28,6 +34,24 @@ export function classifyFailure(output) {
   return TRANSIENT_SIGNATURES.some((sig) => text.includes(sig))
     ? 'transient'
     : 'non-transient'
+}
+
+/** `changeset publish` reports each failed package as
+ *  "an error occurred while publishing <name>: <reason>". */
+const PUBLISH_ERROR = /an error occurred while publishing (\S+?):\s*(.*)/g
+const ALREADY_PUBLISHED = /E409|EPUBLISHCONFLICT|cannot publish over (the )?previously (staged|published) version/i
+
+/** The packages a failed run refused ONLY because the version already exists
+ *  on npm — or null when any package failed for another reason, or no
+ *  per-package failure was reported at all. */
+export function alreadyPublishedOnly(output) {
+  if (output == null) return null
+  const names = new Set()
+  for (const m of String(output).matchAll(PUBLISH_ERROR)) {
+    if (!ALREADY_PUBLISHED.test(m[2])) return null
+    names.add(m[1])
+  }
+  return names.size > 0 ? [...names] : null
 }
 
 const ATTEMPTS = 3
@@ -47,6 +71,11 @@ export async function runPublish({ command = 'pnpm release:ci', attempts = ATTEM
     if (result.stderr) process.stderr.write(result.stderr)
     if (result.status === 0) {
       log(`[publish-with-retry] attempt ${attempt}/${attempts} succeeded`)
+      return 0
+    }
+    const already = alreadyPublishedOnly(output)
+    if (already) {
+      log(`[publish-with-retry] every failure is an already-published version (${already.length} package(s): ${already.join(', ')}) — nothing left to publish, treating as success`)
       return 0
     }
     if (attempt === attempts) {

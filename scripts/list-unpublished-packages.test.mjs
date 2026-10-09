@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isPublished, listUnpublished, workspaceGlobs } from './list-unpublished-packages.mjs'
+import { isPublished, listUnpublished, listUnpublishedSettled, workspaceGlobs } from './list-unpublished-packages.mjs'
 
 const respond = (status) => async () => ({ status })
 
@@ -38,4 +38,26 @@ test('listUnpublished: keeps 404 and unknown (fail-open), drops published', asyn
 
 test('listUnpublished: everything published → empty', async () => {
   assert.deepEqual(await listUnpublished([{ name: 'a', version: '1' }], respond(200)), [])
+})
+
+test('listUnpublishedSettled: a version that appears after a re-check is not pending (registry lag)', async () => {
+  const pkgs = [{ name: 'a', version: '1.0.0' }, { name: 'b', version: '1.0.0' }]
+  let reads = 0
+  // `a` reads 404 on the first pass only; `b` is really missing.
+  const fetchImpl = async (u) => {
+    const name = u.split('/').at(-2)
+    if (name === 'a') return { status: reads++ === 0 ? 404 : 200 }
+    return { status: 404 }
+  }
+  const sleeps = []
+  const pending = await listUnpublishedSettled(pkgs, { fetchImpl, rounds: 3, waitMs: 5, sleep: async (ms) => { sleeps.push(ms) }, log: () => {} })
+  assert.deepEqual(pending.map((p) => p.name), ['b'])
+  assert.deepEqual(sleeps, [5, 5, 5])
+})
+
+test('listUnpublishedSettled: nothing pending → no wait', async () => {
+  const sleeps = []
+  const pending = await listUnpublishedSettled([{ name: 'a', version: '1' }], { fetchImpl: respond(200), sleep: async (ms) => { sleeps.push(ms) }, log: () => {} })
+  assert.deepEqual(pending, [])
+  assert.deepEqual(sleeps, [])
 })
