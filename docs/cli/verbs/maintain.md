@@ -21,6 +21,13 @@ One run:
    `branch_gc_verdict` — recording a verdict never deletes anything. A turn
    that ends without a stored verdict gets one same-session re-prompt, then
    one large-model retry.
+   Branches held only because they're checked out in a linked worktree
+   join the queue too, when that worktree is idle (no live session), clean,
+   has no open PR, and its tip is at least 3 days old. Otherwise
+   `worktree gc` and `branch gc` would each hold them forever. The report
+   lists each such worktree's verdict, plus the `agentproto worktree rm`
+   command when the reviewer agreed nothing of value is lost. Removal stays
+   manual. The workflow input `reviewHeldWorktrees: false` turns this off.
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
    reports any gap, the verdict tally, and the `salvage` branches by name.
 4. With `--apply-merged`: applies `branch_gc` (reclaim-class only,

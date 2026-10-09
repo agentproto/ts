@@ -44,6 +44,14 @@ inputs:
       with a stored verdict are never re-reviewed, so daily runs walk the
       backlog.
     default: 40
+  reviewHeldWorktrees:
+    type: boolean
+    description: >-
+      Also review branches held only because they're checked out in an idle,
+      clean linked worktree with no open PR (tip at least 3 days old). The
+      report lists each verdict and the removal command when the reviewer
+      agreed; nothing is removed automatically.
+    default: true
   notify:
     type: object
     description: >-
@@ -93,7 +101,10 @@ steps:
     name: Queue unreviewed review candidates, one per branch name
     description: >-
       Entry-based — no string expression language for `compute` in the
-      declarative manifest. See entry.mjs's buildReviewQueue: dedupes by tip
+      declarative manifest. With `reviewHeldWorktrees` (default true) it also
+      queues branches branch_gc held only for `worktree` when worktreeGcPlan
+      shows that worktree idle, clean and without an open PR (entry.mjs's
+      reviewableWorktrees). See entry.mjs's buildReviewQueue: dedupes by tip
       sha, then merges candidates whose refs share one branch name (a local
       branch and its remote twin review together even when their tips
       diverged — the newest tip is primary, the older ones ride along as
