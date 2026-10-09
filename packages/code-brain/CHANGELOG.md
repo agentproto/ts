@@ -1,5 +1,16 @@
 # @agentproto/code-brain
 
+## 0.3.8
+
+### Patch Changes
+
+- Updated dependencies [ab367ec]
+  - @agentproto/tool@0.5.1
+  - @agentproto/driver-cli@0.2.4
+  - @agentproto/driver@0.3.2
+  - @agentproto/driver-http@0.1.12
+  - @agentproto/driver-mcp@0.1.12
+
 ## 0.3.7
 
 ### Patch Changes

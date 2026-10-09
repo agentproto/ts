@@ -1,5 +1,11 @@
 # @agentproto/adapter-browser-chromium
 
+## 0.2.2
+
+### Patch Changes
+
+- @agentproto/driver-browser@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes

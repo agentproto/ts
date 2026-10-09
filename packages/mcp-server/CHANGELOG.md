@@ -1,5 +1,13 @@
 # @agentproto/mcp-server
 
+## 0.6.3
+
+### Patch Changes
+
+- Updated dependencies [ab367ec]
+  - @agentproto/tool@0.5.1
+  - @agentproto/driver@0.3.2
+
 ## 0.6.2
 
 ### Patch Changes

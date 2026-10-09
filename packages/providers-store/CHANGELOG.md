@@ -1,5 +1,12 @@
 # @agentproto/providers-store
 
+## 0.3.25
+
+### Patch Changes
+
+- Updated dependencies [66a2708]
+  - @agentproto/model-catalog@0.12.2
+
 ## 0.3.24
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-browser-chrome",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "System Chrome provider for agentproto: a defineBrowser provider that launches the installed Chrome on a fresh dedicated profile dir, attaches over CDP and injects granted cookies. Never touches the default profile.",
   "keywords": [
     "agentproto",

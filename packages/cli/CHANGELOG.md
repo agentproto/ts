@@ -1,5 +1,28 @@
 # @agentproto/cli
 
+## 1.16.0
+
+### Minor Changes
+
+- ab367ec: Narrow `session_list` server-side instead of reading hundreds of sessions. New optional filters, shared by the MCP tool, `GET /sessions` and `agentproto sessions [list]`: `q` (substring over id/name/label/title/cwd), `excludeNoise` (drops `review:*`/`wf:*` sessions and ended command / plain-terminal runs), `excludeLabelPrefix`, `excludeLabels`, `excludeKinds`, `rootOnly`, `parentSessionId`, `updatedSince` and `startedSince` (ISO or relative, e.g. `24h`). Rows now come back newest-activity first and the response carries `total` for the filtered set. `fields` is now honoured without `limit`, and `session_list` errors are returned as tool errors. Without any filter the response only gains `total`. `paginated` in `@agentproto/tool` gains an `includeTotal` option; the long-form help moves to `tool_help {name:"session_list"}`.
+
+### Patch Changes
+
+- Updated dependencies [66a2708]
+- Updated dependencies [eee0a3c]
+- Updated dependencies [68c5ce6]
+- Updated dependencies [60a1fd2]
+- Updated dependencies [60a1fd2]
+  - @agentproto/model-catalog@0.12.2
+  - @agentproto/apps@0.21.1
+  - @agentproto/app-kit@1.7.1
+  - @agentproto/driver@0.3.2
+  - @agentproto/worktree@0.14.5
+  - @agentproto/llm-endpoint@0.11.7
+  - @agentproto/adapter-browser@0.3.2
+  - @agentproto/sandbox-box@0.2.27
+  - @agentproto/sandbox-e2b@0.5.17
+
 ## 1.15.0
 
 ### Minor Changes
