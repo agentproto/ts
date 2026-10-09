@@ -35,6 +35,7 @@ const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
   mounts: false,
   lifecyclePause: false,
   readOnly: false,
+  exec: false,
 }
 
 /** e2b and Box can both pause/reconnect (e2b: `Sandbox.pause()` +
@@ -44,6 +45,9 @@ const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
 const E2B_CAPABILITIES: SandboxProviderCapabilities = {
   ...CAPABILITIES_TODAY,
   lifecyclePause: true,
+  // `BootedSandbox.exec` shells through `sandbox.commands.run` — the seam
+  // the `sandbox_exec` MCP tool uses. Box's provider hasn't implemented it.
+  exec: true,
 }
 
 /** Box's `box stop` snapshots the box for later `box resume`/`box fork`. */

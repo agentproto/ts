@@ -26,6 +26,10 @@ export interface SandboxProviderCapabilities {
   lifecyclePause: boolean
   /** Sandbox can be started read-only (AIP-36 `read_only`). */
   readOnly: boolean
+  /** Sandbox's own `BootedSandbox` handle exposes `exec()` — the seam the
+   *  `sandbox_exec` MCP tool shells through. Metadata only; the tool itself
+   *  checks the live handle's `exec` presence. */
+  exec?: boolean
   /** Hard cap on `limits.timeout_ms`, when the provider enforces one. */
   maxTimeoutMs?: number
 }

@@ -1,13 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { SandboxSpec } from "@agentproto/sandbox"
 
-const { sandboxCreateMock, sandboxGetInfoMock } = vi.hoisted(() => ({
+const { sandboxCreateMock, sandboxGetInfoMock, commandExitErrorMock } = vi.hoisted(() => ({
   sandboxCreateMock: vi.fn(),
   sandboxGetInfoMock: vi.fn(),
+  commandExitErrorMock: class CommandExitError extends Error {
+    exitCode: number
+    stdout: string
+    stderr: string
+    constructor(result: { exitCode: number; stdout: string; stderr: string }) {
+      super(`command exited with ${result.exitCode}`)
+      this.name = "CommandExitError"
+      this.exitCode = result.exitCode
+      this.stdout = result.stdout
+      this.stderr = result.stderr
+    }
+  },
 }))
 
 vi.mock("e2b", () => ({
   Sandbox: { create: sandboxCreateMock, getInfo: sandboxGetInfoMock },
+  CommandExitError: commandExitErrorMock,
   SandboxNotFoundError: class SandboxNotFoundError extends Error {
     constructor(message?: string) {
       super(message)
@@ -551,5 +564,107 @@ describe("e2bSandboxProvider.boot", () => {
     const { e2bSandboxProvider } = await import("../provider.js")
     const booted = await e2bSandboxProvider.boot(spec, { env: {} })
     expect(booted.ports).toBeUndefined()
+  })
+})
+
+describe("booted.exec", () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    sandboxCreateMock.mockReset()
+    fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    fetchMock.mockResolvedValue({ ok: true }) // daemon already healthy on boot
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const spec: SandboxSpec = { provider: "e2b", config: {} }
+
+  async function bootedOf(commandsRun: ReturnType<typeof vi.fn>) {
+    const sandbox = fakeSandbox({
+      commands: { run: commandsRun },
+    })
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const booted = await e2bSandboxProvider.boot(spec, { env: {} })
+    expect(booted.exec).toBeDefined()
+    return { sandbox, booted }
+  }
+
+  it("resolves the SDK's CommandResult verbatim (exit 0)", async () => {
+    const commandsRun = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: "all green\n",
+      stderr: "",
+    }))
+    const { booted } = await bootedOf(commandsRun)
+
+    const result = await booted.exec!({ command: "pnpm test" })
+
+    expect(commandsRun).toHaveBeenCalledWith("pnpm test", {})
+    expect(result).toEqual({
+      exitCode: 0,
+      stdout: "all green\n",
+      stderr: "",
+      durationMs: expect.any(Number),
+    })
+  })
+
+  it("turns the SDK's CommandExitError (non-zero exit) into a RESULT, not a rejection", async () => {
+    const commandsRun = vi.fn(async () => {
+      throw new commandExitErrorMock({
+        exitCode: 3,
+        stdout: "some output",
+        stderr: "failing tests",
+      })
+    })
+    const { booted } = await bootedOf(commandsRun)
+
+    const result = await booted.exec!({ command: "pnpm test" })
+
+    expect(result.exitCode).toBe(3)
+    expect(result.stdout).toBe("some output")
+    expect(result.stderr).toBe("failing tests")
+    expect(result.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it("forwards cwd, envs and timeoutMs to commands.run", async () => {
+    const commandsRun = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
+    const { booted } = await bootedOf(commandsRun)
+
+    await booted.exec!({
+      command: "ls -la",
+      cwd: "/home/user/app",
+      env: { FOO: "bar" },
+      timeoutMs: 5000,
+    })
+
+    expect(commandsRun).toHaveBeenCalledWith("ls -la", {
+      cwd: "/home/user/app",
+      envs: { FOO: "bar" },
+      timeoutMs: 5000,
+    })
+  })
+
+  it("sends no cwd/envs/timeoutMs options when the caller omits them", async () => {
+    const commandsRun = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
+    const { booted } = await bootedOf(commandsRun)
+
+    await booted.exec!({ command: "date" })
+
+    expect(commandsRun).toHaveBeenCalledWith("date", {})
+  })
+
+  it("propagates non-exit errors (command timeout etc.) as rejections", async () => {
+    const commandsRun = vi.fn(async () => {
+      throw new Error("timeout: exceeded command timeoutMs")
+    })
+    const { booted } = await bootedOf(commandsRun)
+
+    await expect(booted.exec!({ command: "sleep 999", timeoutMs: 1_000 })).rejects.toThrow(
+      /timeout/,
+    )
   })
 })
