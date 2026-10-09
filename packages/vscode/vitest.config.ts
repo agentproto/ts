@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config"
+import VITEST_MAX_WORKERS from "../../vitest.shared"
 
 // Pure-logic tests only — no VS Code extension host. The vscode module
 // is mocked via an alias so modules that import it for types/events load
@@ -13,5 +14,6 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     environment: "node",
     globals: false,
+    poolOptions: { threads: { maxThreads: VITEST_MAX_WORKERS } },
   },
 })

@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config"
+import VITEST_MAX_WORKERS from "../../vitest.shared"
 
 // Unit tests live under src/ only. The `templates/` trees ship app-skeleton
 // files (including a trame `tests/gate.test.mjs` written for node:test, to
@@ -6,5 +7,6 @@ import { defineConfig } from "vitest/config"
 export default defineConfig({
   test: {
     include: ["src/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    poolOptions: { threads: { maxThreads: VITEST_MAX_WORKERS } },
   },
 })

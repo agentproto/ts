@@ -480,6 +480,8 @@ jobs:
       # (push to main, CI_AFFECTED_ONLY=false) runs the shard's suites in full
       # through `pnpm -r`, exactly like the old unscoped `pnpm test` did — no
       # turbo test cache, so a green main is a real full run.
+      # VITEST_MAX_WORKERS is set to cap per-package worker count and prevent
+      # CPU saturation (see AGENTS.md `tests` section).
       - name: Run tests
         run: |
           FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4)
@@ -493,6 +495,7 @@ jobs:
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
+          VITEST_MAX_WORKERS: 3
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
