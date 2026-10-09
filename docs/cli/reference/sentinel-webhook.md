@@ -172,6 +172,31 @@ OutboxRow {
   older than 7 days age out to `dead`; the file is capped at 2000 rows.
 - Ordering across events is not guaranteed.
 
+## Delivery observability
+
+Each delivery attempt writes one log line: sentinel id, event, the callback
+**host** only, the HTTP status or a redacted error, the attempt number, and a
+final `delivered` / `dead`. URL paths, tokens, bodies and secrets are never
+logged.
+
+`sentinel_list` and `GET /sentinels` also add a `deliveryStatus` object to
+each sentinel that has outbox rows (it is omitted when the outbox holds none
+for that sentinel). `GET /sentinels/:id` does not carry it.
+
+```json
+{ "active": false, "lastDeliveryAt": "2026-10-09T10:00:00.000Z",
+  "lastStatus": "dead", "lastError": "delivered_rejected", "attempts": 5, "dead": 1 }
+```
+
+- `active`: at least one row is still `pending`.
+- `lastDeliveryAt`: time of the most recent attempt, when one ran.
+- `lastStatus`: `pending`, `delivered` or `dead`, for the most recent row.
+- `lastError`: present unless the last row was `delivered`; URLs are redacted.
+- `attempts`: attempts spent on the most recent row.
+- `dead`: number of `dead` rows the outbox still holds.
+
+The `events/subscribe` result is unchanged.
+
 ## Expiry
 
 `isExpired(sentinel)` is checked:
@@ -188,7 +213,7 @@ OutboxRow {
 | Tool | Description |
 |------|-------------|
 | `sentinel_watch` | Create a sentinel (subject or `prUrl`, types, until, provider, session target). |
-| `sentinel_list` | List all sentinels (credentials never returned). |
+| `sentinel_list` | List all sentinels (credentials never returned; webhook targets add `deliveryStatus`). |
 | `sentinel_unwatch` | Stop and remove a sentinel. |
 | `sentinel_poll_now` | Trigger an immediate poll cycle. |
 | `list_sentinel_adapters` | Report provider readiness. |
