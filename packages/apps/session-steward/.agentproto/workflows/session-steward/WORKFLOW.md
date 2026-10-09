@@ -56,6 +56,14 @@ inputs:
       Ask low-confidence idle sessions directly whether they're done. Off by
       default — it spends a turn in someone else's conversation.
     default: false
+  keepAliveAskAfterMinutes:
+    type: number
+    description: >-
+      With `askSessions`: a keepAlive session idle at least this many minutes,
+      whose worktree is merged or clean (nothing uncommitted, nothing ahead of
+      base), may be asked too. keepAlive only re-lights a session after a
+      daemon restart; it does not stop a declared DONE from closing it.
+    default: 240
   callerSessionId:
     type: string
     description: The calling session's id — never a candidate.
@@ -342,7 +350,9 @@ steps:
   - id: askQueue
     kind: transform
     name: Low-confidence idle sessions to ask directly
-    description: Entry-based. Empty unless `askSessions`.
+    description: >-
+      Entry-based. Empty unless `askSessions`. A keepAlive session is included
+      only once idle `keepAliveAskAfterMinutes` with a merged/clean worktree.
 
   - id: ask
     kind: map
@@ -488,8 +498,13 @@ as observed, never nudged.
 - `session_wrapup_apply` re-classifies each id right before acting and always
   refuses `keep`-class ids; this workflow never feeds it one.
 - Rules only ever close `close`/`stuck` ids; a `keepAlive` session is never
-  in those classes, so only a confident judge verdict (with `judgedBy`) can
-  close it — as FIX-9A allows.
+  in those classes, so only a confident judge verdict or a declared DONE (with
+  `judgedBy`) can close it — as FIX-9A allows. `keepAlive` means "re-light
+  after a daemon restart", not "never close": with `askSessions`, a keepAlive
+  session idle ≥ `keepAliveAskAfterMinutes` (default 240) whose worktree is
+  merged or clean (no uncommitted change, nothing ahead of base; unknown
+  worktree is not clean) is asked like any other. A steward close is a
+  deliberate end, so the sentinel never revives it.
 - A malformed judge reply is `active` with confidence 0 — never acted on.
 - The caller's own session (`callerSessionId`) is dropped from every list.
 - `blocked` / `needs-input` only FLAG a session; it keeps running.

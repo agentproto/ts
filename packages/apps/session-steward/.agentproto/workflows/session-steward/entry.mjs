@@ -57,6 +57,10 @@ import {
 
 const DEFAULT_IDLE_MINUTES = 30
 const DEFAULT_MIN_CONFIDENCE = 0.8
+/** A keepAlive session idle at least this long (and with nothing to lose in
+ *  its worktree) may be asked whether it is done. keepAlive only means "relight
+ *  me after a daemon restart"; it is not a promise to stay open forever. */
+const DEFAULT_KEEPALIVE_ASK_AFTER_MINUTES = 240
 /** Terminal sessions older than this (hours since they ended) are not listed
  *  as relabel candidates. */
 const DEFAULT_RELABEL_WINDOW_HOURS = 24
@@ -118,6 +122,7 @@ export function resolveSettings(input, modelRoles) {
     jevModel: typeof i.jevModel === "string" && i.jevModel.trim() ? i.jevModel.trim() : DEFAULT_JEV_MODEL,
     maxJudged: Math.floor(num(i.maxJudged, DEFAULT_MAX_JUDGED)),
     askSessions: i.askSessions === true,
+    keepAliveAskAfterMinutes: num(i.keepAliveAskAfterMinutes, DEFAULT_KEEPALIVE_ASK_AFTER_MINUTES, { min: 1 }),
     callerSessionId: typeof i.callerSessionId === "string" && i.callerSessionId ? i.callerSessionId : null,
     callerOrigin: typeof i.callerOrigin === "string" && i.callerOrigin ? i.callerOrigin : null,
     appId: typeof i.appId === "string" ? i.appId.trim() : DEFAULT_APP_ID,
@@ -427,8 +432,33 @@ export function collectVerdicts(evidenceResult, judgeQueue, jevResult, jevQueue,
 
 // ── ask (opt-in) ─────────────────────────────────────────────────────────
 
-/** Sessions to ask directly: judged below `minConfidence`, and idle, not
- *  keepAlive, not awaitingInput — only when `askSessions`. */
+/** Nothing to lose in the session's worktree: it is merged (the plan's signal
+ *  or the PR state), or it is a linked worktree with no uncommitted changes
+ *  and no commits beyond the base. No worktree info at all is unknown, not
+ *  clean — a session in a plain checkout stays out. */
+export function worktreeHasNothingToLose(evidence) {
+  if (evidence?.signals?.worktreeMerged === true) return true
+  const wt = evidence?.worktree
+  if (!wt) return false
+  if (wt.pr?.state === "merged") return true
+  return wt.dirty === false && wt.ahead === 0
+}
+
+/** keepAlive is the restart-relight flag; closing is a separate decision. A
+ *  keepAlive session may be asked once it has been idle for
+ *  `keepAliveAskAfterMinutes` and its worktree holds nothing to lose. */
+export function keepAliveAskEligible(evidence, settings) {
+  return (
+    evidence?.keepAlive === true &&
+    typeof evidence.idleMinutes === "number" &&
+    evidence.idleMinutes >= settings.keepAliveAskAfterMinutes &&
+    worktreeHasNothingToLose(evidence)
+  )
+}
+
+/** Sessions to ask directly: judged below `minConfidence`, not awaitingInput
+ *  or busy, and either not keepAlive or a long-idle keepAlive with a worktree
+ *  that holds nothing to lose — only when `askSessions`. */
 export function buildAskQueue(verdicts, settings) {
   if (!settings?.askSessions) return []
   return (verdicts ?? [])
@@ -436,7 +466,7 @@ export function buildAskQueue(verdicts, settings) {
       r =>
         r.evidence &&
         r.confidence < settings.minConfidence &&
-        r.evidence.keepAlive !== true &&
+        (r.evidence.keepAlive !== true || keepAliveAskEligible(r.evidence, settings)) &&
         r.evidence.awaitingInput !== true &&
         r.evidence.busy !== true,
     )
@@ -995,6 +1025,7 @@ export default {
     judgeModel: { type: "string", description: `Model for the agent judge. Default: the \`${ROLE_JUDGE_SESSION}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     maxJudged: { type: "number", description: `Most \`judge\` sessions judged per run, most RAM first. Default ${DEFAULT_MAX_JUDGED}.`, default: DEFAULT_MAX_JUDGED },
     askSessions: { type: "boolean", description: "Ask low-confidence idle sessions directly whether they're done. Default false — it spends a turn in someone else's conversation.", default: false },
+    keepAliveAskAfterMinutes: { type: "number", description: `With \`askSessions\`: a keepAlive session idle at least this many minutes, whose worktree is merged or clean (nothing uncommitted, nothing ahead of base), may be asked too. keepAlive only re-lights a session after a daemon restart; it does not stop a declared DONE from closing it. Default ${DEFAULT_KEEPALIVE_ASK_AFTER_MINUTES}.`, default: DEFAULT_KEEPALIVE_ASK_AFTER_MINUTES },
     callerSessionId: { type: "string", description: "The calling session's id — never a candidate. The CLI passes AGENTPROTO_SESSION_ID." },
     callerOrigin: { type: "string", description: "The calling session's origin (`cron:<jobId>`) — an older run of the SAME cron job is never judged as user work." },
     appId: { type: "string", description: `Installed app whose \`app_state\` ledger holds the verdict memory. Default ${DEFAULT_APP_ID}.` },
