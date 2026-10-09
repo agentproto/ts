@@ -101,7 +101,9 @@ export interface SessionEvidence {
     changes?: { modified: number; staged: number; untracked: number }
     ahead?: number
     behind?: number
-    pr: null | { state: string; number?: number }
+    /** `url` is the forge web URL of the session's OWN repo, so a report can
+     *  say `owner/repo#N` instead of an ambiguous bare number. */
+    pr: null | { state: string; number?: number; url?: string }
   }
 }
 
@@ -410,7 +412,13 @@ export function buildSessionEvidence(input: {
             dirty: worktree.dirty,
             ...(worktree.changes ? { changes: worktree.changes } : {}),
             ...(worktree.base ? { ahead: worktree.base.ahead, behind: worktree.base.behind } : {}),
-            pr: worktree.pr ? { state: worktree.pr.state, ...(worktree.pr.number !== undefined ? { number: worktree.pr.number } : {}) } : null,
+            pr: worktree.pr
+              ? {
+                  state: worktree.pr.state,
+                  ...(worktree.pr.number !== undefined ? { number: worktree.pr.number } : {}),
+                  ...(worktree.pr.url ? { url: worktree.pr.url } : {}),
+                }
+              : null,
           },
         }
       : {}),

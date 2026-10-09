@@ -116,9 +116,9 @@ describe("planSessionWrapup — class: judge (ambiguous)", () => {
     expect(entries[0]!.reasons).toContain("pendingToolCall")
   })
 
-  it("status:starting, not yet stuck (young) ⇒ judge", () => {
+  it("status:starting, not yet stuck (young) ⇒ keep, never a judge candidate", () => {
     const entries = plan([row({ id: "a", status: "starting", pid: null })])
-    expect(entries[0]!.class).toBe("judge")
+    expect(entries[0]!.class).toBe("keep")
     expect(entries[0]!.reasons).toContain("starting")
   })
 

@@ -106,6 +106,30 @@ describe("session_wrapup_plan", () => {
     registry.shutdown()
   })
 
+  it("carries the worktree PR state into the plan signals: open → worktreePrOpen, merged → worktreeMerged", async () => {
+    const openLister: WorktreeStatusLister = async (root, options) =>
+      (await mergedLister(root, options)).map(v => ({ ...v, pr: { state: "open", number: 505 } }))
+    for (const [lister, expected, absent] of [
+      [openLister, "worktreePrOpen", "worktreeMerged"],
+      [mergedLister, "worktreeMerged", "worktreePrOpen"],
+    ] as const) {
+      const { client, registry, close } = await buildHarness(lister)
+      const desc = registry.spawnAgent({ workspaceSlug: "default", cwd: "/tmp/wt/x", agentSession: idleAgentSession("acp-pr"), adapterSlug: "claude-code" })
+      const rt = registry.get(desc.id)!
+      rt.lastActivityAt = OLD_TIMESTAMP
+      rt.worktreePath = "/tmp/wt/x"
+      rt.mainRepoPath = "/tmp/repo"
+      const parsed = JSON.parse(textOf(await client.callTool({ name: "session_wrapup_plan", arguments: {} }))) as {
+        entries: Array<{ sessionId: string; class: string; signals?: Record<string, unknown> }>
+      }
+      const entry = parsed.entries.find(e => e.sessionId === desc.id)
+      expect(entry?.signals?.[expected]).toBe(true)
+      expect(entry?.signals?.[absent]).toBeUndefined()
+      await close()
+      registry.shutdown()
+    }
+  })
+
   it("omits keep-class entries by default, includes them with includeKeep:true", async () => {
     const { client, registry, close } = await buildHarness()
     const desc = registry.spawnAgent({

@@ -64,6 +64,7 @@ export function isUsefulLoopCommand(signature) {
 }
 
 const READ_TOOLS = new Set(["read", "cat", "rg", "grep", "sed", "head", "tail", "less", "view", "readfile"])
+const FILE_EXT = /\.(md|ts|tsx|js|mjs|cjs|json|txt|py|go|rs|sql|yml|yaml|toml|log|sh)$/
 const READ_VERB_WORD = /^["']?(cat|rg|grep|sed|head|tail|less|view)["']?$/
 
 /**
@@ -83,15 +84,29 @@ export function readTargetOf(record) {
   const segments = command !== undefined && !readTool ? command.split(/&&|\|\||\||;/) : [undefined]
   for (const seg of segments) {
     let tokens = seg !== undefined ? seg.trim().split(/\s+/) : command !== undefined ? command.split(/\s+/) : args
+    let searchVerb = tool === "rg" || tool === "grep"
     if (seg !== undefined) {
       const first = tokens.findIndex((t) => !t.includes("=") || t.startsWith("-"))
       if (first < 0 || !READ_VERB_WORD.test(tokens[first])) continue
+      searchVerb = /^["']?(rg|grep)["']?$/.test(tokens[first])
       tokens = tokens.slice(first + 1)
     }
+    // `rg`/`grep` take a pattern first, then search roots: the pattern is not
+    // a file, and a root without an extension is a directory (a recursive
+    // search of one tree is not "the same file re-read").
+    let patternPending = searchVerb
     for (const raw of tokens) {
       const t = raw.replace(/^['"]|['"]$/g, "")
       if (!t || t.startsWith("-") || t.includes("=")) continue
-      if (t.includes("/") || /\.(md|ts|tsx|js|mjs|cjs|json|txt|py|go|rs|sql|yml|yaml|toml)$/.test(t)) return t
+      if (patternPending) {
+        patternPending = false
+        continue
+      }
+      if (searchVerb) {
+        if (FILE_EXT.test(t)) return t
+        continue
+      }
+      if (t.includes("/") || FILE_EXT.test(t)) return t
     }
     if (seg === undefined) return args[0] ?? null
   }
@@ -256,7 +271,7 @@ export function isCommitOrPrCall(record) {
 
 /**
  * The done fast-path: the last tool call is `message_parent(kind:done)` AND
- * the window shows a commit/PR (or the worktree/PR state or the derived
+ * the window shows a commit/PR (or a MERGED worktree PR or the derived
  * outcome already proves one). That is `done` without spending a judge.
  * Anything short of both halves returns `{ done: false }`.
  */
@@ -267,9 +282,9 @@ export function detectFastPathDone(input = {}) {
   if (!doneMessage) return { done: false, reason: "no message_parent(kind:done)" }
   const prState = input.worktree?.pr?.state
   const merged = prState === "merged" || prState === "MERGED"
-  const opened = prState === "open" || prState === "OPEN"
   const outcomePrs = Array.isArray(input.outcome?.pullRequests) ? input.outcome.pullRequests.length : 0
-  const hasCommitOrPr = calls.some(isCommitOrPrCall) || merged || opened || outcomePrs > 0
+  // An OPEN worktree PR is work awaiting review, not proof of completion.
+  const hasCommitOrPr = calls.some(isCommitOrPrCall) || merged || outcomePrs > 0
   if (!hasCommitOrPr) return { done: false, reason: "message_parent(kind:done) but no commit/PR" }
   return { done: true, reason: merged || outcomePrs > 0 ? "message_parent(kind:done) + merged/opened PR" : "message_parent(kind:done) + commit" }
 }
@@ -296,82 +311,194 @@ export function prNumbersOf(session) {
 
 /** Relabel verdict for "no positive evidence either way". */
 export const UNKNOWN_VERDICT = "unknown"
+/** Relabel verdict for "a PR/outcome exists but work remains" (report only —
+ *  the steward never closes on it, and a terminal session has nothing to flag). */
+export const FOLLOW_UP_VERDICT = "needs-follow-up"
 
-const fmtPrs = nums => nums.map(n => `#${n}`).join(", ")
 const isMergedState = state => state === "merged" || state === "MERGED"
+const isOpenState = state => state === "open" || state === "OPEN"
+
+/** `owner/repo` out of a GitHub PR URL; undefined when it names no repo. */
+export function repoOfPrUrl(url) {
+  const m = /github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/\d+/.exec(String(url ?? ""))
+  return m ? m[1] : undefined
+}
+
+/** `owner/repo#N` when the repo is known, else `#N` — a bare number is
+ *  ambiguous across repos (G3: `#504` was agentik-studio's, not agentproto's). */
+export const fmtPr = (n, repo) => (repo ? `${repo}#${n}` : `#${n}`)
+const fmtPrs = (nums, repos) => nums.map(n => fmtPr(n, repos?.[n])).join(", ")
+
+/** owner/repo per PR number from the session's `outcome.artifacts` PR refs
+ *  (`…github.com/OWNER/REPO/pull/N`) — the only list-row field that carries
+ *  a repo. Plain object (journal-safe). */
+export function prReposOf(session) {
+  const repos = {}
+  for (const a of Array.isArray(session?.outcome?.artifacts) ? session.outcome.artifacts : []) {
+    if (a?.type !== "pr") continue
+    const m = /\/pull\/(\d+)/.exec(String(a.ref ?? ""))
+    const repo = repoOfPrUrl(a.ref)
+    if (m && repo) repos[Number(m[1])] = repo
+  }
+  return repos
+}
 
 /**
  * A terminal session that still carries no derived outcome and no wrapup
  * flag is a relabel CANDIDATE — visible instead of invisible, as the log
- * asks. The proposed verdict is `done` when the session's own record shows a
- * PR (merged, or merely opened — the PR is the hand-off), else `unknown`: a
- * session with no PR is as likely finished as abandoned, and only evidence
- * ({@link refineRelabel}) can say which.
- * `reason` carries the evidence (`PR #1738 merged`, `PRs #1738, #1740 opened`).
+ * asks. A PR is never proof the session finished, so the proposal is
+ * deliberately cautious: `done` only when the session's OWN record shows its
+ * PR merged (a worktree PR it never recorded is shared with sibling sessions
+ * and credits nobody); otherwise `unknown`. {@link refineRelabel} sharpens
+ * it with evidence and runs the remaining-work check.
  */
 export function terminalRelabelCandidate(session) {
   if (!TERMINAL_STATUSES.has(String(session?.status ?? ""))) return { candidate: false, reason: "not terminal" }
   if (session?.outcome?.verdict) return { candidate: false, reason: "outcome already recorded" }
   if (session?.wrapupFlag) return { candidate: false, reason: "already flagged" }
   const prs = prNumbersOf(session)
+  const repos = prReposOf(session)
   const wt = session?.worktree?.pr
-  // A worktree can be shared by several sessions, so its merged PR is not
-  // proof THIS one finished: a session whose last turn errored is not credited
-  // with it, and a PR the session did not record itself is labelled as the
-  // worktree's.
-  const ownMerged = Number.isInteger(wt?.number) && prs.includes(wt.number)
-  if (isMergedState(wt?.state) && (ownMerged || !session?.lastTurnErroredAt)) {
-    if (Number.isInteger(wt.number)) {
-      return { candidate: true, proposedVerdict: "done", reason: `PR ${fmtPrs([wt.number])} merged${prs.includes(wt.number) ? "" : " (worktree)"}`, prs }
-    }
-    return { candidate: true, proposedVerdict: "done", reason: prs.length > 0 ? `PR ${fmtPrs(prs)} merged` : "PR merged", prs }
+  if (isMergedState(wt?.state) && Number.isInteger(wt?.number) && prs.includes(wt.number)) {
+    return { candidate: true, proposedVerdict: "done", reason: `PR ${fmtPr(wt.number, repos[wt.number])} merged`, prs, repos }
   }
   if (prs.length > 0) {
-    return { candidate: true, proposedVerdict: "done", reason: `PR${prs.length > 1 ? "s" : ""} ${fmtPrs(prs)} opened`, prs }
+    return { candidate: true, proposedVerdict: UNKNOWN_VERDICT, reason: `PR${prs.length > 1 ? "s" : ""} ${fmtPrs(prs, repos)} recorded, state unknown`, prs, repos }
   }
-  return { candidate: true, proposedVerdict: UNKNOWN_VERDICT, reason: "terminal, no PR recorded — outcome unknown", prs }
+  return { candidate: true, proposedVerdict: UNKNOWN_VERDICT, reason: "terminal, no PR recorded — outcome unknown", prs, repos }
 }
 
 /**
- * Sharpen one relabel proposal with its `session_evidence` answer: a merged
- * PR / merged worktree (`pullRequests.merged`, `worktree.pr.state`) →
- * `done` with `PR #N merged`; an open or recorded PR the list row did not
- * carry → `done`. Anything else leaves the proposal untouched.
+ * Sharpen one relabel proposal with its `session_evidence` answer.
+ *  - the worktree PR is merged AND the session recorded it → `done`;
+ *  - merged but NOT recorded by this session (a shared worktree) → `unknown`;
+ *  - open and the session's own → `needs-follow-up` (awaiting review/merge);
+ *    open and not its own → `unknown`;
+ *  - no PR: `abandoned` only on positive evidence (errored / never ran).
+ * Whatever lands on `done` then goes through the remaining-work check on the
+ * last assistant turn: a question or announced next step → `needs-follow-up`.
  */
 export function refineRelabel(item, evidence) {
   if (!evidence) return item
   const wt = evidence.worktree?.pr
-  const state = wt?.state ?? evidence.pullRequests?.state ?? null
+  const state = wt?.state ?? null
   const known = Array.isArray(item?.prs) ? item.prs : []
-  // `pullRequests.merged` and `worktree.pr` describe the whole worktree, which
-  // sibling sessions share: a session that recorded no PR of its own and whose
-  // last turn errored is not credited with a sibling's merge.
-  const ownPr = known.length > 0 || (evidence.pullRequests?.opened ?? 0) > 0
-  const errored = typeof evidence.lastTurnError === "string" && evidence.lastTurnError.trim() !== ""
-  const credited = ownPr || !errored
-  const merged = credited && (isMergedState(state) || (evidence.pullRequests?.merged ?? 0) > 0)
-  if (merged) {
-    const n = Number.isInteger(wt?.number) ? wt.number : known.length === 1 ? known[0] : undefined
-    const others = known.filter(k => k !== n)
-    // A PR number the session did not record itself is the worktree's.
-    const shared = n !== undefined && !known.includes(n) ? " (worktree)" : ""
-    const reason = (n !== undefined ? `PR #${n} merged${shared}` : "PR merged") + (others.length > 0 && n !== undefined ? `; also opened ${fmtPrs(others)}` : "")
-    return { ...item, proposedVerdict: "done", reason }
-  }
-  if (item?.proposedVerdict === "done") return item
-  if (credited && (state === "open" || state === "OPEN")) {
-    return { ...item, proposedVerdict: "done", reason: Number.isInteger(wt?.number) ? `PR #${wt.number} open` : "PR open" }
-  }
-  const opened = evidence.pullRequests?.opened ?? 0
-  if (opened > 0) return { ...item, proposedVerdict: "done", reason: `${opened} PR${opened > 1 ? "s" : ""} opened` }
-  // No PR: `abandoned` needs positive evidence the session did not finish.
-  if (item?.proposedVerdict === UNKNOWN_VERDICT) {
+  const n = Number.isInteger(wt?.number) ? wt.number : undefined
+  const repos = { ...(item?.repos ?? {}) }
+  const wtRepo = repoOfPrUrl(wt?.url)
+  if (n !== undefined && wtRepo) repos[n] = wtRepo
+  const label = n !== undefined ? fmtPr(n, repos[n]) : "PR"
+  const own = n !== undefined && known.includes(n)
+  let next = item
+  if (isMergedState(state) && n !== undefined) {
+    next = own
+      ? { ...item, proposedVerdict: "done", reason: `PR ${label} merged` }
+      : { ...item, proposedVerdict: UNKNOWN_VERDICT, reason: `worktree PR ${label} merged, not recorded by this session (shared worktree)` }
+  } else if (isOpenState(state) && n !== undefined) {
+    next = own
+      ? { ...item, proposedVerdict: FOLLOW_UP_VERDICT, reason: `PR ${label} open — awaiting review/merge` }
+      : { ...item, proposedVerdict: UNKNOWN_VERDICT, reason: `worktree PR ${label} open, not recorded by this session` }
+  } else if ((evidence.pullRequests?.opened ?? 0) > 0) {
+    const opened = evidence.pullRequests.opened
+    next = { ...item, proposedVerdict: UNKNOWN_VERDICT, reason: `${opened} PR${opened > 1 ? "s" : ""} opened, state unknown` }
+  } else if (item?.proposedVerdict === UNKNOWN_VERDICT) {
     if (typeof evidence.lastTurnError === "string" && evidence.lastTurnError.trim()) {
-      return { ...item, proposedVerdict: "abandoned", reason: `no PR, last turn errored: ${evidence.lastTurnError.trim().slice(0, 80)}` }
+      next = { ...item, proposedVerdict: "abandoned", reason: `no PR, last turn errored: ${evidence.lastTurnError.trim().slice(0, 80)}` }
+    } else if (evidence.turnsCompleted === 0) {
+      next = { ...item, proposedVerdict: "abandoned", reason: "no PR, no turn ever completed" }
     }
-    if (evidence.turnsCompleted === 0) return { ...item, proposedVerdict: "abandoned", reason: "no PR, no turn ever completed" }
   }
-  return item
+  if (Object.keys(repos).length > 0) next = { ...next, repos }
+  if (next.proposedVerdict === "done") {
+    const turns = Array.isArray(evidence.turns) ? evidence.turns : []
+    const lastAssistant = [...turns].reverse().find(t => t?.role === "assistant")
+    const pending = remainingWork({ lastAssistantText: lastAssistant?.text })
+    if (pending.length > 0) {
+      return { ...next, proposedVerdict: FOLLOW_UP_VERDICT, reason: `${next.reason}; remaining work: ${pending.join(", ")}` }
+    }
+  }
+  return next
+}
+
+// ── remaining-work detection (G11) ───────────────────────────────────────
+//
+// A PR, a merged worktree or an ended parent says the work MOVED ON, never
+// that THIS session finished: a child whose last message asks something or
+// announces a next step has an orphaned obligation once its parent is gone.
+// Closing it silently drops that. These checks therefore turn a would-be
+// close / `done` into a FLAG; they are conservative on purpose (a false
+// positive costs one flag, a false negative drops a question).
+
+/** A `?` that ends a sentence, a quote or a bracket — not a URL query (`?a=1`). */
+const QUESTION_MARK = /\?(?=\s|$|["'»”’)\]*_`])/
+/** How far back from the end of the message a `?` still counts as "the
+ *  question this session left open". */
+const QUESTION_WINDOW_CHARS = 240
+
+/** Deferred-work phrasing, EN + FR. `kind` names the signal in the flag note. */
+const PENDING_PATTERNS = [
+  { kind: "open question", re: /\b(open\s+question|unanswered|question\s+ouverte|sans\s+réponse|j'?ai\s+posé\s+la\s+question|the\s+question\s+i\s+(?:put|sent|asked))\b/i },
+  { kind: "asks the user", re: /\b(should\s+i|should\s+we|shall\s+i|shall\s+we|do\s+you\s+want|would\s+you\s+like|dois-je|faut-il|je\s+corrige|voulez-vous|veux-tu)\b/i },
+  { kind: "waiting", re: /\b(waiting\s+(?:for|on)|i'?ll\s+report|i\s+will\s+report|en\s+attente|j'?attends|dans\s+l'?attente)\b/i },
+  { kind: "next step", re: /\b(next\s+steps?|to\s+do\s+next|follow[- ]?ups?|todo|à\s+faire|reste\s+à|prochaines?\s+étapes?|il\s+faudrait|avant\s+le\s+prochain|(?:i|we)\s+(?:still\s+)?(?:need|have)\s+to)\b|\breste\s*:/i },
+  { kind: "recommendation", re: /\b(recommandation|je\s+recommande|i\s+recommend|i'?d\s+recommend|recommendation)\b/i },
+]
+/** "nothing left to do", "rien à faire", "no follow-up" — a negation right
+ *  before a marker makes it a clean sign-off, not a pending item. */
+const NEGATION_BEFORE = /\b(nothing|no|none|rien|aucune?|n'?ai\s+rien|ne\s+reste\s+rien|no\s+further|no\s+more)\b[^.!?]{0,30}$/i
+
+/** The last sentence announces an action rather than reporting a result
+ *  ("Now drive it with the built CLI.") — the transcript stops mid-work.
+ *  A sentence that also states an outcome ("Now it works.") does not count. */
+const ANNOUNCES_NEXT = /^(?:now|next|then|ensuite|maintenant|puis|let\s+me(?!\s+know)|let'?s|i'?ll|i\s+will|je\s+vais|on\s+va)\b/i
+const STATES_OUTCOME = /\b(is|are|was|were|works?|passes?|passed|green|done|merged|fixed|complete[d]?|ready|ok|terminé|fini|fonctionne)\b/i
+
+function announcesNextAction(flat) {
+  const sentences = flat.split(/(?<=[.!?])\s+/).filter(Boolean)
+  const last = sentences.at(-1)?.trim()
+  return !!last && last.length <= 160 && ANNOUNCES_NEXT.test(last) && !STATES_OUTCOME.test(last)
+}
+
+/**
+ * Why a session's LAST assistant message still owes something, or `null`
+ * when it reads as a clean final report. Reasons: `question to the user`,
+ * `announced next action`, `open question`, `asks the user`, `waiting`, `next step`,
+ * `recommendation`.
+ * The tail the plan carries is ~600 chars, whitespace-flattened.
+ */
+export function pendingWorkReason(text) {
+  if (typeof text !== "string" || text.trim().length === 0) return null
+  const flat = text.replace(/\s+/g, " ").trim()
+  const recent = flat.slice(-QUESTION_WINDOW_CHARS)
+  if (QUESTION_MARK.test(recent)) return "question to the user"
+  if (announcesNextAction(flat)) return "announced next action"
+  for (const { kind, re } of PENDING_PATTERNS) {
+    const m = re.exec(flat)
+    if (!m) continue
+    if (NEGATION_BEFORE.test(flat.slice(Math.max(0, m.index - 40), m.index))) continue
+    return kind
+  }
+  return null
+}
+
+/** Boolean form of {@link pendingWorkReason}. */
+export const hasPendingWork = text => pendingWorkReason(text) !== null
+
+/** PR states that mean "still waiting on someone" (not merged, not closed). */
+const isOpenPrState = state => state === "open" || state === "OPEN"
+
+/**
+ * The remaining-work check for one session: reasons it must NOT be closed
+ * or labelled `done`. Inputs are whatever the caller has — the last
+ * assistant text and/or the worktree's PR state; missing inputs add no
+ * reason. An empty list means nothing pending was found.
+ */
+export function remainingWork({ lastAssistantText, prState } = {}) {
+  const reasons = []
+  const pending = pendingWorkReason(lastAssistantText)
+  if (pending) reasons.push(pending)
+  if (isOpenPrState(prState)) reasons.push("open PR awaiting review/merge")
+  return reasons
 }
 
 // ── self-exclusion (mission item 7) ──────────────────────────────────────
@@ -577,15 +704,26 @@ export function saturationHeader(hostLoad) {
  * Why there is nothing to do, stated explicitly instead of an empty report:
  * how many live sessions were seen, how many were busy, how many were
  * terminal (and whether any still need a relabel), and how many were
- * excluded (self / same cron job / pinned / pty / keepAlive).
+ * excluded — with a per-reason breakdown (`counts.excludedByReason`) so the
+ * report says exactly WHY (G6), e.g. `6 excluded (2 same_cron_job_as_caller,
+ * 3 pty, 1 archived)`.
  */
 export function explainZeroCandidates(counts = {}) {
   const n = (v) => (typeof v === "number" ? v : 0)
+  const byReason = counts.excludedByReason
+  let excluded = `${n(counts.excluded)} excluded`
+  const breakdown = []
+  if (byReason && typeof byReason === "object") {
+    for (const [reason, count] of Object.entries(byReason)) {
+      if (count > 0) breakdown.push(`${count} ${reason}`)
+    }
+  }
+  if (breakdown.length > 0) excluded += ` (${breakdown.join(", ")})`
   return (
     `0 candidates: ${n(counts.live)} live (` +
     `${n(counts.busy)} busy, ${n(counts.idle)} idle), ` +
     `${n(counts.terminal)} terminal (${n(counts.terminalRelabel)} need a relabel), ` +
-    `${n(counts.excluded)} excluded (self/cron/pinned/pty/keepAlive)`
+    excluded
   )
 }
 

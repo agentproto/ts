@@ -15,6 +15,7 @@ import type { AgentSessionHost } from "@agentproto/workflow-runtime"
 import { createDaemonToolRegistry, type DispatchTool } from "../workflow-tool-registry.js"
 import { judgeSessionWithJev } from "../jev-client.js"
 import { modelRoles } from "../model-roles-tools.js"
+import { G11_REAL_TAILS } from "./fixtures/session-steward-g11-tails.js"
 
 const CRON_RULES_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -193,7 +194,7 @@ function fakeTools(opts: {
         keepAlive: opts.keepAlive?.has(id) ?? false,
         awaitingInput: false,
         busy: false,
-        turns: [
+        turns: (extra as { turns?: unknown[] } | undefined)?.turns ?? [
           { role: "user", text: "do the thing" },
           { role: "assistant", text: askText ?? "working on it" },
         ],
@@ -899,7 +900,7 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     const term = terminalRow("sess_term", hoursAgo(1), { worktree: { pr: { state: "merged" } } })
     const f = fakeTools({ entries: [entry("idle_1", "judge", 100)], liveExtra: [term] })
     const out = await run(f.dispatchTool, judgeHost({ idle_1: verdict("idle_1", "active", 0.2) }).host, {})
-    expect(out.relabel).toEqual([expect.objectContaining({ sessionId: "sess_term", proposedVerdict: "done" })])
+    expect(out.relabel).toEqual([expect.objectContaining({ sessionId: "sess_term", proposedVerdict: "unknown" })])
     expect(out.report).toContain("Terminal sessions missing an outcome")
   })
 
@@ -917,8 +918,8 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(ids[1]).toBe("new_0")
     const lines = out.report.split("\n").filter(l => /^- sess|^- (new|old)_/.test(l) && l.includes("→"))
     expect(lines).toHaveLength(20)
-    expect(lines[0]).toContain("new_merged → done")
-    expect(out.report).toContain("31 ended in the last 24h (82 without an outcome in all) — done: 1, unknown: 30")
+    expect(lines[0]).toContain("new_merged → unknown")
+    expect(out.report).toContain("31 ended in the last 24h (82 without an outcome in all) — unknown: 31")
     expect(out.report).toContain("… and 62 more (older/omitted)")
     expect(out.report).not.toContain("old_0")
   })
@@ -936,33 +937,49 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
       return { out, calls: f.calls, byId: Object.fromEntries(out.relabel.map(r => [r.sessionId, r])) }
     }
 
-    it("opened PRs on the list row → done with the PR numbers in the reason", async () => {
+    it("recorded PRs on the list row → unknown, repo-qualified (G3), never done", async () => {
       const { byId, out } = await relabelOf([prRow("sess_prs", [1740, 1738]), prRow("sess_one", [1743]), terminalRow("sess_none", hoursAgo(1))])
-      expect(byId.sess_prs).toMatchObject({ proposedVerdict: "done", reason: "PRs #1738, #1740 opened" })
-      expect(byId.sess_one).toMatchObject({ proposedVerdict: "done", reason: "PR #1743 opened" })
+      expect(byId.sess_prs).toMatchObject({ proposedVerdict: "unknown", reason: "PRs o/r#1738, o/r#1740 recorded, state unknown" })
+      expect(byId.sess_one).toMatchObject({ proposedVerdict: "unknown", reason: "PR o/r#1743 recorded, state unknown" })
       expect(byId.sess_none).toMatchObject({ proposedVerdict: "unknown", reason: "terminal, no PR recorded — outcome unknown" })
-      expect(out.report).toContain("- sess_prs → done — PRs #1738, #1740 opened")
-      expect(out.report).toContain("done: 2, unknown: 1")
+      expect(out.report).toContain("- sess_prs → unknown — PRs o/r#1738, o/r#1740 recorded, state unknown")
+      expect(out.report).toContain("unknown: 3")
     })
 
-    it("a merged PR/worktree in session_evidence → done with 'PR #N merged'", async () => {
+    it("a merged PR the session recorded itself → done; a merged shared-worktree PR it never recorded → unknown (G2)", async () => {
       const { byId } = await relabelOf(
         [prRow("sess_merged", [1738, 1740]), terminalRow("sess_wt", hoursAgo(2))],
         {
-          sess_merged: { worktree: { branch: "wt/x", pr: { state: "merged", number: 1738 } }, pullRequests: { opened: 2, merged: 1, state: "merged" } },
+          sess_merged: { worktree: { branch: "wt/x", pr: { state: "merged", number: 1738, url: "https://github.com/agentik/agentik-studio/pull/1738" } }, pullRequests: { opened: 2, merged: 1, state: "merged" } },
           sess_wt: { worktree: { branch: "wt/y", pr: { state: "merged", number: 9 } }, pullRequests: { opened: 0, merged: 1, state: "merged" } },
         },
       )
-      expect(byId.sess_merged).toMatchObject({ proposedVerdict: "done", reason: "PR #1738 merged; also opened #1740" })
-      expect(byId.sess_wt).toMatchObject({ proposedVerdict: "done", reason: "PR #9 merged (worktree)" })
+      expect(byId.sess_merged).toMatchObject({ proposedVerdict: "done", reason: "PR agentik/agentik-studio#1738 merged" })
+      expect(byId.sess_wt).toMatchObject({ proposedVerdict: "unknown", reason: "worktree PR #9 merged, not recorded by this session (shared worktree)" })
     })
 
-    it("an open worktree PR the row did not carry → done; no PR anywhere stays unknown", async () => {
+    it("a merged PR whose session left a question in its last message → needs-follow-up, not done (G1)", async () => {
+      const merged = { worktree: { branch: "wt/x", pr: { state: "merged", number: 31 } }, pullRequests: { opened: 1, merged: 1, state: "merged" } }
+      const withTurns = (text: string) => ({ ...merged, turns: [{ role: "user", text: "go" }, { role: "assistant", text }] })
       const { byId } = await relabelOf(
-        [terminalRow("sess_open", hoursAgo(1)), terminalRow("sess_nothing", hoursAgo(2))],
-        { sess_open: { worktree: { branch: "wt/z", pr: { state: "open", number: 77 } }, pullRequests: { opened: 0, merged: 0, state: "open" } } },
+        [prRow("sess_clean", [31]), prRow("sess_ask", [31])],
+        { sess_clean: withTurns("Merged and verified. Nothing left to do."), sess_ask: withTurns("Merged. Should I also delete the branch?") },
       )
-      expect(byId.sess_open).toMatchObject({ proposedVerdict: "done", reason: "PR #77 open" })
+      expect(byId.sess_clean).toMatchObject({ proposedVerdict: "done" })
+      expect(byId.sess_ask?.proposedVerdict).toBe("needs-follow-up")
+      expect(byId.sess_ask?.reason).toContain("remaining work: question to the user")
+    })
+
+    it("an OPEN PR the session recorded → needs-follow-up (never done); an open PR it did not record → unknown (G1)", async () => {
+      const { byId } = await relabelOf(
+        [prRow("sess_29762d5d", [505]), terminalRow("sess_other", hoursAgo(2)), terminalRow("sess_nothing", hoursAgo(3))],
+        {
+          sess_29762d5d: { worktree: { branch: "wt/z", pr: { state: "open", number: 505, url: "https://github.com/agentik/agentik-studio/pull/505" } }, pullRequests: { opened: 1, merged: 0, state: "open" } },
+          sess_other: { worktree: { branch: "wt/z", pr: { state: "open", number: 505 } }, pullRequests: { opened: 0, merged: 0, state: "open" } },
+        },
+      )
+      expect(byId.sess_29762d5d).toMatchObject({ proposedVerdict: "needs-follow-up", reason: "PR agentik/agentik-studio#505 open — awaiting review/merge" })
+      expect(byId.sess_other).toMatchObject({ proposedVerdict: "unknown", reason: "worktree PR #505 open, not recorded by this session" })
       expect(byId.sess_nothing).toMatchObject({ proposedVerdict: "unknown" })
     })
 
@@ -982,7 +999,7 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
 
     it("a failed evidence lookup keeps the list-row proposal", async () => {
       const { byId } = await relabelOf([prRow("sess_x", [5]), terminalRow("sess_y", hoursAgo(2))], { sess_x: "throw", sess_y: "throw" })
-      expect(byId.sess_x).toMatchObject({ proposedVerdict: "done", reason: "PR #5 opened" })
+      expect(byId.sess_x).toMatchObject({ proposedVerdict: "unknown", reason: "PR o/r#5 recorded, state unknown" })
       expect(byId.sess_y).toMatchObject({ proposedVerdict: "unknown" })
     })
 
@@ -1093,10 +1110,116 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(out.report).toContain("verdict memory: off (appId empty)")
   })
 
+  it("breaks the excluded count down per reason, never lumping cron sessions in (G6)", async () => {
+    const rows = [
+      busyRow("sess_pinned", { pinned: true }),
+      busyRow("sess_pty", { pty: true }),
+      busyRow("sess_arch", { archived: true }),
+      busyRow("sess_ka", { keepAlive: true }),
+      busyRow("sess_ka2", { keepAlive: true }),
+      busyRow("sess_cron_other", { origin: "cron:other-job" }),
+    ]
+    const f = fakeTools({ entries: [], liveExtra: rows })
+    const out = await run(f.dispatchTool, judgeHost({}).host, { callerSessionId: SELF })
+    const by = (out.scan.counts as unknown as { excludedByReason: Record<string, number> }).excludedByReason
+    expect(by).toEqual({ pinned: 1, pty: 1, archived: 1, keepAlive: 2 })
+    expect(out.report).toContain("5 excluded (")
+    expect(out.report).toContain("2 keepAlive")
+    expect(out.report).toContain("1 archived")
+    expect(out.report).not.toContain("self/cron")
+    // another cron job's session is NOT excluded: it is a normal busy session.
+    expect(out.scan.counts.busy).toBe(1)
+  })
+
   it("reports why there were 0 candidates when nothing is idle", async () => {
     const f = fakeTools({ entries: [], liveExtra: [busyRow("sess_busy")] })
     const out = await run(f.dispatchTool, judgeHost({}).host, {})
     expect(out.report).toContain("0 candidates:")
     expect(out.report).toContain("1 busy")
+  })
+})
+
+// ── G11: never close a session that still owes something ────────────────
+
+describe("session-steward workflow — remaining-work guard (G11)", () => {
+  const PARENT = "sess_b54a2eb5"
+  /** The 7 children of the dead parent, each carrying its REAL last message. */
+  const children = Object.entries(G11_REAL_TAILS).map(([id, tail]) =>
+    entry(`sess_${id}`, "close", 100, {
+      origin: undefined,
+      parentSessionId: PARENT,
+      reasons: ["parent session ended", "idle 120m"],
+      signals: { parentEnded: true, lastAssistantTail: tail },
+    }),
+  )
+  const appliesOf = (calls: Array<{ name: string; inputs: Record<string, unknown> }>) =>
+    calls.filter(c => c.name === "session_wrapup_apply").map(c => c.inputs)
+
+  it("flags (needs-input) all 7 real children of an ended parent, with their last words — closes none", async () => {
+    const { dispatchTool, calls } = fakeTools({ entries: children })
+    const out = await run(dispatchTool, judgeHost({}).host, { apply: true })
+    const applies = appliesOf(calls)
+    expect(applies).toHaveLength(7)
+    for (const a of applies) {
+      expect(a.verdict).toBe("needs-input")
+      expect(a.judgedBy).toBeUndefined()
+      expect(String(a.note)).toContain("remaining work")
+      expect(String(a.note)).toContain("last message: «")
+    }
+    expect(out.report).toContain("7 would-be close(s) downgraded to a flag")
+    expect(out.report).not.toContain("close (règle certaine)")
+  })
+
+  it("a dry run shows the same downgrade and mutates nothing", async () => {
+    const { dispatchTool, calls } = fakeTools({ entries: children })
+    const out = await run(dispatchTool, judgeHost({}).host, {})
+    expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
+    expect(out.report).toContain("flag (remaining work: ")
+    expect(out.report).toContain("(dry run)")
+  })
+
+  it("a child whose last message is a clean final report is still closed", async () => {
+    const clean = entry("sess_clean", "close", 100, {
+      origin: undefined,
+      parentSessionId: PARENT,
+      signals: { parentEnded: true, lastAssistantTail: "Done. PR merged, gate green (exit 0). Nothing left to do." },
+    })
+    const noTail = entry("sess_notail", "close", 100, { origin: undefined, parentSessionId: PARENT, signals: { parentEnded: true } })
+    const { dispatchTool, calls } = fakeTools({ entries: [clean, noTail, children[0]!] })
+    await run(dispatchTool, judgeHost({}).host, { apply: true })
+    const byId = new Map(appliesOf(calls).map(a => [(a.sessionIds as string[])[0], a]))
+    expect(byId.get("sess_clean")).toMatchObject({ verdict: "done" })
+    expect(byId.get("sess_notail")).toMatchObject({ verdict: "done" })
+    expect(byId.get(children[0]!.sessionId)).toMatchObject({ verdict: "needs-input" })
+  })
+
+  it("an open worktree PR keeps a would-be close as a flag", async () => {
+    const open = entry("sess_openpr", "close", 100, { origin: "cron:job", signals: { worktreePrOpen: true, lastAssistantTail: "All set." } })
+    const { dispatchTool, calls } = fakeTools({ entries: [open] })
+    await run(dispatchTool, judgeHost({}).host, { apply: true })
+    expect(appliesOf(calls)[0]).toMatchObject({ verdict: "needs-input" })
+    expect(String(appliesOf(calls)[0]!.note)).toContain("open PR awaiting review/merge")
+  })
+
+  it("a confident judged done with a question in the last message is flagged; a declared STEWARD: DONE is trusted", async () => {
+    const ask = entry("judged_q", "judge", 100, { origin: undefined, parentSessionId: PARENT, signals: { lastAssistantTail: "Should I also open a PR for this?" } })
+    const { dispatchTool, calls } = fakeTools({ entries: [ask] })
+    await run(dispatchTool, judgeHost({ judged_q: verdict("judged_q", "done", 0.99, "finished") }).host, { apply: true })
+    expect(appliesOf(calls)[0]).toMatchObject({ verdict: "needs-input" })
+    expect(String(appliesOf(calls)[0]!.note)).toContain("remaining work")
+
+    const decl = fakeTools({ entries: [ask], askReplies: { judged_q: "Yes.\nSTEWARD: DONE nothing more" } })
+    await run(decl.dispatchTool, judgeHost({ judged_q: verdict("judged_q", "done", 0.3) }).host, { apply: true, askSessions: true })
+    expect(appliesOf(decl.calls).find(a => a.judgedBy === "steward-ask:judged_q")).toMatchObject({ verdict: "done" })
+  })
+
+  it("a stuck-starting session is never downgraded; a user-origin close keeps the origin reason", async () => {
+    const stuck = entry("sess_stuck", "stuck", 10, { signals: { lastAssistantTail: "Should I?" } })
+    const user = entry("sess_user", "close", 10, { origin: "chat-starter", signals: { lastAssistantTail: "Should I?" } })
+    const { dispatchTool, calls } = fakeTools({ entries: [stuck, user] })
+    await run(dispatchTool, judgeHost({}).host, { apply: true })
+    const byId = new Map(appliesOf(calls).map(a => [(a.sessionIds as string[])[0], a]))
+    expect(byId.get("sess_stuck")).toMatchObject({ verdict: "abandoned" })
+    expect(byId.get("sess_user")).toMatchObject({ verdict: "needs-input", note: "flag (origine utilisateur)" })
   })
 })

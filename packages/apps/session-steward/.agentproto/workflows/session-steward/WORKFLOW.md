@@ -261,7 +261,7 @@ steps:
   - id: relabelQueue
     kind: transform
     name: Terminal sessions missing an outcome (relabel candidates)
-    description: Entry-based — buildRelabelQueue. PR numbers come from the session row.
+    description: Entry-based — buildRelabelQueue. PR numbers (and their owner/repo) come from the session row.
 
   - id: relabelEvidenceQueue
     kind: transform
@@ -284,7 +284,7 @@ steps:
   - id: relabelFinal
     kind: transform
     name: Relabel proposals with their evidence
-    description: Entry-based — applyRelabelEvidence (merged PR/worktree or opened PR → done).
+    description: Entry-based — applyRelabelEvidence. `done` only when the session's own PR is merged and its last message leaves nothing pending; an open PR or pending work → needs-follow-up; a shared worktree's PR credits nobody.
 
   - id: evidence
     kind: map
@@ -463,7 +463,8 @@ Every rule below is a pure function in `cron-rules.mjs`, pinned by
 `session-steward-cron-rules.test.ts`:
 
 - **Loop (1).** `tool_calls_list` per busy session: the same argv verbatim ≥3
-  in 10 min, distinct/total < 0.2, or the same file read ≥4 → `looping`, a
+  in 10 min, distinct/total < 0.2, or the same file read ≥4 (a recursive `rg`/`grep` over a
+  directory, or its pattern, is not a file read) → `looping`, a
   sub-case of `active`. The proposed action is an **interrupt nudge**, never a
   close. Useful loops (watch, test/type-check re-runs, `git status`, `gh pr`
   polling) are excluded.

@@ -49,6 +49,7 @@ import {
   saturationHeader,
   shouldRejudge,
   refineRelabel,
+  remainingWork,
   terminalRelabelCandidate,
   verdictMemoryEvent,
   NUDGE_CONTINUE,
@@ -139,11 +140,28 @@ function policyOf(settings) {
   return { userOrigins: settings?.userOrigins, closableOrigins: settings?.closableOrigins }
 }
 
+/** Why a would-be close must not happen: the remaining-work check over a plan
+ *  entry — its last assistant message (`signals.lastAssistantTail`) and its
+ *  worktree's PR still open (`signals.worktreePrOpen`). A merged worktree or an
+ *  ended parent only says the work moved on, never that THIS session finished
+ *  (G11: 7 children of an ended parent were closed `done` while their last
+ *  message asked the parent a question that nobody can answer any more). */
+export function remainingWorkOf(entry) {
+  return remainingWork({
+    lastAssistantText: entry?.signals?.lastAssistantTail,
+    prState: entry?.signals?.worktreePrOpen === true ? "open" : undefined,
+  })
+}
+
 /** `decideAction` over one candidate entry, with the run's policy folded in.
  *  Used by both the apply-queue builders and the report, so the action shown
- *  and the action executed can never drift. */
-export function decideFor(entry, planClass, verdict, confidence, settings) {
-  return decideAction({
+ *  and the action executed can never drift. A rule or judged `close` whose
+ *  session still has remaining work becomes a `flag` (`remaining` lists why):
+ *  the operator sees the question instead of the session being closed. A
+ *  `stuck` session never ran, so it has nothing to owe; a session that itself
+ *  declared `STEWARD: DONE` (`opts.declared`) answered the question. */
+export function decideFor(entry, planClass, verdict, confidence, settings, opts = {}) {
+  const d = decideAction({
     session: entry,
     planClass,
     verdict,
@@ -152,6 +170,19 @@ export function decideFor(entry, planClass, verdict, confidence, settings) {
     policy: policyOf(settings),
     minConfidence: settings?.minConfidence,
   })
+  if (d.action !== "close" || planClass === "stuck" || opts.declared === true) return d
+  const remaining = remainingWorkOf(entry)
+  if (remaining.length === 0) return d
+  const reason = `flag (remaining work: ${remaining.join(", ")})`
+  return { action: "flag", reason: settings?.apply === true ? reason : `${reason} (dry run)`, remaining }
+}
+
+/** The flag note for a decision that downgraded a close: the reason plus the
+ *  session's own last words, so the operator sees the question it left open. */
+function flagNote(entry, d, extra) {
+  const tail = typeof entry?.signals?.lastAssistantTail === "string" ? entry.signals.lastAssistantTail.trim().slice(-300) : ""
+  const quoted = d.remaining && tail ? ` — last message: «${tail}»` : ""
+  return `${d.reason}${extra ? ` — ${extra}` : ""}${quoted}`
 }
 
 // ── plan → candidates ────────────────────────────────────────────────────
@@ -190,7 +221,7 @@ export function buildRuleApplyQueue(candidates, settings) {
       queue.push({
         sessionId: e.sessionId,
         verdict: d.action === "close" ? closeVerdict : "needs-input",
-        note: d.action === "close" ? closeNote(e) : d.reason,
+        note: d.action === "close" ? closeNote(e) : flagNote(e, d),
       })
     }
   }
@@ -528,14 +559,14 @@ export function buildJudgedApplyQueue(finalVerdicts, settings) {
   const queue = []
   for (const r of finalVerdicts ?? []) {
     if (r.malformed) continue
-    const d = decideFor(r.entry, "judge", r.verdict, r.confidence, settings)
+    const d = decideFor(r.entry, "judge", r.verdict, r.confidence, settings, { declared: r.source === "declared" })
     if (d.action === "skip") continue
     const isFlagVerdict = r.verdict === "blocked" || r.verdict === "needs-input"
     queue.push({
       sessionId: r.entry.sessionId,
       verdict: d.action === "close" ? r.verdict : isFlagVerdict ? r.verdict : "needs-input",
       judgedBy: r.source === "declared" ? `steward-ask:${r.entry.sessionId}` : r.judgedBy ?? r.judgeSessionId ?? "steward-judge",
-      note: d.action === "close" ? r.reason : `${d.reason}${r.reason ? ` — ${r.reason}` : ""}`,
+      note: d.action === "close" ? r.reason : flagNote(r.entry, d, r.reason),
     })
   }
   return queue
@@ -614,8 +645,10 @@ export function buildReport(b) {
       `| ${cls} | ${cell(e.label ?? e.sessionId)} | ${cell(originCell(e, s))} | ${e.idleMinutes ?? "?"} min | ${fmtMB(e.rssBytes)} | ` +
         `${cell(verdict)} | ${conf === undefined ? "—" : conf.toFixed(2)} | ${cell(reason)} | ${cell(action)} |`,
     )
+  let withRemainingWork = 0
   for (const e of c.close) {
     const d = decideFor(e, "close", "done", 1, s)
+    if (d.remaining) withRemainingWork++
     row("close", e, "done (rules)", undefined, (e.reasons ?? []).join("; "), actionCell(e.sessionId, d, applied))
   }
   for (const e of c.stuck) {
@@ -623,7 +656,8 @@ export function buildReport(b) {
     row("stuck", e, "abandoned (rules)", undefined, (e.reasons ?? []).join("; ") || "stuck starting, never ran", actionCell(e.sessionId, d, applied))
   }
   for (const r of verdicts) {
-    const d = decideFor(r.entry, "judge", r.verdict, r.confidence, s)
+    const d = decideFor(r.entry, "judge", r.verdict, r.confidence, s, { declared: r.source === "declared" })
+    if (d.remaining) withRemainingWork++
     const by = r.source === "declared" ? " (declared)" : r.source === "jev" ? " (jev)" : r.source === "judged" ? " (agent)" : ""
     const reason = r.jevFallback ? `${r.reason} [jev failed: ${r.jevFallback} → agent judge]` : r.reason
     row("judge", r.entry, `${r.verdict}${by}`, r.confidence, reason, actionCell(r.entry.sessionId, d, applied))
@@ -645,6 +679,7 @@ export function buildReport(b) {
     `- candidates: close=${c.close.length} stuck=${c.stuck.length} judge=${verdicts.length}` +
       (c.judgeOverflow?.length ? ` (+${c.judgeOverflow.length} not judged)` : ""),
   )
+  if (withRemainingWork > 0) lines.push(`- ${withRemainingWork} would-be close(s) downgraded to a flag: the session still has remaining work (open question, announced next step, open PR)`)
   if (verdicts.length > 0) lines.push(`- verdicts: ${Object.entries(counts).map(([k, n]) => `${k}=${n}`).join(" ")}`)
   const bySource = { jev: 0, agent: 0 }
   let fallbacks = 0
@@ -781,7 +816,7 @@ export function scanLive(liveSessions, settings, nowMs) {
         const endedAt = s.endedAt ?? s.lastActivityAt ?? s.startedAt
         const endedMs = endedAt ? Date.parse(endedAt) : Number.NaN
         if (Number.isFinite(endedMs) && nowMs - endedMs <= relabelWindowMs) {
-          terminalRelabel.push({ sessionId: id, origin: s.origin, originClass, label, proposedVerdict: cand.proposedVerdict, reason: cand.reason, prs: cand.prs ?? [], endedAt, endedMs })
+          terminalRelabel.push({ sessionId: id, origin: s.origin, originClass, label, proposedVerdict: cand.proposedVerdict, reason: cand.reason, prs: cand.prs ?? [], repos: cand.repos ?? {}, endedAt, endedMs })
         }
       }
       continue
@@ -811,6 +846,10 @@ export function scanLive(liveSessions, settings, nowMs) {
     relabelTotal,
     neverRan: neverRan.length,
     excluded: excluded.length,
+    excludedByReason: excluded.reduce((acc, e) => {
+      acc[e.reason] = (acc[e.reason] ?? 0) + 1
+      return acc
+    }, {}),
   }
   return { busy, idle, terminal, terminalRelabel, neverRan, excluded, loopQueue, stallInputs, counts }
 }

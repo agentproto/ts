@@ -4745,7 +4745,7 @@ export function registerSessionTools(
     const withPid = gatherScope.onlyIds ? [] : candidates.filter((d): d is SessionDescriptor & { pid: number } => typeof d.pid === "number")
     const rssByPid = withPid.length > 0 ? await processTreeRss(withPid.map(d => d.pid)) : new Map<number, number>()
 
-    const mergedByWorktreePath = new Map<string, boolean>()
+    const prStateByWorktreePath = new Map<string, string | undefined>()
     if (listWorktreeStatuses) {
       const pathsByRepo = new Map<string, Set<string>>()
       for (const d of candidates) {
@@ -4761,7 +4761,7 @@ export function registerSessionTools(
         [...pathsByRepo].map(async ([repoRoot, paths]) => {
           try {
             const views = await listWorktreeStatuses(repoRoot, { paths: [...paths] })
-            for (const v of views) mergedByWorktreePath.set(v.path, v.pr?.state === "merged")
+            for (const v of views) prStateByWorktreePath.set(v.path, v.pr?.state)
           } catch {
             // Best-effort signal only — a lister failure never blocks the plan.
           }
@@ -4773,7 +4773,9 @@ export function registerSessionTools(
     const rssById = new Map<string, number>()
     for (const d of candidates) {
       const scope = sessionWorktreeScope(d)
-      const worktreeMerged = scope ? mergedByWorktreePath.get(scope.worktreePath) === true : false
+      const worktreePrState = scope ? prStateByWorktreePath.get(scope.worktreePath) : undefined
+      const worktreeMerged = worktreePrState === "merged"
+      const worktreePrOpen = worktreePrState === "open"
       const parent = d.parentSessionId ? byId.get(d.parentSessionId) : undefined
       const parentEnded =
         d.parentSessionId !== undefined &&
@@ -4784,6 +4786,7 @@ export function registerSessionTools(
         : undefined
       signals.set(d.id, {
         ...(worktreeMerged ? { worktreeMerged: true } : {}),
+        ...(worktreePrOpen ? { worktreePrOpen: true } : {}),
         ...(parentEnded ? { parentEnded: true } : {}),
         ...(lastAssistantTail !== undefined ? { lastAssistantTail } : {}),
         ...(pendingToolCall ? { pendingToolCall: true } : {}),
@@ -4809,8 +4812,8 @@ export function registerSessionTools(
       "is free, it never ran), `judge` (idle-enough but ambiguous — no merge/" +
       "parent-ended signal, a pending tool call, or a `keepAlive` session " +
       "that would otherwise close, since `keepAlive` can only ever reach " +
-      "`judge`, never `close`), or `keep` (not idle long enough yet, or " +
-      "busy/awaitingInput/awaitingPermission/archived/pinned/has busy " +
+      "`judge`, never `close`), or `keep` (not idle long enough yet, still " +
+      "`status:'starting'` and not yet stuck, or busy/awaitingInput/awaitingPermission/archived/pinned/has busy " +
       "children/has a live parent/is the caller's own session — NEVER " +
       "eligible for `session_wrapup_apply`; omitted here unless " +
       "`includeKeep` is set). Also reports `rssBytes` (process-tree RSS) per " +
