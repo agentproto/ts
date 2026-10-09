@@ -58,9 +58,22 @@ Each rung has exactly one owner — don't reach into the next one.
    pnpm test        > /tmp/gate.log 2>&1; echo "TEST_EXIT=$?"
    ```
 
-   (Add `pnpm lint` too if the package defines it.)
+(Add `pnpm lint` too if the package defines it.)
 
-   Same trap for a backgrounded gate: the harness reports the exit code of
+    **Test ceiling.** `pnpm test` at the repo root runs `pnpm -r --workspace-concurrency=2 test`,
+    which invokes vitest in every package. Each package's vitest config reads the
+    `VITEST_MAX_WORKERS` env var (fallback: `Math.max(1, Math.floor(os.availableParallelism() / 4))`),
+    capping per-package worker count. Default on a 12-core machine: 3 workers per package.
+
+    **Variable.** Set `VITEST_MAX_WORKERS` in the CI job's environment to adjust the
+    cap. Omit it to let vitest compute `Math.floor(os.availableParallelism() / 4)`
+    automatically per CI machine.
+
+    **Préférence d'itération.** During iteration, prefer `pnpm --filter @agentproto/<pkg> test`
+    over `pnpm test` to avoid saturating the machine with 24+ concurrent vitest processes.
+    Running a single package's tests is fast and isolates issues.
+
+    Same trap for a backgrounded gate: the harness reports the exit code of
    the whole compound command, so end it with the real status
    (`echo "EXIT=$?"`) rather than trusting the completion notification.
 

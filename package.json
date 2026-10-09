@@ -16,7 +16,7 @@
   "scripts": {
     "build": "turbo run build --filter=\"./packages/**\" --filter=\"./adapters/**\"",
     "pretest": "node scripts/agentflow/docs.mjs --check",
-    "test": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" test",
+    "test": "pnpm -r --workspace-concurrency=2 --filter \"./packages/**\" --filter \"./adapters/**\" test",
     "check-types": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" check-types",
     "clean": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" clean",
     "scaffold-aip": "node scripts/scaffold-aip.mjs",
