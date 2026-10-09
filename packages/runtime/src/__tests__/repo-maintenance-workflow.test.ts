@@ -1036,17 +1036,19 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
       branch: name,
       head: "1".repeat(40),
       class: "hold",
-      tree: { state: "clean" },
+      // The daemon's real `worktree_gc` projection: `tree` is the bare
+      // discriminant, `liveness` carries a count, not the sessions.
+      tree: "clean",
       integration: { state: "diverged" },
-      liveness: { state: "idle", sessions: [] },
+      liveness: { state: "idle", sessionCount: 0 },
       ...over,
     })
     return {
       mode: "plan",
       plan: [
         wt("idle"),
-        wt("live", { liveness: { state: "sessions", sessions: [{ id: "sess_x" }] } }),
-        wt("dirty", { tree: { state: "dirty", modified: 1 } }),
+        wt("live", { liveness: { state: "sessions", sessionCount: 1 } }),
+        wt("dirty", { tree: "dirty" }),
         wt("young"),
         wt("pr", { integration: { state: "open", pr: 7 } }),
       ],
