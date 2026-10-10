@@ -118,6 +118,7 @@ describe("createSessionTurnObserver — outcome classification", () => {
     })
     const obs = await observer({ sessionId: "s1", jobId: "cron_1", timeoutMs: 30 })
     expect(obs.outcome).toBe("timeout")
-    expect(obs.durationMs).toBeGreaterThanOrEqual(30)
+    // Node timers can fire ~1 ms early relative to Date.now(); allow slack.
+    expect(obs.durationMs).toBeGreaterThanOrEqual(25)
   })
 })
