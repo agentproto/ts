@@ -19,26 +19,56 @@ export const FIRST_PARTY_CATALOG_ENTRIES: readonly AppCatalogEntry[] = [
     "description": "View and continue any agentproto daemon session's conversation in the Agentik chat UI (assistant-ui based). Pick a session from the live/recent list or deep-link with ?session=<id>; the page replays the session's full transcript, then follows it live over SSE, and lets you send follow-up prompts into the same session. Built on @agstudio/react-agentproto (SSE transcript projection, permission approval, thread list) and @agstudio/chat-starter's assistant-ui shell, reused almost as-is.",
     "source": {
       "kind": "agentapp",
-      "url": "https://github.com/agentproto/apps/releases/download/session-chat%400.1.1/session-chat-0.1.1.agentapp",
-      "sha256": "e8084a125e335cbc408b0e8dd3371711191f6aa0019dad4907f26b19ec9f344b",
-      "version": "0.1.1",
-      "size": 516437
+      "url": "https://github.com/agentproto/apps/releases/download/session-chat%400.1.4/session-chat-0.1.4.agentapp",
+      "sha256": "07d8d32167f599a1a03972fe8bc05fac83f123d8732882de1d553c3c74116a6c",
+      "version": "0.1.4",
+      "size": 518086
     },
-    "icon": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.1/icon.svg",
-    "version": "0.1.1",
+    "icon": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.4/icon.svg",
+    "version": "0.1.4",
     "tier": "bundle",
     "publisher": "Agentik",
     "license": {
       "kind": "free"
     },
-    "tagline": "Read and continue any agentproto session as a chat thread.",
-    "longDescription": "Session Chat turns any agentproto session into a chat thread you can read and continue.\n\nPick a running or recent session, or open one directly with `?session=<id>`. The page replays the full transcript, then follows the session live as the agent works, and lets you send follow-up prompts into the same session.\n\n## What you get\n\n- **Transcript replay and live follow**: the whole conversation, then new turns as they stream in.\n- **Tool activity at a glance**: file reads, commands and edits grouped under each reply, with the files an agent changed.\n- **Reply into the session**: send a follow-up, interrupt a running turn, queue prompts while the agent works.\n- **Approvals**: answer the agent's permission requests from the thread.\n- **Session list**: running and recent sessions, grouped by workspace, with search and pins.\n- **Start a session**: pick a harness and model and start a new chat from the same page.\n\n## Requirements\n\nSession Chat talks to your local agentproto daemon. Its bundled agent runs on the `mastra-agent` adapter: install it first with `agentproto install mastra-agent`.",
+    "tagline": "One chat window for every agent session, on your phone too.",
+    "longDescription": "Your agents run in many harnesses, terminals and machines, and it is easy to\nlose track of them. Session Chat puts every session on your daemon in one chat\nwindow.\n\n## From your phone\n\nSession Chat installs as a web app on your phone. Open it over the daemon's\nremote tunnel to read a session, answer the agent or send a new prompt from\nanywhere.\n\n## Any harness, one place\n\nStart a session with the harness, model, account and location you pick: this\nmachine or a sandbox. The sidebar follows sessions from every harness, such as\nClaude Code, Codex and OpenCode, so you read them all the same way.\n\n## What each session costs\n\nOpen the Stats tab on a session to see its model, cost, turns, tool calls and\nhow much of the context window is used. Token counts show up when the harness\nreports them.\n\n## Know when work finishes\n\nThe bell lists what happened on your daemon: sessions that finished or failed,\npull requests opened and merged, and push checks that passed or failed. You get\nnotified without keeping a terminal open.\n\n## Pick who pays\n\nChoose the account for each session when you start it, so a job runs on the\nsubscription or API key you want it to use.\n\n## And more\n\n- Change posture and effort in the middle of a session.\n- Schedule sessions to run on their own.\n- Queue prompts while the agent is still working.\n- Approve or deny permission requests right in the thread.\n\n## Requirements\n\nSession Chat talks to your local agentproto daemon. Its bundled agent runs on\nthe `mastra-agent` adapter: install it first with\n`agentproto install mastra-agent`.",
     "screenshots": [
       {
-        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.1/conversation.png",
-        "alt": "A finished session replayed as a chat thread, with a markdown table in the agent's reply and the composer below",
-        "width": 1280,
-        "height": 800
+        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.4/conversation.png",
+        "alt": "A finished session as a chat thread, with a reply that has bullet points, inline code and a markdown table, then a Done card and the composer below",
+        "width": 1440,
+        "height": 900
+      },
+      {
+        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.4/mobile.png",
+        "alt": "The same thread on a phone screen, with a compact header, the reply table, the Done card and the composer at the bottom",
+        "width": 780,
+        "height": 1688
+      },
+      {
+        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.4/new-session.png",
+        "alt": "The new session dialog with the harness list open, showing Claude Code, OpenCode and other harnesses, above fields for model and account",
+        "width": 1440,
+        "height": 900
+      },
+      {
+        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.4/sessions.png",
+        "alt": "The sidebar filtered to two finished sessions, one from Claude Code and one from Codex, with recently used harness and model shortcuts above",
+        "width": 1440,
+        "height": 900
+      },
+      {
+        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.4/stats.png",
+        "alt": "The Stats tab beside the thread, listing the session's model, cost, turns, tool calls, duration and context used",
+        "width": 1440,
+        "height": 900
+      },
+      {
+        "url": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentik/session-chat/0.1.4/notifications.png",
+        "alt": "The notifications bell open over the sidebar, with two entries named after their sessions, \"Export invoices to CSV\" and \"Add VAT and discounts to invoice-cli\", each marked Done with how long ago",
+        "width": 1440,
+        "height": 900
       }
     ],
     "categories": [
@@ -46,6 +76,6 @@ export const FIRST_PARTY_CATALOG_ENTRIES: readonly AppCatalogEntry[] = [
       "sessions",
       "developer-tools"
     ],
-    "homepage": "https://agentproto.sh/apps/session-chat"
+    "homepage": "https://agentproto.sh/apps/@agentik/session-chat"
   },
 ]

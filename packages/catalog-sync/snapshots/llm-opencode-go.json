@@ -136,6 +136,7 @@
         "name": "Grok 4.5",
         "family": "grok",
         "release_date": "2026-07-08",
+        "status": "deprecated",
         "provider": {
           "npm": "@ai-sdk/openai"
         },
@@ -200,6 +201,7 @@
         "name": "Kimi K2.6",
         "family": "kimi-k2",
         "release_date": "2026-04-21",
+        "status": "deprecated",
         "cost": {
           "input": 0.95,
           "output": 4,
@@ -356,6 +358,7 @@
         "name": "Qwen3.6 Plus",
         "family": "qwen3.6",
         "release_date": "2026-04-02",
+        "status": "deprecated",
         "cost": {
           "input": 0.5,
           "output": 3,
@@ -368,6 +371,7 @@
         "name": "Qwen3.7 Max",
         "family": "qwen3.7-max",
         "release_date": "2026-05-21",
+        "status": "deprecated",
         "cost": {
           "input": 2.5,
           "output": 7.5,
@@ -435,6 +439,7 @@
         "id": "space-bunny-free",
         "name": "Space Bunny Free",
         "release_date": "2026-09-23",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
