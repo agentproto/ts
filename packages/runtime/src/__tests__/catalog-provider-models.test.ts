@@ -86,15 +86,19 @@ describe("buildCatalogProviderModels", () => {
 
   it("enumerates OpenCode Zen's roster, including the whole Claude family", () => {
     const res = buildCatalogProviderModels({ endpoint: "opencode" })
-    expect(res.models.length).toBeGreaterThan(90)
+    // Floor, not a count: the roster is catalog-synced and models.dev-
+    // deprecated models are dropped (84 on 2026-10-10).
+    expect(res.models.length).toBeGreaterThan(50)
     expect(res.models.every(m => m.route === "opencode")).toBe(true)
     expect(res.models.every(m => m.id.startsWith("opencode/"))).toBe(true)
     const sonnet = res.models.find(m => m.id === "opencode/claude-sonnet-4-6")
     expect(sonnet?.pricing?.inPer1M).toBe(3)
     // `-free` variants are KEPT with a zero price — on this endpoint zero is
-    // the truth, not a missing price, so they must not be filtered out.
-    const free = res.models.find(m => m.id === "opencode/glm-5-free")
-    expect(free?.pricing).toEqual({ inPer1M: 0, outPer1M: 0 })
+    // the truth, not a missing price, so they must not be filtered out. Free
+    // ids retire fast, so this asserts the shape rather than pinning one id.
+    const free = res.models.filter(m => m.id.endsWith("-free"))
+    expect(free.length).toBeGreaterThan(0)
+    for (const m of free) expect(m.pricing).toEqual({ inPer1M: 0, outPer1M: 0 })
   })
 
   it("keeps the two OpenCode endpoints disjoint (separate balances, separate lineups)", () => {
