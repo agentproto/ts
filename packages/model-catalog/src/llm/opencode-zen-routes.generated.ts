@@ -8,7 +8,8 @@
 // relative to cost.input, and are omitted when the base input price is 0
 // (every `-free` variant) because a free model has no cache discount.
 // Zero-priced models are KEPT — on these endpoints zero is the truth, not
-// a missing price.
+// a missing price. Models the source flags `status: "deprecated"` are
+// DROPPED: the endpoint no longer serves them.
 // Keys are `<provider>/<bare-id>`, the form opencode's own config uses and
 // the form the runtime derives the billing endpoint from; `vendor` is a
 // heuristic attribution of the model's BUILDER and is metadata only.

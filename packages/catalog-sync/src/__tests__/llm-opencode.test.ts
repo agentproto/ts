@@ -88,6 +88,15 @@ const FIXTURE = {
       },
       // No published price at all → skipped (a fabricated 0 would read as free).
       "unpriced-preview": { id: "unpriced-preview", release_date: "2026-09-01" },
+      // Retired: priced and on the Anthropic surface, but no longer served →
+      // dropped from the route table AND the Anthropic list, kept in the snapshot.
+      "kimi-k2.6": {
+        id: "kimi-k2.6",
+        release_date: "2026-04-21",
+        status: "deprecated",
+        provider: { npm: "@ai-sdk/anthropic" },
+        cost: { input: 0.95, output: 4 },
+      },
     },
   },
   opencode: {
@@ -180,6 +189,13 @@ describe("llm:opencode-go generator — hand-written fixture", () => {
   it("skips a model with no published price at all", async () => {
     const files = await llmOpencodeGoGenerator.generate(fixtureCtx())
     expect(files[GO_OUTPUT]!).not.toContain("unpriced-preview")
+  })
+
+  it("drops a deprecated model from the route table and the Anthropic list", async () => {
+    const files = await llmOpencodeGoGenerator.generate(fixtureCtx())
+    expect(files[GO_OUTPUT]!).not.toContain("kimi-k2.6")
+    const snapshot = JSON.parse(files[GO_SNAPSHOT]!)
+    expect(snapshot["opencode-go"].models["kimi-k2.6"].status).toBe("deprecated")
   })
 
   it("backfills addedAt from release_date (already ISO — no unix conversion)", async () => {
