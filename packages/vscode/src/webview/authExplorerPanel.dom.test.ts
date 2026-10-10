@@ -97,7 +97,7 @@ const VIEW: AuthExplorerView = {
               writeId: "deepseek/deepseek-v4-pro",
               allowed: false,
               status: "unbillable",
-              hint: "no connected wallet can bill this model on openrouter — check this wallet's credential",
+              hint: "no connected wallet can bill this model on openrouter — allow it in a wallet's model list, or check that wallet's credential",
             },
           ],
           catalogCount: 2,

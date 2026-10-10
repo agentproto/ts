@@ -191,7 +191,7 @@ function walletModelRows(
           hint = "not billed by this wallet — another connected wallet serves it"
         } else {
           status = "unbillable"
-          hint = `no connected wallet can bill this model on ${profile.endpoint} — check this wallet's credential`
+          hint = `no connected wallet can bill this model on ${profile.endpoint} — allow it in a wallet's model list, or check that wallet's credential`
         }
         rows.push({
           vendor: vendor.vendor,
