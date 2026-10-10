@@ -1294,6 +1294,14 @@ export interface RuntimeHttpServerOptions {
      *  Kept in sync with the `daemon_health` MCP tool's field of the same
      *  name. */
     turnStallAfterMs?: number
+    /** Installed-app registry records that loaded partial/unusable. Kept in
+     *  sync with the `daemon_health` MCP tool's `appRegistryIssues`. */
+    appRegistryIssues?: () => readonly {
+      kind: string
+      appId: string | null
+      dir: string | null
+      problems: readonly string[]
+    }[]
   }
 }
 
@@ -2115,6 +2123,7 @@ export async function startHttpServer(
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
+        appRegistryIssues: opts.meta.appRegistryIssues?.() ?? [],
       }),
     )
   }

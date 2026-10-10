@@ -36,7 +36,6 @@ import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
 import {
   runAppServe,
-  installAppDir,
   listInstalledApps,
   resolveDaemonMcpUrl,
   createDaemonMcpClientGetter,
@@ -100,8 +99,9 @@ unpack:
   restores into <id>-<version> in the current directory.
 
 install:
-  Install an app. <appDir> registers an app id→dir mapping in
-  ~/.agentproto/apps.json (reads .agentproto/APP.md for the id; idempotent).
+  Install an app. <appDir> registers the app in ~/.agentproto/apps.json
+  (idempotent): through the running daemon (app_install), or, with no daemon
+  up, in-process with the same full record.
   A git URL (https://…, git@…, file://…; optional --ref branch/tag and
   --subdir path inside the repo) or a .agentapp (https URL, file:// URL, or
   local path) is installed BY THE RUNNING DAEMON under its state dir
@@ -328,44 +328,32 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  // Read the app id (and the optional `data.dir` hint) from APP.md frontmatter.
-  let appId: string
-  let hintDir: string | undefined
-  try {
-    const raw = await readFile(appMdPath, "utf8")
-    const front = matter(raw).data as Record<string, unknown>
-    const dataHint = front.data
-    if (typeof dataHint === "object" && dataHint !== null) {
-      const d = (dataHint as { dir?: unknown }).dir
-      if (typeof d === "string" && d.trim() !== "") hintDir = d
-    }
-    appId =
-      typeof front.id === "string" && front.id.length > 0
-        ? front.id
-        : typeof front.slug === "string" && front.slug.length > 0
-          ? front.slug
-          : ""
-  } catch {
-    process.stderr.write(
-      `agentproto app install: could not parse ${appMdPath}.\n`,
-    )
+  // Daemon up → it installs (and owns the registry it holds in memory).
+  // Daemon down → run the same `performInstall` in-process against the same
+  // apps.json. Both write the full record; only a failed CONNECT falls back.
+  const daemonUp = await createDaemonMcpClientGetter(await resolveDaemonMcpUrl(), "agentproto-app")().then(
+    async (probe) => {
+      await closeQuietly(probe)
+      return true
+    },
+    () => false,
+  )
+  if (daemonUp) {
+    return callDaemonAppTool("install", "app_install", {
+      dir: appDir,
+      ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
+    })
+  }
+
+  const { installAppDirOffline } = await import("@agentproto/runtime/app-install-offline")
+  const result = await installAppDirOffline(appDir, dataDirArg !== undefined ? { dataDir: dataDirArg } : undefined)
+  if (!result.ok) {
+    process.stderr.write(`agentproto app install: ${result.error}\n`)
     return 1
   }
-
-  if (!appId) {
-    process.stderr.write(
-      `agentproto app install: APP.md must have a non-empty 'id' or 'slug' field.\n`,
-    )
-    return 2
-  }
-
-  const entry = installAppDir(appId, appDir, {
-    ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
-    ...(hintDir !== undefined ? { hintDir } : {}),
-  })
   process.stdout.write(
-    `agentproto: registered app '${appId}' -> ${appDir}\n` +
-      `  data dir: ${entry.dataDir}\n`,
+    `agentproto: registered app '${result.record.appId}' -> ${appDir} (daemon not running; restart or start it to pick this up)\n` +
+      `  data dir: ${result.record.dataDir}\n`,
   )
   return 0
 }
@@ -393,6 +381,15 @@ function isRemoteInstallUrl(arg: string): boolean {
 }
 
 /** Call a daemon `app_*` tool over its /mcp endpoint and print the JSON result. */
+// The open Streamable-HTTP session otherwise keeps the process alive after the verb prints.
+async function closeQuietly(client: { close?: () => Promise<void> }): Promise<void> {
+  try {
+    await client.close?.()
+  } catch {
+    // best-effort
+  }
+}
+
 async function callDaemonAppTool(
   verb: string,
   tool: string,
@@ -402,9 +399,11 @@ async function callDaemonAppTool(
   let isError = false
   try {
     const client = await createDaemonMcpClientGetter(await resolveDaemonMcpUrl(), "agentproto-app")()
-    const res = (await client.callTool({ name: tool, arguments: args })) as {
-      isError?: boolean
-      content?: { type: string; text?: string }[]
+    let res: { isError?: boolean; content?: { type: string; text?: string }[] }
+    try {
+      res = (await client.callTool({ name: tool, arguments: args })) as typeof res
+    } finally {
+      await closeQuietly(client)
     }
     isError = res.isError === true
     text = res.content?.find((c) => c.type === "text")?.text
@@ -493,9 +492,11 @@ async function callDaemonAppToolRaw(
   let isError = false
   try {
     const client = await createDaemonMcpClientGetter(await resolveDaemonMcpUrl(), "agentproto-app")()
-    const res = (await client.callTool({ name: tool, arguments: args })) as {
-      isError?: boolean
-      content?: { type: string; text?: string }[]
+    let res: { isError?: boolean; content?: { type: string; text?: string }[] }
+    try {
+      res = (await client.callTool({ name: tool, arguments: args })) as typeof res
+    } finally {
+      await closeQuietly(client)
     }
     isError = res.isError === true
     content = res.content ?? []

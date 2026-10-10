@@ -64,6 +64,15 @@ export interface RegisterDaemonHealthToolsOptions {
    *  Mirrors `/health`'s field of the same name; version alone can't
    *  distinguish a workspace dist from the published tarball. */
   build?: { sha?: string; builtAt?: string; source?: string }
+  /** Installed-app registry records that loaded partial or unusable (see
+   *  `AppRegistry.listIssues`). Surfaced as `appRegistryIssues` — empty when
+   *  the registry is clean — so a bad record is reported, not thrown on. */
+  appRegistryIssues?: () => readonly {
+    kind: string
+    appId: string | null
+    dir: string | null
+    problems: readonly string[]
+  }[]
 }
 
 function text(value: string | object): {
@@ -105,6 +114,7 @@ export function registerDaemonHealthTools(
         turnStallAfterMs: opts.turnStallAfterMs ?? 0,
         version: opts.version ?? null,
         build: opts.build ?? null,
+        appRegistryIssues: opts.appRegistryIssues?.() ?? [],
       })
     },
   )
