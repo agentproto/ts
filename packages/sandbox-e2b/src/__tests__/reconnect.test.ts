@@ -76,7 +76,7 @@ describe("e2bSandboxProvider.connect", () => {
     const reconnectSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
     await e2bSandboxProvider.connect!("sbx_abc", reconnectSpec, { env: { OPENROUTER_API_KEY: "k" } })
 
-    // the stable template's recorded bake is PROVEN (cli 0.17.0) with no
+    // the stable template's recorded bake is PROVEN with no
     // cliVersion requested — the on-boot npm install is SKIPPED on reconnect
     // too; only the daemon (re)start runs
     expect(sandbox.commands.run).not.toHaveBeenCalledWith(
