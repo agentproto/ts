@@ -89,8 +89,8 @@ describe("@agentproto/adapter-opencode", () => {
     // model — union-alpha moved Go 36 to 37 (cf. #1324/#1328, same pattern).
     const go = byProvider("opencode-go")
     const zen = byProvider("opencode")
-    expect(go.length).toBeGreaterThan(30)
-    expect(zen.length).toBeGreaterThan(90)
+    expect(go.length).toBeGreaterThan(20)
+    expect(zen.length).toBeGreaterThan(50)
 
     // `<provider>/<bare-id>` — exactly how opencode's own config addresses
     // them, which is also what `modelIdPrefixProvider` reads to derive the

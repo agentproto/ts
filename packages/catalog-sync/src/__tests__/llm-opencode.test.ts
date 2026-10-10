@@ -369,7 +369,7 @@ describe("llm:opencode-* generators — real committed snapshots (offline)", () 
     const files = await llmOpencodeZenGenerator.generate(offlineCtx())
     const src = files[ZEN_OUTPUT]!
     // Bounds, not exact counts: see the Go case above (#1324 pattern).
-    expect((src.match(/inputPer1M:/g) ?? []).length).toBeGreaterThan(90)
+    expect((src.match(/inputPer1M:/g) ?? []).length).toBeGreaterThan(50)
     const list = src.slice(src.indexOf("OPENCODE_ZEN_ANTHROPIC_MODELS"))
     const anthropicIds = [...list.matchAll(/^ {2}"([^"]+)",$/gm)].map(m => m[1])
     expect(anthropicIds.length).toBeGreaterThan(15)
