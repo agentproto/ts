@@ -133,7 +133,10 @@ Keys under `when` (all must match): globs `origin`, `label`, `cwd`, `model`,
 `profile`; enums `class` (held|close|stuck|judge|terminal|archive), `state`
 (live|ended), `verdict`, `errorKind`, `action`, `originClass`; numbers
 `idleMinutes`, `confidence` (`120`, `">=120"`, `"10..60"`); booleans
-`transient`, `errored`, `neverRan`, `remainingWork`, `confident`. Rule keys:
+`transient`, `errored`, `neverRan`, `remainingWork`, `confident`,
+`superseded`, `ownedByRun`, `staleFailure`; number `failedMinutesAgo`.
+`relaunch` is default-recommended only for a recent (`--relaunch-window`,
+360 min), non-superseded, non-owned failure; the rest are `mark-failed`. Rule keys:
 `id`, `when`, `action` (an action or `skip`), `reason`. Unknown keys are
 validation errors, reported in the run output.
 

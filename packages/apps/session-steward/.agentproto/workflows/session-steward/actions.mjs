@@ -18,8 +18,8 @@ export const ACTIONS = ["keep", "mark-complete", "mark-failed", "relaunch", "nee
 export const ACTION_INFO = {
   keep: "leave alone — active, busy, pinned/keepAlive, or not confident enough to act",
   "mark-complete": "done, nothing pending (the remaining-work check applies) — records outcome `done`",
-  "mark-failed": "ended or stuck on a non-transient error — records outcome `failed`",
-  relaunch: "failed on a TRANSIENT cause (quota, upstream, timeout, crash) — continue it or restart it on another profile",
+  "mark-failed": "failed and not worth relaunching (non-transient error, superseded by a later attempt, owned by a run, or past the relaunch window) — records outcome `failed`",
+  relaunch: "failed recently on a TRANSIENT cause (quota, upstream, timeout, crash), not superseded, not owned by a run — continue it or restart it on another profile",
   "needs-input": "waiting on a human / blocked — flags the session and surfaces the question",
   "close-abandoned": "never ran, orphaned or superseded, no value — records outcome `abandoned`",
   archive: "already ended with an outcome recorded — just clutter, hide it from the default list",
@@ -130,6 +130,10 @@ export const WHEN_KEYS = {
   neverRan: "bool",
   remainingWork: "bool",
   confident: "bool",
+  failedMinutesAgo: "number",
+  staleFailure: "bool",
+  superseded: "bool",
+  ownedByRun: "bool",
 }
 const ENUM_VALUES = {
   class: ["held", "close", "stuck", "judge", "terminal", "archive"],
@@ -249,6 +253,9 @@ function compileTests(rule) {
 export const DEFAULT_POLICY = [
   { id: "held", when: { class: "held" }, action: "keep", reason: "pinned / keepAlive / busy / pty — never touched" },
   { id: "archive-ended", when: { class: "archive" }, action: "archive", reason: "ended with an outcome recorded — clutter" },
+  { id: "superseded", when: { state: "ended", transient: true, superseded: true }, action: "mark-failed", reason: "failed on {errorKind}, superseded by {supersededBy} (a later session of the same task ran)" },
+  { id: "owned-by-run", when: { transient: true, ownedByRun: true }, action: "mark-failed", reason: "failed on {errorKind}; owned by a workflow / gate / review / cron run — its owner relaunches it, not the steward" },
+  { id: "stale-failure", when: { state: "ended", transient: true, staleFailure: true }, action: "mark-failed", reason: "failed on {errorKind} {failedAgo} ago — outside the relaunch window" },
   { id: "transient-error", when: { transient: true }, action: "relaunch", reason: "last turn failed on a transient cause" },
   { id: "errored", when: { errored: true }, action: "mark-failed", reason: "last turn errored (non-transient)" },
   { id: "never-ran", when: { neverRan: true }, action: "close-abandoned", reason: "0 tokens in/out — never ran" },
@@ -281,15 +288,29 @@ export function boundByOrigin(action, facts) {
   return { action, bound: false }
 }
 
+function fmtAge(minutes) {
+  if (typeof minutes !== "number" || !Number.isFinite(minutes)) return "a while"
+  if (minutes < 90) return `${Math.round(minutes)}m`
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)}h`
+  return `${Math.round(minutes / 1440)}d`
+}
+
+/** `{errorKind}`, `{supersededBy}`, `{failedAgo}` in a rule's reason. */
+function renderReason(reason, facts) {
+  return String(reason).replace(/\{(errorKind|supersededBy|failedAgo)\}/g, (_, k) =>
+    k === "failedAgo" ? fmtAge(facts.failedMinutesAgo) : String(facts[k] ?? "?"),
+  )
+}
+
 /** Custom rules first, then the defaults; the origin bound last. */
 export function decideAction(facts, customRules = []) {
   const custom = matchRule(customRules, facts)
   let chosen
   if (custom) {
-    chosen = { action: custom.action, ruleId: custom.id, source: "custom", reason: custom.reason ?? `custom rule ${custom.id}` }
+    chosen = { action: custom.action, ruleId: custom.id, source: "custom", reason: renderReason(custom.reason ?? `custom rule ${custom.id}`, facts) }
   } else {
     const d = matchRule(COMPILED_DEFAULTS, facts) ?? { id: "fallthrough", action: "keep", reason: "no rule matched" }
-    chosen = { action: d.action, ruleId: d.id, source: "default", reason: d.reason }
+    chosen = { action: d.action, ruleId: d.id, source: "default", reason: renderReason(d.reason, facts) }
   }
   if (chosen.action === "skip") return { ...chosen, action: "keep", skipped: true }
   const b = boundByOrigin(chosen.action, facts)
@@ -357,9 +378,73 @@ export function newSnapshotId(nowMs, suffix) {
   return `snap_${ymdhms(nowMs)}_${s}`
 }
 
+// ── supersession / ownership / recency ───────────────────────────────────
+
+/** Minutes a failed session may still be relaunched after it failed. */
+export const DEFAULT_RELAUNCH_WINDOW_MINUTES = 360
+
+/** Origins whose sessions belong to a run (a review lane, a gate, a workflow,
+ *  a cron or routine fire): that run relaunches them, not the steward. */
+export const OWNER_ORIGINS = ["review", "gate", "workflow", "cron", "cron:*", "routine:*", "webhook"]
+
+const toMs = v => {
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string") {
+    const t = Date.parse(v)
+    return Number.isNaN(t) ? undefined : t
+  }
+  return undefined
+}
+
+/** The task identity of a label: `review:repo:claims:fallback2:retry1` and
+ *  `review:repo:claims` are attempts of the same task. */
+export function labelStem(label) {
+  if (typeof label !== "string") return ""
+  return label.trim().replace(/(?::(?:fallback|retry|attempt)\d*|[-_](?:retry|attempt)\d*)+$/i, "")
+}
+
+const ranOf = row => (num(row?.turnsCompleted) ?? 0) > 0 || (num(row?.tokensOut) ?? 0) > 0
+
+/** Per task stem, the sessions that ran, oldest first. */
+export function buildFamilyIndex(rows) {
+  const byStem = new Map()
+  for (const row of rows ?? []) {
+    const stem = labelStem(row?.label ?? row?.name)
+    const at = toMs(row?.startedAt)
+    if (!stem || at === undefined || !ranOf(row)) continue
+    if (!byStem.has(stem)) byStem.set(stem, [])
+    byStem.get(stem).push({ id: row.id, at })
+  }
+  for (const list of byStem.values()) list.sort((a, b) => a.at - b.at)
+  return byStem
+}
+
+/** The latest session of the same task that started after `row` and ran. */
+export function supersededBy(row, familyIndex) {
+  const stem = labelStem(row?.label ?? row?.name)
+  const at = toMs(row?.startedAt)
+  if (!stem || at === undefined || !familyIndex) return undefined
+  const list = familyIndex.get(stem)
+  const last = list?.[list.length - 1]
+  return last && last.id !== row.id && last.at > at ? last.id : undefined
+}
+
+/** Machine origin that belongs to a run, or any machine session with a parent. */
+export function isOwnedByRun(row, originClass) {
+  if (originClass !== "closable") return false
+  if (row?.parentSessionId) return true
+  return typeof row?.origin === "string" && OWNER_ORIGINS.some(p => globMatch(p, row.origin))
+}
+
+/** Minutes since the session's last failure (error stamp, else end, else last activity). */
+export function failedMinutesAgoOf(row, nowMs) {
+  const at = toMs(row?.lastTurnErroredAt) ?? toMs(row?.endedAt) ?? toMs(row?.lastActivityAt)
+  return at === undefined || typeof nowMs !== "number" ? undefined : Math.max(0, (nowMs - at) / 60000)
+}
+
 /** The facts a session is matched on. `row` is the `session_list` row (any
  *  of it may be missing), `item` carries the classification. */
-export function makeFacts({ cls, state, row, entry, verdict, confidence, evidence, settings, neverRan, remainingWork }) {
+export function makeFacts({ cls, state, row, entry, verdict, confidence, evidence, settings, neverRan, remainingWork, family, nowMs }) {
   const idle = num(entry?.idleMinutes) ?? num(row?.idleMinutes)
   const errText = errorTextOf(row, evidence)
   const errored = Boolean(row?.lastTurnErroredAt) || (state === "ended" && row?.status === "error" && Boolean(errText))
@@ -367,11 +452,15 @@ export function makeFacts({ cls, state, row, entry, verdict, confidence, evidenc
   const errorKind = errored && err.kind === "none" ? "logic" : err.kind
   const originSource = row ?? entry ?? {}
   const min = settings?.minConfidence ?? 0.8
+  const originClass = classifyOrigin(originSource, { userOrigins: settings?.userOrigins, closableOrigins: settings?.closableOrigins })
+  const window = num(settings?.relaunchWindowMinutes) ?? DEFAULT_RELAUNCH_WINDOW_MINUTES
+  const failedMinutesAgo = errored ? failedMinutesAgoOf(row, nowMs) : undefined
+  const supersededId = errored && row ? supersededBy(row, family) : undefined
   return {
     sessionId: row?.id ?? entry?.sessionId,
     label: row?.label ?? row?.name ?? entry?.label,
     origin: row?.origin ?? entry?.origin,
-    originClass: classifyOrigin(originSource, { userOrigins: settings?.userOrigins, closableOrigins: settings?.closableOrigins }),
+    originClass,
     cwd: row?.cwd,
     model: row?.model,
     profile: row?.accessProfile?.profileRef,
@@ -386,6 +475,11 @@ export function makeFacts({ cls, state, row, entry, verdict, confidence, evidenc
     errored,
     errorKind,
     transient: errored && err.transient,
+    superseded: supersededId !== undefined,
+    supersededBy: supersededId,
+    ownedByRun: errored && isOwnedByRun(row ?? entry, originClass),
+    failedMinutesAgo,
+    staleFailure: failedMinutesAgo !== undefined && failedMinutesAgo > window,
     errorText: cut(errText, 300),
     neverRan: neverRan === true,
     remainingWork: remainingWork === true,
@@ -419,6 +513,7 @@ export function evidenceSummary(f) {
 export function buildSnapshot(input) {
   const { settings, rules, candidates, verdicts, relabel, archive, held, liveRows, profiles, nowMs, remainingOf, hostLoad } = input
   const byId = new Map((liveRows ?? []).map(r => [r.id, r]))
+  const family = buildFamilyIndex(liveRows)
   const customRules = rules?.rules ?? []
   const rows = []
   const seen = new Set()
@@ -427,7 +522,7 @@ export function buildSnapshot(input) {
     if (!id || seen.has(id)) return
     seen.add(id)
     const row = byId.get(id)
-    const facts = makeFacts({ cls, state, row, entry, settings, ...extra })
+    const facts = makeFacts({ cls, state, row, entry, settings, family, nowMs, ...extra })
     rows.push({ id, entry, row, facts, extra })
   }
   for (const e of candidates?.close ?? []) add("close", "live", e, { verdict: "done", confidence: 1, remainingWork: (remainingOf?.(e) ?? []).length > 0 })
@@ -474,6 +569,10 @@ export function buildSnapshot(input) {
       errored: facts.errored,
       errorKind: facts.errorKind,
       transient: facts.transient,
+      ...(facts.failedMinutesAgo !== undefined ? { failedMinutesAgo: Math.round(facts.failedMinutesAgo) } : {}),
+      ...(facts.staleFailure ? { staleFailure: true } : {}),
+      ...(facts.superseded ? { superseded: true, supersededBy: facts.supersededBy } : {}),
+      ...(facts.ownedByRun ? { ownedByRun: true } : {}),
       ...(facts.walletProfile ? { walletProfile: facts.walletProfile } : {}),
       neverRan: facts.neverRan,
       remainingWork: facts.remainingWork,
@@ -501,6 +600,7 @@ export function buildSnapshot(input) {
       jevModel: settings?.jevModel,
       userOrigins: settings?.userOrigins,
       closableOrigins: settings?.closableOrigins,
+      relaunchWindowMinutes: num(settings?.relaunchWindowMinutes) ?? DEFAULT_RELAUNCH_WINDOW_MINUTES,
     },
     rules: { source: rules?.source ?? "none", count: customRules.length },
     ...(hostLoad ? { host: hostLoad } : {}),
@@ -703,6 +803,11 @@ function factsOfRow(row, settings) {
     errored: row.errored,
     errorKind: row.analysis?.errorKind ?? row.errorKind,
     transient: row.transient,
+    superseded: row.superseded === true,
+    supersededBy: row.supersededBy,
+    ownedByRun: row.ownedByRun === true,
+    failedMinutesAgo: row.failedMinutesAgo,
+    staleFailure: row.staleFailure === true,
     neverRan: row.neverRan,
     remainingWork: row.remainingWork,
   }

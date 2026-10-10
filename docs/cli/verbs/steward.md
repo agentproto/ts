@@ -1,7 +1,7 @@
 # `agentproto steward`
 
 ```text
-agentproto steward [classify] [--idle <min>] [--rules <file>] [--all] [--json]
+agentproto steward [classify] [--idle <min>] [--relaunch-window <min>] [--rules <file>] [--all] [--json]
 agentproto steward classify --llm
 agentproto steward analyze [<snapshotId|latest>] [--session <ids>] [--only <actions>]
                            [--judge <agent|jev>] [--max-sessions <n>] [--json]
@@ -31,7 +31,13 @@ needs-input | close-abandoned | archive`.
 - `relaunch` is for transient causes (quota, upstream, timeout): the plan says
   continue vs restart and suggests another non-exhausted profile/sub-account of
   the same provider; it never suggests a paid fallback for a free-only model.
-  Opt-in: `--only relaunch` or `--allow-relaunch`.
+  Opt-in: `--only relaunch` or `--allow-relaunch`. It is recommended only for
+  work that is not superseded (no later session of the same label stem, with
+  `:fallbackN` / `:retryN` stripped, has run), not owned by a run (a
+  machine-origin session with a parent, or a review / gate / workflow / cron
+  origin: its owner relaunches it) and recent (`--relaunch-window`). Superseded,
+  owned and stale failures are `mark-failed` with the reason (for example
+  "superseded by <id>").
 - `needs-input` flags a session that waits on someone; a user-origin session is
   only ever flagged or labelled, never closed or killed.
 - `close-abandoned` retires a session that never ran / was abandoned.
@@ -43,6 +49,7 @@ needs-input | close-abandoned | archive`.
 | `--apply` | `false` | Perform the planned actions. On `classify` it is the one-shot (classify, then act on the fresh snapshot). |
 | `--idle <min>` | `30` | Idle threshold in minutes. |
 | `--min-confidence <x>` | `0.8` | Confidence (0..1) needed to act on a verdict. |
+| `--relaunch-window <min>` | `360` | `relaunch` is only recommended for a failure newer than this (rules key `failedMinutesAgo`); an older failed session is `mark-failed`. |
 | `--rules <file>` | auto | Custom rules (YAML or JSON). Auto-loads `./.agentproto/steward-rules.yaml` (`.yml`/`.json`), then `~/.agentproto/…`. An unreadable or unparsable file exits `2`; unknown keys / bad actions are listed as errors in the report and the run then acts on nothing. |
 | `--only <a,b,…>` | all | Restrict to these recommended actions. |
 | `--session <a,b,…>` | all | Restrict to these session ids (repeatable). |
@@ -76,8 +83,8 @@ rules:
 
 `when` keys (all must match): globs `origin`, `label`, `cwd`, `model`,
 `profile`; enums `class`, `state`, `verdict`, `errorKind`, `action`,
-`originClass`; numbers `idleMinutes`, `confidence` (`120`, `">=120"`,
-`"10..60"`); booleans `transient`, `errored`, `neverRan`, `remainingWork`,
+`originClass`; numbers `idleMinutes`, `failedMinutesAgo`, `confidence` (`120`, `">=120"`,
+`"10..60"`); booleans `superseded`, `ownedByRun`, `staleFailure`, `transient`, `errored`, `neverRan`, `remainingWork`,
 `confident`. A bare list is shorthand for `{version: 1, rules: [...]}`. Rule
 keys: `id`, `when`, `action` (an action or `skip`), `reason`. Unknown keys are
 reported as validation errors.

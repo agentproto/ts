@@ -27,6 +27,7 @@ import {
   splitCandidates,
 } from "./entry.mjs"
 import {
+  DEFAULT_RELAUNCH_WINDOW_MINUTES,
   ACTIONS,
   ACTION_INFO,
   ANALYZE_DEFAULT_MAX,
@@ -73,6 +74,7 @@ export function csvList(v) {
 export const SHARED_INPUTS = {
   idleMinutes: { type: "number", description: "Idle threshold in minutes. Default 30.", default: 30 },
   minConfidence: { type: "number", description: "Confidence needed to act on a verdict. Default: the snapshot's own (0.8)." },
+  relaunchWindowMinutes: { type: "number", description: "A failed session is only recommended for `relaunch` when it failed within this many minutes (older: `mark-failed`). Default 360. Rules key: `failedMinutesAgo`.", default: 360 },
   relabelWindowHours: { type: "number", description: "Ended sessions that finished within this many hours are classified (outcome labels). Default 24.", default: 24 },
   rules: { type: "object", description: "Custom rules, already parsed (`{version:1, rules:[…]}` or a bare list). First match wins, then the defaults. Validated; unknown keys are errors." },
   rulesSource: { type: "string", description: "Where `rules` came from (a file path), for the report." },
@@ -108,6 +110,7 @@ export function twoStepSettings(input, modelRoles, { planning = false } = {}) {
   const archiveWindowHours = num(i.archiveWindowHours, DEFAULT_ARCHIVE_WINDOW_HOURS, { min: 1 })
   return {
     ...base,
+    relaunchWindowMinutes: num(i.relaunchWindowMinutes, DEFAULT_RELAUNCH_WINDOW_MINUTES, { min: 0 }),
     act: i.apply === true,
     planning: planning || i.apply === true,
     allowRelaunch: i.allowRelaunch === true,

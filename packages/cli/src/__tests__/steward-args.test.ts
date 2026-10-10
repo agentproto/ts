@@ -39,6 +39,13 @@ describe("parseStewardArgs", () => {
     })
   })
 
+  it("--relaunch-window maps to relaunchWindowMinutes and rejects bad values", () => {
+    expect(ok(["--relaunch-window", "90"]).input).toEqual({ relaunchWindowMinutes: 90 })
+    expect(ok(["--relaunch-window", "0"]).input).toEqual({ relaunchWindowMinutes: 0 })
+    expect(parseStewardArgs(["--relaunch-window", "-1"])).toMatchObject({ ok: false })
+    expect(parseStewardArgs(["--relaunch-window", "soon"])).toMatchObject({ ok: false })
+  })
+
   it("analyze maps judge / max-sessions / selectors", () => {
     const v = ok(["analyze", "latest", "--judge", "jev", "--max-sessions", "5", "--only", "relaunch"])
     expect(v.sub).toBe("analyze")

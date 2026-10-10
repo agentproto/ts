@@ -33,7 +33,7 @@ function row(over: Record<string, unknown> = {}) {
     id: (over.id as string) ?? "s1",
     label: (over.id as string) ?? "s1",
     status: "running",
-    origin: "workflow",
+    origin: "model-bench",
     cwd: "/work/a",
     model: "claude-sonnet-5",
     lastActivityAt: "2026-10-10T08:00:00Z",
@@ -534,5 +534,67 @@ describe("analyze", () => {
     const h = A.heuristicAnalysis(a, { lastTurnError: "request timed out" })
     expect(h).toMatchObject({ action: "relaunch", errorKind: "timeout" })
     expect(h.reason).toContain("transient timeout")
+  })
+})
+
+describe("relaunch gates: superseded, owned by a run, recency", () => {
+  const f = (over: Record<string, unknown>) => ({ originClass: "closable", state: "ended", class: "terminal", errored: true, errorKind: "quota", transient: true, ...over })
+
+  it("labelStem folds fallback / retry attempts onto the task", () => {
+    expect(A.labelStem("review:repo:claims:fallback2:retry1")).toBe("review:repo:claims")
+    expect(A.labelStem("review:repo:claims")).toBe("review:repo:claims")
+    expect(A.labelStem("bench-retry2")).toBe("bench")
+    expect(A.labelStem(undefined)).toBe("")
+  })
+
+  it("supersededBy: only a LATER session of the same task that RAN counts", () => {
+    const at = (m: number) => new Date(NOW - m * 60000).toISOString()
+    const rows = [
+      { id: "a", label: "t", startedAt: at(300), tokensOut: 0, turnsCompleted: 0 },
+      { id: "b", label: "t:fallback1", startedAt: at(200), tokensOut: 0, turnsCompleted: 0 },
+      { id: "c", label: "t:fallback2", startedAt: at(100), tokensOut: 50, turnsCompleted: 1 },
+      { id: "d", label: "other", startedAt: at(50), tokensOut: 50, turnsCompleted: 1 },
+    ]
+    const idx = A.buildFamilyIndex(rows)
+    expect(A.supersededBy(rows[0], idx)).toBe("c")
+    expect(A.supersededBy(rows[1], idx)).toBe("c")
+    expect(A.supersededBy(rows[2], idx)).toBeUndefined()
+    expect(A.supersededBy(rows[3], idx)).toBeUndefined()
+    expect(A.supersededBy({ id: "x", label: "t", startedAt: at(10) }, idx)).toBeUndefined()
+    expect(A.supersededBy({ id: "y", label: "", startedAt: at(500) }, idx)).toBeUndefined()
+  })
+
+  it("isOwnedByRun: owner origins and any machine session with a parent; never a user session", () => {
+    for (const origin of ["review", "gate", "workflow", "cron", "cron:daily", "routine:x", "webhook"]) expect(A.isOwnedByRun({ origin }, "closable")).toBe(true)
+    expect(A.isOwnedByRun({ origin: "model-bench", parentSessionId: "p" }, "closable")).toBe(true)
+    expect(A.isOwnedByRun({ origin: "model-bench" }, "closable")).toBe(false)
+    expect(A.isOwnedByRun({ origin: "review", parentSessionId: "p" }, "user")).toBe(false)
+  })
+
+  it("default policy: superseded and owned fail with a reason, stale failures fail, the rest relaunch", () => {
+    expect(A.decideAction(f({ superseded: true, supersededBy: "s9" }))).toMatchObject({ action: "mark-failed", ruleId: "superseded" })
+    expect(A.decideAction(f({ superseded: true, supersededBy: "s9" })).reason).toContain("superseded by s9")
+    expect(A.decideAction(f({ ownedByRun: true }))).toMatchObject({ action: "mark-failed", ruleId: "owned-by-run" })
+    expect(A.decideAction(f({ ownedByRun: true, state: "live", class: "stuck" }))).toMatchObject({ action: "mark-failed", ruleId: "owned-by-run" })
+    expect(A.decideAction(f({ staleFailure: true, failedMinutesAgo: 600 }))).toMatchObject({ action: "mark-failed", ruleId: "stale-failure" })
+    expect(A.decideAction(f({ staleFailure: true, failedMinutesAgo: 600 })).reason).toMatch(/10h ago/)
+    expect(A.decideAction(f({ failedMinutesAgo: 30 })).action).toBe("relaunch")
+  })
+
+  it("makeFacts: window, ownership and supersession are computed from the row", () => {
+    const row = { id: "r", label: "t:fallback1", origin: "review", startedAt: new Date(NOW - 200 * 60000).toISOString(), lastTurnErroredAt: new Date(NOW - 400 * 60000).toISOString(), lastTurnErrorMessage: "usage limit exceeded", status: "exited" }
+    const family = A.buildFamilyIndex([row, { id: "later", label: "t", startedAt: new Date(NOW - 10 * 60000).toISOString(), tokensOut: 5 }])
+    const facts = A.makeFacts({ cls: "terminal", state: "ended", row, settings, family, nowMs: NOW })
+    expect(facts).toMatchObject({ errorKind: "quota", transient: true, ownedByRun: true, superseded: true, supersededBy: "later", staleFailure: true })
+    expect(Math.round(facts.failedMinutesAgo)).toBe(400)
+    expect(A.makeFacts({ cls: "terminal", state: "ended", row, settings: { ...settings, relaunchWindowMinutes: 1000 }, nowMs: NOW }).staleFailure).toBe(false)
+  })
+
+  it("rules accept the new keys (failedMinutesAgo, staleFailure, superseded, ownedByRun) and reject typos", () => {
+    const ok = A.validateRules([{ id: "r", when: { failedMinutesAgo: ">120", superseded: false, ownedByRun: false, staleFailure: false }, action: "relaunch" }])
+    expect(ok.ok).toBe(true)
+    expect(A.validateRules([{ id: "r", when: { failedAgo: ">120" }, action: "relaunch" }]).ok).toBe(false)
+    const rule = ok.rules
+    expect(A.decideAction(f({ failedMinutesAgo: 200, superseded: false, ownedByRun: false, staleFailure: false }), rule)).toMatchObject({ action: "relaunch", source: "custom" })
   })
 })

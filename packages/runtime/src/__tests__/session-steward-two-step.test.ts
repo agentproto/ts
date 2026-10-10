@@ -179,7 +179,7 @@ function fixture() {
   const rows: Row[] = [
     liveRow(SELF),
     liveRow("close_1"),
-    b1Row("b1_quota"),
+    { ...b1Row("b1_quota"), origin: "model-bench" },
     b1Row("b1_logic", "TypeError: cannot read properties of undefined"),
     liveRow("judge_done"),
     liveRow("judge_chat", { origin: "chat-starter" }),
@@ -430,6 +430,113 @@ describe("act", () => {
     await act(w, { apply: true, only: ["relaunch"] })
     const touched = w.calls.filter(c => c.name === "session_restart" || c.name === "session_continue_fresh" || c.name === "agent_prompt")
     expect(touched.length).toBeGreaterThan(0)
+  })
+})
+
+/** A machine session (no owner run) whose only turn failed on quota. */
+const benchFailed = (id: string, extra: Row = {}): Row =>
+  liveRow(id, {
+    origin: "model-bench",
+    tokensIn: 0,
+    tokensOut: 0,
+    turnsCompleted: 0,
+    startedAt: minutesAgo(100),
+    lastTurnErrorMessage: '[wallet: profile "anthropic/acct-a" — quota exceeded]',
+    ...extra,
+  })
+
+const endedBench = (id: string, label: string, ago: number, extra: Row = {}): Row =>
+  benchFailed(id, {
+    label,
+    status: "exited",
+    startedAt: minutesAgo(ago + 20),
+    lastTurnErroredAt: minutesAgo(ago),
+    endedAt: minutesAgo(ago),
+    lastActivityAt: minutesAgo(ago),
+    ...extra,
+  })
+
+describe("classify — relaunch is only for work that is not superseded, not owned, and recent", () => {
+  const classifyRows = async (rows: Row[], input: Record<string, unknown> = {}) => {
+    const w = world({ rows: [liveRow(SELF), ...rows], entries: [], jev: jevFor })
+    await classify(w, input)
+    return { w, snap: snapshotOf(w) }
+  }
+
+  it("superseded: a later session of the same task that ran supersedes every earlier failed attempt", async () => {
+    const { snap, w } = await classifyRows([
+      endedBench("t_a", "bench:claims", 300),
+      endedBench("t_b", "bench:claims:fallback1", 200),
+      endedBench("t_c", "bench:claims:fallback2", 100, { tokensIn: 4000, tokensOut: 900, turnsCompleted: 2, lastTurnErroredAt: undefined, lastTurnErrorMessage: undefined, status: "exited" }),
+    ])
+    for (const id of ["t_a", "t_b"]) {
+      expect(actionOf(snap, id)).toMatchObject({ action: "mark-failed", ruleId: "superseded", superseded: true, supersededBy: "t_c", errorKind: "quota" })
+      expect(actionOf(snap, id).actionReason).toContain("superseded by t_c")
+    }
+    expect(mutations(w)).toEqual([])
+  })
+
+  it("not superseded: a later attempt that never ran does not supersede, and the last failed attempt is the one relaunched", async () => {
+    const { snap } = await classifyRows([
+      endedBench("n_a", "bench:docs", 100),
+      endedBench("n_b", "bench:docs:fallback1", 60),
+    ])
+    expect(actionOf(snap, "n_a")).toMatchObject({ action: "relaunch" })
+    expect(actionOf(snap, "n_b")).toMatchObject({ action: "relaunch" })
+    expect(actionOf(snap, "n_a").superseded).toBeUndefined()
+  })
+
+  it("owned by a run: review / gate / cron origins and anything with a parent are mark-failed with the error kind, never relaunch", async () => {
+    const { snap } = await classifyRows([
+      endedBench("o_review", "review:repo:glm", 90, { origin: "review" }),
+      endedBench("o_gate", "gate:abc", 90, { origin: "gate" }),
+      endedBench("o_cron", "cron-job", 90, { origin: "cron:daily" }),
+      endedBench("o_child", "child-task", 90, { origin: "model-bench", parentSessionId: "run_1" }),
+      endedBench("o_free", "free-task", 90),
+    ])
+    for (const id of ["o_review", "o_gate", "o_cron", "o_child"]) {
+      expect(actionOf(snap, id)).toMatchObject({ action: "mark-failed", ruleId: "owned-by-run", ownedByRun: true, errorKind: "quota" })
+      expect(actionOf(snap, id).actionReason).toMatch(/owner relaunches/)
+    }
+    expect(actionOf(snap, "o_free").action).toBe("relaunch")
+  })
+
+  it("recency window: failures older than the window are mark-failed; the window is an input and a rules key", async () => {
+    const rows = [endedBench("r_new", "bench:new", 60), endedBench("r_old", "bench:old", 600)]
+    const { snap } = await classifyRows(rows)
+    expect(actionOf(snap, "r_new").action).toBe("relaunch")
+    expect(actionOf(snap, "r_old")).toMatchObject({ action: "mark-failed", ruleId: "stale-failure", staleFailure: true })
+    expect(actionOf(snap, "r_old").actionReason).toMatch(/outside the relaunch window/)
+    expect(snap.settings.relaunchWindowMinutes).toBe(360)
+
+    const wide = await classifyRows(rows, { relaunchWindowMinutes: 1440 })
+    expect(actionOf(wide.snap, "r_old").action).toBe("relaunch")
+
+    const narrow = await classifyRows(rows, { relaunchWindowMinutes: 30 })
+    expect(actionOf(narrow.snap, "r_new").action).toBe("mark-failed")
+
+    const byRule = await classifyRows(rows, { rules: { version: 1, rules: [{ id: "older-than-2h", when: { failedMinutesAgo: ">120" }, action: "mark-failed", reason: "too old" }] } })
+    expect(actionOf(byRule.snap, "r_old")).toMatchObject({ action: "mark-failed", ruleId: "older-than-2h" })
+    expect(actionOf(byRule.snap, "r_new").action).toBe("relaunch")
+  })
+
+  it("act --apply --only relaunch never relaunches a superseded, owned or stale session", async () => {
+    const { w } = await classifyRows([
+      endedBench("a_sup", "bench:x", 300),
+      endedBench("a_ran", "bench:x:fallback1", 100, { tokensIn: 10, tokensOut: 10, turnsCompleted: 1, lastTurnErroredAt: undefined, lastTurnErrorMessage: undefined }),
+      endedBench("a_own", "review:y", 90, { origin: "review" }),
+      endedBench("a_old", "bench:z", 900),
+    ])
+    w.calls.length = 0
+    await act(w, { apply: true, only: ["relaunch"] })
+    expect(w.calls.filter(c => ["session_restart", "session_continue_fresh", "agent_prompt"].includes(c.name))).toEqual([])
+    w.calls.length = 0
+    await act(w, { apply: true, only: ["mark-failed"] })
+    const labelled = w.calls.filter(c => c.name === "agent_kill").map(c => (c.inputs as any).sessionId).sort()
+    expect(labelled).toEqual(["a_old", "a_own", "a_sup"])
+    const outcome = (w.calls.find(c => c.name === "agent_kill" && (c.inputs as any).sessionId === "a_sup")!.inputs as any).outcome
+    expect(outcome).toMatchObject({ verdict: "failed", errorKind: "quota" })
+    expect(outcome.reason).toContain("superseded by a_ran")
   })
 })
 

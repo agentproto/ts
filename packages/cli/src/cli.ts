@@ -178,7 +178,7 @@ Usage:
   agentproto workflow  resolve <runId> (--approve|--reject) [--who <name>] [--note <text>]
   agentproto maintain  [--repo <dir>] [--apply-merged] [--json]
                        plan/review (and optionally apply) branch + worktree gc for a repo
-  agentproto steward   [classify] [--rules <file>] [--idle <min>] [--llm] [--json]
+  agentproto steward   [classify] [--rules <file>] [--idle <min>] [--relaunch-window <min>] [--llm] [--json]
                        classify sessions at one instant → a snapshot with ONE recommended action each
   agentproto steward   analyze [<snapshotId|latest>] [--session <ids>] [--only <actions>] [--judge <agent|jev>]
                        LLM pass over the relevant rows: reason / question / errorKind / nextStep

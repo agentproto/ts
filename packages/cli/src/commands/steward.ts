@@ -75,6 +75,10 @@ Flags:
   --apply              Perform the planned actions (act, or one-shot with classify).
   --idle <min>         Idle threshold in minutes. Default 30.
   --min-confidence <x> Confidence (0..1) needed to act on a verdict. Default 0.8.
+  --relaunch-window <min>
+                       classify: only recommend "relaunch" for sessions that
+                       failed within this many minutes (older: mark-failed).
+                       Default 360. Rules key: failedMinutesAgo.
   --rules <file>       Custom rules (YAML or JSON). Default: auto-load
                        ./.agentproto/steward-rules.yaml (or .yml/.json), then
                        ~/.agentproto/steward-rules.yaml. First match wins,
@@ -147,6 +151,7 @@ export function parseStewardArgs(
 				apply: { type: "boolean", default: false },
 				idle: { type: "string" },
 				"min-confidence": { type: "string" },
+				"relaunch-window": { type: "string" },
 				judge: { type: "string" },
 				"ask-sessions": { type: "boolean", default: false },
 				legacy: { type: "boolean", default: false },
@@ -191,6 +196,11 @@ export function parseStewardArgs(
 			return { ok: false, error: `--min-confidence must be a number in 0..1, got "${String(values["min-confidence"])}"` }
 		}
 		input.minConfidence = x
+	}
+	if (values["relaunch-window"] !== undefined) {
+		const n = Number(values["relaunch-window"])
+		if (!Number.isFinite(n) || n < 0) return { ok: false, error: `--relaunch-window must be a number of minutes >= 0, got "${String(values["relaunch-window"])}"` }
+		input.relaunchWindowMinutes = n
 	}
 	const judge = values.judge as string | undefined
 	if (judge !== undefined) {
