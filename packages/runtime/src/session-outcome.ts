@@ -49,7 +49,93 @@ export interface SessionOutcomeLink {
   title?: string
 }
 
-export interface SessionOutcome {
+/** Why a session failed (or `none`) — the closed vocabulary shared by the
+ *  steward's analyze step, `act`, and a manual `sessions stop --error-kind`. */
+export const OUTCOME_ERROR_KINDS = ["quota", "upstream", "timeout", "crash", "logic", "none"] as const
+export type OutcomeErrorKind = (typeof OUTCOME_ERROR_KINDS)[number]
+
+/** Who stated the outcome: the deterministic rules, Jev, an agent judge, or a human. */
+export const OUTCOME_BY = ["steward-rules", "jev", "agent", "user"] as const
+export type OutcomeBy = (typeof OUTCOME_BY)[number]
+
+/** Caps for the free-text outcome fields (characters). */
+export const OUTCOME_REASON_MAX = 500
+export const OUTCOME_QUESTION_MAX = 500
+export const OUTCOME_NEXT_STEP_MAX = 500
+
+/** The structured "why" attached to a Level-2 verdict. Generic: written by
+ *  `steward act`, by a manual `sessions stop`, by `session_mark_completed`
+ *  and `session_wrapup_apply`; every field optional. */
+export interface OutcomeDetail {
+  /** Free text — why the session completed / failed / was abandoned. */
+  reason?: string
+  /** For `needs-input`: the question the session is waiting on. */
+  question?: string
+  errorKind?: OutcomeErrorKind
+  /** What should happen next (the remaining work, or how to retry). */
+  nextStep?: string
+  by?: OutcomeBy
+}
+
+/** Normalize caller-supplied detail: trim + cap the texts, drop blanks and
+ *  values outside the closed vocabularies. Pure; returns only set fields. */
+export function sanitizeOutcomeDetail(input: Partial<Record<keyof OutcomeDetail, unknown>> | undefined): OutcomeDetail {
+  if (!input) return {}
+  const out: OutcomeDetail = {}
+  const reason = trimOutcomeText(typeof input.reason === "string" ? input.reason : undefined, OUTCOME_REASON_MAX, "head")
+  if (reason) out.reason = reason
+  const question = trimOutcomeText(typeof input.question === "string" ? input.question : undefined, OUTCOME_QUESTION_MAX, "head")
+  if (question) out.question = question
+  const nextStep = trimOutcomeText(typeof input.nextStep === "string" ? input.nextStep : undefined, OUTCOME_NEXT_STEP_MAX, "head")
+  if (nextStep) out.nextStep = nextStep
+  if (typeof input.errorKind === "string" && (OUTCOME_ERROR_KINDS as readonly string[]).includes(input.errorKind)) {
+    out.errorKind = input.errorKind as OutcomeErrorKind
+  }
+  if (typeof input.by === "string" && (OUTCOME_BY as readonly string[]).includes(input.by)) out.by = input.by as OutcomeBy
+  return out
+}
+
+/** The verdicts a manual stop / label can declare. */
+export const STOP_OUTCOME_VERDICTS = ["done", "failed", "abandoned", "needs-input"] as const
+
+/** The declared outcome carried by a manual stop (`sessions stop`, the
+ *  `/kill` body's `outcome`, `agent_kill`'s `outcome`). */
+export interface StopOutcome extends OutcomeDetail {
+  verdict?: (typeof STOP_OUTCOME_VERDICTS)[number]
+  note?: string
+  judgedBy?: string
+}
+
+/** Validate an untrusted `outcome` object (HTTP body / tool arg): unknown
+ *  verdicts / errorKinds / `by` are an error rather than silently dropped, so
+ *  a typo never records a blank label. `undefined`/`null` ⇒ no outcome. */
+export function parseStopOutcome(raw: unknown): { ok: true; outcome?: StopOutcome } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true }
+  if (typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "`outcome` must be an object" }
+  const o = raw as Record<string, unknown>
+  const out: StopOutcome = {}
+  if (o.verdict !== undefined) {
+    if (typeof o.verdict !== "string" || !(STOP_OUTCOME_VERDICTS as readonly string[]).includes(o.verdict)) {
+      return { ok: false, error: `outcome.verdict must be one of ${STOP_OUTCOME_VERDICTS.join(", ")}` }
+    }
+    out.verdict = o.verdict as StopOutcome["verdict"]
+  }
+  if (o.errorKind !== undefined && !(typeof o.errorKind === "string" && (OUTCOME_ERROR_KINDS as readonly string[]).includes(o.errorKind))) {
+    return { ok: false, error: `outcome.errorKind must be one of ${OUTCOME_ERROR_KINDS.join(", ")}` }
+  }
+  if (o.by !== undefined && !(typeof o.by === "string" && (OUTCOME_BY as readonly string[]).includes(o.by))) {
+    return { ok: false, error: `outcome.by must be one of ${OUTCOME_BY.join(", ")}` }
+  }
+  for (const k of ["reason", "question", "nextStep", "note", "judgedBy"] as const) {
+    if (o[k] !== undefined && typeof o[k] !== "string") return { ok: false, error: `outcome.${k} must be a string` }
+  }
+  Object.assign(out, sanitizeOutcomeDetail(o))
+  if (typeof o.note === "string" && o.note.trim()) out.note = o.note.trim()
+  if (typeof o.judgedBy === "string" && o.judgedBy.trim()) out.judgedBy = o.judgedBy.trim()
+  return { ok: true, outcome: out }
+}
+
+export interface SessionOutcome extends OutcomeDetail {
   /** Level 1 (`deriveSessionOutcome`) only ever writes `"derived"` — what an
    *  ended session produced, with zero agent/human cooperation. Level 2 adds
    *  `"judged"` (a judge agent decided the verdict, `judgedBy` names the
@@ -110,6 +196,12 @@ export interface SessionOutcome {
 export interface SessionOutcomeCompact {
   status: SessionOutcome["status"]
   summary?: string
+  /** Level 2 label, when one was recorded (`steward act` / manual stop). */
+  verdict?: SessionOutcome["verdict"]
+  /** First {@link OUTCOME_COMPACT_SUMMARY_MAX} chars of the recorded `reason`. */
+  reason?: string
+  errorKind?: OutcomeErrorKind
+  by?: OutcomeBy
 }
 
 /** Collapse whitespace and cap at `max` chars — keeping the head or the
@@ -208,7 +300,15 @@ export function shouldReplaceOutcome(existing: SessionOutcome | undefined, next:
 export function compactOutcome(o: SessionOutcome | undefined): SessionOutcomeCompact | undefined {
   if (!o) return undefined
   const summary = trimOutcomeText(o.summary, OUTCOME_COMPACT_SUMMARY_MAX, "head")
-  return { status: o.status, ...(summary ? { summary } : {}) }
+  const reason = trimOutcomeText(o.reason, OUTCOME_COMPACT_SUMMARY_MAX, "head")
+  return {
+    status: o.status,
+    ...(summary ? { summary } : {}),
+    ...(o.verdict ? { verdict: o.verdict } : {}),
+    ...(reason ? { reason } : {}),
+    ...(o.errorKind ? { errorKind: o.errorKind } : {}),
+    ...(o.by ? { by: o.by } : {}),
+  }
 }
 
 /**

@@ -467,6 +467,78 @@ describe("POST /sessions/:id/kill — reason body", () => {
   })
 })
 
+describe("POST /sessions/:id/kill — outcome body", () => {
+  let stopServer: (() => Promise<void>) | undefined
+  afterEach(async () => {
+    await stopServer?.()
+    stopServer = undefined
+  })
+
+  async function withServer(run: (port: number, registry: ReturnType<typeof createSessionsRegistry>) => Promise<void>): Promise<void> {
+    const registry = createSessionsRegistry({ persist: false })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    stopServer = () => http.stop()
+    try {
+      await run(port, registry)
+    } finally {
+      await http.stop()
+      stopServer = undefined
+    }
+  }
+  const post = (port: number, id: string, body: unknown) =>
+    fetch(`http://127.0.0.1:${port}/sessions/${id}/kill`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+
+  it("{ outcome } on a live row stops it and records verdict + detail (failed ⇒ operator-stopped)", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", agentSession: instantAgentSession(), adapterSlug: "fake" })
+      const res = await post(port, desc.id, { outcome: { verdict: "failed", reason: "wedged", errorKind: "crash", nextStep: "restart it" } })
+      expect(res.status).toBe(200)
+      const after = registry.get(desc.id)!
+      expect(after.endedReason).toBe("operator-stopped")
+      expect(after.outcome).toMatchObject({ verdict: "failed", reason: "wedged", errorKind: "crash", nextStep: "restart it", by: "user", source: "declared" })
+    })
+  })
+
+  it("{ outcome: done } with no reason reads as operator-completed", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", agentSession: instantAgentSession(), adapterSlug: "fake" })
+      expect((await post(port, desc.id, { outcome: { verdict: "done", reason: "shipped" } })).status).toBe(200)
+      expect(registry.get(desc.id)?.endedReason).toBe("operator-completed")
+    })
+  })
+
+  it("{ outcome } alone on an ALREADY-ENDED row labels it without retiring it", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", agentSession: instantAgentSession(), adapterSlug: "fake" })
+      expect(registry.kill(desc.id)).toBe(true)
+      expect((await post(port, desc.id, { outcome: { verdict: "abandoned", reason: "obsolete" } })).status).toBe(200)
+      const after = registry.get(desc.id)!
+      expect(after.retiredAt).toBeUndefined()
+      expect(after.outcome).toMatchObject({ verdict: "abandoned", reason: "obsolete" })
+    })
+  })
+
+  it("an invalid outcome is a 400 and the session is left alone", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", agentSession: instantAgentSession(), adapterSlug: "fake" })
+      const res = await post(port, desc.id, { outcome: { verdict: "kaput" } })
+      expect(res.status).toBe(400)
+      expect(registry.get(desc.id)?.status).toBe("running")
+    })
+  })
+})
+
 describe("POST /sessions/:id/prompt — superseded session", () => {
   let stopServer: (() => Promise<void>) | undefined
   afterEach(async () => {

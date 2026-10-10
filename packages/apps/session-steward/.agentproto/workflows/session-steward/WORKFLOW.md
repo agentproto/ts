@@ -151,12 +151,118 @@ steps:
     tool: host_load
     inputs: {}
 
+  - id: listWindow
+    kind: transform
+    name: Relabel window as a relative age
+    description: Entry-based — listWindow (`updatedSince`, e.g. 24h).
+
   - id: liveSessions
     kind: tool
-    name: List live sessions for the mechanical scan
+    name: Live sessions (projected, paged)
+    description: >-
+      Projected (`fields`), filtered and paged (`limit` 200) — never
+      `full: true`, so no whole-registry step output is persisted.
     tool: session_list
     inputs:
-      full: true
+      onlyAlive: true
+      fields: [id, name, label, status, origin, parentSessionId, cwd, model, accessProfile, startedAt, lastActivityAt, endedAt, lastTurnErroredAt, lastTurnErrorMessage, lastError, lastTurnReason, turnsCompleted, tokensIn, tokensOut, costUsd, contextUsed, busy, pty, pinned, keepAlive, archived, provisioning, pendingPrompts, outcome, wrapupFlag, openedPrs, worktree]
+      limit: 200
+
+  - id: liveSessionsCursor2
+    kind: transform
+    name: Cursor of page 2 (none when page 1 was the last)
+    description: Entry-based — [{cursor}] or [].
+
+  - id: liveSessionsPage2
+    kind: map
+    name: Fetch page 2
+    over: $steps.liveSessionsCursor2
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage2Fetch
+        kind: tool
+        tool: session_list
+        inputs:
+          onlyAlive: true
+          fields: [id, name, label, status, origin, parentSessionId, cwd, model, accessProfile, startedAt, lastActivityAt, endedAt, lastTurnErroredAt, lastTurnErrorMessage, lastError, lastTurnReason, turnsCompleted, tokensIn, tokensOut, costUsd, contextUsed, busy, pty, pinned, keepAlive, archived, provisioning, pendingPrompts, outcome, wrapupFlag, openedPrs, worktree]
+          limit: 200
+          cursor: $item.cursor
+
+  - id: liveSessionsCursor3
+    kind: transform
+    name: Cursor of page 3 (none when page 2 was the last)
+    description: Entry-based — [{cursor}] or [].
+
+  - id: liveSessionsPage3
+    kind: map
+    name: Fetch page 3
+    over: $steps.liveSessionsCursor3
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage3Fetch
+        kind: tool
+        tool: session_list
+        inputs:
+          onlyAlive: true
+          fields: [id, name, label, status, origin, parentSessionId, cwd, model, accessProfile, startedAt, lastActivityAt, endedAt, lastTurnErroredAt, lastTurnErrorMessage, lastError, lastTurnReason, turnsCompleted, tokensIn, tokensOut, costUsd, contextUsed, busy, pty, pinned, keepAlive, archived, provisioning, pendingPrompts, outcome, wrapupFlag, openedPrs, worktree]
+          limit: 200
+          cursor: $item.cursor
+
+  - id: endedSessions
+    kind: tool
+    name: Recently active sessions (covers the relabel window)
+    description: >-
+      Projected (`fields`), filtered and paged (`limit` 200) — never
+      `full: true`, so no whole-registry step output is persisted.
+    tool: session_list
+    inputs:
+      updatedSince: $steps.listWindow.updatedSince
+      fields: [id, name, label, status, origin, parentSessionId, cwd, model, accessProfile, startedAt, lastActivityAt, endedAt, lastTurnErroredAt, lastTurnErrorMessage, lastError, lastTurnReason, turnsCompleted, tokensIn, tokensOut, costUsd, contextUsed, busy, pty, pinned, keepAlive, archived, provisioning, pendingPrompts, outcome, wrapupFlag, openedPrs, worktree]
+      limit: 200
+
+  - id: endedSessionsCursor2
+    kind: transform
+    name: Cursor of page 2 (none when page 1 was the last)
+    description: Entry-based — [{cursor}] or [].
+
+  - id: endedSessionsPage2
+    kind: map
+    name: Fetch page 2
+    over: $steps.endedSessionsCursor2
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage2Fetch
+        kind: tool
+        tool: session_list
+        inputs:
+          updatedSince: $steps.listWindow.updatedSince
+          fields: [id, name, label, status, origin, parentSessionId, cwd, model, accessProfile, startedAt, lastActivityAt, endedAt, lastTurnErroredAt, lastTurnErrorMessage, lastError, lastTurnReason, turnsCompleted, tokensIn, tokensOut, costUsd, contextUsed, busy, pty, pinned, keepAlive, archived, provisioning, pendingPrompts, outcome, wrapupFlag, openedPrs, worktree]
+          limit: 200
+          cursor: $item.cursor
+
+  - id: endedSessionsCursor3
+    kind: transform
+    name: Cursor of page 3 (none when page 2 was the last)
+    description: Entry-based — [{cursor}] or [].
+
+  - id: endedSessionsPage3
+    kind: map
+    name: Fetch page 3
+    over: $steps.endedSessionsCursor3
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage3Fetch
+        kind: tool
+        tool: session_list
+        inputs:
+          updatedSince: $steps.listWindow.updatedSince
+          fields: [id, name, label, status, origin, parentSessionId, cwd, model, accessProfile, startedAt, lastActivityAt, endedAt, lastTurnErroredAt, lastTurnErrorMessage, lastError, lastTurnReason, turnsCompleted, tokensIn, tokensOut, costUsd, contextUsed, busy, pty, pinned, keepAlive, archived, provisioning, pendingPrompts, outcome, wrapupFlag, openedPrs, worktree]
+          limit: 200
+          cursor: $item.cursor
 
   - id: scan
     kind: transform
@@ -189,7 +295,9 @@ steps:
         inputs:
           sessionIds: [$item.sessionId]
           verdict: $item.verdict
+          judgedBy: $item.judgedBy
           note: $item.note
+          reason: $item.reason
           wait: true
 
   - id: installedApps

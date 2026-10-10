@@ -3,7 +3,9 @@
  * `agentproto sessions start <slug> [--cwd <dir>] [--workspace <slug>]
  *                                    [--prompt <text>] [--label <text>]
  *                                    [--title <text>] [--attach] [--json]`
- * `agentproto sessions stop <id> [--completed]`
+ * `agentproto sessions stop <id> [--completed] [--outcome <v>] [--reason <text>]
+ *                              [--error-kind <k>] [--next-step <text>]
+ *                              [--question <text>] [--note <text>]`
  *
  * Browse and control the daemon's live sessions (terminals, agent
  * CLIs, custom commands) without leaving the shell:
@@ -186,10 +188,21 @@ Usage:
                               (one session's detail: status, lineage, and —
                                once it has ended — its derived outcome: last
                                message, opened PRs, cost, run/parent links.)
-  agentproto sessions stop <id-or-name> [--completed] [--json]
+  agentproto sessions stop <id-or-name> [--completed] [--outcome <verdict>]
+                              [--reason <text>] [--error-kind <kind>]
+                              [--next-step <text>] [--question <text>]
+                              [--note <text>] [--json]
                               (--completed: tag the outcome "completed" rather
                                than "stopped"; on an already-ended session,
-                               relabels its outcome instead of erroring)
+                               relabels its outcome instead of erroring.
+                               --outcome done|failed|abandoned|needs-input
+                               records the verdict on the session; --reason is
+                               the free-text why, --error-kind one of
+                               quota|upstream|timeout|crash|logic|none,
+                               --next-step what should happen next,
+                               --question what a needs-input session waits on.
+                               On an already-ended session an --outcome alone
+                               only labels it — nothing is retired.)
   agentproto sessions pin <id-or-name> [--json]
   agentproto sessions unpin <id-or-name> [--json]
                               (list-visibility only — pinned sessions sort to
@@ -1447,6 +1460,42 @@ async function runRecap(args: readonly string[]): Promise<number> {
   return 0
 }
 
+/** `sessions stop` flags → the `/kill` body: `{ reason: "completed" }` for
+ *  `--completed`, plus an `outcome` object when any outcome flag is given
+ *  (`by` is always `user`: a human typed it). Pure. */
+export function buildStopBody(values: {
+  completed?: boolean
+  outcome?: string
+  reason?: string
+  "error-kind"?: string
+  "next-step"?: string
+  question?: string
+  note?: string
+}): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
+  const verdicts = ["done", "failed", "abandoned", "needs-input"]
+  const kinds = ["quota", "upstream", "timeout", "crash", "logic", "none"]
+  if (values.outcome !== undefined && !verdicts.includes(values.outcome)) {
+    return { ok: false, error: `--outcome must be one of ${verdicts.join(", ")}, got "${values.outcome}"` }
+  }
+  if (values["error-kind"] !== undefined && !kinds.includes(values["error-kind"])) {
+    return { ok: false, error: `--error-kind must be one of ${kinds.join(", ")}, got "${values["error-kind"]}"` }
+  }
+  if (values.completed && values.outcome !== undefined && values.outcome !== "done") {
+    return { ok: false, error: `--completed contradicts --outcome ${values.outcome}` }
+  }
+  const outcome: Record<string, string> = {}
+  if (values.outcome !== undefined) outcome.verdict = values.outcome
+  if (values.reason !== undefined) outcome.reason = values.reason
+  if (values["error-kind"] !== undefined) outcome.errorKind = values["error-kind"]
+  if (values["next-step"] !== undefined) outcome.nextStep = values["next-step"]
+  if (values.question !== undefined) outcome.question = values.question
+  if (values.note !== undefined) outcome.note = values.note
+  const body: Record<string, unknown> = {}
+  if (values.completed) body.reason = "completed"
+  if (Object.keys(outcome).length > 0) body.outcome = { ...outcome, by: "user" }
+  return { ok: true, body }
+}
+
 async function runStop(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -1455,8 +1504,19 @@ async function runStop(args: readonly string[]): Promise<number> {
     options: {
       json: { type: "boolean" },
       completed: { type: "boolean" },
+      outcome: { type: "string" },
+      reason: { type: "string" },
+      "error-kind": { type: "string" },
+      "next-step": { type: "string" },
+      question: { type: "string" },
+      note: { type: "string" },
     },
   })
+  const stopBody = buildStopBody(values)
+  if (!stopBody.ok) {
+    process.stderr.write(`agentproto sessions stop: ${stopBody.error}\n`)
+    return 2
+  }
   const id = positionals[0]
   if (!id) {
     process.stderr.write(
@@ -1485,7 +1545,7 @@ async function runStop(args: readonly string[]): Promise<number> {
   try {
     const result = await httpPostJson<{ ok: boolean; sessionId: string }>(
       `${endpoint.url}/sessions/${encodeURIComponent(id)}/kill`,
-      values.completed ? { reason: "completed" } : {},
+      stopBody.body,
       endpoint.token,
     )
     if (values.json) {
@@ -1493,7 +1553,9 @@ async function runStop(args: readonly string[]): Promise<number> {
     } else {
       process.stdout.write(
         result.ok
-          ? `agentproto sessions stop: SIGTERM sent to ${id}\n`
+          ? `agentproto sessions stop: ${
+              values.outcome ? `${id} recorded as ${values.outcome}${values.reason ? ` — ${values.reason}` : ""}` : `SIGTERM sent to ${id}`
+            }\n`
           : `agentproto sessions stop: ${id} not running\n`
       )
     }

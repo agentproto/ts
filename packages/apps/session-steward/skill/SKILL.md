@@ -12,26 +12,32 @@ Dry run by default — nothing is closed unless `--apply`.
 
 ## Run it
 
-Prefer the CLI (it installs/updates the app and runs the workflow):
+Prefer the CLI (it installs/updates the app and runs the workflow). Three
+steps, each usable alone, all reading/writing one persisted snapshot:
 
 ```bash
-agentproto steward --wait
+agentproto steward                      # 1. classify: rules + Jev, ONE action per session
+agentproto steward analyze              # 2. LLM reasons for the relevant rows only
+agentproto steward act latest           # 3. dry run of the planned actions
+agentproto steward act latest --apply   #    …perform them
+agentproto steward --apply              # one-shot: classify + act
 ```
 
 Variants:
 
 ```bash
-agentproto steward --wait                          # dry run: plan + verdicts + report
-agentproto steward --apply --wait                  # close/flag confident verdicts
-agentproto steward --apply --wait --idle 60        # stricter idle threshold (minutes)
-agentproto steward --apply --wait --min-confidence 0.9
-agentproto steward --apply --wait --judge agent    # force the LLM judge lane
-agentproto steward --ask-sessions --wait           # ask low-confidence sessions directly
+agentproto steward classify --llm                       # classify, then analyze
+agentproto steward act latest --rules my-rules.yaml     # custom rules (auto-loads ./.agentproto/steward-rules.yaml)
+agentproto steward act latest --only mark-failed,needs-input --apply
+agentproto steward act latest --session sess_a,sess_b
+agentproto steward --legacy --apply --idle 60           # the original single-run steward
 ```
 
-`--wait` blocks until the report is ready (a run takes ~1-3 min depending on
-candidate count). Without it, poll with `workflow_status` on the returned
-runId.
+Actions: `keep | mark-complete | mark-failed | relaunch | needs-input |
+close-abandoned | archive` (`relaunch` / `archive` only when named in
+`--only`). `act` skips a session that changed since the snapshot and never
+closes a user-origin session (it flags it). Each command blocks until the
+report is printed; `--no-wait` returns the runId, `--json` prints the output.
 
 ## Read the report
 
@@ -40,6 +46,8 @@ session label + id, idle time, RAM, verdict, confidence, reason, action.
 Key reading rules:
 
 - `close` rows are safe to auto-close; `judge` rows are what the judge saw.
+- Classify rows carry the typed verdict and its probabilities
+  (`p: active=0.84 blocked=0.08 …`); analyze adds the free-text reason.
 - Verdicts: `done|abandoned|blocked|needs-input|active`. Only confident
   `done`/`abandoned` close (sessions stay resumable; transcripts preserved).
   `blocked`/`needs-input` only get flagged, never closed.
@@ -67,8 +75,8 @@ before running with `--apply`.
 
 ## Rules
 
-- NEVER run with `--apply` without explicit user go-ahead. Dry run first,
-  show the report, then apply.
+- NEVER run with `--apply` without explicit user go-ahead. Classify, dry-run
+  `act`, show the report, then apply.
 - Never judge the calling session — the CLI already excludes it.
 - If a session is mid-turn, busy, or has background tasks, the plan skips
   it; re-running later is fine and idempotent.

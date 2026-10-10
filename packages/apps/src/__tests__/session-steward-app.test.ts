@@ -13,13 +13,27 @@ import { loadAppHandle } from "@agentproto/app-kit"
 const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "session-steward")
 const ENTRY = join(APP_DIR, ".agentproto", "workflows", "session-steward", "entry.mjs")
 
+type Step = { kind: string; tool?: unknown; steps?: unknown }
+const toolsOf = (workflow: { steps: unknown }): Set<string> => {
+  const tools = new Set<string>()
+  const walk = (steps: ReadonlyArray<Step>) => {
+    for (const s of steps) {
+      if (s.kind === "tool" && typeof s.tool === "string") tools.add(s.tool)
+      if (Array.isArray(s.steps)) walk(s.steps as never)
+    }
+  }
+  walk(workflow.steps as never)
+  return tools
+}
+
 describe("session-steward app", () => {
   it("loads through loadAppHandle with the expected identity and attachment", async () => {
     const app = await loadAppHandle(APP_DIR)
     expect(app.id).toBe("@agentproto/session-steward")
-    expect(app.agents.map(a => a.agent.id)).toEqual(["@agentproto/session-steward-judge"])
-    expect(app.workflows.map(w => w.id)).toEqual(["session-steward"])
+    expect(app.agents.map(a => a.agent.id)).toEqual(["@agentproto/session-steward-judge", "@agentproto/session-steward-analyst"])
+    expect(app.workflows.map(w => w.id)).toEqual(["session-steward", "session-steward-classify", "session-steward-analyze", "session-steward-act"])
     expect(app.agents[0]!.agent.workflows).toContainEqual({ ref: "session-steward" })
+    expect(app.agents[1]!.agent.workflows).toContainEqual({ ref: "session-steward-analyze" })
   })
 
   it("scopes the judge's gateway to the one read-only evidence tool", async () => {
@@ -31,15 +45,7 @@ describe("session-steward app", () => {
 
   it("routes every SESSION mutation through session_wrapup_apply — the app_state ledger is the only other write", async () => {
     const app = await loadAppHandle(APP_DIR)
-    const [workflow] = app.workflows
-    const tools = new Set<string>()
-    const walk = (steps: ReadonlyArray<{ kind: string; tool?: unknown; steps?: unknown }>) => {
-      for (const s of steps) {
-        if (s.kind === "tool" && typeof s.tool === "string") tools.add(s.tool)
-        if (Array.isArray(s.steps)) walk(s.steps as never)
-      }
-    }
-    walk(workflow!.steps as never)
+    const tools = toolsOf(app.workflows.find(w => w.id === "session-steward")!)
     expect([...tools].sort()).toEqual([
       "agent_prompt",
       "app_list",
@@ -61,6 +67,22 @@ describe("session-steward app", () => {
     expect(tools.has("app_state_append")).toBe(true)
     expect(tools.has("agent_kill")).toBe(false)
     expect(tools.has("session_restart")).toBe(false)
+  })
+
+  it("the two-step workflows keep the mutation boundary: classify/analyze never touch a session", async () => {
+    const app = await loadAppHandle(APP_DIR)
+    const SESSION_MUTATORS = ["session_wrapup_apply", "agent_kill", "session_archive", "session_restart", "session_continue_fresh", "agent_prompt"]
+    const classify = toolsOf(app.workflows.find(w => w.id === "session-steward-classify")!)
+    const analyze = toolsOf(app.workflows.find(w => w.id === "session-steward-analyze")!)
+    const act = toolsOf(app.workflows.find(w => w.id === "session-steward-act")!)
+    // classify/analyze/act all read & write the snapshot through the app data dir.
+    for (const t of [classify, analyze, act]) expect(t.has("app_data_read") || t.has("app_data_write")).toBe(true)
+    // analyze is read-only on sessions: evidence in, snapshot out.
+    expect(SESSION_MUTATORS.filter(m => analyze.has(m))).toEqual([])
+    // classify only mutates in its one-shot `apply` half, which is the same act graph.
+    expect([...classify].filter(t => SESSION_MUTATORS.includes(t)).sort()).toEqual([...act].filter(t => SESSION_MUTATORS.includes(t)).sort())
+    // the act half uses only the closed set of daemon verbs.
+    expect(SESSION_MUTATORS.filter(m => act.has(m)).sort()).toEqual(["agent_kill", "agent_prompt", "session_archive", "session_continue_fresh", "session_restart", "session_wrapup_apply"].sort())
   })
 
   describe("judge model comes from the judge.session role", () => {

@@ -302,6 +302,7 @@ import type {
 import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
 import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
 import { writeSseHead } from "./sse-headers.js"
+import { parseStopOutcome } from "./session-outcome.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -8269,8 +8270,28 @@ async function handleSessions(
     // affordance — see `registry.kill`'s doc — and still returns 200; every
     // other reason on a dead row stays today's 404 no-op.
     const body = await readJsonBody(req)
-    const reason = parseOperatorKillReason(body)
-    const ok = registry.kill(id, undefined, reason)
+    const rawBody = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    // Optional `outcome` — the declared Level-2 label (verdict + reason /
+    // question / errorKind / nextStep / by). With no `reason`, a live row is
+    // stopped as `operator-completed` for a `done` verdict and
+    // `operator-stopped` otherwise; an ALREADY-ended row is only relabeled.
+    const parsedOutcome = parseStopOutcome(rawBody.outcome)
+    if (!parsedOutcome.ok) {
+      json(400, { error: "invalid_body", message: parsedOutcome.error })
+      return true
+    }
+    const stopOutcome = parsedOutcome.outcome
+    const status = registry.get(id)?.status
+    const ended = status === "exited" || status === "killed" || status === "error"
+    const reason =
+      stopOutcome && rawBody.reason === undefined
+        ? ended
+          ? undefined
+          : stopOutcome.verdict === "done"
+            ? "operator-completed"
+            : "operator-stopped"
+        : parseOperatorKillReason(body)
+    const ok = registry.kill(id, undefined, reason, stopOutcome)
     json(ok ? 200 : 404, { ok, sessionId: id })
     return true
   }

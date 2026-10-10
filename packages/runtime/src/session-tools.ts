@@ -85,9 +85,13 @@ import {
   compactOutcome,
   OUTCOME_SUMMARY_MAX,
   readLastAssistantTextSync,
+  sanitizeOutcomeDetail,
   trimOutcomeText,
+  type OutcomeBy,
+  type OutcomeDetail,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
+import { outcomeDetailShape } from "./outcome-detail-schema.js"
 import { processTreeRss } from "./process-memory.js"
 import {
   applySessionListFilters,
@@ -943,6 +947,25 @@ const sessionWrapupApplyJobs = createBackgroundJobRegistry<SessionWrapupApplyRes
 /** Default window `worktree_gc` / `session_wrapup_plan` block for before
  *  falling back to the background view (under a ~60 s MCP client timeout). */
 const BACKGROUND_DEFAULT_WAIT_MS = 25_000
+/** `session_wrapup_apply` `judgedBy` sentinel: the steward workflow's own rule verdict. */
+const STEWARD_RULES_JUDGE = "steward-rules"
+
+/** The structured outcome fields of a tool call, with `by` defaulted from who
+ *  judged it: the rules sentinel / nobody ⇒ `fallbackBy`, a `jev…` judge ⇒
+ *  jev, any other judge id ⇒ agent. */
+function pickOutcomeDetail(
+  input: { reason?: string; question?: string; errorKind?: string; nextStep?: string; by?: string; judgedBy?: string },
+  fallbackBy: OutcomeBy = "steward-rules",
+): OutcomeDetail {
+  const derived: OutcomeBy = !input.judgedBy
+    ? fallbackBy
+    : input.judgedBy === STEWARD_RULES_JUDGE
+      ? "steward-rules"
+      : input.judgedBy.startsWith("jev")
+        ? "jev"
+        : "agent"
+  return sanitizeOutcomeDetail({ ...input, by: input.by ?? derived })
+}
 
 const branchGcBackgroundView = (job: BackgroundJob<BranchGcResult>): object =>
   branchGcJobs.backgroundView(job, {
@@ -4955,9 +4978,13 @@ export function registerSessionTools(
         .describe(
           "A judge session id. When set, the outcome's `source` is " +
             "`'judged'` and a `judge`-class session also becomes eligible " +
-            "(not just `close`/`stuck`). Omitted ⇒ `source:'declared'`, " +
+            "(not just `close`/`stuck`). The literal `'steward-rules'` is the " +
+            "workflow's own rule verdict: it also makes a `judge`-class id " +
+            "eligible but keeps `source:'declared'`. Omitted ⇒ `source:'declared'`, " +
             "`judgedBy:'steward-rules'`, and only `close`/`stuck` are eligible.",
-        ),      wait: mcpBool
+        ),
+      ...outcomeDetailShape,
+      wait: mcpBool
         .optional()
         .describe(
           "false ⇒ return a jobId immediately; poll `session_wrapup_status`. " +
@@ -4990,8 +5017,14 @@ export function registerSessionTools(
         })
         const entryById = new Map(entries.map(e => [e.sessionId, e]))
 
-        const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
-        const judgedBy = input.judgedBy ?? "steward-rules"
+        // `judgedBy: "steward-rules"` is the workflow's own mechanical verdict
+        // (its rule scan classifies a 0-token running session as `stuck`; the
+        // daemon plans the same row as `judge`): it makes a `judge`-class id
+        // eligible exactly like a judge session id does, but the outcome stays
+        // `declared` — no judge ever decided it.
+        const source: "judged" | "declared" =
+          input.judgedBy && input.judgedBy !== STEWARD_RULES_JUDGE ? "judged" : "declared"
+        const judgedBy = input.judgedBy ?? STEWARD_RULES_JUDGE
 
         const results = input.sessionIds.map(ref => {
           const desc = registry.findByIdOrName(ref)
@@ -5016,6 +5049,7 @@ export function registerSessionTools(
             ...(input.note !== undefined ? { note: input.note } : {}),
             judgedBy,
             source,
+            ...pickOutcomeDetail(input),
           })
           return applied
             ? { sessionId: desc.id, ok: true as const, class: entry.class, action }
@@ -5091,6 +5125,7 @@ export function registerSessionTools(
           "A judge session id — sets the outcome's source to 'judged'. " +
             "Omitted ⇒ 'declared', judgedBy:'steward-rules'.",
         ),
+      ...outcomeDetailShape,
     },
     async input => {
       const desc = registry.findByIdOrName(input.sessionId)
@@ -5137,6 +5172,7 @@ export function registerSessionTools(
         ...(input.note !== undefined ? { note: input.note } : {}),
         judgedBy: input.judgedBy ?? "steward-rules",
         source,
+        ...pickOutcomeDetail(input, "user"),
       })
       const out = {
         ok: applied,

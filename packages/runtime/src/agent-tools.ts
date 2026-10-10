@@ -38,6 +38,7 @@ import type {
   AdapterListEntry,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
+import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -1023,11 +1024,35 @@ export function registerAgentTools(
             "that's already ended, `completed` relabels its outcome instead " +
             "of erroring; `stopped`/omitted stays a no-op.",
         ),
+      outcome: stopOutcomeSchema
+        .optional()
+        .describe(
+          "Declare the session's outcome while stopping it: `{ verdict: " +
+            "done|failed|abandoned|needs-input, reason, question, errorKind, " +
+            "nextStep, by, note }`, recorded on the session's outcome (`by` " +
+            "defaults to `user`). With NO `reason` and an already-ended session " +
+            "it only (re)labels the outcome — nothing is retired.",
+        ),
     },
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_kill")
-      const endReason = input.reason === "completed" ? "operator-completed" : "operator-stopped"
+      const ended = ((): boolean => {
+        const st = registry.get(sessionId)?.status
+        return st === "exited" || st === "killed" || st === "error"
+      })()
+      // An outcome with no explicit reason: label-only on an ended row; on a
+      // live row `done` reads as completed, anything else as stopped.
+      const endReason =
+        input.outcome && input.reason === undefined
+          ? ended
+            ? undefined
+            : input.outcome.verdict === "done"
+              ? "operator-completed"
+              : "operator-stopped"
+          : input.reason === "completed"
+            ? "operator-completed"
+            : "operator-stopped"
       // Subtree scoping (WP4): on the scoped sub-gateway a child
       // orchestrator may only kill sessions in its own subtree — never
       // an arbitrary id (e.g. a sibling's, or the root operator's). Full
@@ -1062,7 +1087,7 @@ export function registerAgentTools(
           }
         }
       }
-      const ok = registry.kill(sessionId, undefined, endReason)
+      const ok = registry.kill(sessionId, undefined, endReason, input.outcome)
       return {
         content: [
           {
