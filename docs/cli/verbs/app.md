@@ -53,7 +53,10 @@ survive the round-trip. The APP.md `package` block narrows what ships, and
 Register the app (its `id` from `.agentproto/APP.md`) → `<appDir>` mapping in
 `~/.agentproto/apps.json`, the same file the daemon's `app_install` writes, so
 `agentproto app serve --app <id>` and the daemon can resolve it. Idempotent:
-re-running for the same id updates the entry.
+re-running for the same id updates the entry. With the daemon up the install is
+`app_install {dir}`; with it down the CLI runs the same install in-process, so
+the record (agents, workflows, ui, …) is identical either way. An app that does
+not load is rejected, not registered.
 
 If APP.md's `ui` block declares a `build` (`{ command, cwd?, sources? }`),
 `app_install` builds the UI bundle first when it's missing or older than the

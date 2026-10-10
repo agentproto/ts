@@ -197,7 +197,21 @@ interface AppRegistryState {
   applied: AppliedMount[]
 }
 
+/** A persisted app record that did not load clean. `dropped` records were
+ *  unusable (no `appId`/`dir`) and are not in the registry; `incomplete`
+ *  records were kept with the missing fields defaulted, and are cleared once
+ *  the app is reinstalled (`upsertApp`) — the daemon does that on its own
+ *  from the app's dir (`repairIncompleteApps`, app-tools.ts). */
+export interface AppRegistryIssue {
+  readonly kind: "dropped" | "incomplete"
+  readonly appId: string | null
+  readonly dir: string | null
+  readonly problems: readonly string[]
+}
+
 export interface AppRegistry {
+  /** Records that loaded partial or malformed (see {@link AppRegistryIssue}). */
+  listIssues(): AppRegistryIssue[]
   /** Insert or, keyed by `appId`, fully replace an installed-app record. */
   upsertApp(
     input: Omit<InstalledApp, "installedAt" | "updatedAt">,
@@ -270,6 +284,50 @@ export function defaultRemoteAppDataDir(dataRoot: string, appId: string): string
   return join(dataRoot, encodeURIComponent(appId))
 }
 
+const STRING_ARRAY_FIELDS = ["unvalidatedAgentTools"] as const
+const REF_ARRAY_FIELDS = ["agents", "workflows"] as const
+
+/** Coerce one persisted app record into an {@link InstalledApp}. A record from
+ *  an older or foreign writer (a bare `{appId, dir, dataDir}`) lacks the
+ *  fields every reader dereferences (`workflows`, `agents`, …): default them
+ *  rather than let one record throw inside an unrelated workflow run.
+ *  Returns `null` when there is no usable `appId`/`dir` to key it by. */
+export function normalizeInstalledApp(
+  raw: unknown,
+): { app: InstalledApp; problems: string[] } | { app: null; problems: string[] } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { app: null, problems: ["record is not an object"] }
+  }
+  const rec = raw as Record<string, unknown>
+  const problems: string[] = []
+  if (typeof rec["appId"] !== "string" || rec["appId"] === "") problems.push("missing appId")
+  if (typeof rec["dir"] !== "string" || rec["dir"] === "") problems.push("missing dir")
+  if (problems.length > 0) return { app: null, problems }
+
+  const out: Record<string, unknown> = { ...rec }
+  for (const field of REF_ARRAY_FIELDS) {
+    const v = rec[field]
+    const valid =
+      Array.isArray(v) &&
+      v.every(r => typeof r === "object" && r !== null && typeof (r as InstalledAppRef).id === "string" && typeof (r as InstalledAppRef).path === "string")
+    if (!valid) {
+      problems.push(v === undefined ? `missing ${field}` : `malformed ${field}`)
+      out[field] = []
+    }
+  }
+  for (const field of STRING_ARRAY_FIELDS) {
+    const v = rec[field]
+    if (!Array.isArray(v) || !v.every(x => typeof x === "string")) {
+      if (v !== undefined) problems.push(`malformed ${field}`)
+      out[field] = []
+    }
+  }
+  const now = new Date().toISOString()
+  if (typeof rec["installedAt"] !== "string") out["installedAt"] = now
+  if (typeof rec["updatedAt"] !== "string") out["updatedAt"] = out["installedAt"]
+  return { app: out as unknown as InstalledApp, problems }
+}
+
 function loadState(persistPath: string): AppRegistryState {
   const empty: AppRegistryState = { apps: [], runs: [], applied: [] }
   if (!existsSync(persistPath)) return empty
@@ -314,6 +372,24 @@ export function createAppRegistry(opts?: {
   // Only a persisting registry owns an on-disk state root; a test registry
   // leaves `stateDir` unset so its ledgers stay under the app's dataDir.
   const stateRoot = shouldPersist ? join(dirname(persistPath), APP_STATE_ROOT_SUBDIR) : undefined
+  const issues: AppRegistryIssue[] = []
+  const loadedApps: InstalledApp[] = []
+  for (const rawApp of state.apps as unknown[]) {
+    const { app, problems } = normalizeInstalledApp(rawApp)
+    if (app === null) {
+      const rec = typeof rawApp === "object" && rawApp !== null ? (rawApp as Record<string, unknown>) : {}
+      issues.push({
+        kind: "dropped",
+        appId: typeof rec["appId"] === "string" ? rec["appId"] : null,
+        dir: typeof rec["dir"] === "string" ? rec["dir"] : null,
+        problems,
+      })
+      continue
+    }
+    if (problems.length > 0) issues.push({ kind: "incomplete", appId: app.appId, dir: app.dir, problems })
+    loadedApps.push(app)
+  }
+  state.apps = loadedApps
   // Backfill records installed before `stateDir` existed (persisted on the
   // next write) — the ledger moves on its first append (app-state.ts).
   if (stateRoot !== undefined) {
@@ -327,6 +403,9 @@ export function createAppRegistry(opts?: {
   }
 
   return {
+    listIssues() {
+      return issues.map(i => ({ ...i }))
+    },
     upsertApp(input) {
       const now = new Date().toISOString()
       const idx = state.apps.findIndex(a => a.appId === input.appId)
@@ -342,6 +421,9 @@ export function createAppRegistry(opts?: {
       }
       if (idx === -1) state.apps.push(record)
       else state.apps[idx] = record
+      for (let i = issues.length - 1; i >= 0; i--) {
+        if (issues[i]!.appId === input.appId) issues.splice(i, 1)
+      }
       persist()
       return record
     },
@@ -355,6 +437,9 @@ export function createAppRegistry(opts?: {
       const idx = state.apps.findIndex(a => a.appId === appId)
       if (idx === -1) return undefined
       const [removed] = state.apps.splice(idx, 1)
+      for (let i = issues.length - 1; i >= 0; i--) {
+        if (issues[i]!.appId === appId) issues.splice(i, 1)
+      }
       persist()
       return removed
     },

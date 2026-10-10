@@ -193,8 +193,15 @@ describe("llm:requesty generator — real committed snapshot (offline)", () => {
     const entryCount = (src.match(/inputPer1M:/g) ?? []).length
     expect(entryCount).toBeGreaterThanOrEqual(1)
 
-    // Spot-check the real verified entry from the live payload.
-    expect(entryBlock(src, "sference/thinkingcap-qwen3.6-27b")).toContain("inputPer1M: 0.4")
+    // Spot-check a real priced entry from the snapshot itself: pinning one id
+    // breaks as soon as Requesty retires it.
+    const snapshot = (await offlineCtx().fetchSource(llmRequestyGenerator.sources[0]!)) as {
+      data: Array<{ id: string; input_price?: number; output_price?: number }>
+    }
+    const priced = snapshot.data.find(m => (m.input_price ?? 0) > 0 && (m.output_price ?? 0) > 0)
+    expect(priced).toBeDefined()
+    const inputPer1M = Math.round(priced!.input_price! * 1e12) / 1e6
+    expect(entryBlock(src, priced!.id)).toContain(`inputPer1M: ${inputPer1M}`)
   })
 
   it("generates the same bytes whether called directly or through the runner (write=false)", async () => {

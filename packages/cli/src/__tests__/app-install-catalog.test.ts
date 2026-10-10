@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises"
+import { mkdtemp, mkdir, rm, writeFile, readFile, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -17,6 +17,7 @@ const h = vi.hoisted(() => {
   return {
     calls: [] as { name: string; arguments: Record<string, unknown> }[],
     responses: {} as Record<string, unknown>,
+    connectError: undefined as Error | undefined,
   }
 })
 
@@ -27,14 +28,17 @@ vi.mock("../app-serve.js", async (importOriginal) => {
     resolveDaemonMcpUrl: vi.fn(async () => "http://127.0.0.1:18790/mcp"),
     createDaemonMcpClientGetter: vi.fn(
       (_url: string, _name: string) =>
-        async () => ({
+        async () => {
+          if (h.connectError) throw h.connectError
+          return {
           callTool: async (req: { name: string; arguments: Record<string, unknown> }) => {
             h.calls.push({ name: req.name, arguments: req.arguments })
             const r = h.responses[req.name]
             if (r instanceof Error) throw r
             return r
           },
-        }),
+          }
+        },
     ),
   }
 })
@@ -58,8 +62,13 @@ function result(texts: unknown[], isError = false) {
 }
 
 const APP_MD = `---
+schema: app/v1
 id: "@scope/name"
 name: Name
+agents:
+  - id: worker
+    path: .agentproto/agents/worker/AGENT.md
+workflows: []
 ---
 
 # app
@@ -72,6 +81,7 @@ beforeEach(async () => {
   process.chdir(cwd)
   h.calls.length = 0
   h.responses = {}
+  h.connectError = undefined
   appModule = await import("../commands/app.js")
 })
 
@@ -152,16 +162,38 @@ describe("app install @scope/name catalog resolution", () => {
     expect(h.calls[1]!.arguments).toMatchObject({ url: "https://github.com/scope/name", sha: "abc", allowBuild: true })
   })
 
-  it("an existing path wins — no catalog call", async () => {
+  it("an existing path wins — no catalog call; a reachable daemon installs it", async () => {
     const dir = join(cwd, "@scope", "name")
     await mkdir(dir, { recursive: true })
     await mkdir(join(dir, ".agentproto"), { recursive: true })
     await writeFile(join(dir, ".agentproto", "APP.md"), APP_MD, "utf8")
+    h.responses["app_install"] = result([{ appId: "@scope/name" }])
+
+    const { code, err } = await of(() => appModule!.runAppInstall(["@scope/name"]))
+    expect(code, err).toBe(0)
+    expect(h.calls.map((c) => c.name)).toEqual(["app_install"])
+    expect(h.calls[0]!.arguments).toEqual({ dir: await realpath(dir) })
+  })
+
+  it("with no daemon reachable, a local dir installs offline (full record) instead", async () => {
+    const dir = join(cwd, "@scope", "name")
+    await mkdir(dir, { recursive: true })
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(join(dir, ".agentproto", "APP.md"), APP_MD, "utf8")
+    await mkdir(join(dir, ".agentproto", "agents", "worker"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "agents", "worker", "AGENT.md"),
+      "---\nschema: agent/v1\nid: worker\ndescription: A worker.\nmodel: claude-sonnet-5\n---\n\nWork.\n",
+      "utf8",
+    )
+    h.connectError = new Error("ECONNREFUSED")
 
     const { code, out, err } = await of(() => appModule!.runAppInstall(["@scope/name"]))
     expect(code, err).toBe(0)
     expect(h.calls).toEqual([])
     expect(out).toContain("registered app '@scope/name'")
+    const apps = (JSON.parse(await readFile(join(home, ".agentproto", "apps.json"), "utf8")) as { apps: Record<string, unknown>[] }).apps
+    expect(apps[0]).toMatchObject({ appId: "@scope/name", agents: [{ id: "worker" }], workflows: [] })
   })
 
   it("an entry without its digest / commit pin is refused, never installed unverified", async () => {
