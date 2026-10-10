@@ -3,4 +3,4 @@
 "@agentproto/runtime": patch
 ---
 
-Rebake the workstation template pins (`@agentproto/cli` 1.16.0, refreshed adapter pins, `opencode-ai`) via `sync-templates`. Regenerated pins, baked metadata and the provider description string only; no API change.
+Regenerate workstation template pins (cli 1.16.0, refreshed adapter and opencode-ai versions) and the derived baked metadata via `sync-templates`. No API change.
