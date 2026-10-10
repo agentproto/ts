@@ -22,8 +22,25 @@ anything.
 | `analyze` (`classify --llm`) | Reads ONLY the relevant sessions (action not `keep`, low confidence, or `--session`) and records `reason`, `question`, `errorKind`, `nextStep`, `relaunchHint`, evidence refs into the snapshot; may revise the action (the classify verdict stays alongside). | one analyst turn per relevant session, capped by `--max-sessions` (20) |
 | `act` | Re-checks each session against the live registry (`changed since snapshot` => skipped), applies the rules, bounds by origin, runs the daemon verbs and records the outcome fields on the session. Dry run unless `--apply`. | daemon verbs |
 
-Actions (closed vocabulary): `keep | mark-complete | mark-failed | relaunch |
-needs-input | close-abandoned | archive`.
+1. Plans with `session_wrapup_plan`: every idle agent session is `close`,
+   `stuck`, `judge` or `keep`.
+2. With `--apply`: closes `close`-class sessions as `done` and `stuck`-class
+   ones as `abandoned` — resumable, with a recorded outcome.
+3. Collects compact, read-only evidence (`session_evidence`) for up to 15
+   `judge`-class sessions, most RAM first.
+4. Judges each one: with **Jev** (TypeSafe System One — a calibrated choice
+   with probabilities) when `jev.apiKey` from `~/.agentproto/config.json` or
+   the `JEV_API_KEY` env var resolves, else a one-shot **agent judge**
+   (sonnet). A Jev failure falls back to the agent judge for that session; a
+   malformed or failed judgement is `active` and never acted on.
+5. With `--ask-sessions`: asks low-confidence idle sessions directly whether
+   they're done (one prompt each, ~3 min bounded wait).
+6. With `--apply`: confident (≥ `--min-confidence`) `done`/`abandoned`
+   verdicts close the session; `blocked`/`needs-input` only flag it. A `done`
+   whose last assistant message asks a question, announces a next action or
+   leaves work pending is downgraded to a `needs-input` flag instead of a close
+   (an open PR is not proof the session is finished).
+7. Reports a markdown table plus RAM freed / still held.
 
 - `mark-complete` still passes the remaining-work check (a last message that
   asks a question or proposes a next step turns it into `needs-input`).

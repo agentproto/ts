@@ -110,6 +110,16 @@ There's an MCP-callable twin of the same operation, `sandbox_attach`, for
 callers that want this from inside another agent session rather than a
 shell.
 
+A third, lighter primitive is the `sandbox_exec` MCP tool: run **one command**
+in a box (typically a test gate) and get `{ exitCode, stdout, stderr,
+durationMs, sandboxId }` back in the calling session, without moving the agent
+into the box. Without `sandboxId` it boots an ephemeral box and always stops it
+afterwards; with `sandboxId` it attaches and leaves the box as found. Each
+output stream is truncated at 20,000 characters (with `stdoutTruncated` /
+`stderrTruncated` flags), `cwd` is a path inside the box, and an omitted
+`timeoutMs` lets the command run as long as the box lives. Only providers with
+an exec capability support it (currently e2b).
+
 | | Boot-and-drive (`agent_start.sandbox`) | Attach (`sandbox attach`) |
 |---|---|---|
 | Box lifecycle | Daemon boots it, owns it, may pause/destroy on close | Untouched — never stopped or paused |
