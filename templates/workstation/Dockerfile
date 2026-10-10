@@ -13,11 +13,11 @@
 # single AGENTPROTO_ADAPTERS="a b" arg silently installed hermes only and the
 # per-package smoke loop passed by accident (verified live). Pre-FROM defaults
 # reach the post-FROM stage ONLY if not re-declared bare after FROM.
-ARG AGENTPROTO_CLI_VERSION=0.17.0
-ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.10
-ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.6.0
-ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.1.10
-ARG OPENCODE_RUNTIME_VERSION=1.18.28
+ARG AGENTPROTO_CLI_VERSION=1.16.0
+ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.34
+ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.29
+ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.6.8
+ARG OPENCODE_RUNTIME_VERSION=1.18.35
 
 # FROM is NOT parameterized — E2B does not interpolate build args into FROM
 # (verified live: invalid image reference '${BASE_IMAGE}'). Regenerated to
@@ -63,7 +63,7 @@ RUN npm i -g \
 #     inspecting /usr/lib/node_modules/@agentproto. ---
 
 # 1. The pinned CLI is on PATH. `agentproto --version` prints e.g.
-#    "agentproto 0.17.0 (sha, built ...)" — match the pin as a substring.
+#    "agentproto 1.16.0 (sha, built ...)" — match the pin as a substring.
 RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
   || (echo "smoke: agentproto --version does not contain ${AGENTPROTO_CLI_VERSION}" && agentproto --version && exit 1)
 

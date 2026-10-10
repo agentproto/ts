@@ -32,23 +32,23 @@ export const TEMPLATES = {
     id: "tnqtmeims5q9ex7j9k06",
     alias: "agentproto-workstation-dev",
     baked: {
-      "cli": "0.17.0",
+      "cli": "1.16.0",
       "adapters": {
-        "@agentproto/adapter-hermes": "0.4.10",
-        "@agentproto/adapter-mastra-agent": "0.6.0",
-        "@agentproto/adapter-opencode": "1.1.10"
+        "@agentproto/adapter-hermes": "0.4.34",
+        "@agentproto/adapter-mastra-agent": "0.7.29",
+        "@agentproto/adapter-opencode": "1.6.8"
       },
-      "builtAt": "2026-09-29T19:24:53Z"
+      "builtAt": "2026-10-09T23:58:16Z"
     },
   },
 } as const
-export const BAKED_CLI_VERSION = "0.17.0"
+export const BAKED_CLI_VERSION = "1.16.0"
 export const BAKED_ADAPTERS = {
-  "@agentproto/adapter-hermes": "0.4.10",
-  "@agentproto/adapter-mastra-agent": "0.6.0",
-  "@agentproto/adapter-opencode": "1.1.10",
+  "@agentproto/adapter-hermes": "0.4.34",
+  "@agentproto/adapter-mastra-agent": "0.7.29",
+  "@agentproto/adapter-opencode": "1.6.8",
 } as const
 export const BAKED_RUNTIME = {
-  "opencode-ai": "1.18.28",
+  "opencode-ai": "1.18.35",
 } as const
 export const BAKED_BASE_IMAGE = "e2bdev/code-interpreter:latest"
