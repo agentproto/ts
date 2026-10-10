@@ -34,6 +34,7 @@ import {
   type CustomRouteConfig,
 } from "../index.js"
 import { HUGGINGFACE_ROUTES } from "../../llm/huggingface-routes.generated.js"
+import { REQUESTY_ROUTES } from "../../llm/requesty-routes.generated.js"
 
 describe("parseModelRef", () => {
   it("parses vendor/product with implicit route = vendor", () => {
@@ -390,15 +391,15 @@ describe("resolveLlmModelRoute", () => {
   it("prices a Requesty-only model that has no direct vendor route", () => {
     // sference/* is served only via Requesty, so the bare ref is unresolvable
     // while the routed ref prices — the case the @route suffix exists for.
-    expect(
-      resolveLlmModelRoute("sference/thinkingcap-qwen3.6-27b")
-    ).toBeUndefined()
-    const routed = resolveLlmModelRoute(
-      "sference/thinkingcap-qwen3.6-27b@requesty"
-    )
+    // Picked from the table, not pinned: Requesty retires sference ids fast.
+    const [id, pricing] =
+      Object.entries(REQUESTY_ROUTES).find(([k]) => k.startsWith("sference/")) ?? []
+    expect(id).toBeDefined()
+    expect(resolveLlmModelRoute(id!)).toBeUndefined()
+    const routed = resolveLlmModelRoute(`${id}@requesty`)
     expect(routed).toBeDefined()
-    expect(routed!.pricing.inputPer1M).toBe(0.4)
-    expect(routed!.pricing.outputPer1M).toBe(3)
+    expect(routed!.pricing.inputPer1M).toBe(pricing!.inputPer1M)
+    expect(routed!.pricing.outputPer1M).toBe(pricing!.outputPer1M)
   })
 
   it("keeps the direct vendor route unchanged by the Requesty table", () => {
