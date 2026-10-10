@@ -410,6 +410,51 @@ describe("session_wrapup_apply", () => {
     registry.shutdown()
   })
 
+  it("judgedBy:'steward-rules' makes a judge-class session eligible but the outcome stays declared", async () => {
+    const { client, registry, close } = await buildHarness()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: idleAgentSession("acp-6b"),
+      adapterSlug: "claude-code",
+    })
+    registry.get(desc.id)!.lastActivityAt = OLD_TIMESTAMP
+
+    const res = await client.callTool({
+      name: "session_wrapup_apply",
+      arguments: { sessionIds: [desc.id], verdict: "abandoned", judgedBy: "steward-rules", note: "0 tokens, never ran" },
+    })
+    const parsed = JSON.parse(textOf(res)) as { results: Array<{ ok: boolean; class?: string; action?: string }> }
+    expect(parsed.results).toEqual([{ sessionId: desc.id, ok: true, class: "judge", action: "closed" }])
+    expect(registry.get(desc.id)?.outcome?.source).toBe("declared")
+    expect(registry.get(desc.id)?.outcome?.judgedBy).toBe("steward-rules")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("wrapup_apply writes the structured outcome detail; `by` follows judgedBy (rules sentinel ⇒ steward-rules, jev: ⇒ jev)", async () => {
+    const { client, registry, close } = await buildHarness()
+    const a = registry.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", agentSession: idleAgentSession("acp-6c"), adapterSlug: "claude-code" })
+    const b = registry.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", agentSession: idleAgentSession("acp-6d"), adapterSlug: "claude-code" })
+    registry.get(a.id)!.lastActivityAt = OLD_TIMESTAMP
+    registry.get(b.id)!.lastActivityAt = OLD_TIMESTAMP
+
+    await client.callTool({
+      name: "session_wrapup_apply",
+      arguments: { sessionIds: [a.id], verdict: "failed", judgedBy: "steward-rules", reason: "usage limit", errorKind: "quota", nextStep: "relaunch", wait: true },
+    })
+    await client.callTool({
+      name: "session_wrapup_apply",
+      arguments: { sessionIds: [b.id], verdict: "needs-input", judgedBy: "jev:jev-latest", question: "Delete the branch?", reason: "asks the operator", wait: true },
+    })
+    expect(registry.get(a.id)?.outcome).toMatchObject({ verdict: "failed", reason: "usage limit", errorKind: "quota", nextStep: "relaunch", by: "steward-rules" })
+    expect(registry.get(b.id)?.wrapupFlag).toMatchObject({ verdict: "needs-input", question: "Delete the branch?", reason: "asks the operator", by: "jev" })
+
+    await close()
+    registry.shutdown()
+  })
+
   it("verdict:'blocked'/'needs-input' FLAGS instead of closing — session stays running", async () => {
     const { client, registry, close } = await buildHarness(mergedLister)
     const desc = registry.spawnAgent({

@@ -15,6 +15,8 @@ tools:
   - session_evidence
 workflows:
   - ref: session-steward
+  - ref: session-steward-classify
+  - ref: session-steward-act
 ---
 
 You are the session steward's judge. Each prompt carries the evidence for ONE

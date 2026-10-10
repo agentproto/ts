@@ -38,6 +38,8 @@ import type {
   AdapterListEntry,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
+import { stopOutcomeSchema } from "./outcome-detail-schema.js"
+import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -1014,20 +1016,45 @@ export function registerAgentTools(
         .enum(["completed", "stopped"])
         .optional()
         .describe(
-          "Why you're ending it — `completed` if it finished its work, " +
-            "`stopped` if you're cutting it off early (wedged, no longer " +
-            "needed, etc). Recorded on the session's outcome as " +
-            "`operator-completed` / `operator-stopped` so it reads as a " +
-            "deliberate stop, distinct from an automatic teardown (idle-reap, " +
-            "crash, cost cap, …). Omit to default to `stopped`. On a session " +
-            "that's already ended, `completed` relabels its outcome instead " +
-            "of erroring; `stopped`/omitted stays a no-op.",
+          "`completed` if it finished its work, `stopped` (default) if cut off " +
+            "early; recorded as `operator-completed` / `operator-stopped`.",
+        ),
+      outcome: stopOutcomeSchema
+        .optional()
+        .describe(
+          "Outcome to record: `{verdict: done|failed|abandoned|needs-input, " +
+            "reason, question, errorKind: quota|upstream|timeout|crash|logic|none, " +
+            "nextStep, by, note}`. Alone (no `reason`) on an ended session it " +
+            "only relabels.",
         ),
     },
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_kill")
-      const endReason = input.reason === "completed" ? "operator-completed" : "operator-stopped"
+      const parsedOutcome = parseStopOutcome(input.outcome)
+      if (!parsedOutcome.ok) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, error: "invalid_outcome", message: parsedOutcome.error }) }],
+          isError: true,
+        }
+      }
+      const outcome = parsedOutcome.outcome
+      const ended = ((): boolean => {
+        const st = registry.get(sessionId)?.status
+        return st === "exited" || st === "killed" || st === "error"
+      })()
+      // An outcome with no explicit reason: label-only on an ended row; on a
+      // live row `done` reads as completed, anything else as stopped.
+      const endReason =
+        outcome && input.reason === undefined
+          ? ended
+            ? undefined
+            : outcome.verdict === "done"
+              ? "operator-completed"
+              : "operator-stopped"
+          : input.reason === "completed"
+            ? "operator-completed"
+            : "operator-stopped"
       // Subtree scoping (WP4): on the scoped sub-gateway a child
       // orchestrator may only kill sessions in its own subtree — never
       // an arbitrary id (e.g. a sibling's, or the root operator's). Full
@@ -1062,7 +1089,7 @@ export function registerAgentTools(
           }
         }
       }
-      const ok = registry.kill(sessionId, undefined, endReason)
+      const ok = registry.kill(sessionId, undefined, endReason, outcome)
       return {
         content: [
           {

@@ -9,10 +9,23 @@
 /** Origins the steward must NEVER close — a human launched the session, so a
  *  close is always downgraded to a flag. Exact match, or a trailing `*`. */
 export const DEFAULT_USER_ORIGINS = ["chat-starter", "vscode"]
-/** Origins the steward MAY close under the current rules. `cron:*` matches
- *  every cron-spawned job (`origin: "cron:<jobId>"`); `gate` matches
- *  supervision-gate sessions. */
-export const DEFAULT_CLOSABLE_ORIGINS = ["cron:*", "gate", "workflow", "review"]
+/** Origins the steward MAY close under the current rules: every origin a
+ *  harness or scheduler stamps instead of a human. `cron:*` matches every
+ *  cron-spawned job (`origin: "cron:<jobId>"`) and bare `cron` the scheduler's
+ *  command sessions; `routine:*` routine-registrar fires; `gate` supervision
+ *  gates; `webhook` the inbound watcher; `model-bench*` the model-bench
+ *  harness (and its smoketest). A root with NO origin, or `cli`/`vscode`/
+ *  `chat-starter`, is a human at a keyboard and stays flag-only. */
+export const DEFAULT_CLOSABLE_ORIGINS = [
+  "cron",
+  "cron:*",
+  "routine:*",
+  "gate",
+  "workflow",
+  "review",
+  "webhook",
+  "model-bench*",
+]
 
 /** The reason shown (and recorded) when a would-be close is bounded by origin. */
 export const USER_ORIGIN_REASON = "flag (origine utilisateur)"
@@ -46,7 +59,7 @@ export function resolveOriginPolicy(policy) {
 /** The origin class of a candidate:
  *  - `"user"` — human-launched: a `userOrigins` match, OR a root with no
  *    origin and no parent. FLAG ONLY, never close.
- *  - `"closable"` — a `closableOrigins` match (cron:*, gate, workflow, review) or an executor
+ *  - `"closable"` — a `closableOrigins` match (cron, routine, gate, workflow, review, webhook, model-bench) or an executor
  *    (has a `parentSessionId`). Close allowed under the current rules.
  *  `userOrigins` wins over both `closableOrigins` and the executor rule, so a
  *  `vscode` executor is still user-origin. An unrecognized root origin is

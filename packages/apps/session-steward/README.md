@@ -61,8 +61,10 @@ the `userOrigins` / `closableOrigins` inputs:
   `origin` and no `parentSessionId` (a human launched it). A would-be close —
   even a rule-certain `close`/`stuck`, even a confident `done` — is recorded
   as a `needs-input` flag with reason `flag (origine utilisateur)`.
-- **Close allowed:** `cron:*`, `gate`, `workflow` (step sessions), `review` (reviewer lanes), and executors (a session with a
-  `parentSessionId`).
+- **Close allowed:** every origin a harness or scheduler stamps — `cron` /
+  `cron:*`, `routine:*`, `gate`, `workflow` (step sessions), `review`
+  (reviewer lanes), `webhook`, `model-bench*` (the bench harness and its
+  smoketest) — and executors (a session with a `parentSessionId`).
 
 A trailing `*` in either list is a prefix wildcard. The report carries the
 origin column and the retained action in dry run as well as apply.
@@ -86,13 +88,73 @@ only when the session's *own* recorded PR is merged and nothing is pending; an
 open PR or pending work is `needs-follow-up`; a worktree PR the session never
 recorded (shared worktree) credits nobody. PRs are reported as `owner/repo#N`.
 
+## Two steps, one snapshot (classify → analyze → act)
+
+Besides the single-run workflow above (`--legacy`), the app ships the steward
+as three workflows that share one persisted snapshot
+(`snapshots/latest.json` in the app's data dir; `snapshots/<id>.json` too
+unless `history: false`):
+
+| Step | Workflow | Cost | Writes |
+|------|----------|------|--------|
+| `classify` | `session-steward-classify` | rules + Jev only, no agent LLM | per session: state, evidence summary, typed verdict + probabilities, confidence, ONE recommended action |
+| `analyze` | `session-steward-analyze` | one analyst turn per *relevant* session (capped) | `reason`, `question`, `errorKind`, `nextStep`, `relaunchHint`, evidence refs; may revise the action |
+| `act` | `session-steward-act` | daemon verbs only | the outcome (`outcome`, `reason`, `question`, `errorKind`, `nextStep`, `by`) on each session record |
+
+The closed action vocabulary: `keep | mark-complete | mark-failed | relaunch |
+needs-input | close-abandoned | archive`. `mark-complete` still runs the
+remaining-work check; `relaunch` is for transient causes (continue vs
+restart, and a suggested non-exhausted sub-account of the same provider —
+never a paid fallback for a free-only model); `relaunch` and `archive` run
+only when named in `--only` (`--allow-relaunch` also unlocks relaunch).
+
+`act` re-reads each session right before acting and skips the ones that
+*changed since the snapshot*; it bounds every action by origin (a user-origin
+session is never closed, only flagged). Rules are data — the default policy
+plus an optional custom file (`.agentproto/steward-rules.yaml`, or
+`--rules <file>`), first match wins:
+
+```yaml
+version: 1
+rules:
+  - id: bench-leftovers
+    when: { origin: "model-bench*", idleMinutes: ">=60" }
+    action: close-abandoned
+    reason: bench harness leftover
+  - id: leave-my-research-alone
+    when: { cwd: "**/research/**" }
+    action: skip
+  - id: quota-relaunch
+    when: { errorKind: quota }
+    action: relaunch
+```
+
+Keys under `when` (all must match): globs `origin`, `label`, `cwd`, `model`,
+`profile`; enums `class` (held|close|stuck|judge|terminal|archive), `state`
+(live|ended), `verdict`, `errorKind`, `action`, `originClass`; numbers
+`idleMinutes`, `confidence` (`120`, `">=120"`, `"10..60"`); booleans
+`transient`, `errored`, `neverRan`, `remainingWork`, `confident`,
+`superseded`, `ownedByRun`, `staleFailure`; number `failedMinutesAgo`.
+`relaunch` is default-recommended only for a recent (`--relaunch-window`,
+360 min), non-superseded, non-owned failure; the rest are `mark-failed`. Rule keys:
+`id`, `when`, `action` (an action or `skip`), `reason`. Unknown keys are
+validation errors, reported in the run output.
+
+None of these steps puts the session list in a workflow step output: every
+`session_list` read is a projected (`fields`), filtered, paged query, and the
+snapshot lives in the app data dir, not in the run record.
+
 ## Running it
 
 ```bash
-agentproto steward --wait                     # dry run: plan + verdicts, report
-agentproto steward --apply --wait             # close / flag confident verdicts
-agentproto steward --apply --idle 60 --min-confidence 0.9 --judge agent
-agentproto steward --ask-sessions --wait      # also ask low-confidence sessions
+agentproto steward                            # classify: table by action + snapshot id
+agentproto steward analyze                    # LLM reasons for the relevant rows
+agentproto steward act latest                 # dry run of the default rules
+agentproto steward act latest --rules my.yaml # …with a custom rules file
+agentproto steward act latest --apply --only mark-failed,needs-input
+agentproto steward --apply                    # one-shot: classify + act
+agentproto steward --legacy --apply --idle 60 --min-confidence 0.9 --judge agent
+agentproto steward --legacy --ask-sessions --wait   # also ask low-confidence sessions
 ```
 
 `agentproto steward` installs (upserts) this app and starts the workflow via
@@ -103,12 +165,13 @@ directly:
 ```bash
 agentproto app install packages/apps/session-steward
 agentproto workflow run-file \
-  packages/apps/session-steward/.agentproto/workflows/session-steward/WORKFLOW.md \
-  --input-json '{"apply": false}'
+  packages/apps/session-steward/.agentproto/workflows/session-steward-classify/WORKFLOW.md \
+  --input-json '{}'
 ```
 
 ## Routine
 
-`routines/session-steward-hourly` is an AIP-41 `ROUTINE.md` template: hourly,
-`apply: true`, `askSessions: false`, shipped `enabled: false` — nothing
-starts closing sessions on install. Its own doc lists the enabling steps.
+`routines/session-steward-hourly` is an AIP-41 `ROUTINE.md` template: hourly
+`session-steward-classify` with `apply: true` (classify + act on the fresh
+snapshot, latest only), shipped `enabled: false` — nothing starts closing
+sessions on install. Its own doc lists the enabling steps.

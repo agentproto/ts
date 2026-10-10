@@ -178,8 +178,12 @@ Usage:
   agentproto workflow  resolve <runId> (--approve|--reject) [--who <name>] [--note <text>]
   agentproto maintain  [--repo <dir>] [--apply-merged] [--json]
                        plan/review (and optionally apply) branch + worktree gc for a repo
-  agentproto steward   [--apply] [--idle <min>] [--min-confidence <x>] [--judge <auto|jev|agent>] [--ask-sessions] [--wait] [--json]
-                       judge idle agent sessions, then close or flag them (dry run by default)
+  agentproto steward   [classify] [--rules <file>] [--idle <min>] [--relaunch-window <min>] [--llm] [--json]
+                       classify sessions at one instant → a snapshot with ONE recommended action each
+  agentproto steward   analyze [<snapshotId|latest>] [--session <ids>] [--only <actions>] [--judge <agent|jev>]
+                       LLM pass over the relevant rows: reason / question / errorKind / nextStep
+  agentproto steward   act [<snapshotId|latest>] [--rules <file>] [--only <actions>] [--session <ids>] [--apply]
+                       apply a snapshot by the rules (dry run by default); steward --apply = classify + act
   agentproto task      create <title> [--description <text>] [--board-id <id>] [--json]
   agentproto task      list [--board-id <id>] [--status <s>] [--include-closed] [--json]
   agentproto task      claim <taskId> --rev <n>

@@ -126,6 +126,13 @@ describe("origin policy — classifyOrigin", () => {
     ["gate", GATE, "closable"],
     ["workflow step session (root)", { origin: "workflow" }, "closable"],
     ["review lane (root)", { origin: "review" }, "closable"],
+    ["model-bench harness (root)", { origin: "model-bench" }, "closable"],
+    ["model-bench smoketest (root)", { origin: "model-bench-smoketest" }, "closable"],
+    ["model-bench sweep variant (root)", { origin: "model-bench:sweep-7" }, "closable"],
+    ["bare cron scheduler origin", { origin: "cron" }, "closable"],
+    ["routine registrar fire", { origin: "routine:session-steward-hourly" }, "closable"],
+    ["inbound webhook", { origin: "webhook" }, "closable"],
+    ["cli stays a human at a keyboard", { origin: "cli" }, "user"],
     ["executor (parent, no origin)", EXECUTOR, "closable"],
     ["executor with an unknown origin", EXECUTOR_UNKNOWN_ORIGIN, "closable"],
     ["chat-starter", CHAT, "user"],
@@ -148,6 +155,18 @@ describe("origin policy — classifyOrigin", () => {
 })
 
 // ── decideAction: every plan class × verdict, apply vs dry run ───────────
+
+describe("decideAction — harness origins (B2)", () => {
+  it("a model-bench session with a certain close is closed, not flagged", () => {
+    const d = decide({ session: { origin: "model-bench" }, planClass: "stuck" })
+    expect(d.action).toBe("close")
+  })
+
+  it("a user-origin bench-like name is still bounded when listed as user", () => {
+    const d = decide({ session: { origin: "model-bench" }, planClass: "close", policy: { userOrigins: ["model-bench"] } })
+    expect(d.action).toBe("flag")
+  })
+})
 
 describe("decideAction — rule-certain classes (apply)", () => {
   it.each([

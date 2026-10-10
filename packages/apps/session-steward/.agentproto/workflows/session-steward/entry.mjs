@@ -30,6 +30,7 @@
 // fold. This file wires them over `session_list` / `tool_calls_list` /
 // `host_load` / `app_state`.
 
+import { liveListSteps, scannedRows } from "./live-list.mjs"
 import {
   classifyOrigin,
   decideAction,
@@ -89,6 +90,8 @@ const ASK_WAIT_POLLS = 4
 const ASK_POLL_MS = 45_000
 
 const JUDGE_REF = "@agentproto/session-steward-judge"
+/** `judgedBy` sentinel the daemon accepts for workflow rule verdicts. */
+export const RULES_JUDGE = "steward-rules"
 const VERDICTS = ["done", "abandoned", "blocked", "needs-input", "active"]
 
 export const ASK_PROMPT =
@@ -218,10 +221,17 @@ export function buildRuleApplyQueue(candidates, settings) {
     for (const e of entries ?? []) {
       const d = decideFor(e, planClass, closeVerdict, 1, settings)
       if (d.action === "skip") continue
+      const note = d.action === "close" ? closeNote(e) : flagNote(e, d)
+      // `judgedBy: "steward-rules"` is the daemon's sentinel for "a workflow
+      // rule verdict, not a judge": without it the daemon re-plans, sees a
+      // running idle 0-token session as class `judge`, and refuses with
+      // `ambiguous_needs_judge` (B1). It keeps the outcome `declared`.
       queue.push({
         sessionId: e.sessionId,
         verdict: d.action === "close" ? closeVerdict : "needs-input",
-        note: d.action === "close" ? closeNote(e) : flagNote(e, d),
+        note,
+        judgedBy: RULES_JUDGE,
+        reason: note,
       })
     }
   }
@@ -325,7 +335,7 @@ export function buildJudgePrompt(evidence) {
 /** Fold one evidence map item: the `session_evidence` answer read off the
  *  step slot this item's tool step just wrote. The id check guards against
  *  ever pairing one session's evidence with another's plan entry. */
-function foldEvidence(b) {
+export function foldEvidence(b) {
   const raw = b.steps.evidenceOne
   if (!raw || raw.sessionId !== b.item?.sessionId) {
     throw new Error(`session_evidence answered for '${raw?.sessionId}', expected '${b.item?.sessionId}'`)
@@ -335,7 +345,7 @@ function foldEvidence(b) {
 }
 
 /** Items of a tolerant (`onError: collect`) map, split by outcome. */
-function settled(mapResult) {
+export function settled(mapResult) {
   if (Array.isArray(mapResult)) return { ok: mapResult.map((value, index) => ({ index, value })), failed: [] }
   const results = Array.isArray(mapResult?.results) ? mapResult.results : []
   return {
@@ -596,8 +606,24 @@ function cell(s) {
   return String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ")
 }
 
+/** Plain-language cause of each daemon refusal, so the report says WHY an
+ *  action did not land instead of echoing the bare error code. */
+export const REFUSAL_EXPLANATIONS = {
+  ambiguous_needs_judge: "the daemon classes this session `judge` and no judgedBy was passed",
+  refused_stale_or_busy: "the session changed or is busy since the plan",
+  keep_class_never_touched: "the daemon classes it `keep` (active, pinned or keepAlive)",
+  not_a_candidate: "the session is not a wrapup candidate any more",
+  not_found: "the session no longer exists",
+}
+
+export function explainRefusal(error) {
+  const code = typeof error === "string" ? error : String(error ?? "unknown")
+  const why = REFUSAL_EXPLANATIONS[code]
+  return why ? `${code}: ${why}` : code
+}
+
 function actionOf(applied) {
-  return applied.ok ? applied.action ?? "applied" : `refused (${applied.error})`
+  return applied.ok ? applied.action ?? "applied" : `refused (${explainRefusal(applied.error)})`
 }
 
 /** The `origin` column: the provenance label plus `(user)` when the origin
@@ -854,6 +880,15 @@ export function scanLive(liveSessions, settings, nowMs) {
   return { busy, idle, terminal, terminalRelabel, neverRan, excluded, loopQueue, stallInputs, counts }
 }
 
+/** `scanLive` over the projected `liveSessions` / `endedSessions` pages. The
+ *  merged list lives only inside this call; the step output is the slim scan,
+ *  plus `counts.listTruncated` when a query had more rows than the pages hold. */
+export function scanListed(steps, settings, nowMs) {
+  const { sessions, truncated } = scannedRows(steps)
+  const scan = scanLive({ sessions }, settings, nowMs)
+  return { ...scan, counts: { ...scan.counts, listed: sessions.length, listTruncated: truncated } }
+}
+
 /** Fold the never-ran 0/0 sessions into the plan as `stuck` (no judge,
  *  whatever the idle) and drop them from the judge queue — mission item 3. */
 export function mergeNeverRan(candidates, scan) {
@@ -1001,7 +1036,7 @@ export function buildRelabelEvidenceQueue(relabelQueue) {
 }
 
 /** One relabel evidence map item: the `session_evidence` answer, id-checked. */
-function foldRelabelEvidence(b) {
+export function foldRelabelEvidence(b) {
   const raw = b.steps.relabelEvidenceOne
   if (!raw || raw.sessionId !== b.item?.sessionId) {
     throw new Error(`session_evidence answered for '${raw?.sessionId}', expected '${b.item?.sessionId}'`)
@@ -1094,8 +1129,10 @@ export default {
     // Host saturation header (report only — mission item 9) and the live
     // session scan behind loop/stall/never-ran/terminal rules (items 1-5).
     { id: "hostLoad", kind: "tool", tool: "host_load", inputs: {} },
-    { id: "liveSessions", kind: "tool", tool: "session_list", inputs: { full: true } },
-    { id: "scan", kind: "transform", compute: b => scanLive(b.steps.liveSessions, b.steps.settings, Date.now()) },
+    // Projected + filtered + paged reads (live-list.mjs) — never `full: true`,
+    // whose whole registry would be persisted as a step output on every run.
+    ...liveListSteps(),
+    { id: "scan", kind: "transform", compute: b => scanListed(b.steps, b.steps.settings, Date.now()) },
     // Never-ran 0/0 sessions are `stuck` immediately, never judged (item 3).
     { id: "candidatesPlus", kind: "transform", compute: b => demoteErroredCloses(mergeNeverRan(b.steps.candidates, b.steps.scan), b.steps.scan) },
     { id: "ruleApplyQueue", kind: "transform", compute: b => buildRuleApplyQueue(b.steps.candidatesPlus, b.steps.settings) },
@@ -1114,7 +1151,7 @@ export default {
           // `wait: true` — past its 25 s default `waitMs` the tool returns a
           // bare `{ jobId, status: "running" }` and the report would show no
           // outcome for a session that did get closed.
-          inputs: { sessionIds: ["$item.sessionId"], verdict: "$item.verdict", note: "$item.note", wait: true },
+          inputs: { sessionIds: ["$item.sessionId"], verdict: "$item.verdict", judgedBy: "$item.judgedBy", note: "$item.note", reason: "$item.reason", wait: true },
         },
       ],
     },

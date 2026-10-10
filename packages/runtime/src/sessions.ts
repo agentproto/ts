@@ -150,9 +150,12 @@ import {
   deriveSessionOutcome,
   OUTCOME_SUMMARY_MAX,
   readLastAssistantTextSync,
+  sanitizeOutcomeDetail,
   shouldReplaceOutcome,
   trimOutcomeText,
+  type OutcomeDetail,
   type SessionOutcome,
+  type StopOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
 import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
@@ -1330,7 +1333,7 @@ export interface SessionDescriptor {
    *  (not accumulated) by the next flag, and left stale on the descriptor
    *  until something clears it (nothing here does — a later successful
    *  turn/close is a separate, more informative signal than deleting this). */
-  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
+  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string } & OutcomeDetail
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -2466,7 +2469,7 @@ export interface SessionSummary {
   keepAlive?: boolean
   /** Steward wrap-up flag — a blocked/needs-input verdict that deliberately
    *  left the session running; see `SessionDescriptor.wrapupFlag`. */
-  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
+  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string } & OutcomeDetail
   pinned?: boolean
   /** Ascending position among pinned sessions — see
    *  `SessionDescriptor.pinnedOrder`. */
@@ -3617,7 +3620,7 @@ export type PermissionRespondResult =
  *  instead and never touches the session's liveness. See {@link
  *  SessionOutcome} / {@link SessionDescriptor.wrapupFlag} for the field
  *  meanings. */
-export interface CloseWithOutcomeInput {
+export interface CloseWithOutcomeInput extends OutcomeDetail {
   verdict: "done" | "abandoned" | "partial" | "failed" | "blocked" | "needs-input"
   /** Overrides the outcome's derived summary when given (e.g. a judge's own
    *  written summary) — trimmed the same way `deriveSessionOutcome` trims
@@ -3632,6 +3635,10 @@ export interface CloseWithOutcomeInput {
   judgedBy?: string
   source: "judged" | "declared"
 }
+
+/** The declared outcome a manual stop (or `steward act` on an ended row)
+ *  stamps onto a session: the verdict plus the structured detail. */
+export type StopOutcomeInput = StopOutcome
 
 export interface SessionsRegistry {
   spawn(input: SpawnSessionInput): SessionDescriptor
@@ -4327,8 +4334,17 @@ export interface SessionsRegistry {
    *  `"operator-completed"` (the true original mechanism preserved in
    *  `termination.previousReason`) and this returns `true`. Every other
    *  reason (including `"operator-stopped"` or none) on a terminal row
-   *  stays the plain no-op. */
-  kill(id: string, signal?: NodeJS.Signals, reason?: SessionEndReason): boolean
+   *  stays the plain no-op.
+   *
+   *  `outcome` (optional) stamps a Level-2 declared outcome on the row —
+   *  the verdict plus the structured {@link OutcomeDetail} (reason /
+   *  question / errorKind / nextStep / by) — after the termination fields
+   *  are set, exactly like `closeWithOutcome`. On a row that is ALREADY
+   *  terminal and given NO `reason`, it labels the existing outcome only
+   *  (liveness, `endedReason` and retirement are untouched) and returns
+   *  `true`; that is how a finished-but-unlabeled row gets a manual
+   *  failed/done/abandoned label. */
+  kill(id: string, signal?: NodeJS.Signals, reason?: SessionEndReason, outcome?: StopOutcomeInput): boolean
   /** Close a LIVE agent-cli session with a Level 2 (judged/declared) outcome
    *  — the primitive the session steward (FIX-9A/9B) drives once a wrap-up
    *  plan (`planSessionWrapup`, `session-wrapup.ts`) puts a session in the
@@ -5503,6 +5519,26 @@ export function createSessionsRegistry(opts?: {
         reason: "operator-completed",
         ...(previousReason ? { previousReason } : {}),
       },
+      recordedAt: new Date().toISOString(),
+    }
+    schedulePersist()
+  }
+
+  // Layer a declared Level-2 outcome (verdict + structured detail) on the
+  // row's existing outcome — the shared tail of a manual stop and of a
+  // steward label on an already-ended row. Keeps the derived summary /
+  // artifacts / cost / termination under the declared fields.
+  const layerDeclaredOutcome = (rt: SessionRuntime, outcome: StopOutcomeInput): void => {
+    const base = rt.desc.outcome ?? deriveSessionOutcome(rt.desc, { lastAssistantText: rt.lastAssistantText })
+    const detail = sanitizeOutcomeDetail({ ...outcome, by: outcome.by ?? "user" })
+    const note = trimOutcomeText(outcome.note, OUTCOME_SUMMARY_MAX, "head")
+    rt.desc.outcome = {
+      ...base,
+      source: "declared",
+      ...(outcome.verdict ? { verdict: outcome.verdict } : {}),
+      ...(outcome.judgedBy !== undefined ? { judgedBy: outcome.judgedBy } : {}),
+      ...(note ? { note } : {}),
+      ...detail,
       recordedAt: new Date().toISOString(),
     }
     schedulePersist()
@@ -11357,7 +11393,7 @@ export function createSessionsRegistry(opts?: {
       }
       return joined
     },
-    kill(id, signal = "SIGTERM", reason) {
+    kill(id, signal = "SIGTERM", reason, outcome) {
       const rt = sessions.get(id)
       if (!rt) return false
       if (
@@ -11365,12 +11401,19 @@ export function createSessionsRegistry(opts?: {
         rt.desc.status === "killed" ||
         rt.desc.status === "error"
       ) {
+        // Label-only: an outcome on an ended row with no end reason just
+        // (re)labels the recorded outcome — nothing is retired or relabeled.
+        if (outcome && reason === undefined) {
+          layerDeclaredOutcome(rt, outcome)
+          return true
+        }
         // "Mark as completed" on an already-ended row (see
         // `markOutcomeCompleted`'s doc) — every other reason (a plain
         // "operator-stopped", or none at all) on a terminal row stays
         // exactly today's no-op refusal.
         if (reason === "operator-completed") {
           markOutcomeCompleted(rt)
+          if (outcome) layerDeclaredOutcome(rt, outcome)
           retireRow(rt, "killed")
           return true
         }
@@ -11382,6 +11425,7 @@ export function createSessionsRegistry(opts?: {
         // carries the retirement.
         if (reason && DELIBERATE_END_REASONS.has(reason)) {
           if (rt.desc.endedReason === undefined) rt.desc.endedReason = reason
+          if (outcome) layerDeclaredOutcome(rt, outcome)
           retireRow(rt, "killed")
           return true
         }
@@ -11430,6 +11474,7 @@ export function createSessionsRegistry(opts?: {
       // Child/PTY sessions emit from their exit handlers; the
       // exitedEmitted guard prevents a duplicate from kill() AND exit.
       emitExited(rt)
+      if (outcome) layerDeclaredOutcome(rt, outcome)
       if (reason && DELIBERATE_END_REASONS.has(reason)) retireRow(rt, "killed")
       return true
     },
@@ -11458,6 +11503,7 @@ export function createSessionsRegistry(opts?: {
           verdict: input.verdict,
           ...(input.note !== undefined ? { note: input.note } : {}),
           ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
+          ...sanitizeOutcomeDetail(input),
           at: new Date().toISOString(),
         }
         schedulePersist()
@@ -11504,6 +11550,7 @@ export function createSessionsRegistry(opts?: {
           : {}),
         ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
         ...(input.note !== undefined ? { note: input.note } : {}),
+        ...sanitizeOutcomeDetail(input),
         recordedAt: new Date().toISOString(),
       }
       schedulePersist()

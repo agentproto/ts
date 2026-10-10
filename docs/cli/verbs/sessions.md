@@ -46,7 +46,9 @@ agentproto sessions story    <id-or-name> [--json] [--no-color]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
                                            [--source auto|native|daemon]
                                            [--adapter <slug>] [--cwd <dir>]
-agentproto sessions stop     <id-or-name> [--json]
+agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
+                                           [--error-kind <kind>] [--next-step <text>]
+                                           [--question <text>] [--note <text>] [--json]
 agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
                                            [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
@@ -721,10 +723,22 @@ made.
 ```bash
 agentproto sessions stop ses_abc12
 agentproto sessions stop claude-tui --json
+agentproto sessions stop ses_abc12 --outcome failed --error-kind quota \
+  --reason "usage limit hit mid-run" --next-step "re-run on another profile"
 ```
 
 POSTs `/sessions/:id/kill` — sends SIGTERM to the child. Idempotent
 on already-dead sessions (reports "not running"; exit `1`).
+
+A manual stop can record an outcome, the same record the session steward's
+`act` writes: `--outcome done|failed|abandoned|needs-input` is the verdict,
+`--reason` the free-text why, `--question` the open question (for
+`needs-input`), `--error-kind quota|upstream|timeout|crash|logic|none`,
+`--next-step` what should happen next, `--note` a short note. The detail
+fields are stored on the session (`outcome.reason`, `outcome.errorKind`, …,
+`outcome.by: "user"`) and shown by `sessions show`. `--completed` tags the stop as
+"completed" (it conflicts with an `--outcome` other than `done`). On an already-ended session the same flags relabel its
+outcome instead of erroring.
 
 ### `wait <id-or-name>`
 

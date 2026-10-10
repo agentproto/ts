@@ -16,6 +16,7 @@ import { createDaemonToolRegistry, type DispatchTool } from "../workflow-tool-re
 import { judgeSessionWithJev } from "../jev-client.js"
 import { modelRoles } from "../model-roles-tools.js"
 import { G11_REAL_TAILS } from "./fixtures/session-steward-g11-tails.js"
+import { emulateSessionList } from "./fixtures/session-list-fake.js"
 
 const CRON_RULES_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -128,12 +129,14 @@ function fakeTools(opts: {
   memoryEvents?: unknown[]
   /** Installed app ids `app_list` reports; default = the real steward app id. */
   installedApps?: string[]
-  /** `session_list` result wrapper: the real un-paged `{sessions}` (default) or the paged `{items}`. */
-  listShape?: "sessions" | "items"
   /** `host_load` report; default = a calm host. */
   hostLoad?: Record<string, unknown>
   /** Extra `session_evidence` fields per session id (worktree / pullRequests); `"throw"` fails the lookup. */
   evidenceExtra?: Record<string, Record<string, unknown> | "throw">
+  /** Ids the fake daemon classes `judge` itself: `session_wrapup_apply` refuses them with `ambiguous_needs_judge` unless `judgedBy` is passed (like the real tool). */
+  daemonJudgeClass?: Set<string>
+  /** Ids the fake daemon refuses outright, id → error code. */
+  refuseApply?: Record<string, string>
 }) {
   const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
   const evidenceReads = new Map<string, number>()
@@ -167,7 +170,7 @@ function fakeTools(opts: {
         ...(e.startedAt ? { startedAt: e.startedAt } : {}),
         lastActivityAt: new Date(Date.now() - e.idleMinutes * 60_000).toISOString(),
       }))
-      return mcpResult({ [opts.listShape ?? "sessions"]: [...rows, ...(opts.liveExtra ?? [])] })
+      return mcpResult(emulateSessionList([...rows, ...(opts.liveExtra ?? [])], inputs))
     }
     if (name === "tool_calls_list") {
       return mcpResult({ records: opts.toolCalls?.[inputs.sessionId as string] ?? [] })
@@ -206,7 +209,14 @@ function fakeTools(opts: {
       if (inputs.wait !== true) return mcpResult({ jobId: "swa_test", status: "running" })
       const ids = inputs.sessionIds as string[]
       const closes = inputs.verdict === "done" || inputs.verdict === "abandoned"
-      return mcpResult({ results: ids.map(sessionId => ({ sessionId, ok: true, class: "x", action: closes ? "closed" : "flagged" })) })
+      return mcpResult({
+        results: ids.map(sessionId => {
+          const refused = opts.refuseApply?.[sessionId]
+          if (refused) return { sessionId, ok: false, error: refused }
+          if (opts.daemonJudgeClass?.has(sessionId) && !inputs.judgedBy) return { sessionId, ok: false, class: "judge", error: "ambiguous_needs_judge" }
+          return { sessionId, ok: true, class: "x", action: closes ? "closed" : "flagged" }
+        }),
+      })
     }
     if (name === "session_judge_jev") {
       return mcpResult(
@@ -308,7 +318,17 @@ describe("session-steward workflow — shape", () => {
       "plan:tool",
       "candidates:transform",
       "hostLoad:tool",
+      "listWindow:transform",
       "liveSessions:tool",
+      "liveSessionsCursor2:transform",
+      "liveSessionsPage2:map",
+      "liveSessionsCursor3:transform",
+      "liveSessionsPage3:map",
+      "endedSessions:tool",
+      "endedSessionsCursor2:transform",
+      "endedSessionsPage2:map",
+      "endedSessionsCursor3:transform",
+      "endedSessionsPage3:map",
       "scan:transform",
       "candidatesPlus:transform",
       "ruleApplyQueue:transform",
@@ -402,9 +422,23 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     const applies = calls.filter(c => c.name === "session_wrapup_apply").map(c => c.inputs)
     const byId = new Map(applies.map(a => [(a.sessionIds as string[])[0], a]))
 
-    // Rules pass — no judgedBy.
-    expect(byId.get("close_1")).toEqual({ sessionIds: ["close_1"], verdict: "done", note: "steward-rules: idle 90m; worktree merged", wait: true })
-    expect(byId.get("stuck_1")).toEqual({ sessionIds: ["stuck_1"], verdict: "abandoned", note: "stuck starting, never ran", wait: true })
+    // Rules pass — the `steward-rules` sentinel, not a judge id.
+    expect(byId.get("close_1")).toEqual({
+      sessionIds: ["close_1"],
+      verdict: "done",
+      note: "steward-rules: idle 90m; worktree merged",
+      judgedBy: "steward-rules",
+      reason: "steward-rules: idle 90m; worktree merged",
+      wait: true,
+    })
+    expect(byId.get("stuck_1")).toEqual({
+      sessionIds: ["stuck_1"],
+      verdict: "abandoned",
+      note: "stuck starting, never ran",
+      judgedBy: "steward-rules",
+      reason: "stuck starting, never ran",
+      wait: true,
+    })
 
     // Judged pass — carries the judge's own session id.
     const judgeOf = (candidate: string) => [...j.prompts.keys()].find(k => j.candidateOf(k) === candidate)
@@ -437,8 +471,8 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     // keepAlive + confident done → closed, and ONLY through the judged path.
     expect(forId("keepalive_done")).toHaveLength(1)
     expect(forId("keepalive_done")[0]!.judgedBy).toMatch(/^judge_/)
-    // No rules-pass call (no judgedBy) ever names a keepAlive session.
-    expect(applies.filter(a => a.judgedBy === undefined).flatMap(a => a.sessionIds as string[])).toEqual(["close_1", "stuck_1"])
+    // No rules-pass call (judgedBy 'steward-rules') ever names a keepAlive session.
+    expect(applies.filter(a => a.judgedBy === "steward-rules").flatMap(a => a.sessionIds as string[])).toEqual(["close_1", "stuck_1"])
   })
 
   it("apply: a user-origin session is only ever flagged — never closed, even with a confident done", async () => {
@@ -857,6 +891,48 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(apply?.inputs).toMatchObject({ verdict: "abandoned" })
   })
 
+  describe("B1 — rule verdicts apply even when the daemon classes the session `judge`", () => {
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+    // A running session whose only turn errored with 0 tokens in/out: the
+    // workflow calls it `stuck` (never ran), the daemon plans it `judge`.
+    const erroredZero = () =>
+      entry("errored_zero", "judge", 40, {
+        origin: "chat-starter",
+        tokensIn: 0,
+        tokensOut: 0,
+        idleMinutes: 90,
+        startedAt: minutesAgo(120),
+        lastTurnErroredAt: minutesAgo(100),
+      })
+
+    it("passes judgedBy 'steward-rules' + a reason, so the flag lands instead of ambiguous_needs_judge", async () => {
+      const f = fakeTools({ entries: [erroredZero()], daemonJudgeClass: new Set(["errored_zero"]) })
+      const out = await run(f.dispatchTool, judgeHost({}).host, { apply: true })
+      expect(out.candidates.stuck.map(e => e.sessionId)).toContain("errored_zero")
+      const apply = f.calls.find(c => c.name === "session_wrapup_apply")
+      expect(apply?.inputs).toMatchObject({ sessionIds: ["errored_zero"], verdict: "needs-input", judgedBy: "steward-rules" })
+      expect(String(apply?.inputs.reason)).toContain("origine utilisateur")
+      expect(out.report).not.toContain("refused")
+      expect(out.report).toContain("flagged")
+    })
+
+    it("explains a daemon refusal in plain words instead of the bare error code", async () => {
+      const f = fakeTools({ entries: [erroredZero()], refuseApply: { errored_zero: "ambiguous_needs_judge" } })
+      const out = await run(f.dispatchTool, judgeHost({}).host, { apply: true })
+      expect(out.report).toContain("refused (ambiguous_needs_judge: the daemon classes this session `judge` and no judgedBy was passed)")
+    })
+
+    it("a cron-origin never-ran session is closed abandoned with the rules sentinel", async () => {
+      const e = { ...erroredZero(), origin: "cron:fixture" }
+      const f = fakeTools({ entries: [e], daemonJudgeClass: new Set(["errored_zero"]) })
+      const out = await run(f.dispatchTool, judgeHost({}).host, { apply: true })
+      const apply = f.calls.find(c => c.name === "session_wrapup_apply")
+      expect(apply?.inputs).toMatchObject({ verdict: "abandoned", judgedBy: "steward-rules" })
+      expect(out.report).toContain("closed")
+      expect(out.report).not.toContain("refused")
+    })
+  })
+
   it("does not call a busy, just-started 0/0 session stuck (never ran)", async () => {
     const justStarted = new Date(Date.now() - 20_000).toISOString()
     const f = fakeTools({
@@ -1058,14 +1134,12 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     expect(f2.calls.some(c => c.name === "app_state_append")).toBe(true)
   })
 
-  it("reads the real {sessions} session_list shape (and the paged {items} one) — live counts are not 0", async () => {
-    for (const listShape of ["sessions", "items"] as const) {
-      const f = fakeTools({ entries: [], listShape, liveExtra: [busyRow("sess_a"), busyRow("sess_b"), { id: "sess_t", status: "killed", origin: "cron:job" }] })
-      const out = await run(f.dispatchTool, judgeHost({}).host, {})
-      expect(out.report).toContain("0 candidates:")
-      expect(out.report).toContain("2 busy")
-      expect(out.report).not.toContain("0 live")
-    }
+  it("reads the projected, paged session_list pages — live counts are not 0", async () => {
+    const f = fakeTools({ entries: [], liveExtra: [busyRow("sess_a"), busyRow("sess_b"), { id: "sess_t", status: "killed", origin: "cron:job" }] })
+    const out = await run(f.dispatchTool, judgeHost({}).host, {})
+    expect(out.report).toContain("0 candidates:")
+    expect(out.report).toContain("2 busy")
+    expect(out.report).not.toContain("0 live")
   })
 
   it("verdict memory resolves the installed app id by default (read + write use it)", async () => {
@@ -1122,10 +1196,10 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
     const f = fakeTools({ entries: [], liveExtra: rows })
     const out = await run(f.dispatchTool, judgeHost({}).host, { callerSessionId: SELF })
     const by = (out.scan.counts as unknown as { excludedByReason: Record<string, number> }).excludedByReason
-    expect(by).toEqual({ pinned: 1, pty: 1, archived: 1, keepAlive: 2 })
-    expect(out.report).toContain("5 excluded (")
+    // archived rows are hidden by `session_list` itself (the steward never asks for them).
+    expect(by).toEqual({ pinned: 1, pty: 1, keepAlive: 2 })
+    expect(out.report).toContain("4 excluded (")
     expect(out.report).toContain("2 keepAlive")
-    expect(out.report).toContain("1 archived")
     expect(out.report).not.toContain("self/cron")
     // another cron job's session is NOT excluded: it is a normal busy session.
     expect(out.scan.counts.busy).toBe(1)
@@ -1162,7 +1236,7 @@ describe("session-steward workflow — remaining-work guard (G11)", () => {
     expect(applies).toHaveLength(7)
     for (const a of applies) {
       expect(a.verdict).toBe("needs-input")
-      expect(a.judgedBy).toBeUndefined()
+      expect(a.judgedBy).toBe("steward-rules")
       expect(String(a.note)).toContain("remaining work")
       expect(String(a.note)).toContain("last message: «")
     }
@@ -1221,5 +1295,50 @@ describe("session-steward workflow — remaining-work guard (G11)", () => {
     const byId = new Map(appliesOf(calls).map(a => [(a.sessionIds as string[])[0], a]))
     expect(byId.get("sess_stuck")).toMatchObject({ verdict: "abandoned" })
     expect(byId.get("sess_user")).toMatchObject({ verdict: "needs-input", note: "flag (origine utilisateur)" })
+  })
+})
+
+describe("session-steward workflow — footprint (no whole-registry step output)", () => {
+  // 1000 wide registry rows (30 `availableCommands` x 400 chars each, like the real daemon).
+  const wide = (i: number): Record<string, unknown> => ({
+    id: `wide_${i}`,
+    label: `wide-${i}`,
+    status: i < 40 ? "running" : "exited",
+    busy: false,
+    origin: "review",
+    lastActivityAt: new Date(Date.now() - (i < 60 ? i * 20 : 6000 + i) * 60_000).toISOString(),
+    ...(i >= 40 ? { endedAt: new Date(Date.now() - (i < 60 ? i * 20 : 6000 + i) * 60_000).toISOString(), outcome: { verdict: "done" } } : {}),
+    availableCommands: Array.from({ length: 30 }, (_, k) => ({ name: `cmd${k}`, description: "x".repeat(400) })),
+    config: { blob: "y".repeat(2000) },
+  })
+
+  it("reads session_list with fields + filters + pages, and its step outputs stay small", async () => {
+    const f = fixture()
+    const { dispatchTool, calls } = fakeTools({ entries: f.entries, keepAlive: f.keepAlive, liveExtra: Array.from({ length: 1000 }, (_, i) => wide(i)) })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, { ...createDaemonToolRegistry(handle, dispatchTool), agentRefs: { [JUDGE_REF]: { adapter: "mock-agent" } } })
+    let bytes = 0
+    let biggest = 0
+    await runWorkflow({
+      workflow: compiled,
+      agents: judgeHost(f.replies).host,
+      input: { callerSessionId: SELF },
+      onStepComplete: (_id: string, out: unknown) => {
+        const n = JSON.stringify(out ?? null).length
+        bytes += n
+        biggest = Math.max(biggest, n)
+      },
+    })
+    const lists = calls.filter(c => c.name === "session_list")
+    expect(lists.length).toBeGreaterThan(0)
+    for (const c of lists) {
+      expect(c.inputs.full).toBeUndefined()
+      expect(Array.isArray(c.inputs.fields)).toBe(true)
+      expect(c.inputs.fields).not.toContain("availableCommands")
+      expect(c.inputs.limit).toBeLessThanOrEqual(200)
+      expect(c.inputs.onlyAlive === true || c.inputs.updatedSince !== undefined).toBe(true)
+    }
+    expect(biggest).toBeLessThan(200_000)
+    expect(bytes).toBeLessThan(400_000)
   })
 })
