@@ -3027,6 +3027,7 @@ export async function createGateway(
       crashDetectIntervalMs,
       restartSweepIntervalMs,
       turnStallAfterMs,
+      appRegistryIssues: () => appRegistry.listIssues(),
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
     })
@@ -3811,6 +3812,7 @@ export async function createGateway(
       crashDetectIntervalMs,
       restartSweepIntervalMs,
       turnStallAfterMs,
+      appRegistryIssues: () => appRegistry.listIssues(),
     },
     cronScheduler,
     routineRegistrar,

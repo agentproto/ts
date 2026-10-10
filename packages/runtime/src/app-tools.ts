@@ -1136,6 +1136,12 @@ export interface PerformInstallOptions {
    *  recorded as `source.catalogId = {url, appId}` so `app_updates` /
    *  `app_resync` follow that catalog's entry. Ignored for a local source. */
   readonly catalogUrl?: string
+  /** Skip the two checks that need a running daemon — every `tool` step id is
+   *  a registered daemon tool, and the default agent adapter resolves. For
+   *  `agentproto app install <dir>` with no daemon up: the record written is
+   *  otherwise identical to the one `app_install {dir}` writes, and those two
+   *  checks are redone by whoever runs the app. */
+  readonly skipDaemonChecks?: boolean
 }
 
 /**
@@ -1231,10 +1237,11 @@ export async function performInstall(
   // id-coverage `mergeAppAndDaemonToolRegistry` applies at compile time
   // (workflow-tool-registry.ts), checked here with just the id set since
   // install-time validation doesn't need live driver dispatch.
+  const skipDaemonChecks = opts?.skipDaemonChecks === true
   const appToolIds = new Set(handle.tools.map(t => t.id))
   const missingByWorkflow: Record<string, string[]> = {}
-  const registeredIds = new Set(await listRegisteredToolIds())
-  for (const workflow of handle.workflows) {
+  const registeredIds = new Set(skipDaemonChecks ? [] : await listRegisteredToolIds())
+  for (const workflow of skipDaemonChecks ? [] : handle.workflows) {
     const { tools } = createDaemonToolRegistry(workflow, async () => undefined)
     const missing = Object.keys(tools).filter(id => !registeredIds.has(id) && !appToolIds.has(id))
     if (missing.length > 0) missingByWorkflow[workflow.id] = missing
@@ -1246,7 +1253,7 @@ export async function performInstall(
     }
   }
 
-  if (handle.agents.length > 0) {
+  if (handle.agents.length > 0 && !skipDaemonChecks) {
     const resolved = resolveAgentAdapter ? await resolveAgentAdapter(DEFAULT_AGENT_ADAPTER) : null
     if (!resolved) {
       return {
@@ -1366,6 +1373,33 @@ export async function performInstall(
   return { ok: true, record }
 }
 
+/**
+ * Re-resolve every `incomplete` registry record (a partial record written by
+ * an older/foreign writer — see `normalizeInstalledApp`) from its app dir, so
+ * it carries the full agents/workflows/ui refs again. The previous `dataDir`
+ * is kept (`performInstall` prefers it). A record whose dir is gone, or that
+ * no longer installs, stays flagged in `listIssues()` with the reason.
+ * Returns the app ids that were repaired.
+ */
+export async function repairIncompleteApps(
+  appRegistry: AppRegistry,
+  listRegisteredToolIds: () => Promise<string[]>,
+  resolveAgentAdapter?: AgentAdapterResolver,
+): Promise<string[]> {
+  const repaired: string[] = []
+  for (const issue of appRegistry.listIssues()) {
+    if (issue.kind !== "incomplete" || issue.appId === null || issue.dir === null) continue
+    if (!existsSync(issue.dir)) continue
+    const result = await performInstall(issue.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+      skipDaemonChecks: true,
+    }).catch(() => ({ ok: false as const }))
+    if (result.ok && result.record.appId === issue.appId) repaired.push(issue.appId)
+  }
+  return repaired
+}
+
+const repairStarted = new WeakSet<AppRegistry>()
+
 export function registerAppTools(server: McpServer, opts: RegisterAppToolsOptions): void {
   const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner, dispatchTool, callImportedTool, resolveModelRole } =
     opts
@@ -1373,6 +1407,13 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     ...(opts.persistPath !== undefined ? { persistPath: opts.persistPath } : {}),
     ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
   })
+
+  // Once per registry (this runs per MCP server instance): heal partial
+  // records from disk without blocking the first request.
+  if (!repairStarted.has(appRegistry) && appRegistry.listIssues().some(i => i.kind === "incomplete")) {
+    repairStarted.add(appRegistry)
+    void repairIncompleteApps(appRegistry, listRegisteredToolIds, resolveAgentAdapter).catch(() => {})
+  }
 
   const appsDir =
     opts.appsDir ?? join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "apps")
@@ -1764,6 +1805,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     app: InstalledApp & {
       dataDir: string
       dirMissing: boolean
+      registryProblems?: string[]
       runs: {
         appRunId: string
         status: string
@@ -1784,6 +1826,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     dataDir: app.dataDir,
     ...(app.source !== undefined ? { source: app.source } : {}),
     ...(app.dirMissing ? { dirMissing: true } : {}),
+    ...(app.registryProblems ? { registryProblems: app.registryProblems } : {}),
     agents: app.agents.map(a => a.id),
     workflows: app.workflows.map(w => w.id),
     requires: app.requires,
@@ -1793,7 +1836,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const appListSchema = z.object({})
   type AppListInput = z.infer<typeof appListSchema>
 
-  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string; dirMissing: boolean })[]>(server, {
+  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string; dirMissing: boolean; registryProblems?: string[] })[]>(server, {
     id: "app_list",
     description: "List installed apps, each with a summary of its app_run history. " +
       "COMPACT BY DEFAULT: each entry keeps appId/name/version/description/" +
@@ -1807,10 +1850,14 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     inputSchema: appListSchema,
     handler: async () => {
       const runs = appRegistry.listRuns()
+      const issues = appRegistry.listIssues()
       return appRegistry.listApps().map(app => ({
         ...app,
         dataDir: appDataDir(app),
         dirMissing: !existsSync(app.dir),
+        ...(issues.some(i => i.appId === app.appId)
+          ? { registryProblems: issues.filter(i => i.appId === app.appId).flatMap(i => [...i.problems]) }
+          : {}),
         runs: runs
           .filter(r => r.appId === app.appId)
           .map(r => ({

@@ -20,6 +20,7 @@ async function buildHarness(
   deferred = false,
   resumeSessionsOnBoot = false,
   idleReapAfterMs = 0,
+  extra: Partial<Parameters<typeof registerDaemonHealthTools>[1]> = {},
 ): Promise<{ client: Client; close: () => Promise<void> }> {
   const { server: rawServer } = await createMcpServer({
     specs: [],
@@ -35,6 +36,7 @@ async function buildHarness(
     startedAt,
     resumeSessionsOnBoot,
     idleReapAfterMs,
+    ...extra,
   })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -90,6 +92,19 @@ describe("daemon_health", () => {
     expect(body.uptimeMs).toBeLessThanOrEqual(after - startedAt)
 
     await close()
+  })
+
+  it("reports app-registry issues instead of throwing, and [] when clean", async () => {
+    const clean = await buildHarness(workspace, [], startedAt)
+    expect(JSON.parse(textOf(await clean.client.callTool({ name: "daemon_health", arguments: {} }))).appRegistryIssues).toEqual([])
+    await clean.close()
+
+    const issues = [{ kind: "incomplete", appId: "@t/bare", dir: "/x", problems: ["missing workflows"] }]
+    const bad = await buildHarness(workspace, [], startedAt, false, false, 0, { appRegistryIssues: () => issues })
+    const body = JSON.parse(textOf(await bad.client.callTool({ name: "daemon_health", arguments: {} })))
+    expect(body.alive).toBe(true)
+    expect(body.appRegistryIssues).toEqual(issues)
+    await bad.close()
   })
 
   it("returns empty registered when no specs are registered", async () => {

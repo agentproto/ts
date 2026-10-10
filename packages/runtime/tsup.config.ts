@@ -34,6 +34,7 @@ export default createTsupConfig({
     "daemon-tool-names": "src/daemon-tool-names.generated.ts",
     "first-party-catalog-gen": "src/first-party-catalog-gen.ts",
     "app-remote-install": "src/app-remote-install.ts",
+    "app-install-offline": "src/app-install-offline.ts",
     "app-mcp-server": "src/app-mcp-server.ts",
   },
   format: ["esm"],

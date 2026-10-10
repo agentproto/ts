@@ -69,7 +69,7 @@ import { STAGEBOARD_JS_PATH, serveStageboard } from "./stageboard/serve.js"
 // ── installed-app registry (shared with daemon's ~/.agentproto/apps.json) ──
 
 import { homedir } from "node:os"
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 
 const APPS_JSON_PATH = join(homedir(), ".agentproto", "apps.json")
 
@@ -88,49 +88,12 @@ function loadAppsJson(): AppsJsonFile {
   }
 }
 
-function saveAppsJson(data: AppsJsonFile): void {
-  mkdirSync(dirname(APPS_JSON_PATH), { recursive: true })
-  const tmp = `${APPS_JSON_PATH}.tmp.${process.pid}`
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8")
-  renameSync(tmp, APPS_JSON_PATH)
-}
-
 /** Resolve an installed app's directory by its `appId`. Returns `undefined`
  *  when no app with that id is registered. */
 export function findInstalledAppDir(appId: string): string | undefined {
   const data = loadAppsJson()
   const app = data.apps?.find((a) => a.appId === appId)
   return app?.dir
-}
-
-/** Register (or update) an app id → directory mapping in `~/.agentproto/apps.json`.
- *  Preserves unrelated keys (`runs`, `applied`) the daemon manages.
- *
- *  `dataDir` is the absolute root of the app's durable data (`app_data_*`).
- *  Precedence mirrors the daemon's `performInstall`: an explicit `dataDir`
- *  > the entry's previously registered `dataDir` (a bare re-install never
- *  moves data) > `hintDir` (APP.md `data.dir`, relative to `dir`) >
- *  `<dir>/data`. Returns the entry as written. */
-export function installAppDir(
-  appId: string,
-  dir: string,
-  opts?: { dataDir?: string; hintDir?: string },
-): { appId: string; dir: string; dataDir: string } {
-  const data = loadAppsJson()
-  const apps = data.apps ?? []
-  const idx = apps.findIndex((a) => a.appId === appId)
-  const previous = idx === -1 ? undefined : apps[idx]?.dataDir
-  const raw = opts?.dataDir ?? previous ?? opts?.hintDir
-  const dataDir = raw === undefined ? resolve(dir, "data") : resolve(dir, expandHome(raw))
-  const entry = idx === -1 ? { appId, dir, dataDir } : { ...apps[idx], appId, dir, dataDir }
-  if (idx === -1) {
-    apps.push(entry)
-  } else {
-    apps[idx] = entry
-  }
-  data.apps = apps
-  saveAppsJson(data)
-  return entry
 }
 
 /** Every registered app (`appId` → `dir`, plus its `dataDir` — defaulting to
