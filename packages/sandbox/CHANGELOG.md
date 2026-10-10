@@ -1,5 +1,18 @@
 # @agentproto/sandbox
 
+## 0.9.0
+
+### Minor Changes
+
+- fdb7e74: Add `sandbox_exec` MCP tool for sandbox command execution
+
+### Patch Changes
+
+- Updated dependencies [dcf3f33]
+  - @agentproto/workflow-runtime@0.17.2
+  - @agentproto/secrets@2.0.1
+  - @agentproto/worktree@0.14.6
+
 ## 0.8.5
 
 ### Patch Changes

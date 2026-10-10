@@ -1,5 +1,54 @@
 # @agentproto/runtime
 
+## 5.16.0
+
+### Minor Changes
+
+- 6dec0d4: Let Claude Desktop / `claude` CLI sessions the daemon did not spawn own an AIP-46 inbox. An authenticated `/mcp` request whose `callerSessionId` is unknown and which carries `?host=<label>` now registers an `external` session (no process; alive for `daemon.externalSessionLivenessMs`, default 30 min, after its last MCP request or inbox poll), so `sentinel_watch`, `session_follow` and workflow notifications can deliver to it. `workflow_start` / `workflow_run_file` record the calling session and post one inbox item on run succeeded, run failed and approval/input suspension. New `agentproto hook inbox` Claude Code hook injects unread inbox items as untrusted `additionalContext` and acks them.
+- 00fed67: Generalize opencode console workspaces into provider-agnostic sub-accounts. An auth profile can pin `subaccount: { kind, id, name? }` (an org / workspace / project of its account); a registry in `@agentproto/auth` (`registerSubaccountProvider`, `SubaccountProvider` with `list(account)` / `resolve(profile)`) applies the pin at spawn, so the runtime and auth packages no longer name any vendor. The opencode console implementation moved from `@agentproto/runtime` to `@agentproto/adapter-opencode` and is registered by the CLI at start-up. New `agentproto auth subaccounts list <profile|account> [--create [--prefix]]` and `auth profile create --subaccount <kind>:<id>`; `auth profile opencode-orgs` stays as a deprecated alias and legacy `source: "opencode-console:<orgId>"` profiles are migrated on read. Usage-limit failures name the profile and sub-account. `@agentproto/runtime` drops the `./opencode-console-source` export added by #1831 (never published in a release); use `@agentproto/adapter-opencode` instead. Consumers of `@agentproto/auth` outside the CLI must call `registerSubaccountProvider` before resolving or validating sub-account profiles (including legacy `opencode-console:` sources). `@agentproto/driver-agent-cli` honours `isolateDataHome: false` from a provider.
+- c982376: opencode console workspaces (orgs) are now distinct, truthful wallets. opencode merges the active console org's provider block over every other config on start, so each spawn billed the active org whatever auth profile it named. A new source-backed api-key profile (`source: "opencode-console:<orgId>"`, no stored token) reads the console session read-only from `opencode.db`, fetches that org's provider block and injects the bearer plus block into the spawn; the new driver field `credentialDataHome` (opencode: `XDG_DATA_HOME`) runs an engaged-credential spawn in a login-less data dir, which also makes a plain api-key profile really bill its own key. An expired console session fails loud (never refreshed: the refresh token rotates). `agentproto auth profile opencode-orgs [--create] [--prefix <p>]` lists the console orgs and creates one profile per org. A `Go usage limit exceeded` failure (error event, session output, turn error) now names the wallet profile that hit it. Session usage and transcripts are read from the isolated opencode db when it exists.
+- 927b257: opencode executors now start lean by default. A first request for "reply OK" was ~140k input tokens (the global `agentproto` MCP bridge's ~280 tool schemas, the skills list and the repo's `AGENTS.md`); the new `lean` context mode on the opencode adapter disables external skills, project config / `AGENTS.md` autoload and that bridge, bringing it to opencode's own ~8k floor. `defaults.adapters.opencode.contextProfile` (and `contextProfile` per spawn) opts out or in.
+- 00fed67: Generalize opencode console workspaces into provider-agnostic sub-accounts. An auth profile can pin `subaccount: { kind, id, name? }` (an org / workspace / project of its account); a registry in `@agentproto/auth` (`registerSubaccountProvider`, `SubaccountProvider` with `list(account)` / `resolve(profile)`) applies the pin at spawn, so the runtime and auth packages no longer name any vendor. The opencode console implementation moved from `@agentproto/runtime` to `@agentproto/adapter-opencode` and is registered by the CLI at start-up. New `agentproto auth subaccounts list <profile|account> [--create [--prefix]]` and `auth profile create --subaccount <kind>:<id>`; `auth profile opencode-orgs` stays as a deprecated alias and legacy `source: "opencode-console:<orgId>"` profiles are migrated on read. Usage-limit failures name the profile and sub-account. `@agentproto/runtime` drops the `./opencode-console-source` export added by #1831; it was never published (absent from 5.15.0), so use `@agentproto/adapter-opencode`. Consumers of `@agentproto/auth` outside the CLI must call `registerSubaccountProvider` before resolving or validating sub-account profiles (including legacy `opencode-console:` sources). `@agentproto/driver-agent-cli` honours `isolateDataHome: false` from a provider.
+- fdb7e74: Add `sandbox_exec` MCP tool for sandbox command execution
+
+### Patch Changes
+
+- 120cbbc: Sync generated catalog data from the pinned provider sources.
+- 35fffc9: Pin the workstation template to @agentproto/cli 1.16.0 and record the dev template rebake.
+- dcf3f33: `run.retry` seeds the retry's workspace with a copy of the original run's `scratch/` and `artifacts/`, so replayed steps' files (and any supervisor fix) are present. Journal output relocation no longer overwrites files already in the destination.
+- 35fffc9: Regenerate workstation template pins (cli 1.16.0, refreshed adapter and opencode-ai versions) and the derived baked metadata via `sync-templates`. No API change.
+- ecb70c1: sandbox_exec on e2b no longer kills the command after e2b's 60-second default; an omitted timeoutMs now runs as long as the box lives.
+- 86f43d7: Session steward: a PR is not proof a session is finished. A would-be `done` close is now downgraded to a flag (`needs-input`) when the last assistant message asks the user a question, announces a next action or leaves work pending — this includes the `parentEnded` path that closed children holding an open question to a dead parent. The terminal-session relabel gains `needs-follow-up` (open PR still awaiting review/merge) and PR numbers are repo-qualified (`owner/repo#N`). The loop rule no longer counts recursive `rg`/`grep` over a directory as a repeated file read, and the zero-candidate report breaks exclusions down per reason.
+
+  Runtime: `session_wrapup_plan` evidence carries `worktree.pr` state (`open`/`merged`/`closed`) and a `worktreePrOpen` signal; a fresh `starting` session that is not stuck is kept instead of sent to the judge.
+
+  Workflow loader: the workflow entry's relative imports are versioned with the entry (`agentproto_v`), so editing a helper next to `entry.mjs` is picked up on the next run instead of being served from Node's module cache.
+
+- Updated dependencies [5c1b40d]
+- Updated dependencies [120cbbc]
+- Updated dependencies [00fed67]
+- Updated dependencies [c982376]
+- Updated dependencies [dcf3f33]
+- Updated dependencies [00fed67]
+- Updated dependencies [fdb7e74]
+- Updated dependencies [86f43d7]
+  - @agentproto/model-catalog@0.12.3
+  - @agentproto/auth@1.2.0
+  - @agentproto/driver-agent-cli@2.10.0
+  - @agentproto/workflow-runtime@0.17.2
+  - @agentproto/sandbox@0.9.0
+  - @agentproto/apps@0.21.2
+  - @agentproto/workflow-loader@0.2.6
+  - @agentproto/providers-store@0.3.26
+  - @agentproto/llm-endpoint@0.11.8
+  - @agentproto/secrets@2.0.1
+  - @agentproto/review@0.5.0
+  - @agentproto/app-kit@1.7.2
+  - @agentproto/acp@0.10.0
+  - @agentproto/pairing-host@0.2.6
+  - @agentproto/eval-reporters@0.2.23
+  - @agentproto/telemetry-langfuse@0.2.21
+
 ## 5.15.0
 
 ### Minor Changes

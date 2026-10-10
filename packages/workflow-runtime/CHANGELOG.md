@@ -1,5 +1,11 @@
 # @agentproto/workflow-runtime
 
+## 0.17.2
+
+### Patch Changes
+
+- dcf3f33: `run.retry` seeds the retry's workspace with a copy of the original run's `scratch/` and `artifacts/`, so replayed steps' files (and any supervisor fix) are present. Journal output relocation no longer overwrites files already in the destination.
+
 ## 0.17.1
 
 ### Patch Changes
