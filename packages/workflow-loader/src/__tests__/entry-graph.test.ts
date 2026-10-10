@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execFileSync } from "node:child_process"
@@ -16,24 +16,65 @@ afterEach(() => {
 })
 
 describe("entryGraphVersion", () => {
-  it("is the newest script mtime under the entry dir, ignoring dotfiles and node_modules", async () => {
+  it("is stable for an untouched graph and changes with the content of any reachable file", async () => {
     const dir = tmp()
-    writeFileSync(join(dir, "entry.mjs"), "export default 1")
-    writeFileSync(join(dir, "rules.mjs"), "export const a = 1")
-    mkdirSync(join(dir, "node_modules"))
-    writeFileSync(join(dir, "node_modules", "x.mjs"), "")
-    writeFileSync(join(dir, "notes.md"), "")
-    utimesSync(join(dir, "entry.mjs"), 1000, 1000)
-    utimesSync(join(dir, "rules.mjs"), 2000, 2000)
-    utimesSync(join(dir, "node_modules", "x.mjs"), 9000, 9000)
-    utimesSync(join(dir, "notes.md"), 9000, 9000)
-    expect(await entryGraphVersion(dir)).toBe(2_000_000)
-    utimesSync(join(dir, "rules.mjs"), 3000, 3000)
-    expect(await entryGraphVersion(dir)).toBe(3_000_000)
+    mkdirSync(join(dir, "wf"))
+    mkdirSync(join(dir, "shared"))
+    const entry = join(dir, "wf", "entry.mjs")
+    writeFileSync(entry, 'import "./a.mjs"; import "../shared/s.mjs"')
+    writeFileSync(join(dir, "wf", "a.mjs"), 'import "./b.mjs"')
+    writeFileSync(join(dir, "wf", "b.mjs"), "export const b = 1")
+    writeFileSync(join(dir, "shared", "s.mjs"), 'export * from "./t.mjs"')
+    writeFileSync(join(dir, "shared", "t.mjs"), "export const t = 1")
+    writeFileSync(join(dir, "outside.mjs"), "export const o = 1")
+    const v0 = await entryGraphVersion(entry)
+    expect(v0).toMatch(/^[0-9a-f]{16}$/)
+    expect(await entryGraphVersion(entry)).toBe(v0)
+
+    writeFileSync(join(dir, "outside.mjs"), "export const o = 2")
+    expect(await entryGraphVersion(entry)).toBe(v0)
+
+    const seen = new Set([v0])
+    for (const [file, content] of [
+      ["wf/b.mjs", "export const b = 2"],
+      ["shared/t.mjs", "export const t = 2"],
+      ["shared/s.mjs", 'export * from "./t.mjs"; export const s = 1'],
+    ] as const) {
+      writeFileSync(join(dir, file), content)
+      const v = await entryGraphVersion(entry)
+      expect(seen.has(v)).toBe(false)
+      seen.add(v)
+    }
   })
 
-  it("is 0 for a missing dir", async () => {
-    expect(await entryGraphVersion(join(tmp(), "nope"))).toBe(0)
+  it("ignores dotfiles and node_modules, and follows imports past the directory-scan depth", async () => {
+    const dir = tmp()
+    const entry = join(dir, "entry.mjs")
+    mkdirSync(join(dir, "node_modules"))
+    mkdirSync(join(dir, "a/b/c/d"), { recursive: true })
+    writeFileSync(entry, 'import "./a/b/c/d/deep.mjs"')
+    writeFileSync(join(dir, "a/b/c/d/deep.mjs"), "export const d = 1")
+    writeFileSync(join(dir, "node_modules", "x.mjs"), "1")
+    writeFileSync(join(dir, ".hidden.mjs"), "1")
+    const v0 = await entryGraphVersion(entry)
+    writeFileSync(join(dir, "node_modules", "x.mjs"), "2")
+    writeFileSync(join(dir, ".hidden.mjs"), "2")
+    expect(await entryGraphVersion(entry)).toBe(v0)
+    writeFileSync(join(dir, "a/b/c/d/deep.mjs"), "export const d = 2")
+    expect(await entryGraphVersion(entry)).not.toBe(v0)
+  })
+
+  it("changes when a missing import target appears, and survives import cycles", async () => {
+    const dir = tmp()
+    const entry = join(dir, "entry.mjs")
+    writeFileSync(entry, 'import "./later.mjs"')
+    const missing = await entryGraphVersion(entry)
+    writeFileSync(join(dir, "later.mjs"), 'import "./entry.mjs"')
+    expect(await entryGraphVersion(entry)).not.toBe(missing)
+  })
+
+  it("is empty for an unreadable entry", async () => {
+    expect(await entryGraphVersion(join(tmp(), "nope", "entry.mjs"))).toBe("")
   })
 })
 
