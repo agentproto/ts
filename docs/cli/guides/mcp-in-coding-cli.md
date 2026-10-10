@@ -233,6 +233,7 @@ coding-CLI orchestration:
 | `session_usage` | Per-session cost + token usage, live |
 | `list_sandbox_providers` | List configured sandbox providers (e.g. e2b) |
 | `setup_sandbox_provider` | Configure a sandbox provider's credentials |
+| `sandbox_exec` | Run one command in a sandbox box (ephemeral, or an existing `sandboxId`) and get back exit code + stdout/stderr |
 | `agentproto_terminal` | MCP App: live PTY over WebSocket for a session |
 | `agentproto_session_story` | MCP App: per-session story/timeline panel |
 | `role_list` | List role profiles and their spawn/delegation policy |

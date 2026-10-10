@@ -162,6 +162,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `harness_capabilities` | Discover what an installed adapter can do on this host |
 | `catalog_models` | Read-only catalog of runnable models + routes (daemon `GET /catalog/models`) |
 | `list_sandbox_providers` / `setup_sandbox_provider` | Sandbox provider catalog and credentials |
+| `sandbox_exec` | Run one command in a sandbox box (ephemeral, or an existing `sandboxId`) and return exit code + stdout/stderr |
 | `list_eval_reporters` / `setup_eval_reporter` | Eval-reporter backends (e.g. Langfuse) |
 | `start_browser` / `stop_browser` / `browser_status` | Manage browser sessions |
 | `mcp_discovered_list` / `mcp_imported_list` / `mcp_import` / `mcp_imported_remove` | Discover and curate imported MCP servers |
