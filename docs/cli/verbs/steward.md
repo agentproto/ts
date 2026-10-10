@@ -43,7 +43,7 @@ needs-input | close-abandoned | archive`.
 | `--apply` | `false` | Perform the planned actions. On `classify` it is the one-shot (classify, then act on the fresh snapshot). |
 | `--idle <min>` | `30` | Idle threshold in minutes. |
 | `--min-confidence <x>` | `0.8` | Confidence (0..1) needed to act on a verdict. |
-| `--rules <file>` | auto | Custom rules (YAML or JSON). Auto-loads `./.agentproto/steward-rules.yaml` (`.yml`/`.json`), then `~/.agentproto/…`. Invalid rules (unknown keys, bad actions) exit `2`. |
+| `--rules <file>` | auto | Custom rules (YAML or JSON). Auto-loads `./.agentproto/steward-rules.yaml` (`.yml`/`.json`), then `~/.agentproto/…`. An unreadable or unparsable file exits `2`; unknown keys / bad actions are listed as errors in the report and the run then acts on nothing. |
 | `--only <a,b,…>` | all | Restrict to these recommended actions. |
 | `--session <a,b,…>` | all | Restrict to these session ids (repeatable). |
 | `--allow-relaunch` | `false` | Let `relaunch` run without naming it in `--only`. |
