@@ -59,6 +59,10 @@ const ModelSchema = z
     family: z.string().optional(),
     /** ISO `YYYY-MM-DD` already — no unix-seconds conversion (cf. Requesty). */
     release_date: z.string().optional(),
+    /** Lifecycle flag. `"deprecated"` marks a model the endpoint no longer
+     *  serves: opencode's own client hides it, and a request for it answers
+     *  "model not found". Absent on every live model. */
+    status: z.string().optional(),
     provider: z
       .object({
         /** Which AI-SDK package serves this model — the ONLY discriminator
@@ -291,7 +295,8 @@ function serializeFile(
     "// relative to cost.input, and are omitted when the base input price is 0",
     "// (every `-free` variant) because a free model has no cache discount.",
     "// Zero-priced models are KEPT — on these endpoints zero is the truth, not",
-    "// a missing price.",
+    "// a missing price. Models the source flags `status: \"deprecated\"` are",
+    "// DROPPED: the endpoint no longer serves them.",
     "// Keys are `<provider>/<bare-id>`, the form opencode's own config uses and",
     "// the form the runtime derives the billing endpoint from; `vendor` is a",
     "// heuristic attribution of the model's BUILDER and is metadata only.",
@@ -335,6 +340,7 @@ interface ProjectedModel {
   name?: string
   family?: string
   release_date?: string
+  status?: string
   provider?: { npm: string }
   cost?: {
     input?: number
@@ -375,6 +381,7 @@ function projectSnapshot(providerKey: string, provider: SourceProvider): string 
       ...(model.name !== undefined ? { name: model.name } : {}),
       ...(model.family !== undefined ? { family: model.family } : {}),
       ...(model.release_date !== undefined ? { release_date: model.release_date } : {}),
+      ...(model.status !== undefined ? { status: model.status } : {}),
       ...(model.provider?.npm !== undefined ? { provider: { npm: model.provider.npm } } : {}),
       ...(model.cost !== undefined
         ? {
@@ -416,6 +423,16 @@ function snapshotRelPath(ledgerId: string): string {
 // ── Generator ───────────────────────────────────────────────────────────
 
 /**
+ * models.dev keeps a retired model in the provider's list and flags it
+ * `status: "deprecated"`. opencode's client (`opencode models <provider>`)
+ * hides those, and the endpoint answers "model not found" for them, so they
+ * must not reach the route tables.
+ */
+function isDeprecated(model: SourceModel): boolean {
+  return model.status === "deprecated"
+}
+
+/**
  * The bare ids served on the Anthropic Messages surface. models.dev
  * discriminates an endpoint's wire surfaces per model via `provider.npm`:
  * absent ⇒ OpenAI chat/completions, `@ai-sdk/anthropic` ⇒ Anthropic
@@ -425,6 +442,7 @@ function snapshotRelPath(ledgerId: string): string {
  */
 function anthropicSurfaceIds(models: Readonly<Record<string, SourceModel>>): string[] {
   return Object.entries(models)
+    .filter(([, model]) => !isDeprecated(model))
     .filter(([, model]) => model.provider?.npm === "@ai-sdk/anthropic")
     .map(([bareId]) => bareId)
     .sort()
@@ -448,6 +466,11 @@ async function generateFor(
   const entries: Record<string, LLMPricingEntry> = {}
   const releasedAt: Record<string, string> = {}
   for (const [bareId, model] of Object.entries(models)) {
+    // A deprecated model is no longer served (see isDeprecated): routing to it
+    // only yields "model not found", so it leaves the route table. It stays in
+    // the committed snapshot, and its addedAt ledger stamp is kept, so a model
+    // that comes back keeps its original date.
+    if (isDeprecated(model)) continue
     const inputPer1M = model.cost?.input
     const outputPer1M = model.cost?.output
     // An entry with no published price at all is skipped: a fabricated 0 would
