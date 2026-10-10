@@ -98,6 +98,11 @@ export function resetColdSessionCache(): void {
 /**
  * Every session the registry is NOT holding, newest activity first. One
  * directory scan per {@link COLD_TTL_MS} window per base dir.
+ *
+ * Returns the CACHED array by reference — treat it as read-only (every
+ * caller copies before filtering/splicing). It is rebuilt on the next
+ * TTL-expired call, so a mutation would survive only until then, but
+ * silently vanish after — a bug class not worth the defensive copy.
  */
 export function coldSessionRows(
   baseDir?: string,
@@ -111,14 +116,32 @@ export function coldSessionRows(
 }
 
 /**
+ * Is `id` a plain directory name under the transcript base dir? Session ids
+ * are minted as `sess_<8hex>` (or legacy shapes) — never separators, never
+ * `.`/`..`. Callers of {@link coldSessionDescriptor} pass USER input
+ * (`conversation_read` / `session_recap`'s `idOrName`), and the id becomes
+ * half of a `join(baseDir, id, …)` path, so this is the disk-side
+ * membership check the registry's `findByIdOrName` is for the in-memory
+ * map: reject path-like values BEFORE they reach the filesystem.
+ */
+function isSafeSessionDirName(id: string): boolean {
+  if (id.length === 0 || id.length > 200) return false
+  if (id === "." || id === "..") return false
+  if (id.includes("/") || id.includes("\\") || id.includes("\0")) return false
+  return true
+}
+
+/**
  * One cold session by id — the `conversation_read` rescue path. Targeted
  * (one sidecar read, or one bounded transcript tail when the sidecar is
- * missing), never the full scan.
+ * missing), never the full scan. Path-like ids (`../x`) are rejected: the
+ * input is caller-supplied and becomes a path segment.
  */
 export function coldSessionDescriptor(
   idOrName: string,
   baseDir?: string,
 ): SessionDescriptor | undefined {
+  if (!isSafeSessionDirName(idOrName)) return undefined
   const entry = readSessionIndex(idOrName, baseDir) ?? deriveIndexFromTranscript(idOrName, baseDir)
   return entry ? sessionDescriptorFromIndexEntry(entry) : undefined
 }

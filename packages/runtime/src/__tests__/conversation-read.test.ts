@@ -798,6 +798,24 @@ describe("readConversation — cold session (registry miss, disk hit)", () => {
     expect(result.reason).toContain("not found")
   })
 
+  it("never lets a path-like id escape the sessions dir", async () => {
+    // `idOrName` is caller-supplied and the cold path turns it into a
+    // `join(baseDir, id, …)` read — a traversal must answer not-found, not
+    // read an index.json outside the store.
+    setupFakeHome()
+    const outside = join(fakeHome, "outside")
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(
+      join(outside, "index.json"),
+      JSON.stringify({ id: "sess_escaped", kind: "agent-cli", status: "exited", startedAt: "2026-04-01T00:00:00.000Z" }),
+    )
+    for (const evil of ["../outside", "../outside/index.json", "..\\outside"]) {
+      const result = await readConversation(stubRegistry(undefined), { idOrName: evil })
+      expect(result.conversation).toBeNull()
+      expect(result.reason).toContain("not found")
+    }
+  })
+
   it("prefers the live registry row over a stale sidecar with the same id", async () => {
     setupFakeHome()
     const cwd = "/live/project"

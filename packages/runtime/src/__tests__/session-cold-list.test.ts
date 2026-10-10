@@ -179,4 +179,12 @@ describe("coldSessionDescriptor — the single-id rescue", () => {
   it("returns undefined for an id nothing on disk knows", () => {
     expect(coldSessionDescriptor("sess_ghost", baseDir)).toBeUndefined()
   })
+
+  it("rejects path-like ids before they reach the filesystem", () => {
+    // A caller-supplied id becomes half of `join(baseDir, id, …)`; a
+    // traversal must not read an index.json outside the store.
+    for (const evil of ["../outside", "a/b", "..", ".", "a\\b", "", "a".repeat(201)]) {
+      expect(coldSessionDescriptor(evil, baseDir)).toBeUndefined()
+    }
+  })
 })
