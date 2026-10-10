@@ -603,7 +603,7 @@ describe("booted.exec", () => {
 
     const result = await booted.exec!({ command: "pnpm test" })
 
-    expect(commandsRun).toHaveBeenCalledWith("pnpm test", {})
+    expect(commandsRun).toHaveBeenCalledWith("pnpm test", { timeoutMs: 0 })
     expect(result).toEqual({
       exitCode: 0,
       stdout: "all green\n",
@@ -648,13 +648,13 @@ describe("booted.exec", () => {
     })
   })
 
-  it("sends no cwd/envs/timeoutMs options when the caller omits them", async () => {
+  it("disables e2b's 60s default command timeout when the caller sets none", async () => {
     const commandsRun = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
     const { booted } = await bootedOf(commandsRun)
 
     await booted.exec!({ command: "date" })
 
-    expect(commandsRun).toHaveBeenCalledWith("date", {})
+    expect(commandsRun).toHaveBeenCalledWith("date", { timeoutMs: 0 })
   })
 
   it("propagates non-exit errors (command timeout etc.) as rejections", async () => {
