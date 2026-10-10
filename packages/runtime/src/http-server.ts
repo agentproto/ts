@@ -142,6 +142,7 @@ import {
   ifNoneMatchHits,
   isCompressibleContentType,
   isValidAppUiAssetName,
+  negotiateContentEncoding,
   sendRepresentation,
   strongEtag,
   type EncodedRepresentation,
@@ -206,6 +207,12 @@ import { mimeTypeForExtension, sessionAttachmentsDir, sessionEventsPath } from "
 import { listSessionArtifacts, resolveArtifactPath, resolveSiteFile } from "./session-artifacts.js"
 import { createReadStream, existsSync } from "node:fs"
 import { createInterface } from "node:readline"
+import { promisify } from "node:util"
+import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib"
+import { openEventRecords } from "./events-jsonl-reader.js"
+
+const gzipAsync = promisify(gzip)
+const brotliCompressAsync = promisify(brotliCompress)
 import { createTranscriptToUiMapper } from "./chat-stream.js"
 import {
   monitorSessionWait,
@@ -5171,32 +5178,62 @@ async function currentTranscriptSeq(id: string): Promise<number> {
   return last
 }
 
-/** Async-iterable of a session's on-disk events.jsonl records. Tolerates a
+/** Async-iterable of a session's on-disk events.jsonl records with
+ *  `seq > since` (seeked via the offset index). Tolerates a
  *  missing file (yields nothing) — unlike /events/stream's 404-on-ENOENT, a
  *  chat against a session with no transcript yet is a live-only stream. */
-async function* transcriptDiskRecords(id: string): AsyncGenerator<Record<string, unknown>> {
-  const filePath = sessionEventsPath(id)
-  let stream: ReturnType<typeof createReadStream>
+async function* transcriptDiskRecords(
+  id: string,
+  since: number,
+): AsyncGenerator<Record<string, unknown>> {
+  let records: AsyncGenerator<Record<string, unknown>, void, undefined>
   try {
-    stream = createReadStream(filePath, { encoding: "utf8" })
-    await new Promise<void>((resolve, reject) => {
-      stream.once("error", reject)
-      stream.once("open", resolve)
-    })
+    records = await openEventRecords(sessionEventsPath(id), since)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return
     throw err
   }
-  const rl = createInterface({ input: stream, crlfDelay: Infinity })
-  for await (const line of rl) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    try {
-      yield JSON.parse(trimmed) as Record<string, unknown>
-    } catch {
-      continue
-    }
+  yield* records
+}
+
+/** JSON response compressed per `accept-encoding` (br, then gzip — see
+ *  `negotiateContentEncoding`) once the body is big enough to be worth it.
+ *  Async zlib so a multi-MB events page doesn't stall the event loop. */
+const JSON_COMPRESS_MIN_BYTES = 1024
+async function sendJsonNegotiated(
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+): Promise<void> {
+  const raw = Buffer.from(JSON.stringify(body), "utf8")
+  const prior = res.getHeader("vary")
+  const priorVary = Array.isArray(prior) ? prior.join(", ") : prior === undefined ? "" : String(prior)
+  const vary = /(^|,)\s*accept-encoding\s*(,|$)/i.test(priorVary)
+    ? priorVary
+    : priorVary
+      ? `${priorVary}, accept-encoding`
+      : "accept-encoding"
+  const headers: Record<string, string> = { "content-type": "application/json", vary }
+  const coding =
+    raw.length >= JSON_COMPRESS_MIN_BYTES
+      ? negotiateContentEncoding(req.headers["accept-encoding"])
+      : "identity"
+  let out = raw
+  if (coding === "br") {
+    out = await brotliCompressAsync(raw, {
+      params: {
+        [zlibConstants.BROTLI_PARAM_QUALITY]: 4,
+        [zlibConstants.BROTLI_PARAM_SIZE_HINT]: raw.length,
+      },
+    })
+  } else if (coding === "gzip") {
+    out = await gzipAsync(raw, { level: 6 })
   }
+  if (coding !== "identity") headers["content-encoding"] = coding
+  headers["content-length"] = String(out.length)
+  res.writeHead(status, headers)
+  res.end(out)
 }
 
 /**
@@ -6531,7 +6568,7 @@ async function handleSessions(
     const stream = startAiUiMessageStream({
       res,
       since,
-      diskRecords: transcriptDiskRecords(id),
+      diskRecords: transcriptDiskRecords(id, since),
       subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
       map: createTranscriptToUiMapper(id),
     })
@@ -7937,14 +7974,13 @@ async function handleSessions(
     // resolution export's daemon-events strategy relies on) — `id` above
     // already resolved to that via findByIdOrName, falling back to the
     // raw path segment when the registry doesn't know it.
+    // Seeks via the cached seq→offset index, skips lines at/below the
+    // cursor without JSON.parse, and stops at the first record past `limit`
+    // (events-jsonl-reader.ts) — a tail read no longer scans the file.
     const filePath = sessionEventsPath(id)
-    let fileStream: ReturnType<typeof createReadStream>
+    let records: AsyncGenerator<Record<string, unknown>, void, undefined>
     try {
-      fileStream = createReadStream(filePath, { encoding: "utf8" })
-      await new Promise<void>((resolve, reject) => {
-        fileStream.once("error", reject)
-        fileStream.once("open", resolve)
-      })
+      records = await openEventRecords(filePath, since)
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if (code === "ENOENT") {
@@ -7956,27 +7992,18 @@ async function handleSessions(
 
     const events: Record<string, unknown>[] = []
     let truncated = false
-    const rl = createInterface({ input: fileStream, crlfDelay: Infinity })
-    for await (const line of rl) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      let rec: Record<string, unknown>
-      try {
-        rec = JSON.parse(trimmed) as Record<string, unknown>
-      } catch {
-        continue
-      }
-      if (typeof rec.seq !== "number" || rec.seq <= since) continue
+    for await (const rec of records) {
       if (events.length >= limit) {
+        // One record beyond the page is all `complete` needs.
         truncated = true
-        continue
+        break
       }
       events.push(rec)
     }
 
     const nextSeq =
       events.length > 0 ? (events[events.length - 1]?.seq as number) : since
-    json(200, {
+    await sendJsonNegotiated(req, res, 200, {
       sessionId: id,
       events,
       nextSeq,
@@ -8006,15 +8033,12 @@ async function handleSessions(
 
     // Existence check up front, same ENOENT→404 contract as /events —
     // lets a caller distinguish "no transcript" from "connection refused"
-    // before any SSE bytes go out.
+    // before any SSE bytes go out. The replay seeks to `since` through the
+    // cached seq→offset index instead of re-parsing the file per (re)connect.
     const filePath = sessionEventsPath(id)
-    let fileStream: ReturnType<typeof createReadStream>
+    let replay: AsyncGenerator<Record<string, unknown>, void, undefined>
     try {
-      fileStream = createReadStream(filePath, { encoding: "utf8" })
-      await new Promise<void>((resolve, reject) => {
-        fileStream.once("error", reject)
-        fileStream.once("open", resolve)
-      })
+      replay = await openEventRecords(filePath, since)
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if (code === "ENOENT") {
@@ -8039,22 +8063,9 @@ async function handleSessions(
       }
     }, 25_000)
 
-    async function* diskRecords(): AsyncGenerator<Record<string, unknown>> {
-      const rl = createInterface({ input: fileStream, crlfDelay: Infinity })
-      for await (const line of rl) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-        try {
-          yield JSON.parse(trimmed) as Record<string, unknown>
-        } catch {
-          continue
-        }
-      }
-    }
-
     const { unsubscribe, done } = deliverRecordsExactlyOnce({
       since,
-      diskRecords: diskRecords(),
+      diskRecords: replay,
       subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
       send: record => {
         try {
@@ -8129,7 +8140,7 @@ async function handleSessions(
     const stream = startAiUiMessageStream({
       res,
       since,
-      diskRecords: transcriptDiskRecords(id),
+      diskRecords: transcriptDiskRecords(id, since),
       subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
       map: createTranscriptToUiMapper(id),
     })

@@ -289,6 +289,29 @@ describe("GET /sessions/:id/events/stream", () => {
     })
   })
 
+  it("replays only the tail after a deep `since` cursor in a large transcript", { timeout: 15_000 }, async () => {
+    writeEvents(
+      Array.from({ length: 3000 }, (_, i) => ({ kind: "text-delta", sessionId: SESSION_ID, text: `t${i}` })),
+    )
+
+    await withServer(async (port, registry) => {
+      vi.spyOn(registry, "findByIdOrName").mockReturnValue({
+        id: SESSION_ID,
+      } as SessionDescriptor)
+
+      // Twice: the second (re)connect reuses the cached offset index.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/sessions/${SESSION_ID}/events/stream?since=2996`,
+        )
+        expect(res.status).toBe(200)
+        const frames = await readSseFrames(res, 4)
+        expect(frames.map(f => f.seq)).toEqual([2997, 2998, 2999, 3000])
+        expect(frames[0]?.text).toBe("t2996")
+      }
+    })
+  })
+
   it("404s with {error: 'no_transcript'} when events.jsonl doesn't exist", { timeout: 15_000 }, async () => {
     await withServer(async port => {
       const res = await fetch(
