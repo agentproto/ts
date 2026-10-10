@@ -274,7 +274,10 @@ export function registerSandboxExecTool(
       timeoutMs: z
         .number()
         .optional()
-        .describe("Per-command timeout, ms (provider kills the process on expiry)."),
+        .describe(
+          "Per-command timeout, ms (provider kills the process on expiry). Omit to let the " +
+            "command run as long as the box lives.",
+        ),
     },
     async input => {
       const result = await execSandboxCommand(

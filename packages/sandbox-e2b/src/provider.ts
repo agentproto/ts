@@ -305,7 +305,11 @@ function toBootedSandbox(
         const result = await sandbox.commands.run(opts.command, {
           ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
           ...(opts.env !== undefined ? { envs: opts.env } : {}),
-          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+          // e2b's per-command timeout DEFAULTS TO 60 SECONDS: an omitted
+          // timeoutMs would SIGKILL any real test run after one minute. 0
+          // disables it, so the command lives as long as the box (lifetime
+          // cap above) unless the caller sets its own bound.
+          timeoutMs: opts.timeoutMs ?? 0,
         })
         return {
           exitCode: result.exitCode,
