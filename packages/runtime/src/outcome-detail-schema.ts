@@ -4,7 +4,7 @@
  * (`session_mark_completed`, `session_wrapup_apply`, `agent_kill`).
  */
 import { z } from "zod"
-import { OUTCOME_BY, OUTCOME_ERROR_KINDS, STOP_OUTCOME_VERDICTS } from "./session-outcome.js"
+import { OUTCOME_BY, OUTCOME_ERROR_KINDS } from "./session-outcome.js"
 
 export const outcomeDetailShape = {
   reason: z.string().optional().describe("Free text: why the session completed / failed / was abandoned (recorded on the outcome as `reason`)."),
@@ -14,12 +14,8 @@ export const outcomeDetailShape = {
   by: z.enum(OUTCOME_BY).optional().describe("Who states this outcome: steward-rules | jev | agent | user."),
 }
 
-/** `agent_kill`'s nested `outcome`: the verdict plus the detail fields. */
-export const stopOutcomeSchema = z
-  .object({
-    verdict: z.enum(STOP_OUTCOME_VERDICTS).optional().describe("done | failed | abandoned | needs-input."),
-    note: z.string().optional(),
-    judgedBy: z.string().optional(),
-    ...outcomeDetailShape,
-  })
-  .strict()
+/** `agent_kill`'s nested `outcome`. An always-on tool (see
+ *  `tool-schema-budget.test.ts`), so it is a bare string record: the keys and
+ *  allowed values are in the tool description and validated by
+ *  `parseStopOutcome`. */
+export const stopOutcomeSchema = z.record(z.string(), z.string())
