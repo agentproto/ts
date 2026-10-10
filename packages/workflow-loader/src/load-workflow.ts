@@ -250,8 +250,9 @@ async function importEntryHandle(
   // URL-cached modules — which, because the manifest IS re-read fresh, would
   // otherwise fail reconcileEntry with a spurious step-count mismatch after an
   // edit, or silently run a new entry against stale helper modules. The
-  // version is the newest mtime in the entry directory; a resolve hook
-  // (entry-graph.ts) propagates it to the entry's relative imports. Fresh
+  // version is a content hash of the entry's whole relative-import graph (any
+  // depth, any directory); a resolve hook (entry-graph.ts) propagates it to the
+  // entry's relative imports. Fresh
   // daemons / CI boot cold, so they never need it — this only helps the dev loop.
   //
   // Skipped under the Vite/vitest transform (`process.env.VITEST`): Vite owns
@@ -261,10 +262,10 @@ async function importEntryHandle(
   let href = pathToFileURL(abs).href
   if (!process.env.VITEST) {
     try {
-      const version = await entryGraphVersion(dirname(abs))
-      if (version > 0) {
+      const version = await entryGraphVersion(abs)
+      if (version) {
         const url = pathToFileURL(abs)
-        url.searchParams.set(ENTRY_GRAPH_VERSION_PARAM, String(version))
+        url.searchParams.set(ENTRY_GRAPH_VERSION_PARAM, version)
         registerEntryGraphHook()
         href = url.href
       }
