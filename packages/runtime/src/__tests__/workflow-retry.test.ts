@@ -33,6 +33,7 @@ import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createWorkflowRunner, type WorkflowRun } from "../workflow-runner.js"
+import { runStoreDir, runFilePath, readRunFull } from "../workflow-run-store.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -785,9 +786,11 @@ steps:
       stages: [{ steps: [{ label: "transcribe", adapter: "mock", prompt: "go" }] }],
     })
     const onDisk = (): WorkflowRun | undefined =>
-      (JSON.parse(readFileSync(persistPath, "utf8")) as WorkflowRun[]).find(r => r.runId === run.runId)
+      readRunFull(runFilePath(runStoreDir(persistPath), run.runId)!)
+    await runner.flush()
     expect(onDisk()?.status).toBe("running")
     runner.cancel(run.runId)
+    await runner.flush()
     expect(onDisk()?.status).toBe("cancelled")
   })
 

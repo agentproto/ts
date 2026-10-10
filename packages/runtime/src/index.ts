@@ -1220,6 +1220,38 @@ function bootResumeConcurrency(): number {
  *     before this is ever reached).
  *   - INBOUND (watcher + push router) is a HUMAN writing to the session —
  *     explicit intent, so a deliberate end may still be revived in place. */
+
+/** Env overrides for the workflow runner's run-history bounds. Unset / invalid
+ *  values keep the runner's defaults. */
+function workflowRunnerEnvOptions(env: NodeJS.ProcessEnv): {
+  outputLimits?: Partial<{ stepInlineBytes: number; previewChars: number; runBudgetBytes: number; runOutputInlineBytes: number; errorChars: number }>
+  summaryMaxCount?: number
+  summaryMaxAgeMs?: number
+  approvalTtlMs?: number
+} {
+  const num = (key: string): number | undefined => {
+    const n = Number.parseInt(env[key] ?? "", 10)
+    return Number.isFinite(n) && n >= 0 ? n : undefined
+  }
+  const limits = {
+    stepInlineBytes: num("AGENTPROTO_WORKFLOW_STEP_OUTPUT_BYTES"),
+    previewChars: num("AGENTPROTO_WORKFLOW_OUTPUT_PREVIEW_CHARS"),
+    runBudgetBytes: num("AGENTPROTO_WORKFLOW_RUN_OUTPUT_BUDGET_BYTES"),
+    runOutputInlineBytes: num("AGENTPROTO_WORKFLOW_RUN_RESULT_BYTES"),
+    errorChars: num("AGENTPROTO_WORKFLOW_ERROR_CHARS"),
+  }
+  const outputLimits = Object.fromEntries(Object.entries(limits).filter(([, v]) => v !== undefined))
+  const summaryMaxCount = num("AGENTPROTO_WORKFLOW_SUMMARY_MAX")
+  const summaryMaxAgeMs = num("AGENTPROTO_WORKFLOW_SUMMARY_MAX_AGE_MS")
+  const approvalTtlMs = num("AGENTPROTO_WORKFLOW_APPROVAL_TTL_MS")
+  return {
+    ...(Object.keys(outputLimits).length > 0 ? { outputLimits } : {}),
+    ...(summaryMaxCount !== undefined ? { summaryMaxCount } : {}),
+    ...(summaryMaxAgeMs !== undefined ? { summaryMaxAgeMs } : {}),
+    ...(approvalTtlMs !== undefined ? { approvalTtlMs } : {}),
+  }
+}
+
 export function makeRestartForRouting(
   deps: {
     sessions: SessionsRegistry
@@ -2474,6 +2506,9 @@ export async function createGateway(
         resolveAgentAdapter: opts.resolveAgentAdapter,
         webhookNotifier,
         persist,
+        // Run-history bounds (see workflow-run-store.ts): env overrides for the
+        // output ceilings, the in-memory summary window and the stale-approval TTL.
+        ...workflowRunnerEnvOptions(process.env),
         // Sandbox-capable agent steps (`AgentStep.sandbox` / workflow_start's
         // step `sandbox`) resolve providers through the same resolver
         // `agent_start.sandbox` uses.

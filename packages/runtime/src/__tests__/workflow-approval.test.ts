@@ -379,6 +379,7 @@ describe("WorkflowRunner human approvals (WP-S)", () => {
     const parked = await awaitStatus(runner1, started.runId, "awaiting-approval")
     expect(parked.awaitingApproval?.approvalId).toMatch(/^wfappr_/)
 
+    await runner1.flush()
     // "Restart": a fresh runner over the same persist file.
     const bus2 = createSessionEventBus()
     const events2: SessionEvent[] = []

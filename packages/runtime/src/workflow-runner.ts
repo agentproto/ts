@@ -10,23 +10,31 @@
  * `WorkflowRunner.start()` / `status()` / `cancel()` — is preserved
  * unchanged.
  *
- * Persistence: runs are serialised to ~/.agentproto/workflow-runs.json
- * (write-tmp + rename atomic swap) on every state mutation, same pattern
- * as routine-runner.ts. On load, any run with status "running" or
+ * Persistence: one file per run under ~/.agentproto/workflow-runs/ (see
+ * workflow-run-store.ts) — only DIRTY runs are written, asynchronously
+ * (write-tmp + rename), and step outputs over a ceiling are stored as a
+ * preview + pointer with the full value in a per-run artifact file. A legacy
+ * ~/.agentproto/workflow-runs.json is split into that layout once at boot
+ * (kept as `.bak`). Active runs stay resident; finished ones are summaries,
+ * lazy-loaded on `status()`.
+ *
+ * On load, any run with status "running" or
  * "awaiting-input" is immediately marked "failed" with reason
  * "interrupted by daemon restart" — EXCEPT a run parked at a
  * `kind: "suspend"` step (status "awaiting-input" with a durable
  * `awaitingSuspend` record), which stays suspended and is re-registered so
- * a matching `resumeSuspend` still lands (AIP-15 conformance rule 7).
+ * a matching `resumeSuspend` still lands (AIP-15 conformance rule 7) — and a
+ * run parked at an approval, kept as a slim envelope until it is decided or
+ * its approval expires (`approvalTtlMs`).
  *
  * Persistence opt-in: disabled by default (persist defaults to false when
  * no persistPath is supplied) so unit tests never touch ~/.agentproto/.
  */
 
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from "node:path"
-import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync, cpSync, rmSync } from "node:fs"
+import { existsSync, cpSync, rmSync } from "node:fs"
 import { buildAgentStep, runWorkflow, validateWorkflowInput, validateAgainstJsonSchema, StepOutcomeError, MissingArtifactError } from "@agentproto/workflow-runtime"
 import type { AgentSandboxRef, ApprovalDecision, ArtifactEntry, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
@@ -49,6 +57,34 @@ import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js
 import { ensureRunWorkspace, runWorkspacePaths, type RunWorkspacePaths } from "./run-workspace.js"
 import { buildAppBoundary, isPathWithin, type AppBoundary } from "./app-boundary.js"
 import { copyFile, mkdir, readFile } from "node:fs/promises"
+import {
+  DEFAULT_OUTPUT_LIMITS,
+  RUN_OUTPUT_REF,
+  STEP_OUTPUT_REF_PREFIX,
+  boundOutput,
+  clipError,
+  isBoundedOutputRef,
+  listLeaseRunIds,
+  listRunIds,
+  migrateLegacyRuns,
+  readRunFull,
+  readRunHeader,
+  readSpillValue,
+  removeLeaseFile,
+  removeLeaseFileSync,
+  runFilePath,
+  runStoreDir,
+  serializeRunFile,
+  slimRun,
+  spillFilePath,
+  spillRelativePath,
+  stepOutputRef,
+  writeFileAtomic,
+  writeFileAtomicSync,
+  writeLeaseFile,
+  writeSpill,
+  type WorkflowOutputLimits,
+} from "./workflow-run-store.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -260,8 +296,21 @@ export interface WorkflowRunner {
     callerSessionId?: string
   }): Promise<WorkflowRun>
 
-  status(runId: string): WorkflowRun | undefined
+  /** The run record. A run that is no longer resident (older terminal runs)
+   *  is lazy-loaded from its per-run file. Step outputs over the ceiling are
+   *  {@link BoundedOutputRef}s (preview + pointer); `resolveOutputs: true`
+   *  returns a COPY with each pointer replaced by the full value read back
+   *  from its artifact file (values over {@link MAX_READ_ARTIFACT_BYTES}
+   *  keep their pointer — fetch those through `readArtifact`). */
+  status(runId: string, opts?: { resolveOutputs?: boolean }): WorkflowRun | undefined
+  /** Every known run. Active runs and the newest terminal ones are the live
+   *  records; older terminal runs are SUMMARIES (stages and steps, but no
+   *  step outputs / final output / input) — use `status(runId)` for detail. */
   list(): WorkflowRun[]
+  /** Resolves once every change made so far is on disk. Persistence is
+   *  asynchronous and dirty-run-only; await this where a test or a shutdown
+   *  path needs durability. */
+  flush(): Promise<void>
 
   /** AIP-58 §5/§9 `run.events` — events with `seq > sinceSeq`, in order.
    *  `undefined` when `runId` is unknown; an empty array is a known run
@@ -278,7 +327,7 @@ export interface WorkflowRunner {
    *  one instead of waiting on a real timer. Callable directly (tests) or on
    *  a caller-owned interval (the daemon composition root); this runner
    *  does not schedule it on its own. */
-  sweep(now?: Date): { orphaned: string[] }
+  sweep(now?: Date): { orphaned: string[]; expiredApprovals?: string[] }
 
   resolve(runId: string, stageIndex: number, stepIndex: number, response: string): void
 
@@ -436,7 +485,13 @@ interface RunState {
    * `WorkflowRunner.resolveApproval()`. `approvalId` ties the parked entry
    * to the run's `awaitingApproval` record across a daemon restart.
    */
-  pendingApproval?: { approvalId: string; resolve: (decision: ApprovalDecision) => void }
+  pendingApproval?: {
+    approvalId: string
+    resolve: (decision: ApprovalDecision) => void
+    /** Set only on an approval re-registered after a restart: `sweep()` calls
+     *  it once the approval is older than the configured TTL. */
+    expire?: () => void
+  }
   /**
    * Set while a `kind: "suspend"` step is parked (run.status ===
    * "awaiting-input"), waiting for an external event through
@@ -451,6 +506,21 @@ interface RunState {
    *  it when orphaning a run so a heartbeat that fires just afterwards can't
    *  resurrect a fresh `lease` on an already-`failed` record. */
   heartbeatTimer?: ReturnType<typeof setInterval>
+  /** Budget already spent on inline step outputs / previews of this run (see
+   *  `WorkflowOutputLimits.runBudgetBytes`). */
+  outputBytes?: number
+  /** Output ceilings + the spill sink for this run (set only when
+   *  persistence is on — a non-persisting runner keeps raw outputs). */
+  bounds?: { limits: WorkflowOutputLimits; spill: (ref: string, text: string) => void }
+  /** Last status written to disk — a change makes the next flush immediate. */
+  persistedStatus?: WorkflowRunStatus
+  /** Full outputs queued for a spill file and not yet on disk — flushed
+   *  synchronously on process exit so a pointer never dangles. */
+  spillQueue?: Map<string, string>
+  /** `run` is the slim envelope loaded at boot for a parked approval /
+   *  suspend: enough to approve/reject, NOT the full record. Anything that
+   *  mutates the run first re-reads the full one (`ensureFull`). */
+  envelope?: boolean
 }
 
 // ── Translation: WorkflowStage[] → RuntimeWorkflow ──────────────────
@@ -742,11 +812,11 @@ function seedRetryWorkspace(
  * `WorkflowRun`, so this works after a daemon restart too, not just via the
  * in-memory `runs` map built fresh each process) up to a run with none.
  */
-function resolveLineageRoot(runs: Map<string, RunState>, runId: string): string {
+function resolveLineageRoot(retryOfOf: (runId: string) => string | undefined, runId: string): string {
   let current = runId
   const seen = new Set<string>([current])
   for (;;) {
-    const next = runs.get(current)?.run.retryOf
+    const next = retryOfOf(current)
     if (next === undefined || seen.has(next)) return current
     current = next
     seen.add(current)
@@ -835,6 +905,19 @@ const DEFAULT_LEASE_TTL_MS = 60_000
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 /** Floor between two full rewrites of the runs file for non-status changes. */
 const DEFAULT_PERSIST_MIN_INTERVAL_MS = 2_000
+/** Terminal runs kept as in-memory summaries (newest N / younger than the age). */
+const DEFAULT_SUMMARY_MAX_COUNT = 500
+const DEFAULT_SUMMARY_MAX_AGE_MS = 30 * 24 * 3_600_000
+/** A parked approval older than this when the daemon restarts (or at a later
+ *  sweep) is expired instead of kept forever. `0` disables expiry. */
+const DEFAULT_APPROVAL_TTL_MS = 7 * 24 * 3_600_000
+/** Finished runs of THIS process kept fully resident (newest N / younger than
+ *  the age) before they are demoted to a summary + their per-run file. */
+const DEFAULT_HOT_TERMINAL_MAX = 32
+const DEFAULT_HOT_TERMINAL_AGE_MS = 10 * 60_000
+const HYDRATED_CACHE_MAX = 16
+/** Upper bound for resolving one spilled output back into `status full:true`. */
+const RESOLVE_OUTPUT_MAX_BYTES = 64 * 1024 * 1024
 
 // ── Persistence helpers (mirrors routine-runner.ts exactly) ──────────
 
@@ -907,80 +990,165 @@ function finalizeStuckSteps(run: WorkflowRun): boolean {
   return anyTouched
 }
 
-function loadRuns(persistPath: string, runsRoot: string): Map<string, RunState> {
-  const result = new Map<string, RunState>()
-  if (!existsSync(persistPath)) return result
-  let raw: string
+const isActiveStatus = (status: WorkflowRunStatus): boolean =>
+  status === "running" || status === "awaiting-input" || status === "awaiting-approval"
+
+/** A terminal run with a step still `running`/`pending` — `finalizeStuckSteps`
+ *  has something to fix. Checked on the slim header so a clean run is never
+ *  loaded in full at boot. */
+function hasStuckSteps(run: WorkflowRun): boolean {
+  if (run.status !== "cancelled" && run.status !== "failed" && run.status !== "done") return false
+  return run.stages.some(st => st.steps.some(s => s.status === "running" || s.status === "pending"))
+}
+
+/** Terminal-state a parked approval whose decision window has lapsed. */
+function expireApprovalRecord(run: WorkflowRun, nowMs: number, ttlMs: number): void {
+  const aa = run.awaitingApproval
+  run.awaitingApproval = undefined
+  run.status = "failed"
+  run.errorCode = "approval-expired"
+  run.error =
+    `approval${aa ? ` "${aa.approvalId}" at step "${aa.stepId}"` : ""} expired: ` +
+    `no decision within ${Math.round(ttlMs / 3_600_000)}h of being requested, and its execution cannot resume after a daemon restart`
+  run.endedAt = run.endedAt ?? new Date(nowMs).toISOString()
+  run.lease = undefined
+  finalizeStuckSteps(run)
+}
+
+const approvalRequestedMs = (run: WorkflowRun): number =>
+  Date.parse(run.awaitingApproval?.since ?? run.startedAt)
+
+interface LoadedStore {
+  /** Runs that stay resident: parked approvals / suspends (as slim envelopes). */
+  runs: Map<string, RunState>
+  /** Every other run, as slim summaries — insertion order is oldest first. */
+  summaries: Map<string, WorkflowRun>
+}
+
+/**
+ * Boot: migrate the legacy single-file registry if present, then index the
+ * per-run files from their one-line headers. Only a run that needs correcting
+ * (interrupted by the restart, terminal with a stuck step) is read in full
+ * and rewritten; every other run costs one small read and stays a summary.
+ */
+function loadStore(args: {
+  persistPath: string
+  dir: string
+  runsRoot: string
+  limits: WorkflowOutputLimits
+  summaryMaxCount: number
+  summaryMaxAgeMs: number
+  approvalTtlMs: number
+  nowMs: number
+}): LoadedStore {
+  const { persistPath, dir, runsRoot, limits } = args
+  const runs = new Map<string, RunState>()
+  const loaded: WorkflowRun[] = []
+
   try {
-    raw = readFileSync(persistPath, "utf8")
-  } catch {
-    return result
+    const migration = migrateLegacyRuns({ persistPath, dir, runsRoot, limits })
+    if (migration) {
+      console.warn(
+        `[workflow-runner] migrated legacy ${persistPath}: ${migration.migrated} runs split into ${dir} ` +
+          `(${(migration.legacyBytes / 1048576).toFixed(1)} MB -> ${(migration.newBytes / 1048576).toFixed(1)} MB, ` +
+          `${migration.outputsSpilled} full outputs kept as artifact files` +
+          `${migration.skipped > 0 ? `, ${migration.skipped} unusable records only in the backup` : ""}); ` +
+          `original kept at ${migration.bakPath}`,
+      )
+    }
+  } catch (err) {
+    console.warn(
+      `[workflow-runner] legacy runs migration failed (${err instanceof Error ? err.message : String(err)}); ` +
+        `${persistPath} is left in place and will be retried on the next start`,
+    )
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return result
-  }
-  if (!Array.isArray(parsed)) return result
-  let anyMarkedInterrupted = false
-  for (const item of parsed) {
-    if (!item || typeof item !== "object" || typeof (item as WorkflowRun).runId !== "string") continue
-    const run = item as WorkflowRun
+
+  for (const runId of listRunIds(dir)) {
+    const file = runFilePath(dir, runId)!
+    let run = readRunHeader(file)
+    if (!run) continue
     // AIP-15 conformance rule 7 / AIP-58 §2 host-restart rule: a run parked
     // at a `kind: "suspend"` step carries a durable `awaitingSuspend` record
     // — keep it suspended so a matching resume can still land (the pending
-    // entry is re-registered below). Any other in-flight run (running /
-    // awaiting-input without a suspend record) is `failed { code:
+    // entry is re-registered by the factory). Any other in-flight run
+    // (running / awaiting-input without a suspend record) is `failed { code:
     // "host-interrupted" }` — the daemon restarted while it was running and
     // it was not durably parked.
     const parkedAtSuspend = run.status === "awaiting-input" && run.awaitingSuspend !== undefined
-    if (!parkedAtSuspend && (run.status === "running" || run.status === "awaiting-input")) {
-      run.status = "failed"
-      run.error = "interrupted by daemon restart"
-      run.errorCode = "host-interrupted"
-      run.endedAt = run.endedAt ?? new Date().toISOString()
-      run.lease = undefined
-      anyMarkedInterrupted = true
-      createRunEventLog(run.runId, runsRoot).append({
-        type: "run.failed",
-        data: { code: "host-interrupted", message: run.error },
-      })
+    const interrupted = !parkedAtSuspend && (run.status === "running" || run.status === "awaiting-input")
+    if (interrupted || hasStuckSteps(run)) {
+      const full = readRunFull(file) ?? run
+      if (interrupted) {
+        full.status = "failed"
+        full.error = "interrupted by daemon restart"
+        full.errorCode = "host-interrupted"
+        full.endedAt = full.endedAt ?? new Date(args.nowMs).toISOString()
+        full.lease = undefined
+        createRunEventLog(full.runId, runsRoot).append({
+          type: "run.failed",
+          data: { code: "host-interrupted", message: full.error },
+        })
+      }
+      // F44b: whether the run was ALREADY terminal on disk (e.g. `cancelled` —
+      // see `finalizeStuckSteps`'s doc) or just corrected to `failed` above,
+      // its steps must not be left `running`/`pending`.
+      if (finalizeStuckSteps(full)) {
+        createRunEventLog(full.runId, runsRoot).append({
+          type: "run.steps-finalized",
+          data: { code: "host-interrupted", status: full.status },
+        })
+      }
+      try {
+        writeFileAtomicSync(file, dir, serializeRunFile(full))
+      } catch {
+        // Best-effort — the correction is re-derived on the next boot.
+      }
+      run = slimRun(full)
     }
-    // F44b: whether the run was ALREADY terminal on disk (e.g. `cancelled` —
-    // see `finalizeStuckSteps`'s doc) or just corrected to `failed` above,
-    // its steps must not be left `running`/`pending`.
-    if (finalizeStuckSteps(run)) {
-      anyMarkedInterrupted = true
-      createRunEventLog(run.runId, runsRoot).append({
-        type: "run.steps-finalized",
-        data: { code: "host-interrupted", status: run.status },
+    // P1: a parked approval older than the TTL is expired at boot instead of
+    // being kept (and re-registered) forever.
+    if (
+      run.status === "awaiting-approval" &&
+      args.approvalTtlMs > 0 &&
+      args.nowMs - approvalRequestedMs(run) > args.approvalTtlMs
+    ) {
+      const full = readRunFull(file) ?? run
+      expireApprovalRecord(full, args.nowMs, args.approvalTtlMs)
+      createRunEventLog(full.runId, runsRoot).append({
+        type: "run.failed",
+        data: { code: "approval-expired", message: full.error },
       })
+      try {
+        writeFileAtomicSync(file, dir, serializeRunFile(full))
+      } catch {
+        // Best-effort — expiry is re-derived on the next boot.
+      }
+      run = slimRun(full)
     }
     // WP-S: a run parked awaiting a human approval is NOT failed on reload —
     // its `awaitingApproval` record is durable. The runner re-registers the
-    // pending item below so the decision is still taken and ledgered (the
-    // run's in-flight execution itself can't resume; see the reload resolver).
-    result.set(run.runId, { run, cancelled: false, abort: new AbortController(), stages: [] })
+    // pending item so the decision is still taken and ledgered (the run's
+    // in-flight execution itself can't resume; see the reload resolver).
+    // Only the slim envelope stays resident; the full record is re-read from
+    // its per-run file when the decision lands.
+    if (isActiveStatus(run.status)) {
+      runs.set(run.runId, { run, cancelled: false, abort: new AbortController(), stages: [], envelope: true })
+    } else {
+      loaded.push(run)
+    }
   }
-  // Persist the host-interrupted corrections immediately — a second restart
-  // before anything else calls `persist()` must not re-derive/re-emit them.
-  if (anyMarkedInterrupted) saveRuns(result, persistPath)
-  return result
-}
+  // A lease sidecar means nothing to a fresh process: no run is `running`
+  // under an old owner any more.
+  for (const runId of listLeaseRunIds(dir)) removeLeaseFileSync(dir, runId)
 
-function saveRuns(runs: Map<string, RunState>, persistPath: string): void {
-  try {
-    mkdirSync(dirname(persistPath), { recursive: true })
-    const payload = JSON.stringify(
-      Array.from(runs.values()).map(s => s.run),
-    ) + "\n"
-    const tmp = `${persistPath}.tmp.${process.pid}`
-    writeFileSync(tmp, payload, "utf8")
-    renameSync(tmp, persistPath)
-  } catch {
-    // Best-effort — a write failure must not crash the daemon.
+  loaded.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt))
+  const summaries = new Map<string, WorkflowRun>()
+  const cutoff = args.summaryMaxAgeMs > 0 ? args.nowMs - args.summaryMaxAgeMs : Number.NEGATIVE_INFINITY
+  for (const run of loaded.slice(Math.max(0, loaded.length - args.summaryMaxCount))) {
+    if (Date.parse(run.endedAt ?? run.startedAt) < cutoff) continue
+    summaries.set(run.runId, run)
   }
+  return { runs, summaries }
 }
 
 function fireNotifyUrl(run: WorkflowRun): void {
@@ -1306,6 +1474,29 @@ function createLedgerAppender(
   return { append, flush: () => chain }
 }
 
+// ── Output ceilings ──────────────────────────────────────────────────
+
+/** Bound one value for the run record (per-step + per-run budget); the full
+ *  serialized value goes to the spill sink. A run without `bounds` (persistence
+ *  off) keeps its raw value. */
+function boundForRun(state: RunState, value: unknown, ref: string, kind: "step" | "run"): unknown {
+  const bounds = state.bounds
+  if (!bounds || value === undefined) return value
+  const { limits } = bounds
+  const spent = state.outputBytes ?? 0
+  const r = boundOutput(value, ref, {
+    inlineBytes: kind === "run" ? limits.runOutputInlineBytes : limits.stepInlineBytes,
+    previewChars: limits.previewChars,
+    budgetLeft: kind === "run" ? limits.runOutputInlineBytes : Math.max(0, limits.runBudgetBytes - spent),
+  })
+  if (kind === "step") state.outputBytes = spent + r.spent
+  if (r.spill !== undefined) bounds.spill(ref, r.spill)
+  return r.stored
+}
+
+const clipForRun = (state: RunState, text: string): string =>
+  state.bounds ? clipError(text, state.bounds.limits.errorChars) : text
+
 // ── Background execution ─────────────────────────────────────────────
 
 async function executeRunWorkflow(
@@ -1320,7 +1511,7 @@ async function executeRunWorkflow(
   persist?: () => void,
   appRegistry?: Pick<AppRegistry, "getApp" | "listApps">,
   eventLog?: RunEventLog,
-  lease?: { ownerId: string; heartbeatIntervalMs: number; now: () => Date },
+  lease?: { ownerId: string; heartbeatIntervalMs: number; now: () => Date; onRenew?: (state: RunState) => void },
   runsRoot?: string,
 ): Promise<void> {
   // AIP-58 §2 owner liveness: renew this run's lease on a timer for as long
@@ -1331,7 +1522,7 @@ async function executeRunWorkflow(
   if (lease) {
     const renew = (): void => {
       state.run.lease = { ownerId: lease.ownerId, heartbeatAt: lease.now().toISOString() }
-      persist?.()
+      lease.onRenew?.(state)
     }
     renew()
     state.heartbeatTimer = setInterval(renew, lease.heartbeatIntervalMs)
@@ -1608,7 +1799,12 @@ async function executeRunWorkflow(
         for (const stage of state.run.stages) {
           const step = stage.steps.find((s) => s.label === ev.stepId)
           if (step) {
-            step.gateReport = { ok: ev.ok, exitCode: ev.exitCode, report: ev.report, attempt: ev.attempt }
+            step.gateReport = {
+              ok: ev.ok,
+              exitCode: ev.exitCode,
+              report: boundForRun(state, ev.report, stepOutputRef(step.label, "gate"), "step") as typeof ev.report,
+              attempt: ev.attempt,
+            }
             persist?.()
             break
           }
@@ -1698,7 +1894,7 @@ async function executeRunWorkflow(
             step.status = "done"
             delete step.phase
             step.endedAt = new Date().toISOString()
-            step.output = output
+            step.output = boundForRun(state, output, stepOutputRef(step.label), "step")
             if (cached) step.cached = true
             // Extract sessionId from output if present
             if (output && typeof output === "object" && "sessionId" in output) {
@@ -1833,7 +2029,7 @@ async function executeRunWorkflow(
     }
     state.run.status = "done"
     state.run.endedAt = new Date().toISOString()
-    if (runOutput !== undefined) state.run.output = runOutput
+    if (runOutput !== undefined) state.run.output = boundForRun(state, runOutput, RUN_OUTPUT_REF, "run")
 
     const sessionIds = fillStepStates(state.run.stages, state.stages, agents)
     if (sessionIds.length > 0) state.run.result = { sessionIds }
@@ -1886,7 +2082,7 @@ async function executeRunWorkflow(
       state.run.status = "cancelled"
       state.run.endedAt = endedAt
     } else {
-      const errMsg = err instanceof Error ? err.message : String(err)
+      const errMsg = clipForRun(state, err instanceof Error ? err.message : String(err))
       state.run.status = "failed"
       state.run.error = errMsg
       state.run.endedAt = new Date().toISOString()
@@ -2065,6 +2261,19 @@ export function createWorkflowRunner(opts: {
    *  don't alter any run's status (step progress, lease renewals). Status
    *  changes always flush at once. Default 2s; `0` writes on every change. */
   persistMinIntervalMs?: number
+  /** Output ceilings applied before a run record is persisted / kept in
+   *  memory (see {@link WorkflowOutputLimits}). Persisting runners only. */
+  outputLimits?: Partial<WorkflowOutputLimits>
+  /** Terminal runs kept as in-memory summaries: newest N … */
+  summaryMaxCount?: number
+  /** … and no older than this. Older runs stay on disk and are lazy-loaded
+   *  by `status()`. */
+  summaryMaxAgeMs?: number
+  /** Expire a parked approval older than this (ms) after a restart. 0 = never. */
+  approvalTtlMs?: number
+  /** Finished runs kept fully resident (count / age) before demotion. */
+  hotTerminalMax?: number
+  hotTerminalAgeMs?: number
   /** Clock override for lease timestamps AND `sweep()`'s "now" — tests only;
    *  defaults to `() => new Date()`. */
   now?: () => Date
@@ -2102,52 +2311,226 @@ export function createWorkflowRunner(opts: {
     })
   }
 
-  const runs = shouldPersist ? loadRuns(persistPath, runsRoot) : new Map<string, RunState>()
+  // ── Persistence: one file per run, dirty-only, asynchronous ─────────
+  //
+  // `<persistPath minus .json>/<runId>.jsonl` (see workflow-run-store.ts).
+  // Resident: active runs, parked-approval envelopes, the newest few finished
+  // runs (`runs`); everything else is a slim summary (`summaries`, count/age
+  // capped) and is lazy-loaded from its file on `status()`.
+  const outputLimits: WorkflowOutputLimits = { ...DEFAULT_OUTPUT_LIMITS, ...(opts.outputLimits ?? {}) }
+  const storeDir = runStoreDir(persistPath)
+  const summaryMaxCount = opts.summaryMaxCount ?? DEFAULT_SUMMARY_MAX_COUNT
+  const summaryMaxAgeMs = opts.summaryMaxAgeMs ?? DEFAULT_SUMMARY_MAX_AGE_MS
+  const approvalTtlMs = opts.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS
+  const hotTerminalMax = opts.hotTerminalMax ?? DEFAULT_HOT_TERMINAL_MAX
+  const hotTerminalAgeMs = opts.hotTerminalAgeMs ?? DEFAULT_HOT_TERMINAL_AGE_MS
 
-  // Every step transition calls `persist()`, and `saveRuns` rewrites the WHOLE
-  // runs file synchronously — with hundreds of retained runs that is hundreds
-  // of MB per call, enough to hog the event loop for minutes across a run (the
-  // lease heartbeat and the orphan sweep never get a turn). So: flush at once
-  // when any run's STATUS changed (a park, a terminal state — these must be
-  // durable immediately), otherwise coalesce into at most one write per
-  // `persistMinIntervalMs` with a trailing flush, and flush on process exit.
+  const loaded = shouldPersist
+    ? loadStore({
+        persistPath,
+        dir: storeDir,
+        runsRoot,
+        limits: outputLimits,
+        summaryMaxCount,
+        summaryMaxAgeMs,
+        approvalTtlMs,
+        nowMs: now().getTime(),
+      })
+    : { runs: new Map<string, RunState>(), summaries: new Map<string, WorkflowRun>() }
+  const runs = loaded.runs
+  const summaries = loaded.summaries
+  const hydrated = new Map<string, WorkflowRun>()
+
+  const isTerminalStatus = (status: WorkflowRunStatus): boolean => !isActiveStatus(status)
+
+  // Serial async write chain: spills, then run files, then lease sidecars,
+  // then compaction — a pointer never lands before its target.
+  let writeChain: Promise<void> = Promise.resolve()
+  const enqueue = (job: () => Promise<void> | void): void => {
+    writeChain = writeChain.then(job).catch((err: unknown) => {
+      console.warn(`[workflow-runner] persist failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+  const dirty = new Map<string, RunState>()
+  /** Run-file snapshots queued on the write chain and not yet on disk, so the
+   *  exit handler can land them synchronously. */
+  const pendingWrites = new Map<string, string>()
   const persistMinIntervalMs = opts.persistMinIntervalMs ?? DEFAULT_PERSIST_MIN_INTERVAL_MS
   let lastFlushAt = 0
-  let lastStatusSig = ""
   let trailingFlush: ReturnType<typeof setTimeout> | undefined
-  let dirty = false
-  const flushRuns = (): void => {
+
+  const spillSinkFor = (state: RunState) => (ref: string, text: string): void => {
+    const queue = state.spillQueue ?? (state.spillQueue = new Map())
+    queue.set(ref, text)
+    const runId = state.run.runId
+    enqueue(async () => {
+      try {
+        await writeSpill(runsRoot, runId, ref, text)
+      } finally {
+        queue.delete(ref)
+      }
+    })
+  }
+  const attachBounds = (state: RunState): void => {
+    if (shouldPersist) state.bounds = { limits: outputLimits, spill: spillSinkFor(state) }
+  }
+
+  /** Lease heartbeat: rewrite ONLY the run's tiny sidecar — never the run file. */
+  const writeLeaseSidecar = (state: RunState): void => {
+    if (!shouldPersist) return
+    const lease = state.run.lease
+    if (!lease) return
+    const runId = state.run.runId
+    enqueue(() => writeLeaseFile(storeDir, runId, { ownerId: lease.ownerId, heartbeatAt: lease.heartbeatAt }))
+  }
+
+  const demote = (state: RunState): void => {
+    runs.delete(state.run.runId)
+    summaries.delete(state.run.runId)
+    summaries.set(state.run.runId, slimRun(state.run))
+  }
+  const trimSummaries = (): void => {
+    const cutoff = summaryMaxAgeMs > 0 ? now().getTime() - summaryMaxAgeMs : Number.NEGATIVE_INFINITY
+    for (const [id, run] of summaries) {
+      if (summaries.size > summaryMaxCount || Date.parse(run.endedAt ?? run.startedAt) < cutoff) summaries.delete(id)
+      else break
+    }
+  }
+  /** Demote finished runs beyond the hot window. Runs on the write chain, i.e.
+   *  after the files it demotes have landed. */
+  const compactMemory = (): void => {
+    const nowMs = now().getTime()
+    const finished: RunState[] = []
+    for (const state of runs.values()) {
+      if (!isTerminalStatus(state.run.status) || dirty.has(state.run.runId)) continue
+      if (state.heartbeatTimer || state.agents || state.persistedStatus !== state.run.status) continue
+      finished.push(state)
+    }
+    finished.sort((a, b) => Date.parse(b.run.endedAt ?? b.run.startedAt) - Date.parse(a.run.endedAt ?? a.run.startedAt))
+    finished.forEach((state, i) => {
+      const age = nowMs - Date.parse(state.run.endedAt ?? state.run.startedAt)
+      if (i >= hotTerminalMax || age > hotTerminalAgeMs) demote(state)
+    })
+    trimSummaries()
+  }
+
+  const flushDirty = (): void => {
     if (trailingFlush) {
       clearTimeout(trailingFlush)
       trailingFlush = undefined
     }
-    dirty = false
+    if (dirty.size === 0) return
     lastFlushAt = Date.now()
-    saveRuns(runs, persistPath)
+    const batch = [...dirty.values()]
+    dirty.clear()
+    for (const state of batch) {
+      const run = state.run
+      const file = runFilePath(storeDir, run.runId)
+      if (file === undefined) continue
+      // Serialized NOW (a consistent snapshot, bounded in size); written later.
+      const text = serializeRunFile(run)
+      state.persistedStatus = run.status
+      const parkedOrDone = run.status !== "running"
+      pendingWrites.set(file, text)
+      enqueue(async () => {
+        try {
+          await writeFileAtomic(file, storeDir, text)
+          if (parkedOrDone) await removeLeaseFile(storeDir, run.runId)
+        } finally {
+          if (pendingWrites.get(file) === text) pendingWrites.delete(file)
+        }
+      })
+    }
+    enqueue(compactMemory)
   }
-  const statusSig = (): string => {
-    let sig = ""
-    for (const st of runs.values()) sig += `${st.run.runId}:${st.run.status}|`
-    return sig
+
+  /** Make sure a record that was loaded as a slim envelope is the full one
+   *  before anything mutates (and re-persists) it. */
+  const ensureFull = (state: RunState): void => {
+    if (!state.envelope) return
+    state.envelope = false
+    hydrated.delete(state.run.runId)
+    const file = runFilePath(storeDir, state.run.runId)
+    const full = file !== undefined ? readRunFull(file) : undefined
+    if (full) state.run = full
   }
-  if (shouldPersist && persistMinIntervalMs > 0) {
+
+  const markDirty = (state: RunState): void => {
+    if (!shouldPersist) return
+    ensureFull(state)
+    dirty.set(state.run.runId, state)
+    if (persistMinIntervalMs <= 0 || state.persistedStatus !== state.run.status) return flushDirty()
+    const wait = lastFlushAt + persistMinIntervalMs - Date.now()
+    if (wait <= 0) return flushDirty()
+    if (!trailingFlush) {
+      trailingFlush = setTimeout(flushDirty, wait)
+      trailingFlush.unref?.()
+    }
+  }
+
+  if (shouldPersist) {
+    // Last-chance synchronous drain: dirty runs and any spill still queued.
     process.once("exit", () => {
-      if (dirty) flushRuns()
+      try {
+        for (const [file, text] of pendingWrites) writeFileAtomicSync(file, storeDir, text)
+        for (const state of dirty.values()) {
+          const file = runFilePath(storeDir, state.run.runId)
+          if (file !== undefined) writeFileAtomicSync(file, storeDir, serializeRunFile(state.run))
+        }
+        for (const state of runs.values()) {
+          for (const [ref, text] of state.spillQueue ?? []) {
+            const target = spillFilePath(runsRoot, state.run.runId, ref)
+            if (target !== undefined) writeFileAtomicSync(target, dirname(target), text)
+          }
+        }
+      } catch {
+        // Best-effort at exit.
+      }
     })
   }
-  const persist = (): void => {
-    if (!shouldPersist) return
-    if (persistMinIntervalMs <= 0) return flushRuns()
-    const sig = statusSig()
-    const wait = lastFlushAt + persistMinIntervalMs - Date.now()
-    if (sig !== lastStatusSig || wait <= 0) {
-      lastStatusSig = sig
-      return flushRuns()
+
+  const loadFull = (runId: string): WorkflowRun | undefined => {
+    const state = runs.get(runId)
+    if (state && !state.envelope) return state.run
+    const slim = state?.run ?? summaries.get(runId)
+    if (!shouldPersist) return slim
+    const cached = hydrated.get(runId)
+    if (cached) {
+      hydrated.delete(runId)
+      hydrated.set(runId, cached)
+      return cached
     }
-    dirty = true
-    if (!trailingFlush) {
-      trailingFlush = setTimeout(flushRuns, wait)
-      trailingFlush.unref?.()
+    const file = runFilePath(storeDir, runId)
+    const full = file !== undefined ? readRunFull(file) : undefined
+    if (!full) return slim
+    hydrated.set(runId, full)
+    while (hydrated.size > HYDRATED_CACHE_MAX) hydrated.delete(hydrated.keys().next().value as string)
+    return full
+  }
+  const knowsRun = (runId: string): boolean => {
+    if (runs.has(runId) || summaries.has(runId)) return true
+    const file = shouldPersist ? runFilePath(storeDir, runId) : undefined
+    return file !== undefined && existsSync(file)
+  }
+  /** Re-attach every spilled output to a (cloned) run for `status full:true`. */
+  const resolveRunOutputs = (run: WorkflowRun): WorkflowRun => {
+    const resolve = (value: unknown): unknown => {
+      if (!isBoundedOutputRef(value)) return value
+      return readSpillValue(runsRoot, run.runId, value.ref, RESOLVE_OUTPUT_MAX_BYTES)?.value ?? value
+    }
+    return {
+      ...run,
+      ...(run.output !== undefined ? { output: resolve(run.output) } : {}),
+      stages: run.stages.map(stage => ({
+        ...stage,
+        steps: stage.steps.map(step => ({
+          ...step,
+          ...(step.output !== undefined ? { output: resolve(step.output) } : {}),
+          ...(step.gateReport !== undefined
+            ? { gateReport: { ...step.gateReport, report: resolve(step.gateReport.report) } }
+            : {}),
+        })),
+      })),
     }
   }
 
@@ -2164,7 +2547,7 @@ export function createWorkflowRunner(opts: {
   // other process that could ever observe a lease, and skipping the
   // heartbeat timer entirely keeps a non-persisting caller (most unit
   // tests) free of a recurring interval it never asked for.
-  const leaseOpts = shouldPersist ? { ownerId, heartbeatIntervalMs, now } : undefined
+  const leaseOpts = shouldPersist ? { ownerId, heartbeatIntervalMs, now, onRenew: writeLeaseSidecar } : undefined
 
   // AIP-58 §9 `run.requestInput` (the `run_request_input` MCP tool): a
   // sessionId → (runId, stepId, host) index spanning every run this runner
@@ -2176,28 +2559,36 @@ export function createWorkflowRunner(opts: {
 
   // ── Reload re-registration (WP-S restart safety) ────────────────────
   //
-  // A run parked at "awaiting-approval" survives the restart with its
-  // `awaitingApproval` record intact. The live approve hook died with the
-  // old process, so re-register a pending item here: a decision still
-  // resolves (emit + ledger `approval` event, exactly once — the live hook
-  // is gone, so no double write), but the run itself can't resume execution
-  // and is marked failed with a clear reason.
+  // A run parked at "awaiting-approval" survives the restart as a slim
+  // envelope. The live approve hook died with the old process, so re-register
+  // a pending item here: a decision still resolves (emit + ledger `approval`
+  // event, exactly once — the live hook is gone, so no double write), but the
+  // run itself can't resume execution and is marked failed with a clear
+  // reason (the full record is re-read from its file first). An approval left
+  // unanswered past `approvalTtlMs` is expired by `sweep()` the same way,
+  // with `errorCode: "approval-expired"`.
   const reRegisterReloadedApprovals = (): void => {
     for (const state of runs.values()) {
-      const run = state.run
-      const aa = run.awaitingApproval
-      if (run.status !== "awaiting-approval" || !aa) continue
-      const resolveAfterRestart = (decision: ApprovalDecision): void => {
+      const aa = state.run.awaitingApproval
+      if (state.run.status !== "awaiting-approval" || !aa) continue
+      const settle = (decision: ApprovalDecision, expired: boolean): void => {
         // Only the FIRST decision wins — the pending entry is cleared before
         // anything else runs.
         if (state.pendingApproval?.approvalId !== aa.approvalId) return
         state.pendingApproval = undefined
-        run.awaitingApproval = undefined
-        run.status = "failed"
-        run.error =
-          "approval resolved after daemon restart — the run's execution could not resume"
-        run.endedAt = run.endedAt ?? new Date().toISOString()
-        persist()
+        ensureFull(state)
+        const run = state.run
+        if (expired) {
+          expireApprovalRecord(run, now().getTime(), approvalTtlMs)
+          state.eventLog?.append({ type: "run.failed", data: { code: "approval-expired", message: run.error } })
+        } else {
+          run.awaitingApproval = undefined
+          run.status = "failed"
+          run.error =
+            "approval resolved after daemon restart — the run's execution could not resume"
+          run.endedAt = run.endedAt ?? new Date().toISOString()
+        }
+        markDirty(state)
         sessionEvents.emit({
           type: "workflow:approval-resolved",
           runId: run.runId,
@@ -2231,7 +2622,12 @@ export function createWorkflowRunner(opts: {
           }
         }
       }
-      state.pendingApproval = { approvalId: aa.approvalId, resolve: resolveAfterRestart }
+      state.eventLog = state.eventLog ?? newEventLog(state.run.runId)
+      state.pendingApproval = {
+        approvalId: aa.approvalId,
+        resolve: decision => settle(decision, false),
+        expire: () => settle({ approved: false, who: "timeout", note: "approval expired" }, true),
+      }
     }
   }
   reRegisterReloadedApprovals()
@@ -2239,7 +2635,7 @@ export function createWorkflowRunner(opts: {
   // ── Reload re-registration (AIP-15 rule 7, suspend points) ───────────
   //
   // A run parked at a `kind: "suspend"` step survives the restart with its
-  // durable `awaitingSuspend` record intact (loadRuns keeps it suspended).
+  // durable `awaitingSuspend` record intact (loadStore keeps it suspended).
   // The live resume hook died with the old process, so re-register the
   // pending entry here: a matching resume still resolves (event emitted
   // exactly once), but the run's execution can't resume and it is marked
@@ -2247,18 +2643,19 @@ export function createWorkflowRunner(opts: {
   // failure.
   const reRegisterReloadedSuspends = (): void => {
     for (const state of runs.values()) {
-      const run = state.run
-      const as = run.awaitingSuspend
-      if (run.status !== "awaiting-input" || !as) continue
+      const as = state.run.awaitingSuspend
+      if (state.run.status !== "awaiting-input" || !as) continue
       const resolveAfterRestart = (_payload: unknown): void => {
         if (state.pendingSuspend?.stepId !== as.stepId) return
         state.pendingSuspend = undefined
+        ensureFull(state)
+        const run = state.run
         run.awaitingSuspend = undefined
         run.status = "failed"
         run.error =
           "suspend resolved after daemon restart — the run's execution could not resume"
         run.endedAt = run.endedAt ?? new Date().toISOString()
-        persist()
+        markDirty(state)
         sessionEvents.emit({
           type: "workflow:suspend-resumed",
           runId: run.runId,
@@ -2284,7 +2681,7 @@ export function createWorkflowRunner(opts: {
     milestone: "succeeded" | "failed" | "approval" | "input",
     detail: { text: string; data?: Record<string, unknown> },
   ): void => {
-    const run = runs.get(runId)?.run
+    const run = runs.get(runId)?.run ?? summaries.get(runId)
     const to = run?.callerSessionId
     if (!run || !to) return
     try {
@@ -2306,7 +2703,7 @@ export function createWorkflowRunner(opts: {
   const clip = (v: string, max = 500): string => (v.length > max ? `${v.slice(0, max)}…` : v)
 
   const notifyCallerOfOutcome = (runId: string): void => {
-    const run = runs.get(runId)?.run
+    const run = runs.get(runId)?.run ?? summaries.get(runId)
     if (!run || !run.callerSessionId) return
     if (run.status === "done") {
       notifyCaller(runId, "succeeded", {
@@ -2385,6 +2782,8 @@ export function createWorkflowRunner(opts: {
         ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      attachBounds(state)
+      const persist = (): void => markDirty(state)
       persist()
       eventLog?.append({ type: "run.created", data: { workflowId: input.workflowId } })
       eventLog?.append({ type: "run.started", data: {} })
@@ -2490,8 +2889,9 @@ export function createWorkflowRunner(opts: {
           }),
         }
         const eventLog = newEventLog(runId)
-        runs.set(runId, { run, cancelled: false, abort: new AbortController(), stages: [], ...(eventLog !== undefined ? { eventLog } : {}) })
-        persist()
+        const rejected: RunState = { run, cancelled: false, abort: new AbortController(), stages: [], ...(eventLog !== undefined ? { eventLog } : {}) }
+        runs.set(runId, rejected)
+        markDirty(rejected)
         // AIP-58 §3/V1: rejected before dispatch — `run.created` then
         // `run.failed` ONLY. `run.started` MUST NOT appear; the run never
         // entered the running state.
@@ -2559,6 +2959,8 @@ export function createWorkflowRunner(opts: {
         ...(args.workspaceSlug !== undefined ? { workspaceSlug: args.workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      attachBounds(state)
+      const persist = (): void => markDirty(state)
       persist()
       eventLog?.append({ type: "run.created", data: { workflowId: handle.id } })
       eventLog?.append({ type: "run.started", data: {} })
@@ -2631,11 +3033,19 @@ export function createWorkflowRunner(opts: {
       return run
     },
 
-    status: (runId) => runs.get(runId)?.run,
+    status: (runId, statusOpts) => {
+      const run = loadFull(runId)
+      return run && statusOpts?.resolveOutputs ? resolveRunOutputs(run) : run
+    },
 
-    list: () => Array.from(runs.values()).map(s => s.run),
+    list: () => [...summaries.values(), ...Array.from(runs.values(), s => s.run)],
 
-    events: (runId, sinceSeq) => (runs.has(runId) ? readRunEvents(runId, runsRoot, sinceSeq) : undefined),
+    events: (runId, sinceSeq) => (knowsRun(runId) ? readRunEvents(runId, runsRoot, sinceSeq) : undefined),
+
+    flush: async () => {
+      flushDirty()
+      await writeChain
+    },
 
     // AIP-58 §2 owner liveness — see the interface doc comment. A run this
     // SAME process is actively driving always has a fresh lease (the
@@ -2645,6 +3055,15 @@ export function createWorkflowRunner(opts: {
     sweep: (sweepNow) => {
       const nowMs = (sweepNow ?? now()).getTime()
       const orphaned: string[] = []
+      const expiredApprovals: string[] = []
+      if (approvalTtlMs > 0) {
+        for (const state of [...runs.values()]) {
+          if (!state.pendingApproval?.expire || state.run.status !== "awaiting-approval") continue
+          if (nowMs - approvalRequestedMs(state.run) <= approvalTtlMs) continue
+          expiredApprovals.push(state.run.runId)
+          state.pendingApproval.expire()
+        }
+      }
       for (const state of runs.values()) {
         const run = state.run
         if (run.status !== "running" || !run.lease) continue
@@ -2665,11 +3084,12 @@ export function createWorkflowRunner(opts: {
         run.errorCode = "orphaned"
         run.endedAt = new Date(nowMs).toISOString()
         run.lease = undefined
-        persist()
+        markDirty(state)
         state.eventLog?.append({ type: "run.failed", data: { code: "orphaned", message: run.error } })
         orphaned.push(run.runId)
       }
-      return { orphaned }
+      if (shouldPersist) enqueue(compactMemory)
+      return { orphaned, ...(expiredApprovals.length > 0 ? { expiredApprovals } : {}) }
     },
 
     // Fulfils the promise `onEscalate` (createOnEscalate) is awaiting for a
@@ -2785,19 +3205,19 @@ export function createWorkflowRunner(opts: {
         console.warn(`[workflow-runner] releasing step sessions for cancelled run ${runId} failed:`, err)
       })
       if (state.run.status === "running" || state.run.status === "awaiting-input" || state.run.status === "awaiting-approval") {
+        ensureFull(state)
         state.run.status = "cancelled"
         state.run.endedAt = new Date().toISOString()
-        persist()
+        markDirty(state)
         state.eventLog?.append({ type: "run.cancelled", data: {} })
       }
     },
 
     retry: async (originalRunId, retryInput) => {
-      const origState = runs.get(originalRunId)
-      if (!origState) {
+      const orig = loadFull(originalRunId)
+      if (!orig) {
         return { ok: false, error: "run_not_found", message: `no workflow run "${originalRunId}"` }
       }
-      const orig = origState.run
       if (orig.status !== "failed" && orig.status !== "cancelled") {
         const label = orig.status === "done" ? "succeeded" : orig.status
         return {
@@ -2864,7 +3284,7 @@ export function createWorkflowRunner(opts: {
         }
       }
 
-      const rootRunId = resolveLineageRoot(runs, originalRunId)
+      const rootRunId = resolveLineageRoot(id => (runs.get(id)?.run ?? summaries.get(id) ?? loadFull(id))?.retryOf, originalRunId)
       const runId = `wfrun_${randomUUID()}`
       const workspace = workspaceRunsRoot()
       if (workspace !== undefined) {
@@ -2924,6 +3344,8 @@ export function createWorkflowRunner(opts: {
         ...(orig.workspaceSlug !== undefined ? { workspaceSlug: orig.workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      attachBounds(state)
+      const persist = (): void => markDirty(state)
       persist()
       // AIP-58 §6 — the vector's own worked example (V7) names the linkage
       // on `run.created`'s `data` (`replayOf`); this host's equivalent field
@@ -2991,11 +3413,10 @@ export function createWorkflowRunner(opts: {
     },
 
     publish: async (runId, input) => {
-      const state = runs.get(runId)
-      if (!state) {
+      const run = loadFull(runId)
+      if (!run) {
         return { ok: false, error: "run_not_found", message: `no run '${runId}'` }
       }
-      const run = state.run
       // AIP-58 §4 — the hard invariant: publishing mid-run, or a run that
       // went on to fail/cancel, would resurrect the exact race this
       // deferred-publish model exists to close.
@@ -3040,18 +3461,37 @@ export function createWorkflowRunner(opts: {
           message: `failed to read/copy artifact file: ${err instanceof Error ? err.message : String(err)}`,
         }
       }
-      state.eventLog?.append({ type: "run.published", data: { artifactKey: input.artifactKey, to: destAbs } })
+      ;(runs.get(runId)?.eventLog ?? newEventLog(runId))?.append({ type: "run.published", data: { artifactKey: input.artifactKey, to: destAbs } })
       return { ok: true, publishedPath: destAbs }
     },
 
     readArtifact: async (runId, key) => {
-      const state = runs.get(runId)
-      if (!state) return { ok: false, error: "run_not_found", message: `no run '${runId}'` }
-      const entry = state.run.artifacts?.find((a) => a.key === key)
-      if (!entry || state.run.workspace === undefined) {
+      const run = loadFull(runId)
+      if (!run) return { ok: false, error: "run_not_found", message: `no run '${runId}'` }
+      if (key === RUN_OUTPUT_REF || key.startsWith(STEP_OUTPUT_REF_PREFIX)) {
+        // A bounded step/run output: the full value was spilled to a per-run file.
+        const spill = shouldPersist ? spillFilePath(runsRoot, runId, key) : undefined
+        if (spill === undefined || !existsSync(spill)) {
+          return { ok: false, error: "artifact_not_found", message: `run '${runId}' has no stored output '${key}'` }
+        }
+        const bytes = await readFile(spill)
+        const stepId = key === RUN_OUTPUT_REF ? "" : key.slice(STEP_OUTPUT_REF_PREFIX.length)
+        const outputEntry: ArtifactEntry = {
+          key,
+          path: spillRelativePath(runsRoot, runId, key) ?? "",
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          size: bytes.length,
+          stepId,
+          contentType: "application/json",
+        }
+        const clipped = bytes.length > MAX_READ_ARTIFACT_BYTES
+        return { ok: true, entry: outputEntry, content: clipped ? bytes.subarray(0, MAX_READ_ARTIFACT_BYTES) : bytes, truncated: clipped }
+      }
+      const entry = run.artifacts?.find((a) => a.key === key)
+      if (!entry || run.workspace === undefined) {
         return { ok: false, error: "artifact_not_found", message: `run '${runId}' has no artifact keyed '${key}'` }
       }
-      const abs = join(state.run.workspace, entry.path)
+      const abs = join(run.workspace, entry.path)
       if (!existsSync(abs)) {
         return { ok: false, error: "file_missing", message: `artifact '${key}' is recorded but its file is gone (${abs})` }
       }

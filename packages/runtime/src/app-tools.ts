@@ -901,7 +901,8 @@ export async function performAppCall(
         }
       }
       appCallLog(input, durationMs, true)
-      return { ok: true, output: status.output, runId: run.runId, durationMs }
+      const output = runner.status(run.runId, { resolveOutputs: true })?.output ?? status.output
+      return { ok: true, output, runId: run.runId, durationMs }
     }
     if (Date.now() - startedAt >= timeoutMs) {
       const durationMs = Date.now() - startedAt
@@ -2179,7 +2180,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
               workflowRunStatuses: ownWorkflowRunStatuses,
             })
       const reconciledStatus = reconciled.status
-      const workflowRuns = input.full === true ? allWorkflowRuns : allWorkflowRuns.map(compactWorkflowRunStatus)
+      const workflowRuns =
+        input.full === true && workflowRunner
+          ? allWorkflowRuns.map(r => workflowRunner.status(r.runId) ?? r)
+          : allWorkflowRuns.map(compactWorkflowRunStatus)
       // WP-S: parked human approvals across the app's workflow runs — what a
       // UI renders as the permissions inbox for this app.
       const awaitingApprovals = allWorkflowRuns
