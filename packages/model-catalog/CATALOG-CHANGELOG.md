@@ -307,3 +307,18 @@ for that.
 
 ### llm:openai
 - Added: gpt-6.1-sol-pro:batch, gpt-6.1-sol:batch
+
+## 2026-10-10
+
+### llm:openrouter
+- Removed: qwen/qwen-plus-2025-07-28, qwen/qwen3-235b-a22b, qwen/qwen3-30b-a3b-thinking-2507, qwen/qwen3-8b, qwen/qwen3-coder-plus, qwen/qwen3-max, qwen/qwen3-max-thinking, qwen/qwen3-vl-235b-a22b-thinking, qwen/qwen3-vl-32b-instruct, qwen/qwen3-vl-8b-thinking, qwen/qwen3.6-max-preview
+
+### llm:opencode-go
+- Removed: opencode-go/grok-4.5, opencode-go/kimi-k2.6, opencode-go/qwen3.6-plus, opencode-go/qwen3.7-max, opencode-go/space-bunny-free
+
+### llm:opencode-zen
+- Removed: opencode/claude-3-5-haiku, opencode/claude-opus-4-1, opencode/deepseek-v4-flash-free, opencode/fledge-alpha-free, opencode/gemini-3-pro, opencode/glm-4.6, opencode/glm-4.7, opencode/glm-4.7-free, opencode/glm-5-free, opencode/grok-code, opencode/hy3-free, opencode/hy3-preview-free, opencode/kimi-k2, opencode/kimi-k2-thinking, opencode/kimi-k2.5-free, opencode/laguna-s-2.1-free, opencode/ling-2.6-flash-free, opencode/ling-3.0-flash-free, opencode/ling-3.0-tiny-free, opencode/longcat-2.0-free, opencode/mimo-v2-flash-free, opencode/mimo-v2-omni-free, opencode/mimo-v2-pro-free, opencode/mimo-v2.5-free, opencode/minimax-m2.1, opencode/minimax-m2.1-free, opencode/minimax-m2.5-free, opencode/minimax-m3-free, opencode/muse-spark-1.2-contributor-free, opencode/nemotron-3-super-free, opencode/north-mini-code-free, opencode/qwen3-coder, opencode/qwen3.6-plus-free, opencode/ring-2.6-1t-free, opencode/trinity-large-preview-free, opencode/x-preview-f-free
+
+### llm:huggingface
+- Added: zai-org/GLM-4.5, zai-org/GLM-4.6-FP8
+- Removed: zai-org/GLM-5.1-FP8

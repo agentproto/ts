@@ -3,7 +3,7 @@
   "data": [
     {
       "created": 1790257664,
-      "id": "kimi-k2.7-code-highspeed",
+      "id": "kimi-k2.6",
       "object": "model",
       "owned_by": "moonshot",
       "permission": [
@@ -25,7 +25,7 @@
     },
     {
       "created": 1790257664,
-      "id": "kimi-k2.7-code",
+      "id": "kimi-k2.7-code-highspeed",
       "object": "model",
       "owned_by": "moonshot",
       "permission": [
@@ -89,7 +89,7 @@
     },
     {
       "created": 1790257664,
-      "id": "kimi-k2.6",
+      "id": "kimi-k2.7-code",
       "object": "model",
       "owned_by": "moonshot",
       "permission": [
