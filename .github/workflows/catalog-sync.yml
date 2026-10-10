@@ -89,6 +89,7 @@ jobs:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
         # Invoke the built entrypoint directly rather than the `catalog-sync`
         # bin: that bin points at `./dist/bin.mjs`, which does not exist when
         # `pnpm install --frozen-lockfile` runs on a fresh checkout, so pnpm
