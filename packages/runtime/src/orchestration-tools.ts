@@ -1195,13 +1195,16 @@ export function registerOrchestrationTools(
         "what an earlier step produced (e.g. via `agent_output` on that sessionId). " +
         "COMPACT BY DEFAULT (AIP-58 §9): omits each step's raw `output` and a gate " +
         "step's full `report` body — pass `full: true` for everything. A `done` run's " +
-        "own final `output` (the workflow's declared result) is always included.",
+        "own final `output` (the workflow's declared result) is always included. " +
+        "Stored outputs are bounded: a step/run output over the daemon's ceiling is kept as " +
+        "`{truncated, bytes, preview, ref}` and `full: true` resolves it back to the full " +
+        "value (or fetch it with `workflow_artifact_get` using the `ref` as the key).",
       {
         runId: z.string().describe("Run id returned by `workflow_start`."),
         full: z.boolean().optional().describe("Include step outputs and full gate-report bodies. Defaults to false (compact)."),
       },
       async input => {
-        const run = workflowRunner.status(input.runId)
+        const run = workflowRunner.status(input.runId, input.full === true ? { resolveOutputs: true } : undefined)
         if (!run) {
           return {
             content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
@@ -1576,7 +1579,8 @@ export function registerOrchestrationTools(
 
     registerBuiltinTool<WorkflowListInput, WorkflowRun[]>(server, {
       id: "workflow_list",
-      description: "List all workflow runs (running, done, failed, cancelled). " +
+      description: "List workflow runs (running, done, failed, cancelled) — active runs plus the " +
+        "newest finished ones (older history is reachable by runId through `workflow_status`). " +
         "COMPACT BY DEFAULT: each entry is a slim projection (runId/" +
         "workflowId/status/startedAt/endedAt/error/awaitingApproval) — the " +
         "full per-stage step detail is behind `full: true` / `compact: false`.",

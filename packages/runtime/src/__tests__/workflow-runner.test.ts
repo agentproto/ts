@@ -8,6 +8,7 @@ import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createWorkflowRunner } from "../workflow-runner.js"
+import { runStoreDir, runFilePath, readRunFull } from "../workflow-run-store.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createAppRegistry } from "../app-registry.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
@@ -669,10 +670,10 @@ describe("WorkflowRunner persistence", () => {
 
     const run = await runner.start({ workflowId: "persist-test", stages: [{ steps: [{ label: "s", adapter: "mock" }] }] })
 
-    expect(existsSync(persistPath)).toBe(true)
-    const raw = readFileSync(persistPath, "utf8")
-    const parsed = JSON.parse(raw) as Array<{ runId: string }>
-    expect(parsed.some(r => r.runId === run.runId)).toBe(true)
+    await runner.flush()
+    const file = runFilePath(runStoreDir(persistPath), run.runId)!
+    expect(existsSync(file)).toBe(true)
+    expect(readRunFull(file)?.runId).toBe(run.runId)
   })
 
   it("loads persisted runs on init", async () => {
@@ -763,9 +764,10 @@ describe("WorkflowRunner persistence", () => {
     expect(s?.stages[0]?.status).toBe("cancelled")
 
     // Persisted immediately, the same way the host-interrupted correction is.
-    const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{ stages: Array<{ status: string; steps: Array<{ status: string }> }> }>
-    expect(persisted[0]?.stages[0]?.steps[0]?.status).toBe("cancelled")
-    expect(persisted[0]?.stages[0]?.status).toBe("cancelled")
+    await runner.flush()
+    const persisted = readRunFull(runFilePath(runStoreDir(persistPath), "wfrun_stuckcancel1")!)
+    expect(persisted?.stages[0]?.steps[0]?.status).toBe("cancelled")
+    expect(persisted?.stages[0]?.status).toBe("cancelled")
   })
 
   it("F45: a cancelled run's stage stays `failed` if one of its steps genuinely failed before the cancel landed", async () => {
