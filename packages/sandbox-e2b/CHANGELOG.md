@@ -1,5 +1,20 @@
 # @agentproto/sandbox-e2b
 
+## 0.6.0
+
+### Minor Changes
+
+- fdb7e74: Add `sandbox_exec` MCP tool for sandbox command execution
+
+### Patch Changes
+
+- d8142d1: The stable `agentproto-workstation` e2b template now bakes CLI 1.16.0 (adapters opencode 1.6.8, hermes 0.4.34, mastra-agent 0.7.29), so stable boots no longer reinstall the CLI on every start.
+- 35fffc9: Pin the workstation template to @agentproto/cli 1.16.0 and record the dev template rebake.
+- 35fffc9: Regenerate workstation template pins (cli 1.16.0, refreshed adapter and opencode-ai versions) and the derived baked metadata via `sync-templates`. No API change.
+- ecb70c1: sandbox_exec on e2b no longer kills the command after e2b's 60-second default; an omitted timeoutMs now runs as long as the box lives.
+- Updated dependencies [fdb7e74]
+  - @agentproto/sandbox@0.9.0
+
 ## 0.5.17
 
 ### Patch Changes

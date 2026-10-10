@@ -1,5 +1,11 @@
 # @agentproto/egress
 
+## 0.1.15
+
+### Patch Changes
+
+- @agentproto/secrets@2.0.1
+
 ## 0.1.14
 
 ### Patch Changes

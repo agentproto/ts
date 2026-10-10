@@ -1,5 +1,12 @@
 # @agentproto/app-kit
 
+## 1.7.2
+
+### Patch Changes
+
+- Updated dependencies [86f43d7]
+  - @agentproto/workflow-loader@0.2.6
+
 ## 1.7.1
 
 ### Patch Changes

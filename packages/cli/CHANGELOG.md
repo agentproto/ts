@@ -1,5 +1,41 @@
 # @agentproto/cli
 
+## 1.17.0
+
+### Minor Changes
+
+- 6dec0d4: Let Claude Desktop / `claude` CLI sessions the daemon did not spawn own an AIP-46 inbox. An authenticated `/mcp` request whose `callerSessionId` is unknown and which carries `?host=<label>` now registers an `external` session (no process; alive for `daemon.externalSessionLivenessMs`, default 30 min, after its last MCP request or inbox poll), so `sentinel_watch`, `session_follow` and workflow notifications can deliver to it. `workflow_start` / `workflow_run_file` record the calling session and post one inbox item on run succeeded, run failed and approval/input suspension. New `agentproto hook inbox` Claude Code hook injects unread inbox items as untrusted `additionalContext` and acks them.
+- 00fed67: Generalize opencode console workspaces into provider-agnostic sub-accounts. An auth profile can pin `subaccount: { kind, id, name? }` (an org / workspace / project of its account); a registry in `@agentproto/auth` (`registerSubaccountProvider`, `SubaccountProvider` with `list(account)` / `resolve(profile)`) applies the pin at spawn, so the runtime and auth packages no longer name any vendor. The opencode console implementation moved from `@agentproto/runtime` to `@agentproto/adapter-opencode` and is registered by the CLI at start-up. New `agentproto auth subaccounts list <profile|account> [--create [--prefix]]` and `auth profile create --subaccount <kind>:<id>`; `auth profile opencode-orgs` stays as a deprecated alias and legacy `source: "opencode-console:<orgId>"` profiles are migrated on read. Usage-limit failures name the profile and sub-account. `@agentproto/runtime` drops the `./opencode-console-source` export added by #1831 (never published in a release); use `@agentproto/adapter-opencode` instead. Consumers of `@agentproto/auth` outside the CLI must call `registerSubaccountProvider` before resolving or validating sub-account profiles (including legacy `opencode-console:` sources). `@agentproto/driver-agent-cli` honours `isolateDataHome: false` from a provider.
+- c982376: opencode console workspaces (orgs) are now distinct, truthful wallets. opencode merges the active console org's provider block over every other config on start, so each spawn billed the active org whatever auth profile it named. A new source-backed api-key profile (`source: "opencode-console:<orgId>"`, no stored token) reads the console session read-only from `opencode.db`, fetches that org's provider block and injects the bearer plus block into the spawn; the new driver field `credentialDataHome` (opencode: `XDG_DATA_HOME`) runs an engaged-credential spawn in a login-less data dir, which also makes a plain api-key profile really bill its own key. An expired console session fails loud (never refreshed: the refresh token rotates). `agentproto auth profile opencode-orgs [--create] [--prefix <p>]` lists the console orgs and creates one profile per org. A `Go usage limit exceeded` failure (error event, session output, turn error) now names the wallet profile that hit it. Session usage and transcripts are read from the isolated opencode db when it exists.
+- 00fed67: Generalize opencode console workspaces into provider-agnostic sub-accounts. An auth profile can pin `subaccount: { kind, id, name? }` (an org / workspace / project of its account); a registry in `@agentproto/auth` (`registerSubaccountProvider`, `SubaccountProvider` with `list(account)` / `resolve(profile)`) applies the pin at spawn, so the runtime and auth packages no longer name any vendor. The opencode console implementation moved from `@agentproto/runtime` to `@agentproto/adapter-opencode` and is registered by the CLI at start-up. New `agentproto auth subaccounts list <profile|account> [--create [--prefix]]` and `auth profile create --subaccount <kind>:<id>`; `auth profile opencode-orgs` stays as a deprecated alias and legacy `source: "opencode-console:<orgId>"` profiles are migrated on read. Usage-limit failures name the profile and sub-account. `@agentproto/runtime` drops the `./opencode-console-source` export added by #1831; it was never published (absent from 5.15.0), so use `@agentproto/adapter-opencode`. Consumers of `@agentproto/auth` outside the CLI must call `registerSubaccountProvider` before resolving or validating sub-account profiles (including legacy `opencode-console:` sources). `@agentproto/driver-agent-cli` honours `isolateDataHome: false` from a provider.
+
+### Patch Changes
+
+- Updated dependencies [5c1b40d]
+- Updated dependencies [120cbbc]
+- Updated dependencies [d8142d1]
+- Updated dependencies [35fffc9]
+- Updated dependencies [00fed67]
+- Updated dependencies [c982376]
+- Updated dependencies [00fed67]
+- Updated dependencies [35fffc9]
+- Updated dependencies [ecb70c1]
+- Updated dependencies [fdb7e74]
+- Updated dependencies [86f43d7]
+  - @agentproto/model-catalog@0.12.3
+  - @agentproto/sandbox-e2b@0.6.0
+  - @agentproto/auth@1.2.0
+  - @agentproto/driver-agent-cli@2.10.0
+  - @agentproto/apps@0.21.2
+  - @agentproto/workflow-loader@0.2.6
+  - @agentproto/llm-endpoint@0.11.8
+  - @agentproto/secrets@2.0.1
+  - @agentproto/worktree@0.14.6
+  - @agentproto/sandbox-box@0.2.28
+  - @agentproto/app-kit@1.7.2
+  - @agentproto/acp@0.10.0
+  - @agentproto/pairing-host@0.2.6
+
 ## 1.16.0
 
 ### Minor Changes
