@@ -47,6 +47,20 @@ function loadVector(file: string): { expected: { events: string[] } } {
   return JSON.parse(readFileSync(join(VECTORS_DIR, file), "utf8")) as { expected: { events: string[] } }
 }
 
+
+// Runners persist asynchronously (temp file + rename); a test that removes
+// its tmp dir before those writes land fails with ENOTEMPTY. Every runner is
+// tracked so afterEach can drain it first.
+const liveRunners: Array<ReturnType<typeof createWorkflowRunner>> = []
+function createRunner(...args: Parameters<typeof createWorkflowRunner>): ReturnType<typeof createWorkflowRunner> {
+  const runner = createWorkflowRunner(...args)
+  liveRunners.push(runner)
+  return runner
+}
+async function drainRunners(): Promise<void> {
+  await Promise.all(liveRunners.splice(0).map(r => r.flush()))
+}
+
 function makeMockRegistry(overrides: Partial<SessionsRegistry> = {}): SessionsRegistry {
   const descriptors = new Map<string, SessionDescriptor>()
   return {
@@ -95,7 +109,8 @@ describe("AIP-58 §5 event log (host-level, vectors V1/V2/V8)", () => {
     runsRoot = join(tmpDir, "runs")
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainRunners()
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
@@ -103,7 +118,7 @@ describe("AIP-58 §5 event log (host-level, vectors V1/V2/V8)", () => {
     const vector = loadVector("v1-invalid-input.json")
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -159,7 +174,7 @@ steps:
         bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
       },
     })
-    runner = createWorkflowRunner({
+    runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -229,7 +244,7 @@ steps:
       ],
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -296,7 +311,7 @@ steps:
       kill: () => true,
       archiveSession: () => ({ archived: true }) as SessionDescriptor,
     })
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -363,7 +378,8 @@ describe("AIP-58 §2 liveness (host-level, vectors V4/V6)", () => {
     runsRoot = join(tmpDir, "runs")
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainRunners()
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
@@ -398,7 +414,7 @@ describe("AIP-58 §2 liveness (host-level, vectors V4/V6)", () => {
       "utf8",
     )
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter: makeMockAdapter(),
@@ -434,7 +450,7 @@ describe("AIP-58 §2 liveness (host-level, vectors V4/V6)", () => {
       "utf8",
     )
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter: makeMockAdapter(),
@@ -461,7 +477,7 @@ describe("AIP-58 §2 liveness (host-level, vectors V4/V6)", () => {
     }
 
     let clock = new Date("2026-09-25T10:00:00.000Z")
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter: makeMockAdapter(),
@@ -517,7 +533,8 @@ describe("AIP-58 §5 / F28 — workflow_status shows the REAL steps", () => {
     tmpDir = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "node_modules", ".aip58-events-real-steps-"))
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainRunners()
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
@@ -543,7 +560,7 @@ describe("AIP-58 §5 / F28 — workflow_status shows the REAL steps", () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
     const { tool, driver } = makeIdentityTool()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -592,7 +609,7 @@ steps:
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
     const { tool, driver } = makeIdentityTool()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -672,7 +689,7 @@ steps:
         }),
       ],
     })
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter: makeMockAdapter(),
@@ -736,7 +753,7 @@ steps:
 
   it("F31/F22 — branch arms aren't pre-listed, the untaken arm surfaces as skipped (row + step.skipped), steps read in execution order", async () => {
     const { tool, driver } = makeIdentityTool()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter: makeMockAdapter(),
@@ -821,7 +838,7 @@ steps:
   it("a tolerant fan-out: a failed item's step is `failed` with its error (step.failed), and a spawn circuit breaker skips the rest with the reason", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     try {
-      const runner = createWorkflowRunner({
+      const runner = createRunner({
         registry: makeMockRegistry(),
         sessionEvents: createSessionEventBus(),
         // Every spawn fails: the adapter doesn't resolve.
@@ -890,7 +907,7 @@ steps:
     vi.stubEnv("HOME", tmpDir) // createFileStepCache's default dir is under homedir()
     try {
       const { tool, driver } = makeIdentityTool()
-      const runner = createWorkflowRunner({
+      const runner = createRunner({
         registry: makeMockRegistry(),
         sessionEvents: createSessionEventBus(),
         resolveAgentAdapter: makeMockAdapter(),
@@ -963,7 +980,7 @@ steps:
 
   it("F34 — a RUNNING agent step exposes its sessionId as soon as the session is spawned", async () => {
     const registry = makeMockRegistry()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter: makeMockAdapter(),
@@ -1000,7 +1017,7 @@ steps:
       },
       commandPreview: "mock-adapter",
     })) as unknown as AgentAdapterResolver
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter,
@@ -1035,7 +1052,7 @@ steps:
       },
       commandPreview: "mock-adapter",
     })) as unknown as AgentAdapterResolver
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter,
