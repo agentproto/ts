@@ -15,7 +15,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import * as os from "node:os"
 import { join } from "node:path"
-import { createServer } from "node:http"
+import { createServer, request as httpRequest } from "node:http"
+import { brotliDecompressSync, gunzipSync } from "node:zlib"
 import { AddressInfo } from "node:net"
 
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
@@ -268,6 +269,111 @@ describe("GET /sessions/:id/events", () => {
       expect(body2.events[0]).toMatchObject({ kind: "user-prompt" })
       expect(body2.nextSeq).toBe(6)
       expect(body2.complete).toBe(true)
+    })
+  })
+
+  function rawGet(
+    port: number,
+    path: string,
+    acceptEncoding?: string,
+  ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest(
+        {
+          host: "127.0.0.1",
+          port,
+          path,
+          headers: acceptEncoding ? { "accept-encoding": acceptEncoding } : {},
+        },
+        res => {
+          const chunks: Buffer[] = []
+          res.on("data", (c: Buffer) => chunks.push(c))
+          res.on("end", () =>
+            resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }),
+          )
+          res.on("error", reject)
+        },
+      )
+      req.on("error", reject)
+      req.end()
+    })
+  }
+
+  it("compresses the page per accept-encoding (br > gzip > identity)", { timeout: 15_000 }, async () => {
+    writeEvents(
+      Array.from({ length: 200 }, (_, i) => ({ kind: "text-delta", sessionId: SESSION_ID, text: `chunk ${i} `.repeat(4) })),
+    )
+
+    await withServer(async (port, registry) => {
+      vi.spyOn(registry, "findByIdOrName").mockReturnValue({
+        id: SESSION_ID,
+      } as SessionDescriptor)
+      const path = `/sessions/${SESSION_ID}/events?since=10&limit=150`
+
+      const plain = await rawGet(port, path)
+      expect(plain.status).toBe(200)
+      expect(plain.headers["content-encoding"]).toBeUndefined()
+      expect(String(plain.headers.vary)).toMatch(/accept-encoding/i)
+      const expected = JSON.parse(plain.body.toString("utf8")) as {
+        events: Array<{ seq: number }>
+        nextSeq: number
+        complete: boolean
+      }
+      expect(expected.events).toHaveLength(150)
+      expect(expected.events[0]?.seq).toBe(11)
+      expect(expected.nextSeq).toBe(160)
+      expect(expected.complete).toBe(false)
+
+      const gz = await rawGet(port, path, "gzip, deflate")
+      expect(gz.headers["content-encoding"]).toBe("gzip")
+      expect(Number(gz.headers["content-length"])).toBe(gz.body.length)
+      expect(gz.body.length).toBeLessThan(plain.body.length)
+      expect(JSON.parse(gunzipSync(gz.body).toString("utf8"))).toEqual(expected)
+
+      const br = await rawGet(port, path, "gzip, br")
+      expect(br.headers["content-encoding"]).toBe("br")
+      expect(JSON.parse(brotliDecompressSync(br.body).toString("utf8"))).toEqual(expected)
+
+      const refused = await rawGet(port, path, "br;q=0, gzip;q=0")
+      expect(refused.headers["content-encoding"]).toBeUndefined()
+      expect(JSON.parse(refused.body.toString("utf8"))).toEqual(expected)
+
+      // Tiny pages aren't worth compressing.
+      const small = await rawGet(port, `/sessions/${SESSION_ID}/events?since=199`, "gzip")
+      expect(small.headers["content-encoding"]).toBeUndefined()
+      expect(JSON.parse(small.body.toString("utf8")).events).toHaveLength(1)
+    })
+  })
+
+  it("serves an appended tail and a rewritten file correctly across calls", { timeout: 15_000 }, async () => {
+    writeEvents(Array.from({ length: 1200 }, (_, i) => ({ kind: "text-delta", sessionId: SESSION_ID, text: `a${i}` })))
+
+    await withServer(async (port, registry) => {
+      vi.spyOn(registry, "findByIdOrName").mockReturnValue({
+        id: SESSION_ID,
+      } as SessionDescriptor)
+      const get = async (since: number) =>
+        (await (await fetch(`http://127.0.0.1:${port}/sessions/${SESSION_ID}/events?since=${since}`)).json()) as {
+          events: Array<{ seq: number; text: string }>
+          nextSeq: number
+          complete: boolean
+        }
+
+      const first = await get(1195)
+      expect(first.events.map(e => e.seq)).toEqual([1196, 1197, 1198, 1199, 1200])
+
+      // Growth: the writer appends; the cached index must extend.
+      writeEvents(Array.from({ length: 1300 }, (_, i) => ({ kind: "text-delta", sessionId: SESSION_ID, text: `a${i}` })))
+      const grown = await get(1200)
+      expect(grown.events.map(e => e.seq)).toEqual(Array.from({ length: 100 }, (_, i) => 1201 + i))
+      expect(grown.complete).toBe(true)
+
+      // Rewrite to something shorter: the stale index must not be used.
+      writeEvents(Array.from({ length: 30 }, (_, i) => ({ kind: "text-delta", sessionId: SESSION_ID, text: `b${i}` })))
+      const rewritten = await get(25)
+      expect(rewritten.events.map(e => e.seq)).toEqual([26, 27, 28, 29, 30])
+      expect(rewritten.events[0]?.text).toBe("b25")
+      expect(rewritten.nextSeq).toBe(30)
     })
   })
 
