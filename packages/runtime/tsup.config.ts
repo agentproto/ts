@@ -21,7 +21,6 @@ export default createTsupConfig({
     "session-presence": "src/session-presence.ts",
     "providers-store": "src/providers-store.ts",
     "credential-discovery": "src/credential-discovery.ts",
-    "opencode-console-source": "src/opencode-console-source.ts",
     "release-check": "src/release-check.ts",
     "session-story": "src/session-story.ts",
     "user-presets": "src/user-presets.ts",

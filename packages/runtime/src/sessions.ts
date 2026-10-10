@@ -885,7 +885,7 @@ export interface SessionAuthEcho {
     | "providers-store"
     | "claude-code-oauth"
     | "cli-local-login"
-    | "opencode-console"
+    | "subaccount"
     | "none"
   setEnv?: string
 }
@@ -908,6 +908,8 @@ export interface SessionAccessProfileEcho {
   /** Billing endpoint, deliberately distinct from the model's vendor. */
   endpoint: string
   method: AuthMethod
+  /** The sub-account (org / workspace / project) the profile is pinned to. */
+  subaccount?: { kind: string; id: string; name?: string }
 }
 
 /**

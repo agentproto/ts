@@ -71,7 +71,24 @@ export type {
   ModelCuration,
   CostBudget,
   CostBudgetScope,
+  SubaccountPin,
 } from "./profile-types.js"
+export {
+  SUBACCOUNT_KIND_RE,
+  SubaccountError,
+  findSubaccountProvider,
+  getSubaccountProvider,
+  listSubaccountProviders,
+  migrateLegacySubaccountProfile,
+  parseSubaccountPin,
+  registerSubaccountProvider,
+  unregisterSubaccountProvider,
+  type DiscoveredSubaccount,
+  type SubaccountAccountRef,
+  type SubaccountListing,
+  type SubaccountProvider,
+  type SubaccountResolution,
+} from "./subaccounts.js"
 export {
   authProfilesPath,
   loadAuthProfiles,

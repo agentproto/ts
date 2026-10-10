@@ -776,6 +776,9 @@ importers:
 
   adapters/opencode:
     dependencies:
+      '@agentproto/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../../packages/driver/agent-cli

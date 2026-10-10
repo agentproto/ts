@@ -100,6 +100,15 @@ describe("credentialDataHome", () => {
     expect(spawnCalls[0]!.env.OPENCODE_API_KEY).toBe("k-test-credential")
   })
 
+  it("keeps the ambient data home when the spec opts out with isolateDataHome:false", async () => {
+    const configDir = join(base, "sess_optout")
+    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    await runtime.start({ cwd: "/scratch", configDir, auth: apiKeySpec({ isolateDataHome: false }) })
+    expect(spawnCalls[0]!.env.XDG_DATA_HOME).toBe("/operator/real/data")
+    expect(existsSync(join(configDir, "auth-data"))).toBe(false)
+    expect(spawnCalls[0]!.env.OPENCODE_API_KEY).toBe("k-test-credential")
+  })
+
   it("falls back to a throwaway dir when the host keys no configDir — never the operator's real data home", async () => {
     const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
     await runtime.start({ cwd: "/scratch", auth: apiKeySpec() })

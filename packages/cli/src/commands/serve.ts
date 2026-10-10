@@ -128,6 +128,7 @@ import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
+import { registerBuiltinSubaccountProviders } from "../util/subaccount-providers.js"
 import { readClaudeCodeUsage } from "@agentproto/adapter-claude-code"
 import { driverSpec } from "@agentproto/driver"
 import {
@@ -593,6 +594,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
     store: new KeychainStore(),
     getProvider: getAuthProvider,
   })
+  // Sub-account providers (org / workspace / project pins on auth profiles):
+  // the runtime resolves a pinned profile through this registry and never
+  // imports a provider itself, so the daemon must register them before any spawn.
+  await registerBuiltinSubaccountProviders()
   // Re-register persisted broker auth-providers (`agentproto auth cred set …`)
   // onto the module-level registry the broker looks up by id — an unregistered
   // id throws, so without this every `credentialRef` would fail. Non-fatal: a

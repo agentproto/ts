@@ -48,11 +48,17 @@ import {
   deleteAuthProfile,
   getAuthProfile,
   listAuthProfiles,
+  findSubaccountProvider,
+  getSubaccountProvider,
+  listSubaccountProviders,
+  parseSubaccountPin,
   refreshAuthProfileModels,
   removeAuthProfile,
   setAuthProfileEnabled,
   setAuthProfileModels,
   AuthProfileValidationError,
+  type SubaccountAccountRef,
+  type SubaccountProvider,
   type AuthProviderHandle,
   type AuthProfile,
   type CredentialStore,
@@ -65,10 +71,7 @@ import {
   CredentialImportError,
   type DiscoveredCredential,
 } from "@agentproto/runtime/credential-discovery"
-import {
-  listOpencodeConsoleOrgs,
-  opencodeConsoleSource,
-} from "@agentproto/runtime/opencode-console-source"
+import { registerBuiltinSubaccountProviders } from "../util/subaccount-providers.js"
 import {
   authProvidersPath,
   buildBrokerProvider,
@@ -108,6 +111,8 @@ export async function runAuth(args: readonly string[]): Promise<number> {
       return runAuthCred(rest)
     case "profile":
       return runAuthProfile(rest)
+    case "subaccounts":
+      return runAuthSubaccounts(rest)
     case "discover":
       return runAuthDiscover(rest)
     case undefined:
@@ -140,17 +145,21 @@ Usage:
                           create <id> <endpoint> --method <oauth-bearer|api-key>
                                  [--label <text>] [--source <name>]
                                  [--credential-file <path>] [--credential-env <VAR>]
+                                 [--subaccount <kind>:<id>]
                                  [--credential-ref <slot>] [--json]
                           list [--endpoint <e>] [--json]
                           rm <id>
                           import <origin> <endpoint> [--id <id>] [--label <text>]
-                          opencode-orgs [--create] [--prefix <p>] [--endpoint <e>] [--json]
                           set-models <id> <all|allow> [<ids…>]
                           set-enabled <id> <true|false>
                           refresh-models <id> [--json]
                           (the credential itself is NEVER a command-line
                            argument — pipe it on stdin, or name a file or
                            env var with --credential-file/--credential-env)
+  agentproto auth subaccounts list <profile|account> [--create [--prefix <p>]]
+                          [--endpoint <e>] [--json]
+                          — orgs / workspaces / projects of an account, each
+                            usable as its own billing wallet
   agentproto auth discover [--endpoint <e>] [--json]
                           — scan this host for credentials you can import
 
@@ -564,12 +573,12 @@ Usage:
   agentproto auth profile create <id> <endpoint> --method <oauth-bearer|api-key>
                                  [--label <text>] [--source <name>]
                                  [--credential-file <path>] [--credential-env <VAR>]
+                                 [--subaccount <kind>:<id>]
                                  [--credential-ref <slot>] [--json]
   agentproto auth profile list|ls [--endpoint <e>] [--json]
   agentproto auth profile rm|remove|delete <id>
   agentproto auth profile import <origin> <endpoint> [--id <id>] [--label <text>]
-  agentproto auth profile opencode-orgs [--create] [--endpoint <opencode-go|opencode>]
-                                        [--prefix <p>] [--json]
+  agentproto auth profile opencode-orgs …   (deprecated: use \`auth subaccounts list\`)
   agentproto auth profile set-models <id> <all|allow> [<ids…>]
   agentproto auth profile set-enabled <id> <true|false>
   agentproto auth profile refresh-models <id> [--json]
@@ -587,8 +596,9 @@ create:
                          every spawn (exactly one of a piped credential or
                          --source).
   --method api-key       a vendor/gateway key — requires a credential. The one
-                         exception is --source opencode-console:<orgId>, an
-                         opencode console workspace (see opencode-orgs below).
+                         exception is a sub-account of a source-backed account
+                         (--source <name> --subaccount <kind>:<id>; see
+                         \`auth subaccounts\` below).
 
   --credential-ref       explicit keychain slot; omitted ⇒ derived from
                          endpoint + method (qualified with <id> on collision).
@@ -602,12 +612,11 @@ import <origin> materializes a credential discovered by
 gemini) into a named profile — source-backed where the origin self-refreshes,
 a keychain COPY otherwise. The method is fixed by the origin.
 
-opencode-orgs lists the console orgs ("workspaces") the opencode login on this
-host can use (read-only on opencode's own db; the token never leaves it). With
---create it makes one source-backed profile per org
-(\`<prefix>-<org name>\`, default prefix "opencode") — each its own selectable
-wallet: a spawn on it bills THAT org's Go/Zen quota, in an isolated opencode
-data dir, whatever org opencode's own login has active.
+--subaccount <kind>:<id> pins the profile to one sub-account (org, workspace,
+project…) of its account, so a spawn on it bills THAT sub-account's quota. The
+kinds an account supports come from its registered provider; discover them with
+\`agentproto auth subaccounts list\`. A pin is not a secret: the account's
+credential (or source) is unchanged and is never stored twice.
 
 set-models "all" services every eligible model and clears any allowlist;
 "allow" narrows the profile to exactly the listed model ids (space- or
@@ -811,7 +820,7 @@ async function readCreateCredential(
 const CREATE_USAGE_LINE =
   `agentproto auth profile create: usage: create <id> <endpoint> ` +
   `--method <oauth-bearer|api-key> [--label <text>] [--source <name>] ` +
-  `[--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
+  `[--subaccount <kind>:<id>] [--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
 
 async function runProfileCreate(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -822,6 +831,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
       method: { type: "string" },
       label: { type: "string" },
       source: { type: "string" },
+      subaccount: { type: "string" },
       "credential-file": { type: "string" },
       "credential-env": { type: "string" },
       "credential-ref": { type: "string" },
@@ -851,16 +861,21 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  let credential: string | undefined
-  let source: string | undefined
-  if (values.source) {
-    if (method !== "oauth-bearer" && !values.source.startsWith("opencode-console:")) {
+  let subaccount: ReturnType<typeof parseSubaccountPin>
+  if (values.subaccount !== undefined) {
+    subaccount = parseSubaccountPin(values.subaccount)
+    if (!subaccount) {
       process.stderr.write(
-        `agentproto auth profile create: --source is only supported for --method oauth-bearer ` +
-          `(or --source opencode-console:<orgId> with --method api-key)\n`,
+        `agentproto auth profile create: --subaccount must be <kind>:<id> (e.g. org:org_01ABC), got "${values.subaccount}"\n`,
       )
       return 2
     }
+  }
+  await registerBuiltinSubaccountProviders()
+
+  let credential: string | undefined
+  let source: string | undefined
+  if (values.source) {
     source = values.source
   } else {
     credential = await readCreateCredential(values)
@@ -875,6 +890,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
         method,
         ...(credential !== undefined ? { credential } : {}),
         ...(source !== undefined ? { source } : {}),
+        ...(subaccount !== undefined ? { subaccount } : {}),
         ...(values.label ? { label: values.label } : {}),
         ...(values["credential-ref"]
           ? { credentialRef: values["credential-ref"] }
@@ -888,6 +904,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
     }
     process.stdout.write(
       `agentproto auth: ✓ created auth profile "${created.id}" (${created.endpoint}, ${created.method})\n` +
+        (created.subaccount ? `  pinned to ${created.subaccount.kind} "${created.subaccount.name ?? created.subaccount.id}"\n` : "") +
         (created.source
           ? `  source-backed — no stored secret; credential re-resolved from "${created.source}" at every spawn\n`
           : `  credential → OS keychain (${created.credentialRef})\n` +
@@ -904,19 +921,69 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
   }
 }
 
-function orgSlug(name: string): string {
+function subaccountSlug(name: string): string {
   return (
     name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "org"
+      .replace(/^-+|-+$/g, "") || "sub"
   )
 }
 
-async function runProfileOpencodeOrgs(args: readonly string[]): Promise<number> {
-  const { values } = parseArgs({
+function subaccountsUsage(): string {
+  return `agentproto auth subaccounts — orgs / workspaces / projects of an account
+
+Usage:
+  agentproto auth subaccounts list <profile|account> [--create [--prefix <p>]]
+                                   [--endpoint <e>] [--json]
+
+An account (a login or API key) can have sub-accounts with their own quota and
+billing. Each one becomes its own selectable profile (a "wallet"): a spawn on it
+bills THAT sub-account. How a pin is applied is the account provider's business.
+
+<profile>  an existing auth profile id — its account is listed.
+<account>  a provider id or source name (e.g. the one shown under "providers"
+           below) — lists the sub-accounts of the account that provider reads.
+
+  --create   make one profile per sub-account that has none yet, named
+             <prefix>-<sub-account name> (prefix defaults to the provider's)
+  --endpoint billing endpoint for created profiles (default: the provider's)
+
+Registered providers: ${providersLine()}
+`
+}
+
+function providersLine(): string {
+  const all = listSubaccountProviders()
+  return all.length === 0
+    ? "(none)"
+    : all.map(p => `${p.id} [${p.kinds.join(", ")}]`).join(", ")
+}
+
+async function runAuthSubaccounts(args: readonly string[]): Promise<number> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  await registerBuiltinSubaccountProviders()
+  switch (sub) {
+    case "list":
+    case "ls":
+      return runSubaccountsList(rest)
+    case undefined:
+    case "--help":
+    case "-h":
+      process.stdout.write(subaccountsUsage())
+      return 0
+    default:
+      process.stderr.write(`agentproto auth subaccounts: unknown subcommand '${sub}'.\n\n${subaccountsUsage()}`)
+      return 2
+  }
+}
+
+async function runSubaccountsList(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
     args: [...args],
     strict: true,
+    allowPositionals: true,
     options: {
       create: { type: "boolean" },
       endpoint: { type: "string" },
@@ -924,21 +991,78 @@ async function runProfileOpencodeOrgs(args: readonly string[]): Promise<number> 
       json: { type: "boolean" },
     },
   })
-  const endpoint = values.endpoint ?? "opencode-go"
-  const prefix = values.prefix ?? "opencode"
-  let listing: Awaited<ReturnType<typeof listOpencodeConsoleOrgs>>
+  const [target] = positionals
+  if (!target || positionals.length > 1) {
+    process.stderr.write(`agentproto auth subaccounts list: usage: list <profile|account> [--create [--prefix <p>]] [--endpoint <e>] [--json]\n`)
+    return 2
+  }
+
+  const store: CredentialStore = new KeychainStore()
+  let provider: SubaccountProvider | undefined
+  let account: SubaccountAccountRef
+  let parent: AuthProfile | undefined
+  const asProfile = await getAuthProfile(target)
+  if (asProfile) {
+    parent = asProfile
+    provider = findSubaccountProvider({
+      ...(asProfile.source !== undefined ? { source: asProfile.source } : { endpoint: asProfile.endpoint }),
+    })
+    if (!provider) {
+      process.stderr.write(
+        `agentproto auth subaccounts list: no sub-account provider is registered for profile "${asProfile.id}" ` +
+          `(${asProfile.source !== undefined ? `source "${asProfile.source}"` : `endpoint "${asProfile.endpoint}"`}).\n`,
+      )
+      return 1
+    }
+    let credential: string | undefined
+    if (asProfile.credentialRef !== undefined) {
+      credential = (await store.read({ path: asProfile.credentialRef }))?.value
+    }
+    account = {
+      endpoint: asProfile.endpoint,
+      ...(asProfile.source !== undefined ? { source: asProfile.source } : {}),
+      ...(credential !== undefined ? { credential } : {}),
+    }
+  } else {
+    provider =
+      getSubaccountProvider(target) ?? listSubaccountProviders().find(p => p.source === target)
+    if (!provider) {
+      process.stderr.write(
+        `agentproto auth subaccounts list: "${target}" is neither an auth profile nor a registered ` +
+          `sub-account provider (registered: ${providersLine()}).\n`,
+      )
+      return 1
+    }
+    account = {
+      endpoint: values.endpoint ?? provider.defaultEndpoint ?? provider.endpoints?.[0] ?? provider.id,
+      ...(provider.source !== undefined ? { source: provider.source } : {}),
+    }
+  }
+
+  let listing: Awaited<ReturnType<SubaccountProvider["list"]>>
   try {
-    listing = await listOpencodeConsoleOrgs()
+    listing = await provider.list(account)
   } catch (err) {
-    process.stderr.write(`agentproto auth profile opencode-orgs: ${err instanceof Error ? err.message : String(err)}\n`)
+    process.stderr.write(`agentproto auth subaccounts list: ${err instanceof Error ? err.message : String(err)}\n`)
     return 1
   }
+
+  const endpoint = values.endpoint ?? parent?.endpoint ?? provider.defaultEndpoint ?? account.endpoint
+  const prefix = values.prefix ?? provider.profilePrefix ?? provider.id
   const existing = await listAuthProfiles()
-  const rows = listing.orgs.map(org => {
-    const source = opencodeConsoleSource(org.id)
-    const have = existing.find(p => p.source === source && p.endpoint === endpoint)
-    return { ...org, source, profile: have?.id as string | undefined, proposedId: `${prefix}-${orgSlug(org.name)}` }
+  const rows = listing.subaccounts.map(sa => {
+    const have = existing.find(
+      p =>
+        p.endpoint === endpoint &&
+        p.subaccount?.kind === sa.kind &&
+        p.subaccount.id === sa.id &&
+        (account.source !== undefined
+          ? p.source === account.source
+          : p.source === undefined),
+    )
+    return { ...sa, profile: have?.id as string | undefined, proposedId: `${prefix}-${subaccountSlug(sa.name)}` }
   })
+
   const created: string[] = []
   if (values.create) {
     for (const row of rows) {
@@ -949,9 +1073,13 @@ async function runProfileOpencodeOrgs(args: readonly string[]): Promise<number> 
             id: row.proposedId,
             endpoint,
             method: "api-key",
-            source: row.source,
-            label: `opencode console: ${row.name}`,
-            origin: "opencode-console",
+            ...(account.source !== undefined ? { source: account.source } : {}),
+            ...(account.source === undefined && account.credential !== undefined
+              ? { credential: account.credential }
+              : {}),
+            subaccount: { kind: row.kind, id: row.id, name: row.name },
+            label: `${provider.id}: ${row.name}`,
+            origin: provider.id,
           },
           localProfileProvisionDeps(),
         )
@@ -959,19 +1087,26 @@ async function runProfileOpencodeOrgs(args: readonly string[]): Promise<number> 
         created.push(made.id)
       } catch (err) {
         if (err instanceof AuthProfileValidationError) {
-          process.stderr.write(`agentproto auth profile opencode-orgs: ${row.proposedId}: ${err.message}\n`)
+          process.stderr.write(`agentproto auth subaccounts list: ${row.proposedId}: ${err.message}\n`)
           continue
         }
         throw err
       }
     }
   }
+
   if (values.json) {
     process.stdout.write(
       JSON.stringify(
         {
-          account: { id: listing.account.id, email: listing.account.email },
-          orgs: rows.map(r => ({ id: r.id, name: r.name, source: r.source, profile: r.profile ?? null })),
+          provider: provider.id,
+          account: listing.account,
+          subaccounts: rows.map(r => ({
+            kind: r.kind,
+            id: r.id,
+            name: r.name,
+            profile: r.profile ?? null,
+          })),
           created,
         },
         null,
@@ -981,17 +1116,26 @@ async function runProfileOpencodeOrgs(args: readonly string[]): Promise<number> 
     return 0
   }
   process.stdout.write(
-    `opencode console login: ${listing.account.email ?? listing.account.id}  (${rows.length} org${rows.length === 1 ? "" : "s"})\n`,
+    `${provider.id} account ${listing.account.label ?? listing.account.id}  (${rows.length} sub-account${rows.length === 1 ? "" : "s"})\n`,
   )
   for (const r of rows) {
     process.stdout.write(
-      `  ${r.id}  ${r.name}  ${r.profile ? `→ profile "${r.profile}"` : `(no profile; --create would make "${r.proposedId}")`}\n`,
+      `  ${r.kind}  ${r.id}  ${r.name}  ${r.profile ? `→ profile "${r.profile}"` : `(no profile; --create would make "${r.proposedId}")`}\n`,
     )
   }
   if (created.length > 0) {
-    process.stdout.write(`created: ${created.join(", ")}\n  bill a spawn through one: agentproto sessions start opencode --access-profile ${created[0]}\n`)
+    process.stdout.write(`created: ${created.join(", ")}\n  bill a spawn through one: agentproto sessions start <adapter> --access-profile ${created[0]}\n`)
   }
   return 0
+}
+
+/** Deprecated alias for `auth subaccounts list opencode-console` (one release). */
+async function runProfileOpencodeOrgs(args: readonly string[]): Promise<number> {
+  process.stderr.write(
+    `agentproto auth profile opencode-orgs is deprecated — use \`agentproto auth subaccounts list opencode-console\` ` +
+      `(same flags).\n`,
+  )
+  return runAuthSubaccounts(["list", "opencode-console", ...args])
 }
 
 async function runProfileList(args: readonly string[]): Promise<number> {

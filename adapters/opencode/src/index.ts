@@ -397,4 +397,15 @@ export async function readOpenCodeUsage(
   }
 }
 
+export {
+  OPENCODE_CONSOLE_SOURCE,
+  OPENCODE_CONSOLE_ORG_KIND,
+  OPENCODE_CONSOLE_TOKEN_ENV,
+  createOpencodeSubaccountProvider,
+  opencodeSubaccounts,
+  opencodeDbPath,
+  readOpencodeConsoleAccount,
+  listOpencodeConsoleOrgs,
+  resolveOpencodeConsoleOrg,
+} from "./subaccounts.js"
 export type { AgentCliHandle, AgentCliRuntime }

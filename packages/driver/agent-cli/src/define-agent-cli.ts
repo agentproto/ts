@@ -333,7 +333,7 @@ export function createAgentCliRuntime(
         env[authSpec.setEnv] = authSpec.credential
         if (authSpec.extraEnv) {
           for (const [key, value] of Object.entries(authSpec.extraEnv)) {
-            // A mode (e.g. opencode `lean`) may already carry a JSON config
+            // A mode (e.g. a lean context profile) may already carry a JSON config
             // under the same key; layer the credential's block over it rather
             // than clobbering it. Ambient env is never merged in.
             env[key] = key in composed.env ? mergeJsonEnvValue(composed.env[key]!, value) : value
@@ -343,7 +343,7 @@ export function createAgentCliRuntime(
         // data dir) overrides an env credential gets a login-less data dir
         // for exactly this credential-injecting spawn, so the credential it
         // was handed is the one that bills.
-        if (definition.credentialDataHome) {
+        if (definition.credentialDataHome && authSpec.isolateDataHome !== false) {
           credentialDataDir = isolatedCredentialDataHome(opts?.configDir)
           env[definition.credentialDataHome.env] = credentialDataDir
         }

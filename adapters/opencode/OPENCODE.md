@@ -188,16 +188,22 @@ data dir (`<configDir>/auth-data`, or a throwaway temp dir), so a plain
 api-key profile really bills its own key. Session usage and transcripts are read
 from that isolated `opencode.db` when it exists.
 
-A console org is a source-backed profile — no token is stored:
+A console org is a **sub-account** of the console login (see the auth package's
+sub-account providers): a source-backed profile that pins `org:<orgId>` — no
+token is stored. The provider lives in this adapter (`src/subaccounts.ts`) and is
+registered by the CLI at start-up.
 
 ```bash
-agentproto auth profile opencode-orgs                     # list orgs of the logged-in console account
-agentproto auth profile opencode-orgs --create --prefix opencode   # -> opencode-<org-name> profiles
+agentproto auth subaccounts list opencode-console                    # list orgs of the logged-in console account
+agentproto auth subaccounts list opencode-console --create --prefix opencode   # -> opencode-<org-name> profiles
 agentproto auth profile create opencode-ws01 --endpoint opencode-go \
-  --method api-key --source opencode-console:<orgId>
+  --method api-key --source opencode-console --subaccount org:<orgId>
 ```
 
-At spawn the runtime reads the console session read-only from `opencode.db`,
+`auth profile opencode-orgs` still works as a deprecated alias, and profiles
+stored as `source: "opencode-console:<orgId>"` are migrated on read.
+
+At spawn the provider reads the console session read-only from `opencode.db`,
 fetches that org's provider block (`/api/config` with `x-org-id`), and injects
 the bearer (`OPENCODE_CONSOLE_TOKEN`) plus the block (`OPENCODE_CONFIG_CONTENT`).
 The session is never refreshed here (the refresh token rotates); an expired

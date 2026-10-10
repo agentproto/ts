@@ -50,11 +50,7 @@ import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
 } from "./claude-code-oauth-source.js"
-import {
-  OPENCODE_CONSOLE_TOKEN_ENV,
-  parseOpencodeConsoleSource,
-  resolveOpencodeConsoleOrg,
-} from "./opencode-console-source.js"
+import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
@@ -76,6 +72,7 @@ import {
   type AdapterAuthManifest,
   type AuthProfile,
   type CostBudget,
+  type SubaccountPin,
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
 import {
@@ -521,7 +518,13 @@ export interface AccessProfileAuthResult {
    *  explicit `route: {gateway}` would be. Absent when the caller pinned a
    *  route themselves or the profile resolved on a direct endpoint. */
   resolvedRouteGateway?: string
-  accessProfileEcho: { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
+  accessProfileEcho: {
+    profileRef: string
+    label?: string
+    endpoint: string
+    method: AuthMethod
+    subaccount?: SubaccountPin
+  }
 }
 
 export interface AccessProfileAuthError {
@@ -641,17 +644,19 @@ export async function resolveAccessProfileAuth(input: {
   // opencode) needs it to pick the anthropic vs. openai surface.
   const authSubSurface = subscriptionSurfaceFor(authDescriptor.authSubscription, profile.endpoint)
   const externalSub = authSubSurface?.external === true
-  // opencode console org: an api-key-method profile pinned to one org via
-  // `source: "opencode-console:<orgId>"`. The bearer + the org's provider
-  // block are resolved fresh from opencode.db + the console API every spawn;
-  // nothing is stored on the profile.
-  const consoleOrg = authMode === "api-key" ? parseOpencodeConsoleSource(profile.source) : undefined
-  let consoleExtraEnv: Record<string, string> | undefined
-  if (consoleOrg) {
+  // Sub-account pin (org / workspace / project): an api-key-method profile
+  // pinned to one via `profile.subaccount`. The registered provider for the
+  // profile's account decides how the pin is applied (scoped token, env,
+  // config); nothing is stored on the profile beyond the pin itself.
+  let subaccount: ResolvedProfileSubaccount | undefined
+  if (authMode === "api-key" && profile.subaccount !== undefined) {
     try {
-      const resolved = await resolveOpencodeConsoleOrg(consoleOrg.orgId, profile.id)
-      apiKeyCredential = resolved.credential
-      consoleExtraEnv = resolved.extraEnv
+      const stored =
+        profile.credentialRef !== undefined
+          ? (await new KeychainStore().read({ path: profile.credentialRef }))?.value
+          : undefined
+      subaccount = await resolveProfileSubaccount(profile, stored !== undefined ? { credential: stored } : {})
+      apiKeyCredential = subaccount?.credential
     } catch (err) {
       if (err instanceof SubscriptionSourceError) {
         return {
@@ -743,13 +748,7 @@ export async function resolveAccessProfileAuth(input: {
       ...(subscriptionCredentialSource !== undefined ? { subscriptionCredentialSource } : {}),
       ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
       ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
-      ...(consoleExtraEnv
-        ? {
-            credentialEnvOverride: OPENCODE_CONSOLE_TOKEN_ENV,
-            apiKeyCredentialSource: "opencode-console" as const,
-            extraEnv: consoleExtraEnv,
-          }
-        : {}),
+      ...(subaccount ? subaccount.authInputs : {}),
     })
     if (result) {
       authSpec = result.spec
@@ -776,6 +775,7 @@ export async function resolveAccessProfileAuth(input: {
       ...(profile.label !== undefined ? { label: profile.label } : {}),
       endpoint: profile.endpoint,
       method: profile.method,
+      ...(subaccount ? { subaccount: subaccount.pin } : {}),
     },
   }
 }
@@ -2920,7 +2920,7 @@ export async function spawnAgentSession(
   let authSpec: ResolvedAuthSpec | undefined
   let authEcho: AuthEcho | undefined
   let accessProfileEcho:
-    | { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
+    | { profileRef: string; label?: string; endpoint: string; method: AuthMethod; subaccount?: SubaccountPin }
     | undefined
   // Echo of the resolved billing route for a BY-MODEL ROUTER adapter (no
   // fixed `authDescriptor.provider` — hermes, pi, opencode) when the caller

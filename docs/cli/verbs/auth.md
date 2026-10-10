@@ -8,6 +8,8 @@ agentproto auth provider <set|list|rm> …   — LLM provider API keys
 agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
 agentproto auth profile <create|list|rm|import|set-models|set-enabled|refresh-models> …
                                            — named auth profiles (subscriptions / API keys)
+agentproto auth subaccounts list <profile|account> [--create [--prefix <p>]] [--json]
+                                           — orgs / workspaces / projects of an account
 agentproto auth discover [--endpoint <e>] [--json]
                                            — scan this host for importable credentials
 ```
@@ -162,6 +164,7 @@ Flags:
 | `--method <oauth-bearer\|api-key>` | Required. How the credential is used at spawn time. |
 | `--label <text>` | Human-readable name for the profile. |
 | `--source <name>` | Source tag for oauth-bearer profiles (enables self-refreshing). |
+| `--subaccount <kind>:<id>` | Pin the profile to a sub-account (org / workspace / project) of its account; see `auth subaccounts`. |
 | `--credential-file <path>` | Read the credential from a file. |
 | `--credential-env <VAR>` | Read the credential from an environment variable. |
 | `--credential-ref <slot>` | Reference an existing keychain slot directly. |
@@ -236,6 +239,21 @@ agentproto auth profile refresh-models openrouter-api --json
 
 Explicit and opt-in; refuses a `mode: "all"` profile (nothing to
 refresh).
+
+## `subaccounts`
+
+```bash
+agentproto auth subaccounts list opencode-console           # an account (provider source)
+agentproto auth subaccounts list opencode-ws01 --json       # or an existing profile id
+agentproto auth subaccounts list opencode-console --create --prefix opencode
+```
+
+An account can have sub-accounts with their own quota. `list` asks the
+sub-account provider that owns the account (providers ship with their adapter)
+for its sub-accounts; `--create` makes one pinned profile per sub-account
+(`<prefix>-<name>`, idempotent) with `--subaccount <kind>:<id>` and no stored
+secret where the provider resolves its own. `auth profile opencode-orgs` is a
+deprecated alias for `auth subaccounts list opencode-console`.
 
 ## `discover`
 

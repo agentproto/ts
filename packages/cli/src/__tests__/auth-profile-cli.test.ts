@@ -20,6 +20,10 @@ import {
   KeychainStore,
   addAuthProfile,
   getAuthProfile,
+  listAuthProfiles,
+  registerSubaccountProvider,
+  unregisterSubaccountProvider,
+  type SubaccountProvider,
 } from "@agentproto/auth"
 import {
   runAuth,
@@ -460,5 +464,104 @@ describe("agentproto auth profile import", () => {
     expect(code).toBe(2)
     expect(err.join("")).toMatch(/unknown origin "dropbox"/)
     expect(writes).toHaveLength(0)
+  })
+})
+
+describe("agentproto auth subaccounts / profile create --subaccount", () => {
+  const fake: SubaccountProvider = {
+    id: "fake-vendor",
+    source: "fake-login",
+    kinds: ["workspace"],
+    defaultEndpoint: "fake-api",
+    profilePrefix: "fake",
+    list: async () => ({
+      account: { id: "acct_1", label: "me@example.com" },
+      subaccounts: [
+        { kind: "workspace", id: "ws_a", name: "Alpha Team" },
+        { kind: "workspace", id: "ws_b", name: "Beta" },
+      ],
+    }),
+    resolve: async () => ({}),
+  }
+  beforeEach(() => registerSubaccountProvider(fake))
+  afterEach(() => unregisterSubaccountProvider("fake-vendor"))
+
+  it("creates a source-backed pinned profile via --subaccount kind:id", async () => {
+    const { restore } = capture()
+    const code = await runAuth([
+      "profile", "create", "fake-alpha", "fake-api",
+      "--method", "api-key", "--source", "fake-login", "--subaccount", "workspace:ws_a",
+    ])
+    restore()
+    expect(code).toBe(0)
+    expect(await getAuthProfile("fake-alpha")).toMatchObject({
+      source: "fake-login",
+      subaccount: { kind: "workspace", id: "ws_a" },
+    })
+  })
+
+  it("rejects a malformed --subaccount before any write", async () => {
+    const { err, restore } = capture()
+    const code = await runAuth([
+      "profile", "create", "x", "fake-api", "--method", "api-key", "--source", "fake-login", "--subaccount", "nonsense",
+    ])
+    restore()
+    expect(code).toBe(2)
+    expect(err.join("")).toMatch(/--subaccount must be <kind>:<id>/)
+    expect(await listAuthProfiles()).toHaveLength(0)
+  })
+
+  it("lists a provider's sub-accounts, then --create makes one profile each (idempotent)", async () => {
+    const first = capture()
+    expect(await runAuth(["subaccounts", "list", "fake-vendor"])).toBe(0)
+    first.restore()
+    expect(first.out.join("")).toContain("Alpha Team")
+    expect(await listAuthProfiles()).toHaveLength(0)
+
+    const second = capture()
+    expect(await runAuth(["subaccounts", "list", "fake-vendor", "--create"])).toBe(0)
+    second.restore()
+    const profiles = await listAuthProfiles()
+    expect(profiles.map(p => p.id).sort()).toEqual(["fake-alpha-team", "fake-beta"])
+    expect(profiles.find(p => p.id === "fake-beta")).toMatchObject({
+      endpoint: "fake-api",
+      source: "fake-login",
+      subaccount: { kind: "workspace", id: "ws_b", name: "Beta" },
+    })
+
+    const third = capture()
+    expect(await runAuth(["subaccounts", "list", "fake-vendor", "--create", "--json"])).toBe(0)
+    third.restore()
+    const json = JSON.parse(third.out.join(""))
+    expect(json.created).toEqual([])
+    expect(json.subaccounts.map((s: { profile: string }) => s.profile).sort()).toEqual(["fake-alpha-team", "fake-beta"])
+  })
+
+  it("resolves a profile id to its account", async () => {
+    await addAuthProfile({
+      id: "fake-alpha",
+      endpoint: "fake-api",
+      method: "api-key",
+      source: "fake-login",
+      subaccount: { kind: "workspace", id: "ws_a" },
+    })
+    const { out, restore } = capture()
+    expect(await runAuth(["subaccounts", "list", "fake-alpha"])).toBe(0)
+    restore()
+    expect(out.join("")).toContain('profile "fake-alpha"')
+  })
+
+  it("fails clearly for an unknown target", async () => {
+    const { err, restore } = capture()
+    expect(await runAuth(["subaccounts", "list", "nope"])).toBe(1)
+    restore()
+    expect(err.join("")).toMatch(/neither an auth profile nor a registered/)
+  })
+
+  it("keeps `profile opencode-orgs` as a deprecated alias that prints a notice", async () => {
+    const { err, restore } = capture()
+    await runAuth(["profile", "opencode-orgs"])
+    restore()
+    expect(err.join("")).toMatch(/opencode-orgs is deprecated/)
   })
 })

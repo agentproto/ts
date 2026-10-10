@@ -707,6 +707,23 @@ describe("usage-limit wallet naming", () => {
     expect(tagLimitErrorWithWallet(tagged, { profileRef: "other" })).toBe(tagged)
   })
 
+  it("names the pinned sub-account (display name preferred, else id)", async () => {
+    const { tagLimitErrorWithWallet } = await import("../session-end-reason.js")
+    expect(
+      tagLimitErrorWithWallet("usage limit exceeded", {
+        profileRef: "p",
+        subaccount: { kind: "org", id: "org_1", name: "Ws01" },
+      }),
+    ).toBe('usage limit exceeded [wallet: profile "p", org "Ws01"]')
+    expect(
+      tagLimitErrorWithWallet("usage limit exceeded", {
+        profileRef: "p",
+        label: "L",
+        subaccount: { kind: "project", id: "proj_9" },
+      }),
+    ).toBe('usage limit exceeded [wallet: profile "p" — L, project "proj_9"]')
+  })
+
   it("leaves other errors and profile-less sessions untouched", async () => {
     const { tagLimitErrorWithWallet } = await import("../session-end-reason.js")
     expect(tagLimitErrorWithWallet("boom", { profileRef: "p" })).toBe("boom")
