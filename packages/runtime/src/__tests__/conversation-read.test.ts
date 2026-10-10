@@ -679,3 +679,147 @@ describe("readConversation — additive lastN + cursor windowing", () => {
     expect(result.window).toEqual({ start: 6, count: 0, total: 6, truncated: true })
   })
 })
+
+// ── cold history: a session the registry dropped at boot ───────────────────
+//
+// `HISTORY_CAP` bounds what the registry holds; the session's sidecar and
+// transcript stay on disk. `readConversation` must still read one — that is
+// the whole point of having kept the transcript.
+
+function writeSidecar(id: string, entry: Record<string, unknown>): void {
+  const dir = join(fakeHome, ".agentproto", "sessions", id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, "index.json"), JSON.stringify({ id, ...entry }))
+}
+
+function writeConversationRecord(record: Record<string, unknown>): void {
+  const dir = join(fakeHome, ".agentproto", "workspaces", "default")
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, "conversations.jsonl"), JSON.stringify(record) + "\n")
+}
+
+describe("readConversation — cold session (registry miss, disk hit)", () => {
+  it("reads the conversation of a session the registry no longer holds", async () => {
+    setupFakeHome()
+    const cwd = "/cold/project"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "ffffffff-0000-0000-0000-000000000001"
+    writeJsonl(dir, uuid, [
+      {
+        type: "user",
+        timestamp: "2026-04-01T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "cold hello" }] },
+      },
+    ])
+    writeSidecar("sess_cold", {
+      kind: "agent-cli",
+      status: "exited",
+      alive: false,
+      label: "the tuesday session",
+      cwd,
+      workspaceSlug: "default",
+      startedAt: "2026-04-01T09:00:00.000Z",
+      lastActivityAt: "2026-04-01T11:00:00.000Z",
+    })
+    // The link index is what turns the cwd+time search (ladder step 3) into
+    // an exact bind (step 1) for a row that no longer carries its
+    // adapterSessionId.
+    writeConversationRecord({
+      sessionId: "sess_cold",
+      workspace: "default",
+      cwd,
+      adapterSlug: "claude-code",
+      adapterSessionId: uuid,
+      agentprotoTranscript: join(dir, `${uuid}.jsonl`),
+      startedAt: "2026-04-01T09:00:00.000Z",
+    })
+
+    const result = await readConversation(stubRegistry(undefined), { idOrName: "sess_cold" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversationId).toBe(uuid)
+    expect(result.adapter).toBe("claude-code")
+    expect(result.content).toContain("cold hello")
+  })
+
+  it("still resolves by cwd + time when the link index has no record", async () => {
+    setupFakeHome()
+    const cwd = "/cold/project-2"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "ffffffff-1111-0000-0000-000000000002"
+    writeJsonl(dir, uuid, [
+      {
+        type: "user",
+        timestamp: "2026-04-02T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "no link index" }] },
+      },
+    ])
+    writeSidecar("sess_cold2", {
+      kind: "agent-cli",
+      status: "exited",
+      alive: false,
+      adapter: "claude-code",
+      cwd,
+      workspaceSlug: "default",
+      startedAt: "2026-04-02T09:00:00.000Z",
+    })
+
+    const result = await readConversation(stubRegistry(undefined), { idOrName: "sess_cold2" })
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversationId).toBe(uuid)
+    expect(result.content).toContain("no link index")
+  })
+
+  it("falls back to the daemon's own events.jsonl when nothing else is left", async () => {
+    setupFakeHome()
+    writeSidecar("sess_cold3", {
+      kind: "agent-cli",
+      status: "exited",
+      alive: false,
+      cwd: "/gone/for-good",
+      workspaceSlug: "default",
+      startedAt: "2026-04-03T09:00:00.000Z",
+    })
+    writeEventsJsonl("sess_cold3", [
+      { seq: 1, ts: "2026-04-03T10:00:00.000Z", kind: "user-prompt", text: "still here" },
+      { seq: 2, ts: "2026-04-03T10:00:01.000Z", kind: "turn-end" },
+    ])
+
+    const result = await readConversation(stubRegistry(undefined), { idOrName: "sess_cold3" })
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversation?.meta.source).toBe("daemon-events")
+    expect(result.content).toContain("still here")
+  })
+
+  it("keeps answering 'not found' for an id nothing on disk knows", async () => {
+    setupFakeHome()
+    const result = await readConversation(stubRegistry(undefined), { idOrName: "sess_nope" })
+    expect(result.conversation).toBeNull()
+    expect(result.reason).toContain("not found")
+  })
+
+  it("prefers the live registry row over a stale sidecar with the same id", async () => {
+    setupFakeHome()
+    const cwd = "/live/project"
+    claudeProjectDir(cwd)
+    writeSidecar("sess_both", {
+      kind: "agent-cli",
+      status: "exited",
+      alive: false,
+      adapter: "claude-code",
+      cwd: "/stale/cwd",
+      workspaceSlug: "default",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    })
+    const live = makeDescriptor({
+      id: "sess_both",
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      cwd,
+      status: "running",
+    })
+    const result = await readConversation(stubRegistry(live), { idOrName: "sess_both" })
+    expect(result.conversation).toBeNull() // live row has no transcript — but it is the one consulted
+    expect(result.reason).toBeTruthy()
+  })
+})

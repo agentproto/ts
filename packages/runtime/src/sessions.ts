@@ -83,6 +83,7 @@ import {
 } from "./session-observer.js"
 import { artifactMarkerLines, formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
+import { isReviewOrWorkflowSession } from "./session-list-filters.js"
 import {
   addSessionArtifact as addSessionArtifactImpl,
   getSessionArtifact as getSessionArtifactImpl,
@@ -1260,6 +1261,14 @@ export interface SessionDescriptor {
    *  treat res.ok as liveness must read `alive` (or GET /sessions/:id/alive)
    *  instead. */
   alive?: boolean
+  /** Stamped on a row the COLD-history fallback served from its on-disk
+   *  `index.json` sidecar because the registry does not hold it — see
+   *  `session-cold-list.ts` and `HISTORY_CAP`. Terminal by construction
+   *  (`pid` null, `alive` false): the daemon has no process for it, so it
+   *  is a record, not a session you can prompt. Additive; absent on every
+   *  registered row, and never persisted (cold rows never enter the
+   *  registry's map, so `snapshotRows` never sees one). */
+  cold?: boolean
   startedAt: string
   endedAt?: string
   exitCode?: number
@@ -12280,11 +12289,22 @@ function loadHistorySnapshot(
     return
   }
   if (!Array.isArray(parsed.sessions)) return
-  // Newest first so the FIFO cap drops oldest.
-  const sorted = parsed.sessions
-    .filter((s): s is SessionDescriptor => !!s && typeof s.id === "string")
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-    .slice(0, HISTORY_CAP)
+  // Newest first so the FIFO cap drops oldest — but spent per LANE: real
+  // sessions first, review-lane / workflow-stage noise last. A store that
+  // blew past the cap on review traffic (the ordinary busy-host shape: a
+  // handful of real sessions, hundreds of `review:`/`wf:` rows) keeps every
+  // real session and drops only the oldest noise, instead of the previous
+  // newest-first slice silently evicting real history while noise survived.
+  // The rows still on disk are reachable either way via the cold fallback
+  // (`session-cold-list.ts`), but what the registry holds should be the
+  // history worth holding.
+  const byNewestStart = (a: SessionDescriptor, b: SessionDescriptor): number =>
+    b.startedAt.localeCompare(a.startedAt)
+  const valid = parsed.sessions.filter((s): s is SessionDescriptor => !!s && typeof s.id === "string")
+  const sorted = [
+    ...valid.filter(s => !isReviewOrWorkflowSession(s)).sort(byNewestStart),
+    ...valid.filter(s => isReviewOrWorkflowSession(s)).sort(byNewestStart),
+  ].slice(0, HISTORY_CAP)
   const now = new Date().toISOString()
   for (const desc of sorted) {
     if (sessions.has(desc.id)) continue // collision with a live entry — keep live

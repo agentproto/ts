@@ -28,9 +28,12 @@ import { createGateway, type GatewayHandle } from "../index.js"
 import { measureToolList } from "../tool-schema-measure.js"
 
 /** Always-on set: ~51.4 KB measured after slimming agent_start (down from
- *  ~63.6 KB baseline). Headroom for normal growth without re-opening this
- *  file on every field addition. */
-const ALWAYS_ON_BUDGET_BYTES = 60_000
+ *  ~63.6 KB baseline). Re-set to 61 KB when `session_list` grew ~0.35 KB for
+ *  the `label`/`cwd` filters and the cold-history fallback (`includeCold`) —
+ *  the measured total was already at the old 60 KB line, so the old number
+ *  left no room for a normal field addition. Headroom for normal growth
+ *  without re-opening this file on every field addition. */
+const ALWAYS_ON_BUDGET_BYTES = 61_000
 
 /** No single description — a tool's own, or any schema property's, at any
  *  nesting depth — may exceed this. The plan's own cap. */

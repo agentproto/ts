@@ -17,6 +17,7 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import {
   buildSessionTree,
+  groupNoiseRoots,
   groupRootsByOrigin,
   registerSessionTools,
   UNKNOWN_ORIGIN,
@@ -697,3 +698,163 @@ function flattenTree(nodes: SessionTreeNode[]): SessionTreeNode[] {
   }
   return result
 }
+
+// ── (f) noise-root grouping ─────────────────────────────────────────────────
+//
+// `groupNoiseRoots` collapses review-lane / workflow-stage ROOTS under one
+// synthetic `reviews · <checkout>` parent so a busy daemon's gate-review
+// flood reads as one row. Pure-function tests first, then the MCP surface.
+
+describe("groupNoiseRoots", () => {
+  const node = (
+    id: string,
+    over: Partial<SessionTreeNode> = {},
+  ): SessionTreeNode => ({
+    id,
+    status: "killed",
+    depth: 0,
+    isOrchestrator: false,
+    children: [],
+    ...over,
+  })
+
+  it("leaves a tree with no review/workflow roots untouched", () => {
+    const roots = [node("sess_a", { label: "chat" }), node("sess_b", { origin: "vscode" })]
+    expect(groupNoiseRoots(roots)).toEqual(roots)
+  })
+
+  it("leaves a single lane ungrouped — a one-child folder is noise too", () => {
+    const roots = [node("sess_a", { label: "chat" }), node("sess_rev", { label: "review:pr-1" })]
+    expect(groupNoiseRoots(roots).map(n => n.id)).toEqual(["sess_a", "sess_rev"])
+  })
+
+  it("groups two lanes from the same checkout under one synthetic parent", () => {
+    const roots = [
+      node("sess_a", { label: "chat", workspaceSlug: "ws" }),
+      node("sess_rev1", { label: "review:pr-1", workspaceSlug: "ws" }),
+      node("sess_rev2", { label: "review:pr-2", workspaceSlug: "ws" }),
+    ]
+    const grouped = groupNoiseRoots(roots)
+    expect(grouped.map(n => n.id)).toEqual(["sess_a", "reviews:ws"])
+    const group = grouped[1]!
+    expect(group).toMatchObject({
+      label: "reviews · ws",
+      synthetic: true,
+      isOrchestrator: true,
+      status: "exited",
+    })
+    expect(group.children.map(n => n.id)).toEqual(["sess_rev1", "sess_rev2"])
+    // Nodes are shared, not cloned — children survive.
+    expect(group.children[0]).toBe(roots[1])
+  })
+
+  it("keys the group by worktree basename when the session runs in a worktree", () => {
+    const roots = [
+      node("sess_rev1", { label: "review:pr-1", worktreePath: "/repo/main/.worktrees/alpha" }),
+      node("sess_rev2", { origin: "workflow", worktreePath: "/repo/main/.worktrees/alpha" }),
+      node("sess_rev3", { label: "review:pr-3", worktreePath: "/repo/other/.worktrees/beta" }),
+      node("sess_rev4", { label: "review:pr-4", worktreePath: "/repo/other/.worktrees/beta" }),
+    ]
+    const grouped = groupNoiseRoots(roots)
+    expect(grouped.map(n => n.id)).toEqual(["reviews:alpha", "reviews:beta"])
+    expect(grouped[0]!.children.map(n => n.id)).toEqual(["sess_rev1", "sess_rev2"])
+    expect(grouped[1]!.children.map(n => n.id)).toEqual(["sess_rev3", "sess_rev4"])
+  })
+
+  it("does not mix a worktree lane with a non-worktree lane in the same workspace", () => {
+    const roots = [
+      node("sess_rev1", { label: "review:pr-1", worktreePath: "/repo/main/.worktrees/alpha" }),
+      node("sess_rev2", { label: "review:pr-2", workspaceSlug: "ws" }),
+    ]
+    // Two single-member buckets ⇒ neither is worth a folder.
+    expect(groupNoiseRoots(roots).map(n => n.id)).toEqual(["sess_rev1", "sess_rev2"])
+  })
+
+  it("inserts the group where its first member sat and never nests a lane child", () => {
+    const child = node("sess_lane_child", { label: "review:pr-1 child" })
+    const lane = node("sess_rev1", {
+      label: "review:pr-1",
+      workspaceSlug: "ws",
+      isOrchestrator: true,
+      children: [child],
+    })
+    const roots = [
+      node("sess_first", { label: "chat" }),
+      lane,
+      node("sess_rev2", { label: "review:pr-2", workspaceSlug: "ws" }),
+      node("sess_last", { label: "chat 2" }),
+    ]
+    const grouped = groupNoiseRoots(roots)
+    expect(grouped.map(n => n.id)).toEqual(["sess_first", "reviews:ws", "sess_last"])
+    // The nested child keeps its real parent — only ROOTS are grouped.
+    expect(grouped[1]!.children.map(n => n.id)).toEqual(["sess_rev1", "sess_rev2"])
+    expect(grouped[1]!.children[0]!.children.map(n => n.id)).toEqual(["sess_lane_child"])
+  })
+
+  it("is idempotent — a synthetic node is never re-grouped", () => {
+    const roots = [
+      node("sess_rev1", { label: "review:pr-1", workspaceSlug: "ws" }),
+      node("sess_rev2", { label: "review:pr-2", workspaceSlug: "ws" }),
+    ]
+    const once = groupNoiseRoots(roots)
+    expect(groupNoiseRoots(once)).toEqual(once)
+  })
+})
+
+describe("session_tree tool — noise grouping", () => {
+  it("collapses review roots under one synthetic parent, and byOrigin mirrors the grouped tree", async () => {
+    const { client, registry, close } = await buildHarness()
+    const real = spawnNode(registry, undefined, 0, "the real session", "claude-code")
+    const rev1 = spawnNode(registry, undefined, 0, "review:pr-1", "review")
+    const rev2 = spawnNode(registry, undefined, 0, "review:pr-2", "review")
+
+    const body = payload<{ tree: SessionTreeNode[]; byOrigin: Array<{ origin: string; sessions: SessionTreeNode[] }> }>(
+      await client.callTool({ name: "session_tree", arguments: {} }),
+    )
+    const group = body.tree.find(n => n.synthetic === true)
+    expect(group).toBeDefined()
+    expect(group).toMatchObject({ id: `reviews:${real.workspaceSlug}`, label: `reviews · ${real.workspaceSlug}`, synthetic: true })
+    expect(group!.children.map(n => n.id).sort()).toEqual([rev1.id, rev2.id].sort())
+    expect(body.tree.map(n => n.id)).toContain(real.id)
+    expect(body.tree).toHaveLength(2)
+
+    // The companion view mirrors the grouped tree: the review bucket holds
+    // the synthetic parent, never the raw lanes.
+    const reviewBucket = body.byOrigin.find(g => g.origin === "review")
+    expect(reviewBucket?.sessions.map(n => n.id)).toEqual([group!.id])
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("keeps a lane nested under a real orchestrator parent in place", async () => {
+    const { client, registry, close } = await buildHarness()
+    const parent = spawnNode(registry, undefined, 0, "orchestrator", "claude-code")
+    spawnNode(registry, parent.id, 1, "review:pr-1", "review")
+
+    const body = payload<{ tree: SessionTreeNode[] }>(
+      await client.callTool({ name: "session_tree", arguments: {} }),
+    )
+    expect(body.tree.some(n => n.synthetic === true)).toBe(false)
+    expect(body.tree.map(n => n.id)).toEqual([parent.id])
+    expect(body.tree[0]!.children.map(n => n.label)).toEqual(["review:pr-1"])
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("suppresses byOrigin but still groups when groupByOrigin is false", async () => {
+    const { client, registry, close } = await buildHarness()
+    spawnNode(registry, undefined, 0, "review:pr-1", "review")
+    spawnNode(registry, undefined, 0, "review:pr-2", "review")
+
+    const body = payload<{ tree: SessionTreeNode[]; byOrigin?: unknown }>(
+      await client.callTool({ name: "session_tree", arguments: { groupByOrigin: false } }),
+    )
+    expect(body.byOrigin).toBeUndefined()
+    expect(body.tree.map(n => n.id)).toEqual(["reviews:w"])
+
+    await close()
+    registry.shutdown()
+  })
+})

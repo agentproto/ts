@@ -95,10 +95,12 @@ import { outcomeDetailShape } from "./outcome-detail-schema.js"
 import { processTreeRss } from "./process-memory.js"
 import {
   applySessionListFilters,
+  isReviewOrWorkflowSession,
   pickSessionListFilters,
   sessionListFilterShape,
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
+import { coldSessionRows, coldSessionDescriptor } from "./session-cold-list.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import {
   INDEX_DEFAULT_LIMIT,
@@ -224,6 +226,21 @@ export interface SessionTreeNode {
    *  and its `handoff` field (full record only, via `session_list full:true`)
    *  for the harness the checkpoint moved from/to. */
   continuedFrom?: string
+  /** Workspace slug this session belongs to — copied from the descriptor.
+   *  Absent when the descriptor has none. */
+  workspaceSlug?: string
+  /** Absolute worktree path this session runs in, when it runs in one —
+   *  copied from the descriptor. The grouping key behind the synthetic
+   *  `reviews · <worktree>` node (see {@link groupNoiseRoots}): two review
+   *  lanes in the same checkout belong under one parent, two lanes in
+   *  different checkouts do not. */
+  worktreePath?: string
+  /** True on the synthetic parent node {@link groupNoiseRoots} inserts —
+   *  NOT a session: it has no descriptor, cannot be focused, prompted or
+   *  killed, and exists purely so a listing can collapse a pile of review
+   *  lanes into one row. Consumers that render nodes as actionable must
+   *  skip these (render them as a header instead). */
+  synthetic?: boolean
   isOrchestrator: boolean
   /** Latest 3 reviews this session requested (`review_run`'s
    *  `requesterSessionId`, default the caller), newest first — settled
@@ -286,6 +303,87 @@ export function groupRootsByOrigin(
     }
   }
   return order.map(origin => ({ origin, sessions: byOrigin.get(origin)! }))
+}
+
+/** How many review-lane / workflow-stage roots a group needs before it is
+ *  worth a synthetic parent. One lone lane reads better flat than wrapped
+ *  in a single-child folder. */
+export const NOISE_GROUP_MIN = 2
+
+/** Label for the synthetic parent of one noise bucket. */
+export const noiseGroupLabel = (key: string): string => `reviews · ${key}`
+
+/**
+ * Collapse review-lane / workflow-stage ROOTS under one synthetic parent
+ * per checkout — the "Gate reviews / Crons / Tasks" shape the desktop
+ * already applies client-side, now at the source so every listing agrees.
+ *
+ * A daemon left running accumulates dozens of `review:*` / `wf:*` roots,
+ * one per gate review or workflow stage, and a flat tree of them buries the
+ * handful of sessions a human actually launched. Only ROOTS are grouped —
+ * a lane nested under a real orchestrator parent keeps its place — and only
+ * roots the descriptor marks review/workflow (`isReviewOrWorkflowSession`),
+ * so an ended one-shot command run is not swallowed into a "reviews" node.
+ *
+ * Bucket key: the basename of `worktreePath` when the session runs in a
+ * provisioned worktree, else its `workspaceSlug`, else `default`. The node
+ * is inserted where its FIRST member sat (so the group keeps the oldest
+ * member's position), is flagged `synthetic: true` and is never focusable —
+ * see `SessionTreeNode.synthetic`. A bucket with fewer than
+ * {@link NOISE_GROUP_MIN} members is left ungrouped.
+ *
+ * Pure: nodes are shared, never cloned, so review badges and children stay
+ * attached exactly as built.
+ */
+export function groupNoiseRoots(roots: readonly SessionTreeNode[]): SessionTreeNode[] {
+  const keyOf = (node: SessionTreeNode): string => {
+    if (node.worktreePath) return basename(node.worktreePath)
+    return node.workspaceSlug ?? "default"
+  }
+  const membersByGroup = new Map<string, SessionTreeNode[]>()
+  const qualifies = (node: SessionTreeNode): boolean =>
+    node.synthetic !== true && isReviewOrWorkflowSession({ label: node.label, origin: node.origin })
+  for (const root of roots) {
+    if (!qualifies(root)) continue
+    const key = keyOf(root)
+    const bucket = membersByGroup.get(key)
+    if (bucket) bucket.push(root)
+    else membersByGroup.set(key, [root])
+  }
+  // Drop buckets too small to be worth a folder.
+  for (const [key, members] of membersByGroup) {
+    if (members.length < NOISE_GROUP_MIN) membersByGroup.delete(key)
+  }
+  if (membersByGroup.size === 0) return [...roots]
+
+  const memberSet = new Set<SessionTreeNode>()
+  const groupOf = new Map<SessionTreeNode, SessionTreeNode>()
+  for (const [key, members] of membersByGroup) {
+    const group: SessionTreeNode = {
+      id: `reviews:${key}`,
+      label: noiseGroupLabel(key),
+      status: "exited",
+      depth: 0,
+      origin: "review",
+      synthetic: true,
+      isOrchestrator: true,
+      children: members,
+    }
+    for (const member of members) {
+      memberSet.add(member)
+      groupOf.set(member, group)
+    }
+  }
+  const out: SessionTreeNode[] = []
+  for (const root of roots) {
+    if (memberSet.has(root)) {
+      const group = groupOf.get(root)!
+      if (out[out.length - 1] !== group) out.push(group)
+      continue
+    }
+    out.push(root)
+  }
+  return out
 }
 
 /** Resolve `session_tree`'s `reviews` badges for a set of visible session
@@ -405,6 +503,8 @@ export function buildSessionTree(
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
     ...(s.origin ? { origin: s.origin } : {}),
     ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
+    ...(s.workspaceSlug ? { workspaceSlug: s.workspaceSlug } : {}),
+    ...(s.worktreePath ? { worktreePath: s.worktreePath } : {}),
     isOrchestrator: orchestratorIds.has(s.id),
     children: (childrenOf.get(s.id) ?? [])
       .sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
@@ -639,6 +739,10 @@ export interface SessionListCompactItem {
   /** Liveness (stamped at read time by the registry) — the unambiguous
    *  signal; `status` alone is a lifecycle classification, not liveness. */
   alive?: boolean
+  /** True only on a COLD row — history the registry dropped at boot but
+   *  whose transcript is still on disk (`session-cold-list.ts`). Such a row
+   *  is a terminal record: no pid, not promptable. */
+  cold?: boolean
   pty?: boolean
   /** What was actually run — quoted joined, same string the full record carries. */
   command: string
@@ -747,6 +851,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   status: s.status,
   ...(s.provisioning ? { provisioning: { ...s.provisioning } } : {}),
   alive: s.alive,
+  ...(s.cold ? { cold: true } : {}),
   pty: s.pty,
   command: s.command,
   cwd: s.cwd,
@@ -1190,9 +1295,16 @@ export function registerSessionTools(
       .boolean()
       .optional()
       .describe("Add `rssBytes` (process-tree RSS) to live sessions with a pid; one `ps` per call. Default false."),
+    includeCold: z
+      .boolean()
+      .optional()
+      .describe(
+        "Also serve sessions the registry dropped at boot (`HISTORY_CAP`) from disk — " +
+          "terminal records, flagged `cold: true`. Implied when `q` matches nothing live.",
+      ),
     stats: statsParamSchema.describe(
-      "Per-live-session RSS, %CPU, process count and top commands under `stats`; `true` = summary, " +
-        "`\"full\"` = every process. Cached ~3s. Host-level view: `session_stats`.",
+      "Per-live-session RSS, %CPU, process count and top commands under `stats`; " +
+        "`true` = summary, `\"full\"` = every process. Cached ~3s. Host view: `session_stats`.",
     ),
     ...sessionListFilterShape,
     ...pageParamsShape,
@@ -1202,20 +1314,57 @@ export function registerSessionTools(
   registerBuiltinTool<SessionListInput, Array<Omit<SessionDescriptor, "ptyResumeEnv">>>(server, {
     id: "session_list",
     description: "List sessions tracked by the daemon (agent-CLI and terminal/PTY). " +
-      "Use it to see what's already running before spawning, or to find a session id by name. " +
-      "NARROW BEFORE YOU READ: hundreds of sessions are mostly noise and without `limit` all " +
-      "come back. Filter (`q`, `excludeNoise`, `rootOnly`, `updatedSince`, …) and/or pass " +
-      "`limit`; rows are newest-activity first, `total` is the filtered count. " +
-      "E.g. `{q:'X', excludeNoise:true, limit:10}`. " +
-      "Rows are COMPACT by default (`fields:[…]` picks keys, `full:true` returns everything). " +
-      "Detail: tool_help {name:\"session_list\"}; ranked text search: `session_search`.",
+      "NARROW BEFORE YOU READ: hundreds of sessions are mostly noise and without `limit` " +
+      "all come back — filter (`q`, `excludeNoise`, `rootOnly`, `updatedSince`, …) and/or " +
+      "pass `limit`. Rows are newest-activity first, `total` is the filtered count, COMPACT " +
+      "by default (`full:true` for the whole descriptor). History the registry dropped at " +
+      "boot comes back via `includeCold` (or a `q` matching nothing live), flagged `cold:true`. " +
+      "Detail: tool_help {name:\"session_list\"}; ranked search: `session_search`.",
     inputSchema: sessionListSchema,
     handler: async (input) => {
+      // Narrow one row set through every structural + caller filter, newest
+      // activity first. Live registry rows AND cold (on-disk) rows go
+      // through the SAME function, so a cold row can never be wider than a
+      // live one would be under identical input.
+      const { parentSessionId, ...filterRest } = pickSessionListFilters(input)
+      const filters = {
+        ...filterRest,
+        ...(parentSessionId
+          ? { parentSessionId: registry.findByIdOrName(parentSessionId)?.id ?? parentSessionId }
+          : {}),
+      }
+      const narrow = (inputRows: readonly SessionDescriptor[]): SessionDescriptor[] => {
+        let narrowed = [...inputRows]
+        if (!input.includeArchived) {
+          narrowed = narrowed.filter(s => !s.archived)
+        }
+        if (input.kind && input.kind !== "all") {
+          narrowed = narrowed.filter(s => s.kind === input.kind)
+        } else if (!input.includeCommands) {
+          // Default view = live-able sessions only. `kind:"command"` rows are
+          // a shell-execution LOG (already reachable via `command_list` / an
+          // explicit `kind:"command"` filter), not resumable sessions — left
+          // in, hundreds of finished-command rows bury the real agent/PTY
+          // sessions this tool exists to surface.
+          narrowed = narrowed.filter(s => s.kind !== "command")
+        }
+        // Inbox-only external rows are not agents; they never appear in this list.
+        narrowed = narrowed.filter(s => s.kind !== "external")
+        if (input.status) {
+          narrowed = narrowed.filter(s => s.status === input.status)
+        } else if (input.onlyAlive) {
+          narrowed = narrowed.filter(
+            s => s.status === "running" || s.status === "starting",
+          )
+        }
+        narrowed = applySessionListFilters(narrowed, filters)
+        return sortNewestActivityFirst(narrowed)
+      }
       // Always pull the FULL list (archived included) — subtree scoping
       // below needs every row to keep the parent→child graph connected
       // (an archived ancestor excluded from the base list would silently
       // orphan its non-archived descendants from `collectSubtree`'s BFS).
-      // The archived-hide is applied afterwards, per `input.includeArchived`.
+      // The archived-hide is applied inside `narrow`, per `input.includeArchived`.
       let rows = registry.list({ includeArchived: true })
       // Subtree scoping (WP4): on the scoped sub-gateway a child
       // orchestrator only sees the sessions in its own subtree, never
@@ -1224,36 +1373,29 @@ export function registerSessionTools(
         const subtree = collectSubtree(callerScope.ownerSessionId, rows)
         rows = rows.filter(s => subtree.has(s.id))
       }
-      if (!input.includeArchived) {
-        rows = rows.filter(s => !s.archived)
-      }
-      if (input.kind && input.kind !== "all") {
-        rows = rows.filter(s => s.kind === input.kind)
-      } else if (!input.includeCommands) {
-        // Default view = live-able sessions only. `kind:"command"` rows are
-        // a shell-execution LOG (already reachable via `command_list` / an
-        // explicit `kind:"command"` filter), not resumable sessions — left
-        // in, hundreds of finished-command rows bury the real agent/PTY
-        // sessions this tool exists to surface.
-        rows = rows.filter(s => s.kind !== "command")
-      }
-      // Inbox-only external rows are not agents; they never appear in this list.
-      rows = rows.filter(s => s.kind !== "external")
-      if (input.status) {
-        rows = rows.filter(s => s.status === input.status)
-      } else if (input.onlyAlive) {
-        rows = rows.filter(
-          s => s.status === "running" || s.status === "starting",
-        )
-      }
       // Narrow + order BEFORE the per-row `ps` sampling below, so
       // `withMemory`/`stats` only pay for rows that survive.
-      const { parentSessionId, ...filterRest } = pickSessionListFilters(input)
-      rows = applySessionListFilters(rows, {
-        ...filterRest,
-        ...(parentSessionId ? { parentSessionId: registry.findByIdOrName(parentSessionId)?.id ?? parentSessionId } : {}),
-      })
-      rows = sortNewestActivityFirst(rows)
+      rows = narrow(rows)
+
+      // ── cold fallback ──────────────────────────────────────────
+      // `HISTORY_CAP` bounds what the registry holds at boot; the rows it
+      // dropped are still on disk (sidecar + transcript). Two ways in:
+      // explicitly (`includeCold`), or implicitly when a `q` matches
+      // NOTHING live — the caller is looking for history, and an empty
+      // page is a worse answer than the session they remember. Cold rows
+      // are terminal records (`cold: true`, no pid) and are dropped for
+      // any id the registry already holds.
+      const query = input.q?.trim() ?? ""
+      const wantCold = input.includeCold === true || (query !== "" && rows.length === 0)
+      // A scope-filtered caller has no way to verify a cold row's subtree
+      // membership (its parent chain may not be held by the registry
+      // either), so it never sees cold rows.
+      if (wantCold && !callerScope) {
+        const held = new Set(registry.list({ includeArchived: true }).map(s => s.id))
+        const cold = coldSessionRows(registry.transcriptBaseDir).filter(s => !held.has(s.id))
+        rows = narrow([...rows, ...cold])
+      }
+
       if (input.withMemory) {
         const live = rows.filter(
           (s): s is SessionDescriptor & { pid: number } =>
@@ -1308,6 +1450,14 @@ export function registerSessionTools(
       .enum(["starting", "running", "exited", "killed", "error"])
       .optional()
       .describe("Filter by exact status."),
+    includeCold: z
+      .boolean()
+      .optional()
+      .describe(
+        "Also search COLD history — sessions the registry dropped at boot " +
+          "(`HISTORY_CAP`) whose transcripts are still on disk (terminal records, " +
+          "flagged `cold: true`). Implied when the query matches nothing live.",
+      ),
     ...pageParamsShape,
   })
   type SessionSearchInput = z.infer<typeof sessionSearchSchema>
@@ -1318,8 +1468,10 @@ export function registerSessionTools(
       "Find sessions by a case-insensitive query across id prefix, label, title, cwd and " +
       "workspace slug — the daemon-side twin of `agentproto sessions find <query>`. " +
       "Optional `status` filters to an exact lifecycle status; `limit` (default 20) caps " +
-      "the result. Each hit uses the same compact shape as `session_list`. Read-only; " +
-      "use `session_recap` on a hit to see where that session stopped.",
+      "the result and `cursor` pages through it. Hits include COLD history (sessions the " +
+      "registry dropped at boot but whose transcripts are still on disk — terminal records, " +
+      "flagged `cold: true`). Each hit uses the same compact shape as `session_list`. " +
+      "Read-only; use `session_recap` on a hit to see where that session stopped.",
     inputSchema: sessionSearchSchema,
     handler: async input => {
       let rows = registry.list({ includeArchived: true })
@@ -1329,10 +1481,32 @@ export function registerSessionTools(
       }
       rows = rows.filter(s => matchesSessionQuery(s, input.query))
       if (input.status) rows = rows.filter(s => s.status === input.status)
-      const limit = Math.max(1, Math.min(200, input.limit ?? INDEX_DEFAULT_LIMIT))
-      rows = rows
-        .sort((a, b) => (b.lastActivityAt ?? b.startedAt).localeCompare(a.lastActivityAt ?? a.startedAt))
-        .slice(0, limit)
+      // Cold fallback — same rule as `session_list`: search is where you go
+      // for a session you remember, and "the registry dropped it at boot"
+      // is not an acceptable answer while its transcript is still on disk.
+      // Consulted when the live query matched NOTHING (or explicitly, via
+      // `includeCold`), never merged into a non-empty live result — cold
+      // rows are terminal records, and a rescue is not a ranking input.
+      // Live rows always win on a duplicate id; a scope-filtered caller
+      // never sees cold rows (see session_list's docblock).
+      const wantCold = input.includeCold === true || rows.length === 0
+      if (wantCold && !callerScope) {
+        const held = new Set(registry.list({ includeArchived: true }).map(s => s.id))
+        const cold = coldSessionRows(registry.transcriptBaseDir)
+          .filter(s => !held.has(s.id))
+          .filter(s => matchesSessionQuery(s, input.query))
+          .filter(s => (input.status ? s.status === input.status : true))
+        rows = rows.concat(cold)
+      }
+      rows = rows.sort((a, b) => (b.lastActivityAt ?? b.startedAt).localeCompare(a.lastActivityAt ?? a.startedAt))
+      // Pre-slice ONLY for the default (no `limit`, no `cursor`) call, which
+      // documents 20 results. With `limit`/`cursor` the `paginated`
+      // transformer owns the window — slicing here first would index the
+      // cursor into a truncated array and make every page after the first
+      // come back empty.
+      if (input.limit === undefined && input.cursor === undefined) {
+        rows = rows.slice(0, INDEX_DEFAULT_LIMIT)
+      }
       return rows.map(publicSessionDescriptor)
     },
     transformers: [
@@ -1374,7 +1548,12 @@ export function registerSessionTools(
         .describe("How many recent user prompts to include (default 8)."),
     }),
     handler: async input => {
-      const resolved = registry.findByIdOrName(input.id)
+      const resolved =
+        registry.findByIdOrName(input.id) ??
+        // Cold rescue: a hit found via `session_search`'s cold fallback has
+        // no registry row, but its sidecar + transcript are enough for a
+        // recap (`desc` is only ever read for id/meta below).
+        coldSessionDescriptor(input.id, registry.transcriptBaseDir)
       if (!resolved) throw new Error(`session_recap: no session "${input.id}"`)
       const desc = registry.get(resolved.id) ?? resolved
       const baseDir = registry.transcriptBaseDir
@@ -2871,6 +3050,11 @@ export function registerSessionTools(
       "SOURCE session's sibling, not its child; the full record's `handoff` " +
       "field names which harness the checkpoint moved from/to), and " +
       "`isOrchestrator` (true when the session itself spawned sub-agents). " +
+      "Review-lane / workflow-stage ROOTS (`review:*`/`wf:*` labels, or origin " +
+      "`review`/`workflow`) are collapsed under one synthetic parent per checkout — " +
+      "`{ id: 'reviews:<key>', label: 'reviews · <key>', synthetic: true, children: [...] }` " +
+      "— so a busy daemon's gate-review flood reads as one row; that node is NOT a " +
+      "session (never focus/prompt/kill it, just render it as a group header). " +
       "Via a scoped orchestrator token only the caller's subtree is returned; " +
       "from the root `/mcp` endpoint the full daemon tree is visible. " +
       "NAVIGATION (additive): pass `nodeId` + `direction` together to fetch a " +
@@ -3014,6 +3198,8 @@ export function registerSessionTools(
           ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
           ...(s.origin ? { origin: s.origin } : {}),
           ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
+          ...(s.workspaceSlug ? { workspaceSlug: s.workspaceSlug } : {}),
+          ...(s.worktreePath ? { worktreePath: s.worktreePath } : {}),
           isOrchestrator: orchestratorIds.has(s.id),
           children: [],
         })
@@ -3109,7 +3295,12 @@ export function registerSessionTools(
           content: [{ type: "text", text: JSON.stringify(body) }],
         }
       }
-      const tree = badgesFor ? attachReviewBadges(buildSessionTree(rows), badgesFor) : buildSessionTree(rows)
+      const built = badgesFor ? attachReviewBadges(buildSessionTree(rows), badgesFor) : buildSessionTree(rows)
+      // Collapse review-lane / workflow-stage roots under one synthetic
+      // `reviews · <checkout>` parent per checkout — see groupNoiseRoots.
+      // `byOrigin` is derived from the GROUPED tree so the companion view
+      // always mirrors what `tree` shows.
+      const tree = groupNoiseRoots(built)
       // Additive companion view: the same roots bucketed by `origin` so a
       // client can show "claude-code desktop vs vscode extension vs cron"
       // groups — the human-launched roots have no agent parent to nest under,

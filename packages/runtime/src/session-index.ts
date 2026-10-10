@@ -59,6 +59,11 @@ export interface SessionIndexEntry {
   parentSessionId?: string
   startedAt: string
   lastActivityAt?: string
+  /** True when the session was archived at the time this sidecar was
+   *  written. Present from this point on; a sidecar written by an older
+   *  daemon simply omits it, so a cold read of such a row shows it as
+   *  non-archived. */
+  archived?: boolean
   lastTurnReason?: string
   lastUserPrompt?: { ts: string; text: string }
   lastOutputText?: string
@@ -129,6 +134,7 @@ export function indexEntryFromDescriptor(
   if (desc.lastTurnReason !== undefined) entry.lastTurnReason = desc.lastTurnReason
   if (desc.turnsCompleted !== undefined) entry.turnsCompleted = desc.turnsCompleted
   if (desc.costUsd !== undefined) entry.costUsd = desc.costUsd
+  if (desc.archived === true) entry.archived = true
   const prompt = extra?.lastUserPrompt
   if (prompt && prompt.text.trim()) {
     entry.lastUserPrompt = { ts: prompt.ts, text: capText(prompt.text, INDEX_MAX_PROMPT) }

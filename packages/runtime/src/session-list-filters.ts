@@ -28,6 +28,10 @@ export type StringOrList = string | readonly string[]
 export interface SessionListFilterInput {
   /** Case-insensitive substring over id, name, label, title and cwd. */
   q?: string
+  /** Only sessions whose `label` equals this (case-insensitive exact match). */
+  label?: string
+  /** Only sessions whose `cwd` is this path or lives under it (path prefix, boundary-aware). */
+  cwd?: string
   /** Drop sessions whose `label` starts with any of these (case-sensitive). */
   excludeLabelPrefix?: StringOrList
   /** Drop sessions whose `label` equals any of these (as `session_follow`'s `exclude.labels`). */
@@ -49,6 +53,8 @@ export interface SessionListFilterInput {
 /** Names of every filter key, for surfaces that parse them from a query string. */
 export const SESSION_LIST_FILTER_KEYS = [
   "q",
+  "label",
+  "cwd",
   "excludeLabelPrefix",
   "excludeLabels",
   "excludeKinds",
@@ -124,14 +130,24 @@ type NoiseView = Pick<SessionDescriptor, "kind" | "status" | "label" | "origin" 
  * and every agent-cli session outside 1–2 are kept, as is anything `error`ed.
  */
 export function isNoiseSession(s: NoiseView): boolean {
-  const label = s.label ?? ""
-  if (label.startsWith(REVIEW_LABEL_PREFIX) || label.startsWith(WORKFLOW_LABEL_PREFIX)) return true
-  if (s.origin !== undefined && NOISE_ORIGINS.has(s.origin)) return true
+  if (isReviewOrWorkflowSession(s)) return true
   // Inbox-only rows (Desktop / CLI sessions the daemon doesn't run) are not agents.
   if (s.kind === "external") return true
   const ended = s.status === "exited" || s.status === "killed"
   if (ended && (s.kind === "command" || (s.kind === "terminal" && !s.adapterSlug))) return true
   return false
+}
+
+/**
+ * Just the review-lane / workflow-stage lanes of {@link isNoiseSession}
+ * (steps 1–2): `label` starts with `review:` or `wf:`, or `origin` is
+ * `review` / `workflow`. Used to group these under one synthetic parent node
+ * without also swallowing ended one-shot command runs.
+ */
+export function isReviewOrWorkflowSession(s: Pick<NoiseView, "label" | "origin">): boolean {
+  const label = s.label ?? ""
+  if (label.startsWith(REVIEW_LABEL_PREFIX) || label.startsWith(WORKFLOW_LABEL_PREFIX)) return true
+  return s.origin !== undefined && NOISE_ORIGINS.has(s.origin)
 }
 
 /** Epoch ms of a session's last activity, falling back to its start. */
@@ -151,6 +167,8 @@ export function sortNewestActivityFirst<T extends Pick<SessionDescriptor, "id" |
 export function hasSessionListFilters(input: SessionListFilterInput): boolean {
   return (
     (input.q !== undefined && input.q.trim() !== "") ||
+    (input.label !== undefined && input.label.trim() !== "") ||
+    (input.cwd !== undefined && input.cwd.trim() !== "") ||
     toList(input.excludeLabelPrefix).length > 0 ||
     toList(input.excludeLabels).length > 0 ||
     toList(input.excludeKinds).length > 0 ||
@@ -179,6 +197,24 @@ type FilterableSession = Pick<
 >
 
 /**
+ * Trim trailing slashes from a directory prefix, collapsing the empty root
+ * (`/` → `""`), so `pathUnder` can compare with a single boundary-aware rule.
+ */
+function normalizePathPrefix(raw: string): string {
+  const trimmed = raw.trim()
+  const collapsed = trimmed.replace(/\/{2,}/g, "/")
+  return collapsed.length > 1 ? collapsed.replace(/\/+$/, "") : collapsed
+}
+
+/** True when `p` equals `root` or lives under it (`/a/b` under `/a`, not under `/ab`). */
+function pathUnder(p: string | undefined, root: string): boolean {
+  if (p === undefined || p === "") return false
+  if (root === "") return p.startsWith("/")
+  if (p === root) return true
+  return p.startsWith(root.endsWith("/") ? root : `${root}/`)
+}
+
+/**
  * Compile `input` into a row predicate. Validates (and resolves relative
  * times against `now`) once, up front, so a bad `updatedSince` fails the
  * whole call instead of silently matching nothing.
@@ -188,6 +224,9 @@ export function compileSessionListFilters(
   now: number = Date.now(),
 ): (s: FilterableSession) => boolean {
   const q = input.q?.trim().toLowerCase() ?? ""
+  const labelExact = input.label && input.label.trim() !== "" ? input.label.trim().toLowerCase() : undefined
+  const cwdRoot =
+    input.cwd && input.cwd.trim() !== "" ? normalizePathPrefix(input.cwd.trim()) : undefined
   const prefixes = toList(input.excludeLabelPrefix)
   const labels = new Set(toList(input.excludeLabels))
   const kinds = new Set(toList(input.excludeKinds))
@@ -208,6 +247,8 @@ export function compileSessionListFilters(
     }
     if (kinds.has(s.kind)) return false
     const label = s.label
+    if (labelExact !== undefined && (label ?? "").toLowerCase() !== labelExact) return false
+    if (cwdRoot !== undefined && !pathUnder(s.cwd, cwdRoot)) return false
     if (label !== undefined) {
       if (labels.has(label)) return false
       if (prefixes.some(p => label.startsWith(p))) return false
@@ -254,6 +295,10 @@ export function parseSessionListFilterParams(params: URLSearchParams): SessionLi
   const out: SessionListFilterInput = {}
   const q = str("q")
   if (q !== undefined) out.q = q
+  const label = str("label")
+  if (label !== undefined) out.label = label
+  const cwd = str("cwd")
+  if (cwd !== undefined) out.cwd = cwd
   const prefix = list("excludeLabelPrefix")
   if (prefix) out.excludeLabelPrefix = prefix
   const labels = list("excludeLabels")
@@ -279,6 +324,8 @@ const stringOrList = z.union([z.string(), z.array(z.string())])
 /** Zod fragment spread into `session_list`'s input schema. */
 export const sessionListFilterShape = {
   q: z.string().optional().describe("Case-insensitive substring over id, name, label, title, cwd."),
+  label: z.string().optional().describe("Only sessions whose label equals this (case-insensitive)."),
+  cwd: z.string().optional().describe("Only sessions whose cwd is this path or a path under it."),
   excludeLabelPrefix: stringOrList.optional().describe("Drop labels starting with any of these, e.g. ['review:','wf:']."),
   excludeLabels: stringOrList.optional().describe("Drop labels exactly equal to any of these (as session_follow exclude.labels)."),
   excludeKinds: stringOrList.optional().describe("Drop kinds: terminal | agent-cli | command."),

@@ -106,13 +106,16 @@ Usage:
                               (--simple: with --watch, the flat-table picker
                                instead of the 3-pane dashboard)
   agentproto sessions [list] [--q <text>] [--exclude-noise]
+                              [--label <exact>] [--cwd <dir>]
                               [--exclude-label-prefix <p>]... [--exclude-label <l>]...
                               [--exclude-kind <k>]... [--root-only] [--parent <id-or-name>]
                               [--updated-since <iso|24h>] [--started-since <iso|7d>]
                               [--status <s>] [--alive] [--limit N] [--fields a,b] [--json]
                               (daemon-side narrowing, newest activity first.
                                --q: case-insensitive substring over id, name,
-                               label, title, cwd. --exclude-noise drops review:*
+                               label, title, cwd. --label: exact label match;
+                               --cwd: only sessions under that directory.
+                               --exclude-noise drops review:*
                                lanes, wf:* workflow stages and ended one-shot
                                command runs (exited/killed terminals with no
                                adapter). Times are ISO-8601 or relative: 30m,
@@ -476,6 +479,8 @@ export async function runSessions(args: readonly string[]): Promise<number> {
       simple: { type: "boolean" },
       "no-color": { type: "boolean" },
       q: { type: "string" },
+      label: { type: "string" },
+      cwd: { type: "string" },
       "exclude-noise": { type: "boolean" },
       "exclude-label-prefix": { type: "string", multiple: true },
       "exclude-label": { type: "string", multiple: true },
@@ -549,6 +554,8 @@ export async function runSessions(args: readonly string[]): Promise<number> {
 
 type SessionListFlags = {
   q?: string | undefined
+  label?: string | undefined
+  cwd?: string | undefined
   "exclude-noise"?: boolean | undefined
   "exclude-label-prefix"?: string[] | undefined
   "exclude-label"?: string[] | undefined
@@ -573,6 +580,8 @@ function buildSessionListQuery(v: SessionListFlags): string | undefined {
     for (const val of vals ?? []) qs.append(k, val)
   }
   put("q", v.q)
+  put("label", v.label)
+  put("cwd", v.cwd)
   putAll("excludeLabelPrefix", v["exclude-label-prefix"])
   putAll("excludeLabels", v["exclude-label"])
   putAll("excludeKinds", v["exclude-kind"])

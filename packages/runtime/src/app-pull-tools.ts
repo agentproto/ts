@@ -11,7 +11,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { readFileSync } from "node:fs"
 import type { SessionsRegistry } from "./sessions.js"
-import { buildSessionTree } from "./session-tools.js"
+import { buildSessionTree, groupNoiseRoots } from "./session-tools.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 
 export interface RegisterAppPullToolsOptions {
@@ -94,7 +94,11 @@ export function registerAppPullTools(
       if (input.onlyAlive) {
         rows = rows.filter(s => s.status === "running" || s.status === "starting")
       }
-      const tree = buildSessionTree(rows)
+      // Same collapse `session_tree` applies: review/workflow roots nest
+      // under one synthetic `reviews · <checkout>` parent so the widget's
+      // left pane isn't a wall of gate-review lanes. The node is flagged
+      // `synthetic: true` and the widget renders it as a group header.
+      const tree = groupNoiseRoots(buildSessionTree(rows))
       return {
         content: [{ type: "text" as const, text: JSON.stringify({ tree }) }],
       }

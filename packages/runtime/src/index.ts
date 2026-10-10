@@ -577,6 +577,7 @@ export {
   compileSessionListFilters,
   hasSessionListFilters,
   isNoiseSession,
+  isReviewOrWorkflowSession,
   parseSessionListFilterParams,
   parseTimeBound,
   pickSessionListFilters,
@@ -607,6 +608,13 @@ export {
   type TranscriptPrompt,
   type TranscriptTail,
 } from "./session-index.js"
+export {
+  COLD_TTL_MS,
+  coldSessionDescriptor,
+  coldSessionRows,
+  resetColdSessionCache,
+  sessionDescriptorFromIndexEntry,
+} from "./session-cold-list.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,

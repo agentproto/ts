@@ -122,6 +122,10 @@ details.tool-group .row{margin-top:5px}
 .dot.error{background:var(--red)}
 .tnode .label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:Menlo,Monaco,monospace}
 .tnode .badge{font-size:9px;font-weight:700;color:var(--purple);border:1px solid var(--purple);border-radius:3px;padding:0 4px;flex-shrink:0}
+/* Synthetic group header (session_tree's "reviews · <checkout>" node) — a
+   folder, not a session: no cursor, no hover, no click. */
+.tnode.tsyn{cursor:default;font-weight:600;color:var(--text2)}
+.tnode.tsyn:hover{background:transparent}
 .tchildren{margin-left:14px;border-left:1px solid var(--border);padding-left:4px}
 #tree-empty{padding:12px;color:var(--text3);font-size:12px}
 
@@ -441,14 +445,23 @@ function flattenDfs(nodes, out) {
 }
 
 function pickInitialFocus(tree) {
-  var flat = flattenDfs(tree);
+  // Synthetic group headers are folders, never focusable.
+  var flat = flattenDfs(tree).filter(function(n) { return !n.synthetic; });
   var alive = flat.filter(function(n) { return n.status === 'running' || n.status === 'starting'; });
   if (alive.length) return alive[alive.length - 1].id;
-  return tree.length ? tree[0].id : null;
+  return flat.length ? flat[0].id : null;
 }
 
 function renderTreeNode(node, depth) {
   var childrenHtml = (node.children || []).map(function(c) { return renderTreeNode(c, depth + 1); }).join('');
+  // Synthetic parent = a group header for its children, not a session: it
+  // carries no data-id, so the click binding below can never focus it.
+  if (node.synthetic) {
+    return '<div class="tnode tsyn">' +
+      '<span class="label">' + escHtml(node.label || node.id) + '</span>' +
+      '</div>' +
+      (childrenHtml ? '<div class="tchildren">' + childrenHtml + '</div>' : '');
+  }
   var badge = node.isOrchestrator ? '<span class="badge">orch</span>' : '';
   var cls = 'tnode' + (node.id === focusId ? ' focus' : '');
   return '<div class="' + cls + '" data-id="' + escHtml(node.id) + '">' +
@@ -462,7 +475,7 @@ function renderTreeNode(node, depth) {
 // setFocus() — the only session-switch entry point.
 function renderHeadSelector() {
   var sel = document.getElementById('head-selector');
-  var flat = flattenDfs(currentTree);
+  var flat = flattenDfs(currentTree).filter(function(n) { return !n.synthetic; });
   while (sel.firstChild) sel.removeChild(sel.firstChild);
   if (!flat.length) return;
   for (var i = 0; i < flat.length; i++) {
@@ -489,7 +502,8 @@ function renderTree() {
   els.forEach(function(el) {
     el.addEventListener('click', function() {
       var id = el.getAttribute('data-id');
-      if (id === focusId) return;
+      // Synthetic group headers render without a data-id — never focusable.
+      if (!id || id === focusId) return;
       focusSource = 'user';
       setFocus(id);
     });
