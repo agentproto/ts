@@ -480,9 +480,12 @@ describe("resolveLlmModelRoute", () => {
     // exact-length pin reddens the weekly "Regenerate catalog data" job
     // outright the moment either endpoint's live roster gains or loses a
     // model — before it ever reaches the reviewable sync PR. Same pattern
-    // as the openrouter/requesty/huggingface enumeration tests below.
-    expect(go.length).toBeGreaterThan(30)
-    expect(zen.length).toBeGreaterThan(90)
+    // as the openrouter/requesty/huggingface enumeration tests below. The
+    // floors sit well under the live counts (31 Go / 84 Zen on 2026-10-10,
+    // once models.dev-deprecated models are dropped) so a retirement or two
+    // doesn't trip them.
+    expect(go.length).toBeGreaterThan(20)
+    expect(zen.length).toBeGreaterThan(50)
     // No `@route` annotation: route === vendor, so `formatModelRef` drops it
     // and the enumerated id is exactly what a caller passes to `agent_start`.
     expect(go.map(r => formatModelRef(r.ref))).toContain("opencode-go/glm-5.3")
