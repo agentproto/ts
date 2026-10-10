@@ -69,7 +69,7 @@ describe("e2bSandboxProvider.boot", () => {
       DEFAULT_TEMPLATE,
       expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
     )
-    // the stable template's recorded bake is PROVEN (cli 0.17.0) and no
+    // the stable template's recorded bake is PROVEN and no
     // cliVersion was requested, so the on-boot npm install is SKIPPED — the
     // baked image already carries the pinned CLI + adapters.
     expect(sandbox.commands.run).not.toHaveBeenCalledWith(
@@ -186,11 +186,13 @@ describe("e2bSandboxProvider.boot", () => {
     fetchMock.mockResolvedValue({ ok: true })
 
     const { e2bSandboxProvider, resolveUpdateCli, TEMPLATES } = await import("../provider.js")
-    // the committed stable record is PROVEN against a real bake
-    expect(TEMPLATES.stable.baked.cli).toBe("0.17.0")
+    // the committed stable record is PROVEN against a real bake; read the
+    // pin from it so a template promotion does not break this test
+    const bakedCli = TEMPLATES.stable.baked.cli
+    expect(bakedCli).toMatch(/^\d+\.\d+\.\d+/)
     const bootSpec: SandboxSpec = {
       provider: "e2b",
-      config: { healthProbeTimeoutMs: 0, cliVersion: "0.17.0" }, // matches the baked pin
+      config: { healthProbeTimeoutMs: 0, cliVersion: bakedCli! }, // matches the baked pin
     }
     await e2bSandboxProvider.boot(bootSpec, { env: {} })
 
@@ -201,7 +203,7 @@ describe("e2bSandboxProvider.boot", () => {
     )
     // unit-level: a proven bake matching the pin (or an unset cliVersion,
     // where the bake IS the pin) skips the legacy install
-    expect(resolveUpdateCli({ cliVersion: "0.17.0" }, TEMPLATES.stable.id!)).toBe(false)
+    expect(resolveUpdateCli({ cliVersion: bakedCli! }, TEMPLATES.stable.id!)).toBe(false)
     expect(resolveUpdateCli({}, TEMPLATES.stable.id!)).toBe(false)
   })
 

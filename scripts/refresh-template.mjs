@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url"
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const SEMVER_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
-const ID_RE = /\b[a-z0-9]{20}\b/g
+// Template ids are exactly 20 chars; sandbox ids are 20 or 21 (e2b now
+// issues 21). Bounded on both sides so a 64-char image digest in the build
+// output is never mistaken for an id.
+const ID_LENGTH = { template: "{20}", sandbox: "{20,21}" }
 const ID_EXACT_RE = /^[a-z0-9]{20}$/
 
 let root = DEFAULT_ROOT
@@ -197,10 +200,14 @@ function makeBuildDirectory(nextVersions) {
   }
 }
 
-function extractId(output, kind) {
+function extractId(output, kind, exclude = []) {
   const text = String(output)
-  const id = text.match(new RegExp(`(?:${kind} ID|${kind} id|ID)\\s+([a-z0-9]{20})\\b`, "i"))?.[1]
-    ?? [...text.matchAll(ID_RE)].map(match => match[0]).at(-1)
+  const length = ID_LENGTH[kind]
+  const id = text.match(new RegExp(`(?:${kind} ID|${kind} id|ID)\\s+([a-z0-9]${length})\\b`, "i"))?.[1]
+    ?? [...text.matchAll(new RegExp(`\\b[a-z0-9]${length}\\b`, "g"))]
+      .map(match => match[0])
+      .filter(candidate => !exclude.includes(candidate))
+      .at(-1)
   if (!id) throw new Error(`could not find a ${kind} id in e2b output`)
   return id
 }
@@ -214,7 +221,7 @@ function assertCredentials() {
 function proveTemplate(templateId, expected) {
   let sandboxId = null
   try {
-    sandboxId = extractId(run("e2b", ["sandbox", "create", "--detach", templateId]), "sandbox")
+    sandboxId = extractId(run("e2b", ["sandbox", "create", "--detach", templateId]), "sandbox", [templateId])
     const command = (...commandArgs) => run("e2b", ["sandbox", "exec", sandboxId, "--", ...commandArgs])
     const cliOutput = command("agentproto", "--version")
     if (!new RegExp(`\\b${expected.cli.replaceAll(".", "\\.")}\\b`).test(cliOutput)) {

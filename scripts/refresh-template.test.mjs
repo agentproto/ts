@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url"
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const REFRESH = path.join(ROOT, "scripts/refresh-template.mjs")
 const SYNC = path.join(ROOT, "scripts/sync-templates.mjs")
+// Pins move with every template bump; derive them instead of hardcoding.
+const PINS = JSON.parse(readFileSync(path.join(ROOT, "templates/workstation/versions.json"), "utf8"))
 
 function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "refresh-template-fixture-"))
@@ -28,7 +30,30 @@ function run(root, args, env = {}) {
   })
 }
 
-function fakeBinaries(root, { dirty = false } = {}) {
+// What the fake box reports as installed: the stable pins, except for a
+// dev --latest run where it reports what the fake registry served.
+function bakedReport(latest) {
+  if (latest) {
+    return {
+      cli: "0.17.0",
+      packages: {
+        "@agentproto/adapter-hermes": "0.4.10",
+        "@agentproto/adapter-mastra-agent": "0.6.0",
+        "@agentproto/adapter-opencode": "1.1.10",
+        "opencode-ai": "1.18.28",
+      },
+    }
+  }
+  return { cli: PINS.cli, packages: { ...PINS.adapters, ...PINS.runtime } }
+}
+
+function fakeBinaries(root, { dirty = false, latest = false } = {}) {
+  const baked = bakedReport(latest)
+  const npmLs = JSON.stringify({
+    dependencies: Object.fromEntries(
+      [["@agentproto/cli", baked.cli], ...Object.entries(baked.packages)].map(([name, version]) => [name, { version }]),
+    ),
+  })
   const bin = path.join(root, "bin")
   mkdirSync(bin)
   const write = (name, source) => {
@@ -49,17 +74,22 @@ esac`)
   write("e2b", `
 if [ "$1" = auth ] && [ "$2" = info ]; then echo logged-in; exit 0; fi
 if [ "$1" = template ] && [ "$2" = create ]; then
+  # Real build output ends with the image digest (64 hex chars) after the id.
   if [ "$3" = agentproto-workstation-dev ]; then echo "created devtemplate000000001"; else echo "created stabletemplate000001"; fi
+  echo "digest sha256 7b198ad8ecf27b589cb95353df479e097e2a6ab8a1ab8867438a5a16641d5a87"
   exit 0
 fi
-if [ "$1" = sandbox ] && [ "$2" = create ]; then echo "created sandboxproof00000001"; exit 0; fi
+# Real e2b sandbox ids are 21 chars and the create output also names the
+# template id, so the proof must not mistake the template for the sandbox.
+if [ "$1" = sandbox ] && [ "$2" = create ]; then echo "Sandbox sandboxproof000000001 created from template $4"; exit 0; fi
 if [ "$1" = sandbox ] && [ "$2" = kill ]; then exit 0; fi
+if [ "$1" = sandbox ] && [ "$2" = exec ] && [ "$3" != sandboxproof000000001 ]; then echo "Paused sandbox $3 not found" >&2; exit 7; fi
 if [ "$1" = sandbox ] && [ "$2" = exec ]; then
   case "$5" in
-    agentproto) echo 'agentproto 0.17.0 (test)'; exit 0 ;;
+    agentproto) echo 'agentproto ${baked.cli} (test)'; exit 0 ;;
     node) echo v22.22.0; exit 0 ;;
     git) echo 'git version 2.50.1'; exit 0 ;;
-    npm) echo '{"dependencies":{"@agentproto/cli":{"version":"0.17.0"},"@agentproto/adapter-hermes":{"version":"0.4.10"},"@agentproto/adapter-mastra-agent":{"version":"0.6.0"},"@agentproto/adapter-opencode":{"version":"1.1.10"},"opencode-ai":{"version":"1.18.28"}}}'; exit 0 ;;
+    npm) echo '${npmLs}'; exit 0 ;;
     sh) exit 0 ;;
   esac
 fi
@@ -104,7 +134,7 @@ test("stable --pin --dry-run resolves pins from versions.json without registry a
     // Only git is needed pre-dry-run; npm/e2b must not be consulted for pins.
     const out = run(root, ["--channel", "stable", "--pin", "--dry-run"], { PATH: `${bin}:${process.env.PATH}` })
     assert.match(out, /would publish and prove stable/)
-    assert.match(out, /@agentproto\/cli@0\.17\.0/)
+    assert.ok(out.includes(`@agentproto/cli@${PINS.cli}`))
     assert.match(out, /agentproto-workstation\n/)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -139,7 +169,7 @@ test("latest refresh only changes the proved dev entry and canonical generated f
   const root = fixture()
   try {
     const before = JSON.parse(readFileSync(path.join(root, "templates/workstation/versions.json"), "utf8"))
-    const bin = fakeBinaries(root)
+    const bin = fakeBinaries(root, { latest: true })
     const out = run(root, ["--channel", "dev", "--latest"], { PATH: `${bin}:${process.env.PATH}` })
     assert.match(out, /published and proved dev template devtemplate000000001/)
     const after = JSON.parse(readFileSync(path.join(root, "templates/workstation/versions.json"), "utf8"))
