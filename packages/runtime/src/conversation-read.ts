@@ -14,6 +14,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { CONVERSATION_STORES, type ConversationCandidate } from "./conversation-store.js"
+import { coldSessionDescriptor } from "./session-cold-list.js"
+import { locateConversationBySessionId } from "./conversation-index.js"
+import { BUCKETS_ROOT, listBuckets } from "./workspace-buckets.js"
 import {
   exportDaemonEventsSession,
   renderMarkdown,
@@ -216,6 +219,45 @@ function windowSession(
   }
 }
 
+/**
+ * The registry-miss rescue: a session the registry dropped at boot
+ * (`HISTORY_CAP`) is still on disk, and reading its conversation is exactly
+ * the thing a caller wants to do with it. Two sources, both read-only:
+ *
+ *  1. the session's `index.json` sidecar (or a bounded transcript tail when
+ *     the sidecar is missing) — the descriptor, via `session-cold-list`;
+ *  2. the `conversations.jsonl` link index — the adapter's OWN conversation
+ *     id, which the sidecar never carries. With it the ladder's step 1 is
+ *     exact; without it a cold agent-cli row still resolves by cwd+time
+ *     (step 3), and a cold PTY falls through to the daemon-events fallback.
+ *
+ * Returns undefined when neither source knows the id, so the caller keeps
+ * its "not found" answer. `idOrName` must be a session id here: names are
+ * registry-assigned and a cold row never has one.
+ */
+async function resolveColdSession(
+  idOrName: string,
+  registry: SessionsRegistry,
+): Promise<SessionDescriptor | undefined> {
+  const cold = coldSessionDescriptor(idOrName, registry.transcriptBaseDir)
+  if (!cold) return undefined
+  let located: Awaited<ReturnType<typeof locateConversationBySessionId>>
+  try {
+    located = await locateConversationBySessionId(BUCKETS_ROOT(), () => listBuckets(BUCKETS_ROOT()), cold.id)
+  } catch {
+    located = undefined // best-effort — the sidecar alone is still useful
+  }
+  const record = located?.record
+  return {
+    ...cold,
+    ...(record?.adapterSessionId ? { adapterSessionId: record.adapterSessionId } : {}),
+    ...(record?.adapterSlug ? { adapterSlug: record.adapterSlug } : {}),
+    ...(record?.adapterConfigDir ? { adapterConfigDir: record.adapterConfigDir } : {}),
+    ...(record?.cwd && !cold.cwd ? { cwd: record.cwd } : {}),
+    ...(located?.workspace ? { workspaceSlug: located.workspace } : {}),
+  }
+}
+
 /** Core logic shared by the MCP tool and the HTTP route below — resolves
  *  a session (alive or historical) to its provider-native conversation and
  *  renders it. Read-only: never spawns, kills, resumes, or writes. */
@@ -223,7 +265,9 @@ export async function readConversation(
   registry: SessionsRegistry,
   input: ConversationReadInput,
 ): Promise<ConversationReadResult> {
-  const desc = registry.findByIdOrName(input.idOrName)
+  const desc =
+    registry.findByIdOrName(input.idOrName) ??
+    (await resolveColdSession(input.idOrName, registry))
   if (!desc) {
     return { conversation: null, reason: `session "${input.idOrName}" not found` }
   }

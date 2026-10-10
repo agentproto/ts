@@ -18,6 +18,8 @@ The same names work on `GET /sessions` (query params) and the CLI
 | Filter | Meaning |
 |---|---|
 | `q` | case-insensitive substring over id, name, label, title and cwd |
+| `label` | only sessions whose label equals this (case-insensitive exact match) |
+| `cwd` | only sessions whose cwd is this path or lives under it (boundary-aware prefix) |
 | `excludeNoise` | preset, see the `excludeNoise` topic |
 | `excludeLabelPrefix` | drop sessions whose label starts with any of these (string or list) |
 | `excludeLabels` | drop sessions whose label equals any of these exactly (`session_follow`'s `exclude.labels`) |
@@ -29,6 +31,20 @@ The same names work on `GET /sessions` (query params) and the CLI
 
 A malformed `updatedSince` / `startedSince` returns an error result (HTTP 400
 `invalid_filter`), never a silently empty list.
+
+## cold history (`includeCold`)
+
+`HISTORY_CAP` bounds how many sessions the registry holds after a restart;
+older ones keep their `index.json` sidecar and `events.jsonl` transcript on
+disk but are invisible to the live list. `includeCold: true` merges them back
+in, and a `q` that matches NOTHING live falls back to them automatically —
+an empty page is a worse answer than the session you remember.
+
+Cold rows are terminal records: `pid: null`, `alive: false`, flagged
+`cold: true`. They are not promptable or attachable (use `conversation_read`
+to read one). Rows the registry already holds always win, they honour every
+filter above exactly like live rows, and a subtree-scoped caller never sees
+them (a cold row's parent chain can't be verified).
 
 ## excludeNoise
 

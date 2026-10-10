@@ -5,6 +5,7 @@ import {
   applySessionListFilters,
   hasSessionListFilters,
   isNoiseSession,
+  isReviewOrWorkflowSession,
   parseSessionListFilterParams,
   parseTimeBound,
   pickSessionListFilters,
@@ -217,5 +218,74 @@ describe("parseSessionListFilterParams / pickSessionListFilters", () => {
   })
   it("pickSessionListFilters keeps only filter keys", () => {
     expect(pickSessionListFilters({ q: "a", limit: 5, kind: "all" } as never)).toEqual({ q: "a" })
+  })
+})
+
+describe("label (exact) and cwd (prefix) filters", () => {
+  it("label keeps only exact, case-insensitive matches", () => {
+    expect(apply({ label: "pygmalion brain" })).toEqual(["sess_main"])
+    expect(apply({ label: "PYGMALION BRAIN" })).toEqual(["sess_main"])
+    // A prefix of a label is not a match — that is `excludeLabelPrefix`'s job.
+    expect(apply({ label: "pygmalion" })).toEqual([])
+    expect(apply({ label: "review:agentik-studio:claims" })).toEqual(["sess_rev1"])
+  })
+
+  it("cwd keeps the directory itself and everything under it, not a sibling prefix", () => {
+    expect(apply({ cwd: "/work/scanner" })).toEqual(["sess_cmd1"])
+    // Every shared row's cwd lives under /work (default "/work/app").
+    expect(apply({ cwd: "/work" })).toEqual(ids(rows))
+    // "/work/app" must not match "/work/apple" — path-boundary aware.
+    expect(applySessionListFilters(
+      [row({ id: "sess_b", cwd: "/work/apple" }), row({ id: "sess_a", cwd: "/work/app" })],
+      { cwd: "/work/app" },
+      NOW,
+    ).map(r => r.id)).toEqual(["sess_a"])
+  })
+
+  it("label and cwd AND with every other filter", () => {
+    expect(apply({ label: "review:agentik-studio:claims", cwd: "/work/app" })).toEqual(["sess_rev1"])
+    expect(
+      applySessionListFilters(
+        [
+          row({ id: "sess_root", cwd: "/work/app" }),
+          row({ id: "sess_kid", cwd: "/work/app", parentSessionId: "sess_root" }),
+          row({ id: "sess_elsewhere", cwd: "/elsewhere" }),
+        ],
+        { cwd: "/work/app", rootOnly: true },
+        NOW,
+      ).map(r => r.id),
+    ).toEqual(["sess_root"])
+  })
+
+  it("a row with no cwd never matches a cwd filter", () => {
+    expect(applySessionListFilters([row({ id: "sess_nocwd", cwd: undefined })], { cwd: "/work" }, NOW)).toEqual([])
+  })
+
+  it("hasSessionListFilters and the HTTP param reader both see the new keys", () => {
+    expect(hasSessionListFilters({ label: "x" })).toBe(true)
+    expect(hasSessionListFilters({ cwd: "/x" })).toBe(true)
+    expect(hasSessionListFilters({ label: "  " })).toBe(false)
+    expect(parseSessionListFilterParams(new URLSearchParams("label=chat&cwd=/work/app"))).toEqual({
+      label: "chat",
+      cwd: "/work/app",
+    })
+    expect(pickSessionListFilters({ label: "chat", limit: 3 } as never)).toEqual({ label: "chat" })
+  })
+})
+
+describe("isReviewOrWorkflowSession", () => {
+  it("names exactly the review-lane / workflow-stage subset of the noise preset", () => {
+    expect(isReviewOrWorkflowSession({ label: "review:pr-42" })).toBe(true)
+    expect(isReviewOrWorkflowSession({ label: "wf:revise/reader-probe" })).toBe(true)
+    expect(isReviewOrWorkflowSession({ origin: "review" })).toBe(true)
+    expect(isReviewOrWorkflowSession({ origin: "workflow" })).toBe(true)
+    // Ended one-shot command runs are noise too, but NOT this subset —
+    // they must never be folded into a "reviews" group.
+    expect(isReviewOrWorkflowSession({ label: "bash -lc …" })).toBe(false)
+    expect(isReviewOrWorkflowSession({})).toBe(false)
+  })
+  it("isNoiseSession still covers review/workflow", () => {
+    expect(isNoiseSession({ kind: "agent-cli", status: "killed", label: "review:pr-1", origin: "review" })).toBe(true)
+    expect(isNoiseSession({ kind: "agent-cli", status: "killed", label: "chat", origin: "review" })).toBe(true)
   })
 })

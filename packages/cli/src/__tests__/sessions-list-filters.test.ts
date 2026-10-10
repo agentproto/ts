@@ -90,6 +90,10 @@ describe("agentproto sessions — list filter flags", () => {
       "7d",
       "--status",
       "running",
+      "--label",
+      "chat 16:56",
+      "--cwd",
+      "/work/app",
       "--limit",
       "10",
     ])
@@ -106,7 +110,18 @@ describe("agentproto sessions — list filter flags", () => {
     expect(p.get("updatedSince")).toBe("24h")
     expect(p.get("startedSince")).toBe("7d")
     expect(p.get("status")).toBe("running")
+    expect(p.get("label")).toBe("chat 16:56")
+    expect(p.get("cwd")).toBe("/work/app")
     expect(p.get("limit")).toBe("10")
+  })
+
+  it("--label and --cwd each narrow the request on their own", async () => {
+    await runSessions(["--json", "--label", "review:pr-1"])
+    expect(lastUrl().searchParams.get("label")).toBe("review:pr-1")
+
+    await runSessions(["--json", "--cwd", "/work/app"])
+    expect(lastUrl().searchParams.get("cwd")).toBe("/work/app")
+    expect(lastUrl().searchParams.get("label")).toBeNull()
   })
 
   it("--json stays a bare array even though the route returns {sessions,total}", async () => {

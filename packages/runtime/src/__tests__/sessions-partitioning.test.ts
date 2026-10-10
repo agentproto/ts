@@ -212,6 +212,59 @@ describe("sessions registry — per-workspace partitioning", () => {
     await registry.shutdown()
   })
 
+  it("HISTORY_CAP spends its budget on real sessions first — review/workflow noise is evicted first", async () => {
+    // The same shape the noise flood creates on a busy host: a modest pile
+    // of real sessions plus a much larger pile of gate-review / workflow
+    // rows, all in one bucket, total past the cap. Before this rule the
+    // newest-first slice spent the cap on whichever rows happened to be
+    // newest — i.e. the review flood — and the real sessions went first.
+    const real = Array.from({ length: 150 }, (_, i) =>
+      row(`real-${i}`, "busy", `2026-06-01T${String(i % 24).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}:00.000Z`),
+    )
+    const noise = Array.from({ length: 100 }, (_, i) => ({
+      ...row(`rev-${i}`, "busy", new Date(Date.parse("2026-07-02T00:00:00.000Z") + i * 60_000).toISOString()),
+      label: `review:pr-${i}`,
+      origin: "review",
+    }))
+    writeBucket("busy", [...real, ...noise])
+
+    const registry = createSessionsRegistry({})
+    const loaded = registry.list()
+
+    // Every real session survives — the cap is spent on noise only.
+    expect(loaded.filter(s => s.id.startsWith("real-"))).toHaveLength(150)
+    // …and the cap is still honoured overall.
+    expect(loaded).toHaveLength(HISTORY_CAP)
+    // The noise that remains is the NEWEST noise (recency still ranks within
+    // the lane), the oldest 50 reviews are what got dropped.
+    const survivingNoise = loaded.filter(s => s.id.startsWith("rev-")).map(s => s.id)
+    expect(survivingNoise.sort()).toEqual(
+      Array.from({ length: 50 }, (_, i) => `rev-${50 + i}`).sort(),
+    )
+
+    await registry.shutdown()
+  })
+
+  it("when real sessions alone exceed the cap, noise is dropped entirely", async () => {
+    const real = Array.from({ length: HISTORY_CAP + 20 }, (_, i) =>
+      row(`real-${i}`, "busy", `2026-06-02T${String(i % 24).padStart(2, "0")}:00:00.000Z`),
+    )
+    const noise = Array.from({ length: 30 }, (_, i) => ({
+      ...row(`rev-${i}`, "busy", `2026-07-02T${String(i % 24).padStart(2, "0")}:00:00.000Z`),
+      label: `wf:stage-${i}`,
+      origin: "workflow",
+    }))
+    writeBucket("busy", [...real, ...noise])
+
+    const registry = createSessionsRegistry({})
+    const loaded = registry.list()
+
+    expect(loaded).toHaveLength(HISTORY_CAP)
+    expect(loaded.every(s => s.id.startsWith("real-"))).toBe(true)
+
+    await registry.shutdown()
+  })
+
   it("migrates the legacy global file into buckets on first boot, non-destructively", async () => {
     registerWorkspaces("alpha", "beta")
     writeFileSync(
