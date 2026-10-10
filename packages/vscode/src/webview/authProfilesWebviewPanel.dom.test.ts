@@ -82,7 +82,7 @@ const CURATED_WALLET = {
     {
       id: "anthropic/claude-opus-4-8",
       status: "unbillable",
-      hint: "no connected wallet can bill this model on anthropic — check this wallet's credential",
+      hint: "no connected wallet can bill this model on anthropic — allow it in a wallet's model list, or check that wallet's credential",
     },
   ],
 }

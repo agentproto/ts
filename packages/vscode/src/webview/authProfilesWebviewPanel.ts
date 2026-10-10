@@ -146,7 +146,7 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
     })
 
     webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) this.post()
+      if (webviewView.visible) this.refresh()
     })
 
     webviewView.onDidDispose(() => {

@@ -227,7 +227,7 @@ function curatedChipFor(
     return {
       id,
       status: "unbillable",
-      hint: `no connected wallet can bill this model on ${profile.endpoint} — check this wallet's credential`,
+      hint: `no connected wallet can bill this model on ${profile.endpoint} — allow it in a wallet's model list, or check that wallet's credential`,
     }
   }
   return { id, status: "unlisted", hint: `not in the ${profile.endpoint} catalog — check the model id` }
