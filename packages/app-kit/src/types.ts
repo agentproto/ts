@@ -88,10 +88,13 @@ export interface AppUiBuildConfig {
   readonly cwd?: string
   /**
    * Glob patterns (relative to `cwd`) whose newest mtime is compared
-   * against the built file's to decide staleness. Defaults to `["src/**"]`.
-   * Supports `**` (any number of path segments) and `*` (any characters
-   * within one segment) — not full glob syntax (no brace expansion, no
-   * negation).
+   * against the built file's to decide staleness; when the mtimes say
+   * stale, the files' content hash is compared with the last successful
+   * build's, so a rewrite with identical bytes doesn't rebuild. Defaults to
+   * `["src/**"]`. Supports `**` (any number of path segments) and `*` (any
+   * characters within one segment), plus `!pattern` entries that exclude
+   * matches — not full glob syntax (no brace expansion, no `?`). Test files
+   * (`__tests__/` dirs, `*.test.*`, `*.spec.*`) are always excluded.
    */
   readonly sources?: readonly string[]
 }

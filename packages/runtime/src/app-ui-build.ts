@@ -17,6 +17,21 @@
  * absolute `uiPath` — an app's bundle lives at one path regardless of which
  * route is asking).
  *
+ * Staleness is two-tier. The mtime comparison above is only the fast path:
+ * when it says "stale", the sources' CONTENT is hashed and compared with the
+ * hash recorded after the last successful build (`appUiBuildStampPath`, under
+ * the daemon state dir). A matching hash means nothing that feeds the bundle
+ * actually changed — a `git checkout`/`stash`/hook that rewrote files with
+ * identical bytes only bumped their mtimes — so no build runs. Test files
+ * (`DEFAULT_SOURCE_EXCLUDES`) never count as sources, and a `!pattern` entry
+ * in `sources` excludes more.
+ *
+ * Page renders go through `resolveAppUiBuildState`, which never makes a user
+ * wait on a REbuild: when a bundle already exists it is served as-is while
+ * the rebuild runs in the background (stale-while-revalidate), and a failed
+ * background rebuild keeps serving it, without retrying until the sources
+ * change again. Only a MISSING bundle shows the "building" placeholder.
+ *
  * An app with no `ui.build` declared keeps today's behavior exactly: the
  * bundle must already exist on disk, and a missing one is a clear error
  * naming the path rather than a bare 404.
@@ -27,7 +42,7 @@ import { createHash } from "node:crypto"
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import type { Dirent, Stats } from "node:fs"
 import { homedir } from "node:os"
-import { basename, dirname, isAbsolute, join, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import type { AppUiBuildConfig } from "@agentproto/app-kit"
 
 /**
@@ -145,26 +160,180 @@ async function collectGlobFiles(baseDir: string, segments: readonly string[]): P
   return results
 }
 
-/** Newest mtime (ms) among every file matched by `patterns` (relative to
- *  `cwd`), or `undefined` if nothing matched any pattern. */
+/** Whole-path glob → regex, for EXCLUDE patterns matched against a source's
+ *  `/`-separated path relative to `cwd`: `**` spans any number of segments
+ *  (a leading or trailing `**` segment also matches zero), `*` stays within
+ *  one segment. */
+function pathGlobToRegex(pattern: string): RegExp {
+  let out = ""
+  let i = 0
+  while (i < pattern.length) {
+    if (pattern.startsWith("**/", i)) {
+      out += "(?:.*/)?"
+      i += 3
+    } else if (pattern.startsWith("/**", i) && i + 3 === pattern.length) {
+      out += "(?:/.*)?"
+      i += 3
+    } else if (pattern.startsWith("**", i)) {
+      out += ".*"
+      i += 2
+    } else if (pattern[i] === "*") {
+      out += "[^/]*"
+      i += 1
+    } else {
+      out += pattern[i]!.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+      i += 1
+    }
+  }
+  return new RegExp(`^${out}$`)
+}
+
+/** Never sources, whatever `ui.build.sources` says: tests don't feed a UI
+ *  bundle, so editing one must not trigger a multi-second rebuild. */
+export const DEFAULT_SOURCE_EXCLUDES: readonly string[] = ["**/__tests__/**", "**/*.test.*", "**/*.spec.*"]
+
+/**
+ * Every file matched by `patterns` (relative to `cwd`), minus
+ * {@link DEFAULT_SOURCE_EXCLUDES} and any `!pattern` entry in `patterns`.
+ * Returned sorted by relative path, deduped (two patterns can match the same
+ * file), as `{ abs, rel }` with `rel` always `/`-separated.
+ */
+export async function collectSourceFiles(
+  cwd: string,
+  patterns: readonly string[],
+): Promise<{ readonly abs: string; readonly rel: string }[]> {
+  const normalize = (p: string) => p.replace(/^\.\//, "")
+  const excludes = [
+    ...DEFAULT_SOURCE_EXCLUDES,
+    ...patterns.filter(p => p.startsWith("!")).map(p => normalize(p.slice(1))),
+  ].map(pathGlobToRegex)
+  const byRel = new Map<string, string>()
+  for (const pattern of patterns) {
+    if (pattern.startsWith("!")) continue
+    const segments = normalize(pattern).split("/").filter(s => s.length > 0)
+    if (segments.length === 0) continue
+    for (const abs of await collectGlobFiles(cwd, segments)) {
+      const rel = relative(cwd, abs).split(sep).join("/")
+      if (excludes.some(re => re.test(rel))) continue
+      byRel.set(rel, abs)
+    }
+  }
+  return [...byRel.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([rel, abs]) => ({ abs, rel }))
+}
+
+/** Newest mtime (ms) among every source file `patterns` selects (relative
+ *  to `cwd`, see {@link collectSourceFiles}), or `undefined` if none. */
 export async function newestSourceMtime(
   cwd: string,
   patterns: readonly string[],
 ): Promise<number | undefined> {
   let max: number | undefined
-  for (const pattern of patterns) {
-    const segments = pattern.replace(/^\.\//, "").split("/").filter(s => s.length > 0)
-    if (segments.length === 0) continue
-    for (const file of await collectGlobFiles(cwd, segments)) {
-      try {
-        const st = await stat(file)
-        if (max === undefined || st.mtimeMs > max) max = st.mtimeMs
-      } catch {
-        // Vanished between listing and stat — ignore.
-      }
+  for (const { abs } of await collectSourceFiles(cwd, patterns)) {
+    try {
+      const st = await stat(abs)
+      if (max === undefined || st.mtimeMs > max) max = st.mtimeMs
+    } catch {
+      // Vanished between listing and stat — ignore.
     }
   }
   return max
+}
+
+/** Last content hash computed per `uiPath`, with the stat signature
+ *  (path + mtime + size of every source) it was computed under — so a page
+ *  re-rendered while mtimes still read "stale" re-stats the sources but
+ *  doesn't re-read every one of them. */
+const hashMemo = new Map<string, { readonly signature: string; readonly hash: string }>()
+
+/**
+ * Content hash of everything that decides what `build` produces: the
+ * selected source files (relative path + bytes, in sorted order) and the
+ * build command itself. Identical inputs hash identically whatever their
+ * mtimes — the point of the second staleness tier.
+ */
+export async function hashAppUiSources(
+  uiPath: string,
+  cwd: string,
+  build: AppUiBuildConfig,
+): Promise<string> {
+  const files = await collectSourceFiles(cwd, build.sources ?? DEFAULT_SOURCE_GLOBS)
+  const sig = createHash("sha1").update(`${cwd}\0${build.command}`)
+  const present: { readonly abs: string; readonly rel: string }[] = []
+  for (const file of files) {
+    try {
+      const st = await stat(file.abs)
+      sig.update(`\0${file.rel}\0${st.mtimeMs}\0${st.size}`)
+      present.push(file)
+    } catch {
+      // Vanished between listing and stat — not a source anymore.
+    }
+  }
+  const signature = sig.digest("hex")
+  const memo = hashMemo.get(uiPath)
+  if (memo && memo.signature === signature) return memo.hash
+
+  const content = createHash("sha256").update(`command\0${build.command}\0`)
+  for (const file of present) {
+    let bytes: Buffer
+    try {
+      bytes = await readFile(file.abs)
+    } catch {
+      continue
+    }
+    content.update(`file\0${file.rel}\0${bytes.length}\0`).update(bytes)
+  }
+  const hash = content.digest("hex")
+  hashMemo.set(uiPath, { signature, hash })
+  return hash
+}
+
+/** What the last successful build recorded: the source hash it was built
+ *  from, and the bundle it produced (mtime + size) — the stamp only vouches
+ *  for THAT bundle, so a bundle replaced behind our back (a checkout of an
+ *  older committed one) doesn't inherit it. */
+interface AppUiBuildStamp {
+  readonly sourcesHash: string
+  readonly bundleMtimeMs: number
+  readonly bundleSize: number
+}
+
+/** Where the build stamp for `uiPath` lives — the daemon state dir, never
+ *  the app dir (same reasoning as {@link appUiBuildLogPath}); `<hash>` is
+ *  over the absolute `uiPath`, the same key single-flight uses. */
+export function appUiBuildStampPath(uiPath: string): string {
+  const abs = resolve(uiPath)
+  const home = process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+  const name = basename(dirname(dirname(dirname(abs)))).replace(/[^A-Za-z0-9._-]+/g, "-") || "app"
+  const hash = createHash("sha1").update(abs).digest("hex").slice(0, 12)
+  return join(home, "state", "app-ui-build", `${name}-${hash}.json`)
+}
+
+async function readStamp(uiPath: string): Promise<AppUiBuildStamp | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(appUiBuildStampPath(uiPath), "utf8")) as Partial<AppUiBuildStamp>
+    if (
+      typeof raw.sourcesHash === "string" &&
+      typeof raw.bundleMtimeMs === "number" &&
+      typeof raw.bundleSize === "number"
+    ) {
+      return { sourcesHash: raw.sourcesHash, bundleMtimeMs: raw.bundleMtimeMs, bundleSize: raw.bundleSize }
+    }
+  } catch {
+    // Missing or unreadable — no stamp, so mtime alone decides.
+  }
+  return undefined
+}
+
+async function writeStamp(uiPath: string, stamp: AppUiBuildStamp): Promise<void> {
+  const path = appUiBuildStampPath(uiPath)
+  try {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, JSON.stringify(stamp), "utf8")
+  } catch {
+    // Best-effort — without a stamp the next mtime-stale check just rebuilds.
+  }
 }
 
 const DEFAULT_BUILD_TIMEOUT_MS = 120_000
@@ -228,11 +397,21 @@ export interface EnsureAppUiBuiltInput {
   readonly build?: AppUiBuildConfig
   /** Hard timeout for the build command. Defaults to 120s. */
   readonly timeoutMs?: number
+  /** Return the previous build's failure, without re-running the command,
+   *  when the sources hash to what that failed build saw. Set by page
+   *  renders (`resolveAppUiBuildState`), which would otherwise re-run a
+   *  broken build on every panel open; left off for explicit callers
+   *  (`app_install`, `app serve`), where re-running IS the retry. */
+  readonly reuseFailure?: boolean
 }
 
 export type EnsureAppUiBuiltResult =
   | { readonly ok: true; readonly built: boolean }
   | { readonly ok: false; readonly error: string }
+
+/** The last failed build per `uiPath` and the source hash it ran on —
+ *  see {@link EnsureAppUiBuiltInput.reuseFailure}. Cleared by a success. */
+const lastFailure = new Map<string, { readonly sourcesHash: string; readonly result: EnsureAppUiBuiltResult }>()
 
 /** In-flight builds keyed on the absolute `uiPath` — an app's bundle lives
  *  at one path regardless of which route (app_install, GET .../ui, the MCP
@@ -296,6 +475,25 @@ async function runEnsure(input: EnsureAppUiBuiltInput): Promise<EnsureAppUiBuilt
     }
   }
 
+  // mtime says stale (or there's no bundle): hash the inputs. A hash equal
+  // to the one the CURRENT bundle was built from means only mtimes moved.
+  const sourcesHash = await hashAppUiSources(uiPath, buildCwd, build)
+  if (existing) {
+    const stamp = await readStamp(uiPath)
+    if (
+      stamp &&
+      stamp.sourcesHash === sourcesHash &&
+      stamp.bundleMtimeMs === existing.mtimeMs &&
+      stamp.bundleSize === existing.size
+    ) {
+      return { ok: true, built: false }
+    }
+  }
+  if (input.reuseFailure) {
+    const failed = lastFailure.get(uiPath)
+    if (failed && failed.sourcesHash === sourcesHash) return failed.result
+  }
+
   const logPath = appUiBuildLogPath(dir)
   const startedAt = new Date().toISOString()
   buildStartedAt.set(uiPath, Date.now())
@@ -314,13 +512,15 @@ async function runEnsure(input: EnsureAppUiBuiltInput): Promise<EnsureAppUiBuilt
   }
 
   if (result.exitCode !== 0) {
-    return {
+    const failed: EnsureAppUiBuiltResult = {
       ok: false,
       error:
         `ui.build command "${build.command}" failed (exit ${result.exitCode}` +
         `${result.timedOut ? ", timed out" : ""}). See "${logPath}" for full output. ` +
         `Last lines:\n${tailLines(result.stderr || result.stdout, LOG_TAIL_LINES)}`,
     }
+    lastFailure.set(uiPath, { sourcesHash, result: failed })
+    return failed
   }
 
   let rebuilt: Stats | undefined
@@ -340,6 +540,8 @@ async function runEnsure(input: EnsureAppUiBuiltInput): Promise<EnsureAppUiBuilt
 
   await warnIfNotSingleFile(uiPath)
 
+  lastFailure.delete(uiPath)
+  await writeStamp(uiPath, { sourcesHash, bundleMtimeMs: rebuilt.mtimeMs, bundleSize: rebuilt.size })
   return { ok: true, built: true }
 }
 
@@ -379,7 +581,12 @@ async function readLogTailSafe(dir: string, n: number): Promise<string | undefin
 }
 
 export type AppUiBuildState =
-  | { readonly kind: "ready" }
+  /** Serve `uiPath`. `stale` is set when the bundle on disk is NOT the
+   *  current sources' build — `"rebuilding"` (a background build is running;
+   *  the next render picks up its output) or `"build-failed"` (the last
+   *  rebuild failed; see the build log) — but is still the best page there
+   *  is. */
+  | { readonly kind: "ready"; readonly stale?: "rebuilding" | "build-failed" }
   | { readonly kind: "building"; readonly startedAt: number; readonly logTail?: string }
   | { readonly kind: "error"; readonly message: string; readonly logPath: string; readonly logTail?: string }
 
@@ -395,10 +602,23 @@ export type AppUiBuildState =
  * showing a placeholder, short enough that a real build never blocks the
  * caller — it keeps running in the background regardless, and the NEXT call
  * (after the page's own reload) picks up wherever that build landed.
+ *
+ * Stale-while-revalidate: when a bundle already exists, a REbuild never
+ * shows the "building" placeholder or a failure page — the existing bundle
+ * is served (`ready` + `stale`) while the build runs, and after it fails.
+ * A failed rebuild isn't re-run on each render until its sources change
+ * (`reuseFailure`). Only a missing bundle yields `building`/`error`, and that
+ * case always retries, since there's nothing else to serve.
  */
 export async function resolveAppUiBuildState(input: EnsureAppUiBuiltInput): Promise<AppUiBuildState> {
   const { dir, uiPath } = input
-  const pending = peekInFlightBuild(uiPath) ?? ensureAppUiBuilt(input)
+  let hasBundle: boolean
+  try {
+    hasBundle = (await stat(uiPath)).isFile()
+  } catch {
+    hasBundle = false
+  }
+  const pending = peekInFlightBuild(uiPath) ?? ensureAppUiBuilt({ ...input, reuseFailure: hasBundle })
 
   const timeout = new Promise<typeof RESOLVE_TIMEOUT>(resolve => {
     const timer = setTimeout(() => resolve(RESOLVE_TIMEOUT), RESOLVE_FAST_PATH_MS)
@@ -407,11 +627,13 @@ export async function resolveAppUiBuildState(input: EnsureAppUiBuiltInput): Prom
   const raced = await Promise.race([pending, timeout])
 
   if (raced === RESOLVE_TIMEOUT) {
+    if (hasBundle) return { kind: "ready", stale: "rebuilding" }
     const startedAt = peekBuildStartedAt(uiPath) ?? Date.now()
     return { kind: "building", startedAt, logTail: await readLogTailSafe(dir, READABLE_LOG_TAIL_LINES) }
   }
   const result = raced as EnsureAppUiBuiltResult
   if (!result.ok) {
+    if (hasBundle) return { kind: "ready", stale: "build-failed" }
     return {
       kind: "error",
       message: result.error,
