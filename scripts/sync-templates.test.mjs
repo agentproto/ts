@@ -25,6 +25,15 @@ const STABLE_ID = REPO_VERSIONS.templates.stable.id
 // module) — asserted below; never hardcoded anywhere else.
 const STABLE_ID_RE = new RegExp(STABLE_ID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
 
+// The pins under test are derived from the same versions.json the fixture
+// copies — hardcoding them here breaks the test on every pin bump.
+const CLI = REPO_VERSIONS.cli
+const ADAPTER_OPENCODE = REPO_VERSIONS.adapters["@agentproto/adapter-opencode"]
+const ADAPTER_HERMES = REPO_VERSIONS.adapters["@agentproto/adapter-hermes"]
+const ADAPTER_MASTRA = REPO_VERSIONS.adapters["@agentproto/adapter-mastra-agent"]
+const OPENCODE_RUNTIME = REPO_VERSIONS.runtime["opencode-ai"]
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
 function makeFixture() {
   const root = mkdtempSync(path.join(import.meta.dirname, "sync-templates-fixture-"))
   mkdirSync(path.join(root, "templates/workstation"), { recursive: true })
@@ -91,22 +100,22 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     // generated module exports the canonical pins
     const gen = first["packages/sandbox-e2b/src/template-versions.generated.ts"]
     assert.match(gen, new RegExp(`export const DEFAULT_TEMPLATE = "${STABLE_ID}"`))
-    assert.match(gen, /export const BAKED_CLI_VERSION = "0\.17\.0"/)
-    assert.match(gen, /"@agentproto\/adapter-opencode": "1\.1\.10"/)
+    assert.match(gen, new RegExp(`export const BAKED_CLI_VERSION = "${esc(CLI)}"`))
+    assert.match(gen, new RegExp(`"@agentproto/adapter-opencode": "${esc(ADAPTER_OPENCODE)}"`))
     assert.match(gen, /TEMPLATE_ALIASES = \{[^]*stable: "agentproto-workstation"/)
 
     // marked blocks rewritten with pins
-    assert.match(first["packages/sandbox-e2b/README.md"], /@agentproto\/cli@0\.17\.0/)
+    assert.match(first["packages/sandbox-e2b/README.md"], new RegExp(`@agentproto/cli@${esc(CLI)}`))
     assert.doesNotMatch(first["packages/sandbox-e2b/README.md"], /stale/)
-    assert.match(first["docs/cli/guides/sandbox-rendezvous.md"], /opencode-ai@1\.18\.28/)
-    assert.match(first["packages/runtime/src/sandbox-providers/registry.ts"], /baked @agentproto\/cli 0\.17\.0/)
+    assert.match(first["docs/cli/guides/sandbox-rendezvous.md"], new RegExp(`opencode-ai@${esc(OPENCODE_RUNTIME)}`))
+    assert.match(first["packages/runtime/src/sandbox-providers/registry.ts"], new RegExp(`baked @agentproto/cli ${esc(CLI)}`))
 
     // package.json description rewritten in place
-    assert.match(first["packages/sandbox-e2b/package.json"], /"description": ".*baked @agentproto\/cli 0\.17\.0.*"/)
+    assert.match(first["packages/sandbox-e2b/package.json"], new RegExp(`"description": ".*baked @agentproto/cli ${esc(CLI)}.*"`))
 
     // toml records the pins per-package (no space-separated adapter list)
     const toml = first["templates/workstation/e2b.template.toml"]
-    assert.match(toml, /AGENTPROTO_CLI_VERSION = "0\.17\.0"/)
+    assert.match(toml, new RegExp(`AGENTPROTO_CLI_VERSION = "${esc(CLI)}"`))
     assert.doesNotMatch(toml, /AGENTPROTO_ADAPTERS =/)
     // the opaque template id must NOT leak into the toml (alias only)
     assert.doesNotMatch(toml, STABLE_ID_RE)
@@ -120,13 +129,13 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     // baked as ARG defaults, and a SINGLE `npm i -g` for the baked toolchain
     // (so nothing installed later can drop the adapters).
     const df = first["templates/workstation/Dockerfile"]
-    assert.match(df, /ARG AGENTPROTO_ADAPTER_HERMES=@agentproto\/adapter-hermes@0\.4\.10/)
-    assert.match(df, /ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto\/adapter-opencode@1\.1\.10/)
+    assert.match(df, new RegExp(`ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@${esc(ADAPTER_HERMES)}`))
+    assert.match(df, new RegExp(`ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@${esc(ADAPTER_OPENCODE)}`))
     // mastra-agent adapter: its own ARG + npm ls -g smoke line (derived from
     // versions.json, so the arg name is the sanitized upper-cased package name).
-    assert.match(df, /ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto\/adapter-mastra-agent@0\.6\.0/)
+    assert.match(df, new RegExp(`ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@${esc(ADAPTER_MASTRA)}`))
     assert.match(df, /npm ls -g --depth=0 @agentproto\/adapter-mastra-agent/)
-    assert.match(df, /ARG AGENTPROTO_CLI_VERSION=0\.17\.0/)
+    assert.match(df, new RegExp(`ARG AGENTPROTO_CLI_VERSION=${esc(CLI)}`))
     // no space-separated adapter ARG declaration (anchored to a real ARG line,
     // not the explanatory comment that names the anti-pattern)
     assert.doesNotMatch(df, /^ARG [A-Z_]*ADAPTERS=/m)
@@ -147,7 +156,7 @@ test("--check exits non-zero and prints drift after a deliberate edit of a gener
   try {
     runSync(root)
     const genPath = path.join(root, "packages/sandbox-e2b/src/template-versions.generated.ts")
-    writeFileSync(genPath, readFileSync(genPath, "utf8").replace("0.17.0", "9.9.9"))
+    writeFileSync(genPath, readFileSync(genPath, "utf8").replace(CLI, "9.9.9"))
 
     let exitCode = 0
     let stderr = ""
@@ -175,7 +184,7 @@ test("--check fails when a marked block is hand-edited", () => {
   try {
     runSync(root)
     const readme = path.join(root, "packages/sandbox-e2b/README.md")
-    writeFileSync(readme, readFileSync(readme, "utf8").replace("0.17.0", "0.0.1"))
+    writeFileSync(readme, readFileSync(readme, "utf8").replace(CLI, "0.0.1"))
 
     let exitCode = 0
     try {
