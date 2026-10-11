@@ -137,6 +137,7 @@ export type {
   AgentCliStartOptions,
   AgentCliFsZones,
   AgentCliStateHome,
+  AgentCliSmallModel,
   AgentCliCapabilities,
   AgentCliInstallMethod,
   AgentCliVersionCheck,

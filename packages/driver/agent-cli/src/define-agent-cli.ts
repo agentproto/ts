@@ -12,6 +12,7 @@ import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
 import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
+import { resolveSmallModelEnv } from "./small-model.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
 import { resolveWindowsBatchSpawn, windowsBatchShellOption } from "./win32-spawn.js"
@@ -351,6 +352,16 @@ export function createAgentCliRuntime(
       }
 
       Object.assign(env, opts?.env ?? {})
+      // After every env layer, so an inline config any of them carries (lean
+      // mode, a console-org block, the host's own) is merged into — and a
+      // `small_model` it already sets wins. See `small-model.ts`.
+      const smallModelEnv = resolveSmallModelEnv(definition.smallModel, {
+        model: config?.options?.model,
+        ...(config?.options ? { options: config.options } : {}),
+        env,
+        cwd,
+      })
+      if (smallModelEnv) Object.assign(env, smallModelEnv)
       // After ALL env layers (ambient, mode/option patches, billing-auth,
       // opts.env) so the append lands on the final PATH — see the helper's
       // doc for why even an absolute-path npx needs this.

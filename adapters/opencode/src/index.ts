@@ -134,6 +134,29 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // the ACTIVE ORG, not its own credential. An engaged spawn therefore runs in
   // a login-less data dir (`<configDir>/auth-data`).
   credentialDataHome: { env: "XDG_DATA_HOME" },
+  // opencode's "small model" (session titles, summaries) defaults to a pick
+  // of its own — GPT-5.4 Nano on OpenCode Zen, a PAID model, so every
+  // `-free` session logged a `402 Rejected` per title call and would bill
+  // once the key held credit. Pin it to the session's own model (same route,
+  // same bill) unless the spawn passes `small_model` or the user's opencode
+  // config already sets one. The file list mirrors opencode 1.18's loader:
+  // global config dir, $OPENCODE_CONFIG, project opencode.json(c) (skipped
+  // under OPENCODE_DISABLE_PROJECT_CONFIG), `.opencode/` dirs, and
+  // $OPENCODE_CONFIG_DIR. OPENCODE_CONFIG_CONTENT, where the pin lands, is
+  // layered over all of them, hence the check.
+  smallModel: {
+    env: "OPENCODE_CONFIG_CONTENT",
+    key: "small_model",
+    option: "small_model",
+    userConfig: {
+      globalFiles: ["opencode/config.json", "opencode/opencode.json", "opencode/opencode.jsonc"],
+      fileEnv: ["OPENCODE_CONFIG"],
+      dirEnv: ["OPENCODE_CONFIG_DIR"],
+      projectFiles: ["opencode.json", "opencode.jsonc"],
+      dirFiles: [".opencode/opencode.json", ".opencode/opencode.jsonc"],
+      projectDisableEnv: "OPENCODE_DISABLE_PROJECT_CONFIG",
+    },
+  },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./opencode-acp.ACP.md",
@@ -298,6 +321,16 @@ export const opencode: AgentCliHandle = defineAgentCli({
         "`minimal`). A label the resolved model doesn't offer is ignored " +
         "best-effort (never fails the spawn), and a model with no effort axis " +
         "ignores it entirely. Omit to keep the model's own default.",
+    },
+    {
+      id: "small_model",
+      type: "string",
+      description:
+        "Model opencode uses for its background chores (session titles, summaries), as " +
+        "`provider/model`. Defaults to the session's own model so those calls bill exactly " +
+        "like the session; without that, opencode picks its own (GPT-5.4 Nano on OpenCode " +
+        "Zen, a paid model, even for a `-free` session). A `small_model` in the user's " +
+        "opencode config is kept unless this option is passed.",
     },
   ],
   continuation: {

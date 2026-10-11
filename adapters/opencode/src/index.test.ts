@@ -27,6 +27,23 @@ describe("@agentproto/adapter-opencode", () => {
     expect(composed.env.OPENCODE_DISABLE_EXTERNAL_SKILLS).toBeUndefined()
     expect(composed.env.OPENCODE_CONFIG_CONTENT).toBeUndefined()
   })
+  it("pins opencode's small model (titles/summaries) to the session model via the inline config", () => {
+    // On OpenCode Zen opencode's own small-model pick is GPT-5.4 Nano, a paid
+    // model — every `-free` session logged a 402 per title call without this.
+    expect(opencode.smallModel).toMatchObject({
+      env: "OPENCODE_CONFIG_CONTENT",
+      key: "small_model",
+      option: "small_model",
+    })
+    expect(opencode.smallModel?.userConfig?.globalFiles).toContain("opencode/opencode.jsonc")
+    expect(opencode.smallModel?.userConfig?.fileEnv).toEqual(["OPENCODE_CONFIG"])
+    expect(opencode.smallModel?.userConfig?.projectDisableEnv).toBe("OPENCODE_DISABLE_PROJECT_CONFIG")
+    // The option is declared, so a spawn passing it composes cleanly.
+    expect(() =>
+      composeSpawn(opencode, { options: { small_model: "opencode/step-5-preview-free" } }),
+    ).not.toThrow()
+  })
+
   it("declares model-derived api-key auth", () => {
     expect(opencode.modelDerivedApiKey).toBe(true)
     expect(opencode.routeSelection).toBe("derived-from-model")
