@@ -1,0 +1,6 @@
+---
+"@agentproto/runtime": minor
+"@agentproto/cli": minor
+---
+
+Add an opt-in `turnRetry` spawn option (`agent_start`, `POST /sessions/agent`, `agentproto sessions start --turn-retry`, user presets). It is off by default. When a turn fails on a transient provider error (`rate-limit` 429, `upstream-5xx`, or a `no-output-stall` where the provider silently retries), the daemon waits an exponential backoff and then sends the same live session a short continuation prompt. It never retries an interrupted turn, a killed or dead session (including the `maxCostUsd` kill), a session whose governance policy failed (e.g. `costBudget`), auth/billing errors (401/402/403), provider usage caps, or a turn that already made a side-effecting tool call (unless `retryAfterToolCalls`). The descriptor exposes the retry counter as `turnRetryAttempts`, plus `lastTurnRetryAt` and `nextTurnRetryAt`. Each transition emits a `session:turn-retry` event and a `[turn-retry]` transcript notice. `session:turn-end` now also carries `interrupted` and `toolCalls`. `restartPolicy` is unchanged.

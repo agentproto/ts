@@ -10,6 +10,7 @@ import type { AcpMcpServer } from "@agentproto/acp"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { resolveTurnRetryPolicy, type TurnRetryInput } from "./turn-retry-policy.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
@@ -1341,6 +1342,11 @@ export interface SpawnAgentSessionInput {
    *  proactively revived in place — see `RestartPolicy`'s doc in
    *  `sessions.ts`. Omitted ⇒ today's lazy-resume-only behaviour. */
   restartPolicy?: RestartPolicy
+  /** Opt-in turn-retry policy (`turn-retry.ts`): re-prompt the live session
+   *  when a turn fails on a transient provider error. Defaults are filled
+   *  here (`resolveTurnRetryPolicy`) before it lands on the descriptor.
+   *  Omitted ⇒ no automatic retry. */
+  turnRetry?: TurnRetryInput
   /** Context-continuity policy for this session — controls warning,
    *  opportunistic compaction, fresh-continuation, and hard-stop thresholds.
    *  Resolved from global → per-adapter → per-model → explicit override. */
@@ -1720,6 +1726,7 @@ export async function spawnAgentSession(
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
       bundles: explicit.bundles ?? preset.bundles,
+      turnRetry: explicit.turnRetry ?? preset.turnRetry,
     }
     // Best-effort recency stamp — a favorite just got resolved and used for
     // this spawn. Never let the write (or its absence, for a since-deleted
@@ -3594,6 +3601,7 @@ export async function spawnAgentSession(
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
         contextContinuity: resolvedContextContinuity,
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.turnRetry ? { turnRetry: resolveTurnRetryPolicy(input.turnRetry) } : {}),
         ...(input.trace !== undefined ? { trace: input.trace } : {}),
         ...(authEcho?.fingerprint
           ? {
@@ -4121,6 +4129,7 @@ export async function spawnAgentSession(
       ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
       contextContinuity: resolvedContextContinuity,
       ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+      ...(input.turnRetry ? { turnRetry: resolveTurnRetryPolicy(input.turnRetry) } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       // Verifiability: record the OBSERVABLE echo — resolved provider, mode,

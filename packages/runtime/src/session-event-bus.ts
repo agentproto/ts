@@ -58,6 +58,7 @@ export type SessionEventType =
   | "workflow:suspended"
   | "workflow:suspend-resumed"
   | "session:harness-warning"
+  | "session:turn-retry"
   | "mcp:degraded"
   | "session:handoff-suggested"
   | "approval:requested"
@@ -161,6 +162,20 @@ export interface SessionTurnEndEvent {
    * ordinary prompted turn.
    */
   autonomous?: boolean
+  /**
+   * True when the daemon interrupted this turn (a Stop, an `interrupt: true`
+   * prompt, a deliver-now) rather than the turn ending on its own. Absent on
+   * a turn that ended by itself. Read by the turn-retry controller, which
+   * never retries an interrupted turn.
+   */
+  interrupted?: boolean
+  /**
+   * Names of the tool calls this turn made, one entry per call (`""` for a
+   * call the adapter never named). Absent when the turn made no tool call.
+   * Read by the turn-retry controller to refuse re-running a turn that
+   * already did something with possible side effects.
+   */
+  toolCalls?: string[]
 }
 
 export interface SessionAwaitingInputEvent {
@@ -945,6 +960,40 @@ export interface WorkflowSuspendResumedEvent {
  * `AgentHarness.tools`'s doc) — the "never silently ignore" fallback AIP-15
  * P2 requires. Same bus distribution as every other lifecycle event.
  */
+/**
+ * Emitted by the turn-retry controller (`turn-retry.ts`) for a session that
+ * opted into `agent_start.turnRetry`:
+ *   - `scheduled` — a failed turn matched a retry class; a continuation
+ *     prompt lands after `delayMs`;
+ *   - `sent` — the continuation prompt was sent (`attempt` is 1-based);
+ *   - `cancelled` — a scheduled retry was dropped because the session moved
+ *     on first (a new prompt, the stall cleared, exit, kill);
+ *   - `exhausted` — `maxRetries` consecutive retries were already spent;
+ *   - `skipped` — the failure is deliberately never retried (`skipReason`:
+ *     an auth/billing error, a usage cap, an interrupted turn, a turn that
+ *     already made a side-effecting tool call, a failed governance policy…).
+ * The same transitions are also stamped as `notice` lines in the session's
+ * own transcript, so `session_story` shows them in place.
+ */
+export interface SessionTurnRetryEvent {
+  type: "session:turn-retry"
+  sessionId: string
+  phase: "scheduled" | "sent" | "cancelled" | "exhausted" | "skipped"
+  /** The failure class (`rate-limit`, `upstream-5xx`, `no-output-stall`, or
+   *  a never-retried class such as `auth` / `usage-limit` / `other`). */
+  errorClass: string
+  /** 1-based number of this retry (`scheduled`/`sent`), or attempts already
+   *  spent (`exhausted`). */
+  attempt: number
+  maxRetries: number
+  delayMs?: number
+  /** The failed turn's error text (truncated). */
+  error?: string
+  skipReason?: string
+  label?: string
+  ts: string
+}
+
 export interface SessionHarnessWarningEvent {
   type: "session:harness-warning"
   sessionId: string
@@ -1092,6 +1141,7 @@ export type SessionEvent =
   | WorkflowSuspendedEvent
   | WorkflowSuspendResumedEvent
   | SessionHarnessWarningEvent
+  | SessionTurnRetryEvent
   | McpDegradedEvent
   | ApprovalRequestedEvent
   | ApprovalDecidedEvent
