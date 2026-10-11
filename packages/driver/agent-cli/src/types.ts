@@ -809,6 +809,15 @@ export interface AgentCliDefinition {
    * Never applied to ambient spawns or file-based (external) subscriptions.
    */
   credentialDataHome?: { env: string }
+  /**
+   * For a CLI that runs an auxiliary "small model" for background chores
+   * (opencode: session titles / summaries) and otherwise picks one itself —
+   * on OpenCode Zen a PAID one, even for a `-free` session. The driver pins it
+   * to the session's model (or the `option`, when the spawn passes it) through
+   * the CLI's inline JSON config env var, unless that inline config or the
+   * user's own config files already set it. See `small-model.ts`.
+   */
+  smallModel?: AgentCliSmallModel
   runner?: string | Record<string, unknown>
   protocol: AgentCliProtocol
   /** REQUIRED when protocol=acp. Workspace-relative ref to AIP-44 ACP.md. */
@@ -1341,6 +1350,31 @@ export interface AgentCliStartOptions {
 }
 
 /** See {@link AgentCliDefinition.stateHome}. */
+/** See {@link AgentCliDefinition.smallModel}. */
+export interface AgentCliSmallModel {
+  /** Env var carrying the CLI's inline JSON config (`OPENCODE_CONFIG_CONTENT`). */
+  env: string
+  /** Key in that config naming the small model (`small_model`). */
+  key: string
+  /** AIP-45 option id that pins it explicitly for one spawn; beats the user's config files. */
+  option?: string
+  /** Where the user may already set `key` — any hit leaves their choice alone. */
+  userConfig?: {
+    /** Files under the XDG config home (`$XDG_CONFIG_HOME`, else `~/.config`). */
+    globalFiles?: string[]
+    /** Env vars naming a config FILE (`OPENCODE_CONFIG`). */
+    fileEnv?: string[]
+    /** Env vars naming a config DIR, searched for `dirFiles` (`OPENCODE_CONFIG_DIR`). */
+    dirEnv?: string[]
+    /** Files looked up in every dir from the cwd to `/`, skipped when `projectDisableEnv` is set. */
+    projectFiles?: string[]
+    /** Files looked up in every dir from the cwd to `/` and in `$HOME`, always read. */
+    dirFiles?: string[]
+    /** Env var that makes the CLI skip `projectFiles` (`OPENCODE_DISABLE_PROJECT_CONFIG`). */
+    projectDisableEnv?: string
+  }
+}
+
 export interface AgentCliStateHome {
   /** Env var the CLI reads its home from (codex: `CODEX_HOME`). */
   env: string
