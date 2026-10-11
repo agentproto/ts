@@ -1,5 +1,13 @@
 # @agentproto/catalog-sync
 
+## 0.8.4
+
+### Patch Changes
+
+- 0c2ea34: Sync generated catalog data from the pinned provider sources.
+- Updated dependencies [0c2ea34]
+  - @agentproto/model-catalog@0.12.4
+
 ## 0.8.3
 
 ### Patch Changes

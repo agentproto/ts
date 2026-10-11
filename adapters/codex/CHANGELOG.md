@@ -1,5 +1,12 @@
 # @agentproto/adapter-codex
 
+## 2.0.24
+
+### Patch Changes
+
+- Updated dependencies [7eea847]
+  - @agentproto/driver-agent-cli@2.11.0
+
 ## 2.0.23
 
 ### Patch Changes
