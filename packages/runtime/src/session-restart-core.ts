@@ -1121,6 +1121,7 @@ export async function restartAgentSession(
       ...(prev.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
       ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
+      ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
       // Verifiability echo (never the credential) — see the auth
       // resolution block above. Absent when no credential resolved,
       // same as session-spawn.ts.
@@ -1267,6 +1268,7 @@ export async function restartAgentSession(
       ...(prev.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
       ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
+      ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
       ...(authEcho?.fingerprint
         ? {
             auth: {

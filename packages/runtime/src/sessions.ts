@@ -166,6 +166,7 @@ import {
 } from "./session-outcome.js"
 import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
 import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
+import type { TurnRetryPolicy } from "./turn-retry-policy.js"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
   INDEX_TAIL_BYTES,
@@ -1679,6 +1680,26 @@ export interface SessionDescriptor {
    *  actually counts against `maxRetries`. Reset alongside `restartAttempts`
    *  on a healthy turn-end. */
   recentRestartAts?: string[]
+  /** Opt-in turn-retry policy (`agent_start.turnRetry`). Absent ⇒ a turn that
+   *  fails on a transient provider error (429, 5xx, silent no-output stall)
+   *  just stops, exactly like before. DISTINCT from `restartPolicy` (which
+   *  revives a dead process): this re-prompts a LIVE session with a short
+   *  continuation prompt — see `turn-retry.ts`. */
+  turnRetry?: TurnRetryPolicy
+  /** Consecutive continuation prompts the turn-retry controller has SENT
+   *  since the last clean turn-end — the retry counter, compared against
+   *  `turnRetry.maxRetries`. Reset (deleted) by the next turn that completes
+   *  without an error or an interrupt. PERSISTED; absent until the first
+   *  retry. */
+  turnRetryAttempts?: number
+  /** ISO 8601 timestamp of the most recent continuation prompt the
+   *  turn-retry controller sent. Reset with `turnRetryAttempts`. */
+  lastTurnRetryAt?: string
+  /** ISO 8601 landing time of a scheduled-but-not-yet-sent turn retry.
+   *  In-memory timer backed: a daemon restart drops the pending retry (the
+   *  continue-interrupted path covers that case), and the field is cleared
+   *  when the retry fires, is cancelled, or the session exits. */
+  nextTurnRetryAt?: string
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
@@ -4552,6 +4573,18 @@ export interface SessionsRegistry {
    *  window keeps aging out naturally rather than being wiped by the
    *  give-up itself. Returns false (no-op) for an unknown id. */
   giveUpRestart(id: string, message: string): boolean
+  /** Write the turn-retry controller's (`turn-retry.ts`) bookkeeping onto a
+   *  row: each key present in `patch` is set, or deleted when `null`; absent
+   *  keys are left alone. Purely mechanical — the controller owns the policy.
+   *  Returns false (no-op) for an unknown id. */
+  patchTurnRetry(
+    id: string,
+    patch: {
+      turnRetryAttempts?: number | null
+      lastTurnRetryAt?: string | null
+      nextTurnRetryAt?: string | null
+    },
+  ): boolean
   /** Record a daemon-authored DISPLAY-ONLY notice into an agent-cli
    *  session's transcript — the same `kind: "notice"` event `markCrashed`/
    *  `giveUpRestart`/`interruptInFlightTurn` already stamp on their own
@@ -4799,6 +4832,9 @@ export interface SpawnAgentInput {
    *  onto {@link SessionDescriptor.restartPolicy}. Absent ⇒ today's
    *  lazy-resume-only behaviour. */
   restartPolicy?: RestartPolicy
+  /** Opt-in turn-retry policy (`turn-retry.ts`), recorded verbatim onto
+   *  {@link SessionDescriptor.turnRetry}. Absent ⇒ no automatic retry. */
+  turnRetry?: TurnRetryPolicy
   /** Resolved context-continuity policy — recorded verbatim onto
    *  {@link SessionDescriptor.contextContinuity}. */
   contextContinuity?: ResolvedContextContinuityPolicy
@@ -8529,6 +8565,11 @@ export function createSessionsRegistry(opts?: {
     // completion) and must be flagged, not reported as a green turn-end.
     let sawAssistantText = false
     let sawToolCall = false
+    // Tool names this turn called, keyed by toolCallId (an enrichment update
+    // may name a call announced untitled). Rides on the `session:turn-end`
+    // event's `toolCalls` so the turn-retry controller can refuse to re-run
+    // a turn that already did something with side effects.
+    const turnToolNames = new Map<string, string>()
     // Track tool-call IDs announced during this turn so the finally block can
     // emit synthetic tool-results for adapters that silently drop them.
     const pendingToolCallIds = new Set<string>()
@@ -8624,6 +8665,8 @@ export function createSessionsRegistry(opts?: {
         else if (evt.kind === "tool-call") {
           sawToolCall = true
           if (evt.toolCallId) pendingToolCallIds.add(evt.toolCallId)
+          const toolKey = evt.toolCallId ?? `anon-${turnToolNames.size}`
+          if (evt.toolName || !turnToolNames.has(toolKey)) turnToolNames.set(toolKey, evt.toolName ?? "")
           // Count background task starts for the turn-end "parked" heuristic
           // (`SessionDescriptor.pendingBgTasks`). Claude Code's Bash announces
           // a background task as a tool-call whose arguments object carries
@@ -8943,6 +8986,8 @@ export function createSessionsRegistry(opts?: {
             ...(turnEndReason ? { reason: turnEndReason } : {}),
             ...(emptyTurn ? { empty: true } : {}),
             ...(turnErrorMessage !== undefined ? { error: turnErrorMessage } : {}),
+            ...(interruptedBy ? { interrupted: true } : {}),
+            ...(turnToolNames.size > 0 ? { toolCalls: [...turnToolNames.values()] } : {}),
           })
           if (rt.desc.awaitingInput) {
             sessionEvents.emit({
@@ -9025,6 +9070,8 @@ export function createSessionsRegistry(opts?: {
             ts: new Date().toISOString(),
             ...(turnEndReason ? { reason: turnEndReason } : {}),
             ...(turnErrorMessage !== undefined ? { error: turnErrorMessage } : {}),
+            ...(interruptedBy ? { interrupted: true } : {}),
+            ...(turnToolNames.size > 0 ? { toolCalls: [...turnToolNames.values()] } : {}),
           })
         }
       }
@@ -9742,6 +9789,7 @@ export function createSessionsRegistry(opts?: {
         ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -9903,6 +9951,7 @@ export function createSessionsRegistry(opts?: {
         ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -11783,6 +11832,18 @@ export function createSessionsRegistry(opts?: {
       delete rt.desc.nextRestartAt
       appendLine(rt, message, "stderr")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
+      return true
+    },
+    patchTurnRetry(id, patch) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      for (const key of ["turnRetryAttempts", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
+        if (!(key in patch)) continue
+        const value = patch[key]
+        if (value === null || value === undefined) delete rt.desc[key]
+        else (rt.desc as unknown as Record<string, unknown>)[key] = value
+      }
+      schedulePersist()
       return true
     },
     recordNotice(id, text) {

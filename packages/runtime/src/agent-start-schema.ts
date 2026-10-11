@@ -14,6 +14,7 @@
 
 import { z } from "zod"
 import { jsonTolerant } from "./json-tolerant.js"
+import { turnRetryInputSchema } from "./turn-retry-policy.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import {
   attachFieldSchema,
@@ -435,6 +436,11 @@ export const agentStartInputShape = {
       "Opt-in auto-restart policy: an unexpected death (`crashed`/`error`, per " +
         "`on`) is revived IN PLACE after exponential backoff, up to a " +
         `rolling-window crash-loop cap. Omit for today's stay-dead behaviour. ${help("restartPolicy")}`
+    ),
+  turnRetry: jsonTolerant(turnRetryInputSchema)
+    .optional()
+    .describe(
+      `Opt-in: re-prompt the session after backoff when a turn fails transiently. ${help("turnRetry")}`
     ),
   contextContinuity: jsonTolerant(contextContinuityInputSchema)
     .optional()

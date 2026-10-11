@@ -152,6 +152,7 @@ Usage:
                                       [--mcp-servers-json <json|@file>]
                                       [--access-profile <ref>]
                                       [--max-cost-usd <n>] [--cost-budget <spec>]
+                                      [--turn-retry <spec>]
                                       [--worktree | --no-worktree]
                                       [--sandbox <provider-or-json>]
                                       [--hold-permissions] [--browser headless]
@@ -362,6 +363,18 @@ sessions start flags:
                                   '{"maxCostUsd":20,"window":"5h","scope":"profile"}'
                                   — is also accepted. Mirrors MCP
                                   agent_start.costBudget.
+  --turn-retry <spec>           opt-in: when a turn fails on a transient
+                                  provider error, re-send a short continuation
+                                  prompt to the same session after backoff.
+                                  spec: 'all', or a comma list of classes
+                                  (rate-limit,upstream-5xx,no-output-stall), or
+                                  a JSON object '{"on":["rate-limit"],
+                                  "maxRetries":3,"baseDelayMs":5000,"factor":2,
+                                  "maxDelayMs":60000}'. Never retries an
+                                  interrupt, kill, cost stop, 401/402/403, or a
+                                  turn that already made a side-effecting tool
+                                  call (unless "retryAfterToolCalls":true).
+                                  Mirrors MCP agent_start.turnRetry.
   --worktree                    isolate this spawn in its OWN git worktree (auto-
                                  minted slug/branch on origin/main) regardless of
                                  the daemon's worktrees.isolation policy. Mirrors
@@ -637,6 +650,60 @@ async function runListStats(
   return 0
 }
 
+const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
+
+/** Bounds the DAEMON's schema (`turnRetryInputSchema` in
+ *  `turn-retry-policy.ts`) enforces. Validated here too: the daemon drops a
+ *  policy that fails them whole, so a value this parser accepts but the
+ *  daemon rejects would silently disable retries instead of failing loudly. */
+const TURN_RETRY_INT_MS_KEYS = ["baseDelayMs", "maxDelayMs"]
+
+/** Parse `--turn-retry`: `all`, a comma list of classes, or a JSON object
+ *  (`on` required, numeric knobs optional — the daemon fills defaults).
+ *  Returns the body object, or an error message string. */
+export function parseTurnRetryFlag(raw: string): Record<string, unknown> | string {
+  const trimmed = raw.trim()
+  let obj: Record<string, unknown>
+  if (trimmed.startsWith("{")) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch (err) {
+      return `bad JSON: ${err instanceof Error ? err.message : String(err)}`
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "expected a JSON object"
+    obj = parsed as Record<string, unknown>
+  } else if (trimmed === "all") {
+    obj = { on: [...TURN_RETRY_CLASSES] }
+  } else {
+    obj = { on: trimmed.split(",").map(s => s.trim()).filter(Boolean) }
+  }
+  const on = obj.on
+  if (!Array.isArray(on) || on.length === 0) return `"on" must list at least one of ${TURN_RETRY_CLASSES.join(", ")}`
+  const unknown = on.filter(c => typeof c !== "string" || !TURN_RETRY_CLASSES.includes(c))
+  if (unknown.length > 0) {
+    return `unknown class(es) ${unknown.map(String).join(", ")} — expected ${TURN_RETRY_CLASSES.join(", ")} or "all"`
+  }
+  for (const key of TURN_RETRY_INT_MS_KEYS) {
+    const v = obj[key]
+    if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v < 0)) {
+      return `"${key}" must be a non-negative integer (ms)`
+    }
+  }
+  const maxRetries = obj.maxRetries
+  if (maxRetries !== undefined && (typeof maxRetries !== "number" || !Number.isInteger(maxRetries) || maxRetries < 1)) {
+    return `"maxRetries" must be a positive integer (at least 1)`
+  }
+  const factor = obj.factor
+  if (factor !== undefined && (typeof factor !== "number" || !Number.isFinite(factor) || factor < 1)) {
+    return `"factor" must be a number >= 1`
+  }
+  if (obj.retryAfterToolCalls !== undefined && typeof obj.retryAfterToolCalls !== "boolean") {
+    return `"retryAfterToolCalls" must be a boolean`
+  }
+  return obj
+}
+
 /** Validate the JSON-object spelling of --cost-budget. Returns a short error
  *  message, or null when the value is a well-formed CostBudget
  *  `{ maxCostUsd: positive number, window: string, scope: "session"|"profile" }`. */
@@ -685,6 +752,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       "access-profile": { type: "string" },
       "max-cost-usd": { type: "string" },
       "cost-budget": { type: "string" },
+      "turn-retry": { type: "string" },
       worktree: { type: "boolean" },
       "no-worktree": { type: "boolean" },
       mode: { type: "string" },
@@ -940,6 +1008,16 @@ async function runStart(args: readonly string[]): Promise<number> {
     }
   }
 
+  let turnRetry: Record<string, unknown> | undefined
+  if (values["turn-retry"] !== undefined) {
+    const parsed = parseTurnRetryFlag(values["turn-retry"])
+    if (typeof parsed === "string") {
+      process.stderr.write(`agentproto sessions start: invalid --turn-retry: ${parsed}\n`)
+      return 2
+    }
+    turnRetry = parsed
+  }
+
   let browser: "headless" | false | undefined
   if (values.browser !== undefined) {
     if (values.browser === "headless") browser = "headless"
@@ -1019,6 +1097,8 @@ async function runStart(args: readonly string[]): Promise<number> {
   //               to act on. `{ maxCostUsd, window, scope }` as parsed above.
   if (maxCostUsd !== undefined) body.maxCostUsd = maxCostUsd
   if (costBudget !== undefined) body.costBudget = costBudget
+  // Opt-in turn retry — the CLI twin of `agent_start.turnRetry`.
+  if (turnRetry !== undefined) body.turnRetry = turnRetry
   // Worktree isolation — the CLI twin of the MCP `agent_start` tool's
   // `worktree` field. `--worktree` requests True (auto-mint a slug/branch on
   // `origin/main`); `--no-worktree` forces False even when the daemon's
