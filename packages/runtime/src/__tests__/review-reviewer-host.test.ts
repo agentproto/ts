@@ -24,18 +24,45 @@ import {
   isRetryableTurnError,
   resolveReviewerPreset,
   reviewerOpenRouterViolation,
+  WALLET_EXHAUSTED_COOLDOWN_MS,
+  WALLET_RATE_LIMIT_COOLDOWN_MS,
 } from "../review-reviewer-host.js"
 import type { HarnessPreset } from "../harness-preset-store.js"
 import type { UserPreset } from "../user-presets.js"
+
+// Control named auth-profile resolution (`access.profileRef`) + the keychain
+// reads deterministically, so the exhausted-wallet tests below can spawn
+// against a REAL profileRef without touching the real
+// `~/.agentproto/auth-profiles.json` or the machine's keychain. Empty by
+// default: every other test in this file still sees "no such profile", same
+// as the temp HOME it runs under.
+const authProfileState = vi.hoisted(() => ({
+  profiles: {} as Record<string, import("@agentproto/auth").AuthProfile>,
+  keychain: {} as Record<string, string | undefined>,
+}))
+vi.mock("@agentproto/auth", async importOriginal => {
+  const actual = await importOriginal<typeof import("@agentproto/auth")>()
+  return {
+    ...actual,
+    getAuthProfile: vi.fn(async (id: string) => authProfileState.profiles[id]),
+    KeychainStore: vi.fn().mockImplementation(() => ({
+      read: vi.fn(async ({ path }: { path: string }) => {
+        const value = authProfileState.keychain[path]
+        return value !== undefined ? { value, kind: "oat" as const } : undefined
+      }),
+    })),
+  }
+})
 
 // Real git + subprocesses (+ sessions) per test: the 5s default is too tight
 // on a loaded machine or CI runner.
 vi.setConfig({ testTimeout: 30_000 })
 
-type Behaviour = "review" | "hang" | "empty" | `error:${string}` | `slowerror:${number}:${string}`
+type Behaviour = "review" | "block" | "hang" | "empty" | `error:${string}` | `slowerror:${number}:${string}`
 
 /** Fake adapter session. `review`: write the verdict file the prompt names,
- *  say something, end the turn. `hang`: never end the turn until closed.
+ *  say something, end the turn. `block`: the same, but the verdict is a real
+ *  request-changes report. `hang`: never end the turn until closed.
  *  `empty`: end the turn with no output (the auth-failure no-op). */
 function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSessionLike {
   let release: (() => void) | undefined
@@ -66,8 +93,16 @@ function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSession
         return
       }
       const path = text.match(/write EXACTLY ONE file — (\S+) —/)?.[1]
-      if (path) await writeFile(path, JSON.stringify({ findings: [] }))
-      yield { kind: "text-delta", text: "reviewed\n" }
+      const report =
+        behaviour === "block"
+          ? {
+              decision: "request_changes",
+              summary: "one high-severity finding",
+              findings: [{ severity: "high", title: "breaks it", file: "src/x.ts", line: 1 }],
+            }
+          : { findings: [] }
+      if (path) await writeFile(path, JSON.stringify(report))
+      yield { kind: "text-delta", text: behaviour === "block" ? "blocked\n" : "reviewed\n" }
       yield { kind: "turn-end", reason: "completed" }
     },
     async cancel() {
@@ -86,6 +121,8 @@ beforeEach(async () => {
   prevHome = process.env.HOME
   home = await mkdtemp(join(tmpdir(), "agp-review-host-"))
   process.env.HOME = home
+  authProfileState.profiles = {}
+  authProfileState.keychain = {}
 })
 afterEach(async () => {
   if (prevHome === undefined) delete process.env.HOME
@@ -93,7 +130,17 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true })
 })
 
-function setup(behaviour: Behaviour | Behaviour[], laneRetries?: number) {
+function setup(
+  behaviour: Behaviour | Behaviour[],
+  laneRetries?: number,
+  opts: {
+    /** Preset id → auth profileRef, resolved as HARNESS presets (so the
+     *  lane really has a profile behind it). */
+    harnessProfiles?: Record<string, string>
+    /** Clock for the exhausted-wallet cooldowns. */
+    now?: () => number
+  } = {},
+) {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
   const eventRing = createEventRing()
@@ -102,6 +149,19 @@ function setup(behaviour: Behaviour | Behaviour[], laneRetries?: number) {
   const spawnedWith: Array<Record<string, unknown>> = []
   // One behaviour per spawn, in order; the last one repeats.
   const script = Array.isArray(behaviour) ? behaviour : [behaviour]
+  // A harness preset carries `access.profileRef`, so the spawn core resolves
+  // it through the auth store + keychain: back both with a credential-backed
+  // anthropic profile, and give the fake adapter the matching billing
+  // descriptor, or the spawn is refused (`access_profile_ineligible`).
+  for (const [id, profileRef] of Object.entries(opts.harnessProfiles ?? {})) {
+    authProfileState.profiles[profileRef] = {
+      id: profileRef,
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: `agentproto.test.${profileRef}`,
+    }
+    authProfileState.keychain[`agentproto.test.${profileRef}`] = `sk-test-${id}`
+  }
   const resolveAgentAdapter: AgentAdapterResolver = async (slug) => {
     // `broken` is an adapter the daemon cannot resolve → a spawn failure.
     if (slug === "broken") return undefined as never
@@ -113,6 +173,7 @@ function setup(behaviour: Behaviour | Behaviour[], laneRetries?: number) {
         return fakeReviewerSession(next, seen)
       }) as any,
       commandPreview: "fake-reviewer",
+      ...(opts.harnessProfiles ? { authDescriptor: { provider: "anthropic" } } : {}),
     }
   }
   const host = createDaemonReviewerHost({
@@ -120,14 +181,21 @@ function setup(behaviour: Behaviour | Behaviour[], laneRetries?: number) {
     sessionEvents,
     eventRing,
     resolveAgentAdapter,
-    getHarnessPreset: async () => undefined,
+    getHarnessPreset: async (id) => {
+      const profileRef = opts.harnessProfiles?.[id]
+      return profileRef
+        ? { id, harnessSlug: "fake", name: id, profileRef, defaultModel: `model-${id}`, isDefault: false }
+        : undefined
+    },
     getUserPreset: async (id) =>
       id === "broken-rev"
         ? { id, label: id, adapter: "broken" }
         : ["rev", "rev2", "rev3", "rev-openrouter"].includes(id)
           ? { id, label: id, adapter: "fake", model: `model-${id}` }
           : undefined,
+    getAuthProfile: async (id) => ({ id, endpoint: "opencode-go", method: { kind: "api-key" } }) as never,
     ...(laneRetries !== undefined ? { laneRetries } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
     spawnDeps: {
       loadDefaultsConfig: async () => undefined,
       loadRoleRegistry: async () => ({}),
@@ -567,6 +635,211 @@ describe("createDaemonReviewerHost — fallbackPresets", () => {
     expect(res.fallbacks?.map((f) => f.preset)).toEqual(["rev"])
     // A fresh per-preset timer would take ~1600ms.
     expect(elapsed).toBeLessThan(1_450)
+    registry.shutdown()
+  })
+})
+
+describe("createDaemonReviewerHost — an exhausted auth profile is never re-spawned", () => {
+  /** The measured failure: OpenCode Go's wallet is spent, so every Go preset
+   *  dies with the same "usage limit exceeded" line. */
+  const GO_LIMIT = 'error:Go usage limit exceeded [wallet: profile "opencode-go-local"]'
+  /** Two Go presets on the SAME wallet, plus a non-Go fallback on another. */
+  const GO_PROFILES = { go: "opencode-go-local", go2: "opencode-go-local", fb: "claude-subs-agentik" }
+  const lane = (
+    host: ReturnType<typeof setup>["host"],
+    extra: { preset?: string; fallbackPresets?: string[]; prompt?: string } = {},
+  ) =>
+    host.run({
+      preset: "go",
+      cwd: home,
+      prompt: "review",
+      label: "review:demo:wallet",
+      timeoutMs: 10_000,
+      ...extra,
+    })
+
+  it("lane B spawns NOTHING for a wallet lane A already exhausted — it falls straight through", async () => {
+    const { host, registry, spawnedWith } = setup([GO_LIMIT, "review"], undefined, { harnessProfiles: GO_PROFILES })
+    const a = await lane(host, { preset: "go", fallbackPresets: ["fb"] })
+    expect(a).toMatchObject({ status: "ended", preset: "fb" })
+    expect(spawnedWith).toHaveLength(2) // the doomed Go spawn + the fallback
+
+    const b = await lane(host, { preset: "go2", fallbackPresets: ["fb"] })
+    expect(b).toMatchObject({ status: "ended", preset: "fb" })
+    expect(spawnedWith).toHaveLength(3) // ONLY the fallback — go2 never spawned
+    expect(b.fallbacks).toEqual([
+      { preset: "go2", error: expect.stringMatching(/^skipped: auth profile 'opencode-go-local' is exhausted until /) },
+    ])
+    registry.shutdown()
+  })
+
+  it("a fallback preset on the SAME exhausted profile is skipped inside one chain", async () => {
+    const { host, registry, spawnedWith } = setup([GO_LIMIT, "review"], undefined, { harnessProfiles: GO_PROFILES })
+    const res = await lane(host, { preset: "go", fallbackPresets: ["go2", "fb"] })
+    expect(res).toMatchObject({ status: "ended", preset: "fb" })
+    expect(spawnedWith).toHaveLength(2) // go (failed) + fb; go2 skipped
+    expect(res.fallbacks?.map((f) => f.preset)).toEqual(["go", "go2"])
+    expect(res.fallbacks?.[1]?.error).toMatch(/skipped: auth profile 'opencode-go-local' is exhausted/)
+    registry.shutdown()
+  })
+
+  it("after the 15-minute cooldown the profile is tried again", async () => {
+    let clock = 1_760_000_000_000
+    const { host, registry, spawnedWith } = setup([GO_LIMIT, "review"], undefined, {
+      harnessProfiles: GO_PROFILES,
+      now: () => clock,
+    })
+    const first = await lane(host, { preset: "go" })
+    expect(first.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(1)
+
+    const skipped = await lane(host, { preset: "go2" })
+    expect(skipped).toMatchObject({
+      status: "failed",
+      error: expect.stringMatching(/skipped: auth profile 'opencode-go-local' is exhausted until /),
+    })
+    expect(spawnedWith).toHaveLength(1) // still nothing new
+
+    clock += WALLET_EXHAUSTED_COOLDOWN_MS + 1
+    const after = await lane(host, { preset: "go2" })
+    expect(after.status).toBe("ended") // the script's next (last) behaviour is a real review
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+
+  it("a rate limit cools that MODEL down for 60 seconds only", async () => {
+    let clock = 1_760_000_000_000
+    const { host, registry, spawnedWith } = setup("error:Rate limit exceeded", 0, {
+      harnessProfiles: GO_PROFILES,
+      now: () => clock,
+    })
+    const first = await lane(host, { preset: "go" })
+    expect(first.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(1)
+
+    clock += 30_000 // still inside the 60s cooldown
+    const skipped = await lane(host, { preset: "go" }) // the SAME model → skipped
+    expect(skipped.status === "failed" && skipped.error).toMatch(
+      /skipped: auth profile 'opencode-go-local' \(model 'model-go'\) is exhausted until /,
+    )
+    expect(spawnedWith).toHaveLength(1)
+
+    clock += WALLET_RATE_LIMIT_COOLDOWN_MS // well past the 60s cooldown → tried again
+    const after = await lane(host, { preset: "go" })
+    expect(after.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(2) // spawned again (and rate-limited again)
+    registry.shutdown()
+  })
+
+  it("a rate-limited lane retries in the SAME preset — the cooldown it recorded does not eat its own retry", async () => {
+    let clock = 1_760_000_000_000
+    // `laneRetries: 1`: a rate limit is transient, so the retry must really
+    // launch, not fall on the 60s per-model cooldown the failed attempt just
+    // wrote and come back `skipped`.
+    const { host, registry, spawnedWith } = setup(["error:Rate limit exceeded", "review"], 1, {
+      harnessProfiles: GO_PROFILES,
+      now: () => clock,
+    })
+    const a = await lane(host, { preset: "go", fallbackPresets: ["fb"] })
+    expect(a).toMatchObject({ status: "ended", preset: "go" })
+    expect(spawnedWith).toHaveLength(2) // the rate-limited attempt + its retry
+    if (a.status !== "ended") throw new Error("expected ended")
+    expect(registry.get(a.sessionId)!.label).toBe("review:demo:wallet:retry1")
+    expect(a.fallbacks).toBeUndefined()
+
+    // …but the cooldown it recorded still guards every OTHER lane/preset:
+    // a later lane on the same model is skipped without spawning.
+    clock += 30_000
+    const b = await lane(host, { preset: "go", fallbackPresets: ["fb"] })
+    expect(b).toMatchObject({ status: "ended", preset: "fb" })
+    expect(spawnedWith).toHaveLength(3) // ONLY the fallback — `go` was skipped
+    expect(b.fallbacks).toEqual([
+      { preset: "go", error: expect.stringMatching(/^skipped: auth profile 'opencode-go-local' \(model 'model-go'\) is exhausted until /) },
+    ])
+    // and a sibling model on the same profile was never rate-limited: it
+    // still spawns and reviews normally
+    const c = await lane(host, { preset: "go2", fallbackPresets: ["fb"] })
+    expect(c).toMatchObject({ status: "ended", preset: "go2" })
+    expect(spawnedWith).toHaveLength(4)
+    expect(c.fallbacks).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("a 'context usage limit' is not an exhausted wallet — the profile keeps spawning", async () => {
+    let clock = 1_760_000_000_000
+    const { host, registry, spawnedWith } = setup(["error:your context usage limit is at 92%", "review"], 0, {
+      harnessProfiles: GO_PROFILES,
+      now: () => clock,
+    })
+    const first = await lane(host, { preset: "go" })
+    expect(first.status).toBe("failed")
+    expect(first.status === "failed" && first.error).toContain("context usage limit")
+    expect(spawnedWith).toHaveLength(1)
+
+    // SAME profile, other model: no 15-minute cooldown was recorded, so this
+    // spawn is a real review rather than a `skipped:`.
+    clock += 1_000
+    const second = await lane(host, { preset: "go2" })
+    expect(second).toMatchObject({ status: "ended", preset: "go2" })
+    expect(second.fallbacks).toBeUndefined()
+    expect(spawnedWith).toHaveLength(2)
+
+    // …and the original model is not cooled either.
+    const third = await lane(host, { preset: "go" })
+    expect(third.status).toBe("ended")
+    expect(spawnedWith).toHaveLength(3)
+    registry.shutdown()
+  })
+
+  it("a rate limit on one model does NOT skip a sibling model on the same profile", async () => {
+    let clock = 1_760_000_000_000
+    // The real shape: several free Zen models share ONE profile, and lane
+    // chains fall back across them on purpose.
+    const ZEN_PROFILES = { mimo: "opencode-zen-free", step5: "opencode-zen-free", nemotron: "opencode-zen-free" }
+    const { host, registry, spawnedWith } = setup("error:Rate limit exceeded", 0, {
+      harnessProfiles: ZEN_PROFILES,
+      now: () => clock,
+    })
+    // nemotron's rate limit lands in ITS per-model bucket…
+    const a = await lane(host, { preset: "nemotron" })
+    expect(a.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(1)
+
+    // …mimo and step5 share the PROFILE but not the bucket: both still spawn
+    const b = await lane(host, { preset: "mimo" })
+    expect(b.status).toBe("failed")
+    const c = await lane(host, { preset: "step5" })
+    expect(c.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(3)
+
+    // nemotron itself is still skipped inside its 60s window
+    clock += 30_000
+    const skipped = await lane(host, { preset: "nemotron" })
+    expect(skipped.status === "failed" && skipped.error).toMatch(
+      /skipped: auth profile 'opencode-zen-free' \(model 'model-nemotron'\) is exhausted until /,
+    )
+    expect(spawnedWith).toHaveLength(3)
+
+    // …and is tried again once its 60s rate-limit cooldown ends
+    clock += WALLET_RATE_LIMIT_COOLDOWN_MS
+    await lane(host, { preset: "nemotron" })
+    expect(spawnedWith).toHaveLength(4)
+    registry.shutdown()
+  })
+
+  it("a real block verdict still never falls back", async () => {
+    const { host, registry, spawnedWith } = setup(["block", "review"], undefined, { harnessProfiles: GO_PROFILES })
+    const verdictPath = join(home, "verdict-block.json")
+    const res = await lane(host, {
+      preset: "go",
+      fallbackPresets: ["fb"],
+      prompt: `Review it. When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON`,
+    })
+    expect(res).toMatchObject({ status: "ended", preset: "go" })
+    expect(res.fallbacks).toBeUndefined()
+    expect(spawnedWith).toHaveLength(1)
+    const report = JSON.parse(await readFile(verdictPath, "utf8"))
+    expect(report).toMatchObject({ decision: "request_changes", findings: [{ severity: "high" }] })
     registry.shutdown()
   })
 })
