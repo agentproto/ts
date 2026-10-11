@@ -987,6 +987,13 @@ export interface QueuedPrompt {
   deliverVia?: "auto" | "steer" | "interrupt"
   /** ISO 8601 — when the staleness notice for this item was sent (once). */
   staleNotifiedAt?: string
+  /** Items sharing a key collapse: a newer enqueue with the same key
+   *  replaces this item in place (message/envelope/queuedAt updated, id and
+   *  position kept). */
+  coalesceKey?: string
+  /** How many enqueues have collapsed into this item (absent ⇒ 1 — never
+   *  coalesced). Lets a queue UI show "x3". */
+  coalescedCount?: number
 }
 
 /** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
@@ -1152,6 +1159,9 @@ export interface QueuedPromptView {
   /** ISO 8601 timestamp the item was queued. */
   queuedAt: string
   position: number
+  /** How many enqueues collapsed into this item — absent when it was never
+   *  coalesced (a UI can show "x3"). */
+  coalescedCount?: number
 }
 
 /** One prompt still waiting to reach a session, with its age — the
@@ -3865,6 +3875,11 @@ export interface SessionsRegistry {
       /** `steer` — inject only (stay queued if it can't); `interrupt` —
        *  cancel the turn and run it; `auto` (default) — steer, else interrupt. */
       deliverVia?: "auto" | "steer" | "interrupt"
+      /** Coalescing key (`sentinel-coalesce.ts`'s `coalesceKeyFor`, prefixed
+       *  `sentinel:`): on the queue arm, an item already waiting with this
+       *  key is REPLACED in place (newest message wins, id + position kept,
+       *  `coalescedCount` incremented) instead of a second item being pushed. */
+      coalesceKey?: string
     }
   ): Promise<EnqueuePromptResult>
   /** One pass over every prompt queue: force-deliver items past their
@@ -3897,7 +3912,15 @@ export interface SessionsRegistry {
    *  recipient is missing or not alive. */
   sendMessage(
     msg: SessionMessage,
-    opts?: { source?: string; origin?: string; allowInterrupt?: boolean },
+    opts?: {
+      source?: string
+      origin?: string
+      allowInterrupt?: boolean
+      /** Coalescing key — carried through to `enqueuePrompt`'s queue arm
+       *  (sentinel notices use this so a burst about one PR/commit becomes
+       *  one queued item). */
+      coalesceKey?: string
+    },
   ): Promise<SendMessageResult>
   /** Block until a message matching `filter` is in `id`'s inbox (returns at
    *  once when one already is), or `timeoutMs` elapses. Matched messages are
@@ -10563,6 +10586,33 @@ export function createSessionsRegistry(opts?: {
         }
       }
       if (opts?.queue && rtPre.busy) {
+        // Coalesce-in-place (sentinel notices, mostly): a newer enqueue that
+        // names a key an item is already waiting under REPLACES that item —
+        // same id, same queue position, newest message/envelope/timestamp,
+        // `coalescedCount` bumped — rather than parking a second item about
+        // the same underlying thing.
+        const coalesceKey = opts.coalesceKey
+        const waiting = rtPre.desc.promptQueue ?? []
+        if (coalesceKey !== undefined) {
+          const idx = waiting.findIndex(p => p.coalesceKey === coalesceKey)
+          if (idx !== -1) {
+            const existing = waiting[idx]!
+            const replaced: QueuedPrompt = {
+              ...existing,
+              message: envelope ? envelope.text : message,
+              queuedAt: new Date().toISOString(),
+              ...(envelope ? { envelope } : {}),
+              coalesceKey,
+              coalescedCount: (existing.coalescedCount ?? 1) + 1,
+            }
+            const next = [...waiting]
+            next[idx] = replaced
+            rtPre.desc.promptQueue = next
+            if (envelope) emitSessionMessage(envelope)
+            schedulePersist()
+            return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: existing.id }
+          }
+        }
         const steerable = opts.steer === true && !envelope && !isChildPromptSource(opts.source)
         const item: QueuedPrompt = {
           id: opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
@@ -10572,6 +10622,7 @@ export function createSessionsRegistry(opts?: {
           ...(opts.origin ? { origin: opts.origin } : {}),
           ...(envelope ? { envelope } : {}),
           ...(steerable ? { steer: true } : {}),
+          ...(coalesceKey !== undefined ? { coalesceKey } : {}),
           ...(opts.deliverWithinMs !== undefined && opts.deliverWithinMs > 0
             ? {
                 deliverBy: new Date(Date.now() + opts.deliverWithinMs).toISOString(),
@@ -10691,6 +10742,7 @@ export function createSessionsRegistry(opts?: {
         ...(interrupt ? { interrupt: true } : {}),
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.origin ? { origin: opts.origin } : {}),
+        ...(opts?.coalesceKey ? { coalesceKey: opts.coalesceKey } : {}),
       })
       return {
         messageId: msg.id,
@@ -10798,6 +10850,7 @@ export function createSessionsRegistry(opts?: {
         preview: previewPrompt(p.message),
         queuedAt: p.queuedAt,
         position,
+        ...(p.coalescedCount !== undefined ? { coalescedCount: p.coalescedCount } : {}),
       }))
     },
     readBackgroundTaskTail(id, taskId) {

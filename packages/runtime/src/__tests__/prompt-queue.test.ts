@@ -611,6 +611,140 @@ describe("listQueuedPrompts — after-the-fact inspection", () => {
   })
 })
 
+describe("enqueuePrompt({queue: true, coalesceKey}) — replace-in-place", () => {
+  const CI_KEY = "sentinel:github-ci:ci:github:acme/widgets#42:sha1"
+  const PUSH_KEY = "sentinel:github-push:push:github:acme/widgets#42"
+
+  it("a second enqueue with the same key replaces the waiting item: same id + position, newest message, count bumped", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, events } = multiTurnAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+    expect(reg.get(desc.id)?.busy).toBe(true)
+
+    const a = await reg.enqueuePrompt(desc.id, "CI failing on acme/widgets#42", {
+      queue: true,
+      coalesceKey: CI_KEY,
+    })
+    const b = await reg.enqueuePrompt(desc.id, "CI failure on acme/widgets#42", {
+      queue: true,
+      coalesceKey: CI_KEY,
+    })
+    expect(a.queued).toBe(true)
+    expect(b.queued).toBe(true)
+    expect(b.queueId).toBe(a.queueId)
+
+    const queue = reg.get(desc.id)?.promptQueue ?? []
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.id).toBe(a.queueId)
+    expect(queue[0]!.message).toBe("CI failure on acme/widgets#42")
+    expect(queue[0]!.coalesceKey).toBe(CI_KEY)
+    expect(queue[0]!.coalescedCount).toBe(2)
+    // Nothing extra was dispatched — only turn 1 ever started.
+    expect(events).toEqual([`turn1-start:${wrapped("first")}`])
+
+    // The count rides out to queue UIs.
+    const view = reg.listQueuedPrompts(desc.id)!
+    expect(view).toHaveLength(1)
+    expect(view[0]).toMatchObject({ id: a.queueId, coalescedCount: 2, preview: "CI failure on acme/widgets#42" })
+
+    void firstPromise.catch(() => undefined)
+    reg.kill(desc.id)
+    reg.shutdown()
+  })
+
+  it("different keys queue separate items (no collapse across families/subjects)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, events } = multiTurnAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+
+    await reg.enqueuePrompt(desc.id, "CI success on acme/widgets#42", { queue: true, coalesceKey: CI_KEY })
+    await reg.enqueuePrompt(desc.id, "New commits pushed to acme/widgets#42", { queue: true, coalesceKey: PUSH_KEY })
+
+    const queue = reg.get(desc.id)?.promptQueue ?? []
+    expect(queue.map(p => p.message)).toEqual([
+      "CI success on acme/widgets#42",
+      "New commits pushed to acme/widgets#42",
+    ])
+    expect(queue[0]!.coalescedCount).toBeUndefined()
+
+    void firstPromise.catch(() => undefined)
+    reg.kill(desc.id)
+    reg.shutdown()
+  })
+
+  it("replacing keeps the older item's queue position (a coalescing key never jumps the FIFO)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, events } = multiTurnAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+
+    await reg.enqueuePrompt(desc.id, "CI failing on acme/widgets#42", { queue: true, coalesceKey: CI_KEY })
+    await reg.enqueuePrompt(desc.id, "human follow-up", { queue: true })
+    // A third coalescing notice replaces item 0, NOT appended, NOT forced to the back.
+    await reg.enqueuePrompt(desc.id, "CI failure on acme/widgets#42 (rollup)", {
+      queue: true,
+      coalesceKey: CI_KEY,
+    })
+
+    expect(reg.get(desc.id)?.promptQueue?.map(p => p.message)).toEqual([
+      "CI failure on acme/widgets#42 (rollup)",
+      "human follow-up",
+    ])
+    expect(events).toEqual([`turn1-start:${wrapped("first")}`])
+
+    void firstPromise.catch(() => undefined)
+    reg.kill(desc.id)
+    reg.shutdown()
+  })
+
+  it("no coalesceKey ⇒ today's behavior: every enqueue appends", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, events } = multiTurnAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+
+    await reg.enqueuePrompt(desc.id, "second", { queue: true })
+    await reg.enqueuePrompt(desc.id, "third", { queue: true })
+    expect(reg.get(desc.id)?.promptQueue?.map(p => p.message)).toEqual(["second", "third"])
+    expect(reg.get(desc.id)?.promptQueue?.map(p => p.coalescedCount)).toEqual([undefined, undefined])
+    expect(events).toEqual([`turn1-start:${wrapped("first")}`])
+
+    void firstPromise.catch(() => undefined)
+    reg.kill(desc.id)
+    reg.shutdown()
+  })
+})
+
 describe("promote vs deliver — two DISTINCT force operations", () => {
   it("promoteQueuedPrompt REORDERS only — never touches the in-flight turn", async () => {
     const reg = createSessionsRegistry({ persist: false })
