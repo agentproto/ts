@@ -47,6 +47,9 @@ export interface DaemonReviewerHostDeps {
   laneRetries?: number
   /** Auth-profile lookup for the OpenRouter guard — injectable for tests. */
   getAuthProfile?: (id: string) => Promise<AuthProfile | undefined>
+  /** Clock for the exhausted-wallet cooldowns — injectable for tests;
+   *  default {@link Date.now}. */
+  now?: () => number
 }
 
 /** Retries (after the first attempt) for a lane whose reviewer turn ends in a
@@ -68,6 +71,29 @@ export function isRetryableTurnError(message: string | undefined): boolean {
 const clip = (text: string, max = 300): string => {
   const one = text.replace(/\s+/g, " ").trim()
   return one.length > max ? `${one.slice(0, max)}…` : one
+}
+
+/** Cooldown before a profile whose wallet a provider declared EMPTY is worth
+ *  spawning against again. A spent usage limit / quota / balance does not
+ *  refill mid-run; a rate limit does, quickly. */
+export const WALLET_EXHAUSTED_COOLDOWN_MS = 15 * 60_000
+export const WALLET_RATE_LIMIT_COOLDOWN_MS = 60_000
+
+/** An error saying the AUTH PROFILE's wallet is empty — the next spawn
+ *  against the same profile fails the same way, so skip it (let the lane's
+ *  `fallbackPresets` chain advance) instead of burning a process + a
+ *  transcript dir on a reviewer that cannot run. Narrower than
+ *  {@link PERMANENT_ERROR_RE}: this is not "don't retry the turn", it is
+ *  "don't touch this wallet again for a while". */
+const WALLET_EXHAUSTED_RE = /usage limit|quota exceeded|insufficient (credit|balance|funds)|rate limit exceeded/i
+const RATE_LIMIT_RE = /rate limit exceeded/i
+
+/** The auth profile a resolved preset would spawn under — harness presets
+ *  put it in `access.profileRef` directly; user presets nest it in their own
+ *  `access.profileRef`. */
+export function reviewerProfileRef(fields: Pick<SpawnAgentSessionInput, "access" | "preset">): string | undefined {
+  const userPreset = fields.preset as UserPreset | undefined
+  return fields.access?.profileRef ?? userPreset?.access?.profileRef
 }
 
 interface AttemptOutcome {
@@ -95,7 +121,7 @@ export async function reviewerOpenRouterViolation(
 ): Promise<string | undefined> {
   const userPreset = spawnFields.preset as UserPreset | undefined
   const model = spawnFields.model ?? userPreset?.model
-  const profileRef = spawnFields.access?.profileRef ?? userPreset?.access?.profileRef
+  const profileRef = reviewerProfileRef(spawnFields)
   let profile: AuthProfile | undefined
   if (profileRef) {
     try {
@@ -133,6 +159,38 @@ export async function resolveReviewerPreset(
 export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): ReviewerSessionHost {
   const { registry, sessionEvents, eventRing } = deps
   const maxRetries = Math.min(MAX_LANE_RETRIES, Math.max(0, Math.floor(deps.laneRetries ?? DEFAULT_LANE_RETRIES)))
+  const now = deps.now ?? Date.now
+
+  /** Auth profile → `{ until, error }`: a wallet a provider has already
+   *  declared empty. Per HOST instance — the daemon builds one host for its
+   *  singleton review runner (`index.ts`), so this map is shared across
+   *  every review lane and every review run in the process: the 4 lanes of
+   *  a push and the next push's lanes all see the same exhausted wallet and
+   *  skip it without spawning. Entries expire by `until`; a profile is
+   *  bounded by the auth store, so the map cannot grow without limit. */
+  const exhaustedProfiles = new Map<string, { until: number; error: string }>()
+
+  /** A failed attempt whose error says the wallet is empty → cool that
+   *  profile down so later lanes skip it. No-op for a failure with no
+   *  profile behind it, or one whose text isn't wallet-shaped. */
+  const noteWalletExhausted = (profileRef: string | undefined, error: string | undefined) => {
+    if (!profileRef || !error || !WALLET_EXHAUSTED_RE.test(error)) return
+    const cooldownMs = RATE_LIMIT_RE.test(error) ? WALLET_RATE_LIMIT_COOLDOWN_MS : WALLET_EXHAUSTED_COOLDOWN_MS
+    exhaustedProfiles.set(profileRef, { until: now() + cooldownMs, error: clip(error) })
+  }
+
+  /** The live cooldown on `profileRef`, if any — expired entries are
+   *  dropped here, so a profile is tried again the moment its cooldown ends. */
+  const walletCooldown = (profileRef: string | undefined): { until: number; error: string } | undefined => {
+    if (!profileRef) return undefined
+    const hit = exhaustedProfiles.get(profileRef)
+    if (!hit) return undefined
+    if (hit.until <= now()) {
+      exhaustedProfiles.delete(profileRef)
+      return undefined
+    }
+    return hit
+  }
 
   async function runAttempt(
     input: Parameters<ReviewerSessionHost["run"]>[0],
@@ -146,6 +204,18 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         status: "failed",
         preset: input.preset,
         error: `preset '${input.preset}' not found — neither a harness preset (harness_preset_list) nor a user preset`,
+      })
+    }
+    const profileRef = reviewerProfileRef(spawnFields)
+    // An exhausted wallet is skipped BEFORE anything is spawned: the chain
+    // falls through to the next fallback instantly instead of paying for a
+    // session that is doomed to the same "wallet empty" error.
+    const cooldown = walletCooldown(profileRef)
+    if (cooldown && profileRef) {
+      return unavailable({
+        status: "failed",
+        preset: input.preset,
+        error: `skipped: auth profile '${profileRef}' is exhausted until ${new Date(cooldown.until).toISOString()} (${cooldown.error})`,
       })
     }
     const blocked = await reviewerOpenRouterViolation(input.preset, spawnFields, deps.getAuthProfile)
@@ -171,6 +241,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       },
     )
     if (!spawned.ok) {
+      noteWalletExhausted(profileRef, spawned.message)
       return unavailable({
         status: "failed",
         preset: input.preset,
@@ -232,6 +303,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         )
       }
       if (res.event === "turn-end" && res.reason === "error") {
+        noteWalletExhausted(profileRef, res.error)
         return {
           retryable: isRetryableTurnError(res.error),
           fallbackable: true,
