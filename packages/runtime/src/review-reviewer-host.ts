@@ -47,6 +47,9 @@ export interface DaemonReviewerHostDeps {
   laneRetries?: number
   /** Auth-profile lookup for the OpenRouter guard — injectable for tests. */
   getAuthProfile?: (id: string) => Promise<AuthProfile | undefined>
+  /** Clock for the exhausted-wallet cooldowns — injectable for tests;
+   *  default {@link Date.now}. */
+  now?: () => number
 }
 
 /** Retries (after the first attempt) for a lane whose reviewer turn ends in a
@@ -68,6 +71,38 @@ export function isRetryableTurnError(message: string | undefined): boolean {
 const clip = (text: string, max = 300): string => {
   const one = text.replace(/\s+/g, " ").trim()
   return one.length > max ? `${one.slice(0, max)}…` : one
+}
+
+/** Cooldown before a profile whose wallet a provider declared EMPTY is worth
+ *  spawning against again. A spent usage limit / quota / balance does not
+ *  refill mid-run; a rate limit does, quickly. */
+export const WALLET_EXHAUSTED_COOLDOWN_MS = 15 * 60_000
+export const WALLET_RATE_LIMIT_COOLDOWN_MS = 60_000
+
+/** An error saying the AUTH PROFILE's wallet is empty — the next spawn
+ *  against the same profile fails the same way, so skip it (let the lane's
+ *  `fallbackPresets` chain advance) instead of burning a process + a
+ *  transcript dir on a reviewer that cannot run. Narrower than
+ *  {@link PERMANENT_ERROR_RE}: this is not "don't retry the turn", it is
+ *  "don't touch this wallet again for a while". */
+const WALLET_EXHAUSTED_RE =
+  /usage limit (reached|exceeded)|quota exceeded|insufficient (credit|balance|funds)|rate limit exceeded/i
+const RATE_LIMIT_RE = /rate limit exceeded/i
+
+/** The auth profile a resolved preset would spawn under — harness presets
+ *  put it in `access.profileRef` directly; user presets nest it in their own
+ *  `access.profileRef`. */
+export function reviewerProfileRef(fields: Pick<SpawnAgentSessionInput, "access" | "preset">): string | undefined {
+  const userPreset = fields.preset as UserPreset | undefined
+  return fields.access?.profileRef ?? userPreset?.access?.profileRef
+}
+
+/** The model a resolved preset would run — the spawn `model` when the preset
+ *  carried one (harness presets project `defaultModel` into it), else the
+ *  user preset's own. */
+export function reviewerModel(fields: Pick<SpawnAgentSessionInput, "model" | "preset">): string | undefined {
+  const userPreset = fields.preset as UserPreset | undefined
+  return fields.model ?? userPreset?.model
 }
 
 interface AttemptOutcome {
@@ -93,9 +128,8 @@ export async function reviewerOpenRouterViolation(
   spawnFields: Pick<SpawnAgentSessionInput, "adapter" | "model" | "access" | "preset">,
   lookup: (id: string) => Promise<AuthProfile | undefined> = getAuthProfile,
 ): Promise<string | undefined> {
-  const userPreset = spawnFields.preset as UserPreset | undefined
-  const model = spawnFields.model ?? userPreset?.model
-  const profileRef = spawnFields.access?.profileRef ?? userPreset?.access?.profileRef
+  const model = reviewerModel(spawnFields)
+  const profileRef = reviewerProfileRef(spawnFields)
   let profile: AuthProfile | undefined
   if (profileRef) {
     try {
@@ -133,6 +167,58 @@ export async function resolveReviewerPreset(
 export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): ReviewerSessionHost {
   const { registry, sessionEvents, eventRing } = deps
   const maxRetries = Math.min(MAX_LANE_RETRIES, Math.max(0, Math.floor(deps.laneRetries ?? DEFAULT_LANE_RETRIES)))
+  const now = deps.now ?? Date.now
+
+  /** Cooldown key → `{ until, error }`: a wallet a provider has already
+   *  declared empty (or a model it is currently rate-limiting). Two key
+   *  shapes, deliberately: `${profileRef}` for wallet exhaustion — a spent
+   *  usage limit / quota / insufficient balance drains the WHOLE profile —
+   *  and `${profileRef}::${model}` for a rate limit, which is per MODEL:
+   *  several free models share one profile on purpose (opencode-zen-free's
+   *  mimo/step5/nemotron), and a lane chain falls back ACROSS them, so a
+   *  rate limit on one must not skip its siblings. Per HOST instance — the
+   *  daemon builds one host for its singleton review runner (`index.ts`), so
+   *  this map is shared across every review lane and every review run in the
+   *  process. Entries expire by `until`; keys are bounded by the auth store
+   *  × the models lanes actually run, so the map cannot grow without limit. */
+  const exhaustedProfiles = new Map<string, { until: number; error: string }>()
+
+  /** A failed attempt whose error says the wallet is empty (or the model is
+   *  rate-limited) → cool the right key down so later lanes skip it. No-op
+   *  for a failure with no profile behind it, or one whose text isn't
+   *  wallet-shaped. */
+  const noteWalletExhausted = (profileRef: string | undefined, model: string | undefined, error: string | undefined) => {
+    if (!profileRef || !error || !WALLET_EXHAUSTED_RE.test(error)) return
+    const rateLimited = RATE_LIMIT_RE.test(error)
+    const key = rateLimited ? `${profileRef}::${model ?? ""}` : profileRef
+    const cooldownMs = rateLimited ? WALLET_RATE_LIMIT_COOLDOWN_MS : WALLET_EXHAUSTED_COOLDOWN_MS
+    exhaustedProfiles.set(key, { until: now() + cooldownMs, error: clip(error) })
+  }
+
+  /** The live cooldown on `key`, if any — expired entries are dropped here,
+   *  so a profile/model is tried again the moment its cooldown ends. */
+  const cooldownFor = (key: string | undefined): { until: number; error: string } | undefined => {
+    if (!key) return undefined
+    const hit = exhaustedProfiles.get(key)
+    if (!hit) return undefined
+    if (hit.until <= now()) {
+      exhaustedProfiles.delete(key)
+      return undefined
+    }
+    return hit
+  }
+
+  /** The cooldown blocking THIS attempt, if any: the whole profile first
+   *  (wallet drained), then this profile's MODEL bucket (rate limit). */
+  const blockedCooldown = (
+    profileRef: string | undefined,
+    model: string | undefined,
+  ): { until: number; error: string; perModel: boolean } | undefined => {
+    const whole = cooldownFor(profileRef)
+    if (whole) return { ...whole, perModel: false }
+    const perModel = cooldownFor(profileRef === undefined ? undefined : `${profileRef}::${model ?? ""}`)
+    return perModel ? { ...perModel, perModel: true } : undefined
+  }
 
   async function runAttempt(
     input: Parameters<ReviewerSessionHost["run"]>[0],
@@ -146,6 +232,28 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         status: "failed",
         preset: input.preset,
         error: `preset '${input.preset}' not found — neither a harness preset (harness_preset_list) nor a user preset`,
+      })
+    }
+    const profileRef = reviewerProfileRef(spawnFields)
+    const model = reviewerModel(spawnFields)
+    // An exhausted wallet (or a rate-limited MODEL on it) is skipped BEFORE
+    // anything is spawned: the chain falls through to the next fallback
+    // instantly instead of paying for a session that is doomed to the same
+    // error. Wallet cooldowns are checked first — a drained profile blocks
+    // every model on it.
+    // NOT on a retry: `attempt > 0` means the same preset's own previous
+    // attempt just recorded that cooldown (a rate limit is retryable), so
+    // consulting it here would turn every lane retry into a `skipped` and
+    // neutralise `laneRetries` for rate limits. The retry is the one caller
+    // that must be allowed through — every other lane/preset still sees the
+    // cooldown and is skipped.
+    const cooldown = attempt > 0 ? undefined : blockedCooldown(profileRef, model)
+    if (cooldown && profileRef) {
+      const where = cooldown.perModel ? `auth profile '${profileRef}' (model '${model ?? "unknown"}')` : `auth profile '${profileRef}'`
+      return unavailable({
+        status: "failed",
+        preset: input.preset,
+        error: `skipped: ${where} is exhausted until ${new Date(cooldown.until).toISOString()} (${cooldown.error})`,
       })
     }
     const blocked = await reviewerOpenRouterViolation(input.preset, spawnFields, deps.getAuthProfile)
@@ -171,6 +279,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       },
     )
     if (!spawned.ok) {
+      noteWalletExhausted(profileRef, model, spawned.message)
       return unavailable({
         status: "failed",
         preset: input.preset,
@@ -232,6 +341,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         )
       }
       if (res.event === "turn-end" && res.reason === "error") {
+        noteWalletExhausted(profileRef, model, res.error)
         return {
           retryable: isRetryableTurnError(res.error),
           fallbackable: true,
