@@ -156,8 +156,15 @@ describe("normalizeGithubEvent — raw webhook payloads", () => {
       type: "github.check_suite.completed",
       subject: "github:agentproto/ts#1428",
       terminal: false,
-      data: { action: "completed", conclusion: "success", repo: "agentproto/ts", number: 1428, head_branch: "wt/sentinel-webhook" },
-      summary: "Check suite success for agentproto/ts#1428",
+      data: {
+        action: "completed",
+        conclusion: "success",
+        repo: "agentproto/ts",
+        number: 1428,
+        head_branch: "wt/sentinel-webhook",
+        head_sha: "bbb222",
+      },
+      summary: "Check suite success for agentproto/ts#1428 @ bbb222",
     })
   })
 

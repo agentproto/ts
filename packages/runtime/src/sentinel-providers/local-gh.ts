@@ -177,6 +177,15 @@ function rollupConclusion(conclusions: readonly (string | null)[]): string {
   return "neutral"
 }
 
+/** Conclusions that make a check count as failing for the CI rollup. */
+const FAILING = new Set(["failure", "timed_out", "cancelled", "action_required"])
+
+/** Comma-join check names for a summary line, capped at 5 then `+N more`. */
+function checkNamesForSummary(names: readonly string[]): string {
+  const shown = names.slice(0, 5).join(", ")
+  return names.length > 5 ? `${shown} +${names.length - 5} more` : shown
+}
+
 function makeEvent(input: {
   idParts: readonly string[]
   type: string
@@ -285,25 +294,62 @@ function diffSnapshots(
   const nowCompleted = (current.checks ?? []).filter(
     c => c.conclusion !== null && (prevChecks.get(c.name) ?? null) === null,
   )
-  if (nowCompleted.length > 0) {
-    const conclusion = rollupConclusion(nowCompleted.map(c => c.conclusion))
-    const namesKey = nowCompleted
-      .map(c => `${c.name}:${c.conclusion ?? ""}`)
-      .sort()
-      .join(",")
+  // Rollup, not per-check-per-tick: a failure is news the moment it lands
+  // (whatever else is still running), and a full pass is news exactly once —
+  // when the LAST check of the head settles. Partial passes are silent: a
+  // poll that happens to catch one of six checks green is not a verdict.
+  const all = current.checks ?? []
+  const newlyFailed = nowCompleted.filter(c => FAILING.has(c.conclusion ?? ""))
+  const allDone = all.length > 0 && all.every(c => c.conclusion !== null)
+  const sha = current.headSha ?? ""
+  const sha7 = sha.slice(0, 7)
+  if (newlyFailed.length > 0) {
+    const names = newlyFailed.map(c => c.name).sort()
     events.push(
       makeEvent({
-        // headSha so an identical conclusion set on a new head (e.g. lint
-        // fails again after a push) mints a fresh id instead of colliding
-        // with the previous head's already-delivered event.
-        idParts: [prTag, "checks", current.headSha ?? "", namesKey],
+        // headSha + the failing set: one id per (head, failure set) — a later
+        // rollup on the same head mints a DIFFERENT id (the "done" arm below).
+        idParts: [prTag, "checks", sha, "failed", names.join(",")],
         type: "github.check_suite.completed",
         subject: ctx.subject,
         subjects,
         terminal: false,
         time: current.fetchedAt,
-        data: { action: "completed", conclusion, repo: ctx.repo, number: ctx.number, checks: nowCompleted },
-        summary: `Check suite ${conclusion} for ${prTag}`,
+        data: {
+          action: "completed",
+          conclusion: "failure",
+          repo: ctx.repo,
+          number: ctx.number,
+          headSha: sha,
+          checks: newlyFailed,
+          total: all.length,
+        },
+        summary: `CI failing on ${prTag}${sha7 ? ` (${sha7})` : ""}: ${checkNamesForSummary(names)}`,
+      }),
+    )
+  } else if (allDone && nowCompleted.length > 0) {
+    const conclusion = rollupConclusion(all.map(c => c.conclusion))
+    events.push(
+      makeEvent({
+        // Stable per head — every tick after the suite settles re-mints the
+        // same id, so the delivery dedup keeps the "one verdict per head"
+        // guarantee even if a later poll re-reports the same completion set.
+        idParts: [prTag, "checks", sha, "done"],
+        type: "github.check_suite.completed",
+        subject: ctx.subject,
+        subjects,
+        terminal: false,
+        time: current.fetchedAt,
+        data: {
+          action: "completed",
+          conclusion,
+          repo: ctx.repo,
+          number: ctx.number,
+          headSha: sha,
+          checks: all,
+          total: all.length,
+        },
+        summary: `CI ${conclusion} on ${prTag}${sha7 ? ` (${sha7})` : ""}: ${all.length} checks`,
       }),
     )
   }

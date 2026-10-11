@@ -69,6 +69,7 @@ import {
   type SentinelWebhookOutboxRow,
 } from "./sentinel-webhook-outbox.js"
 import type { DeliveryReplay } from "./webhook-egress/delivery.js"
+import { coalesceKeyFor } from "./sentinel-coalesce.js"
 import {
   deliveryPreferenceFor,
   type SentinelEvent,
@@ -170,7 +171,7 @@ function trimEventForEnvelope(event: SentinelEvent): Record<string, unknown> {
 export interface SentinelRuntimeRegistry {
   sendMessage(
     msg: SessionMessage,
-    opts?: { source?: string; origin?: string; allowInterrupt?: boolean },
+    opts?: { source?: string; origin?: string; allowInterrupt?: boolean; coalesceKey?: string },
   ): Promise<SendMessageResult>
 }
 
@@ -455,11 +456,12 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     info: SentinelSessionInfo,
   ): Promise<void> {
     const parentId = info.parentSessionId
+    const key = coalesceKeyFor(event)
     if (parentId && opts.isSessionAlive(parentId)) {
       try {
         await opts.registry.sendMessage(
           { ...msg, to: parentId, urgency: "fyi", text: `[for closed session ${sessionId}] ${msg.text}` },
-          { source: "sentinel", origin: sentinel.id },
+          { source: "sentinel", origin: sentinel.id, ...(key ? { coalesceKey: key } : {}) },
         )
         return
       } catch (err) {
@@ -568,8 +570,13 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // type for `target.sessionId`/`target.urgency` below.
     if (target.kind !== "session") return
     const msg = buildMessage(sentinel, event, target.sessionId, target.urgency)
+    const key = coalesceKeyFor(event)
     try {
-      await opts.registry.sendMessage(msg, { source: "sentinel", origin: sentinel.id })
+      await opts.registry.sendMessage(msg, {
+        source: "sentinel",
+        origin: sentinel.id,
+        ...(key ? { coalesceKey: key } : {}),
+      })
     } catch (err) {
       if (err instanceof SessionNotAliveError) {
         await handleDeadSession(sentinel, event, msg)

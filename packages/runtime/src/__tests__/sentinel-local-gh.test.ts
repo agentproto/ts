@@ -271,6 +271,133 @@ describe("localGhSentinelProvider", () => {
     expect(checkEvents[0]!.data.conclusion).toBe("success")
   })
 
+  it("partial passes are silent; the settled suite emits exactly ONE rollup event", async () => {
+    const state: FakeGhState = {
+      number: 42,
+      state: "open",
+      merged: false,
+      headSha: "sha1",
+      reviews: [],
+      checks: [
+        { name: "lint", conclusion: null },
+        { name: "unit", conclusion: null },
+        { name: "build", conclusion: null },
+      ],
+    }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const baseline = await provider.poll!(handle, 50)
+    expect(baseline.events).toEqual([])
+    handle = { ...handle, cursor: baseline.cursor }
+
+    // Tick 1: one of three checks green — a partial pass is not a verdict.
+    state.checks = [
+      { name: "lint", conclusion: "success" },
+      { name: "unit", conclusion: null },
+      { name: "build", conclusion: null },
+    ]
+    const tick1 = await provider.poll!(handle, 50)
+    expect(tick1.events).toEqual([])
+    handle = { ...handle, cursor: tick1.cursor }
+
+    // Tick 2: the rest land together — exactly one rollup event.
+    state.checks = [
+      { name: "lint", conclusion: "success" },
+      { name: "unit", conclusion: "success" },
+      { name: "build", conclusion: "success" },
+    ]
+    const tick2 = await provider.poll!(handle, 50)
+    expect(tick2.events).toHaveLength(1)
+    expect(tick2.events[0]!.type).toBe("github.check_suite.completed")
+    expect(tick2.events[0]!.summary).toBe("CI success on acme/widgets#42 (sha1): 3 checks")
+    expect(tick2.events[0]!.data).toMatchObject({ conclusion: "success", total: 3, headSha: "sha1" })
+
+    // Tick 3: nothing new — the settled suite does not re-announce itself.
+    const tick3 = await provider.poll!({ ...handle, cursor: tick2.cursor }, 50)
+    expect(tick3.events).toEqual([])
+  })
+
+  it("a mid-suite failure fires immediately, then the settled rollup fires once under a distinct id", async () => {
+    const state: FakeGhState = {
+      number: 42,
+      state: "open",
+      merged: false,
+      headSha: "sha1",
+      reviews: [],
+      checks: [
+        { name: "lint", conclusion: null },
+        { name: "unit", conclusion: null },
+        { name: "build", conclusion: null },
+      ],
+    }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const baseline = await provider.poll!(handle, 50)
+    handle = { ...handle, cursor: baseline.cursor }
+
+    // Tick 1: one check fails — news at once, without waiting for the rest.
+    state.checks = [
+      { name: "lint", conclusion: "failure" },
+      { name: "unit", conclusion: null },
+      { name: "build", conclusion: null },
+    ]
+    const failing = await provider.poll!(handle, 50)
+    expect(failing.events).toHaveLength(1)
+    expect(failing.events[0]!.summary).toBe("CI failing on acme/widgets#42 (sha1): lint")
+    expect(failing.events[0]!.data).toMatchObject({ conclusion: "failure", total: 3, headSha: "sha1" })
+    handle = { ...handle, cursor: failing.cursor }
+
+    // Tick 2: everything settles — the worst-case rollup, once, distinct id.
+    state.checks = [
+      { name: "lint", conclusion: "failure" },
+      { name: "unit", conclusion: "success" },
+      { name: "build", conclusion: "success" },
+    ]
+    const settled = await provider.poll!(handle, 50)
+    expect(settled.events).toHaveLength(1)
+    expect(settled.events[0]!.summary).toBe("CI failure on acme/widgets#42 (sha1): 3 checks")
+    expect(settled.events[0]!.data.conclusion).toBe("failure")
+    expect(settled.events[0]!.id).not.toBe(failing.events[0]!.id)
+
+    // Tick 3: silent again.
+    const tick3 = await provider.poll!({ ...handle, cursor: settled.cursor }, 50)
+    expect(tick3.events).toEqual([])
+  })
+
+  it("a new head sha resets the rollup: sync event, then a fresh per-head verdict", async () => {
+    const state: FakeGhState = {
+      number: 42,
+      state: "open",
+      merged: false,
+      headSha: "sha1",
+      reviews: [],
+      checks: [{ name: "lint", conclusion: null }],
+    }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const baseline = await provider.poll!(handle, 50)
+    handle = { ...handle, cursor: baseline.cursor }
+
+    state.checks = [{ name: "lint", conclusion: "success" }]
+    const sha1Done = await provider.poll!(handle, 50)
+    expect(sha1Done.events).toHaveLength(1)
+    expect(sha1Done.events[0]!.summary).toBe("CI success on acme/widgets#42 (sha1): 1 checks")
+    handle = { ...handle, cursor: sha1Done.cursor }
+
+    state.headSha = "sha2"
+    state.checks = [{ name: "lint", conclusion: null }]
+    const pushed = await provider.poll!(handle, 50)
+    expect(pushed.events.map(e => e.type)).toEqual(["github.pull_request.synchronize"])
+    expect(pushed.events[0]!.data.headSha).toBe("sha2")
+    handle = { ...handle, cursor: pushed.cursor }
+
+    state.checks = [{ name: "lint", conclusion: "success" }]
+    const sha2Done = await provider.poll!(handle, 50)
+    expect(sha2Done.events).toHaveLength(1)
+    expect(sha2Done.events[0]!.summary).toBe("CI success on acme/widgets#42 (sha2): 1 checks")
+    expect(sha2Done.events[0]!.id).not.toBe(sha1Done.events[0]!.id)
+  })
+
   it("reopen then close within one watch emits two distinct closed events", async () => {
     const state: FakeGhState = { number: 42, state: "open", merged: false, headSha: "sha1", reviews: [], checks: [] }
     let fetchedAt = 1_000

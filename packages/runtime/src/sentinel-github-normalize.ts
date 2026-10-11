@@ -234,6 +234,8 @@ function normalizeCheckSuite(payload: Record<string, unknown>, base: BaseFields)
   const suite = asObject(payload.check_suite)
   const conclusion = str(suite, "conclusion")
   const located = repoOrPrSubject(parts, suite)
+  const appName = str(asObject(suite?.app), "name")
+  const headSha = str(suite, "head_sha")
 
   return {
     ok: true,
@@ -251,8 +253,14 @@ function normalizeCheckSuite(payload: Record<string, unknown>, base: BaseFields)
         repo: `${parts.owner}/${parts.repo}`,
         ...(located.number !== undefined ? { number: located.number } : {}),
         ...(located.headBranch ? { head_branch: located.headBranch } : {}),
+        ...(headSha ? { head_sha: headSha } : {}),
+        ...(appName ? { app: appName } : {}),
       },
-      summary: `Check suite ${conclusion ?? action} for ${located.target}`,
+      // Which suite (app) and which commit (head sha) — a PR can run several
+      // suites per push, and "which commit" is what the coalesce key needs.
+      summary: `Check suite ${conclusion ?? action}${appName ? ` (${appName})` : ""} for ${located.target}${
+        headSha ? ` @ ${headSha.slice(0, 7)}` : ""
+      }`,
       subjects: located.subjects,
       terminal: false,
     },
@@ -268,6 +276,7 @@ function normalizeWorkflowRun(payload: Record<string, unknown>, base: BaseFields
   const name = str(run, "name") ?? "workflow"
   const conclusion = str(run, "conclusion")
   const located = repoOrPrSubject(parts, run)
+  const headSha = str(run, "head_sha")
 
   return {
     ok: true,
@@ -286,6 +295,7 @@ function normalizeWorkflowRun(payload: Record<string, unknown>, base: BaseFields
         repo: `${parts.owner}/${parts.repo}`,
         ...(located.number !== undefined ? { number: located.number } : {}),
         ...(located.headBranch ? { head_branch: located.headBranch } : {}),
+        ...(headSha ? { head_sha: headSha } : {}),
       },
       summary: `Workflow run "${name}" ${conclusion ?? action} for ${located.target}`,
       subjects: located.subjects,
