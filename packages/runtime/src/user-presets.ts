@@ -19,6 +19,7 @@ import type {
 } from "./session-config.js"
 import type { SpawnBrowserMode } from "./browser-mount.js"
 import type { SessionDescriptor } from "./sessions.js"
+import { turnRetryInputSchema, type TurnRetryInput } from "./turn-retry-policy.js"
 
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultracode"])
 const postureSchema = z.union([
@@ -62,6 +63,10 @@ export interface UserPreset extends Partial<SessionConfig> {
   /** `agent_start.browser` for spawns from this preset. Ranks below the
    *  role's own default (see `resolveBrowserMode`). */
   browser?: SpawnBrowserMode
+  /** `agent_start.turnRetry` for spawns from this preset (opt-in retry of a
+   *  turn that failed on a transient provider error). An explicit
+   *  `turnRetry` on the spawn wins. */
+  turnRetry?: TurnRetryInput
   /** ISO 8601 timestamp of the last spawn that resolved a `presetId` to this
    *  preset (agent_start, `/sessions/agent`, `/sessions/chat` — stamped once
    *  in `spawnAgentSession`, the shared core all three route through). Never
@@ -86,6 +91,7 @@ export const userPresetSchema = z.object({
   skills: z.array(z.string().min(1)).optional(),
   bundles: z.array(z.string().min(1)).optional(),
   browser: z.union([z.literal("headless"), z.literal(false)]).optional(),
+  turnRetry: turnRetryInputSchema.optional(),
   lastUsedAt: z.string().min(1).optional(),
 }) satisfies z.ZodType<UserPreset>
 

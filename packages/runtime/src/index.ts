@@ -114,6 +114,7 @@ import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
+import { createTurnRetryController } from "./turn-retry.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
@@ -2356,6 +2357,12 @@ export async function createGateway(
   // its own event bus); disposed in stop().
   const restartScheduler = createRestartScheduler({ registry: sessions, sessionEvents })
 
+  // Turn retry (opt-in per session via `agent_start.turnRetry`) — re-prompts
+  // a live session whose turn failed on a 429/5xx or stalled silently while
+  // the provider retried. Inert for sessions without the policy. Disposed in
+  // stop().
+  const turnRetryController = createTurnRetryController({ registry: sessions, sessionEvents })
+
   // Completion-policy supervisor — watches sessions and runs shell gates.
   // Declared after `sessions` so it can resolve session cwd at gate time.
   const supervisor = createCompletionPolicySupervisor({
@@ -4201,6 +4208,7 @@ export async function createGateway(
       clearInterval(livenessSweepTimer)
       // Detach the restart-scheduler's session:exited subscription.
       restartScheduler.dispose()
+      turnRetryController.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       // Stop the sentinel poll loop and flush its store before sessions shut

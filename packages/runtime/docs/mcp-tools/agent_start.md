@@ -364,6 +364,59 @@ restart up to the `maxDelayMs` ceiling. `resume` is reserved for a future
 explicit resume-vs-fresh-spawn toggle; today's behaviour always revives in
 place.
 
+## turnRetry
+
+Opt-in retry of a turn that failed for a TRANSIENT provider reason. Off by
+default: without it, a turn that hits a 429 or a 5xx just stops, as before.
+When set, the daemon waits an exponential backoff and then sends the SAME
+live session a short continuation prompt:
+
+> Continue where you stopped; the previous turn failed with: <error>
+
+Shape: `{ on, maxRetries?, baseDelayMs?, factor?, maxDelayMs?, retryAfterToolCalls? }`.
+Only `on` is required; the rest default to `maxRetries: 3`,
+`baseDelayMs: 5000`, `factor: 2`, `maxDelayMs: 60000`.
+
+`on` lists the classes to retry. The error text comes from the turn's
+in-band error (`lastTurnErrorMessage`), or from the stall watchdog:
+
+- `rate-limit`: HTTP 429, "rate limit", "too many requests",
+  "resource exhausted". A provider `retry-after` hint raises the delay (still
+  capped by `maxDelayMs`).
+- `upstream-5xx`: HTTP 5xx, "overloaded", "bad gateway", "service
+  unavailable", "internal server error".
+- `no-output-stall`: the stall watchdog flagged a turn that produced nothing
+  since its prompt (`no output since prompt — provider retrying?`), for
+  example opencode retrying a 429 internally and silently. That turn is still
+  running, so the retry interrupts it before re-prompting. Needs the daemon's
+  stall watchdog to be on (`turnStallAfterMs`).
+
+Never retried, whatever `on` says:
+
+- a turn the user (or anything else) interrupted;
+- a killed, exited or errored session. That includes the `maxCostUsd` kill. A
+  dead process is `restartPolicy`'s job;
+- a session with a failed governance policy, such as a tripped `costBudget`;
+- auth and billing errors (401/402/403, invalid key, insufficient quota) and
+  provider usage caps ("usage limit exceeded");
+- a turn that already made a tool call outside a small read-only allowlist
+  (read, grep, glob, ls, find, search, webfetch, websearch, todo, think).
+  The continuation could repeat a write or an exec. Set
+  `retryAfterToolCalls: true` to retry those turns anyway.
+
+`maxRetries` counts consecutive retries. The counter is exposed on the
+descriptor as `turnRetryAttempts` (also `lastTurnRetryAt`, and
+`nextTurnRetryAt` while a retry is pending) and resets on the next turn
+that completes cleanly. A new prompt, a kill, or a stall that recovers on its
+own during the backoff cancels the pending retry. Each transition is emitted
+as a `session:turn-retry` event (`scheduled` / `sent` / `cancelled` /
+`exhausted` / `skipped`) and stamped as a `[turn-retry]` notice in the
+session transcript. Pending retries are in-memory: a daemon restart drops
+them.
+
+CLI: `agentproto sessions start --turn-retry all` (or a comma list of
+classes, or a JSON object). User presets accept the same `turnRetry` field.
+
 ## contextContinuity
 
 Context-continuity policy for this session — controls warning,

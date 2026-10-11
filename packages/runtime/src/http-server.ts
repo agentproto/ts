@@ -285,6 +285,7 @@ import {
 } from "./bundles.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
+import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import {
   attachFieldSchema,
@@ -5336,6 +5337,13 @@ export function buildSpawnSessionHttpArgs(
   const inferenceParsed = b.inference !== undefined ? parseInferenceField(b.inference) : undefined
   const inferenceField: Pick<SpawnAgentSessionInput, "inference"> =
     inferenceParsed !== undefined ? { inference: inferenceParsed } : {}
+  // Opt-in turn retry — the HTTP twin of `agent_start.turnRetry`. Accepts the
+  // object, a JSON string, or the CLI shorthand ("all" / a comma list of
+  // classes); an invalid value is dropped, never half-applied. Hoisted for the
+  // same TS2590 reason as `inferenceField`.
+  const turnRetryParsed = b.turnRetry !== undefined ? parseTurnRetryPolicy(b.turnRetry) : undefined
+  const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
+    turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -5507,6 +5515,7 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { restartPolicy: parsed } : {}
         })()
       : {}),
+    ...turnRetryField,
     // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
     // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
     // a stringified boolean like `permissionHold`/`trace`.
