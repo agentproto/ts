@@ -25,6 +25,7 @@
  */
 
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync, type Dirent } from "node:fs"
+import { readFile, readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { defaultTranscriptBaseDir, sessionEventsPath, sessionTranscriptDir } from "./transcript-writer.js"
 import type { PendingPromptView, SessionDescriptor } from "./sessions.js"
@@ -442,20 +443,83 @@ export function backfillSessionIndexes(
       skipped++
       continue
     }
-    const desc = byId.get(id)
-    const derived = deriveIndexFromTranscript(id, dir)
-    if (!desc && !derived) {
-      skipped++
-      continue
-    }
-    const entry = desc
-      ? indexEntryFromDescriptor(desc, {
-          ...(derived?.lastUserPrompt ? { lastUserPrompt: derived.lastUserPrompt } : {}),
-          ...(derived?.lastOutputText ? { lastOutputText: derived.lastOutputText } : {}),
-        })
-      : derived!
-    writeSessionIndex(entry, dir)
-    created++
+    if (createMissingIndex(id, dir, byId)) created++
+    else skipped++
   }
   return { scanned, created, skipped }
+}
+
+/** Build + write the sidecar for one dir that has no valid index. Returns
+ *  whether one was written (false when neither a descriptor nor a
+ *  transcript can describe the dir). */
+function createMissingIndex(id: string, dir: string, byId: ReadonlyMap<string, SessionDescriptor>): boolean {
+  const desc = byId.get(id)
+  const derived = deriveIndexFromTranscript(id, dir)
+  if (!desc && !derived) return false
+  const entry = desc
+    ? indexEntryFromDescriptor(desc, {
+        ...(derived?.lastUserPrompt ? { lastUserPrompt: derived.lastUserPrompt } : {}),
+        ...(derived?.lastOutputText ? { lastOutputText: derived.lastOutputText } : {}),
+      })
+    : derived!
+  writeSessionIndex(entry, dir)
+  return true
+}
+
+/** Async twin of {@link readSessionIndex}'s validity check. */
+async function hasValidSessionIndex(sessionId: string, baseDir: string): Promise<boolean> {
+  let raw: string
+  try {
+    raw = await readFile(sessionIndexPath(sessionId, baseDir), "utf8")
+  } catch {
+    return false
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return isRecord(parsed) && typeof parsed.id === "string" && parsed.id.length > 0
+  } catch {
+    return false
+  }
+}
+
+/** Dirs examined per batch by {@link backfillSessionIndexesAsync} before it
+ *  yields to the event loop. */
+const BACKFILL_BATCH = 64
+
+/**
+ * Non-blocking variant of {@link backfillSessionIndexes} — the one the daemon
+ * runs at boot. Same result, but the readdir and every sidecar check are
+ * async and dirs are processed in batches with a `setImmediate` yield in
+ * between, so a store with thousands of session dirs never holds the event
+ * loop for the whole scan. Only the rare missing-index path (a bounded tail
+ * read + a small write) stays synchronous.
+ */
+export async function backfillSessionIndexesAsync(
+  baseDir?: string,
+  opts?: { descriptors?: Iterable<SessionDescriptor> },
+): Promise<{ scanned: number; created: number; skipped: number }> {
+  const dir = baseDir ?? defaultTranscriptBaseDir()
+  const byId = new Map<string, SessionDescriptor>()
+  if (opts?.descriptors) {
+    for (const desc of opts.descriptors) byId.set(desc.id, desc)
+  }
+  let names: string[]
+  try {
+    names = (await readdir(dir, { withFileTypes: true })).filter(e => e.isDirectory()).map(e => e.name)
+  } catch {
+    return { scanned: 0, created: 0, skipped: 0 }
+  }
+  let created = 0
+  let skipped = 0
+  for (let i = 0; i < names.length; i += BACKFILL_BATCH) {
+    const batch = names.slice(i, i + BACKFILL_BATCH)
+    const valid = await Promise.all(batch.map(id => hasValidSessionIndex(id, dir)))
+    batch.forEach((id, j) => {
+      if (valid[j]) skipped++
+      else if (createMissingIndex(id, dir, byId)) created++
+      else skipped++
+    })
+    await new Promise<void>(resolve => setImmediate(resolve))
+  }
+  return { scanned: names.length, created, skipped }
 }

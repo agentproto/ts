@@ -170,6 +170,8 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     crashDetectIntervalMs: z.number().optional(),
     restartSweepIntervalMs: z.number().optional(),
     turnStallAfterMs: z.number().optional(),
+    reviewSessionRetentionDays: z.number().optional(),
+    sessionRetentionDays: z.number().optional(),
   })
   .passthrough()
 
@@ -596,6 +598,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Turn-stall threshold (ms)",
     help: "Turn-liveness watchdog threshold. Default-on (non-destructive observability); a non-positive value disables it.",
     default: 300_000,
+  },
+  {
+    path: "daemon.reviewSessionRetentionDays",
+    schema: num,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Review-session retention (days)",
+    help: "Delete terminal review-lane session dirs (~/.agentproto/sessions/<id>) older than this. 0/negative disables.",
+    default: 7,
+  },
+  {
+    path: "daemon.sessionRetentionDays",
+    schema: num,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Session retention (days)",
+    help: "Delete ANY terminal session dir older than this (pinned/keepAlive/live never). Unset/0 ⇒ off (default).",
+    default: 0,
   },
   {
     path: "sessions.eventsDir",

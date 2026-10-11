@@ -4886,7 +4886,14 @@ export function registerSessionTools(
       "space; the harness native conversation on disk survives and stays " +
       "importable. NEVER touches a live (running/starting) session. " +
       "`olderThanDays` keeps anything more recent. A scoped orchestrator only " +
-      "GCs its own subtree.",
+      "GCs its own subtree. `retention:true` instead runs the ON-DISK retention " +
+      "pass: it DELETES terminal session dirs (~/.agentproto/sessions/<id>, " +
+      "transcript included — irreversible) past their age — review lanes after " +
+      "`reviewMaxAgeDays` (default: daemon.reviewSessionRetentionDays, 7), " +
+      "every other session only when `maxAgeDays` (default: " +
+      "daemon.sessionRetentionDays, off) is set. Never live, pinned, keepAlive, " +
+      "or an ancestor of a live session. Pair with `dryRun:true` to preview; " +
+      "returns counts + ids.",
     {
       olderThanDays: z
         .number()
@@ -4903,11 +4910,44 @@ export function registerSessionTools(
           "Drop the descriptor entirely (reclaim disk) instead of archiving. The " +
             "native conversation on disk is untouched. Default false = archive."
         ),
+      retention: mcpBool
+        .optional()
+        .describe(
+          "Run the on-disk retention pass instead of archive/forget: DELETE " +
+            "terminal session dirs past their age threshold. Irreversible."
+        ),
+      dryRun: mcpBool
+        .optional()
+        .describe("With `retention:true`: report what would be deleted, delete nothing."),
+      reviewMaxAgeDays: z
+        .number()
+        .optional()
+        .describe(
+          "With `retention:true`: age (days) after which a terminal review-lane " +
+            "session dir is deleted. Default: daemon.reviewSessionRetentionDays (7). " +
+            "0 disables the review rule."
+        ),
+      maxAgeDays: z
+        .number()
+        .optional()
+        .describe(
+          "With `retention:true`: age (days) after which ANY terminal session " +
+            "dir is deleted. Default: daemon.sessionRetentionDays (off). 0 disables."
+        ),
     },
     async input => {
       const onlyIds = callerScope
         ? collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
         : undefined
+      if (input.retention) {
+        const res = await registry.pruneSessionDirs({
+          ...(input.dryRun ? { dryRun: true } : {}),
+          ...(input.reviewMaxAgeDays !== undefined ? { reviewMaxAgeDays: input.reviewMaxAgeDays } : {}),
+          ...(input.maxAgeDays !== undefined ? { maxAgeDays: input.maxAgeDays } : {}),
+          ...(onlyIds ? { onlyIds } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(res) }] }
+      }
       const res = registry.gcSessions({
         ...(input.olderThanDays !== undefined ? { olderThanDays: input.olderThanDays } : {}),
         ...(input.forget ? { forget: true } : {}),

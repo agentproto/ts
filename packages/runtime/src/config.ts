@@ -149,6 +149,20 @@ export interface DaemonConfig {
    *  30 min; non-positive falls back to the default. Set via `agentproto
    *  config set daemon.externalSessionLivenessMs <ms>`. */
   externalSessionLivenessMs?: number
+  /** On-disk retention for REVIEW-LANE sessions (`origin: "review"` /
+   *  `review:` label): a terminal review session whose last activity is older
+   *  than this many days has its `~/.agentproto/sessions/<id>/` dir DELETED
+   *  by the daemon's periodic retention sweep (boot + 10 min, then every 6 h)
+   *  and `session_gc retention:true`. Default 7; `0` / negative disables the
+   *  review rule. Set via `agentproto config set
+   *  daemon.reviewSessionRetentionDays <days>`. */
+  reviewSessionRetentionDays?: number
+  /** On-disk retention for EVERY other terminal session, in days. Default
+   *  OFF (unset / `0` / negative ⇒ regular sessions are never deleted).
+   *  Pinned, keepAlive and live sessions (and ancestors of a live one) are
+   *  never deleted either way. Set via `agentproto config set
+   *  daemon.sessionRetentionDays <days>`. */
+  sessionRetentionDays?: number
 }
 
 export interface TitlerConfig {

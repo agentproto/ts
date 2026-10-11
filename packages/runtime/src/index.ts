@@ -118,7 +118,11 @@ import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
-import { backfillSessionIndexes } from "./session-index.js"
+import { backfillSessionIndexesAsync } from "./session-index.js"
+import {
+  DEFAULT_SESSION_RETENTION_BOOT_DELAY_MS,
+  DEFAULT_SESSION_RETENTION_INTERVAL_MS,
+} from "./session-retention.js"
 import { resolveResumeAuth, restartAgentSession, restartPreferInPlace } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
@@ -593,6 +597,7 @@ export {
   INDEX_MAX_PROMPT,
   INDEX_TAIL_BYTES,
   backfillSessionIndexes,
+  backfillSessionIndexesAsync,
   buildSessionRecap,
   deriveIndexFromTranscript,
   indexEntryFromDescriptor,
@@ -708,6 +713,16 @@ export {
   type ContinueInterruptedSkipReason,
   type ContinueOnBootSummary,
 } from "./continue-interrupted.js"
+export {
+  DEFAULT_REVIEW_SESSION_RETENTION_DAYS,
+  DEFAULT_SESSION_RETENTION_BOOT_DELAY_MS,
+  DEFAULT_SESSION_RETENTION_INTERVAL_MS,
+  isReviewLaneSession,
+  runSessionRetentionPass,
+  type SessionRetentionOptions,
+  type SessionRetentionRegistry,
+  type SessionRetentionResult,
+} from "./session-retention.js"
 export {
   runIdleReapPass,
   type IdleReapSummary,
@@ -1766,12 +1781,12 @@ export interface GatewayHandle {
   /** Daemon-startup backfill for the per-session index sidecars
    *  (`session-index.ts`): create a compact `index.json` for every session dir
    *  that lacks one, recovering the last prompt/output from the transcript
-   *  tail (never a whole-file parse). Synchronous and best-effort — a store
-   *  with thousands of sessions pays one readdir plus one bounded read per
-   *  missing index. serve.ts calls this once at boot so `agentproto sessions
-   *  find`/`recap` answer instantly even for sessions that predate the
-   *  sidecar. */
-  backfillSessionIndexes(): { scanned: number; created: number; skipped: number }
+   *  tail (never a whole-file parse). Async, batched and best-effort — the
+   *  scan yields to the event loop between batches, so a store with
+   *  thousands of sessions never blocks boot. serve.ts fires this once at
+   *  boot (not awaited) so `agentproto sessions find`/`recap` answer
+   *  instantly even for sessions that predate the sidecar. */
+  backfillSessionIndexes(): Promise<{ scanned: number; created: number; skipped: number }>
   stop(): Promise<void>
 }
 
@@ -2172,9 +2187,21 @@ export async function createGateway(
   // build time, even though the factory only invokes later.
   const externalSessionLivenessMs =
     opts.externalSessionLivenessMs ?? daemonConfig.daemon?.externalSessionLivenessMs
+  // On-disk session retention (session-retention.ts): review lanes default to
+  // 7 days, every other session is off unless configured. Read straight from
+  // config, same as externalSessionLivenessMs above.
+  const sessionRetention = {
+    ...(typeof daemonConfig.daemon?.reviewSessionRetentionDays === "number"
+      ? { reviewMaxAgeDays: daemonConfig.daemon.reviewSessionRetentionDays }
+      : {}),
+    ...(typeof daemonConfig.daemon?.sessionRetentionDays === "number"
+      ? { maxAgeDays: daemonConfig.daemon.sessionRetentionDays }
+      : {}),
+  }
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    sessionRetention,
     ...(typeof externalSessionLivenessMs === "number" && externalSessionLivenessMs > 0
       ? { externalSessionLivenessMs }
       : {}),
@@ -3863,6 +3890,63 @@ export async function createGateway(
     idleReapTimer.unref?.()
   }
 
+  // On-disk session retention sweep (session-retention.ts). Deletes terminal
+  // session dirs past their age threshold — review lanes after 7 days by
+  // default, regular sessions only when `daemon.sessionRetentionDays` is set.
+  // First run 10 min after boot (never competing with boot work), then every
+  // 6 h; both overridable via AGENTPROTO_SESSION_RETENTION_BOOT_DELAY_MS /
+  // AGENTPROTO_SESSION_RETENTION_INTERVAL_MS (a non-positive interval disables
+  // the automatic sweep; `session_gc retention:true` still works). The pass
+  // is async + batched, and a sweep still in flight is never overlapped.
+  // `.unref()` so neither timer keeps the process alive on its own.
+  const envMs = (name: string, fallback: number): number => {
+    const raw = process.env[name]
+    if (raw === undefined || raw.trim() === "") return fallback
+    const parsed = Number.parseInt(raw, 10)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+  const retentionIntervalMs = envMs(
+    "AGENTPROTO_SESSION_RETENTION_INTERVAL_MS",
+    DEFAULT_SESSION_RETENTION_INTERVAL_MS,
+  )
+  let retentionBootTimer: ReturnType<typeof setTimeout> | null = null
+  let retentionTimer: ReturnType<typeof setInterval> | null = null
+  if (retentionIntervalMs > 0) {
+    let retentionRunning = false
+    const runRetention = (): void => {
+      if (retentionRunning) return
+      retentionRunning = true
+      sessions
+        .pruneSessionDirs()
+        .then(res => {
+          if (res.count > 0 || res.errors > 0) {
+            console.log(
+              `[session-retention] deleted ${res.count} session dir(s) ` +
+                `(scanned ${res.scanned}, errors ${res.errors})`,
+            )
+          }
+        })
+        .catch(err => {
+          console.warn(
+            `[session-retention] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+        .finally(() => {
+          retentionRunning = false
+        })
+    }
+    retentionBootTimer = setTimeout(
+      () => {
+        retentionBootTimer = null
+        runRetention()
+      },
+      Math.max(0, envMs("AGENTPROTO_SESSION_RETENTION_BOOT_DELAY_MS", DEFAULT_SESSION_RETENTION_BOOT_DELAY_MS)),
+    )
+    retentionBootTimer.unref?.()
+    retentionTimer = setInterval(runRetention, retentionIntervalMs)
+    retentionTimer.unref?.()
+  }
+
   // Crash-detect sweep (crash-detect PR-1). DEFAULT ON — armed whenever
   // `crashDetectIntervalMs > 0`, which it is unless a caller explicitly
   // disabled it (see the normalization above). Detects (and surfaces) a
@@ -4087,11 +4171,12 @@ export async function createGateway(
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },
-    backfillSessionIndexes() {
+    async backfillSessionIndexes() {
       // Best-effort: a broken sessions store must never gate the daemon being
       // up. The live registry's descriptors enrich each recovered entry.
+      // Async + batched so a large store never blocks the event loop.
       try {
-        return backfillSessionIndexes(sessions.transcriptBaseDir, {
+        return await backfillSessionIndexesAsync(sessions.transcriptBaseDir, {
           descriptors: sessions.list({ includeArchived: true }),
         })
       } catch {
@@ -4102,6 +4187,8 @@ export async function createGateway(
       heartbeat.stop()
       // Stop the idle-reaper sweep before sessions shut down (PR-6).
       if (idleReapTimer) clearInterval(idleReapTimer)
+      if (retentionBootTimer) clearTimeout(retentionBootTimer)
+      if (retentionTimer) clearInterval(retentionTimer)
       // Stop the crash-detect sweep before sessions shut down (crash-detect PR-1).
       if (crashDetectTimer) clearInterval(crashDetectTimer)
       // Stop the turn-liveness watchdog sweep before sessions shut down
