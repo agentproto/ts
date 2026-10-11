@@ -731,6 +731,66 @@ describe("createDaemonReviewerHost — an exhausted auth profile is never re-spa
     registry.shutdown()
   })
 
+  it("a rate-limited lane retries in the SAME preset — the cooldown it recorded does not eat its own retry", async () => {
+    let clock = 1_760_000_000_000
+    // `laneRetries: 1`: a rate limit is transient, so the retry must really
+    // launch, not fall on the 60s per-model cooldown the failed attempt just
+    // wrote and come back `skipped`.
+    const { host, registry, spawnedWith } = setup(["error:Rate limit exceeded", "review"], 1, {
+      harnessProfiles: GO_PROFILES,
+      now: () => clock,
+    })
+    const a = await lane(host, { preset: "go", fallbackPresets: ["fb"] })
+    expect(a).toMatchObject({ status: "ended", preset: "go" })
+    expect(spawnedWith).toHaveLength(2) // the rate-limited attempt + its retry
+    if (a.status !== "ended") throw new Error("expected ended")
+    expect(registry.get(a.sessionId)!.label).toBe("review:demo:wallet:retry1")
+    expect(a.fallbacks).toBeUndefined()
+
+    // …but the cooldown it recorded still guards every OTHER lane/preset:
+    // a later lane on the same model is skipped without spawning.
+    clock += 30_000
+    const b = await lane(host, { preset: "go", fallbackPresets: ["fb"] })
+    expect(b).toMatchObject({ status: "ended", preset: "fb" })
+    expect(spawnedWith).toHaveLength(3) // ONLY the fallback — `go` was skipped
+    expect(b.fallbacks).toEqual([
+      { preset: "go", error: expect.stringMatching(/^skipped: auth profile 'opencode-go-local' \(model 'model-go'\) is exhausted until /) },
+    ])
+    // and a sibling model on the same profile was never rate-limited: it
+    // still spawns and reviews normally
+    const c = await lane(host, { preset: "go2", fallbackPresets: ["fb"] })
+    expect(c).toMatchObject({ status: "ended", preset: "go2" })
+    expect(spawnedWith).toHaveLength(4)
+    expect(c.fallbacks).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("a 'context usage limit' is not an exhausted wallet — the profile keeps spawning", async () => {
+    let clock = 1_760_000_000_000
+    const { host, registry, spawnedWith } = setup(["error:your context usage limit is at 92%", "review"], 0, {
+      harnessProfiles: GO_PROFILES,
+      now: () => clock,
+    })
+    const first = await lane(host, { preset: "go" })
+    expect(first.status).toBe("failed")
+    expect(first.status === "failed" && first.error).toContain("context usage limit")
+    expect(spawnedWith).toHaveLength(1)
+
+    // SAME profile, other model: no 15-minute cooldown was recorded, so this
+    // spawn is a real review rather than a `skipped:`.
+    clock += 1_000
+    const second = await lane(host, { preset: "go2" })
+    expect(second).toMatchObject({ status: "ended", preset: "go2" })
+    expect(second.fallbacks).toBeUndefined()
+    expect(spawnedWith).toHaveLength(2)
+
+    // …and the original model is not cooled either.
+    const third = await lane(host, { preset: "go" })
+    expect(third.status).toBe("ended")
+    expect(spawnedWith).toHaveLength(3)
+    registry.shutdown()
+  })
+
   it("a rate limit on one model does NOT skip a sibling model on the same profile", async () => {
     let clock = 1_760_000_000_000
     // The real shape: several free Zen models share ONE profile, and lane

@@ -85,7 +85,8 @@ export const WALLET_RATE_LIMIT_COOLDOWN_MS = 60_000
  *  transcript dir on a reviewer that cannot run. Narrower than
  *  {@link PERMANENT_ERROR_RE}: this is not "don't retry the turn", it is
  *  "don't touch this wallet again for a while". */
-const WALLET_EXHAUSTED_RE = /usage limit|quota exceeded|insufficient (credit|balance|funds)|rate limit exceeded/i
+const WALLET_EXHAUSTED_RE =
+  /usage limit (reached|exceeded)|quota exceeded|insufficient (credit|balance|funds)|rate limit exceeded/i
 const RATE_LIMIT_RE = /rate limit exceeded/i
 
 /** The auth profile a resolved preset would spawn under — harness presets
@@ -240,7 +241,13 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     // instantly instead of paying for a session that is doomed to the same
     // error. Wallet cooldowns are checked first — a drained profile blocks
     // every model on it.
-    const cooldown = blockedCooldown(profileRef, model)
+    // NOT on a retry: `attempt > 0` means the same preset's own previous
+    // attempt just recorded that cooldown (a rate limit is retryable), so
+    // consulting it here would turn every lane retry into a `skipped` and
+    // neutralise `laneRetries` for rate limits. The retry is the one caller
+    // that must be allowed through — every other lane/preset still sees the
+    // cooldown and is skipped.
+    const cooldown = attempt > 0 ? undefined : blockedCooldown(profileRef, model)
     if (cooldown && profileRef) {
       const where = cooldown.perModel ? `auth profile '${profileRef}' (model '${model ?? "unknown"}')` : `auth profile '${profileRef}'`
       return unavailable({
