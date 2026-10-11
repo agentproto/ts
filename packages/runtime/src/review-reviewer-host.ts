@@ -96,6 +96,14 @@ export function reviewerProfileRef(fields: Pick<SpawnAgentSessionInput, "access"
   return fields.access?.profileRef ?? userPreset?.access?.profileRef
 }
 
+/** The model a resolved preset would run — the spawn `model` when the preset
+ *  carried one (harness presets project `defaultModel` into it), else the
+ *  user preset's own. */
+export function reviewerModel(fields: Pick<SpawnAgentSessionInput, "model" | "preset">): string | undefined {
+  const userPreset = fields.preset as UserPreset | undefined
+  return fields.model ?? userPreset?.model
+}
+
 interface AttemptOutcome {
   result: ReviewerRunResult
   /** The reviewer's turn ended in a transient error — another attempt may succeed. */
@@ -119,8 +127,7 @@ export async function reviewerOpenRouterViolation(
   spawnFields: Pick<SpawnAgentSessionInput, "adapter" | "model" | "access" | "preset">,
   lookup: (id: string) => Promise<AuthProfile | undefined> = getAuthProfile,
 ): Promise<string | undefined> {
-  const userPreset = spawnFields.preset as UserPreset | undefined
-  const model = spawnFields.model ?? userPreset?.model
+  const model = reviewerModel(spawnFields)
   const profileRef = reviewerProfileRef(spawnFields)
   let profile: AuthProfile | undefined
   if (profileRef) {
@@ -161,35 +168,55 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
   const maxRetries = Math.min(MAX_LANE_RETRIES, Math.max(0, Math.floor(deps.laneRetries ?? DEFAULT_LANE_RETRIES)))
   const now = deps.now ?? Date.now
 
-  /** Auth profile → `{ until, error }`: a wallet a provider has already
-   *  declared empty. Per HOST instance — the daemon builds one host for its
-   *  singleton review runner (`index.ts`), so this map is shared across
-   *  every review lane and every review run in the process: the 4 lanes of
-   *  a push and the next push's lanes all see the same exhausted wallet and
-   *  skip it without spawning. Entries expire by `until`; a profile is
-   *  bounded by the auth store, so the map cannot grow without limit. */
+  /** Cooldown key → `{ until, error }`: a wallet a provider has already
+   *  declared empty (or a model it is currently rate-limiting). Two key
+   *  shapes, deliberately: `${profileRef}` for wallet exhaustion — a spent
+   *  usage limit / quota / insufficient balance drains the WHOLE profile —
+   *  and `${profileRef}::${model}` for a rate limit, which is per MODEL:
+   *  several free models share one profile on purpose (opencode-zen-free's
+   *  mimo/step5/nemotron), and a lane chain falls back ACROSS them, so a
+   *  rate limit on one must not skip its siblings. Per HOST instance — the
+   *  daemon builds one host for its singleton review runner (`index.ts`), so
+   *  this map is shared across every review lane and every review run in the
+   *  process. Entries expire by `until`; keys are bounded by the auth store
+   *  × the models lanes actually run, so the map cannot grow without limit. */
   const exhaustedProfiles = new Map<string, { until: number; error: string }>()
 
-  /** A failed attempt whose error says the wallet is empty → cool that
-   *  profile down so later lanes skip it. No-op for a failure with no
-   *  profile behind it, or one whose text isn't wallet-shaped. */
-  const noteWalletExhausted = (profileRef: string | undefined, error: string | undefined) => {
+  /** A failed attempt whose error says the wallet is empty (or the model is
+   *  rate-limited) → cool the right key down so later lanes skip it. No-op
+   *  for a failure with no profile behind it, or one whose text isn't
+   *  wallet-shaped. */
+  const noteWalletExhausted = (profileRef: string | undefined, model: string | undefined, error: string | undefined) => {
     if (!profileRef || !error || !WALLET_EXHAUSTED_RE.test(error)) return
-    const cooldownMs = RATE_LIMIT_RE.test(error) ? WALLET_RATE_LIMIT_COOLDOWN_MS : WALLET_EXHAUSTED_COOLDOWN_MS
-    exhaustedProfiles.set(profileRef, { until: now() + cooldownMs, error: clip(error) })
+    const rateLimited = RATE_LIMIT_RE.test(error)
+    const key = rateLimited ? `${profileRef}::${model ?? ""}` : profileRef
+    const cooldownMs = rateLimited ? WALLET_RATE_LIMIT_COOLDOWN_MS : WALLET_EXHAUSTED_COOLDOWN_MS
+    exhaustedProfiles.set(key, { until: now() + cooldownMs, error: clip(error) })
   }
 
-  /** The live cooldown on `profileRef`, if any — expired entries are
-   *  dropped here, so a profile is tried again the moment its cooldown ends. */
-  const walletCooldown = (profileRef: string | undefined): { until: number; error: string } | undefined => {
-    if (!profileRef) return undefined
-    const hit = exhaustedProfiles.get(profileRef)
+  /** The live cooldown on `key`, if any — expired entries are dropped here,
+   *  so a profile/model is tried again the moment its cooldown ends. */
+  const cooldownFor = (key: string | undefined): { until: number; error: string } | undefined => {
+    if (!key) return undefined
+    const hit = exhaustedProfiles.get(key)
     if (!hit) return undefined
     if (hit.until <= now()) {
-      exhaustedProfiles.delete(profileRef)
+      exhaustedProfiles.delete(key)
       return undefined
     }
     return hit
+  }
+
+  /** The cooldown blocking THIS attempt, if any: the whole profile first
+   *  (wallet drained), then this profile's MODEL bucket (rate limit). */
+  const blockedCooldown = (
+    profileRef: string | undefined,
+    model: string | undefined,
+  ): { until: number; error: string; perModel: boolean } | undefined => {
+    const whole = cooldownFor(profileRef)
+    if (whole) return { ...whole, perModel: false }
+    const perModel = cooldownFor(profileRef === undefined ? undefined : `${profileRef}::${model ?? ""}`)
+    return perModel ? { ...perModel, perModel: true } : undefined
   }
 
   async function runAttempt(
@@ -207,15 +234,19 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       })
     }
     const profileRef = reviewerProfileRef(spawnFields)
-    // An exhausted wallet is skipped BEFORE anything is spawned: the chain
-    // falls through to the next fallback instantly instead of paying for a
-    // session that is doomed to the same "wallet empty" error.
-    const cooldown = walletCooldown(profileRef)
+    const model = reviewerModel(spawnFields)
+    // An exhausted wallet (or a rate-limited MODEL on it) is skipped BEFORE
+    // anything is spawned: the chain falls through to the next fallback
+    // instantly instead of paying for a session that is doomed to the same
+    // error. Wallet cooldowns are checked first — a drained profile blocks
+    // every model on it.
+    const cooldown = blockedCooldown(profileRef, model)
     if (cooldown && profileRef) {
+      const where = cooldown.perModel ? `auth profile '${profileRef}' (model '${model ?? "unknown"}')` : `auth profile '${profileRef}'`
       return unavailable({
         status: "failed",
         preset: input.preset,
-        error: `skipped: auth profile '${profileRef}' is exhausted until ${new Date(cooldown.until).toISOString()} (${cooldown.error})`,
+        error: `skipped: ${where} is exhausted until ${new Date(cooldown.until).toISOString()} (${cooldown.error})`,
       })
     }
     const blocked = await reviewerOpenRouterViolation(input.preset, spawnFields, deps.getAuthProfile)
@@ -241,7 +272,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       },
     )
     if (!spawned.ok) {
-      noteWalletExhausted(profileRef, spawned.message)
+      noteWalletExhausted(profileRef, model, spawned.message)
       return unavailable({
         status: "failed",
         preset: input.preset,
@@ -303,7 +334,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         )
       }
       if (res.event === "turn-end" && res.reason === "error") {
-        noteWalletExhausted(profileRef, res.error)
+        noteWalletExhausted(profileRef, model, res.error)
         return {
           retryable: isRetryableTurnError(res.error),
           fallbackable: true,

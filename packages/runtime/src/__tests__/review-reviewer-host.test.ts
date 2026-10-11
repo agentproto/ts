@@ -707,7 +707,7 @@ describe("createDaemonReviewerHost — an exhausted auth profile is never re-spa
     registry.shutdown()
   })
 
-  it("a rate limit cools the profile down for 60 seconds only", async () => {
+  it("a rate limit cools that MODEL down for 60 seconds only", async () => {
     let clock = 1_760_000_000_000
     const { host, registry, spawnedWith } = setup("error:Rate limit exceeded", 0, {
       harnessProfiles: GO_PROFILES,
@@ -718,14 +718,52 @@ describe("createDaemonReviewerHost — an exhausted auth profile is never re-spa
     expect(spawnedWith).toHaveLength(1)
 
     clock += 30_000 // still inside the 60s cooldown
-    const skipped = await lane(host, { preset: "go2" })
-    expect(skipped.status === "failed" && skipped.error).toMatch(/is exhausted until/)
+    const skipped = await lane(host, { preset: "go" }) // the SAME model → skipped
+    expect(skipped.status === "failed" && skipped.error).toMatch(
+      /skipped: auth profile 'opencode-go-local' \(model 'model-go'\) is exhausted until /,
+    )
     expect(spawnedWith).toHaveLength(1)
 
     clock += WALLET_RATE_LIMIT_COOLDOWN_MS // well past the 60s cooldown → tried again
-    const after = await lane(host, { preset: "go2" })
+    const after = await lane(host, { preset: "go" })
     expect(after.status).toBe("failed")
     expect(spawnedWith).toHaveLength(2) // spawned again (and rate-limited again)
+    registry.shutdown()
+  })
+
+  it("a rate limit on one model does NOT skip a sibling model on the same profile", async () => {
+    let clock = 1_760_000_000_000
+    // The real shape: several free Zen models share ONE profile, and lane
+    // chains fall back across them on purpose.
+    const ZEN_PROFILES = { mimo: "opencode-zen-free", step5: "opencode-zen-free", nemotron: "opencode-zen-free" }
+    const { host, registry, spawnedWith } = setup("error:Rate limit exceeded", 0, {
+      harnessProfiles: ZEN_PROFILES,
+      now: () => clock,
+    })
+    // nemotron's rate limit lands in ITS per-model bucket…
+    const a = await lane(host, { preset: "nemotron" })
+    expect(a.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(1)
+
+    // …mimo and step5 share the PROFILE but not the bucket: both still spawn
+    const b = await lane(host, { preset: "mimo" })
+    expect(b.status).toBe("failed")
+    const c = await lane(host, { preset: "step5" })
+    expect(c.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(3)
+
+    // nemotron itself is still skipped inside its 60s window
+    clock += 30_000
+    const skipped = await lane(host, { preset: "nemotron" })
+    expect(skipped.status === "failed" && skipped.error).toMatch(
+      /skipped: auth profile 'opencode-zen-free' \(model 'model-nemotron'\) is exhausted until /,
+    )
+    expect(spawnedWith).toHaveLength(3)
+
+    // …and is tried again once its 60s rate-limit cooldown ends
+    clock += WALLET_RATE_LIMIT_COOLDOWN_MS
+    await lane(host, { preset: "nemotron" })
+    expect(spawnedWith).toHaveLength(4)
     registry.shutdown()
   })
 
