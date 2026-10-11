@@ -85,6 +85,11 @@ import { artifactMarkerLines, formatToolCall, formatToolResult } from "./tool-pr
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
 import { isReviewOrWorkflowSession } from "./session-list-filters.js"
 import {
+  runSessionRetentionPass,
+  type SessionRetentionOptions,
+  type SessionRetentionResult,
+} from "./session-retention.js"
+import {
   addSessionArtifact as addSessionArtifactImpl,
   getSessionArtifact as getSessionArtifactImpl,
   listSessionArtifacts as listSessionArtifactsImpl,
@@ -4190,6 +4195,18 @@ export interface SessionsRegistry {
     forget?: boolean
     onlyIds?: ReadonlySet<string>
   }): { mode: "archived" | "forgotten"; ids: string[]; count: number }
+  /** Drop ONE terminal session's descriptor — the single-row form of
+   *  `gcSessions({ forget: true })` (retire as "forgotten", delete, persist).
+   *  `"alive"` ⇒ refused (running/starting); `"missing"` ⇒ unknown id. Used
+   *  by the on-disk retention pass before it removes the session dir. */
+  forgetSession(id: string): "forgotten" | "missing" | "alive"
+  /** On-disk retention sweep (`session-retention.ts`): DELETE terminal
+   *  session dirs under `transcriptBaseDir` past their age threshold —
+   *  review lanes after `reviewMaxAgeDays` (default 7), everything else only
+   *  when `maxAgeDays` is set. Unset options fall back to the registry's
+   *  configured `sessionRetention` defaults. Async + batched; never touches
+   *  a live, pinned or keepAlive session or an ancestor of a live one. */
+  pruneSessionDirs(opts?: SessionRetentionOptions): Promise<SessionRetentionResult>
   /** Set or clear a session's user-facing name (`PATCH /sessions/:id`, the
    *  `session_rename` MCP verb). Each of `title`/`label`: a non-empty string
    *  sets that field (trimmed, capped to the derivation's `MAX_LENGTH` by
@@ -5139,6 +5156,10 @@ export function createSessionsRegistry(opts?: {
    *  production) — tests that already pin `persistPath` to a tmpdir get
    *  transcript isolation for free without also having to pass this. */
   transcriptDir?: string
+  /** Configured on-disk retention defaults (`daemon.reviewSessionRetentionDays`
+   *  / `daemon.sessionRetentionDays`) — what `pruneSessionDirs` uses for an
+   *  option its caller leaves unset. Omitted ⇒ review lanes 7 days, others off. */
+  sessionRetention?: { reviewMaxAgeDays?: number | null; maxAgeDays?: number | null }
   /** Shared, opt-in Langfuse session observer. Built once in the bootstrap
    *  from eval-reporter creds. Events only reach it for sessions in the
    *  registry's traced-session set — see `langfuseTracingDefault`. */
@@ -11875,6 +11896,30 @@ export function createSessionsRegistry(opts?: {
       }
       if (ids.length > 0) schedulePersist()
       return { mode: opts.forget ? "forgotten" : "archived", ids, count: ids.length }
+    },
+    forgetSession(id) {
+      const rt = sessions.get(id)
+      if (!rt) return "missing"
+      const st = rt.desc.status
+      if (st === "running" || st === "starting") return "alive"
+      retireRow(rt, "forgotten")
+      sessions.delete(id)
+      schedulePersist()
+      return "forgotten"
+    },
+    pruneSessionDirs(pruneOpts) {
+      const defaults = opts?.sessionRetention ?? {}
+      const reviewMaxAgeDays =
+        pruneOpts?.reviewMaxAgeDays !== undefined ? pruneOpts.reviewMaxAgeDays : defaults.reviewMaxAgeDays
+      const maxAgeDays = pruneOpts?.maxAgeDays !== undefined ? pruneOpts.maxAgeDays : defaults.maxAgeDays
+      return runSessionRetentionPass({
+        baseDir: transcriptBaseDir,
+        registry,
+        ...(reviewMaxAgeDays !== undefined ? { reviewMaxAgeDays } : {}),
+        ...(maxAgeDays !== undefined ? { maxAgeDays } : {}),
+        ...(pruneOpts?.dryRun ? { dryRun: true } : {}),
+        ...(pruneOpts?.onlyIds ? { onlyIds: pruneOpts.onlyIds } : {}),
+      })
     },
     renameSession(id, patch) {
       const rt = sessions.get(id)

@@ -7708,7 +7708,10 @@ async function handleSessions(
 
   // Bulk garbage-collect terminal-status sessions — the HTTP twin of the
   // `session_gc` MCP verb, powering `agentproto sessions gc`. Body:
-  // `{ olderThanDays?: number, forget?: boolean }`. ARCHIVES by default
+  // `{ olderThanDays?: number, forget?: boolean, retention?: boolean,
+  // dryRun?: boolean, reviewMaxAgeDays?: number, maxAgeDays?: number }`.
+  // `retention:true` runs the on-disk retention pass (deletes old terminal
+  // session dirs — see session-retention.ts). Otherwise ARCHIVES by default
   // (reversible — hidden from the default list, still readable + importable);
   // `forget:true` DROPS each descriptor to reclaim sessions.json space (the
   // native conversation on disk survives). The registry never touches a live
@@ -7755,6 +7758,17 @@ async function handleSessions(
       typeof b.olderThanDays === "number" && b.olderThanDays > 0 ? b.olderThanDays : undefined
     const forget = b.forget === true
     try {
+      if (b.retention === true) {
+        // On-disk retention pass (session-retention.ts): DELETES terminal
+        // session dirs past their age threshold. `dryRun` previews.
+        const res = await registry.pruneSessionDirs({
+          ...(b.dryRun === true ? { dryRun: true } : {}),
+          ...(typeof b.reviewMaxAgeDays === "number" ? { reviewMaxAgeDays: b.reviewMaxAgeDays } : {}),
+          ...(typeof b.maxAgeDays === "number" ? { maxAgeDays: b.maxAgeDays } : {}),
+        })
+        json(200, res)
+        return true
+      }
       const res = registry.gcSessions({
         ...(olderThanDays !== undefined ? { olderThanDays } : {}),
         ...(forget ? { forget: true } : {}),

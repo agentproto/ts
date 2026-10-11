@@ -215,6 +215,11 @@ Usage:
   agentproto sessions gc [--older-than-days <n>] [--forget] [--json]
                               (archive terminal sessions by default; --forget
                                DROPS descriptors instead. Never touches live.)
+  agentproto sessions gc --retention [--dry-run] [--json]
+                              (DELETE old terminal session dirs on disk:
+                               review lanes after daemon.reviewSessionRetentionDays
+                               (7), others only if daemon.sessionRetentionDays
+                               is set. --dry-run previews.)
   agentproto sessions continue-interrupted [--send] [--id <id-or-name>]...
                               [--prompt <text>] [--json]
                               (list sessions the LAST daemon restart cut off
@@ -1773,6 +1778,8 @@ async function runGc(args: readonly string[]): Promise<number> {
     options: {
       "older-than-days": { type: "string" },
       forget: { type: "boolean" },
+      retention: { type: "boolean" },
+      "dry-run": { type: "boolean" },
       json: { type: "boolean" },
     },
   })
@@ -1808,6 +1815,37 @@ async function runGc(args: readonly string[]): Promise<number> {
   const body: Record<string, unknown> = {}
   if (olderThanDays !== undefined) body.olderThanDays = olderThanDays
   if (values.forget) body.forget = true
+
+  if (values.retention) {
+    // On-disk retention pass: deletes old terminal session dirs. Thresholds
+    // come from the daemon's config (daemon.reviewSessionRetentionDays /
+    // daemon.sessionRetentionDays).
+    try {
+      const result = await httpPostJson<{ count: number; scanned: number; dryRun: boolean; errors: number }>(
+        `${endpoint.url}/sessions/gc`,
+        { retention: true, ...(values["dry-run"] ? { dryRun: true } : {}) },
+        endpoint.token,
+      )
+      if (values.json) {
+        process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+      } else {
+        process.stdout.write(
+          `agentproto sessions gc: ${result.dryRun ? "would delete" : "deleted"} ${result.count} ` +
+            `session dir${result.count === 1 ? "" : "s"} (scanned ${result.scanned}` +
+            `${result.errors > 0 ? `, ${result.errors} failed` : ""}).\n`,
+        )
+      }
+      return 0
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 401/.test(msg)) {
+        process.stderr.write((await explain401(endpoint, "agentproto sessions gc")) + "\n")
+        return 1
+      }
+      process.stderr.write(`agentproto sessions gc: ${msg}\n`)
+      return 1
+    }
+  }
 
   try {
     const result = await httpPostJson<{ mode: string; ids: string[]; count: number }>(

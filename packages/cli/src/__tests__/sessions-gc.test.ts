@@ -103,6 +103,16 @@ describe("agentproto sessions gc", () => {
     expect(body).toEqual({ olderThanDays: 30, forget: true })
   })
 
+  it("--retention --dry-run posts the retention body and prints a dry-run summary", async () => {
+    httpPostJson.mockResolvedValue({ count: 3, scanned: 40, dryRun: true, errors: 0, ids: ["a", "b", "c"] })
+    const code = await runSessions(["gc", "--retention", "--dry-run"])
+    expect(code).toBe(0)
+    const [url, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(url).toBe("http://127.0.0.1:18790/sessions/gc")
+    expect(body).toEqual({ retention: true, dryRun: true })
+    expect(stdoutChunks.join("")).toContain("would delete 3 session dirs (scanned 40)")
+  })
+
   it("--json prints the raw daemon result and still hits the same route", async () => {
     httpPostJson.mockResolvedValue({ mode: "archived", ids: ["a"], count: 1 })
     const code = await runSessions(["gc", "--json"])
