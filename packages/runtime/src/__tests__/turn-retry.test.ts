@@ -466,6 +466,131 @@ describe("turn retry — never retried", () => {
   })
 })
 
+// ── admission decides the `sent` transition ─────────────────────────────
+
+/** A controller driven through its narrow structural registry slice, with no
+ *  real session behind it: `enqueuePrompt` is whatever the test says, so the
+ *  `sent` transition and the attempt booking can be observed directly. */
+function stubHarness(opts: {
+  enqueuePrompt: (id: string, message: unknown, o?: { interrupt?: boolean; source?: string }) => Promise<unknown>
+  row?: Partial<SessionDescriptor>
+  turnRetry?: Parameters<typeof resolveTurnRetryPolicy>[0]
+}) {
+  const sessionEvents = createSessionEventBus()
+  const events: SessionTurnRetryEvent[] = []
+  sessionEvents.on("session:turn-retry", ev => events.push(ev))
+  const notices: string[] = []
+  const enqueued: Array<{ message: unknown; opts?: { interrupt?: boolean } }> = []
+  const row = {
+    id: "s1",
+    kind: "agent-cli",
+    status: "running",
+    turnRetry: resolveTurnRetryPolicy(opts.turnRetry ?? { on: ["rate-limit"], ...FAST }),
+    ...opts.row,
+  } as SessionDescriptor
+  const registry = {
+    get: (id: string) => (id === row.id ? row : undefined),
+    list: () => [row],
+    enqueuePrompt: async (id: string, message: unknown, o?: { interrupt?: boolean; source?: string }) => {
+      if (id !== row.id) throw new Error(`no session "${id}"`)
+      enqueued.push({ message, ...(o?.interrupt !== undefined ? { opts: { interrupt: o.interrupt } } : {}) })
+      return opts.enqueuePrompt(id, message, o)
+    },
+    recordNotice: (id: string, text: string) => {
+      if (id !== row.id) return false
+      notices.push(text)
+      return true
+    },
+    patchTurnRetry: (id: string, patch: Record<string, unknown>) => {
+      if (id !== row.id) return false
+      const r = row as unknown as Record<string, unknown>
+      for (const key of ["turnRetryAttempts", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
+        if (!(key in patch)) continue
+        const value = patch[key]
+        if (value === null || value === undefined) delete r[key]
+        else r[key] = value
+      }
+      return true
+    },
+  }
+  const controller = createTurnRetryController({ registry, sessionEvents, log: () => {} })
+  const turnEnd = (error: string) =>
+    sessionEvents.emit({
+      type: "session:turn-end",
+      sessionId: row.id,
+      awaitingInput: false,
+      reason: "error",
+      error,
+      ts: new Date().toISOString(),
+    })
+  return { row, events, notices, enqueued, controller, turnEnd, phases: () => events.map(e => e.phase) }
+}
+
+describe("turn retry — admission decides the `sent` transition", () => {
+  it("a rejected admission is not `sent`, costs nothing against maxRetries", async () => {
+    const h = stubHarness({
+      enqueuePrompt: async () => {
+        throw new Error("SessionNotAliveError: resume failed — session s1")
+      },
+      turnRetry: { on: ["rate-limit"], maxRetries: 1, ...FAST },
+    })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("cancelled"), "rejected admission")
+
+    expect(h.enqueued).toHaveLength(1)
+    expect(h.phases()).toEqual(["scheduled", "cancelled"])
+    expect(h.events[1]).toMatchObject({ phase: "cancelled", attempt: 1, errorClass: "rate-limit" })
+    expect(h.events[1]?.skipReason).toContain("continuation prompt rejected")
+    // No send notice, only a cancellation one — and the counter untouched.
+    expect(h.notices.some(n => n.includes("sending continuation prompt"))).toBe(false)
+    expect(h.notices).toContain(
+      "[turn-retry] cancelled retry 1: continuation prompt rejected: SessionNotAliveError: resume failed — session s1",
+    )
+    expect(h.row.turnRetryAttempts).toBeUndefined()
+    expect(h.row.lastTurnRetryAt).toBeUndefined()
+
+    // The failed admission did not burn the budget: the next failure still
+    // reaches `enqueuePrompt` instead of reporting `exhausted`.
+    h.turnEnd("429 status code")
+    await until(() => h.phases().length === 4, "the retry budget survived the rejection")
+    expect(h.enqueued).toHaveLength(2)
+    expect(h.phases()).toEqual(["scheduled", "cancelled", "scheduled", "cancelled"])
+    h.controller.dispose()
+  })
+
+  it("a successful admission is what marks `sent` and books the attempt", async () => {
+    const h = stubHarness({ enqueuePrompt: async () => ({ queued: false, delivery: "delivered" }) })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("sent"), "sent transition")
+
+    expect(h.enqueued).toHaveLength(1)
+    expect(h.phases()).toEqual(["scheduled", "sent"])
+    expect(h.notices).toEqual([
+      "[turn-retry] rate-limit: retry 1/3 in 0s",
+      "[turn-retry] retry 1/3 (rate-limit) — sending continuation prompt",
+    ])
+    expect(h.row.turnRetryAttempts).toBe(1)
+    expect(h.row.lastTurnRetryAt).toBeDefined()
+    h.controller.dispose()
+  })
+
+  it("a retry that lands while the session moved on writes the `[turn-retry]` notice", async () => {
+    // Same guard as a kill during the backoff window, but the timer fires
+    // first: another turn is busy by the time the retry is ready.
+    const h = stubHarness({ enqueuePrompt: async () => ({}), row: { busy: true, turnsCompleted: 0 } })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("cancelled"), "stale retry")
+
+    expect(h.enqueued).toHaveLength(0)
+    expect(h.phases()).toEqual(["scheduled", "cancelled"])
+    expect(h.events[1]?.skipReason).toBe("the session moved on (new turn) before the retry landed")
+    expect(h.notices).toContain(
+      "[turn-retry] cancelled retry 1: the session moved on (new turn) before the retry landed",
+    )
+    h.controller.dispose()
+  })
+})
+
 describe("turn-end event fields the controller relies on", () => {
   it("carries toolCalls and interrupted", async () => {
     const sessionEvents = createSessionEventBus()

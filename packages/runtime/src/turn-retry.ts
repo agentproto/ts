@@ -23,6 +23,12 @@
  *   - on `session:stall-cleared` / `session:exited` / any newer turn-end →
  *     drop a pending retry; `policy:failed` halts retries for the session.
  *
+ * A retry reports `sent` only once its continuation prompt has PASSED
+ * admission (`enqueuePrompt` rejects a concurrent prompt, a killed session,
+ * a failed resume): a rejected admission rolls the booked attempt back — it
+ * costs nothing against `maxRetries` — and emits `cancelled` instead, with the
+ * same `[turn-retry]` transcript notice every other transition carries.
+ *
  * NEVER retries: an interrupted turn (user Stop, `interrupt:true` prompt), a
  * killed / exited / errored session (kill, `maxCostUsd` cost-cap kill — the
  * process-death path belongs to `restartPolicy`), a session with a failed
@@ -347,25 +353,58 @@ export function createTurnRetryController(opts: {
             : undefined
     if (stale) {
       emit(desc, { phase: "cancelled", errorClass: p.errorClass, attempt: p.attempt, skipReason: stale })
+      registry.recordNotice(id, `[turn-retry] cancelled retry ${p.attempt}: ${stale}`)
       return
     }
     const nowIso = new Date(now()).toISOString()
+    const prevAttempts = desc.turnRetryAttempts
+    const prevLastTurnRetryAt = desc.lastTurnRetryAt
     // Book the attempt BEFORE sending: a continuation turn that itself fails
-    // still counts toward `maxRetries`.
+    // still counts toward `maxRetries` — its turn-end can land before the
+    // admission promise below settles, and the counter must already be spent.
     registry.patchTurnRetry(id, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
-    emit(desc, { phase: "sent", errorClass: p.errorClass, attempt: p.attempt, ...(p.error ? { error: p.error } : {}) })
-    registry.recordNotice(id, `[turn-retry] retry ${p.attempt}/${desc.turnRetry?.maxRetries ?? "?"} (${p.errorClass}) — sending continuation prompt`)
     registry
       .enqueuePrompt(id, buildContinuationPrompt(p.error), {
         source: TURN_RETRY_PROMPT_SOURCE,
         origin: "daemon",
         ...(p.kind === "stall" ? { interrupt: true } : {}),
       })
-      .catch(err => {
-        const msg = err instanceof Error ? err.message : String(err)
-        log(`[turn-retry] ${id}: continuation prompt failed: ${msg}`)
-        registry.recordNotice(id, `[turn-retry] continuation prompt failed: ${msg}`)
-      })
+      .then(
+        () => {
+          // Admission succeeded — only NOW is the retry actually "sent" (and
+          // only now does the attempt it booked stick).
+          emit(desc, {
+            phase: "sent",
+            errorClass: p.errorClass,
+            attempt: p.attempt,
+            ...(p.error ? { error: p.error } : {}),
+          })
+          registry.recordNotice(
+            id,
+            `[turn-retry] retry ${p.attempt}/${desc.turnRetry?.maxRetries ?? "?"} (${p.errorClass}) — sending continuation prompt`,
+          )
+        },
+        err => {
+          // Admission REJECTED (concurrent prompt, kill, failed resume): the
+          // retry never happened — roll the booking back so it costs nothing
+          // against `maxRetries`, and report it as a cancellation, never `sent`.
+          const msg = err instanceof Error ? err.message : String(err)
+          log(`[turn-retry] ${id}: continuation prompt rejected: ${msg}`)
+          registry.patchTurnRetry(id, {
+            turnRetryAttempts: prevAttempts ?? null,
+            lastTurnRetryAt: prevLastTurnRetryAt ?? null,
+          })
+          registry.recordNotice(id, `[turn-retry] cancelled retry ${p.attempt}: continuation prompt rejected: ${msg}`)
+          const fresh = registry.get(id) ?? desc
+          emit(fresh, {
+            phase: "cancelled",
+            errorClass: p.errorClass,
+            attempt: p.attempt,
+            skipReason: `continuation prompt rejected: ${msg}`,
+            ...(p.error ? { error: p.error } : {}),
+          })
+        },
+      )
   }
 
   const handle = (id: string, trigger: Parameters<typeof decideTurnRetry>[1]): void => {

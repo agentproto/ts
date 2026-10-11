@@ -646,7 +646,12 @@ async function runListStats(
 }
 
 const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
-const TURN_RETRY_NUMBER_KEYS = ["maxRetries", "baseDelayMs", "factor", "maxDelayMs"]
+
+/** Bounds the DAEMON's schema (`turnRetryInputSchema` in
+ *  `turn-retry-policy.ts`) enforces. Validated here too: the daemon drops a
+ *  policy that fails them whole, so a value this parser accepts but the
+ *  daemon rejects would silently disable retries instead of failing loudly. */
+const TURN_RETRY_INT_MS_KEYS = ["baseDelayMs", "maxDelayMs"]
 
 /** Parse `--turn-retry`: `all`, a comma list of classes, or a JSON object
  *  (`on` required, numeric knobs optional — the daemon fills defaults).
@@ -674,11 +679,19 @@ export function parseTurnRetryFlag(raw: string): Record<string, unknown> | strin
   if (unknown.length > 0) {
     return `unknown class(es) ${unknown.map(String).join(", ")} — expected ${TURN_RETRY_CLASSES.join(", ")} or "all"`
   }
-  for (const key of TURN_RETRY_NUMBER_KEYS) {
+  for (const key of TURN_RETRY_INT_MS_KEYS) {
     const v = obj[key]
-    if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v) || v < 0)) {
-      return `"${key}" must be a non-negative number`
+    if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v < 0)) {
+      return `"${key}" must be a non-negative integer (ms)`
     }
+  }
+  const maxRetries = obj.maxRetries
+  if (maxRetries !== undefined && (typeof maxRetries !== "number" || !Number.isInteger(maxRetries) || maxRetries < 1)) {
+    return `"maxRetries" must be a positive integer (at least 1)`
+  }
+  const factor = obj.factor
+  if (factor !== undefined && (typeof factor !== "number" || !Number.isFinite(factor) || factor < 1)) {
+    return `"factor" must be a number >= 1`
   }
   if (obj.retryAfterToolCalls !== undefined && typeof obj.retryAfterToolCalls !== "boolean") {
     return `"retryAfterToolCalls" must be a boolean`

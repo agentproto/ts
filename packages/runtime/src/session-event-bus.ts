@@ -954,13 +954,6 @@ export interface WorkflowSuspendResumedEvent {
 }
 
 /**
- * Emitted when a `kind: "agent"` step's `harness` block declared a field the
- * spawn couldn't honor (today: `harness.tools` — no adapter exposes a
- * generic per-spawn tool allowlist this runtime can drive; see
- * `AgentHarness.tools`'s doc) — the "never silently ignore" fallback AIP-15
- * P2 requires. Same bus distribution as every other lifecycle event.
- */
-/**
  * Emitted by the turn-retry controller (`turn-retry.ts`) for a session that
  * opted into `agent_start.turnRetry`:
  *   - `scheduled` — a failed turn matched a retry class; a continuation
@@ -994,6 +987,13 @@ export interface SessionTurnRetryEvent {
   ts: string
 }
 
+/**
+ * Emitted when a `kind: "agent"` step's `harness` block declared a field the
+ * spawn couldn't honor (today: `harness.tools` — no adapter exposes a
+ * generic per-spawn tool allowlist this runtime can drive; see
+ * `AgentHarness.tools`'s doc) — the "never silently ignore" fallback AIP-15
+ * P2 requires. Same bus distribution as every other lifecycle event.
+ */
 export interface SessionHarnessWarningEvent {
   type: "session:harness-warning"
   sessionId: string
