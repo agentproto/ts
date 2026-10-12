@@ -919,6 +919,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // registers the same base doctypes), so a multi-daemon host routes on them.
   // Computed once at boot — the adapter walk is cheap but not worth per-reconnect.
   const installedAdapterSlugs = await discovery.adapters()
+    // ACP entries alone carry `source`; preserve native-only announcements.
     .then(list => list.filter(a => a.status !== "supported" && !a.source).map(a => a.slug))
     .catch(() => [] as string[])
   const announcedTools = [
