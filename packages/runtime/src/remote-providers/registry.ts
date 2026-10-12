@@ -14,7 +14,12 @@
  * resolves the same way and works end to end.
  */
 
-import { discoverAdapterPackages } from "@agentproto/provider-kit"
+import {
+  sharedAdapterDiscovery,
+  sharedProviderProbe,
+  type AdapterDiscoverer,
+  type ProviderProbe,
+} from "../provider-probes.js"
 
 import {
   quickTunnelProvider,
@@ -110,6 +115,9 @@ export function builtinProviderCapabilities(
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
 
+/** Default discovered-package source: the shared 60s-bounded discovery cache. */
+const defaultDiscover: AdapterDiscoverer = () => sharedAdapterDiscovery.discover()
+
 /** Duck-type a value as a tunnel provider handle (no secrets touched). */
 function isTunnelProvider(x: unknown): x is TunnelProvider {
   if (!x || typeof x !== "object") return false
@@ -130,18 +138,22 @@ function isTunnelProvider(x: unknown): x is TunnelProvider {
  * handle, under `<camelSlug>TunnelProvider`, `<camelSlug>`, `default`, or
  * `handle`. Returns null on any failure (not importable / wrong shape) —
  * partial discovery beats failing the whole listing on one bad package.
+ *
+ * The import itself runs through the shared bounded probe cache
+ * (`provider-probes.ts`): a package the sync preflight proves missing never
+ * enters Node's async loader, and a probe result is reused across requests
+ * and across the tunnel/sentinel families instead of re-importing per MCP
+ * POST. Only the module namespace is cached — the handle below is rebuilt
+ * from it on every call with that call's own creds.
  */
 async function importThirdPartyProvider(
   packageName: string,
   slug: string,
   creds: TunnelCreds | null,
+  probe: ProviderProbe,
 ): Promise<TunnelProvider | null> {
-  let mod: Record<string, unknown>
-  try {
-    mod = (await import(packageName)) as Record<string, unknown>
-  } catch {
-    return null
-  }
+  const mod = await probe.probe(packageName)
+  if (!mod) return null
   const camel = slugToCamel(slug)
   const candidate =
     mod[`${camel}TunnelProvider`] ??
@@ -158,6 +170,10 @@ async function importThirdPartyProvider(
 export interface ResolveTunnelProviderOpts {
   /** Stored creds for the slug (descriptor-only listing passes null). */
   creds?: TunnelCreds | null
+  /** Injectable for tests — defaults to the shared import-probe cache. */
+  probe?: ProviderProbe
+  /** Injectable for tests — defaults to the shared discovery cache. */
+  discover?: AdapterDiscoverer
 }
 
 /**
@@ -174,10 +190,22 @@ export async function resolveTunnelProvider(
   const builtin = BUILTIN_TUNNEL_PROVIDERS[slug]
   if (builtin) return builtin(opts?.creds ?? null)
 
-  const pkgs = await discoverAdapterPackages()
+  const pkgs = await (opts?.discover ?? defaultDiscover)()
   const match = pkgs.find((p) => p.slug === slug)
   if (!match) return null
-  return importThirdPartyProvider(match.packageName, slug, opts?.creds ?? null)
+  return importThirdPartyProvider(
+    match.packageName,
+    slug,
+    opts?.creds ?? null,
+    opts?.probe ?? sharedProviderProbe,
+  )
+}
+
+export interface DiscoverTunnelHandlesOpts {
+  /** Injectable for tests — defaults to the shared import-probe cache. */
+  probe?: ProviderProbe
+  /** Injectable for tests — defaults to the shared discovery cache. */
+  discover?: AdapterDiscoverer
 }
 
 /**
@@ -187,13 +215,15 @@ export async function resolveTunnelProvider(
  */
 export async function discoverTunnelHandles(
   catalogSlugs: Set<string>,
+  opts?: DiscoverTunnelHandlesOpts,
 ): Promise<TunnelProvider[]> {
-  const pkgs = await discoverAdapterPackages()
+  const pkgs = await (opts?.discover ?? defaultDiscover)()
+  const probe = opts?.probe ?? sharedProviderProbe
   const out: TunnelProvider[] = []
   for (const pkg of pkgs) {
     if (catalogSlugs.has(pkg.slug)) continue
     if (BUILTIN_TUNNEL_PROVIDERS[pkg.slug]) continue
-    const handle = await importThirdPartyProvider(pkg.packageName, pkg.slug, null)
+    const handle = await importThirdPartyProvider(pkg.packageName, pkg.slug, null, probe)
     if (handle) out.push(handle)
   }
   return out.sort((a, b) => a.slug.localeCompare(b.slug))

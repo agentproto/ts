@@ -212,7 +212,11 @@ export function makeSandboxCredsStore(home?: string): CredsStore<SandboxCreds> {
 export function makeSandboxResolver(
   credsStore: CredsStore<SandboxCreds>,
   opts?: {
-    /** Injectable for tests — defaults to a real dynamic `import()`. */
+    /** Injectable for tests — a one-shot importer that bypasses the shared
+     *  probe cache. Left unset (production), third-party imports run through
+     *  `provider-probes.ts`: bounded, coalesced, and synchronously
+     *  preflighted so an unpublished placeholder (`modal`/`daytona`) never
+     *  enters Node's async loader. */
     importPackage?: (packageName: string) => Promise<Record<string, unknown>>
   },
 ): SandboxProviderResolver {
