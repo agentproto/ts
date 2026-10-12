@@ -331,3 +331,11 @@ for that.
 
 ### llm:huggingface
 - Added: zai-org/GLM-4.7-FP8
+
+## 2026-10-12
+
+### llm:requesty
+- Added: azure/decision-1, azure/decision-1@francecentral, azure/decision-1@swedencentral, vertex/gemini-3.1-flash-image@eu
+
+### llm:huggingface
+- Removed: aisingapore/Qwen-SEA-LION-v4-32B-IT, deepseek-ai/DeepSeek-V3.2, deepseek-ai/DeepSeek-V4-Flash
