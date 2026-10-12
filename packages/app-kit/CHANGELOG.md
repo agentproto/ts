@@ -1,5 +1,13 @@
 # @agentproto/app-kit
 
+## 1.7.3
+
+### Patch Changes
+
+- 0e8cd2d: Serve stale app UI bundles while rebuilding; skip mtime-only rebuilds
+- Updated dependencies [4e32602]
+  - @agentproto/workflow-loader@0.2.7
+
 ## 1.7.2
 
 ### Patch Changes
