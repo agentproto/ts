@@ -46,6 +46,7 @@ export function createIsolatedDiscovery(
   const cache = new Map<string, { expires: number; value: unknown }>()
   const pending = new Map<string, Promise<unknown>>()
   let generation = 0
+  let outstanding = 0
   let lane: Promise<unknown> = Promise.resolve()
   const query = (request: DiscoveryRequest): Promise<unknown> => {
     const key = JSON.stringify(request)
@@ -53,7 +54,8 @@ export function createIsolatedDiscovery(
     if (found && found.expires > now()) return Promise.resolve(found.value)
     const inFlight = pending.get(key)
     if (inFlight) return inFlight
-    if (pending.size >= 32) return Promise.reject(new Error("Adapter discovery queue is full"))
+    if (outstanding >= 32) return Promise.reject(new Error("Adapter discovery queue is full"))
+    outstanding++
     const startedGeneration = generation
     // One cold importer at a time, even when several panels ask different
     // questions. A UI refresh must not create a native-library spawn storm.
@@ -66,7 +68,10 @@ export function createIsolatedDiscovery(
         while (cache.size > 32) cache.delete(cache.keys().next().value!)
       }
       return value
-    }).finally(() => { if (pending.get(key) === result) pending.delete(key) })
+    }).finally(() => {
+      outstanding--
+      if (pending.get(key) === result) pending.delete(key)
+    })
     pending.set(key, result)
     return result
   }

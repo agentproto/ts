@@ -39,6 +39,21 @@ describe("isolated adapter discovery", () => {
     expect(run).toHaveBeenCalledTimes(2)
   })
 
+  it("keeps the queue bound across invalidation while old probes are outstanding", async () => {
+    let finish!: (result: unknown) => void
+    const run = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      .mockResolvedValue([])
+    const discovery = createIsolatedDiscovery(run)
+    const probes = Array.from({ length: 32 }, (_, i) => discovery.capabilities({ adapter: `adapter-${i}` }))
+    await Promise.resolve()
+    discovery.invalidate()
+    await expect(discovery.adapters()).rejects.toThrow("queue is full")
+    finish([])
+    await Promise.all(probes)
+    await expect(discovery.adapters()).resolves.toEqual([])
+    expect(run).toHaveBeenCalledTimes(33)
+  })
+
   it("does not cache an obsolete result that finishes after invalidation", async () => {
     let finish!: (result: unknown) => void
     const run = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
