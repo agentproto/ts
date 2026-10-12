@@ -215,6 +215,27 @@ export const REQUESTY_ROUTES: Record<string, LLMPricing> = {
     vendor: "anthropic",
     provider: "requesty",
   },
+  "azure/decision-1": {
+    inputPer1M: 0.042,
+    outputPer1M: 0,
+    addedAt: "2026-10-09",
+    vendor: "azure",
+    provider: "requesty",
+  },
+  "azure/decision-1@francecentral": {
+    inputPer1M: 0.042,
+    outputPer1M: 0,
+    addedAt: "2026-10-09",
+    vendor: "azure",
+    provider: "requesty",
+  },
+  "azure/decision-1@swedencentral": {
+    inputPer1M: 0.042,
+    outputPer1M: 0,
+    addedAt: "2026-10-09",
+    vendor: "azure",
+    provider: "requesty",
+  },
   "azure/gpt-4.1": {
     inputPer1M: 2,
     outputPer1M: 8,
@@ -5611,6 +5632,14 @@ export const REQUESTY_ROUTES: Record<string, LLMPricing> = {
   "vertex/gemini-3.1-flash-image:flex": {
     inputPer1M: 0.25,
     outputPer1M: 1.5,
+    cacheReadMultiplier: 0,
+    addedAt: "2026-06-18",
+    vendor: "vertex",
+    provider: "requesty",
+  },
+  "vertex/gemini-3.1-flash-image@eu": {
+    inputPer1M: 0.5,
+    outputPer1M: 2,
     cacheReadMultiplier: 0,
     addedAt: "2026-06-18",
     vendor: "vertex",
