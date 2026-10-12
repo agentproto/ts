@@ -35,10 +35,9 @@
  * identical to what Node's own ESM cache would hand back). Every provider
  * handle is rebuilt from the cached module on each request with that request's
  * own creds, so no credential-dependent instance and no MCP server is shared
- * across requests. Failures are cached too. The automatic recovery path is
- * the TTL: a provider installed after its probe went negative is picked up
- * when that entry expires (at most 60s later), with no wiring required —
- * there is no automatic "an install happened, flush now" hook here.
+ * across requests. Failures are cached too: negative probe results expire
+ * after 60s and the next request retries. This bounds this cache's staleness,
+ * not other resolver caches. There is no automatic install-triggered flush.
  * {@link invalidateProviderProbes} exists as an explicit invalidation seam
  * for callers that want an immediate refresh; it has no production caller
  * today, and this patch does not add one.
@@ -348,8 +347,8 @@ export const sharedAdapterDiscovery: AdapterDiscoveryCache =
  * so a previously-missing provider can be probed again immediately instead
  * of waiting out the TTL. Meant for callers that know an install changed
  * what resolves — it has no production caller today, and this patch does not
- * add one: without a call here, recovery is TTL-driven only (at most
- * `PROBE_TTL_MS` / `DISCOVERY_TTL_MS`, 60s each). With no argument every
+ * add one: without a call here, these caches retry after their TTLs expire
+ * (`PROBE_TTL_MS` / `DISCOVERY_TTL_MS`, 60s each). With no argument every
  * probe is dropped.
  */
 export function invalidateProviderProbes(specifier?: string): void {
