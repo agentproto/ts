@@ -1,4 +1,5 @@
 import { fork } from "node:child_process"
+import { existsSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import type { CatalogModelsQuery, CatalogModelsResponse } from "@agentproto/runtime"
 import type { AdapterListing, listHarnessCapabilities } from "./resolve.js"
@@ -8,11 +9,25 @@ export type DiscoveryRequest =
   | { kind: "capabilities"; adapter?: string }
   | { kind: "models"; query: CatalogModelsQuery }
 
+/** tsup watch builds the same worker used by source-run and bundled CLIs. */
+export function discoveryWorkerPath(moduleUrl: string = import.meta.url): string {
+  const source = new URL(moduleUrl).pathname.endsWith(".ts")
+  return fileURLToPath(new URL(
+    source ? "../../dist/adapter-discovery-worker.mjs" : "./adapter-discovery-worker.mjs",
+    moduleUrl,
+  ))
+}
+
 /** Only discovery metadata crosses IPC; adapter implementations stay in the worker. */
 export function runDiscoveryWorker(request: DiscoveryRequest): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    // serve.ts is bundled into dist/cli.mjs; the worker is a sibling build entry.
-    const child = fork(fileURLToPath(new URL("./adapter-discovery-worker.mjs", import.meta.url)), [], {
+    // No TS loader / inspector flags are inherited by the disposable worker.
+    const workerPath = discoveryWorkerPath()
+    if (!existsSync(workerPath)) {
+      reject(new Error(`Adapter discovery worker is missing: ${workerPath}. Build the CLI with pnpm --filter @agentproto/cli build, or reinstall the CLI.`))
+      return
+    }
+    const child = fork(workerPath, [], {
       execArgv: [],
       stdio: ["ignore", "ignore", "inherit", "ipc"],
     })

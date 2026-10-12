@@ -9,6 +9,11 @@ has compressed/paged out. Do not sum RSS and compressed memory.
 - `host load` added macOS `top` MEM and CMPRS. `man top` defines MEM as physical
   footprint already. The reported 4.6 GB therefore double-counted compressed
   memory; a direct `vmmap` sample measured about 2.9 GB. The parser is corrected.
+  Confirmed against this machine's installed manual and Apple's published
+  [top manual](https://github.com/apple-oss-distributions/top/blob/main/top.1):
+  MEM denotes physical footprint. Apple's [XNU ledger definition](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c#L1226-L1233)
+  includes compressed-memory terms in that footprint. CMPRS is a separate
+  diagnostic column, not an extra amount to add to MEM.
 - Seven to eight live agent trees used about 3.2 GiB RSS. Each Claude session
   brought its own adapter and several MCP processes. Idle does not mean free.
 - A later pre-activation snapshot had five idle agent trees: 43 processes and
@@ -53,6 +58,16 @@ from these three discovery endpoints. Build/install changes can take up to the
 listing TTL to appear. Adapter-carried role discovery and third-party tunnel/
 sentinel discovery still import adapter implementations in the host; isolating
 the CLI listings does not remove those separate import paths.
+
+The bundled CLI resolves the worker beside `dist/cli.mjs` (or `dist/index.mjs`).
+A TypeScript source caller resolves `packages/cli/dist/adapter-discovery-worker.mjs`
+instead of looking for an absent `.mjs` beside `src/registry/isolated-discovery.ts`.
+Source execution requires `pnpm --filter @agentproto/cli build` first;
+`pnpm --filter @agentproto/cli dev` uses tsup watch to keep the worker current.
+A missing build produces an explicit build/reinstall error. The worker remains
+compiled JavaScript with empty `execArgv`, so it never inherits a parent TS loader
+or inspector. Path tests cover both bundle entries and source execution; a real
+source-mode test verifies the fork/IPC/exit round trip.
 
 `daemon.resumeSessionsOnBoot` remains the master enable switch. The additive
 `daemon.bootResumePolicy` selects `all` (legacy default) or `keepalive`. Use:

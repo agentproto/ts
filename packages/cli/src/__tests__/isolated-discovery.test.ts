@@ -1,7 +1,21 @@
 import { describe, it, expect, vi } from "vitest"
-import { createIsolatedDiscovery } from "../registry/isolated-discovery.js"
+import { createIsolatedDiscovery, discoveryWorkerPath, runDiscoveryWorker } from "../registry/isolated-discovery.js"
+import { fileURLToPath } from "node:url"
 
 describe("isolated adapter discovery", () => {
+  it("resolves the built worker from bundled and TypeScript source entry points", () => {
+    const expected = fileURLToPath(new URL("../../dist/adapter-discovery-worker.mjs", import.meta.url))
+    expect(discoveryWorkerPath(new URL("../../dist/cli.mjs", import.meta.url).href)).toBe(expected)
+    expect(discoveryWorkerPath(new URL("../../dist/index.mjs", import.meta.url).href)).toBe(expected)
+    expect(discoveryWorkerPath(new URL("../registry/isolated-discovery.ts", import.meta.url).href)).toBe(expected)
+  })
+
+  it("forks and receives metadata when the caller runs from TypeScript source", async () => {
+    const listing = await runDiscoveryWorker({ kind: "adapters" })
+    expect(Array.isArray(listing)).toBe(true)
+    expect(listing).toEqual(expect.arrayContaining([expect.objectContaining({ slug: "claude-code" })]))
+  }, 30_000)
+
   it("coalesces polling, expires metadata, and invalidates after installs", async () => {
     let now = 0
     const run = vi.fn(async () => [{ slug: "claude-code" }])
