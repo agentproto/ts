@@ -11,7 +11,7 @@
  * simulates.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -337,6 +337,7 @@ describe("context hard-stop on inconsistent usage frames", () => {
       persist: false,
       transcriptDir,
       sessionEvents: createSessionEventBus(),
+      contextRescueSettleMs: 50,
     })
     const desc = registry.spawnAgent({
       workspaceSlug: "default",
@@ -394,8 +395,8 @@ describe("context hard-stop on inconsistent usage frames", () => {
       ],
     ])
     await registry.sendPrompt(id, "go")
+    await vi.waitFor(() => expect(registry.get(id)!.status).toBe("killed"))
     const after = registry.get(id)!
-    expect(after.status).toBe("killed")
     expect(after.contextContinuityHardStopped).toBe(true)
     expect(after.endedReason).toBe("context-hard-stop")
     registry.shutdown()
@@ -416,7 +417,7 @@ describe("context hard-stop on inconsistent usage frames", () => {
     await registry.sendPrompt(id, "turn 1")
     expect(registry.get(id)!.status).not.toBe("killed")
     await registry.sendPrompt(id, "turn 2")
-    expect(registry.get(id)!.endedReason).toBe("context-hard-stop")
+    await vi.waitFor(() => expect(registry.get(id)!.endedReason).toBe("context-hard-stop"))
     registry.shutdown()
   })
 })

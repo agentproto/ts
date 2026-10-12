@@ -66,6 +66,7 @@ import type {
   SessionEventBus,
   SessionAwaitingQuestion,
   SessionConfigChangedEvent,
+  ContextRescueOutcome,
 } from "./session-event-bus.js"
 import { resolvePosture } from "./canonical-posture.js"
 import {
@@ -2714,6 +2715,10 @@ interface SessionRuntime {
    *  `desc.contextUsed` is then a stale reading, so context-continuity must
    *  not act on it with an irreversible hard-stop. */
   contextUsedInconsistent?: boolean
+  /** In flight while the runtime rescues a session that reached
+   *  `hardStopAtPct` (auto-compact, then continue fresh, then — last resort —
+   *  stop). Prompts are held (queued / answered "retry") until it settles. */
+  contextRescue?: Promise<void>
   /** Active tool calls in announcement order. Multiple calls can overlap;
    *  removing the latest one falls back to the previous still-active call. */
   activeToolCalls?: Map<string, string>
@@ -5251,6 +5256,10 @@ export function createSessionsRegistry(opts?: {
    *  root default 5s). Tests pin a small value so `armUsageRefresh`'s polling
    *  can be observed in guest time. */
   usageRefreshIntervalMs?: number
+  /** How long the context rescue waits, after its auto-compaction turn, for
+   *  the usage reading to drop under `hardStopAtPct` before falling back to
+   *  continue-fresh / stop. Default 30s. */
+  contextRescueSettleMs?: number
 }): SessionsRegistry {
   // `persistPath` names one exact file, so passing it means "don't
   // partition" (see its docblock). Absent it, state partitions per
@@ -6938,7 +6947,11 @@ export function createSessionsRegistry(opts?: {
    * ingress can report status/409 truthfully instead of the caller
    * getting back a lie like `{queued: true}`.
    */
-  const validateAgentTurn = (id: string, caller: string): SessionRuntime => {
+  const validateAgentTurn = (
+    id: string,
+    caller: string,
+    admit?: { compaction?: boolean },
+  ): SessionRuntime => {
     const rt = sessions.get(id)
     if (!rt) throw new Error(`${caller}: no session "${id}"`)
     if (rt.desc.kind !== "agent-cli") {
@@ -6955,23 +6968,30 @@ export function createSessionsRegistry(opts?: {
         `${caller}: session "${id}" is mid-turn — wait for it to finish or cancel`
       )
     }
-    // Context-continuity hard stop: prevent a new oversized prompt.
+    // A flag left by an earlier daemon on a session that is still alive is
+    // stale: the rescue below acts on the live reading instead.
     if (rt.desc.contextContinuityHardStopped) {
-      throw new Error(
-        `${caller}: session "${id}" is hard-stopped by context-continuity policy — use continue fresh`
-      )
-    }
-    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
-    if (
-      !rt.contextUsedInconsistent &&
-      rt.desc.contextContinuity &&
-      isContextContinuityHardStopped(pct, rt.desc.contextContinuity)
-    ) {
-      rt.desc.contextContinuityHardStopped = true
+      delete rt.desc.contextContinuityHardStopped
       schedulePersist()
-      throw new Error(
-        `${caller}: session "${id}" context at ${pct}% — hard-stopped by policy`
-      )
+    }
+    // Context floor: never admit a prompt into a window the policy calls
+    // full — and never leave the session stuck behind it either: start the
+    // rescue (auto-compact) and tell the caller to retry. A compaction prompt
+    // is the way out, so it is always admitted.
+    if (!admit?.compaction) {
+      if (rt.contextRescue) {
+        throw new Error(`${caller}: session "${id}" ${CONTEXT_RESCUE_BUSY_MESSAGE}`)
+      }
+      const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+      if (
+        pct !== null &&
+        !rt.contextUsedInconsistent &&
+        rt.desc.contextContinuity &&
+        isContextContinuityHardStopped(pct, rt.desc.contextContinuity)
+      ) {
+        void performContextRescue(rt, pct)
+        throw new Error(`${caller}: session "${id}" ${CONTEXT_RESCUE_BUSY_MESSAGE} (context at ${pct}%)`)
+      }
     }
     return rt
   }
@@ -7113,7 +7133,7 @@ export function createSessionsRegistry(opts?: {
    */
   const dispatchQueuedPrompt = (rt: SessionRuntime, onlyId?: string): void => {
     const queue = rt.desc.promptQueue
-    if (!queue?.length || rt.busy || rt.steerInFlight) return
+    if (!queue?.length || rt.busy || rt.steerInFlight || rt.contextRescue) return
     const next = onlyId ? queue.find(p => p.id === onlyId) : queue[0]
     if (!next) return
     // A typed message at the head drains together with every envelope item
@@ -7132,7 +7152,7 @@ export function createSessionsRegistry(opts?: {
     void (async () => {
       try {
         await maybeResumeAgent(rt, "daemon-restart", next.source ? { source: next.source } : {})
-        const liveRt = validateAgentTurn(rt.desc.id, "queue-drain")
+        const liveRt = validateAgentTurn(rt.desc.id, "queue-drain", { compaction: isCompactPrompt(next.message) })
         if (next.envelope) {
           await runMessageTurn(
             liveRt,
@@ -7958,6 +7978,113 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  const CONTEXT_RESCUE_SOURCE = "runtime:context-rescue"
+  const CONTEXT_RESCUE_BUSY_MESSAGE = "is compacting its context automatically — retry shortly (mid-turn)"
+  const CONTEXT_RESCUE_FOCUS =
+    "Keep the current goal, open tasks and decisions, running child sessions, pending reports, and who is waiting for what."
+
+  const isSessionAlive = (rt: SessionRuntime): boolean =>
+    rt.desc.status === "running" || rt.desc.status === "starting"
+
+  const sleepMs = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+  function contextPctNow(rt: SessionRuntime): number | null {
+    return rt.contextUsedInconsistent ? null : computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+  }
+
+  function announceContextRescue(
+    rt: SessionRuntime,
+    outcome: ContextRescueOutcome,
+    pctBefore: number,
+    pctAfter?: number | null,
+  ): void {
+    const after = pctAfter === null || pctAfter === undefined ? "" : ` → ${pctAfter}%`
+    const text =
+      outcome === "compacted"
+        ? `[context] auto-compacted at the hard-stop floor (${pctBefore}%${after}); the session continues`
+        : outcome === "continued"
+          ? `[context] auto-compaction could not free the window (${pctBefore}%${after}); the session was continued fresh`
+          : `[context-hard-stop] context at ${pctBefore}% and neither compaction nor a fresh continuation was possible; the session was ended`
+    appendLine(rt, text, outcome === "hard-stopped" ? "stderr" : "stdout")
+    transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+    sessionEvents?.emit({
+      type: "session:context-rescue",
+      sessionId: rt.desc.id,
+      outcome,
+      pctBefore,
+      ...(pctAfter !== null && pctAfter !== undefined ? { pctAfter } : {}),
+      ...(rt.desc.label ? { label: rt.desc.label } : {}),
+      ts: new Date().toISOString(),
+    })
+  }
+
+  /**
+   * The policy floor (`hardStopAtPct`) used to end the session outright — and,
+   * reached while the session was idle, left it "running" but rejecting every
+   * prompt. Now the floor is a trigger, not an exit: compact first (checkpoint
+   * written, then `/compact` as the runtime itself), continue fresh when that
+   * did not free the window, and only then stop — loudly. One rescue per
+   * session at a time; prompts wait for it.
+   */
+  function performContextRescue(rt: SessionRuntime, pct: number): Promise<void> {
+    if (rt.contextRescue) return rt.contextRescue
+    const run = async (): Promise<void> => {
+      await Promise.resolve()
+      try {
+        while (rt.busy && isSessionAlive(rt)) await sleepMs(250)
+        if (!isSessionAlive(rt)) return
+        const pctBefore = contextPctNow(rt) ?? pct
+        const policy = rt.desc.contextContinuity
+        if (policy && pctBefore < policy.hardStopAtPct) return
+        appendLine(
+          rt,
+          `[context] context at ${pctBefore}% — compacting automatically (checkpoint first, queued prompts wait)`,
+          "stdout",
+        )
+        const cmd = (rt.desc.harness ?? rt.desc.adapterSlug ?? "").includes("hermes") ? "/compress" : "/compact"
+        try {
+          await runAgentTurn(rt, `${cmd} ${CONTEXT_RESCUE_FOCUS}`, { promptSource: CONTEXT_RESCUE_SOURCE })
+        } catch (err) {
+          appendLine(
+            rt,
+            `[context] auto-compaction failed: ${err instanceof Error ? err.message : String(err)}`,
+            "stderr",
+          )
+        }
+        if (!isSessionAlive(rt)) return
+        const floor = policy?.hardStopAtPct ?? CONTEXT_CONTINUITY_DEFAULTS.hardStopAtPct
+        const deadline = Date.now() + (opts?.contextRescueSettleMs ?? 30_000)
+        let pctAfter = contextPctNow(rt)
+        while ((pctAfter === null || pctAfter >= floor) && Date.now() < deadline && isSessionAlive(rt)) {
+          await sleepMs(500)
+          pctAfter = contextPctNow(rt)
+        }
+        if (!isSessionAlive(rt)) return
+        if (pctAfter !== null && pctAfter < floor) {
+          delete rt.desc.contextContinuityHardStopped
+          delete rt.desc.contextContinuityAckedAtPct
+          schedulePersist()
+          announceContextRescue(rt, "compacted", pctBefore, pctAfter)
+          return
+        }
+        if (resolveAgentAdapter) {
+          await performContextContinueFresh(rt)
+          if (!isSessionAlive(rt)) {
+            announceContextRescue(rt, "continued", pctBefore, pctAfter)
+            return
+          }
+        }
+        await performContextHardStop(rt, pctAfter ?? pctBefore)
+        announceContextRescue(rt, "hard-stopped", pctBefore, pctAfter)
+      } finally {
+        rt.contextRescue = undefined
+        if (isSessionAlive(rt)) dispatchQueuedPrompt(rt)
+      }
+    }
+    rt.contextRescue = run()
+    return rt.contextRescue
+  }
+
   async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
     // The stop itself is not optional (a prompt into a full window is
     // truncated or rejected), but the work done so far must survive it:
@@ -8111,7 +8238,8 @@ export function createSessionsRegistry(opts?: {
           )
           return
         }
-        await performContextHardStop(rt, pct)
+        // Not awaited: the rescue waits for this very turn to settle.
+        void performContextRescue(rt, pct)
         return
     }
   }
@@ -8432,14 +8560,15 @@ export function createSessionsRegistry(opts?: {
     if (isCompactPrompt(message)) {
       assertCompactionAllowed(rt, message, turnOpts?.promptSource, "runAgentTurn")
       try {
-        await checkpointBeforeContextLoss(rt, "compaction", true)
+        // The rescue runs at the window's edge: no handoff turn into it.
+        await checkpointBeforeContextLoss(rt, "compaction", turnOpts?.promptSource !== CONTEXT_RESCUE_SOURCE)
       } catch (err) {
         throw new Error(
           `runAgentTurn: compaction refused — no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,
         )
       }
       // The checkpoint awaited a handoff turn: the session may have moved on.
-      validateAgentTurn(rt.desc.id, "runAgentTurn")
+      validateAgentTurn(rt.desc.id, "runAgentTurn", { compaction: true })
     }
     const messageTurn = turnOpts?.messages !== undefined && turnOpts.messages.length > 0
     if (messageTurn) {
@@ -9333,7 +9462,12 @@ export function createSessionsRegistry(opts?: {
       reason,
       autonomous: true,
     })
-    dispatchQueuedPrompt(rt)
+    // A turn nobody prompted grows the context just like a prompted one: the
+    // policy must run here too, or a session that only wakes itself walks past
+    // every threshold unnoticed.
+    void evaluateContextContinuity(rt)
+      .catch(() => undefined)
+      .finally(() => dispatchQueuedPrompt(rt))
   }
 
   const armAutonomousSilenceClose = (rt: SessionRuntime): void => {
@@ -10587,7 +10721,7 @@ export function createSessionsRegistry(opts?: {
           ...(opts?.forceResume ? { force: true } : {}),
         })
       }
-      const rt = validateAgentTurn(id, "sendPrompt")
+      const rt = validateAgentTurn(id, "sendPrompt", { compaction: isCompactPrompt(message) })
       const structuredAnswer = isChildPromptSource(opts?.source)
         ? undefined
         : matchStructuredQuestionAnswer(rt, message)
@@ -10655,7 +10789,7 @@ export function createSessionsRegistry(opts?: {
           })
         }
       }
-      if (opts?.queue && rtPre.busy) {
+      if (opts?.queue && (rtPre.busy || rtPre.contextRescue)) {
         // Coalesce-in-place (sentinel notices, mostly): a newer enqueue that
         // names a key an item is already waiting under REPLACES that item —
         // same id, same queue position, newest message/envelope/timestamp,
@@ -10725,7 +10859,7 @@ export function createSessionsRegistry(opts?: {
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.forceResume ? { force: true } : {}),
       })
-      const rt = validateAgentTurn(id, "enqueuePrompt")
+      const rt = validateAgentTurn(id, "enqueuePrompt", { compaction: isCompactPrompt(message) })
       if (envelope) {
         void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
           appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
