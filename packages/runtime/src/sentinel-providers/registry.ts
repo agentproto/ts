@@ -8,8 +8,12 @@
  * GitHub repo hooks, push) and `agentpush` (step 10 — hosted subscriptions).
  */
 
-import { discoverAdapterPackages } from "@agentproto/provider-kit"
-
+import {
+  sharedAdapterDiscovery,
+  sharedProviderProbe,
+  type AdapterDiscoverer,
+  type ProviderProbe,
+} from "../provider-probes.js"
 import { agentpushSentinelProvider, AGENTPUSH_SLUG } from "./agentpush.js"
 import { localGhSentinelProvider, LOCAL_GH_SLUG } from "./local-gh.js"
 import { webhookSentinelProvider, WEBHOOK_SLUG } from "./webhook.js"
@@ -80,6 +84,9 @@ export function configureSessionSentinelProvider(deps: SessionSentinelDeps): voi
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
 
+/** Default discovered-package source: the shared 60s-bounded discovery cache. */
+const defaultDiscover: AdapterDiscoverer = () => sharedAdapterDiscovery.discover()
+
 /** Duck-type a value as a sentinel provider handle (no secrets touched). */
 function isSentinelProvider(x: unknown): x is SentinelProviderHandle {
   if (!x || typeof x !== "object") return false
@@ -104,6 +111,13 @@ function isSentinelProvider(x: unknown): x is SentinelProviderHandle {
  * `handle`. Returns null on any failure (not importable / wrong shape) —
  * partial discovery beats failing the whole listing on one bad package.
  *
+ * The import itself runs through the shared bounded probe cache
+ * (`provider-probes.ts`): a package the sync preflight proves missing never
+ * enters Node's async loader, and a probe result is reused across requests
+ * and across the sentinel/tunnel families instead of re-importing per MCP
+ * POST. Only the module namespace is cached — the handle below is rebuilt
+ * from it on every call with that call's own creds.
+ *
  * Naming convention note: discovery is `discoverAdapterPackages` (the shared
  * kit walker), which matches `@agentproto/adapter-<slug>` /
  * `@<scope>/agentproto-adapter-<slug>` — NOT the `agentproto-sentinel-<name>`
@@ -114,13 +128,10 @@ async function importThirdPartyProvider(
   packageName: string,
   slug: string,
   creds: SentinelCreds | null,
+  probe: ProviderProbe,
 ): Promise<SentinelProviderHandle | null> {
-  let mod: Record<string, unknown>
-  try {
-    mod = (await import(packageName)) as Record<string, unknown>
-  } catch {
-    return null
-  }
+  const mod = await probe.probe(packageName)
+  if (!mod) return null
   const camel = slugToCamel(slug)
   const candidate =
     mod[`${camel}SentinelProvider`] ??
@@ -137,6 +148,10 @@ async function importThirdPartyProvider(
 export interface ResolveSentinelProviderOpts {
   /** Stored creds for the slug (descriptor-only listing passes null). */
   creds?: SentinelCreds | null
+  /** Injectable for tests — defaults to the shared import-probe cache. */
+  probe?: ProviderProbe
+  /** Injectable for tests — defaults to the shared discovery cache. */
+  discover?: AdapterDiscoverer
 }
 
 /**
@@ -151,10 +166,22 @@ export async function resolveSentinelProvider(
   const builtin = BUILTIN_SENTINEL_PROVIDERS[slug]
   if (builtin) return builtin(opts?.creds ?? null)
 
-  const pkgs = await discoverAdapterPackages()
+  const pkgs = await (opts?.discover ?? defaultDiscover)()
   const match = pkgs.find(p => p.slug === slug)
   if (!match) return null
-  return importThirdPartyProvider(match.packageName, slug, opts?.creds ?? null)
+  return importThirdPartyProvider(
+    match.packageName,
+    slug,
+    opts?.creds ?? null,
+    opts?.probe ?? sharedProviderProbe,
+  )
+}
+
+export interface DiscoverSentinelHandlesOpts {
+  /** Injectable for tests — defaults to the shared import-probe cache. */
+  probe?: ProviderProbe
+  /** Injectable for tests — defaults to the shared discovery cache. */
+  discover?: AdapterDiscoverer
 }
 
 /**
@@ -164,13 +191,15 @@ export async function resolveSentinelProvider(
  */
 export async function discoverSentinelHandles(
   catalogSlugs: Set<string>,
+  opts?: DiscoverSentinelHandlesOpts,
 ): Promise<SentinelProviderHandle[]> {
-  const pkgs = await discoverAdapterPackages()
+  const pkgs = await (opts?.discover ?? defaultDiscover)()
+  const probe = opts?.probe ?? sharedProviderProbe
   const out: SentinelProviderHandle[] = []
   for (const pkg of pkgs) {
     if (catalogSlugs.has(pkg.slug)) continue
     if (BUILTIN_SENTINEL_PROVIDERS[pkg.slug]) continue
-    const handle = await importThirdPartyProvider(pkg.packageName, pkg.slug, null)
+    const handle = await importThirdPartyProvider(pkg.packageName, pkg.slug, null, probe)
     if (handle) out.push(handle)
   }
   return out.sort((a, b) => a.slug.localeCompare(b.slug))

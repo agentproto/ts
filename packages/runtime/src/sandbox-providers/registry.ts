@@ -9,12 +9,19 @@
  *
  * `modal` and `daytona` are catalog placeholders — AIP-36 day-1 provider
  * ids with no published `@agentproto/sandbox-<slug>` package yet, so they
- * always resolve to `null` (status "supported") until one ships.
+ * always resolve to `null` (status "supported") until one ships. Their
+ * repeated import misses (and every other third-party import here) go
+ * through the shared bounded probe in `../provider-probes.ts`, which proves
+ * them missing synchronously instead of loading them on every MCP request.
  */
 
 import type { SetupField } from "@agentproto/provider-kit"
 import type { SandboxProvider } from "@agentproto/sandbox"
 
+import {
+  sharedProviderProbe,
+  type ProviderProbe,
+} from "../provider-probes.js"
 import { localSandboxProvider } from "./local.js"
 import type { SandboxProviderCapabilities, SandboxProviderHandle } from "./types.js"
 
@@ -173,19 +180,36 @@ function isSandboxProvider(x: unknown): x is SandboxProvider {
  * capability/setup metadata. Returns null on any failure (not importable /
  * wrong shape) — same "supported but not installed" signal the tunnel
  * family's resolver produces.
+ *
+ * By default the import runs through the shared bounded probe cache
+ * (`provider-probes.ts`): `@agentproto/sandbox-modal` / `-daytona` are
+ * catalog placeholders with no published package, and every MCP POST used to
+ * push both through Node's async loader only to collect
+ * `ERR_MODULE_NOT_FOUND`. The sync preflight now answers those without
+ * loading, and a resolved module is reused across requests while the handle
+ * built here stays per-request (its `check()` closes over THIS call's creds).
+ * An injected `importPackage` (test/host seam) bypasses the cache entirely.
  */
 async function importThirdPartyProvider(
   descriptor: ThirdPartySandboxDescriptor,
   slug: string,
   creds: SandboxCreds | null,
-  importPackage: (packageName: string) => Promise<Record<string, unknown>>,
+  opts: {
+    importPackage?: (packageName: string) => Promise<Record<string, unknown>>
+    probe?: ProviderProbe
+  },
 ): Promise<SandboxProviderHandle | null> {
-  let mod: Record<string, unknown>
-  try {
-    mod = await importPackage(descriptor.packageName)
-  } catch {
-    return null
+  let mod: Record<string, unknown> | null
+  if (opts.importPackage) {
+    try {
+      mod = await opts.importPackage(descriptor.packageName)
+    } catch {
+      mod = null
+    }
+  } else {
+    mod = await (opts.probe ?? sharedProviderProbe).probe(descriptor.packageName)
   }
+  if (!mod) return null
   const candidate = mod[descriptor.exportName]
   if (!isSandboxProvider(candidate)) return null
 
@@ -220,15 +244,15 @@ async function importThirdPartyProvider(
   }
 }
 
-const defaultImportPackage = (
-  packageName: string,
-): Promise<Record<string, unknown>> => import(packageName)
-
 export interface ResolveSandboxProviderOpts {
   /** Stored creds for the slug (descriptor-only listing passes null). */
   creds?: SandboxCreds | null
-  /** Injectable for tests — defaults to a real dynamic `import()`. */
+  /** Injectable for tests — a one-shot importer that bypasses the shared
+   *  probe cache (the registries' original seam; keep for callers that need
+   *  a scripted module). Prefer `probe` to exercise the cached path. */
   importPackage?: (packageName: string) => Promise<Record<string, unknown>>
+  /** Injectable for tests — defaults to the shared import-probe cache. */
+  probe?: ProviderProbe
 }
 
 /**
@@ -246,10 +270,8 @@ export async function resolveSandboxProvider(
 
   const descriptor = THIRD_PARTY_SANDBOX_PROVIDERS[slug]
   if (!descriptor) return null
-  return importThirdPartyProvider(
-    descriptor,
-    slug,
-    opts?.creds ?? null,
-    opts?.importPackage ?? defaultImportPackage,
-  )
+  return importThirdPartyProvider(descriptor, slug, opts?.creds ?? null, {
+    ...(opts?.importPackage ? { importPackage: opts.importPackage } : {}),
+    ...(opts?.probe ? { probe: opts.probe } : {}),
+  })
 }
