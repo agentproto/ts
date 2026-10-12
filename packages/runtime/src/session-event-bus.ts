@@ -61,6 +61,7 @@ export type SessionEventType =
   | "session:turn-retry"
   | "mcp:degraded"
   | "session:handoff-suggested"
+  | "session:context-rescue"
   | "approval:requested"
   | "approval:decided"
   | "approval:consumed"
@@ -1044,6 +1045,27 @@ export interface SessionHandoffSuggestedEvent {
   ts: string
 }
 
+/** How a context rescue (the runtime acting at `hardStopAtPct`) ended. */
+export type ContextRescueOutcome = "compacted" | "continued" | "hard-stopped"
+
+/**
+ * Emitted when a session reached `hardStopAtPct` and the runtime acted on it
+ * instead of letting it run into the window: `compacted` (auto-`/compact`
+ * brought it back under the floor), `continued` (compaction did not help, a
+ * fresh session took over — see `continuedTo` on the descriptor) or
+ * `hard-stopped` (neither was possible; the session is ended). Never silent:
+ * every outcome is announced here and in the transcript.
+ */
+export interface SessionContextRescueEvent {
+  type: "session:context-rescue"
+  sessionId: string
+  outcome: ContextRescueOutcome
+  pctBefore: number
+  pctAfter?: number
+  label?: string
+  ts: string
+}
+
 /**
  * Emitted by the approvals engine (`approvals/engine.ts`) when an
  * `approval_request` (MCP or `POST /approvals`) raises a new pending
@@ -1108,6 +1130,7 @@ export type SessionEvent =
   | SessionStalledEvent
   | SessionStallClearedEvent
   | SessionHandoffSuggestedEvent
+  | SessionContextRescueEvent
   | SessionWatcherAttachedEvent
   | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent

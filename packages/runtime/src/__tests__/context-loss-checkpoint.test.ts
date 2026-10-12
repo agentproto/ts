@@ -9,7 +9,7 @@
  * the cut reaches it.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -56,7 +56,7 @@ function promptText(message: unknown): string {
 }
 
 /** `used` is the context fill the harness reports after each ordinary turn. */
-function fakeHarness(sessionDir: () => string, used: number): FakeHarness {
+function fakeHarness(sessionDir: () => string, used: number, usedAfterCompact = 10): FakeHarness {
   const listCheckpoints = (): string[] => {
     try {
       return readdirSync(join(sessionDir(), "checkpoints"))
@@ -74,7 +74,7 @@ function fakeHarness(sessionDir: () => string, used: number): FakeHarness {
       harness.prompts.push(text)
       if (text.startsWith("/compact")) {
         harness.checkpointsAtCompact = listCheckpoints()
-        yield { kind: "usage_update", size: 100, used: 10 }
+        yield { kind: "usage_update", size: 100, used: usedAfterCompact }
         yield { kind: "text-delta", text: "Conversation compacted." }
       } else if (text.includes(HANDOFF_PROMPT_OPENER)) {
         yield { kind: "text-delta", text: HANDOFF_REPLY }
@@ -108,7 +108,7 @@ describe("context-losing paths checkpoint first", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "ctx-loss-"))
-    reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, contextRescueSettleMs: 100 })
   })
   afterEach(async () => {
     reg.shutdown()
@@ -130,9 +130,9 @@ describe("context-losing paths checkpoint first", () => {
     writeFileSync(checkpointDir(id), "not a directory")
   }
 
-  function spawn(used: number, p: Partial<ResolvedContextContinuityPolicy>) {
+  function spawn(used: number, p: Partial<ResolvedContextContinuityPolicy>, usedAfterCompact?: number) {
     let id = ""
-    const harness = fakeHarness(() => dirOf(id), used)
+    const harness = fakeHarness(() => dirOf(id), used, usedAfterCompact)
     const desc = reg.spawnAgent({
       workspaceSlug: "default",
       cwd: tmp,
@@ -293,16 +293,41 @@ describe("context-losing paths checkpoint first", () => {
     })
   })
 
+  describe("the context floor", () => {
+    it("compacts automatically instead of stopping, and keeps the session running", async () => {
+      const { id, harness } = spawn(95, { mode: "manual" })
+      await reg.sendPrompt(id, "Let's decide which database we use")
+      await vi.waitFor(() => expect(harness.prompts.some(p => p.startsWith("/compact"))).toBe(true))
+      await vi.waitFor(() => expect(outputOf(id).join("\n")).toMatch(/auto-compacted at the hard-stop floor/))
+
+      const desc = reg.get(id)!
+      expect(desc.status).toBe("running")
+      expect(desc.contextContinuityHardStopped).toBeFalsy()
+      // checkpoint on disk at the instant /compact reached the harness
+      expect(harness.checkpointsAtCompact).toHaveLength(1)
+    })
+
+    it("takes prompts again once the automatic compaction has settled", async () => {
+      const { id, harness } = spawn(95, { mode: "manual" })
+      await reg.sendPrompt(id, "Let's decide which database we use")
+      await vi.waitFor(() => expect(outputOf(id).join("\n")).toMatch(/auto-compacted at the hard-stop floor/))
+      await reg.sendPrompt(id, "still there?")
+      expect(harness.prompts.at(-1)).toBe("still there?")
+    })
+  })
+
   describe("the hard stop", () => {
     it("checkpoints the session before killing it, whatever the mode", async () => {
-      const { id } = spawn(95, { mode: "manual" })
+      const { id } = spawn(95, { mode: "manual" }, 95)
       await reg.sendPrompt(id, "Let's decide which database we use")
+      await vi.waitFor(() => expect(reg.get(id)?.status).toBe("killed"))
 
       const desc = reg.get(id)!
       expect(desc.status).toBe("killed")
       expect(desc.endedReason).toBe("context-hard-stop")
-      const files = readdirSync(checkpointDir(id))
-      expect(files).toHaveLength(1)
+      // one from the failed auto-compaction attempt, one from the stop itself
+      const files = readdirSync(checkpointDir(id)).sort()
+      expect(files).toHaveLength(2)
       const ckpt = readCheckpoint(id, files[0]!)
       expect(ckpt.contextPct).toBe(95)
       // the turn that tipped it over is in the checkpoint, not lost with the session
@@ -317,11 +342,11 @@ describe("context-losing paths checkpoint first", () => {
     })
 
     it("still stops when the checkpoint fails, and says so", async () => {
-      const { id } = spawn(95, { mode: "manual" })
+      const { id } = spawn(95, { mode: "manual" }, 95)
       breakCheckpointDir(id)
       await reg.sendPrompt(id, "Let's decide which database we use")
+      await vi.waitFor(() => expect(reg.get(id)?.status).toBe("killed"))
 
-      expect(reg.get(id)?.status).toBe("killed")
       expect(outputOf(id).join("\n")).toMatch(/stopping WITHOUT a checkpoint/)
     })
   })
@@ -332,7 +357,7 @@ describe("context-losing paths checkpoint first", () => {
       // session-continue-fresh.test.ts.
       const { id } = spawn(85, { mode: "auto", warnAtPct: 50, compactAtPct: 60, continueFreshAtPct: 80 })
       await reg.sendPrompt(id, "Let's decide which database we use")
-      expect(reg.get(id)?.status).toBe("killed")
+      await vi.waitFor(() => expect(reg.get(id)?.status).toBe("killed"))
       const files = readdirSync(checkpointDir(id))
       expect(files).toHaveLength(1)
       expect(readCheckpoint(id, files[0]!).recentDigest).toContain("decide which database")

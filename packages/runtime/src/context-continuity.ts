@@ -12,14 +12,18 @@
 /**
  * `manual` suppresses every automatic *nudge* (warn/compact/continue-fresh —
  * see `contextContinuityNextAction`) so the session is left alone until the
- * caller acts. It does NOT suppress `hard-stop`: that state is an
- * unconditional safety floor, independent of mode, by design — its whole
- * purpose is to stop a session from silently running past the model's real
- * context window (further prompts would be truncated/rejected by the
- * provider, or corrupt the conversation) even when nothing is watching.
- * `manual` means "don't nag me", not "let me drive off the window's edge".
- * A session that wants to opt out of the hard stop should set
- * `hardStopAtPct` above what it will ever reach, not rely on mode.
+ * caller acts. It does NOT suppress the floor (`hard-stop` state): that is an
+ * unconditional safety net, independent of mode — its purpose is to stop a
+ * session from silently running past the model's real context window
+ * (further prompts would be truncated/rejected by the provider, or corrupt
+ * the conversation) even when nothing is watching.
+ *
+ * The floor is a trigger, not an exit: the runtime first compacts the session
+ * itself (checkpoint, then `/compact`), continues it fresh when that did not
+ * free the window, and only ends it when neither is possible — always
+ * announcing the outcome (`session:context-rescue`). A session that wants to
+ * opt out of the floor should set `hardStopAtPct` above what it will ever
+ * reach, not rely on mode.
  */
 export type ContextContinuityMode = "manual" | "ask" | "auto"
 
@@ -315,8 +319,8 @@ export function contextContinuityNextAction(
       return "continue-fresh"
     case "hard-stop":
       // Mode-independent by design — see the `ContextContinuityMode` doc
-      // comment: hard-stop is an unconditional floor, not a nudge `manual`
-      // can silence.
+      // comment: the floor is an unconditional safety net (the runtime
+      // compacts / continues fresh / stops), not a nudge `manual` can silence.
       return "hard-stop"
   }
 }
@@ -333,7 +337,7 @@ function stateSummary(pct: number | null, state: ContextContinuityState, policy:
     case "continue-fresh":
       return `Context at ${pct}% — fresh continuation recommended to avoid data loss.`
     case "hard-stop":
-      return `Context at ${pct}% — hard stop. Continue via fresh continuation.`
+      return `Context at ${pct}% — at the floor: the runtime compacts automatically, then continues fresh if that is not enough.`
   }
 }
 
