@@ -43,6 +43,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
   entry: {
     index: "src/index.ts",
     cli: "src/cli.ts",
+    "adapter-discovery-worker": "src/registry/adapter-discovery-worker.ts",
     "registry/runtime": "src/registry/runtime.ts",
     "registry/builtins": "src/registry/builtins.ts",
     "registry/adapters": "src/registry/adapters.ts",

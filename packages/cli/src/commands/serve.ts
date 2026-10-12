@@ -133,13 +133,9 @@ import { readClaudeCodeUsage } from "@agentproto/adapter-claude-code"
 import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
-  listAdaptersWithCatalog,
-  listAdaptersWithAcp,
-  listHarnessCapabilities,
 } from "../registry/resolve.js"
 import { installAdapter } from "../registry/install-driver.js"
-import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
-import { CATALOG } from "../registry/catalog.js"
+import { createIsolatedDiscovery } from "../registry/isolated-discovery.js"
 import { cliInstallSource, resolveCliEntry } from "../registry/install-source.js"
 import WebSocket from "ws"
 
@@ -269,6 +265,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     )
   }
 
+  const discovery = createIsolatedDiscovery()
   const cfgDaemon = { ...(cfg.daemon ?? {}), ...(profile?.daemon ?? {}) }
   const cfgTunnel = { ...(cfg.tunnel ?? {}), ...(profile?.tunnel ?? {}) }
   const cfgFeatures = { ...(cfg.features ?? {}), ...(profile?.features ?? {}) }
@@ -788,6 +785,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // daemon.resumeSessionsOnBoot (profile-overlaid). Off ⇒ the handle
         // method short-circuits and only lazy resume-on-prompt applies.
         resumeSessionsOnBoot: cfgDaemon.resumeSessionsOnBoot === true,
+        bootResumePolicy: cfgDaemon.bootResumePolicy,
         // Opt-in continue-on-boot: after the eager pass, prompt the sessions
         // the last restart cut off mid-turn to continue. Off ⇒ no-op.
         continueInterruptedOnBoot: cfgDaemon.continueInterruptedOnBoot === true,
@@ -870,23 +868,25 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // appear (with status "supported") even when not yet installed, and
         // appends the generic ACP agents (curated ACP_CATALOG + a user's
         // config.acpAgents) so a zero-code ACP CLI is discoverable too.
-        listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
+        listAgentAdapters: () => discovery.adapters(),
         // Harness capability-discovery — the `harness_capabilities` MCP tool.
         // What each installed adapter can actually DO on this host (creds
         // present, reachable providers, model-discovery mechanism, endpoint
         // compat, model/posture application), complementing the static
         // manifest fields `listAgentAdapters` surfaces.
-        listHarnessCapabilities: (opts) => listHarnessCapabilities(opts),
+        listHarnessCapabilities: (opts) => discovery.capabilities(opts),
         // Mutation companion to `listAgentAdapters` — `POST /adapters/:slug/
         // install` + the `adapter_install` MCP tool. Drives npm-global for
         // acp-catalog CLIs and the manifest install[] pipeline for first-party
         // adapters (see install-driver.ts). Lets the VS Code Harnesses panel
         // install a not-yet-ready harness inline.
-        installAgentAdapter: (slug: string) => installAdapter(slug),
+        installAgentAdapter: async (slug: string) => {
+          try { return await installAdapter(slug) } finally { discovery.invalidate() }
+        },
         // Read-only catalog/vendor endpoint (SPEC §5) — `GET /catalog/models`
         // + `catalog_models` MCP tool. Joins the same installed-adapter
         // listing `listAgentAdapters` uses with the real named-profile store.
-        listCatalogModels: query => listCatalogModelsFromInstalled(query),
+        listCatalogModels: query => discovery.models(query),
         resolveBrowserAdapter,
         listBrowserAdapters,
         ...(spawnPty ? { spawnPty } : {}),
@@ -918,8 +918,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // The adapters are what differentiate one daemon from another (every daemon
   // registers the same base doctypes), so a multi-daemon host routes on them.
   // Computed once at boot — the adapter walk is cheap but not worth per-reconnect.
-  const installedAdapterSlugs = await listAdaptersWithCatalog(CATALOG)
-    .then(list => list.filter(a => a.status !== "supported").map(a => a.slug))
+  const installedAdapterSlugs = await discovery.adapters()
+    .then(list => list.filter(a => a.status !== "supported" && !a.source).map(a => a.slug))
     .catch(() => [] as string[])
   const announcedTools = [
     ...new Set([...gateway.registered, ...installedAdapterSlugs]),

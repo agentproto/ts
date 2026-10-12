@@ -73,6 +73,8 @@ export interface DaemonConfig {
    *  `agentproto config set daemon.resumeSessionsOnBoot true`. Surfaced in
    *  `daemon_health` / `GET /health`. */
   resumeSessionsOnBoot?: boolean
+  /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
+  bootResumePolicy?: "all" | "keepalive"
   /** Opt-in continue-on-boot (continue-interrupted). When true, right after
    *  the eager resume pass, the boot sends a "the daemon restarted mid-turn,
    *  check the state on disk and continue" prompt to every session the LAST

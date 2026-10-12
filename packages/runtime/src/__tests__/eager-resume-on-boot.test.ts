@@ -300,6 +300,23 @@ describe("runEagerResumePass (bounded boot pass)", () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
+  it("keepalive policy leaves ordinary idle and interrupted sessions lazy-resumable", async () => {
+    writeSessions(persistPath, [
+      { id: "persistent", keepAlive: true },
+      { id: "idle" },
+      { id: "interrupted", busy: true },
+      { id: "stopped", keepAlive: true, status: "killed" },
+    ])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeRecordingResumer([]) })
+    const summary = await runEagerResumePass({ registry: reg, concurrency: 2, policy: "keepalive" })
+    expect(summary).toMatchObject({ candidates: 1, resumed: 1 })
+    expect(reg.get("persistent")?.status).toBe("running")
+    expect(reg.get("idle")?.status).toBe("killed")
+    expect(reg.get("interrupted")?.status).toBe("killed")
+    expect(reg.get("stopped")?.status).toBe("killed")
+    reg.shutdown()
+  })
+
   it("resumes every daemon-restart candidate (idle + mid-turn) with no prompt, leaving non-candidates dead", async () => {
     writeSessions(persistPath, [
       { id: "idle", busy: false },

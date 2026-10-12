@@ -2805,6 +2805,8 @@ interface SessionRuntime {
   /** Ring buffer of recent stdout+stderr lines. Capped so a runaway
    *  child can't blow the daemon's heap. */
   recentLines: string[]
+  /** UTF-16 code units retained in the replay ring (at most 1 MiB of string payload). */
+  recentLinesChars?: number
   /** Ring buffer of recent PTY bytes for replay-on-attach. Total
    *  size capped at RECENT_BYTES_CAP — oldest chunks dropped first. */
   recentBytes: Buffer[]
@@ -3058,6 +3060,8 @@ export function applyBracketedPasteWrap(
 }
 
 const RECENT_LINES_CAP = 500
+const RECENT_LINES_CHARS_CAP = 512 * 1024
+const RECENT_LINE_CHARS_CAP = 32 * 1024
 const RECENT_BYTES_CAP = 64 * 1024
 /** Tail cap on `SessionRuntime.lastAssistantText` — generous next to the
  *  outcome summary's own 600-char cap, small enough to never matter. */
@@ -6390,9 +6394,17 @@ export function createSessionsRegistry(opts?: {
     line: string,
     stream: "stdout" | "stderr"
   ): void => {
-    rt.recentLines.push(line)
-    if (rt.recentLines.length > RECENT_LINES_CAP) {
-      rt.recentLines.splice(0, rt.recentLines.length - RECENT_LINES_CAP)
+    // A line-count cap alone allows 500 multi-megabyte tool-result lines.
+    // Keep a bounded replay preview; observers and the durable transcript
+    // still receive the original event. Copy a truncated suffix through a
+    // Buffer so V8 cannot keep the entire large parent string via a slice.
+    const preview = line.length > RECENT_LINE_CHARS_CAP
+      ? `[output preview truncated] ${Buffer.from(line.slice(-RECENT_LINE_CHARS_CAP), "utf8").toString("utf8")}`
+      : line
+    rt.recentLines.push(preview)
+    rt.recentLinesChars = (rt.recentLinesChars ?? 0) + preview.length
+    while (rt.recentLines.length > RECENT_LINES_CAP || rt.recentLinesChars > RECENT_LINES_CHARS_CAP) {
+      rt.recentLinesChars -= rt.recentLines.shift()!.length
     }
     rt.desc.lastOutputAt = new Date().toISOString()
     sniffResumeHints(rt, line)

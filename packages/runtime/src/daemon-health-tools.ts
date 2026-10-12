@@ -23,6 +23,7 @@ export interface RegisterDaemonHealthToolsOptions {
    *  surfaced so an operator can confirm whether a restart will eagerly revive
    *  sessions or leave them dead-but-lazy-resumable. */
   resumeSessionsOnBoot: boolean
+  bootResumePolicy?: "all" | "keepalive"
   /** Effective value of the `daemon.continueInterruptedOnBoot` knob — whether
    *  a restart will also send a one-shot continue prompt to the sessions it
    *  interrupted mid-turn. Omitted ⇒ false. */
@@ -107,6 +108,8 @@ export function registerDaemonHealthTools(
         registered: opts.registered,
         uptimeMs: Date.now() - opts.startedAt,
         resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
+        memory: process.memoryUsage(),
+        bootResumePolicy: opts.bootResumePolicy ?? "all",
         continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.idleReapAfterMs,
         crashDetectIntervalMs: opts.crashDetectIntervalMs ?? 0,

@@ -1359,6 +1359,8 @@ export interface CreateGatewayOptions {
    *  to an `enabled: false` summary. Also surfaced in `daemon_health` /
    *  `GET /health` so an operator can see the effective value. */
   resumeSessionsOnBoot?: boolean
+  /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
+  bootResumePolicy?: "all" | "keepalive"
   /** Opt-in continue-on-boot. Mirrors the `daemon.continueInterruptedOnBoot`
    *  config knob; when true, the `continueInterruptedOnBoot()` handle method
    *  runs the boot continue pass (see `continue-interrupted.ts`); when
@@ -3064,6 +3066,7 @@ export async function createGateway(
       registered,
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      bootResumePolicy: opts.bootResumePolicy,
       continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
@@ -3849,6 +3852,7 @@ export async function createGateway(
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      bootResumePolicy: opts.bootResumePolicy,
       continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
@@ -4163,6 +4167,7 @@ export async function createGateway(
       return runEagerResumePass({
         registry: sessions,
         concurrency: bootResumeConcurrency(),
+        policy: opts.bootResumePolicy,
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },
@@ -4175,6 +4180,7 @@ export async function createGateway(
       return runContinueOnBootPass({
         registry: sessions,
         concurrency: bootResumeConcurrency(),
+        policy: opts.bootResumePolicy,
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },
