@@ -313,6 +313,8 @@ export interface ContinueOnBootSummary {
 export async function runContinueOnBootPass(opts: {
   registry: Parameters<typeof continueInterruptedSessions>[0]["registry"]
   concurrency: number
+  /** Apply the same automatic recovery policy as the eager resume pass. */
+  policy?: "all" | "keepalive"
   isServed?: (desc: SessionDescriptor) => boolean
 }): Promise<ContinueOnBootSummary> {
   const res = await continueInterruptedSessions({
@@ -320,6 +322,7 @@ export async function runContinueOnBootPass(opts: {
     mode: "boot",
     dryRun: false,
     concurrency: opts.concurrency,
+    ...(opts.policy === "keepalive" ? { visible: (d: SessionDescriptor) => d.keepAlive === true } : {}),
     ...(opts.isServed ? { isServed: opts.isServed } : {}),
   })
   return {

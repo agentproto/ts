@@ -75,6 +75,8 @@ export async function runEagerResumePass(opts: {
   /** Max adapters spawned concurrently (§5 "Resume-storm control"). Clamped to
    *  at least 1 — a non-positive cap would resume nothing. */
   concurrency: number
+  /** Restrict automatic recovery without changing lazy resume-on-prompt. */
+  policy?: "all" | "keepalive"
   /** Cross-process gate (§5): with two daemons sharing the workspace buckets,
    *  each must only resume rows for the workspace IT serves. Return false to
    *  exclude a row from THIS daemon's pass. Omitted ⇒ every eligible row is
@@ -93,6 +95,7 @@ export async function runEagerResumePass(opts: {
     .list()
     .filter(
       d =>
+        (opts.policy !== "keepalive" || d.keepAlive === true) &&
         canResume(d) &&
         d.endedReason === "daemon-restart" &&
         (isServed?.(d) ?? true),

@@ -1,0 +1,10 @@
+---
+"@agentproto/cli": minor
+"@agentproto/runtime": minor
+---
+
+Run adapter, capability and model discovery in an isolated short-lived worker process with caching. Add the `daemon.bootResumePolicy` option (`all` | `keepalive`), bound the session replay buffer by character count, and report `memory` in health output.
+
+Correct macOS process-footprint reporting without double-counting compressed
+memory. Support discovery from both bundled and source-run CLIs, with an explicit
+build/reinstall error for a missing worker.

@@ -473,6 +473,34 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("bounds replay memory for large lines while preserving live output and durable events", async () => {
+    const reg = createSessionsRegistry({ persistPath })
+    const large = "x".repeat(256 * 1024)
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "large-output",
+      async *send() {
+        for (let i = 0; i < 30; i++) yield { kind: "text-delta" as const, text: large + "\n" }
+        yield { kind: "turn-end" as const, reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({ workspaceSlug: "default", cwd: "/tmp", agentSession: fakeAgent, adapterSlug: "test-adapter" })
+    let fullLines = 0
+    const live = reg.attach(desc.id, line => { if (line === large) fullLines++ })
+    await reg.sendPrompt(desc.id, "go")
+    live?.()
+    const replay: string[] = []
+    reg.attach(desc.id, line => replay.push(line))?.()
+    expect(fullLines).toBe(30)
+    expect(replay.reduce((size, line) => size + line.length, 0)).toBeLessThanOrEqual(512 * 1024)
+    expect(replay.some(line => line.startsWith("[output preview truncated]"))).toBe(true)
+    const eventsPath = reg.get(desc.id)!.eventsPath!
+    reg.shutdown()
+    await reg.settlePendingWrites()
+    expect(readFileSync(eventsPath, "utf8")).toContain(large)
+  })
+
   it("projectEvent renders plan updates as a ring-buffer line and ignores usage_update without crashing", async () => {
     const reg = createSessionsRegistry({ persistPath })
     const fakeAgent: AgentSessionLike = {

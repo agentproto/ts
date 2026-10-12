@@ -126,10 +126,10 @@ describe("parseTopHeader", () => {
 })
 
 describe("parseTopProcesses", () => {
-  it("adds compressed pages to resident memory and ignores non-rows", () => {
+  it("uses physical footprint without adding compressed memory twice", () => {
     const m = parseTopProcesses(TOP)
-    expect(m.get(73264)).toEqual({ memoryBytes: (5674 + 7715) * MB, compressedBytes: 7715 * MB })
-    expect(m.get(501)).toEqual({ memoryBytes: 9 * GB + MB, compressedBytes: MB })
+    expect(m.get(73264)).toEqual({ memoryBytes: 5674 * MB, compressedBytes: 7715 * MB })
+    expect(m.get(501)).toEqual({ memoryBytes: 9 * GB, compressedBytes: MB })
     expect(m.get(77)).toEqual({ memoryBytes: 512 * 1024, compressedBytes: 0 })
     expect(m.size).toBe(3)
   })
@@ -425,7 +425,7 @@ describe("collectHostSample", () => {
     expect(s.swap?.percent).toBe(91.8)
     expect(s.disks.map(d => d.name)).toEqual(["disk0", "disk6"])
     expect(s.table).toHaveLength(TABLE.length)
-    expect(s.footprints.get(73264)?.memoryBytes).toBe((5674 + 7715) * MB)
+    expect(s.footprints.get(73264)?.memoryBytes).toBe(5674 * MB)
     expect(s.listeners.get(400)).toEqual([5173])
     expect(s.cwds.get(300)?.deleted).toBe(true)
     expect(s.loadAvg).toEqual([600, 500, 500])
@@ -573,7 +573,7 @@ describe("buildHostLoadReport", () => {
 
   it("prefers the footprint over rss when top measured one, and marks the source", async () => {
     const sample = await collectHostSample(
-      fakeProbes({ top: async () => "PID MEM CMPRS\n 21 100M 900M\n" }),
+      fakeProbes({ top: async () => "PID MEM CMPRS\n 21 1000M 900M\n" }),
       SESSIONS,
       { uid: 501, daemonPid: 10 },
     )

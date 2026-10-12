@@ -353,6 +353,25 @@ describe("continue-on-boot: no-loop rules", () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
+  it("keepalive boot policy also prevents auto-continue from lazily reviving ordinary sessions", async () => {
+    writeSessions(persistPath, [
+      { id: "persistent", busy: true, keepAlive: true },
+      { id: "ordinary", busy: true },
+    ])
+    const log: string[] = []
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeResumer(log) })
+    const boot = await runContinueOnBootPass({ registry: reg, concurrency: 4, policy: "keepalive" })
+    expect(boot).toMatchObject({ eligible: 1, sent: 1 })
+    expect(log).toContain("resume:persistent")
+    expect(log).not.toContain("resume:ordinary")
+    expect(reg.get("ordinary")?.status).toBe("killed")
+    // The boot-only restriction must not remove the human recovery path.
+    const manual = await continueInterruptedSessions({ registry: reg, mode: "manual", dryRun: false, ids: ["ordinary"] })
+    expect(manual.sent).toBe(1)
+    expect(log).toContain("resume:ordinary")
+    reg.shutdown()
+  })
+
   it("at most one auto-continue per restart: a second pass in the same boot sends nothing", async () => {
     writeSessions(persistPath, [{ id: "s", busy: true }])
     const log: string[] = []

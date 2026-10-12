@@ -1278,6 +1278,7 @@ export interface RuntimeHttpServerOptions {
     /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
+    bootResumePolicy?: "all" | "keepalive"
     /** Effective `daemon.continueInterruptedOnBoot` knob. Kept in sync with
      *  the `daemon_health` MCP tool's field of the same name. */
     continueInterruptedOnBoot?: boolean
@@ -2126,6 +2127,8 @@ export async function startHttpServer(
         // ignore the field, and it is absent when a daemon predates it.
         path: process.env["PATH"] ?? null,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
+        memory: process.memoryUsage(),
+        bootResumePolicy: opts.meta.bootResumePolicy ?? "all",
         continueInterruptedOnBoot: opts.meta.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,

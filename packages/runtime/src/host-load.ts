@@ -247,7 +247,8 @@ export function parseTopHeader(text: string): {
 }
 
 /** Per-process memory from `top -l 1 -stats pid,mem,cmprs`: `mem` is the
- *  resident part, `cmprs` the compressed part; footprint is their sum. */
+ *  physical footprint (already including compressed memory), `cmprs` the
+ *  compressed component. Adding them double-counts compressed pages. */
 export interface Footprint {
   memoryBytes: number
   compressedBytes: number
@@ -264,7 +265,7 @@ export function parseTopProcesses(text: string): Map<number, Footprint> {
     const mem = sizeToBytes(m[2]!)
     const cmp = sizeToBytes(m[3]!)
     if (mem === undefined || cmp === undefined) continue
-    out.set(Number(m[1]), { memoryBytes: mem + cmp, compressedBytes: cmp })
+    out.set(Number(m[1]), { memoryBytes: mem, compressedBytes: cmp })
   }
   return out
 }
