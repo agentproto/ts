@@ -70,8 +70,8 @@ describe("registries through the shared probe", () => {
 
     expect(imports).toEqual(["@agentproto/custom-acme"])
     expect(withToken).not.toBe(otherCreds)
-    expect(withToken?.creds).toEqual({ token: "token-a" })
-    expect(otherCreds?.creds).toEqual({ token: "token-b" })
+    expect(withToken).toMatchObject({ creds: { token: "token-a" } })
+    expect(otherCreds).toMatchObject({ creds: { token: "token-b" } })
   })
 
   it("imports a third-party tunnel package once and rebuilds its handle per request's creds", async () => {
@@ -98,8 +98,8 @@ describe("registries through the shared probe", () => {
     })
 
     expect(imports).toEqual(["@agentproto/custom-acme"])
-    expect(first?.creds).toEqual({ tunnelId: "tunnel-a" })
-    expect(second?.creds).toEqual({ tunnelId: "tunnel-b" })
+    expect(first).toMatchObject({ creds: { tunnelId: "tunnel-a" } })
+    expect(second).toMatchObject({ creds: { tunnelId: "tunnel-b" } })
   })
 
   it("serves the sentinel and tunnel families from ONE probe import of the same package", async () => {
@@ -127,8 +127,8 @@ describe("registries through the shared probe", () => {
     })
 
     expect(imports).toBe(1)
-    expect(sentinel?.creds).toEqual({ token: "sentinel-token" })
-    expect(tunnel?.creds).toEqual({ hostname: "tunnel.example" })
+    expect(sentinel).toMatchObject({ creds: { token: "sentinel-token" } })
+    expect(tunnel).toMatchObject({ creds: { hostname: "tunnel.example" } })
   })
 
   it("returns null without probing when discovery has no such slug, and when the probe finds nothing", async () => {
