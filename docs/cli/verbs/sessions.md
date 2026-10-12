@@ -5,7 +5,8 @@ agentproto sessions                                one-shot table dump
 agentproto sessions --watch [--simple] [--no-color]
 agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
-agentproto sessions [list] [--q <text>] [--exclude-noise] [--exclude-label-prefix <p>]...
+agentproto sessions [list] [--q <text>] [--exclude-noise] [--label <exact>] [--cwd <dir>]
+                       [--exclude-label-prefix <p>]...
                        [--exclude-label <l>]... [--exclude-kind <k>]... [--root-only]
                        [--parent <id>] [--updated-since <t>] [--started-since <t>]
                        [--status <s>] [--alive] [--limit <n>] [--fields <a,b>]
@@ -29,6 +30,7 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                         [--hold-permissions]
                                         [--max-cost-usd <n>]
                                         [--cost-budget <spec>]
+                                        [--turn-retry <spec>]
                                         [--attach] [--json] [--no-color]
 agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cwd <dir>] [--workspace <slug>]
@@ -52,6 +54,7 @@ agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [-
 agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
                                            [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
+agentproto sessions gc       --retention [--dry-run] [--json]
 agentproto sessions continue-interrupted [--send] [--id <id-or-name>...]
                                            [--prompt <text>] [--json]
 agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
@@ -145,6 +148,9 @@ activity first, and the response carries `total` (the filtered count before
 | `parentSessionId` | only direct children of this session (id or name) |
 | `updatedSince` | last activity (falling back to start) at or after this instant: ISO-8601 or relative `30m`, `24h`, `7d`, `2w` |
 | `startedSince` | started at or after this instant, same formats |
+| `label` | exact label match (case-insensitive) |
+| `cwd` | only sessions whose working directory is this path or under it (boundary-aware prefix) |
+| `includeCold` | MCP `session_list` only: also return sessions past the boot-history cap, read from their on-disk record (`cold: true`, terminal, `pid: null`). Also applied automatically when `q` matches no live session |
 
 `excludeNoise: true` drops exactly: sessions labelled `review:*` or `wf:*` (or
 with origin `review` / `workflow`), and **ended** (`exited` / `killed`) one-shot
@@ -367,6 +373,7 @@ reattached later.
 | `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
 | `--max-cost-usd <n>` | HARD spend ceiling in USD for this session: the daemon kills the session at the next turn-end once cumulative cost exceeds `n`. A positive number; rejected client-side if non-numeric or ≤ 0. Mirrors `agent_start.maxCostUsd`. |
 | `--cost-budget <spec>` | Windowed governance cap that **never kills** the session — raises a notification when the window's cumulative cost exceeds the cap, leaving the decision to an orchestrator or human. Two spellings: compact `<usd>:<window>[:<scope>]` (e.g. `20:5h:profile`, `15:7d`) or full JSON `{"maxCostUsd":20,"window":"5h","scope":"session"}`. `scope` is `session` (default) or `profile`. Mirrors `agent_start.costBudget`. |
+| `--turn-retry <spec>` | Opt-in retry of a turn that failed on a transient provider error: after an exponential backoff the daemon re-sends the same session a short continuation prompt. `<spec>` is `all`, a comma list of classes (`rate-limit,upstream-5xx,no-output-stall`), or a JSON object (`{"on":["rate-limit"],"maxRetries":3,"baseDelayMs":5000,"factor":2,"maxDelayMs":60000}`). Never retries an interrupt, kill, cost stop, 401/402/403, or a turn that already made a side-effecting tool call (unless `"retryAfterToolCalls":true`). Mirrors `agent_start.turnRetry`; see [`agent_start`](../../../packages/runtime/docs/mcp-tools/agent_start.md#turnretry). |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
 
@@ -808,6 +815,23 @@ By default it **archives** them (hidden from the default view, still
 readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
 descriptors instead (the native conversation on disk survives). `--older-than-days`
 keeps anything more recent. Live sessions are never touched.
+
+```bash
+agentproto sessions gc --retention --dry-run   # preview the on-disk retention pass
+agentproto sessions gc --retention             # delete old terminal session dirs
+```
+
+`--retention` runs the **on-disk retention pass** instead: it **deletes**
+terminal session dirs (`~/.agentproto/sessions/<id>/`, transcript included —
+irreversible) past their age. Review lanes (`origin: "review"` / `review:`
+label) go after `daemon.reviewSessionRetentionDays` (default `7`); every other
+session only when `daemon.sessionRetentionDays` is set (default off; `0`
+disables a rule). Live, pinned, `keepAlive` sessions and ancestors of a live
+session are never deleted. `--dry-run` reports what would be deleted and
+deletes nothing. The daemon also runs this pass itself 10 minutes after boot
+and every 6 hours. Over MCP / HTTP the same pass is `session_gc` /
+`POST /sessions/gc` with `retention: true`, plus optional `dryRun`,
+`reviewMaxAgeDays` and `maxAgeDays` overrides.
 
 ### `continue-interrupted`
 

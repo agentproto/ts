@@ -104,6 +104,8 @@ Creates the file if missing before launching the editor.
 | `daemon.allowedOrigins` | `string[]` | Trusted browser origins for mutating routes (in addition to localhost defaults). |
 | `daemon.strictOrigins` | `boolean` | When true, drop the localhost-default. Only `allowedOrigins` are honoured. |
 | `daemon.label` | `string` | Server label sent in tunnel hello frames. |
+| `daemon.reviewSessionRetentionDays` | `number` | Days after which a terminal review-lane session dir (`~/.agentproto/sessions/<id>/`) is deleted by the retention sweep. Default `7`; `0` disables. See [`sessions gc --retention`](./sessions.md#gc). |
+| `daemon.sessionRetentionDays` | `number` | Same, for every other terminal session. Default off (unset / `0`). Pinned, `keepAlive` and live sessions are never deleted. |
 | `tunnel.host` | `string` | Default tunnel URL for `serve` and `daemon install`. |
 | `tunnel.autoconnect` | `boolean` | When true, `daemon install` bakes `--connect tunnel.host` into the plist; `serve` falls back to it when `--connect` is omitted. |
 | `tunnel.e2e` | `boolean` | Opt into end-to-end encrypting the outbound tunnel (needs `tunnel.token`; the host must also support it, else it falls back to plaintext). See [`serve`](./serve.md#end-to-end-encryption-tunnele2e-opt-in). |
