@@ -127,6 +127,17 @@ declared globally stay on (opencode has no flag to drop them). A supervisor
 with a `daemonMount` still gets the eager daemon tool list unless
 `deferredTools: true`.
 
+## Small model
+
+opencode runs a second, "small" model for background chores (session titles,
+summaries). Left alone it picks its own — GPT-5.4 Nano on OpenCode Zen, a paid
+model — so every `-free` session logged a rejected paid call per title. The
+adapter therefore pins `small_model` to the session's own model (same route,
+same bill) by layering it into `OPENCODE_CONFIG_CONTENT`. The pin is skipped
+when the inline config or the user's own opencode config already sets
+`small_model`. Pass the `small_model` spawn option (`provider/model`) to pick a
+different one; it wins over the user's config.
+
 ## Auth
 
 OpenCode reads provider keys from the environment. Set whichever
