@@ -65,8 +65,8 @@ instead of looking for an absent `.mjs` beside `src/registry/isolated-discovery.
 Source execution requires `pnpm --filter @agentproto/cli build` first;
 `pnpm --filter @agentproto/cli dev` uses tsup watch to keep the worker current.
 A missing build produces an explicit build/reinstall error. The worker remains
-compiled JavaScript with empty `execArgv`, so it never inherits a parent TS loader
-or inspector. Path tests cover both bundle entries and source execution; a real
+compiled JavaScript with empty `execArgv`, rather than copying the parent's
+loader/inspector arguments. Path tests cover both bundle entries and source execution; a real
 source-mode test verifies the fork/IPC/exit round trip.
 
 `daemon.resumeSessionsOnBoot` remains the master enable switch. The additive

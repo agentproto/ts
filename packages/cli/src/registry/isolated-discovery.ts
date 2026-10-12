@@ -21,7 +21,7 @@ export function discoveryWorkerPath(moduleUrl: string = import.meta.url): string
 /** Only discovery metadata crosses IPC; adapter implementations stay in the worker. */
 export function runDiscoveryWorker(request: DiscoveryRequest): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    // No TS loader / inspector flags are inherited by the disposable worker.
+    // The compiled worker does not need parent execArgv (TS loaders/inspectors).
     const workerPath = discoveryWorkerPath()
     if (!existsSync(workerPath)) {
       reject(new Error(`Adapter discovery worker is missing: ${workerPath}. Build the CLI with pnpm --filter @agentproto/cli build, or reinstall the CLI.`))
