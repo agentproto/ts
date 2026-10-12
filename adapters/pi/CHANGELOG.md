@@ -1,5 +1,12 @@
 # @agentproto/adapter-pi
 
+## 0.4.17
+
+### Patch Changes
+
+- Updated dependencies [7609bc1]
+  - @agentproto/model-catalog@0.12.5
+
 ## 0.4.16
 
 ### Patch Changes
