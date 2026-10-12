@@ -3,7 +3,14 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execFileSync } from "node:child_process"
-import { ENTRY_GRAPH_HOOK_SOURCE, ENTRY_GRAPH_VERSION_PARAM, entryGraphVersion } from "../entry-graph.js"
+import {
+  ENTRY_GRAPH_HOOK_SOURCE,
+  ENTRY_GRAPH_VERSION_PARAM,
+  appendEntryGraphVersion,
+  entryGraphResolveSync,
+  entryGraphVersion,
+  installEntryGraphHook,
+} from "../entry-graph.js"
 
 const dirs: string[] = []
 const tmp = () => {
@@ -78,14 +85,118 @@ describe("entryGraphVersion", () => {
   })
 })
 
-describe("entry-graph resolve hook (real node process)", () => {
+describe("appendEntryGraphVersion (pure rewrite)", () => {
+  const file = (href: string) => ({ url: href })
+  const versionedParent = "file:///wf/entry.mjs?agentproto_v=abc"
+
+  it("appends the version to a relative file import and preserves other queries", () => {
+    const out = appendEntryGraphVersion(
+      "./dep.mjs?raw",
+      { parentURL: versionedParent },
+      file("file:///wf/dep.mjs?raw"),
+    )
+    const url = new URL(out.url)
+    expect(url.searchParams.get("raw")).toBe("")
+    expect(url.searchParams.get(ENTRY_GRAPH_VERSION_PARAM)).toBe("abc")
+  })
+
+  it("passes bare specifiers, non-file URLs, node_modules paths, and unversioned parents through", () => {
+    const ctx = { parentURL: versionedParent }
+    expect(appendEntryGraphVersion("node:path", ctx, file("node:path")).url).toBe("node:path")
+    expect(appendEntryGraphVersion("data:text/javascript,1", ctx, file("data:text/javascript,1")).url).toBe(
+      "data:text/javascript,1",
+    )
+    expect(
+      appendEntryGraphVersion("./x.mjs", ctx, file("file:///wf/node_modules/x/index.mjs")).url,
+    ).toBe("file:///wf/node_modules/x/index.mjs")
+    expect(
+      appendEntryGraphVersion("./dep.mjs", { parentURL: "file:///wf/entry.mjs" }, file("file:///wf/dep.mjs")).url,
+    ).toBe("file:///wf/dep.mjs")
+    expect(appendEntryGraphVersion("./dep.mjs", {}, file("file:///wf/dep.mjs")).url).toBe("file:///wf/dep.mjs")
+  })
+})
+
+describe("installEntryGraphHook (registration branch selection)", () => {
+  it("prefers the synchronous in-thread registrar and never touches the async one", () => {
+    const seen: unknown[] = []
+    const ok = installEntryGraphHook(
+      (options: { resolve: unknown }) => seen.push(options),
+      () => {
+        throw new Error("async register must not be reached")
+      },
+    )
+    expect(ok).toBe(true)
+    expect(seen).toHaveLength(1)
+  })
+
+  it("falls back to the data-URL async registration when registerHooks is absent (Node < 22.15)", () => {
+    const registered: string[] = []
+    const ok = installEntryGraphHook(undefined, specifier => registered.push(specifier))
+    expect(ok).toBe(true)
+    expect(registered).toHaveLength(1)
+    expect(registered[0]).toMatch(/^data:text\/javascript,/)
+    // the fallback source is the async wrapper over the shared pure rewrite
+    const source = decodeURIComponent(registered[0]!.slice("data:text/javascript,".length))
+    expect(source).toContain("await nextResolve")
+    expect(source).toContain(ENTRY_GRAPH_VERSION_PARAM)
+  })
+
+  it("falls back when the synchronous registrar throws, and reports false only when both fail", () => {
+    const registered: string[] = []
+    expect(
+      installEntryGraphHook(
+        () => {
+          throw new Error("nope")
+        },
+        specifier => registered.push(specifier),
+      ),
+    ).toBe(true)
+    expect(registered).toHaveLength(1)
+    expect(
+      installEntryGraphHook(undefined, () => {
+        throw new Error("nope either")
+      }),
+    ).toBe(false)
+  })
+})
+
+/** Both ways `registerEntryGraphHook` can install the SAME resolve logic in a
+ *  real process: the synchronous in-thread hook (Node >= 22.15) and the
+ *  off-thread `module.register()` fallback every supported Node has. The sync
+ *  driver skips itself on a runtime without `registerHooks` — the fallback
+ *  driver always runs, since that path exists on the whole engines range. */
+const HOOK_REGISTRATIONS: ReadonlyArray<{ name: string; prelude: string }> = [
+  {
+    name: "registerHooks (synchronous, in-thread)",
+    prelude: `
+      const m = await import("node:module")
+      if (typeof m.registerHooks !== "function") { console.log(JSON.stringify({ skipped: true })); process.exit(0) }
+      const ENTRY_GRAPH_VERSION_PARAM = ${JSON.stringify(ENTRY_GRAPH_VERSION_PARAM)}
+      const appendEntryGraphVersion = ${String(appendEntryGraphVersion)}
+      m.registerHooks({ resolve: ${String(entryGraphResolveSync)} })
+    `,
+  },
+  {
+    name: "module.register() fallback (async, off-thread)",
+    prelude: `
+      const m = await import("node:module")
+      m.register("data:text/javascript," + encodeURIComponent(${JSON.stringify(ENTRY_GRAPH_HOOK_SOURCE)}))
+    `,
+  },
+]
+
+function runChild<T = Record<string, unknown>>(script: string): T {
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" })
+  return JSON.parse(out.trim().split("\n").pop()!) as T
+}
+
+describe.each(HOOK_REGISTRATIONS)("entry-graph resolve hook — $name (real node process)", ({ prelude }) => {
   /** Imports `entry.mjs` twice at two versions, editing a relative import
    *  between; prints what each import saw. */
   const driver = (dir: string) => `
-    import { register } from "node:module"
     import { writeFileSync } from "node:fs"
     import { pathToFileURL } from "node:url"
-    register("data:text/javascript," + encodeURIComponent(${JSON.stringify(ENTRY_GRAPH_HOOK_SOURCE)}))
+    ${prelude}
     const entry = pathToFileURL(${JSON.stringify(join(dir, "entry.mjs"))})
     const load = async v => {
       const u = new URL(entry); if (v !== undefined) u.searchParams.set(${JSON.stringify(ENTRY_GRAPH_VERSION_PARAM)}, v)
@@ -104,8 +215,9 @@ describe("entry-graph resolve hook (real node process)", () => {
     writeFileSync(join(dir, "entry.mjs"), 'import { value } from "./dep.mjs"\nexport default value')
     writeFileSync(join(dir, "dep.mjs"), 'import { deep } from "./deep.mjs"; export const value = "old:" + deep')
     writeFileSync(join(dir, "deep.mjs"), 'export const deep = "deep-old"')
-    const out = execFileSync(process.execPath, ["--input-type=module", "-e", driver(dir)], { encoding: "utf8" })
-    expect(JSON.parse(out.trim().split("\n").pop()!)).toEqual({
+    const out = runChild(driver(dir))
+    if (out.skipped) return
+    expect(out).toEqual({
       first: "old:deep-old",
       sameVersion: "old:deep-old",
       bumped: "new:deep-new",
@@ -116,13 +228,33 @@ describe("entry-graph resolve hook (real node process)", () => {
     const dir = tmp()
     writeFileSync(join(dir, "entry.mjs"), 'import { sep } from "node:path"\nimport os from "node:os"\nexport default [sep, typeof os.cpus]')
     const script = `
-      import { register } from "node:module"
       import { pathToFileURL } from "node:url"
-      register("data:text/javascript," + encodeURIComponent(${JSON.stringify(ENTRY_GRAPH_HOOK_SOURCE)}))
+      ${prelude}
       const u = pathToFileURL(${JSON.stringify(join(dir, "entry.mjs"))}); u.searchParams.set("${ENTRY_GRAPH_VERSION_PARAM}", "7")
       console.log(JSON.stringify((await import(u.href)).default))
     `
-    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" })
-    expect(JSON.parse(out.trim())).toEqual(["/", "function"])
+    const out = runChild(script)
+    if (out.skipped) return
+    expect(out).toEqual(["/", "function"])
+  })
+
+  it("appends the version to relative imports without dropping an existing query string", () => {
+    const dir = tmp()
+    writeFileSync(
+      join(dir, "entry.mjs"),
+      'import { url } from "./dep.mjs?raw"\nexport default url',
+    )
+    writeFileSync(join(dir, "dep.mjs"), "export const url = import.meta.url")
+    const script = `
+      import { pathToFileURL } from "node:url"
+      ${prelude}
+      const u = pathToFileURL(${JSON.stringify(join(dir, "entry.mjs"))}); u.searchParams.set("${ENTRY_GRAPH_VERSION_PARAM}", "9")
+      console.log(JSON.stringify((await import(u.href)).default))
+    `
+    const out = runChild<string | { skipped: true }>(script)
+    if (typeof out !== "string") return
+    const depUrl = new URL(out)
+    expect(depUrl.searchParams.get("raw")).toBe("")
+    expect(depUrl.searchParams.get(ENTRY_GRAPH_VERSION_PARAM)).toBe("9")
   })
 })
