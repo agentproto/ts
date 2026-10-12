@@ -11,6 +11,13 @@ has compressed/paged out. Do not sum RSS and compressed memory.
   memory; a direct `vmmap` sample measured about 2.9 GB. The parser is corrected.
 - Seven to eight live agent trees used about 3.2 GiB RSS. Each Claude session
   brought its own adapter and several MCP processes. Idle does not mean free.
+- A later pre-activation snapshot had five idle agent trees: 43 processes and
+  2.397 GB RSS, plus 0.839 GB daemon RSS (decimal units). Four ordinary sessions
+  used 0.429–0.563 GB each, including six to eight Node processes and a separate
+  Replicate MCP launcher. The keepAlive session used 0.369 GB with four processes.
+  This is why a handful of idle sessions can cost gigabytes; the VS Code row
+  count alone is not a useful RAM estimate. This snapshot followed the diagnostic
+  restart and is separate from the original 2.9 GB daemon-footprint measurement.
 - Five old orphan process trees contained thirteen processes, about 330 MiB RSS:
   development servers and Cloudflare tunnels. No surviving duplicate Claude/ACP
   trees were found after the observed restart. These servers may intentionally
