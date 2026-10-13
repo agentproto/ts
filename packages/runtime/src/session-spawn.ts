@@ -7,6 +7,7 @@
  */
 
 import type { AcpMcpServer } from "@agentproto/acp"
+import { randomBytes } from "node:crypto"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
@@ -18,6 +19,7 @@ import {
   findWorkspace,
   findWorkspaceByPath,
   getActiveWorkspace,
+  type WorkspaceRemote,
 } from "./workspaces-config.js"
 import { loadConfig } from "./config.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
@@ -71,6 +73,18 @@ import {
   type SandboxCredentialRefEntry,
   type SandboxSecretResolver,
 } from "./sandbox-secret-resolver.js"
+import {
+  GIT_TOKEN_ENV,
+  planSandboxWorkspace,
+  runSandboxWorkspaceSetup,
+  type SandboxWorkspacePlan,
+} from "./sandbox-workspace-remote.js"
+import {
+  formatDeliveryNotice,
+  runSandboxDelivery,
+  type SandboxDeliveryRecord,
+  type SandboxDeliveryTarget,
+} from "./sandbox-delivery.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -1572,6 +1586,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_reuse_ambiguous"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
+        | "sandbox_workspace_setup_failed"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -1937,6 +1952,11 @@ export async function spawnAgentSession(
   }
   let cwd = input.cwd ?? (appBoundary && !input.workspaceSlug ? appBoundary.root : undefined)
   let resolvedSlug = input.workspaceSlug
+  // The workspace's off-machine clone source, captured only for a sandbox
+  // spawn that named the workspace itself (no explicit `cwd`, not a device):
+  // that is the one shape where the host path is meaningless in the box and
+  // the box should hold a fresh checkout of the repo instead.
+  let sandboxWorkspace: { slug: string; remote: WorkspaceRemote } | undefined
   if (!cwd || !resolvedSlug) {
     try {
       const config = await loadWorkspacesConfig()
@@ -1946,6 +1966,9 @@ export async function spawnAgentSession(
           if (ws) {
             cwd = ws.path
             resolvedSlug = ws.slug
+            if (input.sandbox !== undefined && !isDeviceSpawn && ws.remote) {
+              sandboxWorkspace = { slug: ws.slug, remote: ws.remote }
+            }
           } else if (deviceBridgeArrival) {
             // DEVICE-BRIDGE ONLY (issue #1647): a spawn that crossed the
             // /device-spawn bridge carrying an explicit `workspaceSlug` that
@@ -3913,6 +3936,18 @@ export async function spawnAgentSession(
         ...(accessProfileEcho ? { authProfileRef: accessProfileEcho.profileRef } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
+        ...(sandboxWorkspace
+          ? {
+              workspace: sandboxWorkspace,
+              ...(normalizeWorktreeField(input.worktree) !== undefined
+                ? { worktree: normalizeWorktreeField(input.worktree) }
+                : {}),
+              sessionId: mintedSessionId,
+              onDelivery: (record: SandboxDeliveryRecord) => {
+                registry.recordSandboxDelivery(mintedSessionId, record, formatDeliveryNotice(record))
+              },
+            }
+          : {}),
         // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
         // prompt INSIDE the inner `agent_start` (see `bootSandboxAgentSession`'s
         // `initialPrompt`) so the device bridge makes ONE dial, not two. The
@@ -4425,6 +4460,7 @@ type SandboxBootResult =
         | "sandbox_proxy_failed"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
+        | "sandbox_workspace_setup_failed"
         | "device_spawn_unreachable"
       message: string
       details?: Record<string, unknown>
@@ -4742,6 +4778,18 @@ async function bootSandboxAgentSession(opts: {
   /** WP3 — serve an app UI from inside the box; see
    *  `SpawnAgentSessionInput.appServe`. */
   appServe?: SandboxAppServeSpec
+  /** The registered workspace whose `remote` should be checked out in the box
+   *  (see `sandbox-workspace-remote.ts`). Honoured only for a provider with a
+   *  disjoint filesystem (`handle.defaultCwd`) — a same-machine provider keeps
+   *  using the host path. */
+  workspace?: { slug: string; remote: WorkspaceRemote }
+  /** The caller's normalized `agent_start.worktree`: cut `wt/<slug>` in the
+   *  box's checkout. Meaningful only together with `workspace`. */
+  worktree?: { slug?: string; base?: string }
+  /** The host session id this box serves — names the delivery output dir. */
+  sessionId?: string
+  /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
+  onDelivery?: (record: SandboxDeliveryRecord) => void
   /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
    *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
    *  `forwardHttpStream` dial delivers both the spawn and the first turn.
@@ -4806,6 +4854,29 @@ async function bootSandboxAgentSession(opts: {
       }
     }
   }
+  // Workspace `remote`: plan the in-box checkout up front so a bad slug/base
+  // rejects the spawn before a box boots. The session lands in the checkout.
+  let workspacePlan: SandboxWorkspacePlan | undefined
+  if (opts.workspace && handle.defaultCwd) {
+    try {
+      workspacePlan = planSandboxWorkspace({
+        workspaceSlug: opts.workspace.slug,
+        remote: opts.workspace.remote,
+        homeDir: handle.defaultCwd,
+        ...(opts.worktree ? { worktree: opts.worktree } : {}),
+        mintSlug: () => randomBytes(4).toString("hex"),
+      })
+    } catch (err) {
+      return {
+        ok: false,
+        code: "sandbox_workspace_setup_failed",
+        message: `agent_start: cannot check out workspace "${opts.workspace.slug}" in the sandbox — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      }
+    }
+    boxCwd = workspacePlan.checkoutDir
+  }
   // Keychain-backed secrets: the explicit `credentialRefs` entries plus (for
   // `env.autoPassthrough`) the attached profile's own `credentialRef`. The
   // layered resolver tries the daemon env first, so a ref only matters for a
@@ -4813,6 +4884,10 @@ async function bootSandboxAgentSession(opts: {
   const credentialRefs = credentialRefMap(
     typeof opts.sandbox === "object" ? opts.sandbox.credentialRefs : undefined,
   )
+  const gitCredentialRef = opts.workspace?.remote.credentialRef
+  if (workspacePlan && gitCredentialRef !== undefined && !credentialRefs.has(GIT_TOKEN_ENV)) {
+    credentialRefs.set(GIT_TOKEN_ENV, gitCredentialRef)
+  }
   const resolveSecret = buildSandboxSecretResolver({
     base: resolveSandboxSecret,
     refs: credentialRefs,
@@ -4975,6 +5050,44 @@ async function bootSandboxAgentSession(opts: {
       : {}),
   })
 
+  let deliveryTarget: SandboxDeliveryTarget | undefined
+  const deliverySessionId = opts.sessionId
+  const boxExec = host.exec
+  const boxReadFile = host.readFile
+  if (workspacePlan && opts.workspace) {
+    const slug = opts.workspace.slug
+    const failSetup = async (message: string, step?: string): Promise<SandboxBootResult> => {
+      await host.stop().catch(() => undefined)
+      recordSandboxState(host.sandboxId, "stopped")
+      return {
+        ok: false,
+        code: "sandbox_workspace_setup_failed",
+        message,
+        ...(step ? { details: { step } } : {}),
+      }
+    }
+    if (!boxExec) {
+      return failSetup(
+        `agent_start: sandbox provider "${providerSlug}" cannot run commands in the box, so workspace ` +
+          `"${slug}" cannot be checked out from its remote.`,
+      )
+    }
+    const setup = await runSandboxWorkspaceSetup(boxExec, workspacePlan)
+    if (!setup.ok) {
+      return failSetup(
+        `agent_start: checking out workspace "${slug}" in the sandbox failed at "${setup.step}" — ${setup.message}`,
+        setup.step,
+      )
+    }
+    if (workspacePlan.branch) {
+      deliveryTarget = {
+        checkoutDir: workspacePlan.checkoutDir,
+        branch: workspacePlan.branch,
+        baseSha: setup.baseSha,
+      }
+    }
+  }
+
   // `omitCwdWhenImplicit` (device sandbox — see that field's doc): the
   // caller passed no explicit cwd, so don't forward the HOST's own
   // resolved `boxCwd` (fallback workspace/worktree path) into a box whose
@@ -5086,6 +5199,19 @@ async function bootSandboxAgentSession(opts: {
       // F2 — when the first prompt rode the spawn dial, don't re-send it as a
       // second `agent_prompt` dial (see `promptCarriedInStart`).
       ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
+      ...(deliveryTarget && boxExec && deliverySessionId
+        ? {
+            onBeforeTeardown: async () => {
+              const record = await runSandboxDelivery({
+                exec: boxExec,
+                ...(boxReadFile ? { readFile: boxReadFile } : {}),
+                target: deliveryTarget,
+                outDir: sessionTranscriptDir(deliverySessionId),
+              })
+              opts.onDelivery?.(record)
+            },
+          }
+        : {}),
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,

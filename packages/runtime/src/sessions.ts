@@ -179,6 +179,7 @@ import {
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
+import type { SandboxDeliveryRecord } from "./sandbox-delivery.js"
 import {
   createSessionMessage,
   escapeHumanPrompt,
@@ -2431,6 +2432,10 @@ export interface SessionDescriptor {
    *  default, ephemeral) or `"pause"` (keeps `sandboxId` reconnectable via
    *  `agent_start.sandbox.reuse`). Only set when `remote` is true. */
   sandboxTeardown?: "kill" | "pause"
+  /** What teardown did with the branch the session worked on inside its box
+   *  (`wt/<slug>` push + bundle fallback). Only set for a sandbox session that
+   *  was spawned from a workspace `remote` with a `worktree`, once it closes. */
+  sandboxDelivery?: SandboxDeliveryRecord
   /** App ports exposed at boot time (`SandboxSpec.extraPorts`) — maps port
    *  number to its public URL. Only present for sandbox sessions where the
    *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
@@ -4606,6 +4611,10 @@ export interface SessionsRegistry {
    *  one. Returns false (no-op) for an unknown id or a non-`agent-cli`
    *  session. */
   recordNotice(id: string, text: string): boolean
+  /** Stamp a sandbox session's teardown delivery outcome onto its descriptor
+   *  and transcript (`notice`). Returns false for an unknown id or a
+   *  non-`agent-cli` session. */
+  recordSandboxDelivery(id: string, record: SandboxDeliveryRecord, notice: string): boolean
   /**
    * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
    * `device-mirror.ts`) into an agent-cli session's durable transcript.
@@ -11997,6 +12006,15 @@ export function createSessionsRegistry(opts?: {
       if (!rt || rt.desc.kind !== "agent-cli") return false
       appendLine(rt, text, "stdout")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+      return true
+    },
+    recordSandboxDelivery(id, record, notice) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.kind !== "agent-cli") return false
+      rt.desc.sandboxDelivery = record
+      appendLine(rt, notice, "stdout")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: notice })
+      schedulePersist()
       return true
     },
     appendDeviceMirrorRecords(id, records) {

@@ -155,6 +155,11 @@ export interface SandboxAgentSessionProxyOpts {
    *  turn; every later `send()` prompts normally. Off for every other
    *  provider (local/e2b/Box keep byte-identical behaviour). */
   promptCarriedInStart?: boolean
+  /** Runs once in `close()`, after the box's agent session is killed and
+   *  before the box is stopped or paused — the last moment its filesystem is
+   *  still reachable. A rejection is swallowed: delivery trouble never blocks
+   *  the teardown it precedes. */
+  onBeforeTeardown?: () => Promise<void>
 }
 
 /**
@@ -554,6 +559,11 @@ export function createSandboxAgentSessionProxy(
       try {
         await host.kill(remoteSessionId)
       } finally {
+        try {
+          await opts.onBeforeTeardown?.()
+        } catch {
+          // best-effort — see `onBeforeTeardown`
+        }
         try {
           if (pauseFn) {
             await pauseFn()
