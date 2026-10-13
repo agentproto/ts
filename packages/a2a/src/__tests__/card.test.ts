@@ -34,7 +34,7 @@ describe("buildAppAgentCard", () => {
         protocolVersion: "1.0",
       },
     ])
-    expect(card.capabilities).toEqual({ streaming: false, pushNotifications: false })
+    expect(card.capabilities).toEqual({ streaming: true, pushNotifications: false })
     expect(card.securitySchemes).toEqual({
       bearer: { httpAuthSecurityScheme: { scheme: "Bearer" } },
     })
@@ -100,7 +100,7 @@ describe("buildDaemonAgentCard", () => {
       "@acme/notes/digest",
       "@acme/two/x",
     ])
-    expect(card.capabilities.streaming).toBe(false)
+    expect(card.capabilities.streaming).toBe(true)
   })
 
   it("has empty skills with no exposing apps", () => {

@@ -22,6 +22,8 @@ const card = buildAppAgentCard({
   with `supportedInterfaces[0] = { url: <baseUrl>/a2a/apps/<appId>, protocolBinding:
   "JSONRPC", protocolVersion: "1.0" }` (the appId is URL-encoded).
 - Skills come only from `exposes`; an app that exposes nothing has `skills: []`.
-- `capabilities.streaming` and `pushNotifications` are `false`; auth is an HTTP
-  bearer scheme (`securitySchemes.bearer.httpAuthSecurityScheme`, required via
+- `capabilities.streaming` is `true` (`SendStreamingMessage` and
+  `SubscribeToTask` stream a task over SSE), `pushNotifications` is `false`;
+  auth is an HTTP bearer scheme
+  (`securitySchemes.bearer.httpAuthSecurityScheme`, required via
   `securityRequirements`).

@@ -249,10 +249,52 @@ candidate task, so only the **500 newest** ledger entries are considered for
 the match. A ledger entry whose backing run is gone is skipped rather than
 failing the call.
 
+## Streaming
+
+Two methods stream a task as server-sent events instead of making you poll
+`GetTask`. Both answer `Content-Type: text/event-stream`, and each event is
+`data:` followed by one whole JSON-RPC response — the request's `id`, and a
+`result` that is exactly one of:
+
+- `{ "task": … }` — the task as it stands when the stream opens.
+- `{ "statusUpdate": { "taskId", "contextId", "status", "final"? } }` — a new
+  state, or a new timestamp on the same state. `final: true` marks the last
+  one.
+- `{ "artifactUpdate": { "taskId", "contextId", "artifact", "lastChunk"? } }` —
+  one artifact, sent once, ahead of the status update that reports the task
+  terminal.
+
+`SendStreamingMessage` takes exactly what `SendMessage` takes — it starts the
+run, then streams it:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "SendStreamingMessage",
+  "params": { "message": {
+    "messageId": "m-3", "role": "ROLE_USER",
+    "metadata": { "skill": "echo" },
+    "parts": [{ "text": "hello" }]
+  } } }
+```
+
+`SubscribeToTask` attaches to a task that is already running:
+
+```json
+{ "jsonrpc": "2.0", "id": 2, "method": "SubscribeToTask",
+  "params": { "id": "apprun_4bce4025-…" } }
+```
+
+The daemon polls the run every second and writes a `: keepalive` comment every
+15 s while the stream is otherwise silent. A stream ends when the task reaches
+a terminal state (its last event is then the `statusUpdate` with
+`final: true`), when the client disconnects, or after 30 minutes — the cap
+closes with a `statusUpdate` carrying the state the task is actually in, not a
+`final` claim. Everything knowable before the stream opens stays a plain
+JSON-RPC error response instead of a stream: a bad request, an unknown task
+id, and `SubscribeToTask` on a task that already finished
+(`task is already TASK_STATE_COMPLETED` — read a finished task with `GetTask`).
+
 ## What is not supported yet
 
-- `SendStreamingMessage` and `SubscribeToTask` return
-  `unsupported operation`: poll `GetTask` instead.
 - Push notifications and the extended Agent Card are not configured.
 - Only A2A version `1.0` is accepted (`A2A-Version` header or `?version=`
   query); anything else returns `version not supported`.

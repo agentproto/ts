@@ -98,7 +98,7 @@ function baseCard(
     ],
     version: rest.version,
     capabilities: {
-      streaming: false,
+      streaming: true,
       pushNotifications: false,
     },
     securitySchemes: {

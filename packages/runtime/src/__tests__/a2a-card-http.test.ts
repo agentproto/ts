@@ -124,7 +124,7 @@ describe("A2A Agent Card HTTP routes", () => {
       ])
       expect(card).not.toHaveProperty("url")
       expect(card).not.toHaveProperty("protocolVersion")
-      expect(card.capabilities).toEqual({ streaming: false, pushNotifications: false })
+      expect(card.capabilities).toEqual({ streaming: true, pushNotifications: false })
       expect(card.securitySchemes).toEqual({
         bearer: { httpAuthSecurityScheme: { scheme: "Bearer" } },
       })
