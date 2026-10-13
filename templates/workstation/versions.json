@@ -8,7 +8,7 @@
     "@agentproto/adapter-opencode": "1.8.2"
   },
   "runtime": {
-    "opencode-ai": "1.18.35"
+    "opencode-ai": "1.19.0"
   },
   "resources": {
     "cpuCount": 2,
@@ -32,13 +32,13 @@
       "id": "tnqtmeims5q9ex7j9k06",
       "alias": "agentproto-workstation-dev",
       "baked": {
-        "cli": "1.16.0",
+        "cli": "1.20.0",
         "adapters": {
-          "@agentproto/adapter-hermes": "0.4.34",
-          "@agentproto/adapter-mastra-agent": "0.7.29",
-          "@agentproto/adapter-opencode": "1.6.8"
+          "@agentproto/adapter-hermes": "0.4.38",
+          "@agentproto/adapter-mastra-agent": "0.7.33",
+          "@agentproto/adapter-opencode": "1.8.2"
         },
-        "builtAt": "2026-10-09T23:58:16Z"
+        "builtAt": "2026-10-13T17:32:21.689Z"
       }
     }
   }

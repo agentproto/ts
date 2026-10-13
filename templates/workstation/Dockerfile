@@ -17,7 +17,7 @@ ARG AGENTPROTO_CLI_VERSION=1.20.0
 ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.38
 ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.33
 ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.8.2
-ARG OPENCODE_RUNTIME_VERSION=1.18.35
+ARG OPENCODE_RUNTIME_VERSION=1.19.0
 
 # FROM is NOT parameterized — E2B does not interpolate build args into FROM
 # (verified live: invalid image reference '${BASE_IMAGE}'). Regenerated to
