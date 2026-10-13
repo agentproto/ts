@@ -1,7 +1,7 @@
 /**
  * `agent_start({ workspaceSlug, sandbox })` for a workspace with NO `remote`
  * in workspaces.json: the clone source is derived from the checkout's git
- * `origin` (using the registered credential), or — when nothing can be derived
+ * `origin` (public repos only, read-only, no credential), or — when nothing can be derived
  * — the box's working dir is checkpointed to the host as a tarball. The box is
  * an in-process daemon behind a fake provider; nothing leaves the machine.
  */
@@ -42,13 +42,18 @@ vi.mock("@agentproto/auth", async importOriginal => {
   return { ...actual, KeychainStore: FakeKeychainStore }
 })
 
+const originState = vi.hoisted(() => ({ public: false }))
 vi.mock("../sandbox-workspace-derive-remote.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../sandbox-workspace-derive-remote.js")>()
   return {
     ...actual,
-    // Never touch the network: no origin is anonymously cloneable.
+    // Never touch the network: local git runs for real, ls-remote never does.
     resolveSandboxWorkspaceSource: (ws: Parameters<typeof actual.resolveSandboxWorkspaceSource>[0]) =>
-      actual.resolveSandboxWorkspaceSource(ws, { isPubliclyCloneable: async () => false }),
+      actual.resolveSandboxWorkspaceSource(ws, {
+        git: (args, opts) =>
+          args.includes("ls-remote") ? Promise.resolve({ ok: false, stdout: "" }) : actual.runGit(args, opts),
+        isPubliclyCloneable: async () => originState.public,
+      }),
   }
 })
 
@@ -200,6 +205,7 @@ describe("agent_start sandbox — workspace without a configured remote", () => 
     })
     keychain.reads.length = 0
     keychain.values = {}
+    originState.public = false
     setMcpCredentialDeps({})
     setWorkspace("/Users/op/projects/scratch")
   })
@@ -215,7 +221,8 @@ describe("agent_start sandbox — workspace without a configured remote", () => 
     repoDir = undefined
   })
 
-  it("derives the clone source from the git origin (ssh → https) with the registered credential, without persisting it", async () => {
+  it("derives a public git origin read-only (ssh → https), never attaching the stored credential, without persisting", async () => {
+    originState.public = true
     setWorkspace(gitRepoWithOrigin("git@github.com:acme/derived.git"))
     keychain.values["agentproto.git.scratch"] = FAKE_TOKEN
     const before = JSON.stringify(wsConfigState.value)
@@ -229,21 +236,25 @@ describe("agent_start sandbox — workspace without a configured remote", () => 
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBe(FAKE_TOKEN)
+    expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBeUndefined()
+    expect(bootEnvs[0]?.GH_TOKEN).toBeUndefined()
+    expect(keychain.reads).not.toContain("agentproto.git.scratch")
     const commands = execCalls.map(c => c.command)
+    expect(commands.some(c => c.includes("git-credential-helper") || c.includes("credential."))).toBe(false)
     expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/derived.git'"))).toBe(true)
     expect(commands.some(c => c.includes("git checkout -b 'wt/x'"))).toBe(true)
     expect(receivedStarts[0]?.cwd).toBe("/home/user/scratch")
     expect(result.descriptor.sandboxDeliveryTarget).toMatchObject({ branch: "wt/x" })
-    expect(notices.join("\n")).toMatch(/no remote configured — cloning its git origin https:\/\/github.com\/acme\/derived.git/)
+    expect(notices.join("\n")).toMatch(/cloning its public git origin https:\/\/github.com\/acme\/derived.git.*read-only/)
     expect(JSON.stringify(wsConfigState.value)).toBe(before)
     expect(JSON.stringify(execCalls)).not.toContain(FAKE_TOKEN)
     expect(JSON.stringify(notices)).not.toContain(FAKE_TOKEN)
     expect(await readTarTarget(sessionTranscriptDir(result.descriptor.id))).toBeUndefined()
   })
 
-  it("falls back to tar checkpoints when the origin is private and no credential is registered", async () => {
+  it("falls back to tar checkpoints when the origin is not publicly cloneable, even if a credential is stored", async () => {
     setWorkspace(gitRepoWithOrigin("git@github.com:acme/private.git"))
+    keychain.values["agentproto.git.scratch"] = FAKE_TOKEN
 
     const result = await spawnAgentSession(makeDeps(), {
       adapter: "fake-cli",
@@ -254,7 +265,8 @@ describe("agent_start sandbox — workspace without a configured remote", () => 
     if (!result.ok) return
 
     expect(execCalls.some(c => c.command.includes("git clone"))).toBe(false)
-    expect(notices.join("\n")).toMatch(/not publicly cloneable and no credential is registered/)
+    expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBeUndefined()
+    expect(notices.join("\n")).toMatch(/not publicly cloneable, and a derived remote never carries a credential/)
     expect(notices.join("\n")).toMatch(/agentproto workspace remote set scratch/)
     expect(await readTarTarget(sessionTranscriptDir(result.descriptor.id))).toEqual({ dir: "/home/user/scratch" })
   })

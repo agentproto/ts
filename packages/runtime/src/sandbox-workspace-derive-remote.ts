@@ -11,10 +11,11 @@
  *   - ssh forms (`git@github.com:o/r.git`, `ssh://git@host/o/r.git`) become
  *     `https://`, and any userinfo is stripped — a URL carrying a token is
  *     never forwarded or echoed;
- *   - the workspace's registered credential (`agentproto.git.<slug>`, what
- *     `agentproto workspace remote set --token-stdin` stores) is used when it
- *     exists; without one the remote is derived only if the repository is
- *     anonymously cloneable;
+ *   - a derived remote is ALWAYS anonymous and read-only: it is accepted only
+ *     if the repository is publicly cloneable, and no credential is ever
+ *     attached, so nothing can be pushed to `origin` and no token reaches a
+ *     host named by a checkout's (untrusted) git config. Pushing needs an
+ *     explicit `agentproto workspace remote set`;
  *   - the result is marked `derived` and is never written back to
  *     `workspaces.json`.
  *
@@ -22,7 +23,6 @@
  */
 
 import { execFile } from "node:child_process"
-import { KeychainStore } from "@agentproto/auth"
 import {
   DEFAULT_REMOTE_BRANCH,
   validateRemoteBranch,
@@ -40,7 +40,10 @@ export interface GitResult {
 }
 
 /** Runs `git <args>` in `cwd`. Injectable for tests. */
-export type GitRunner = (args: string[], opts: { cwd: string; timeoutMs?: number }) => Promise<GitResult>
+export type GitRunner = (
+  args: string[],
+  opts: { cwd: string; timeoutMs?: number; /** Ignore the user's git config (insteadOf, ssh, helpers). */ isolated?: boolean },
+) => Promise<GitResult>
 
 const GIT_TIMEOUT_MS = 10_000
 
@@ -53,16 +56,19 @@ export const runGit: GitRunner = (args, opts) =>
         cwd: opts.cwd,
         timeout: opts.timeoutMs ?? GIT_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "true", GCM_INTERACTIVE: "never" },
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_ASKPASS: "true",
+          GCM_INTERACTIVE: "never",
+          ...(opts.isolated
+            ? { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_ALLOW_PROTOCOL: "https" }
+            : {}),
+        },
       },
       (err, stdout) => resolve({ ok: err === null, stdout: String(stdout ?? "") }),
     )
   })
-
-/** Keychain slot `agentproto workspace remote set --token-stdin` stores a PAT under. */
-export function workspaceGitCredentialRef(slug: string): string {
-  return `agentproto.git.${slug}`
-}
 
 function httpsUrl(host: string, path: string): string | undefined {
   const cleanPath = path.replace(/^\/+/, "").replace(/\/+$/, "")
@@ -113,7 +119,7 @@ export type DeriveRemoteRefusal =
   | "not-a-git-repo"
   | "no-origin"
   | "unsupported-origin"
-  | "private-without-credential"
+  | "not-publicly-cloneable"
 
 export type DeriveRemoteResult =
   | { ok: true; remote: DerivedWorkspaceRemote; notice: string }
@@ -121,20 +127,9 @@ export type DeriveRemoteResult =
 
 export interface DeriveRemoteDeps {
   git?: GitRunner
-  /** Whether a keychain slot holds a value. Default: the OS keychain. */
-  hasCredential?: (ref: string) => Promise<boolean>
   /** Whether `url` can be cloned with no credentials. Default: `git ls-remote`
    *  with credential helpers and prompts disabled. */
   isPubliclyCloneable?: (url: string) => Promise<boolean>
-}
-
-async function keychainHas(ref: string): Promise<boolean> {
-  try {
-    const stored = await new KeychainStore().read({ path: ref })
-    return Boolean(stored?.value)
-  } catch {
-    return false
-  }
 }
 
 function anonymousLsRemote(git: GitRunner): (url: string) => Promise<boolean> {
@@ -143,17 +138,25 @@ function anonymousLsRemote(git: GitRunner): (url: string) => Promise<boolean> {
       await git(["-c", "credential.helper=", "ls-remote", "--exit-code", url, "HEAD"], {
         cwd: process.cwd(),
         timeoutMs: 15_000,
+        isolated: true,
       })
     ).ok
 }
 
-/** The host's current branch may be an unpushed local one the box cannot clone. */
-async function existsOnOrigin(git: GitRunner, cwd: string, branch: string): Promise<boolean> {
+/** The host's current branch may be an unpushed local one the box cannot clone.
+ *  The network check targets the normalized https URL, never the raw `origin`. */
+async function existsOnOrigin(git: GitRunner, cwd: string, url: string, branch: string): Promise<boolean> {
   if ((await git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd })).ok) return true
-  return (await git(["ls-remote", "--exit-code", "--heads", "origin", branch], { cwd, timeoutMs: 15_000 })).ok
+  return (
+    await git(["-c", "credential.helper=", "ls-remote", "--exit-code", "--heads", url, branch], {
+      cwd: process.cwd(),
+      timeoutMs: 15_000,
+      isolated: true,
+    })
+  ).ok
 }
 
-async function originDefaultBranch(git: GitRunner, cwd: string): Promise<string> {
+async function originDefaultBranch(git: GitRunner, cwd: string, url: string): Promise<string> {
   const head = await git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { cwd })
   const fromOrigin = head.stdout.trim().replace(/^origin\//, "")
   if (head.ok && fromOrigin) {
@@ -168,7 +171,7 @@ async function originDefaultBranch(git: GitRunner, cwd: string): Promise<string>
   if (current.ok && branch && branch !== "HEAD") {
     try {
       const valid = validateRemoteBranch(branch)
-      if (await existsOnOrigin(git, cwd, valid)) return valid
+      if (await existsOnOrigin(git, cwd, url, valid)) return valid
     } catch {
       // fall through to the default
     }
@@ -224,35 +227,25 @@ export async function deriveWorkspaceRemote(
     }
   }
 
-  const defaultBranch = await originDefaultBranch(git, path)
-  const credentialRef = workspaceGitCredentialRef(slug)
-  if (await (deps.hasCredential ?? keychainHas)(credentialRef)) {
+  if (!(await (deps.isPubliclyCloneable ?? anonymousLsRemote(git))(url))) {
     return {
-      ok: true,
-      remote: { url, defaultBranch, credentialRef, derived: true },
+      ok: false,
+      reason: "not-publicly-cloneable",
       notice:
-        `${label} has no remote configured — cloning its git origin ${url} (branch ${defaultBranch}) ` +
-        `with the stored credential ${credentialRef}. Derived for this session only; nothing was saved.`,
+        `${label}: its git origin ${url} is not publicly cloneable, and a derived remote never carries a ` +
+        `credential. ${setRemoteHint(slug)}`,
     }
   }
 
-  if (await (deps.isPubliclyCloneable ?? anonymousLsRemote(git))(url)) {
-    return {
-      ok: true,
-      remote: { url, defaultBranch, derived: true },
-      notice:
-        `${label} has no remote configured — cloning its public git origin ${url} (branch ${defaultBranch}) ` +
-        `without a credential, so pushes from the box will fail and work is saved as a bundle on the host instead. ` +
-        `${setRemoteHint(slug)}`,
-    }
-  }
-
+  const defaultBranch = await originDefaultBranch(git, path, url)
   return {
-    ok: false,
-    reason: "private-without-credential",
+    ok: true,
+    remote: { url, defaultBranch, derived: true },
     notice:
-      `${label}: its git origin ${url} is not publicly cloneable and no credential is registered ` +
-      `(keychain slot ${credentialRef} is empty). ${setRemoteHint(slug)}`,
+      `${label} has no remote configured — cloning its public git origin ${url} (branch ${defaultBranch}) ` +
+      `read-only: the box starts from origin/${defaultBranch}, NOT from your local checkout (unpushed commits and ` +
+      `uncommitted changes are not included), nothing can be pushed to origin, and its work is saved as a bundle ` +
+      `on the host instead. ${setRemoteHint(slug)}`,
   }
 }
 

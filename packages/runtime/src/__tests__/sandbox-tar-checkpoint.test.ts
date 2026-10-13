@@ -85,6 +85,9 @@ describe("tar workspace checkpoint", () => {
     expect(record).toMatchObject({ status: "saved", dir: boxDir, mode: "teardown" })
     expect(record.bytes).toBeGreaterThan(0)
     expect(existsSync(tarArchivePath(sessionDir))).toBe(true)
+    // The archive can hold whatever the box wrote (.env, keys): owner-only.
+    expect((await stat(tarArchivePath(sessionDir))).mode & 0o777).toBe(0o600)
+    expect((await stat(tarRecordPath(sessionDir))).mode & 0o777).toBe(0o600)
     expect(JSON.parse(await readFile(tarRecordPath(sessionDir), "utf8"))).toMatchObject({ status: "saved" })
 
     // Restore into a different (fresh) dir.

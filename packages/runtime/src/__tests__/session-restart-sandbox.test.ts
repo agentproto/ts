@@ -39,7 +39,7 @@ vi.mock("../workspaces-config.js", async importOriginal => {
   return { ...actual, loadWorkspacesConfig: vi.fn(async () => wsConfigState.value) }
 })
 
-const deriveState = vi.hoisted(() => ({ hasCredential: false }))
+const deriveState = vi.hoisted(() => ({ isPublic: false }))
 vi.mock("../sandbox-workspace-derive-remote.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../sandbox-workspace-derive-remote.js")>()
   return {
@@ -47,8 +47,9 @@ vi.mock("../sandbox-workspace-derive-remote.js", async importOriginal => {
     // No keychain and no network in unit tests.
     resolveSandboxWorkspaceSource: (ws: Parameters<typeof actual.resolveSandboxWorkspaceSource>[0]) =>
       actual.resolveSandboxWorkspaceSource(ws, {
-        hasCredential: async () => deriveState.hasCredential,
-        isPubliclyCloneable: async () => false,
+        git: (args, opts) =>
+          args.includes("ls-remote") ? Promise.resolve({ ok: false, stdout: "" }) : actual.runGit(args, opts),
+        isPubliclyCloneable: async () => deriveState.isPublic,
       }),
   }
 })
@@ -669,7 +670,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     describe("workspace with no configured remote", () => {
       let repoDir: string
       afterEach(async () => {
-        deriveState.hasCredential = false
+        deriveState.isPublic = false
         setMcpCredentialDeps({})
         if (repoDir) await rm(repoDir, { recursive: true, force: true })
       })
@@ -736,8 +737,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       })
 
       it("re-clones the git origin (derived, https) and resumes the work branch when the workspace has no remote", async () => {
-        deriveState.hasCredential = true
-        setMcpCredentialDeps({ resolveSandboxSecret: async () => "test-token-not-real" })
+        deriveState.isPublic = true
         noRemoteWorkspace(await gitRepoWithOrigin("git@github.com:acme/derived.git"))
         const { resolver, providerResolver } = await setup({
           deliveryTarget: target,
@@ -759,8 +759,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       })
 
       it("a derived remote with no recorded work branch starts the fresh box on a default wt/ branch", async () => {
-        deriveState.hasCredential = true
-        setMcpCredentialDeps({ resolveSandboxSecret: async () => "test-token-not-real" })
+        deriveState.isPublic = true
         noRemoteWorkspace(await gitRepoWithOrigin("git@github.com:acme/derived.git"))
         const { resolver, providerResolver } = await setup({ workspaceSlug: "scratch" })
         const boots = { count: 0 }
@@ -771,8 +770,8 @@ describe("restartAgentSession on a sandboxed session", () => {
         expect(result.desc.sandboxDeliveryTarget?.branch).toMatch(/^wt\//)
       })
 
-      it("fails loud, explaining the missing credential, when the origin is private and none is registered", async () => {
-        deriveState.hasCredential = false
+      it("fails loud, pointing at `workspace remote set`, when the origin is not publicly cloneable", async () => {
+        deriveState.isPublic = false
         noRemoteWorkspace(await gitRepoWithOrigin("git@github.com:acme/private.git"))
         const { resolver, providerResolver } = await setup({
           deliveryTarget: target,
@@ -783,7 +782,7 @@ describe("restartAgentSession on a sandboxed session", () => {
           restartAgentSession(registry, resolver, prev, {
             resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
           }),
-        ).rejects.toThrow(/workspace "scratch" has no remote configured.*not publicly cloneable and no credential is registered/is)
+        ).rejects.toThrow(/workspace "scratch" has no remote configured.*not publicly cloneable, and a derived remote never carries a credential/is)
         expect(boots.count).toBe(0)
       })
     })

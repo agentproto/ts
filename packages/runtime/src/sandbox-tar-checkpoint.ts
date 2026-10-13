@@ -137,7 +137,7 @@ async function withTimeout<T>(ms: number, run: (timeoutMs: number) => Promise<T>
 async function persistTarRecord(record: TarCheckpointRecord, outDir: string): Promise<TarCheckpointRecord> {
   try {
     await mkdir(outDir, { recursive: true })
-    await writeFile(tarRecordPath(outDir), `${JSON.stringify(record, null, 2)}\n`)
+    await writeFile(tarRecordPath(outDir), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 })
   } catch {
     // the record is informational; a disk failure must not block teardown
   }
@@ -225,7 +225,7 @@ export async function runTarCheckpoint(input: RunTarCheckpointInput): Promise<Ta
     }
     await mkdir(input.outDir, { recursive: true })
     const tmp = `${archive}.tmp`
-    await writeFile(tmp, data)
+    await writeFile(tmp, data, { mode: 0o600 })
     await rename(tmp, archive)
     return finish({ status: "saved", path: archive, bytes: data.byteLength, key: packed.sha })
   } catch (err) {
