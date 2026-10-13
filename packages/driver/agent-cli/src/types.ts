@@ -64,6 +64,32 @@ export interface AgentCliVersionCheck {
   timeout_ms?: number
 }
 
+/**
+ * AIP-45 § Harness upgrade — how `agentproto harness upgrade` finds the
+ * latest published version of the harness binary and installs it in place.
+ *
+ * Optional: absent for harnesses agentproto must NOT touch locally —
+ * an adapter that runs through a PINNED `npx -y <pkg>@<x.y.z>` in
+ * `bin_args` (claude-code, codex) carries the pin in the adapter itself,
+ * so `harness outdated` reports that pin against the registry and the
+ * fix is bumping `bin_args`, not running an installer on this machine.
+ *
+ * Consumed by the CLI (`agentproto harness outdated|upgrade`), never by
+ * the driver — spawning behavior is unchanged whether this is present.
+ */
+export interface AgentCliUpgrade {
+  /** Where the latest published version is read. */
+  latest:
+    | { npm: string } // `npm view <pkg> version`
+    | { githubRelease: string } // "owner/repo" → GET api.github.com/repos/<r>/releases/latest, tag_name, strip leading "v"
+  /** Command that upgrades the installed harness in place (argv, no shell). */
+  cmd: string[]
+  /** Optional rollback: argv with "{version}" replaced by the previously
+   *  installed version (npm installs only). Run when the post-upgrade ACP
+   *  smoke probe fails, so a bad upgrade never strands the harness. */
+  rollback?: string[]
+}
+
 export interface AgentCliAuth {
   ref?: string
   state?: { paths?: string[]; env?: string[] }
@@ -703,6 +729,16 @@ export interface AgentCliDefinition {
   env?: Record<string, string>
   install: AgentCliInstallMethod[]
   version_check: AgentCliVersionCheck
+  /**
+   * How `agentproto harness upgrade <slug>` updates the INSTALLED harness
+   * binary on this machine — latest-version source + in-place upgrade argv
+   * (+ optional rollback). Absent when there is nothing safe for agentproto
+   * to run locally (no global npm install, or a npx pin that lives in
+   * `bin_args` instead). Read-only surfaces (`harness outdated`) fall back to
+   * the pin rule, then to "unknown" — never a guess. See
+   * {@link AgentCliUpgrade}.
+   */
+  upgrade?: AgentCliUpgrade
   /** AIP-29 § Setup — post-install configuration pipeline. Optional. */
   setup?: AgentCliSetupStep[]
   auth?: AgentCliAuth

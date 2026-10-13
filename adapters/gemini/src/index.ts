@@ -54,6 +54,14 @@ export const gemini: AgentCliHandle = defineAgentCli({
     range: ">=0.1.0",
     timeout_ms: 15_000,
   },
+  // `install[]` is the global npm package, so the npm shape is the whole
+  // upgrade story: latest from the registry, in-place reinstall, and an
+  // exact-version rollback for a failed post-upgrade ACP smoke probe.
+  upgrade: {
+    latest: { npm: "@google/gemini-cli" },
+    cmd: ["npm", "i", "-g", "@google/gemini-cli@latest"],
+    rollback: ["npm", "i", "-g", "@google/gemini-cli@{version}"],
+  },
   auth: {
     ref: "./SECRETS.md",
     // Every api-key rail the Gemini CLI honors — all three are scrubbed under a
