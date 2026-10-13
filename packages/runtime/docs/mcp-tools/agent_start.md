@@ -663,4 +663,5 @@ periodic timer AND the per-turn hook together, `"teardown"` controls
 whether the teardown delivery snapshots uncommitted work or only counts
 it), `refPrefix` (remote branch namespace the snapshot lands under —
 changing this only affects a FUTURE checkpoint), `minIntervalMs` (periodic
-checkpoint spacing), `timeoutMs` (per-checkpoint wall-clock budget).
+checkpoint spacing; `0` disables the timer AND the turn-end hook even when
+`on` includes `"turn-end"`, the legacy off-switch), `timeoutMs` (per-checkpoint wall-clock budget).
