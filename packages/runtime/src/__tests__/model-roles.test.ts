@@ -13,6 +13,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import {
   DEFAULT_MODEL_ROLES,
+  MODEL_ROLE_PRESETS,
+  adapterForModelId,
   isKnownModelId,
   listModelRoles,
   parseModelRoleRef,
@@ -75,6 +77,43 @@ describe("resolveModelRole precedence", () => {
     expect(parseModelRoleRef("role:review.large")).toBe("review.large")
     expect(parseModelRoleRef("claude-sonnet-5-5")).toBeUndefined()
     expect(parseModelRoleRef("role:")).toBeUndefined()
+  })
+})
+
+describe("model role presets", () => {
+  it("a preset fills its roles below daemon and above the built-in default", () => {
+    expect(resolveModelRole("review.small", { preset: "haiku" })).toMatchObject({ model: "claude-haiku-5-5", source: "preset" })
+    expect(resolveModelRole("review.small", { preset: "haiku", daemon: { "review.small": "d" } })).toMatchObject({
+      model: "d",
+      source: "daemon",
+    })
+    expect(resolveModelRole("judge.session", { preset: "haiku" })?.source).toBe("default")
+  })
+
+  it("an unknown preset name is ignored by the resolver", () => {
+    expect(resolveModelRole("review.small", { preset: "nope" })?.source).toBe("default")
+    expect(resolveModelRole("review.small", { preset: "toString" })?.source).toBe("default")
+  })
+
+  it("opus spells out the built-in defaults, so switching back is one key", () => {
+    for (const [role, model] of Object.entries(MODEL_ROLE_PRESETS.opus!.roles)) expect(DEFAULT_MODEL_ROLES[role]).toBe(model)
+  })
+
+  it("every preset id is in the model catalog and free presets only use -free ids", () => {
+    for (const [name, preset] of Object.entries(MODEL_ROLE_PRESETS)) {
+      for (const model of Object.values(preset.roles)) {
+        expect(isKnownModelId(model), `${name}: ${model}`).toBe(true)
+        if (model.startsWith("opencode")) expect(model.endsWith("-free"), `${name}: ${model}`).toBe(true)
+      }
+    }
+  })
+
+  it("adapterForModelId: opencode ids need opencode (even opencode-go/claude-*), bare claude-* needs claude-code", () => {
+    expect(adapterForModelId("opencode-go/longcat-2.5-preview-free")).toBe("opencode")
+    expect(adapterForModelId("opencode/big-pickle")).toBe("opencode")
+    expect(adapterForModelId("opencode-go/claude-haiku-5-5")).toBe("opencode")
+    expect(adapterForModelId("claude-haiku-5-5")).toBe("claude-code")
+    expect(adapterForModelId("openrouter/z-ai/glm-5.3-flash")).toBeUndefined()
   })
 })
 
@@ -145,7 +184,9 @@ describe("model_roles tool + config_set", () => {
 
   it("tolerates a missing / unreadable agentproto.json and no resolvable workspace", async () => {
     const out = await modelRoles({ roles: ["review.small"] }, { loadCfg: async () => ({}), resolveRoot: async () => repo })
-    expect(out.roles).toEqual([{ role: "review.small", model: DEFAULT_MODEL_ROLES["review.small"], source: "default" }])
+    expect(out.roles).toEqual([
+      { role: "review.small", model: DEFAULT_MODEL_ROLES["review.small"], adapter: "claude-code", source: "default" },
+    ])
     const none = await modelRoles({ roles: ["review.small"] }, { loadCfg: async () => ({}), resolveRoot: async () => undefined })
     expect(none.workspaceRoot).toBeUndefined()
   })
@@ -164,9 +205,39 @@ describe("model_roles tool + config_set", () => {
     const body = JSON.parse(res.content[0]!.text)
     expect(body.roles).toEqual([
       { role: "review.pr", model: "openrouter/z-ai/glm-5.3-flash", source: "daemon" },
-      { role: "judge.session", model: DEFAULT_MODEL_ROLES["judge.session"], source: "default" },
+      { role: "judge.session", model: DEFAULT_MODEL_ROLES["judge.session"], adapter: "claude-code", source: "default" },
     ])
-    expect(body.precedence).toEqual(["input", "workspace", "daemon", "default"])
+    expect(body.precedence).toEqual(["input", "workspace", "daemon", "preset", "default"])
+  })
+
+  it("modelRolePreset: daemon config selects the preset, a per-call preset wins, an unknown one throws", async () => {
+    const load = async () => ({ modelRolePreset: "go-free" }) as AgentprotoConfig
+    const fromConfig = await modelRoles({ roles: ["review.small", "review.large"] }, { loadCfg: load, resolveRoot: async () => undefined })
+    expect(fromConfig.preset).toBe("go-free")
+    expect(fromConfig.models).toEqual({
+      "review.small": "opencode-go/longcat-2.5-preview-free",
+      "review.large": "opencode-go/longcat-2.5-preview-free",
+    })
+    expect(fromConfig.adapters).toEqual({ "review.small": "opencode", "review.large": "opencode" })
+
+    const perCall = await modelRoles(
+      { roles: ["review.small", "review.large"], preset: "free-sonnet" },
+      { loadCfg: load, resolveRoot: async () => undefined },
+    )
+    expect(perCall.preset).toBe("free-sonnet")
+    expect(perCall.adapters).toEqual({ "review.small": "opencode", "review.large": "claude-code" })
+
+    await expect(modelRoles({ preset: "nope" }, { loadCfg: async () => ({}), resolveRoot: async () => undefined })).rejects.toThrow(
+      /unknown model role preset "nope"/,
+    )
+  })
+
+  it("config_set modelRolePreset switches presets hot and rejects an unknown name", async () => {
+    expect(await configSet({ key: "modelRolePreset", value: "haiku" }, deps())).toMatchObject({ ok: true, applied: "hot" })
+    expect((await loadConfig(configPath)).modelRolePreset).toBe("haiku")
+    expect(await configSet({ key: "modelRolePreset", value: "nope" }, deps())).toMatchObject({ ok: false, error: "invalid_value" })
+    expect((await configSet({ key: "modelRolePreset", unset: true }, deps())).ok).toBe(true)
+    expect((await loadConfig(configPath)).modelRolePreset).toBeUndefined()
   })
 
   it("config_set models.<role> writes the role, warns (not blocks) on an unknown id, and config_get lists it", async () => {

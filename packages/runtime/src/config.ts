@@ -684,6 +684,10 @@ export interface AgentprotoConfig {
    *  so `getConfigKey`/`setConfigKey` treat everything after `models.` as
    *  ONE key (`models.review.pr` → `models["review.pr"]`). */
   models?: ModelRolesConfig
+  /** Active model role preset (`MODEL_ROLE_PRESETS` in `model-roles.ts`):
+   *  one key to switch the review roles between named model sets. Layer 4
+   *  of the role precedence — an explicit `models.<role>` still wins. */
+  modelRolePreset?: string
   /** Daemon-side session titler (`session-titler.ts`). DEFAULT OFF — when
    *  `enabled` is not explicitly true the titler is a complete no-op and
    *  nothing renames anything. When on, at the end of the FIRST completed

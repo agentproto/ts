@@ -57,7 +57,7 @@ import { DEFAULT_ATTENTION_DELAY_SEC, ATTENTION_DELAY_ENV } from "./session-pres
 import { DEFAULT_WRAP_GH, PROVENANCE_WRAP_GH_ENV } from "./gh-provenance-shim.js"
 import { DEFAULT_AGENTS_MD_INLINE_MAX_KB } from "./agents-md.js"
 import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
-import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
+import { DEFAULT_MODEL_ROLES, MODEL_ROLE_PRESETS, MODEL_ROLE_PRESET_NAMES } from "./model-roles.js"
 import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
 import { DEFAULT_ROLE_DEPTH_CUTOFF } from "./role.js"
 
@@ -336,6 +336,7 @@ export const agentprotoConfigSchema = z
     approvals: approvalsConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
     models: z.record(z.string(), modelRoleValueSchema).optional(),
+    modelRolePreset: z.enum(MODEL_ROLE_PRESET_NAMES).optional(),
     titler: titlerConfigSchema.optional(),
     catalog: catalogConfigSchema.optional(),
     profiles: z.record(z.string(), profileConfigSchema).optional(),
@@ -393,6 +394,7 @@ type ConfigTopLevelKey =
   | "approvals"
   | "agentsMd"
   | "models"
+  | "modelRolePreset"
   | "titler"
   | "catalog"
   | "profiles"
@@ -753,6 +755,20 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
       "{ model, route?, profile? }. Precedence: explicit run input > the repo's agentproto.json `models` > " +
       "this daemon config > built-in default (`model_roles` lists every role and its source). " +
       `Built-in defaults: ${Object.entries(DEFAULT_MODEL_ROLES).map(([r, m]) => `${r}=${m}`).join(", ")}.`,
+  },
+  {
+    path: "modelRolePreset",
+    schema: z.enum(MODEL_ROLE_PRESET_NAMES),
+    apply: "hot",
+    writable: true,
+    section: "models",
+    label: "Model role preset",
+    help:
+      "Named model set for the review roles, switched with one key: " +
+      Object.entries(MODEL_ROLE_PRESETS)
+        .map(([name, p]) => `${name} (${p.description})`)
+        .join("; ") +
+      ". An explicit models.<role> still wins; unset to fall back to the built-in defaults.",
   },
   {
     path: "titler.model",

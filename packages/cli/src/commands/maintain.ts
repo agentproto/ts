@@ -1,5 +1,5 @@
 /**
- * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--wait] [--json]`
+ * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--review-preset <name>] [--wait] [--json]`
  *
  * Convenience shortcut over `agentproto workflow run-file` for the built-in
  * `repo-maintenance` app's `maintain` workflow (`@agentproto/apps`'s
@@ -30,11 +30,12 @@ import { repoRootOf } from "./worktree.js"
 import { resolveWorktreesRoot } from "./worktree.js"
 import { discoverWorktreeOwningRepos, resolveAllRepos } from "./maintain-discovery.js"
 import { httpGetJson } from "./_daemon-helpers.js"
+import { MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
 
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
 Usage:
-  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--wait] [--json]
+  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--review-preset <name>] [--wait] [--json]
   agentproto maintain --help
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
@@ -46,6 +47,11 @@ Usage:
   --apply-merged   After review, apply branch_gc (reclaim-class only,
                    includeReviewed false) and worktree_gc. Default: dry run
                    (plan + review only, nothing is deleted).
+  --review-preset <name>
+                   Reviewer model set for this run: ${MODEL_ROLE_PRESET_NAMES.join(", ")}.
+                   Default: the daemon's modelRolePreset (switch it with
+                   \`agentproto config set modelRolePreset <name>\`), else
+                   Sonnet/Opus. \`model_roles\` lists what each one uses.
   --wait           Block until each run ends, then print its markdown report
                    (exit 0 when all done, 1 when any failed/was cancelled).
   --json           Print the raw workflow_run_file reply (with --wait: the
@@ -61,6 +67,7 @@ Examples:
   agentproto maintain --repo ~/code/my-app
   agentproto maintain --repo ~/code/my-app --apply-merged
   agentproto maintain --all --apply-merged
+  agentproto maintain --review-preset go-free --wait
   agentproto maintain --wait
 `
 
@@ -94,10 +101,19 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			repo: { type: "string", multiple: true },
 			all: { type: "boolean", default: false },
 			"apply-merged": { type: "boolean" },
+			"review-preset": { type: "string" },
 			wait: { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
 		},
 	})
+
+	const reviewPreset = values["review-preset"]
+	if (reviewPreset !== undefined && !MODEL_ROLE_PRESET_NAMES.includes(reviewPreset)) {
+		process.stderr.write(
+			`agentproto maintain: unknown --review-preset "${reviewPreset}" (known: ${MODEL_ROLE_PRESET_NAMES.join(", ")})\n`,
+		)
+		return 2
+	}
 
 	// Repo list: --all discovers every main repo owning a worktree under the
 	// worktrees root (plus the explicit --repo dirs); without it, exactly one
@@ -179,7 +195,11 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 		try {
 			result = (await mcpToolCall(daemon.endpoint, "workflow_run_file", {
 				path: workflowPath,
-				input: { repoRoot: repo, applyMerged: values["apply-merged"] === true },
+				input: {
+					repoRoot: repo,
+					applyMerged: values["apply-merged"] === true,
+					...(reviewPreset !== undefined ? { reviewPreset } : {}),
+				},
 			})) as Record<string, unknown>
 		} catch (err) {
 			process.stderr.write(`agentproto maintain: ${err instanceof Error ? err.message : String(err)}\n`)

@@ -22,8 +22,10 @@ import { join } from "node:path"
 // The reviewer models are model ROLES, not ids here: the `modelRoles` step
 // (the daemon's `model_roles` tool) resolves `review.small` / `review.large`
 // at run time — explicit input > repo agentproto.json `models` > daemon
-// config `models` > built-in default. The one precedence + default table is
-// packages/runtime/src/model-roles.ts; nothing below hard-codes a model id.
+// config `models` > preset (`reviewPreset`, else the daemon's
+// `modelRolePreset`) > built-in default. The one precedence + default table
+// and the presets are packages/runtime/src/model-roles.ts; nothing below
+// hard-codes a model id.
 const ROLE_REVIEW_SMALL = "review.small"
 const ROLE_REVIEW_LARGE = "review.large"
 
@@ -34,6 +36,17 @@ const ROLE_REVIEW_LARGE = "review.large"
 export function reviewModel(b, role) {
   const explicit = role === ROLE_REVIEW_SMALL ? b.input?.reviewModelSmall : b.input?.reviewModelLarge
   return explicit || b.steps?.modelRoles?.models?.[role] || undefined
+}
+/** The adapter `role`'s model requires (an `opencode-go/…` id only runs on
+ *  opencode), as resolved by the `modelRoles` step — which folds the explicit
+ *  input in too, so it always describes the model {@link reviewModel} picks.
+ *  Undefined keeps the reviewer AGENT.md's own adapter. */
+export function reviewAdapter(b, role) {
+  return b.steps?.modelRoles?.adapters?.[role] || undefined
+}
+/** Small model for a residual of 3 files or fewer, large otherwise. */
+function reviewRole(b) {
+  return (b.item?.residualFileCount ?? 0) <= 3 ? ROLE_REVIEW_SMALL : ROLE_REVIEW_LARGE
 }
 /** Reviews per run — 500+ candidates in one run is hours of agent turns;
  *  daily runs walk the backlog instead (a reviewed tip is skipped next time). */
@@ -558,6 +571,7 @@ export default {
     workspaceSlug: { type: "string", description: "Workspace slug. The active workspace when both are omitted." },
     applyMerged: { type: "boolean", description: "Execute branch_gc/worktree_gc (reclaim-class only) after review. Default false.", default: false },
     reviewModelSmall: { type: "string", description: `Model for a review candidate with residualFileCount <= 3. Default: the \`${ROLE_REVIEW_SMALL}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
+    reviewPreset: { type: "string", description: "Model role preset for this run (opus, sonnet, haiku, go-free, free-sonnet — see `model_roles`). Default: the daemon's `modelRolePreset`, else the built-in roles. `reviewModelSmall`/`reviewModelLarge` still win." },
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     maxReviews: { type: "number", description: `Most review candidates to review this run — newest tip first, then the larger residual. The rest are reported as not reviewed this run; tips with a stored verdict are never re-reviewed, so daily runs walk the backlog. Default ${DEFAULT_MAX_REVIEWS}.`, default: DEFAULT_MAX_REVIEWS },
     reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). The report lists each verdict and the removal command when the reviewer agreed; nothing is removed automatically. Default true.`, default: true },
@@ -576,6 +590,7 @@ export default {
         repoRoot: "$input.repoRoot",
         workspaceSlug: "$input.workspaceSlug",
         roles: [ROLE_REVIEW_SMALL, ROLE_REVIEW_LARGE],
+        preset: "$input.reviewPreset",
         inputs: {
           [ROLE_REVIEW_SMALL]: "$input.reviewModelSmall",
           [ROLE_REVIEW_LARGE]: "$input.reviewModelLarge",
@@ -630,7 +645,8 @@ export default {
           agent: { ref: REVIEWER_REF },
           cwd: REVIEWER_CWD,
           prompt: REVIEW_PROMPT,
-          model: b => reviewModel(b, (b.item?.residualFileCount ?? 0) <= 3 ? ROLE_REVIEW_SMALL : ROLE_REVIEW_LARGE),
+          model: b => reviewModel(b, reviewRole(b)),
+          adapter: b => reviewAdapter(b, reviewRole(b)),
         },
         // A reviewer can end its turn announcing calls it never made. Check
         // the store for EVERY tip of this item (the per-tip map below); if
@@ -672,6 +688,7 @@ export default {
             "\n\nA previous reviewer of this branch ended its turn without recording a verdict. " +
             "Recording the verdict with branch_gc_verdict IS the deliverable — do not end your turn without it.",
           model: b => reviewModel(b, ROLE_REVIEW_LARGE),
+          adapter: b => reviewAdapter(b, ROLE_REVIEW_LARGE),
         },
         {
           id: "reviewSettled",
