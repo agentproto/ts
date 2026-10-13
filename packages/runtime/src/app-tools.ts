@@ -30,13 +30,14 @@ import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type A
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
-import type { AnyRef } from "@agentproto/agent"
+import type { AgentHandle, AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import type { ToolHandle } from "@agentproto/tool"
 import { runTool } from "@agentproto/driver"
 import { createDaemonToolRegistry, type AppToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
+import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
 import type { SessionsRegistry } from "./sessions.js"
@@ -266,10 +267,14 @@ function noAdapterError(agentId: string): string {
  * (`AgentRefResolution.model`), so a step that sets no `model` of its own
  * still gets the agent's.
  *
- * The `agent` adapter option (mastra-agent's `--agent <path>`) is only
- * meaningful for `mastra-agent` itself — any other adapter's manifest
- * doesn't declare it, and `composeSpawn` rejects an undeclared option id, so
- * it's included only when that's the resolved adapter.
+ * Everything else the AGENT.md declares travels through the same
+ * projection `app_run` uses (`projectAgentToSpawn`, agent-projection.ts):
+ * an adapter whose manifest names an AGENT.md-path option
+ * (`agentManifestOption`, mastra-agent) gets the path as that option;
+ * every other adapter gets the rendered instructions (body + persona +
+ * boundaries + traits — prepended to the step's prompt), the declared
+ * skills, the declared tools (gateway scope) and the warnings for what the
+ * harness can't honour.
  *
  * Returns undefined when no installed app bundles `workflowId` (a plain
  * `workflow_run_file` outside any app), so a `kind:"agent"` step using
@@ -280,36 +285,42 @@ export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
   resolveRole?: ModelRoleResolver,
+  resolveAgentAdapter?: AgentAdapterResolver,
 ): Promise<Record<string, AgentRefResolution> | undefined> {
   const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
   if (!app) return undefined
   const refs: Record<string, AgentRefResolution> = {}
+  const caps = new Map<string, Promise<AgentProjectionCaps>>()
   for (const agent of app.agents) {
-    let model: string | undefined
-    let metadata: { [k: string]: unknown } | undefined
-    let tools: string[] | undefined
+    let loaded: LoadedAgentManifest | undefined
     try {
-      const { handle } = await loadAgent(agent.path)
-      model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
-      metadata = handle.metadata
-      // String tool ids only — they scope the daemon gateway an agent step's
-      // session gets (sessions-registry-agent-host.ts). A structured ref has
-      // no gateway tool name to match.
-      const declared = (handle.tools ?? []).filter((t): t is string => typeof t === "string")
-      if (declared.length > 0) tools = declared
+      loaded = await loadAgentPromptDefaults(agent.path, resolveRole)
     } catch {
       // AGENT.md unreadable/invalid at run time (already validated at
-      // install) — leave model/metadata unset for this one agent; if that
-      // leaves it with no adapter at all, the no-adapter error below names
-      // it rather than silently degrading the whole workflow.
+      // install) — if that leaves the agent with no adapter at all, the
+      // no-adapter error below names it rather than silently degrading the
+      // whole workflow.
     }
-    const adapter = resolveAgentSpawnAdapter(model, metadata)
+    const adapter = resolveAgentSpawnAdapter(loaded?.model, loaded?.metadata)
     if (adapter === undefined) throw new Error(noAdapterError(agent.id))
+    if (loaded === undefined) {
+      refs[agent.id] = { adapter }
+      continue
+    }
+    let adapterCaps = caps.get(adapter)
+    if (adapterCaps === undefined) {
+      adapterCaps = projectionCapsFor(resolveAgentAdapter, adapter)
+      caps.set(adapter, adapterCaps)
+    }
+    const projected = projectAgentToSpawn(loaded, await adapterCaps)
     refs[agent.id] = {
       adapter,
-      ...(adapter === DEFAULT_AGENT_ADAPTER ? { options: { agent: agent.path } } : {}),
-      ...(model !== undefined ? { model } : {}),
-      ...(tools !== undefined ? { tools } : {}),
+      ...(projected.options !== undefined ? { options: projected.options } : {}),
+      ...(projected.model !== undefined ? { model: projected.model } : {}),
+      ...(projected.tools !== undefined ? { tools: projected.tools } : {}),
+      ...(projected.skills !== undefined ? { skills: projected.skills } : {}),
+      ...(projected.instructions !== undefined ? { instructions: projected.instructions } : {}),
+      ...(projected.warnings.length > 0 ? { warnings: projected.warnings } : {}),
     }
   }
   return refs
@@ -378,49 +389,48 @@ export async function resolveAppToolsForWorkflow(
   return { tools: toolsById, candidates: drivers }
 }
 
-/**
- * `app_run`'s multi-adapter fallback (P7 deliverable 2): the adapter's
- * manifest `agent` option (`adapters/mastra-agent/src/index.ts`) is how
- * `app_run` normally hands a spawn "run THIS AGENT.md" — but claude-code,
- * hermes, codex, etc. declare no such option (`composeSpawn` in
- * `packages/driver/agent-cli/src/manifest/compose.ts` rejects any option id
- * a manifest doesn't declare), so pointing them at a path does nothing.
- * Instead, thread the AGENT.md's OWN declared content into the spawn: its
- * frontmatter `model` becomes the default model (an explicit `model` arg
- * from the caller still wins), and its body becomes the system/prefix of
- * the first prompt — a caller-given `prompt` is appended after a blank
- * line, and stands alone when there's no body. Pure (no I/O) so it's
- * testable without touching disk; see `loadAgentPromptDefaults` for the
- * AGENT.md read + parse this consumes.
- */
-export function buildAgentRunSpawnConfig(
-  agent: { model?: string; body: string },
-  input: { model?: string; prompt?: string },
-): { model?: string; prompt?: string } {
-  const model = input.model ?? agent.model
-  const body = agent.body.trim()
-  const prompt = body ? (input.prompt ? `${body}\n\n${input.prompt}` : body) : input.prompt
-  return {
-    ...(model !== undefined ? { model } : {}),
-    ...(prompt !== undefined ? { prompt } : {}),
-  }
-}
-
-/** Load an AGENT.md's declared model (string form only — a structured
- *  `ModelRef` has no single id to pass as `agent_start.model`), its body and
- *  its raw frontmatter `metadata`, for `buildAgentRunSpawnConfig` and
- *  `app_run`'s per-agent adapter resolution
- *  ({@link resolveAgentSpawnAdapter}) — one read, both consumers. */
+/** One AGENT.md read for both adapter selection ({@link
+ *  resolveAgentSpawnAdapter}) and the spawn projection
+ *  (`projectAgentToSpawn`): the parsed handle, its body, its declared model
+ *  (string form only — a structured `ModelRef` has no single id to pass as
+ *  `agent_start.model`) after role resolution, and its raw frontmatter
+ *  `metadata`. */
 export async function loadAgentPromptDefaults(
   agentPath: string,
   resolveRole?: ModelRoleResolver,
-): Promise<{ model?: string; body: string; metadata?: { [k: string]: unknown } }> {
+): Promise<LoadedAgentManifest> {
   const { handle, body } = await loadAgent(agentPath)
   const model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
   return {
+    path: agentPath,
+    handle,
     ...(model !== undefined ? { model } : {}),
     ...(handle.metadata !== undefined ? { metadata: handle.metadata } : {}),
     body,
+  }
+}
+
+export interface LoadedAgentManifest {
+  path: string
+  handle: AgentHandle
+  body: string
+  model?: string
+  metadata?: { [k: string]: unknown }
+}
+
+/** The resolver facts `projectAgentToSpawn` needs, read once per adapter
+ *  slug. An unresolvable adapter projects as a plain harness (the spawn then
+ *  fails on its own with `adapter_not_found`). */
+async function projectionCapsFor(
+  resolveAgentAdapter: AgentAdapterResolver | undefined,
+  slug: string,
+): Promise<AgentProjectionCaps> {
+  const resolved = resolveAgentAdapter ? await resolveAgentAdapter(slug) : null
+  if (!resolved) return {}
+  return {
+    ...(resolved.agentManifestOption !== undefined ? { agentManifestOption: resolved.agentManifestOption } : {}),
+    ...(resolved.deliversSessionSkills ? { deliversSessionSkills: true } : {}),
+    ...(resolved.declaredOptions !== undefined ? { declaredOptions: resolved.declaredOptions } : {}),
   }
 }
 
@@ -1054,6 +1064,11 @@ export interface RegisterAppToolsOptions {
   /** The daemon's own workspace root — hidden from `app_run` sessions (see
    *  `app-boundary.ts`). */
   daemonWorkspace?: string
+  /** The daemon's own plain `/mcp` gateway URL — lets an `app_run` session
+   *  get the gateway mount `agent_start` gives (scoped to the agent's
+   *  declared tools, see `SpawnAgentSessionInput.allowTools`). Omitted ⇒ no
+   *  gateway mount, and declared tools are reported as not applied. */
+  daemonMcpUrl?: string
   registry: SessionsRegistry
   /** Required for `app_install`'s adapter-resolves check and `app_run`'s
    *  spawn. Omitted → both return a clear "not enabled" error, mirroring
@@ -2086,31 +2101,22 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         harness: runHarness ?? runAdapter ?? DEFAULT_AGENT_ADAPTER,
       })
 
-      // B — multi-adapter support (P7 deliverable 2), now per RESOLVED adapter
-      // (adapters may differ per agent in one run), so the probe is cached by
-      // slug: N agents on the same adapter resolve its manifest once. Only an
-      // adapter whose manifest declares an `agent` option (mastra-agent today)
-      // can be pointed straight at the AGENT.md path; every other adapter
-      // needs its spawn built FROM the AGENT.md instead
-      // (buildAgentRunSpawnConfig).
-      // `declaredOptions === undefined` means the resolver reported no
-      // option info at all (same convention as `launch-config.ts`'s
-      // `declaredOptionsKnown`) — treat that as "might declare it" so a
-      // resolver stub that omits the field (or a genuinely unresolvable
-      // adapter) keeps today's mastra-agent behaviour instead of silently
-      // falling back; only a resolver that POSITIVELY lists options without
-      // `agent` (claude-code, hermes, codex, ...) takes the fallback path.
-      const agentOptionSupport = new Map<string, Promise<boolean>>()
-      const declaresAgentOptionFor = (slug: string): Promise<boolean> => {
-        const cached = agentOptionSupport.get(slug)
-        if (cached !== undefined) return cached
-        const probe = (async () => {
-          const resolvedAdapter = await resolveAgentAdapter(slug)
-          const declaredOptionsKnown = resolvedAdapter?.declaredOptions !== undefined
-          return !declaredOptionsKnown || (resolvedAdapter!.declaredOptions!.some(o => o.id === "agent"))
-        })()
-        agentOptionSupport.set(slug, probe)
-        return probe
+      // B — the AGENT.md reaches EVERY harness (AIP-42 is runner-agnostic):
+      // `projectAgentToSpawn` turns it into spawn fields for the RESOLVED
+      // adapter (adapters may differ per agent in one run). Only an adapter
+      // whose manifest names an AGENT.md-path option (`agentManifestOption`,
+      // mastra-agent) is pointed at the path; any other gets the rendered
+      // instructions, skills and gateway tool scope, plus a harness warning
+      // for whatever it can't honour. The resolver facts are cached by slug:
+      // N agents on one adapter resolve its manifest once.
+      const capsBySlug = new Map<string, Promise<AgentProjectionCaps>>()
+      const capsFor = (slug: string): Promise<AgentProjectionCaps> => {
+        let caps = capsBySlug.get(slug)
+        if (caps === undefined) {
+          caps = projectionCapsFor(resolveAgentAdapter, slug)
+          capsBySlug.set(slug, caps)
+        }
+        return caps
       }
 
       const ordered = input.sequence ?? input.agents ?? app.agents.map(a => a.id)
@@ -2127,34 +2133,24 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         agentId: string,
       ): Promise<{ agentId: string; sessionId: string } | null> => {
         const agentPath = app.agents.find(a => a.id === agentId)!.path
-        let spawnModel = model
-        let spawnPrompt = input.prompt
-        let spawnOptions: Record<string, boolean | number | string> | undefined
 
-        // AGENT.md is read at most once per agent: adapter selection needs its
-        // `metadata`, the spawn needs its model/body. An unreadable file fails
-        // this one agent only, with the same error the spawn paths reported
-        // before adapter resolution moved in here.
-        let defaults: { model?: string; body: string; metadata?: { [k: string]: unknown } } | undefined
-        const loadDefaults = async () => {
-          if (defaults !== undefined) return defaults
-          try {
-            defaults = await loadAgentPromptDefaults(agentPath, resolveModelRole)
-            return defaults
-          } catch (err) {
-            errors.push({
-              agentId,
-              error: `could not read AGENT.md "${agentPath}": ${err instanceof Error ? err.message : String(err)}`,
-            })
-            return null
-          }
+        // AGENT.md is read once per agent: adapter selection needs its
+        // `metadata`, the spawn its model/body/tools/skills. An unreadable
+        // file fails this one agent only.
+        let loaded: LoadedAgentManifest
+        try {
+          loaded = await loadAgentPromptDefaults(agentPath, resolveModelRole)
+        } catch (err) {
+          errors.push({
+            agentId,
+            error: `could not read AGENT.md "${agentPath}": ${err instanceof Error ? err.message : String(err)}`,
+          })
+          return null
         }
 
         let adapterSlug: string
         let harnessSlug: string
         if (callerAdapter === undefined) {
-          const loaded = await loadDefaults()
-          if (loaded === null) return null
           const resolved = resolveAgentSpawnAdapter(loaded.model, loaded.metadata, model)
           if (resolved === undefined) {
             // No metadata adapter/harness and no model route — fail THIS
@@ -2174,23 +2170,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           runHarness = harnessSlug
         }
 
-        const declaresAgentOption = await declaresAgentOptionFor(adapterSlug)
-        if (declaresAgentOption) {
-          spawnOptions = { agent: agentPath }
-          if (spawnModel === undefined) {
-            const loaded = await loadDefaults()
-            if (loaded === null) return null
-            spawnModel = loaded.model
-          }
-        } else {
-          const loaded = await loadDefaults()
-          if (loaded === null) return null
-          const built = buildAgentRunSpawnConfig(loaded, { model, prompt: input.prompt })
-          spawnModel = built.model
-          spawnPrompt = built.prompt
-        }
+        const projected = projectAgentToSpawn(loaded, await capsFor(adapterSlug), model)
+        const spawnModel = projected.model
+        const spawnPrompt = prefixPrompt(projected.instructions, input.prompt)
         const result = await spawnAgentSession(
-          { registry, resolveAgentAdapter },
+          {
+            registry,
+            resolveAgentAdapter,
+            ...(opts.daemonMcpUrl !== undefined ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+          },
           {
             adapter: adapterSlug,
             ...(harnessSlug !== adapterSlug ? { harness: harnessSlug } : {}),
@@ -2204,7 +2192,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
               ...(opts.daemonWorkspace !== undefined ? { daemonWorkspace: opts.daemonWorkspace } : {}),
             }),
             ...(spawnPrompt ? { prompt: spawnPrompt } : {}),
-            ...(spawnOptions ? { options: spawnOptions } : {}),
+            ...(projected.options ? { options: projected.options } : {}),
+            ...(projected.skills ? { skills: projected.skills } : {}),
+            ...(projected.tools ? { allowTools: projected.tools } : {}),
+            ...(projected.warnings.length > 0 ? { harnessWarnings: projected.warnings } : {}),
             ...(input.access ? { access: input.access } : {}),
             appId: app.appId,
             label: `app:${app.appId}:${agentId}`,
