@@ -6,6 +6,11 @@
  * every lane without being wired into each separately), create a sentinel
  * watching it for the owning session, unless one already exists.
  *
+ * Records from the reconciler's output-scan lane (`OUTPUT_SCAN_ADAPTER`) are
+ * skipped entirely: that lane only sees a PR url MENTIONED in the session's
+ * output, which is no proof the session created it — a supervisor reporting
+ * a child's PR must not be woken by every CI/review event on it.
+ *
  * Gated by (in order): the per-spawn opt-out
  * (`SessionDescriptor.sentinelAutoWatch === false`), then
  * `config.sentinel.autoWatchPrs` (resolved fresh per call, same
@@ -43,7 +48,8 @@ import {
 import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
 import type { SentinelPublicUrl } from "./sentinel-public-url.js"
 import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
-import type { RecordOpenedPrInput } from "./sessions.js"
+import type { MessageUrgency } from "./session-message.js"
+import { OUTPUT_SCAN_ADAPTER, type RecordOpenedPrInput } from "./sessions.js"
 
 /** The slice of `SessionDescriptor` this module reads — structural so tests
  *  don't need to construct a full descriptor. The real `SessionDescriptor`
@@ -58,6 +64,9 @@ export interface SentinelAutoLinkOptions {
   /** Resolves `config.sentinel.autoWatchPrs` (with the local-gh-availability
    *  default baked in) — called fresh on every opened PR, never cached. */
   autoWatchPrs: () => Promise<boolean>
+  /** Resolves `config.sentinel.autoWatchUrgency` — urgency the auto-created
+   *  sentinel delivers at. Called fresh per PR. Defaults to `"next-turn"`. */
+  autoWatchUrgency?: () => Promise<MessageUrgency>
   activeIntervalMs?: number
   /** Public-URL source for provider auto-selection (webhook needs a stable
    *  one). Defaults to the daemon-wired resolver. */
@@ -88,6 +97,7 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
 
   const link = async (sessionId: string, input: RecordOpenedPrInput, desc: AutoLinkSession): Promise<void> => {
     if (desc.sentinelAutoWatch === false) return
+    if (input.adapter === OUTPUT_SCAN_ADAPTER) return
 
     const enabled = await opts.autoWatchPrs()
     if (!enabled) return
@@ -97,6 +107,8 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
 
     const subject = `github:${parsed.repo}#${parsed.number}`
     if (alreadyWatching(subject, sessionId)) return
+
+    const urgency = (await opts.autoWatchUrgency?.()) ?? "next-turn"
 
     // Same order as `sentinel_watch` (agentpush > webhook > local-gh). A
     // best-effort auto-link never leaves a PR unwatched just because the
@@ -116,7 +128,7 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
       const spec: SentinelSpec = {
         match: singleMatch(subject, [...GITHUB_DEFAULT_PR_TYPES]),
         until: { kind: "subject_terminal" },
-        target: { kind: "session", sessionId, urgency: "next-turn" },
+        target: { kind: "session", sessionId, urgency },
         provider: slug,
         label: `auto:pr#${parsed.number}`,
         group: sessionId,

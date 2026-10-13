@@ -5087,6 +5087,11 @@ export interface OpenedPullRequest {
   openedAt: string
 }
 
+/** `RecordOpenedPrInput.adapter` for PRs the reconciler merely saw MENTIONED
+ *  in a session's output — provenance only, not proof the session created
+ *  it, so sentinel auto-link skips it. */
+export const OUTPUT_SCAN_ADAPTER = "output-scan"
+
 export interface RecordOpenedPrInput {
   adapter: string
   number: number
