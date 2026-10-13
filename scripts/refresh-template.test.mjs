@@ -13,12 +13,37 @@ const SYNC = path.join(ROOT, "scripts/sync-templates.mjs")
 // Pins move with every template bump; derive them instead of hardcoding.
 const PINS = JSON.parse(readFileSync(path.join(ROOT, "templates/workstation/versions.json"), "utf8"))
 
-function fixture() {
+// `proved`: rewrite every recorded proof (dev, stable, each available size)
+// to match the declared pins. The --check tests then pass or fail on what
+// they change, not on the repo's real proofs, which lag a pin bump until the
+// templates are re-baked.
+function fixture({ proved = false } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "refresh-template-fixture-"))
   mkdirSync(path.join(root, "templates/workstation"), { recursive: true })
   mkdirSync(path.join(root, "scripts"), { recursive: true })
   cpSync(path.join(ROOT, "templates/workstation/versions.json"), path.join(root, "templates/workstation/versions.json"))
   cpSync(SYNC, path.join(root, "scripts/sync-templates.mjs"))
+  if (proved) {
+    const versionsPath = path.join(root, "templates/workstation/versions.json")
+    const versions = JSON.parse(readFileSync(versionsPath, "utf8"))
+    const prove = (entry, id) => ({
+      ...entry,
+      id: entry.id ?? id,
+      baked: {
+        cli: versions.cli,
+        adapters: { ...versions.adapters },
+        tools: { gh: versions.tools.gh.version },
+        builtAt: "2026-01-01T00:00:00.000Z",
+      },
+    })
+    versions.templates.dev = prove(versions.templates.dev, "devtemplate000000001")
+    versions.templates.stable = prove(versions.templates.stable, "stabletemplate000001")
+    for (const [name, preset] of Object.entries(versions.sizes)) {
+      if (preset.available === false) continue
+      versions.templates.sizes[name] = prove(versions.templates.sizes[name], `${name}template`.padEnd(20, "0"))
+    }
+    writeFileSync(versionsPath, JSON.stringify(versions, null, 2) + "\n")
+  }
   return root
 }
 
@@ -181,7 +206,7 @@ test("stable must never pull npm latest and dev must never use --pin", () => {
 })
 
 test("--check is zero-credential and validates generated drift plus the exact dev proof", () => {
-  const root = fixture()
+  const root = fixture({ proved: true })
   try {
     execFileSync(process.execPath, [path.join(root, "scripts/sync-templates.mjs"), "--root", root])
     const out = run(root, ["--channel", "dev", "--check"], { PATH: "/does-not-exist" })
@@ -228,7 +253,7 @@ test("a dirty tree is rejected before registry or E2B work", () => {
 })
 
 test("--check rejects a dev proof that does not match the declared adapter pins", () => {
-  const root = fixture()
+  const root = fixture({ proved: true })
   try {
     execFileSync(process.execPath, [path.join(root, "scripts/sync-templates.mjs"), "--root", root])
     const versionsPath = path.join(root, "templates/workstation/versions.json")
@@ -352,7 +377,7 @@ test("the proof fails when the box's nproc / free -m do not match the preset", (
 })
 
 test("--check also requires a recorded proof for every available size", () => {
-  const root = fixture()
+  const root = fixture({ proved: true })
   try {
     const versionsPath = path.join(root, "templates/workstation/versions.json")
     const versions = readVersions(root)
@@ -382,7 +407,7 @@ test("the proof requires the pinned gh in the box and records it in baked.tools"
 })
 
 test("--check rejects a recorded proof that predates the pinned gh", () => {
-  const root = fixture()
+  const root = fixture({ proved: true })
   try {
     const versionsPath = path.join(root, "templates/workstation/versions.json")
     const versions = readVersions(root)
