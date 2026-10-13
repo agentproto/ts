@@ -670,3 +670,27 @@ describe("booted.exec", () => {
     )
   })
 })
+
+describe("booted.readFile", () => {
+  beforeEach(() => {
+    sandboxCreateMock.mockReset()
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const spec: SandboxSpec = { provider: "e2b", config: {} }
+
+  it("reads the file from the box as raw bytes", async () => {
+    const bytes = new Uint8Array([0, 1, 2, 255])
+    const read = vi.fn(async () => bytes)
+    sandboxCreateMock.mockResolvedValue(fakeSandbox({ files: { read } }))
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const booted = await e2bSandboxProvider.boot(spec, { env: {} })
+
+    expect(await booted.readFile!("/tmp/agentproto-delivery.bundle")).toBe(bytes)
+    expect(read).toHaveBeenCalledWith("/tmp/agentproto-delivery.bundle", { format: "bytes" })
+  })
+})
