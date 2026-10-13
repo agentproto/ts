@@ -76,8 +76,10 @@ async function setup(opts: { daemonWorkspace?: string } = {}) {
     cancel: async () => {},
     close: async () => {},
   }))
-  const resolveAgentAdapter: AgentAdapterResolver = async slug =>
-    slug === "mastra-agent" ? { startSession, commandPreview: "mock-adapter" } : null
+  // Adapter choice is out of scope here: app_run resolves each agent's adapter
+  // from AGENT.md (the fixture's `claude-*` model → `claude-code`), so the mock
+  // serves every slug and these tests only exercise workspace placement.
+  const resolveAgentAdapter: AgentAdapterResolver = async () => ({ startSession, commandPreview: "mock-adapter" })
   const server = new McpServer({ name: "owned-ws-test", version: "0.0.0" })
   registerAppTools(server, {
     registry,
