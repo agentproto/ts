@@ -5055,8 +5055,16 @@ async function bootSandboxAgentSession(opts: {
   if (workspacePlan && opts.workspace) {
     const slug = opts.workspace.slug
     const failSetup = async (message: string, step?: string): Promise<SandboxBootResult> => {
-      await host.stop().catch(() => undefined)
-      recordSandboxState(host.sandboxId, "stopped")
+      // A reused box may hold earlier sessions' unpushed work: keep it
+      // reconnectable (pause) rather than kill it, as the reconnect-failure
+      // path does.
+      if (reuseSandboxId !== undefined && host.pause) {
+        await host.pause().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "paused")
+      } else {
+        await host.stop().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "stopped")
+      }
       return {
         ok: false,
         code: "sandbox_workspace_setup_failed",

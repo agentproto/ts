@@ -90,6 +90,7 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
   let execImpl: (opts: SandboxExecOpts) => Promise<SandboxExecResult>
   let bootEnvs: Array<Record<string, string> | undefined>
   let stopSpy: ReturnType<typeof vi.fn>
+  let pauseSpy: ReturnType<typeof vi.fn>
   let gateway: GatewayHandle
   let boxWorkspace: string
   let hostDir: string
@@ -128,6 +129,7 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     bootEnvs = []
     withExec = true
     stopSpy = vi.fn(async () => undefined)
+    pauseSpy = vi.fn(async () => undefined)
     execImpl = async opts => {
       if (opts.command.includes("rev-parse")) return ok(`${BASE_SHA}\n`)
       if (opts.command.includes("rev-list")) return ok("ahead=2\nuncommitted=0\n")
@@ -145,23 +147,26 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       persistPath: join(boxWorkspace, "sessions.json"),
       resolveAgentAdapter: makeFakeCliResolver(receivedStarts),
     })
+    const bootedFor = (env: Record<string, string> | undefined) => {
+      bootEnvs.push(env)
+      return {
+        mcpUrl: `${gateway.url}/mcp`,
+        sandboxId: "sbx_fake_ws",
+        stop: stopSpy,
+        pause: pauseSpy,
+        ...(withExec
+          ? {
+              async exec(o: SandboxExecOpts) {
+                execCalls.push(o)
+                return execImpl(o)
+              },
+            }
+          : {}),
+      }
+    }
     provider = {
-      boot: vi.fn(async (_spec, opts) => {
-        bootEnvs.push(opts?.env)
-        return {
-          mcpUrl: `${gateway.url}/mcp`,
-          sandboxId: "sbx_fake_ws",
-          stop: stopSpy,
-          ...(withExec
-            ? {
-                async exec(o: SandboxExecOpts) {
-                  execCalls.push(o)
-                  return execImpl(o)
-                },
-              }
-            : {}),
-        }
-      }),
+      boot: vi.fn(async (_spec, opts) => bootedFor(opts?.env)),
+      connect: vi.fn(async (_id, _spec, opts) => bootedFor(opts?.env)),
     }
     registry = createSessionsRegistry({ persist: false, transcriptDir: join(hostDir, "transcripts") })
     keychain.reads.length = 0
@@ -268,6 +273,24 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(result.message).not.toContain(FAKE_TOKEN)
     expect(stopSpy).toHaveBeenCalled()
     expect(receivedStarts).toHaveLength(0)
+  })
+
+  it("a failed setup on a REUSED box pauses it instead of killing it", async () => {
+    execImpl = async opts =>
+      opts.command.includes("git clone")
+        ? { exitCode: 128, stdout: "", stderr: "fatal: unable to access", durationMs: 1 }
+        : ok()
+    const result = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      sandbox: { provider: "fake", config: {}, reuse: "sbx_prior_box" },
+      workspaceSlug: "agentproto",
+      worktree: { slug: "x" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("sandbox_workspace_setup_failed")
+    expect(pauseSpy).toHaveBeenCalledTimes(1)
+    expect(stopSpy).not.toHaveBeenCalled()
   })
 
   it("a provider that cannot exec fails the spawn instead of starting in an empty box", async () => {
