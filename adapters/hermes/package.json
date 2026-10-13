@@ -34,6 +34,7 @@
   },
   "files": [
     "dist",
+    "plugin",
     "HERMES.md",
     "SECRETS.md",
     "README.md",
@@ -53,7 +54,8 @@
   "dependencies": {
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
-    "@agentproto/provider-kit": "workspace:*"
+    "@agentproto/provider-kit": "workspace:*",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

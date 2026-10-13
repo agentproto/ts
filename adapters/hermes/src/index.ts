@@ -459,4 +459,20 @@ export async function readHermesUsage(
   }
 }
 
+export {
+  HERMES_SYSTEM_PROMPT_PLUGIN_NAME,
+  MAX_HERMES_SYSTEM_PROMPT_CHARS,
+  bundledHermesSystemPromptPluginDir,
+  hermesSystemPromptPluginStatus,
+  installHermesSystemPromptPlugin,
+  resolveHermesHome,
+} from "./system-prompt-plugin.js"
+export type {
+  HermesSystemPromptPluginEnableResult,
+  HermesSystemPromptPluginStatus,
+  HermesSystemPromptPluginStatusOptions,
+  InstallHermesSystemPromptPluginOptions,
+  InstallHermesSystemPromptPluginResult,
+} from "./system-prompt-plugin.js"
+
 export type { AgentCliHandle, AgentCliRuntime }
