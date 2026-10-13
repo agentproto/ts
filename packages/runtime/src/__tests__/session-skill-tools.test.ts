@@ -152,6 +152,29 @@ describe("skill_import / skill_imported_remove round trip", () => {
 
     await close()
   })
+
+  it("rejects an alias with path separators", async () => {
+    const src = await makeSkill("ap-bad-alias")
+    const { client, close } = await open()
+
+    let rejected = false
+    let isError = false
+    try {
+      const result = await client.callTool({
+        name: "skill_import",
+        arguments: { path: src, alias: "../evil" },
+      })
+      isError = Boolean((result as { isError?: boolean }).isError)
+    } catch {
+      rejected = true
+    }
+    expect(rejected || isError).toBe(true)
+
+    const listed = parse(await client.callTool({ name: "skill_imported_list", arguments: {} }))
+    expect(listed.imports).toHaveLength(0)
+
+    await close()
+  })
 })
 
 describe("skill_resync", () => {

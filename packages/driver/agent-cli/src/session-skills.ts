@@ -26,7 +26,7 @@
  */
 
 import { cpSync, mkdirSync, rmSync } from "node:fs"
-import { join } from "node:path"
+import { isAbsolute, join, relative, resolve as resolvePath } from "node:path"
 import type { AgentCliSessionSkill } from "./types.js"
 
 /** Placeholder an adapter manifest uses in `metadata.sessionSkills.env` values
@@ -100,7 +100,17 @@ export function applySessionSkills(args: ApplySessionSkillsArgs): ApplySessionSk
   rmSync(targetDir, { recursive: true, force: true })
   mkdirSync(targetDir, { recursive: true })
   for (const skill of args.skills) {
-    cpSync(skill.path, join(targetDir, skill.alias), { recursive: true })
+    // Defense in depth: the registry validates `alias` as a bare slug, but a
+    // hand-edited/corrupt registry could carry `..`/separators — never let a
+    // copy escape the target dir.
+    const dest = resolvePath(targetDir, skill.alias)
+    const rel = relative(targetDir, dest)
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new Error(
+        `refusing to deliver skill "${skill.alias}": alias escapes ${targetDir}`,
+      )
+    }
+    cpSync(skill.path, dest, { recursive: true })
   }
   if (args.meta.env) {
     for (const [name, value] of Object.entries(args.meta.env)) {

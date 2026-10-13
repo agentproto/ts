@@ -60,6 +60,7 @@ import {
   importSkill,
   removeImportedSkill,
   resyncImportedSkill,
+  NAME_PATTERN,
   type ImportedSkillEntry,
 } from "./skill-imports.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
@@ -2817,6 +2818,13 @@ export function registerSessionTools(
         ),
       alias: z
         .string()
+        .min(1)
+        .max(64)
+        .regex(
+          NAME_PATTERN,
+          "alias must be a bare slug: lowercase letters/digits with single " +
+            "hyphens, no leading/trailing hyphen (it names the delivery dir)."
+        )
         .optional()
         .describe(
           "Optional display/dir name. Defaults to the skill's frontmatter `name`."

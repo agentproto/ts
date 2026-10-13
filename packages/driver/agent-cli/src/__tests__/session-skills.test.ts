@@ -50,6 +50,7 @@ vi.mock("@agentproto/acp/client", () => ({
 }))
 
 const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+import { applySessionSkills } from "../session-skills.js"
 import type { AgentCliDefinition, AgentCliSessionSkill } from "../types.js"
 
 const opencodeLike = (metadata: Record<string, unknown>): AgentCliDefinition => ({
@@ -136,5 +137,19 @@ describe("session-skills delivery (define-agent-cli wiring)", () => {
     const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike({})))
     await runtime.start({ cwd: "/scratch", configDir, sessionSkills: [{ alias: "ap-z", path: src }] })
     expect(existsSync(join(configDir, "skills"))).toBe(false)
+  })
+
+  it("applySessionSkills refuses an alias that escapes the target dir", () => {
+    const configDir = join(base, "sess_evil")
+    const src = makeSkill(base, "ap-ev")
+    expect(() =>
+      applySessionSkills({
+        skills: [{ alias: "../evil", path: src }],
+        meta: { dir: "skills" },
+        baseDir: configDir,
+        env: {},
+      })
+    ).toThrow(/escapes/)
+    expect(existsSync(join(base, "evil"))).toBe(false)
   })
 })

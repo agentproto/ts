@@ -52,7 +52,22 @@ export const SKILL_FILE = "SKILL.md"
  * the fields that gate an import (name is the identity, description is
  * required by AIP-3). Unknown frontmatter keys are tolerated (`.loose()`).
  */
-const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$|^[a-z0-9]$/
+export const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$|^[a-z0-9]$/
+
+/**
+ * An `alias` names the directory the driver copies a skill into
+ * (`<session config dir>/skills/<alias>/`), so it MUST be a bare slug — no
+ * path separators, no `..`, no leading dot. Reusing `NAME_PATTERN` (the AIP-3
+ * skill-name grammar) guarantees it can never escape the target dir.
+ */
+export function assertValidAlias(alias: string): void {
+  if (!NAME_PATTERN.test(alias)) {
+    throw new Error(
+      `alias "${alias}" is invalid — must match ${NAME_PATTERN.source} ` +
+        "(lowercase letters/digits, single hyphens, no leading/trailing hyphen).",
+    )
+  }
+}
 const skillFrontmatterSchema = z
   .object({
     name: z.string().min(1).max(64).regex(NAME_PATTERN),
@@ -304,7 +319,20 @@ export async function importSkill(
   const raw = await fs.readFile(join(sourcePath, SKILL_FILE), "utf8")
   const { name } = parseSkillFrontmatter(raw)
   const alias = (input.alias ?? name).trim()
-  if (!alias) throw new Error("alias resolves to empty string")
+  assertValidAlias(alias)
+
+  const config = await loadImportedSkills(registryPath)
+  // Resolution matches by id OR alias, so an alias that collides with a
+  // DIFFERENT entry's id or alias would make the resolution ambiguous (and
+  // two imports could target the same delivery dir). Refuse it up front.
+  const clash = config.imports.find(
+    e => e.id !== name && (e.id === alias || e.alias === alias),
+  )
+  if (clash) {
+    throw new Error(
+      `alias "${alias}" is already used by import "${clash.id}" — pick a different alias.`,
+    )
+  }
 
   const dest = skillImportDir(name, root)
   await copySkillDir(sourcePath, dest)
@@ -316,7 +344,6 @@ export async function importSkill(
     sha,
     addedAt: new Date().toISOString(),
   }
-  const config = await loadImportedSkills(registryPath)
   const next: ImportedSkillsConfig = {
     ...config,
     imports: [...config.imports.filter(e => e.id !== entry.id), entry],

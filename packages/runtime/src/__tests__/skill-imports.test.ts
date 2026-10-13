@@ -96,6 +96,27 @@ describe("importSkill", () => {
     await expect(importSkill({ sourcePath: join(base, "nope") }, paths)).rejects.toThrow(/does not exist/)
   })
 
+  it("rejects an alias that could escape the delivery dir", async () => {
+    const src = await makeSkill("ap-evil")
+    await expect(importSkill({ sourcePath: src, alias: "../evil" }, paths)).rejects.toThrow(
+      /alias/
+    )
+    await expect(importSkill({ sourcePath: src, alias: "a/b" }, paths)).rejects.toThrow(/alias/)
+    await expect(importSkill({ sourcePath: src, alias: "." }, paths)).rejects.toThrow(/alias/)
+    expect(existsSync(join(base, "evil"))).toBe(false)
+  })
+
+  it("refuses an alias colliding with another entry's id or alias", async () => {
+    await importSkill({ sourcePath: await makeSkill("ap-one"), alias: "shared" }, paths)
+    const two = await makeSkill("ap-two")
+    await expect(importSkill({ sourcePath: two, alias: "shared" }, paths)).rejects.toThrow(
+      /already used/
+    )
+    await expect(importSkill({ sourcePath: two, alias: "ap-one" }, paths)).rejects.toThrow(
+      /already used/
+    )
+  })
+
   it("tolerates extra frontmatter keys", async () => {
     const src = await makeSkill("ap-extra", {
       frontmatter: "---\nname: ap-extra\ndescription: d\nlicense: MIT\nmetadata:\n  aip3:\n    schema: skills/v1\n---\n",
