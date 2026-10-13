@@ -609,6 +609,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  entirely by `session-spawn.ts`: their option ids are forwarded
    *  untouched and no "unknown skill id" warning is raised. */
   deliversSessionSkills?: boolean
+  /** The id of the manifest option that takes an AIP-42 AGENT.md PATH and
+   *  makes this adapter honour the whole manifest itself — declared by the
+   *  adapter as `metadata.agentManifestOption` (mastra-agent: `"agent"`).
+   *  Absent ⇒ `app_run` / workflow agent refs project the manifest onto
+   *  ordinary spawn fields instead (`agent-projection.ts`). An option merely
+   *  NAMED `agent` (antigravity's `agy` agent name) is not this. */
+  agentManifestOption?: string
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes

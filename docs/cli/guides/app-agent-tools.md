@@ -6,13 +6,12 @@ can actually resolve to once the daemon spawns the agent — the executor
 behind each tool id, and the allowlist rule that keeps an app from reaching
 tools it never declared.
 
-> Scope: this page is about the **mastra-agent** adapter (`app_run`'s
-> default, and the only adapter whose manifest exposes a resolvable AGENT.md
-> — see `[app_run` with another adapter](#app_run-with-a-non-mastra-agent-adapter)
-> below). If your app runs its agents under `claude-code`/`hermes`/`codex`
-> instead, tool access comes from that adapter's own native MCP mounting —
-> ambient config or the daemon's self-mount — not from this resolution
-> chain.
+> Scope: the resolution chain below is the **mastra-agent** adapter's — the
+> one adapter whose manifest declares it reads an AGENT.md itself
+> (`metadata.agentManifestOption: "agent"`). Every other adapter
+> (`opencode`, `claude-code`, `hermes`, `codex`, ...) gets the same
+> AGENT.md projected onto its spawn — see
+> [Other adapters](#app_run-with-a-non-mastra-agent-adapter) below.
 
 ## Resolution order
 
@@ -65,15 +64,25 @@ needs to pass `path` — not its own app id.
 
 ## `app_run` with a non-mastra-agent adapter
 
-`app_run(adapter: "claude-code" | "hermes" | ...)` doesn't go through any of
-this — those adapters' manifests declare no `agent` option, so there's no
-per-ref resolution to allowlist against. Instead the spawn is built FROM the
-AGENT.md directly: its frontmatter `model` becomes the spawn's default model
-and its body becomes the system/prefix of the first prompt. Tool access for
-that spawned session then comes entirely from whatever that adapter mounts
-on its own (e.g. claude-code/hermes's daemon self-mount, `session-spawn.ts`'s
-`shouldInjectDaemonSelfMount`) — the AGENT.md's `tools:` list is not
-consulted as an allowlist in this path.
+AIP-42 makes the manifest runner-agnostic, so `app_run` (and a workflow
+`kind: agent` step with `agent.ref`) projects the AGENT.md onto whatever
+adapter runs it (`packages/runtime/src/agent-projection.ts`):
+
+| AGENT.md field | Becomes | When the harness can't take it |
+| --- | --- | --- |
+| body + `persona` (inline) + `boundaries` + `traits` | one instructions text (the same rendering mastra-agent uses), placed before the caller's prompt | always the case today — there is no system-prompt channel on a spawn yet, so the text rides as the first prompt's prefix and a `session:harness-warning` says so |
+| `tools` (string ids) | the daemon gateway mount, scoped with `?allowTools=` (deferred loading off) — mounted for ANY adapter | the harness's own native tools stay available (warned); no daemon `/mcp` URL or a caller-supplied `mcpServers` ⇒ warned as not applied |
+| `skills` (string ids) | the spawn's `skills` — session-skill delivery (claude-code, opencode) or the adapter's `skills` option (hermes) | warned as not delivered |
+| `model` | the spawn model (`app_run`'s `model` arg wins) | — |
+
+Structured `{ ref }` tool/skill entries have no id to pass on and are warned
+about. Nothing is dropped silently: every gap is a `session:harness-warning`
+on the session.
+
+The daemon hands the AGENT.md **path** only to an adapter whose manifest
+declares `metadata.agentManifestOption` (the id of the option that takes the
+path). An option merely *named* `agent` is not enough — antigravity's `agent`
+is an `agy` agent name, and gets the projection like any other harness.
 
 ## See also
 

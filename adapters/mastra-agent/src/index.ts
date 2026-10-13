@@ -140,6 +140,15 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
     },
   ],
   tags: ["mastra", "agentproto", "acp", "agent-runtime", "first-party"],
+  metadata: {
+    // Explicit marker: the `agent` option above takes an AIP-42 AGENT.md
+    // PATH and this arm honours the whole manifest (body, boundaries,
+    // persona, tools, skills) itself. The daemon (`app_run`, workflow agent
+    // refs) hands the path over only to adapters carrying this marker — an
+    // option merely NAMED `agent` (antigravity's `agy` agent name) gets the
+    // manifest projected onto ordinary spawn fields instead.
+    agentManifestOption: "agent",
+  },
 })
 
 export function mastraAgentRuntime(): AgentCliRuntime {

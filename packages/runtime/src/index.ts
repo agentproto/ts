@@ -2638,7 +2638,12 @@ export async function createGateway(
           })
           return compileWorkflow(handle, {
             ...merged,
-            agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id, resolveModelRoleId),
+            agentRefs: await resolveAgentRefsForWorkflow(
+              appRegistry,
+              handle.id,
+              resolveModelRoleId,
+              opts.resolveAgentAdapter,
+            ),
           })
         },
         // App state ledger bridge: runs whose workflow belongs to an
@@ -3370,6 +3375,7 @@ export async function createGateway(
       dispatchTool,
       callImportedTool: callImportedAppTool,
       daemonWorkspace: workspace,
+      daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),

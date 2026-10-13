@@ -36,7 +36,7 @@ import type { WorkflowHandle } from "@agentproto/workflow"
 import { assertKnownStepRefs } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
-import type { AgentRefResolution, AgentStep, AgentStepRetry, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow, Selector } from "./types.js"
+import type { AgentHarness, AgentRefResolution, AgentStep, AgentStepRetry, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow, Selector } from "./types.js"
 import { buildAgentStep } from "./build-agent-step.js"
 import { resolveRefString } from "./ref-string.js"
 import { isCompilableJsonSchema, validateAgainstJsonSchema } from "./validate-input.js"
@@ -728,6 +728,9 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     step.options !== undefined ? step.options : undefined
   let model: unknown = step.model
   let agentTools: readonly string[] | undefined
+  let agentWarnings: readonly string[] | undefined
+  let instructions: string | undefined
+  let harness: AgentHarness | undefined = step.harness
 
   const agentRef: unknown = step.agent?.ref
   if (agentRef !== undefined) {
@@ -770,6 +773,15 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     // The agent's declared tools travel with it whatever adapter runs it —
     // they scope the host's tool gateway, not an adapter option.
     agentTools = resolved.tools
+    // The rest of the manifest, projected for an adapter that doesn't
+    // consume it itself (`AgentRefResolution.instructions`): instructions
+    // lead the step's prompt, skills fill `harness.skills` unless the step
+    // pins its own, and what the harness can't honour rides as warnings.
+    instructions = resolved.instructions
+    if (resolved.skills !== undefined && resolved.skills.length > 0 && harness?.skills === undefined) {
+      harness = { ...(harness ?? {}), skills: resolved.skills }
+    }
+    if (resolved.warnings !== undefined && resolved.warnings.length > 0) agentWarnings = resolved.warnings
   }
 
   // AIP-58 §3 Outcome rule: a step declaring NEITHER an output schema NOR a
@@ -807,7 +819,10 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
 
   const retry = compileAgentRetry(step.retry, id)
   return buildAgentStep(id, {
-    prompt: (b: Bindings) => renderPrompt(prompt, b),
+    prompt:
+      instructions !== undefined
+        ? (b: Bindings) => `${instructions}\n\n${renderPrompt(prompt, b)}`
+        : (b: Bindings) => renderPrompt(prompt, b),
     ...(adapter !== undefined ? { adapter } : {}),
     ...(cwd !== undefined ? { cwd } : {}),
     ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
@@ -819,8 +834,9 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     ...(outputSchema !== undefined ? { outputSchema } : {}),
     ...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
     ...(retry !== undefined ? { retry } : {}),
-    ...(step.harness !== undefined ? { harness: step.harness } : {}),
+    ...(harness !== undefined ? { harness } : {}),
     ...(agentTools !== undefined ? { agentTools } : {}),
+    ...(agentWarnings !== undefined ? { agentWarnings } : {}),
   })
 }
 
