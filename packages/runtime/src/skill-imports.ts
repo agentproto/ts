@@ -30,7 +30,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, relative, resolve as resolvePath, sep } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 
@@ -344,6 +344,44 @@ export interface ImportSkillInput {
   alias?: string
 }
 
+/** True when `child` is `parent` itself or sits inside it. */
+function pathContains(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+}
+
+/** The registry root's realpath, or undefined when it doesn't exist yet (no
+ *  overlap is possible against a path that isn't there). */
+async function realRegistryRoot(root: string): Promise<string | undefined> {
+  try {
+    return await fs.realpath(root)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Reject a source that overlaps the registry root in EITHER direction. A
+ * source INSIDE the root (e.g. an existing import's own copy, or the root
+ * itself) would be wiped by the `rm(dest)` before the copy; a source that
+ * CONTAINS the root would have the whole imports tree deleted by the same rm.
+ * Returns the refusal message, or undefined when there's no overlap.
+ */
+function registryOverlapMessage(
+  sourceReal: string,
+  realRoot: string | undefined,
+): string | undefined {
+  if (!realRoot) return undefined
+  if (pathContains(realRoot, sourceReal) || pathContains(sourceReal, realRoot)) {
+    return (
+      `skill source "${sourceReal}" overlaps the imports root "${realRoot}" — ` +
+      "importing it would delete the source tree. Point at the ORIGINAL skill " +
+      "folder, not a copy under the registry root."
+    )
+  }
+  return undefined
+}
+
 /**
  * Copy a skill folder into the registry and record it. Throws when the source
  * lacks a valid `SKILL.md` (the caller — `skill_import` — turns that into an
@@ -356,6 +394,8 @@ export async function importSkill(
   const root = paths.root ?? IMPORTED_SKILLS_ROOT()
   const registryPath = paths.registryPath ?? IMPORTED_SKILLS_PATH()
   const sourcePath = await assertSkillSource(input.sourcePath)
+  const overlap = registryOverlapMessage(sourcePath, await realRegistryRoot(root))
+  if (overlap) throw new Error(overlap)
   const raw = await fs.readFile(join(sourcePath, SKILL_FILE), "utf8")
   const { name } = parseSkillFrontmatter(raw)
   const alias = (input.alias ?? name).trim()
@@ -468,6 +508,11 @@ export async function resyncImportedSkill(
   if (destSha === sourceSha) {
     return { config, entry, changed: false, warnings: [] }
   }
+
+  // A legacy/hand-edited entry could carry a `sourcePath` that overlaps the
+  // root; re-copying it would delete the source. Warn and leave it intact.
+  const overlap = registryOverlapMessage(entry.sourcePath, await realRegistryRoot(root))
+  if (overlap) return { config, entry, changed: false, warnings: [overlap] }
 
   await copySkillDir(entry.sourcePath, dest)
   const updated: ImportedSkillEntry = { ...entry, sha: await computeSkillDirSha(dest) }

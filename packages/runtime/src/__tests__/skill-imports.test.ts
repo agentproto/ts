@@ -140,6 +140,23 @@ describe("importSkill", () => {
     )
   })
 
+  it("refuses a source inside the imports root (would delete itself)", async () => {
+    await importSkill({ sourcePath: await makeSkill("ap-seed") }, paths)
+    const inside = join(paths.root!, "ap-inner")
+    await mkdir(inside, { recursive: true })
+    await writeFile(join(inside, "SKILL.md"), "---\nname: ap-inner\ndescription: d\n---\n")
+    await expect(importSkill({ sourcePath: inside }, paths)).rejects.toThrow(/overlaps/)
+    expect(existsSync(join(inside, "SKILL.md"))).toBe(true)
+    expect(existsSync(skillImportDir("ap-seed", paths.root))).toBe(true)
+  })
+
+  it("refuses a source that CONTAINS the imports root", async () => {
+    await importSkill({ sourcePath: await makeSkill("ap-seed") }, paths)
+    await writeFile(join(base, "SKILL.md"), "---\nname: ap-base\ndescription: d\n---\n")
+    await expect(importSkill({ sourcePath: base }, paths)).rejects.toThrow(/overlaps/)
+    expect(existsSync(skillImportDir("ap-seed", paths.root))).toBe(true)
+  })
+
   it("leaves no temp copy behind after an import (atomic rename)", async () => {
     const src = await makeSkill("ap-atomic")
     await importSkill({ sourcePath: src }, paths)
