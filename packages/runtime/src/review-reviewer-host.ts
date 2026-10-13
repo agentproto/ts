@@ -18,16 +18,32 @@
  * reviewers, never merged).
  */
 
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { AgentAdapterResolver } from "./http-server.js"
-import { spawnAgentSession, type SpawnAgentSessionDeps, type SpawnAgentSessionInput } from "./session-spawn.js"
+import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps, type SpawnAgentSessionInput } from "./session-spawn.js"
 import { monitorSessionWait } from "./orchestration-tools.js"
 import { getHarnessPreset, type HarnessPreset } from "./harness-preset-store.js"
 import { getUserPreset, type UserPreset } from "./user-presets.js"
 import type { ReviewerRunResult, ReviewerSessionHost } from "./review-runner.js"
-import type { LaneFallback } from "@agentproto/review"
+import { parseAgentLaneReport, type LaneFallback, type LaneRecovery } from "@agentproto/review"
+import {
+  RECOVERY_FOLLOWUP_MIN_MS,
+  RECOVERY_MAX_CANDIDATES,
+  RECOVERY_MIN_EVIDENCE_CHARS,
+  RECOVERY_STEP_MAX_MS,
+  RECOVERY_STEP_MIN_MS,
+  boundEvidence,
+  buildFollowUpPrompt,
+  buildRecoveryPrompt,
+  evaluateRecoveryReply,
+  substantiveChars,
+  type ReviewerLifecycle,
+} from "./review-verdict-recovery.js"
 import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
 
 export interface DaemonReviewerHostDeps {
@@ -50,6 +66,20 @@ export interface DaemonReviewerHostDeps {
   /** Clock for the exhausted-wallet cooldowns — injectable for tests;
    *  default {@link Date.now}. */
   now?: () => number
+  /** Where the bounded verdict-recovery step runs (read per recovery, so a
+   *  config change applies without a restart). Unset / no presets ⇒ a lane
+   *  that ends without a valid verdict file is classified `unavailable` and
+   *  left incomplete — recovery never silently picks a model. */
+  getRecovery?: () => ReviewRecoveryConfig | undefined
+}
+
+/** The recovery step's model selection. `presets` are reviewer presets (the
+ *  same harness/user presets lanes use, so the same OpenRouter guard and
+ *  wallet cooldowns apply); `model`, when set (the `review.recovery` model
+ *  role), overrides the model/profile each of them would run. */
+export interface ReviewRecoveryConfig {
+  presets: string[]
+  model?: { model: string; profile?: string }
 }
 
 /** Retries (after the first attempt) for a lane whose reviewer turn ends in a
@@ -220,6 +250,263 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     return perModel ? { ...perModel, perModel: true } : undefined
   }
 
+  const readLines = (sessionId: string): string[] => {
+    const lines: string[] = []
+    const unsub = registry.attach(sessionId, (line) => {
+      lines.push(line)
+    })
+    unsub?.()
+    return lines
+  }
+
+  /** Why `path` is not an acceptable verdict file, or `undefined` when it is
+   *  one — the canonical lane parser, the same one the runner re-applies. */
+  const artifactProblem = async (path: string): Promise<string | undefined> => {
+    let raw: string
+    try {
+      raw = await readFile(path, "utf8")
+    } catch {
+      return "verdict file was not written"
+    }
+    try {
+      parseAgentLaneReport(raw)
+      return undefined
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  type RecoveryModelReply =
+    | { kind: "reply"; text: string; sessionId: string; preset: string; model?: string }
+    | { kind: "unavailable"; reason: string }
+    | { kind: "timeout" }
+    | { kind: "cancelled" }
+
+  /** One bounded small-model call: read-only, empty scratch cwd, killed and
+   *  archived before returning. Candidates are tried only while they fail to
+   *  START or END a turn (never after a reply), at most
+   *  {@link RECOVERY_MAX_CANDIDATES} spawns. */
+  async function runRecoveryModel(args: {
+    config: ReviewRecoveryConfig
+    prompt: string
+    label: string
+    parentSessionId?: string
+    signal?: AbortSignal
+    deadline: number
+  }): Promise<RecoveryModelReply> {
+    const notes: string[] = []
+    let spawns = 0
+    let scratch: string | undefined
+    try {
+      for (const presetId of args.config.presets) {
+        if (spawns >= RECOVERY_MAX_CANDIDATES) break
+        if (args.signal?.aborted) return { kind: "cancelled" }
+        const stepMs = Math.min(RECOVERY_STEP_MAX_MS, args.deadline - Date.now() - 500)
+        if (stepMs < RECOVERY_STEP_MIN_MS) return { kind: "timeout" }
+        const base = await resolveReviewerPreset(presetId, deps)
+        if (!base) {
+          notes.push(`recovery preset '${presetId}' not found`)
+          continue
+        }
+        const fields: typeof base = args.config.model
+          ? {
+              ...base,
+              model: args.config.model.model,
+              ...(args.config.model.profile ? { access: { profileRef: args.config.model.profile } } : {}),
+            }
+          : base
+        const profileRef = reviewerProfileRef(fields)
+        const model = reviewerModel(fields)
+        const cooling = blockedCooldown(profileRef, model)
+        if (cooling) {
+          notes.push(`recovery preset '${presetId}' skipped: exhausted until ${new Date(cooling.until).toISOString()}`)
+          continue
+        }
+        const violation = await reviewerOpenRouterViolation(presetId, fields, deps.getAuthProfile)
+        if (violation) {
+          notes.push(violation)
+          continue
+        }
+        spawns++
+        scratch ??= await mkdtemp(join(tmpdir(), "agp-review-recover-"))
+        const since = eventRing.since(Number.MAX_SAFE_INTEGER, { limit: 0 }).nextCursor
+        const spawned = await spawnAgentSession(
+          { ...deps.spawnDeps, registry, resolveAgentAdapter: deps.resolveAgentAdapter },
+          {
+            ...fields,
+            cwd: scratch,
+            prompt: args.prompt,
+            label: args.label,
+            role: "executor",
+            origin: "review",
+            posture: "read-only",
+            worktree: false,
+            dedupe: false,
+            ...(args.parentSessionId ? { parentSessionId: args.parentSessionId } : {}),
+          },
+        )
+        if (!spawned.ok) {
+          noteWalletExhausted(profileRef, model, spawned.message)
+          notes.push(`recovery preset '${presetId}' failed to start: ${clip(spawned.message)}`)
+          continue
+        }
+        const id = spawned.descriptor.id
+        const stop = () => {
+          try {
+            registry.kill(id)
+          } catch {
+            // already gone
+          }
+        }
+        args.signal?.addEventListener("abort", stop, { once: true })
+        if (args.signal?.aborted) stop()
+        try {
+          const res = await monitorSessionWait({
+            registry,
+            sessionEvents,
+            eventRing,
+            sessionIds: [id],
+            event: "any",
+            timeoutMs: Math.max(1, Math.min(stepMs, args.deadline - Date.now())),
+            since,
+          })
+          if (res.timedOut) return { kind: "timeout" }
+          if (args.signal?.aborted) return { kind: "cancelled" }
+          if (res.event === "turn-end" && res.reason === "error") {
+            noteWalletExhausted(profileRef, model, res.error)
+            notes.push(`recovery preset '${presetId}' errored: ${clip(res.error ?? "no error text")}`)
+            continue
+          }
+          if (res.event !== "turn-end" || res.empty) {
+            notes.push(`recovery preset '${presetId}' produced no reply`)
+            continue
+          }
+          const desc = registry.get(id)
+          const text = cleanAgentLines(readLines(id)).join("\n").trim()
+          const usedModel = desc?.activeModel ?? desc?.model ?? model
+          return { kind: "reply", text, sessionId: id, preset: presetId, ...(usedModel ? { model: usedModel } : {}) }
+        } finally {
+          args.signal?.removeEventListener("abort", stop)
+          stop()
+          try {
+            if (!registry.get(id)?.archived) registry.archiveSession(id)
+          } catch {
+            // best-effort
+          }
+        }
+      }
+      return { kind: "unavailable", reason: notes.length ? notes.join("; ") : "no recovery model could be started" }
+    } finally {
+      if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  type ArtifactState =
+    | { state: "valid" }
+    | { state: "recovered"; recovery: LaneRecovery }
+    | { state: "unrecovered"; recovery: LaneRecovery }
+
+  /** The verdict file is checked here — at turn end, while the reviewer
+   *  session is still alive. Valid ⇒ nothing to do. Otherwise ONE recovery
+   *  step (plus at most one follow-up to the original reviewer), all inside
+   *  the original deadline. Only the daemon ever writes the recovered file,
+   *  and only from a reply that passed {@link evaluateRecoveryReply}. */
+  async function ensureArtifact(args: {
+    input: Parameters<ReviewerSessionHost["run"]>[0]
+    artifact: NonNullable<Parameters<ReviewerSessionHost["run"]>[0]["artifact"]>
+    sessionId: string
+    deadline: number
+    lifecycle: ReviewerLifecycle
+    lifecycleDetail?: string
+  }): Promise<ArtifactState> {
+    const { input, artifact, sessionId, deadline, lifecycle } = args
+    const problem = await artifactProblem(artifact.path)
+    if (!problem) return { state: "valid" }
+    const fail = (outcome: LaneRecovery["outcome"], reason: string, extra: Partial<LaneRecovery> = {}): ArtifactState => ({
+      state: "unrecovered",
+      recovery: { outcome, reason: clip(reason), ...extra },
+    })
+    if (input.signal?.aborted) return fail("cancelled", "review cancelled before recovery")
+
+    const evidence = boundEvidence(readLines(sessionId))
+    if (substantiveChars(evidence) < RECOVERY_MIN_EVIDENCE_CHARS) {
+      return fail("reviewer_failed", `no analysis to recover from (${problem})`)
+    }
+    if (deadline - Date.now() < RECOVERY_STEP_MIN_MS) return fail("timeout", "no deadline left for recovery")
+    const config = deps.getRecovery?.()
+    if (!config || config.presets.length === 0) {
+      return fail("unavailable", `${problem}; no recovery model configured (config.review.recoveryPresets)`)
+    }
+
+    const canFollowUp = () =>
+      lifecycle === "clean" &&
+      !input.signal?.aborted &&
+      deadline - Date.now() >= RECOVERY_FOLLOWUP_MIN_MS &&
+      registry.get(sessionId)?.status === "running"
+    const reply = await runRecoveryModel({
+      config,
+      prompt: buildRecoveryPrompt({
+        laneId: artifact.laneId,
+        blockOn: artifact.blockOn,
+        evidence,
+        lifecycle,
+        ...(args.lifecycleDetail ? { lifecycleDetail: args.lifecycleDetail } : {}),
+        followUpPossible: canFollowUp() && deadline - Date.now() >= RECOVERY_STEP_MIN_MS + RECOVERY_FOLLOWUP_MIN_MS,
+      }),
+      label: `${input.label}:recover`,
+      ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      deadline,
+    })
+    if (reply.kind === "cancelled") return fail("cancelled", "review cancelled during recovery")
+    if (reply.kind === "timeout") return fail("timeout", "recovery ran out of deadline")
+    if (reply.kind === "unavailable") return fail("unavailable", reply.reason)
+    const provenance = { sessionId: reply.sessionId, preset: reply.preset, ...(reply.model ? { model: reply.model } : {}) }
+
+    const decision = evaluateRecoveryReply(reply.text, {
+      evidence,
+      lifecycle,
+      blockOn: artifact.blockOn,
+      followUpPossible: canFollowUp(),
+    })
+    if (decision.kind === "classified") return fail(decision.outcome, decision.reason, provenance)
+    if (decision.kind === "invalid") return fail("invalid_output", decision.reason, provenance)
+    if (decision.kind === "recovered") {
+      await writeFile(artifact.path, JSON.stringify(decision.report), "utf8")
+      const after = await artifactProblem(artifact.path)
+      if (after) return fail("invalid_output", `recovered report did not validate once written — ${after}`, provenance)
+      return {
+        state: "recovered",
+        recovery: { outcome: "recovered", ...(decision.reason ? { reason: clip(decision.reason) } : {}), ...provenance },
+      }
+    }
+
+    // The recovery model asked for a follow-up: the ORIGINAL reviewer gets one
+    // normal prompt to state its conclusion — only with the lifecycle intact
+    // and time left, and never a second one.
+    if (!canFollowUp()) return fail("insufficient_evidence", `${decision.reason}; no follow-up possible`, provenance)
+    const since = eventRing.since(Number.MAX_SAFE_INTEGER, { limit: 0 }).nextCursor
+    try {
+      await registry.enqueuePrompt(sessionId, buildFollowUpPrompt(artifact.path))
+    } catch (err) {
+      return fail("insufficient_evidence", `follow-up could not be delivered: ${err instanceof Error ? err.message : String(err)}`, provenance)
+    }
+    const res = await monitorSessionWait({
+      registry,
+      sessionEvents,
+      eventRing,
+      sessionIds: [sessionId],
+      event: "any",
+      timeoutMs: Math.max(1, deadline - Date.now()),
+      since,
+    })
+    if (res.timedOut) return fail("timeout", "follow-up ran out of deadline", provenance)
+    if (input.signal?.aborted) return fail("cancelled", "review cancelled during follow-up", provenance)
+    const finalProblem = await artifactProblem(artifact.path)
+    if (finalProblem) return fail("insufficient_evidence", `${decision.reason}; follow-up wrote no valid verdict (${finalProblem})`, provenance)
+    return { state: "recovered", recovery: { outcome: "followup", reason: clip(decision.reason), ...provenance } }
+  }
+
   async function runAttempt(
     input: Parameters<ReviewerSessionHost["run"]>[0],
     attempt: number,
@@ -287,6 +574,7 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       })
     }
     const sessionId = spawned.descriptor.id
+    const attemptDeadline = Date.now() + input.timeoutMs
     /** The reviewer's model, read off the session record (the live active
      *  model when the adapter reported one, else the spawn model). */
     const withModel = <T extends ReviewerRunResult>(r: T): T => {
@@ -349,18 +637,35 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       }
       if (res.event === "turn-end" && res.reason === "error") {
         noteWalletExhausted(profileRef, model, res.error)
-        return {
-          retryable: isRetryableTurnError(res.error),
-          fallbackable: true,
-          result: withModel({
-            status: "failed",
+        const retryable = isRetryableTurnError(res.error)
+        const failed = withModel({
+          status: "failed" as const,
+          sessionId,
+          preset: input.preset,
+          error: res.error
+            ? `reviewer's turn ended with reason 'error': ${clip(res.error)}`
+            : "reviewer's turn ended with reason 'error' (the adapter reported no error text)",
+        })
+        // A transient error with an attempt left is retried in a fresh
+        // session first. Otherwise the partial analysis may still hold a
+        // faithfully recoverable BLOCKING conclusion (never an approval).
+        if (input.artifact && !(retryable && attempt < maxRetries)) {
+          const art = await ensureArtifact({
+            input,
+            artifact: input.artifact,
             sessionId,
-            preset: input.preset,
-            error: res.error
-              ? `reviewer's turn ended with reason 'error': ${clip(res.error)}`
-              : "reviewer's turn ended with reason 'error' (the adapter reported no error text)",
-          }),
+            deadline: attemptDeadline,
+            lifecycle: "errored",
+            lifecycleDetail: res.error ? clip(res.error, 160) : "turn ended with reason 'error'",
+          })
+          if (art.state === "recovered") {
+            return once(withModel({ status: "ended" as const, sessionId, preset: input.preset, recovery: art.recovery }))
+          }
+          if (art.state === "unrecovered") {
+            return { retryable, fallbackable: true, result: { ...failed, recovery: art.recovery } }
+          }
         }
+        return { retryable, fallbackable: true, result: failed }
       }
       // An errored turn that produced nothing is also `empty` — check `error`
       // first so a connection dropped at turn start is still retried and
@@ -375,7 +680,16 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
           }),
         )
       }
-      return once(withModel({ status: "ended", sessionId, preset: input.preset }))
+      const ended = withModel({ status: "ended" as const, sessionId, preset: input.preset })
+      if (!input.artifact) return once(ended)
+      const art = await ensureArtifact({
+        input,
+        artifact: input.artifact,
+        sessionId,
+        deadline: attemptDeadline,
+        lifecycle: "clean",
+      })
+      return once(art.state === "valid" ? ended : { ...ended, recovery: art.recovery })
     } finally {
       input.signal?.removeEventListener("abort", onAbort)
       // One-shot reviewer: its verdict is on disk (or it failed) — release

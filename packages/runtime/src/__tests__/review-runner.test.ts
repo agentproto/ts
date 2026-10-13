@@ -442,6 +442,62 @@ describe("review runner — verdicts over a real repo", () => {
     })
   })
 
+  it("hands the host the verdict artifact to check at turn end, and records a recovered verdict with distinct provenance", async () => {
+    const repo = await makeRepo(
+      manifest(["{id: correctness, kind: agent, preset: kimi, blockOn: high, rubric: ./rubrics/correctness.md}"]),
+    )
+    cleanup.push(repo.dir)
+    let artifact: { path: string; laneId: string; blockOn: string } | undefined
+    const host: ReviewerSessionHost = {
+      async run(input) {
+        artifact = input.artifact
+        // The host's recovery step wrote the canonical file from the reviewer's own words.
+        await writeFile(
+          input.artifact!.path,
+          JSON.stringify({ decision: "request_changes", summary: "inverted check", findings: [{ severity: "high", title: "bug", file: "b.txt" }] }),
+        )
+        return {
+          status: "ended",
+          sessionId: "rev-1",
+          preset: "kimi",
+          recovery: { outcome: "recovered", sessionId: "rec-1", preset: "small", model: "small-model" },
+        }
+      },
+    }
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const run = await runToEnd(runner, { cwd: repo.dir })
+    expect(artifact).toMatchObject({ laneId: "correctness", blockOn: "high", path: expect.stringMatching(/correctness\.verdict\.json$/) })
+    expect(run.attestation!.verdict).toBe("block")
+    expect(run.attestation!.lanes[0]).toMatchObject({
+      status: "fail",
+      sessionId: "rev-1",
+      preset: "kimi",
+      recovery: { outcome: "recovered", sessionId: "rec-1", preset: "small", model: "small-model" },
+    })
+    expect(verifyAttestation(run.attestation!)).toMatchObject({ ok: true })
+  })
+
+  it("a reviewer that ends without a verdict file stays incomplete — recovery that cannot vouch never turns it into a pass", async () => {
+    const repo = await makeRepo(manifest(["{id: correctness, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}"]))
+    cleanup.push(repo.dir)
+    const host: ReviewerSessionHost = {
+      run: async () => ({
+        status: "ended",
+        sessionId: "rev-1",
+        preset: "kimi",
+        recovery: { outcome: "insufficient_evidence", reason: "no explicit conclusion", sessionId: "rec-1", preset: "small" },
+      }),
+    }
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const run = await runToEnd(runner, { cwd: repo.dir })
+    expect(run.attestation!.verdict).toBe("incomplete")
+    expect(run.attestation!.lanes[0]).toMatchObject({
+      status: "skipped",
+      error: expect.stringContaining("insufficient_evidence: no explicit conclusion"),
+      recovery: { outcome: "insufficient_evidence", reason: "no explicit conclusion" },
+    })
+  })
+
   it("records a passed-through pr in the attestation AND as the ledger annotation link", async () => {
     const repo = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
     cleanup.push(repo.dir)

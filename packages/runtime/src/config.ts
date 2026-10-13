@@ -471,6 +471,17 @@ export interface ReviewConfig {
    *  quota and unknown-model errors are never retried. Default 1; `0`
    *  disables; capped at 5. All attempts share the lane's `timeoutMs`. */
   laneRetries?: number
+  /** Reviewer presets (harness/user preset ids — the same surface lanes use,
+   *  so the OpenRouter-billing guard and wallet cooldowns apply) the bounded
+   *  verdict-RECOVERY step may run on, tried in order. That step runs only
+   *  when a reviewer ends its turn without a valid verdict file: a small,
+   *  read-only, tool-less model reads the reviewer's own latest output and
+   *  either recovers its stated conclusion or classifies why it failed.
+   *  Prefer a small subscription/free route. Unset or empty ⇒ no recovery
+   *  model: such a lane is left incomplete (`recovery.outcome:
+   *  "unavailable"`). The `review.recovery` model role (`models` block)
+   *  overrides the model/profile these presets would run. */
+  recoveryPresets?: string[]
 }
 
 /**

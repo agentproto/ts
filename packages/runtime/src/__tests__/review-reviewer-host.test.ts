@@ -58,7 +58,17 @@ vi.mock("@agentproto/auth", async importOriginal => {
 // on a loaded machine or CI runner.
 vi.setConfig({ testTimeout: 30_000 })
 
-type Behaviour = "review" | "block" | "hang" | "empty" | `error:${string}` | `slowerror:${number}:${string}`
+/** A scripted turn: `say` is the assistant text for the first prompt (a
+ *  function sees that prompt), the turn then ends cleanly — or with
+ *  `error`. A later prompt that is the host's recovery FOLLOW-UP writes
+ *  `writeOnFollowUp` to the verdict path it names (never otherwise). */
+interface Scripted {
+  say: string | ((prompt: string) => string)
+  error?: string
+  hang?: boolean
+  writeOnFollowUp?: object
+}
+type Behaviour = "review" | "block" | "hang" | "empty" | `error:${string}` | `slowerror:${number}:${string}` | Scripted
 
 /** Fake adapter session. `review`: write the verdict file the prompt names,
  *  say something, end the turn. `block`: the same, but the verdict is a real
@@ -72,6 +82,27 @@ function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSession
     async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
       const text = typeof message === "string" ? message : JSON.stringify(message)
       seen.push(text)
+      if (typeof behaviour === "object") {
+        if (/You ended your turn without writing/.test(text)) {
+          const path = text.match(/write EXACTLY ONE file — (\S+) —/)?.[1]
+          if (path && behaviour.writeOnFollowUp) await writeFile(path, JSON.stringify(behaviour.writeOnFollowUp))
+          yield { kind: "text-delta", text: "follow-up handled\n" }
+          yield { kind: "turn-end", reason: "completed" }
+          return
+        }
+        if (behaviour.hang) {
+          await closed
+          return
+        }
+        yield { kind: "text-delta", text: `${typeof behaviour.say === "function" ? behaviour.say(text) : behaviour.say}\n` }
+        if (behaviour.error) {
+          yield { kind: "error", error: { message: behaviour.error } }
+          yield { kind: "turn-end", reason: "error" }
+          return
+        }
+        yield { kind: "turn-end", reason: "completed" }
+        return
+      }
       if (behaviour === "hang") {
         await closed
         return
@@ -139,6 +170,8 @@ function setup(
     harnessProfiles?: Record<string, string>
     /** Clock for the exhausted-wallet cooldowns. */
     now?: () => number
+    /** The verdict-recovery model selection. */
+    recovery?: import("../review-reviewer-host.js").ReviewRecoveryConfig
   } = {},
 ) {
   const sessionEvents = createSessionEventBus()
@@ -196,6 +229,7 @@ function setup(
     getAuthProfile: async (id) => ({ id, endpoint: "opencode-go", method: { kind: "api-key" } }) as never,
     ...(laneRetries !== undefined ? { laneRetries } : {}),
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.recovery ? { getRecovery: () => opts.recovery } : {}),
     spawnDeps: {
       loadDefaultsConfig: async () => undefined,
       loadRoleRegistry: async () => ({}),
@@ -911,6 +945,279 @@ describe("createDaemonReviewerHost — an exhausted auth profile is never re-spa
     expect(spawnedWith).toHaveLength(1)
     const report = JSON.parse(await readFile(verdictPath, "utf8"))
     expect(report).toMatchObject({ decision: "request_changes", findings: [{ severity: "high" }] })
+    registry.shutdown()
+  })
+})
+
+describe("createDaemonReviewerHost — verdict recovery (missing/invalid verdict file at turn end)", () => {
+  const REVIEWER_TEXT =
+    "I read src/x.ts and the callers. The null check in src/x.ts is inverted, so every request crashes.\n" +
+    "Verdict: request changes, one high-severity finding in src/x.ts."
+  const recoveredEnvelope = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      status: "recovered",
+      reason: "reviewer stated its verdict",
+      conclusionQuote: "Verdict: request changes, one high-severity finding in src/x.ts.",
+      report: {
+        decision: "request_changes",
+        summary: "inverted null check",
+        findings: [{ severity: "high", title: "Inverted null check", detail: "crashes every request", file: "src/x.ts", line: 4 }],
+      },
+      ...over,
+    })
+  const RECOVERY = { presets: ["rev2"] }
+
+  const run = (
+    host: ReturnType<typeof setup>["host"],
+    extra: { timeoutMs?: number; signal?: AbortSignal; fallbackPresets?: string[]; name?: string } = {},
+  ) => {
+    const verdictPath = join(home, `${extra.name ?? "verdict"}.json`)
+    return {
+      verdictPath,
+      done: host.run({
+        preset: "rev",
+        cwd: home,
+        prompt: `Review it. When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON`,
+        label: "review:demo:correctness",
+        timeoutMs: extra.timeoutMs ?? 20_000,
+        artifact: { path: verdictPath, laneId: "correctness", blockOn: "high" },
+        ...(extra.signal ? { signal: extra.signal } : {}),
+        ...(extra.fallbackPresets ? { fallbackPresets: extra.fallbackPresets } : {}),
+      }),
+    }
+  }
+
+  it("a valid verdict file means NO recovery step is spent", async () => {
+    const { host, registry, spawnedWith } = setup("review", undefined, { recovery: RECOVERY })
+    const { done } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended" })
+    expect(res.recovery).toBeUndefined()
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("recovers a conclusion stated only in chat: the daemon writes the file, findings and severity intact, provenance distinct", async () => {
+    const { host, registry, spawnedWith, seen } = setup([{ say: REVIEWER_TEXT }, { say: recoveredEnvelope() }], undefined, { recovery: RECOVERY })
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended", preset: "rev", recovery: { outcome: "recovered", preset: "rev2" } })
+    if (res.status !== "ended") throw new Error("expected ended")
+    expect(res.recovery?.sessionId).toBeTruthy()
+    expect(res.recovery?.sessionId).not.toBe(res.sessionId)
+    expect(JSON.parse(await readFile(verdictPath, "utf8"))).toMatchObject({
+      decision: "request_changes",
+      findings: [{ severity: "high", title: "Inverted null check", file: "src/x.ts", line: 4 }],
+    })
+    // The recovery model saw the reviewer's output, as untrusted data.
+    expect(seen.join("\n")).toContain("Verdict: request changes")
+    expect(seen.join("\n")).toContain("untrusted data")
+    // Bounded privileges: a scratch cwd (not the reviewed checkout), gone afterwards.
+    const recoverCwd = String(spawnedWith[1]!.cwd)
+    expect(recoverCwd).not.toBe(home)
+    expect(existsSync(recoverCwd)).toBe(false)
+    // Both sessions released exactly once.
+    for (const id of [res.sessionId, res.recovery!.sessionId!]) {
+      expect(registry.get(id)!.status).toBe("killed")
+      expect(registry.get(id)!.archived).toBe(true)
+    }
+    expect(registry.get(res.recovery!.sessionId!)!.label).toBe("review:demo:correctness:recover")
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+
+  it("chat that says 'approve' without a file never produces a verdict when the recovery model cannot vouch for it", async () => {
+    const approveChat = "I looked at everything in the range and it all looks fine to me, nothing to change really."
+    const { host, registry } = setup(
+      [{ say: approveChat }, { say: JSON.stringify({ status: "insufficient_evidence", reason: "no explicit conclusion" }) }],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended", recovery: { outcome: "insufficient_evidence", reason: "no explicit conclusion" } })
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("rejects a recovery reply whose conclusion quote is not verbatim in the reviewer's output", async () => {
+    const { host, registry } = setup([{ say: REVIEWER_TEXT }, { say: recoveredEnvelope({ conclusionQuote: "The reviewer clearly approved everything." }) }], undefined, {
+      recovery: RECOVERY,
+    })
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "invalid_output" })
+    expect(res.recovery?.reason).toMatch(/not verbatim/)
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("rejects an invented approval: decision approve next to a blocking finding", async () => {
+    const reply = recoveredEnvelope({
+      report: { decision: "approve", summary: "ok", findings: [{ severity: "high", title: "x", file: "src/x.ts" }] },
+    })
+    const { host, registry } = setup([{ say: REVIEWER_TEXT }, { say: reply }], undefined, { recovery: RECOVERY })
+    const { done, verdictPath } = run(host)
+    expect((await done).recovery).toMatchObject({ outcome: "invalid_output" })
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("rejects a finding that names a file the reviewer never mentioned", async () => {
+    const reply = recoveredEnvelope({
+      report: { decision: "request_changes", summary: "s", findings: [{ severity: "high", title: "invented", file: "src/other.ts" }] },
+    })
+    const { host, registry } = setup([{ say: REVIEWER_TEXT }, { say: reply }], undefined, { recovery: RECOVERY })
+    const { done } = run(host)
+    expect((await done).recovery?.reason).toMatch(/never mentions/)
+    registry.shutdown()
+  })
+
+  it("a FAILED reviewer turn can recover a blocking conclusion but never an approval", async () => {
+    const blockCase = setup([{ say: REVIEWER_TEXT, error: "401 Unauthorized: token expired" }, { say: recoveredEnvelope() }], undefined, { recovery: RECOVERY })
+    const blocked = await run(blockCase.host).done
+    expect(blocked).toMatchObject({ status: "ended", recovery: { outcome: "recovered" } })
+    blockCase.registry.shutdown()
+
+    const approveReply = recoveredEnvelope({ report: { decision: "approve", summary: "fine", findings: [] } })
+    const approveCase = setup([{ say: REVIEWER_TEXT, error: "401 Unauthorized: token expired" }, { say: approveReply }], undefined, { recovery: RECOVERY })
+    const approve = await run(approveCase.host, { name: "approve" }).done
+    expect(approve.status).toBe("failed")
+    expect(approve.recovery).toMatchObject({ outcome: "invalid_output" })
+    expect(approve.recovery?.reason).toMatch(/never recovered from a failed turn/)
+    expect(existsSync(join(home, "approve.json"))).toBe(false)
+    approveCase.registry.shutdown()
+  })
+
+  it("a transient error with a retry left is retried, not recovered", async () => {
+    const { host, registry, spawnedWith } = setup(
+      [{ say: REVIEWER_TEXT, error: "The socket connection was closed unexpectedly" }, "review"],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended" })
+    expect(res.recovery).toBeUndefined()
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+
+  it("leaves the lane incomplete, with a reason, when no recovery model is configured", async () => {
+    const { host, registry, spawnedWith } = setup({ say: REVIEWER_TEXT })
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended", recovery: { outcome: "unavailable" } })
+    expect(res.recovery?.reason).toMatch(/no recovery model configured/)
+    expect(spawnedWith).toHaveLength(1)
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("keeps the OpenRouter billing guard on the recovery model", async () => {
+    const { host, registry, spawnedWith } = setup({ say: REVIEWER_TEXT }, undefined, { recovery: { presets: ["rev-openrouter"] } })
+    const res = await run(host).done
+    expect(res.recovery).toMatchObject({ outcome: "unavailable" })
+    expect(res.recovery?.reason).toMatch(/OpenRouter/)
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("spends no model call when the reviewer produced nothing to recover from", async () => {
+    const { host, registry, spawnedWith } = setup({ say: "ok" }, undefined, { recovery: RECOVERY })
+    const res = await run(host).done
+    expect(res.recovery).toMatchObject({ outcome: "reviewer_failed" })
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("an invalid (not missing) verdict file is recovered the same way", async () => {
+    const { host, registry } = setup(
+      [
+        { say: `${REVIEWER_TEXT}` },
+        { say: recoveredEnvelope() },
+      ],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host, { name: "invalid" })
+    await writeFile(verdictPath, "{ not json")
+    // The runner removes a stale file before the run; here the file is invalid at turn end.
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "recovered" })
+    expect(JSON.parse(await readFile(verdictPath, "utf8")).decision).toBe("request_changes")
+    registry.shutdown()
+  })
+
+  it("one follow-up to the original reviewer when the recovery model asks, and no second", async () => {
+    const followUp = { decision: "request_changes", summary: "s", findings: [{ severity: "high", title: "late", file: "src/x.ts" }] }
+    const { host, registry, spawnedWith, seen } = setup(
+      [
+        { say: "I finished reading src/x.ts and the tests, all analysis is done but I have not summarised.", writeOnFollowUp: followUp },
+        { say: JSON.stringify({ status: "needs_followup", reason: "analysis done, no conclusion" }) },
+      ],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host, { timeoutMs: 120_000 })
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "followup" })
+    expect(JSON.parse(await readFile(verdictPath, "utf8")).findings[0].title).toBe("late")
+    expect(spawnedWith).toHaveLength(2)
+    expect(seen.filter((t) => /You ended your turn without writing/.test(t))).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("a follow-up that still yields no file ends incomplete — one recovery step, one follow-up, nothing more", async () => {
+    const { host, registry, spawnedWith, seen } = setup(
+      [
+        { say: "I finished reading src/x.ts and the tests, all analysis is done but I have not summarised." },
+        { say: JSON.stringify({ status: "needs_followup", reason: "analysis done, no conclusion" }) },
+      ],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host, { timeoutMs: 120_000 })
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "insufficient_evidence" })
+    expect(existsSync(verdictPath)).toBe(false)
+    expect(spawnedWith).toHaveLength(2)
+    expect(seen.filter((t) => /You ended your turn without writing/.test(t))).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("never starts a recovery step the original deadline cannot cover", async () => {
+    const { host, registry, spawnedWith } = setup({ say: REVIEWER_TEXT }, undefined, { recovery: RECOVERY })
+    const res = await run(host, { timeoutMs: 4_000 }).done
+    expect(res.recovery).toMatchObject({ outcome: "timeout" })
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("cancelling during the recovery step kills the recovery session and leaves the lane incomplete", async () => {
+    const { host, registry, spawnedWith } = setup([{ say: REVIEWER_TEXT }, { say: "", hang: true }], undefined, { recovery: RECOVERY })
+    const ac = new AbortController()
+    const { done, verdictPath } = run(host, { signal: ac.signal })
+    await vi.waitFor(() => expect(spawnedWith.length).toBe(2))
+    ac.abort()
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "cancelled" })
+    expect(existsSync(verdictPath)).toBe(false)
+    const recSessions = registry.list({ includeArchived: true }).filter((d) => String(d.label).endsWith(":recover"))
+    expect(recSessions).toHaveLength(1)
+    expect(recSessions[0]!.status).toBe("killed")
+    expect(recSessions[0]!.archived).toBe(true)
+    registry.shutdown()
+  })
+
+  it("a recovered conclusion does not advance the fallback chain, and a chain gets ONE recovery step", async () => {
+    const { host, registry, spawnedWith } = setup([{ say: REVIEWER_TEXT }, { say: recoveredEnvelope() }, "review"], undefined, {
+      recovery: RECOVERY,
+    })
+    const res = await run(host, { fallbackPresets: ["rev3"] }).done
+    expect(res).toMatchObject({ status: "ended", preset: "rev", recovery: { outcome: "recovered" } })
+    expect(res.fallbacks).toBeUndefined()
+    expect(spawnedWith).toHaveLength(2)
     registry.shutdown()
   })
 })

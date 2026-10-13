@@ -56,6 +56,7 @@ import {
   type Attestation,
   type LaneFallback,
   type LaneOutcome,
+  type LaneRecovery,
   type LaneResult,
   type PackDigest,
   type ReviewLaneExecutor,
@@ -64,6 +65,7 @@ import {
   type ReviewRequester,
   type ReviewTarget,
   type RubricDigest,
+  type Severity,
 } from "@agentproto/review"
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import { repoSlug, withPr, type LedgerEntry, type ReviewLedger } from "./review-ledger.js"
@@ -214,6 +216,10 @@ export type ReviewerRunResult = (
    *  least one reviewer; `preset`/`model`/`sessionId` always name the reviewer
    *  that produced this result. */
   fallbacks?: LaneFallback[]
+  /** Set when the verdict artifact was missing or invalid at turn end and the
+   *  host ran its bounded recovery step — what that step concluded. Absent
+   *  when the artifact was valid as written (no recovery ran). */
+  recovery?: LaneRecovery
 }
 
 /**
@@ -234,6 +240,11 @@ export interface ReviewerSessionHost {
     timeoutMs: number
     parentSessionId?: string
     signal?: AbortSignal
+    /** The verdict file the reviewer must have written by turn end. The host
+     *  checks it WHILE the reviewer session is still alive (before cleanup)
+     *  and, if it is missing/invalid, runs its one bounded recovery step —
+     *  the runner still re-reads and re-validates it afterwards. */
+    artifact?: { path: string; laneId: string; blockOn: Severity }
   }): Promise<ReviewerRunResult>
 }
 
@@ -336,12 +347,14 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
       }),
       label: `review:${ctx.reviewId}:${check.id}`,
       timeoutMs: check.timeoutMs,
+      artifact: { path: verdictPath, laneId: check.id, blockOn: check.blockOn },
       ...(ctx.parentSessionId ? { parentSessionId: ctx.parentSessionId } : {}),
       ...(signal ? { signal } : {}),
     })
     const extras = {
       ...(result.model ? { model: result.model } : {}),
       ...(result.fallbacks?.length ? { fallbacks: result.fallbacks } : {}),
+      ...(result.recovery ? { recovery: result.recovery } : {}),
     }
     if (result.status === "failed") {
       return {
@@ -367,7 +380,9 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
     } catch {
       return {
         outcome: "skipped",
-        error: `reviewer ended its turn without writing ${verdictPath}`,
+        error: `reviewer ended its turn without writing ${verdictPath}${
+          result.recovery ? ` (recovery ${result.recovery.outcome}${result.recovery.reason ? `: ${result.recovery.reason}` : ""})` : ""
+        }`,
         sessionId: result.sessionId,
         preset: result.preset,
         ...extras,
