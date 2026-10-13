@@ -42,11 +42,11 @@ export const TEMPLATES = {
     },
   },
 } as const
-export const BAKED_CLI_VERSION = "1.16.0"
+export const BAKED_CLI_VERSION = "1.20.0"
 export const BAKED_ADAPTERS = {
-  "@agentproto/adapter-hermes": "0.4.34",
-  "@agentproto/adapter-mastra-agent": "0.7.29",
-  "@agentproto/adapter-opencode": "1.6.8",
+  "@agentproto/adapter-hermes": "0.4.38",
+  "@agentproto/adapter-mastra-agent": "0.7.33",
+  "@agentproto/adapter-opencode": "1.8.2",
 } as const
 export const BAKED_RUNTIME = {
   "opencode-ai": "1.18.35",
