@@ -429,6 +429,15 @@ plan, decisions, changed files, tests, errors, risks, next step) first: a
 context hard stop. If the checkpoint can't be written, compaction is refused
 (the hard stop still happens, with a loud warning).
 
+`hardStopAtPct` is a trigger, not a wall. At the floor the runtime
+auto-compacts the session (checkpoint, then `/compact`, or `/compress` on
+hermes) while incoming prompts wait with a retryable "mid-turn" error. If
+compaction does not bring the window below the floor it continues the session
+fresh, and only when neither works does it stop the session. Autonomous turns
+evaluate the policy at turn end. Each outcome (`compacted` / `continued` /
+`hard-stopped`) is announced in the transcript and as a
+`session:context-rescue` event.
+
 `compactRequiresOperator: true` reserves compaction to the operator: a
 compaction prompt attributed to a session (`agent_prompt`, `session_compact`,
 or the session itself) is refused; only an operator-originated prompt (HTTP,
