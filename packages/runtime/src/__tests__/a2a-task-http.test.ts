@@ -23,6 +23,7 @@ import { createRuntimeEvents } from "../events.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+import type { A2aPushDeps } from "../a2a-push.js"
 import {
   createA2aTaskLedger,
   decodePageToken,
@@ -35,6 +36,7 @@ import {
   sessionTurnFailed,
   type A2aAppHandleLike,
   type A2aTask,
+  type A2aTaskPushNotificationConfig,
 } from "../a2a-tasks.js"
 
 const APP_ID = "@test/a2a-app"
@@ -166,7 +168,7 @@ describe("A2A task ingress", () => {
       }>,
       ctx: { port: number },
     ) => Promise<void>,
-    streamConfig: { streamMaxMs?: number } = {},
+    streamConfig: { streamMaxMs?: number; push?: A2aPushDeps } = {},
   ): Promise<void> {
     const port = await freePort()
     const http = await startHttpServer({
@@ -760,7 +762,9 @@ describe("A2A task ingress", () => {
       // (no message, no id) is invalid params, not "unsupported".
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SendStreamingMessage" })).json.error.code).toBe(-32602)
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SubscribeToTask" })).json.error.code).toBe(-32602)
-      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "CreateTaskPushNotificationConfig" })).json.error.code).toBe(-32003)
+      // The push-config methods are live: a bare call is invalid params
+      // (no taskId), not "unsupported".
+      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "CreateTaskPushNotificationConfig" })).json.error.code).toBe(-32602)
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "GetExtendedAgentCard" })).json.error.code).toBe(-32007)
       expect(dispatched).toHaveLength(0)
       const ghost = await rpc("@test/ghost", sendReq("solo"))
@@ -979,6 +983,219 @@ describe("A2A task ingress", () => {
     )
   })
 
+  const pushCreateReq = (taskId: string, url: string, id: number | string = 1, extra: Record<string, unknown> = {}) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "CreateTaskPushNotificationConfig",
+    params: { taskId, url, ...extra },
+  })
+
+  it("push config methods round trip: create → get → list → delete, and get after delete is TaskNotFound", async () => {
+    const seen: string[] = []
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+      const created = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook", 1, { token: "tok-1" }))
+      expect(created.json.error).toBeUndefined()
+      const config = created.json.result as A2aTaskPushNotificationConfig
+      expect(config).toMatchObject({ taskId: "run-1", url: "https://example.com/hook", token: "tok-1" })
+      expect(typeof config.id).toBe("string")
+      expect(config.id).not.toBe("")
+
+      const got = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTaskPushNotificationConfig", params: { taskId: "run-1", id: config.id } })
+      expect(got.json.result).toEqual(config)
+
+      const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 3, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+      expect(listed.json.result.configs).toEqual([config])
+      expect(listed.json.result.nextPageToken).toBe("")
+
+      const deleted = await rpc(APP_ID, { jsonrpc: "2.0", id: 4, method: "DeleteTaskPushNotificationConfig", params: { taskId: "run-1", id: config.id } })
+      expect(deleted.json.result).toEqual({})
+      const gone = await rpc(APP_ID, { jsonrpc: "2.0", id: 5, method: "GetTaskPushNotificationConfig", params: { taskId: "run-1", id: config.id } })
+      expect(gone.json.error.code).toBe(-32001)
+
+      // The store is on disk beside the ledger, one JSON file per app.
+      const onDisk = JSON.parse(await readFile(join(stateDir, "a2a-tasks", `${encodeURIComponent(APP_ID)}.push.json`), "utf8"))
+      expect(onDisk).toEqual({})
+      // Let the watcher this test armed (the create was on a live task) end.
+      runs.get("run-1")!.status = "succeeded"
+      conversations.set("s-run-1", [{ role: "assistant", text: "done" }])
+      await sleep(40)
+      },
+      { push: { fetchImpl: (async (input: Parameters<typeof fetch>[0]) => { seen.push(String(input)); return new Response(null, { status: 200 }) }) as typeof fetch, pollMs: 2, retryDelaysMs: [0, 0] } },
+    )
+  })
+
+  it("push config methods reject unknown tasks, bad urls, and an 11th config", async () => {
+    const seen: string[] = []
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+        const unknown = await rpc(APP_ID, pushCreateReq("nope", "https://example.com/hook"))
+        expect(unknown.json.error.code).toBe(-32001)
+        const unknownGet = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTaskPushNotificationConfig", params: { taskId: "nope", id: "x" } })
+        expect(unknownGet.json.error.code).toBe(-32001)
+        for (const [i, url] of ["ftp://example.com/hook", "http://example.com/hook", "https://user:pass@example.com/hook", "not-a-url"].entries()) {
+          const res = await rpc(APP_ID, pushCreateReq("run-1", url, 10 + i))
+          expect(res.json.error.code).toBe(-32602)
+          expect(res.json.error.message).toContain("url")
+        }
+        for (let i = 0; i < 10; i++) {
+          const res = await rpc(APP_ID, pushCreateReq("run-1", `https://example.com/hook/${i}`, 100 + i))
+          expect(res.json.error).toBeUndefined()
+        }
+        const eleventh = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook/11", 200))
+        expect(eleventh.json.error.code).toBe(-32602)
+        expect(eleventh.json.error.message).toContain("10")
+        const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 3, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+        expect(listed.json.result.configs).toHaveLength(10)
+        // The failed creates stored nothing beyond the ten.
+        expect(listed.json.result.configs.map((c: A2aTaskPushNotificationConfig) => c.url)).toEqual(
+          Array.from({ length: 10 }, (_, i) => `https://example.com/hook/${i}`),
+        )
+        expect(seen).toEqual([])
+        // End the watcher the ten creates armed.
+        runs.get("run-1")!.status = "failed"
+        runs.get("run-1")!.error = "stop"
+        await sleep(40)
+      },
+      { push: { fetchImpl: (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => { seen.push(String(input)); return new Response(null, { status: 200 }) }) as typeof fetch } },
+    )
+  })
+
+  it("SendMessage with configuration.pushNotificationConfig stores the config and delivers updates in order", async () => {
+    const posts: Array<{ url: string; headers: Record<string, string>; body: any }> = []
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      posts.push({
+        url: String(input),
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        body: JSON.parse(String(init?.body ?? "{}")),
+      })
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    await withServer(
+      async rpc => {
+        const sent = await rpc(APP_ID, {
+          ...sendReq("solo", "long job"),
+          params: {
+            message: { messageId: "m1", role: "ROLE_USER", parts: [{ text: "long job" }], metadata: { skill: "solo" } },
+            configuration: {
+              pushNotificationConfig: {
+                url: "https://example.com/hook",
+                token: "tok-1",
+                authentication: { scheme: "Bearer", credentials: "cred-1" },
+              },
+            },
+          },
+        })
+        expect(sent.json.result.task.id).toBe("run-1")
+        const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+        expect(listed.json.result.configs).toHaveLength(1)
+        expect(listed.json.result.configs[0]).toMatchObject({ taskId: "run-1", url: "https://example.com/hook", token: "tok-1" })
+
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "All done." }])
+        await waitFor(() => posts.some(p => p.body?.statusUpdate?.final === true), "final push delivery")
+        const kinds = posts.map(p => (p.body.artifactUpdate ? "artifactUpdate" : p.body.statusUpdate?.final === true ? "final" : "other"))
+        expect(kinds).toEqual(["artifactUpdate", "artifactUpdate", "final"])
+        expect(posts[0]!.body.artifactUpdate.artifact.artifactId).toBe("agent-output-solo")
+        expect(posts[1]!.body.artifactUpdate.artifact.artifactId).toBe("app-artifact")
+        expect(posts[2]!.body.statusUpdate).toMatchObject({
+          taskId: "run-1",
+          status: { state: "TASK_STATE_COMPLETED" },
+          final: true,
+        })
+        for (const post of posts) {
+          expect(post.url).toBe("https://example.com/hook")
+          expect(post.headers["content-type"]).toBe("application/json")
+          expect(post.headers["x-a2a-notification-token"]).toBe("tok-1")
+          expect(post.headers.authorization).toBe("Bearer cred-1")
+        }
+      },
+      { push: { fetchImpl, pollMs: 2, retryDelaysMs: [0, 0] } },
+    )
+  })
+
+  it("SendMessage with the spec's configuration.taskPushNotificationConfig spelling works too", async () => {
+    await withServer(
+      async rpc => {
+        const sent = await rpc(APP_ID, {
+          ...sendReq("solo"),
+          params: {
+            message: { messageId: "m1", role: "ROLE_USER", parts: [{ text: "hi" }], metadata: { skill: "solo" } },
+            configuration: { taskPushNotificationConfig: { url: "https://example.com/spec-hook" } },
+          },
+        })
+        expect(sent.json.result.task.id).toBe("run-1")
+        const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+        expect(listed.json.result.configs[0]).toMatchObject({ url: "https://example.com/spec-hook" })
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "done" }])
+        await sleep(40)
+      },
+      { push: { fetchImpl: (async () => new Response(null, { status: 200 })) as typeof fetch, pollMs: 2 } },
+    )
+  })
+
+  it("SendMessage with a bad push config url is invalid params and starts no run", async () => {
+    await withServer(async rpc => {
+      const res = await rpc(APP_ID, {
+        ...sendReq("solo"),
+        params: {
+          message: { messageId: "m1", role: "ROLE_USER", parts: [{ text: "hi" }], metadata: { skill: "solo" } },
+          configuration: { pushNotificationConfig: { url: "http://example.com/hook" } },
+        },
+      })
+      expect(res.json.error.code).toBe(-32602)
+      expect(res.json.error.message).toContain("must be https")
+      expect(dispatched.some(d => d.name === "app_run")).toBe(false)
+    })
+  })
+
+  it("a config created on a completed task gets one final statusUpdate and no watcher", async () => {
+    const posts: Array<{ body: any }> = []
+    const fetchImpl = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      posts.push({ body: JSON.parse(String(init?.body ?? "{}")) })
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "already done" }])
+        const created = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook", 1, { token: "tok" }))
+        expect(created.json.error).toBeUndefined()
+        await waitFor(() => posts.length === 1, "the final push")
+        expect(posts[0]!.body).toMatchObject({
+          statusUpdate: { taskId: "run-1", status: { state: "TASK_STATE_COMPLETED" }, final: true },
+        })
+        // No watcher: nothing else is ever delivered.
+        await sleep(40)
+        expect(posts).toHaveLength(1)
+      },
+      { push: { fetchImpl, pollMs: 2 } },
+    )
+  })
+
+  it("CreateTaskPushNotificationConfig on a completed task answers right away even when the webhook never responds", async () => {
+    // A fetch that never settles: the fire-and-forget final delivery hangs
+    // in the background, but the JSON-RPC answer must not wait on it.
+    const fetchImpl = (() => new Promise<Response>(() => {})) as unknown as typeof fetch
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "already done" }])
+        const started = Date.now()
+        const created = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook"))
+        expect(created.json.error).toBeUndefined()
+        expect(typeof created.json.result.id).toBe("string")
+        expect(Date.now() - started).toBeLessThan(1000)
+      },
+      { push: { fetchImpl, requestTimeoutMs: 50 } },
+    )
+  })
+
 })
 
 describe("a2a task ledger", () => {
@@ -1180,6 +1397,15 @@ interface SseEvent {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+/** Poll `cond` until it holds (or fail the test after `timeoutMs`). */
+async function waitFor(cond: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error(`waitFor: ${what} not reached`)
+    await sleep(5)
+  }
+}
 
 /** POST a body to the A2A route and hand back the raw response — JSON or
  *  SSE — without reading it. */

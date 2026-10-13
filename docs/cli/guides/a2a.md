@@ -293,9 +293,78 @@ JSON-RPC error response instead of a stream: a bad request, an unknown task
 id, and `SubscribeToTask` on a task that already finished
 (`task is already TASK_STATE_COMPLETED` — read a finished task with `GetTask`).
 
+## Push notifications
+
+Instead of polling or streaming, a caller can register a webhook URL and have
+the daemon POST every task update to it. The Agent Card advertises
+`capabilities.pushNotifications: true`. Four methods manage the registrations
+for one task — each config carries its own `id`:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "CreateTaskPushNotificationConfig",
+  "params": { "taskId": "apprun_4bce4025-…",
+    "url": "https://client.example.com/webhook/a2a",
+    "token": "a-token-unique-for-this-task",
+    "authentication": { "scheme": "Bearer", "credentials": "my-secret" } } }
+```
+
+Only `taskId` and `url` are required (`id` may be supplied, else one is
+assigned; a create with an existing `id` replaces that config). A task keeps
+at most **10** configs — an 11th is `invalid params`. The URL rules: `https:`
+only, except `http:` to `localhost` / `127.0.0.1` / `::1` for local testing,
+and never a URL with `user:password@` userinfo — anything else is
+`invalid params`. Any `https:` host is accepted, because the caller is the
+authenticated owner of the webhook: only register URLs you control. The task
+must exist (a task unknown to the endpoint is `task not found`), and so must
+a config you `Get`/`Delete`:
+
+```json
+{ "method": "GetTaskPushNotificationConfig",  "params": { "taskId": "…", "id": "…" } }
+{ "method": "ListTaskPushNotificationConfigs", "params": { "taskId": "…" } }
+{ "method": "DeleteTaskPushNotificationConfig", "params": { "taskId": "…", "id": "…" } }
+```
+
+`SendMessage` / `SendStreamingMessage` can carry the same object in one shot
+as `configuration.taskPushNotificationConfig` (alias:
+`configuration.pushNotificationConfig`); it is validated before the run
+starts, so a bad URL starts nothing.
+
+While the task runs, every update the SSE streams would emit is POSTed to
+each config of the task — one JSON body per event, a `StreamResponse`
+oneof member exactly as in [Streaming](#streaming):
+
+```json
+{ "statusUpdate": { "taskId": "…", "contextId": "…",
+    "status": { "state": "TASK_STATE_COMPLETED", "timestamp": "…" },
+    "final": true } }
+```
+
+Delivery details:
+
+- Headers: `Content-Type: application/json`, `X-A2A-Notification-Token:
+  <token>` when the config carries a `token`, and
+  `Authorization: <scheme> <credentials>` when its `authentication` carries
+  credentials.
+- Per POST: a 10 s timeout, up to 3 attempts with 1 s / 5 s backoff. A 2xx
+  acknowledges; a 4xx (other than 408/429) is not retried. Failures are
+  logged and never stop delivery of later events.
+- One background watcher per task (not per config); each event is delivered
+  to every current config in parallel (a slow webhook does not delay the
+  others), and a deleted config stops receiving at once. The watcher ends
+  after delivering the terminal event (`final: true`) or at the same
+  30-minute cap as streaming.
+- A config created on a task that is already terminal gets exactly one final
+  `statusUpdate` (`final: true`) — delivered to that config only, not to the
+  task's other configs — and no watcher. The delivery runs in the background:
+  the JSON-RPC answer does not wait on the webhook.
+- **Watchers live in memory only**: after a daemon restart, pending tasks
+  are not resumed. Their configs persist on disk — re-create a config (or
+  send a new message with one) to start watching again.
+
 ## What is not supported yet
 
-- Push notifications and the extended Agent Card are not configured.
+- The extended Agent Card is not configured (`GetExtendedAgentCard` answers
+  `extended agent card not configured`).
 - Only A2A version `1.0` is accepted (`A2A-Version` header or `?version=`
   query); anything else returns `version not supported`.
 - The task is complete when the agent's turn ends, not when it decides the job
