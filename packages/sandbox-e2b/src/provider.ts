@@ -62,6 +62,9 @@ const DEFAULT_PORT = 18790
  * plausible session; `config.timeoutMs` still overrides in either direction.
  */
 const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
+/** Account-level ceiling: `sandbox.setTimeout` rejects anything above 1 hour
+ *  ("Timeout cannot be greater than 1 hours"). */
+export const MAX_SANDBOX_TIMEOUT_MS = 60 * 60_000
 const DEFAULT_WORKSPACE = "/home/user"
 const HEALTH_PROBE_TIMEOUT_MS = 3_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
@@ -365,8 +368,9 @@ async function ensureDaemonHealthy(
 function toBootedSandbox(
   sandbox: Awaited<ReturnType<typeof Sandbox.create>>,
   host: string,
-  token?: string,
-  extraPorts?: number[],
+  token: string | undefined,
+  extraPorts: number[] | undefined,
+  lifetimeMs: number,
 ): BootedSandbox {
   const ports: Record<number, string> = {}
   for (const port of extraPorts ?? []) {
@@ -375,6 +379,7 @@ function toBootedSandbox(
   return {
     mcpUrl: `https://${host}/mcp`,
     sandboxId: sandbox.sandboxId,
+    lifetimeMs,
     ...(token ? { token } : {}),
     ...(Object.keys(ports).length > 0 ? { ports } : {}),
     expose(port: number): Promise<{ url: string }> {
@@ -389,9 +394,10 @@ function toBootedSandbox(
     /** Re-arm the box's remaining lifetime to `ms` from now — the same SDK
      *  call `connect()` already uses to re-arm a resumed box's deadline
      *  (see module docs above), exposed so a host can extend it again on
-     *  detach without a full reconnect. */
+     *  detach or during activity without a full reconnect. Clamped to the
+     *  account cap so a renewal never throws on it. */
     async extendTimeout(ms: number): Promise<void> {
-      await sandbox.setTimeout(ms)
+      await sandbox.setTimeout(Math.min(ms, MAX_SANDBOX_TIMEOUT_MS))
     },
     /**
      * Run ONE command inside the box (e2b `sandbox.commands.run`, foreground)
@@ -485,7 +491,13 @@ export const e2bSandboxProvider: SandboxProvider = {
       const host = sandbox.getHost(port)
       await enableSwap(sandbox, config.swapMb ?? DEFAULT_SWAP_MB)
       await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
-      return toBootedSandbox(sandbox, host, undefined, spec.extraPorts)
+      return toBootedSandbox(
+        sandbox,
+        host,
+        undefined,
+        spec.extraPorts,
+        config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS,
+      )
     } catch (err) {
       await sandbox.kill().catch(() => undefined)
       throw err
@@ -570,7 +582,13 @@ function finishConnect(
   // reconnect for a sandbox that wasn't created with traffic restriction
   // enabled. Unverified against a live sandbox.
   const token = opts.expose === "private" ? sandbox.trafficAccessToken : undefined
-  return toBootedSandbox(sandbox, host, token, spec.extraPorts)
+  return toBootedSandbox(
+    sandbox,
+    host,
+    token,
+    spec.extraPorts,
+    readE2bConfig(spec).timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS,
+  )
 }
 
 /** Poll `url` until it responds OK, or return false once `timeoutMs` elapses. */

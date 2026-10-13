@@ -127,6 +127,44 @@ describe("e2bSandboxProvider.connect", () => {
     expect(sandbox.setTimeout).toHaveBeenCalledWith(60 * 60_000)
   })
 
+  it("extendTimeout() clamps to the 1h account cap so a renewal never throws on it", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const booted = await e2bSandboxProvider.boot(spec, { env: {} })
+    await booted.extendTimeout!(3 * 60 * 60_000)
+    expect(sandbox.setTimeout).toHaveBeenLastCalledWith(60 * 60_000)
+
+    await booted.extendTimeout!(10 * 60_000)
+    expect(sandbox.setTimeout).toHaveBeenLastCalledWith(10 * 60_000)
+  })
+
+  it("reports the configured (or default) lifetime as lifetimeMs, on boot and connect", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    sandboxConnectMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const dflt = await e2bSandboxProvider.boot(spec, { env: {} })
+    expect(dflt.lifetimeMs).toBe(45 * 60_000)
+
+    const custom = await e2bSandboxProvider.boot(
+      { provider: "e2b", config: { timeoutMs: 20 * 60_000 } },
+      { env: {} },
+    )
+    expect(custom.lifetimeMs).toBe(20 * 60_000)
+
+    const resumed = await e2bSandboxProvider.connect!(
+      "sbx_abc",
+      { provider: "e2b", config: { timeoutMs: 30 * 60_000 } },
+      { env: {} },
+    )
+    expect(resumed.lifetimeMs).toBe(30 * 60_000)
+  })
+
   it("never leaks the box when a reconnect's daemon never becomes healthy (kills, then rethrows)", async () => {
     const sandbox = fakeSandbox()
     sandboxConnectMock.mockResolvedValue(sandbox)
