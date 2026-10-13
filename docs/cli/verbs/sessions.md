@@ -877,6 +877,62 @@ and restart can self-heal without manual intervention.
 | `--prompt <text>` | *(default continue message)* | Custom text to send as the continue prompt. |
 | `--json` | `false` | Emit `{dryRun, sessions, eligible, sent, skipped, failed}` instead of the human summary. Exits `1` if any session failed. |
 
+### Sandbox sessions across a daemon restart
+
+A session started with `--sandbox` (a provider box: e2b, Box, …) **survives a
+host daemon restart**. On `daemon stop` / `daemon restart` / any graceful
+shutdown the host *detaches*: it closes its connection to the box and leaves
+the box and its agent session running. It does not kill the remote session and
+does not stop or pause the box. The row is persisted as `running` with
+`hostDetached: true` and a re-attach record (`sandboxReattach`: the box's
+session id, the last box-transcript `seq` the host consumed, and when it
+detached), so it is not read as dead. A crash leaves the same record (refreshed
+with every snapshot), so a crash is recoverable too; the cursor may then be a
+little stale, which can replay a few events twice.
+
+At the next boot, **before** eager resume and `continue-interrupted`, the
+daemon re-attaches every detached row:
+
+1. reconnects to the saved `sandboxId` through the provider's `connect` (the
+   `sandbox.reuse` path; it never boots a new box);
+2. asks the box about its session: still running a turn, idle with events the
+   host hasn't seen, idle, finished, or gone;
+3. re-binds the **same session id** to the live box session. If the box kept
+   working (or produced events meanwhile) those events are replayed from the
+   saved `seq` into the host transcript, busy/turn state follows the box, and
+   parent/inbox notifications fire as usual. The box's agent is **never
+   re-prompted**, and `continue-interrupted` is not involved.
+
+| Outcome at boot | Row |
+|---|---|
+| Re-attached | same id, `running`, `session:resumed` (`resumedFrom: "daemon-restart"`) |
+| Box (or its session) no longer exists | `killed`, `endedReason: "sandbox_gone"`, ledger entry `gone` |
+| Box session had finished while the daemon was down | `error`, `endedReason: "crashed"` |
+| Box unreachable / provider not resolvable (transient) | plain `killed` / `daemon-restart` ghost, so eager resume still applies |
+
+Counts are on `GET /health` and `daemon_health` as
+`sandboxSessions: { attached, reattach: { detachedAtBoot, reattached, gone, failed, pending } }`,
+and `agentproto daemon restart` prints them (see
+[`daemon`](./daemon.md#start--restart--stop)).
+
+**Box lifetime while detached.** Detach asks the provider to extend the box's
+timeout to **60 minutes from the moment of detach** (`BootedSandbox.extendTimeout`,
+e2b: `sandbox.setTimeout`), waiting at most 5 s so a slow provider API never
+holds the shutdown. Providers cap this themselves (e2b hobby: 1 h); a provider
+without the capability, or a rejected/timed-out request, leaves the box with
+whatever lifetime it already had. So the upper bound on how long a restart can
+take and still re-attach is the provider's remaining/extended box lifetime
+(at most 60 min requested). A successful re-attach re-arms the box timeout
+through `connect` again. Past the bound the provider reaps the box and the next
+boot ends the row with `sandbox_gone`.
+
+**Still tears the box down:** explicit `agent_kill` / `sessions stop`, idle
+reap, and cost-budget kill. Out of scope (old behaviour kept): device-paired
+sandboxes and local non-sandbox sessions end as `killed` / `daemon-restart`.
+A re-attached session's `cancel()` is a no-op until its next prompt (the last
+prompt isn't persisted), and killing a still-pending detached row before the
+reattach pass has run cannot reach its box.
+
 ### `queue <id-or-name>`
 
 ```bash

@@ -998,6 +998,26 @@ export async function runServe(args: readonly string[]): Promise<number> {
     const registeredSlugs = new Set(wsConfig.workspaces.map(w => w.slug))
     const servedSlug = findWorkspaceByPath(wsConfig, opts.workspace)?.slug
     const servedBucket = resolveBucketSlug(servedSlug, registeredSlugs)
+    // Sandbox sessions the previous daemon DETACHED from (box + agent kept
+    // running) re-attach FIRST, to the same session ids — before the passes
+    // below can mistake those rows for dead ghosts. Always on: it only acts on
+    // rows that were detached.
+    const reattached = await gateway.reattachSandboxSessionsOnBoot({
+      isServed: desc =>
+        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
+    })
+    if (reattached.candidates > 0) {
+      const notes = [
+        reattached.gone > 0 ? `${reattached.gone} sandbox gone` : "",
+        reattached.ended > 0 ? `${reattached.ended} already ended` : "",
+        reattached.failed > 0 ? `${reattached.failed} unreachable` : "",
+      ].filter(Boolean)
+      process.stderr.write(
+        `${color.dim}re-attached ${reattached.reattached}/${reattached.candidates} sandbox session(s)` +
+          `${notes.length > 0 ? ` (${notes.join(", ")})` : ""}` +
+          `${color.reset}\n`,
+      )
+    }
     const eager = await gateway.resumeSessionsOnBoot({
       isServed: desc =>
         resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,

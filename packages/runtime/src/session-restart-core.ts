@@ -1241,6 +1241,8 @@ export async function restartAgentSession(
       host,
       remoteSessionId,
       lifecyclePolicy,
+      ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+      ...(providerSlug.startsWith("device:") ? {} : { detachable: true }),
       ...(deliveryTarget && host.exec
         ? {
             onBeforeTeardown: createDeliveryHook({
@@ -1495,7 +1497,7 @@ function sandboxAuthForBox(auth: ResolvedAuthSpec, echo?: AuthEcho): DefaultsAda
 }
 
 /** session-spawn.ts's private `resolveSandboxSecret` — keep in sync by inspection. */
-async function resolveSandboxSecretFromBroker(slug: string): Promise<string | null> {
+export async function resolveSandboxSecretFromBroker(slug: string): Promise<string | null> {
   const { resolveSandboxSecret: resolve } = getMcpCredentialDeps()
   if (!resolve) return null
   try {

@@ -285,6 +285,38 @@ describe("createSandboxAgentSessionHost", () => {
     expect(host.ports).toEqual({ 3210: "https://sbx-abc-3210.e2b.dev" })
   })
 
+  it("forwards extendTimeout() to the booted sandbox when present", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const extendTimeoutFn = vi.fn(async (_ms: number) => {})
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: vi.fn(async () => {}),
+        extendTimeout: extendTimeoutFn,
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.extendTimeout).toBeDefined()
+    await host.extendTimeout!(45 * 60_000)
+    expect(extendTimeoutFn).toHaveBeenCalledWith(45 * 60_000)
+  })
+
+  it("omits extendTimeout() when the booted sandbox doesn't support it", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const provider = fakeProvider()
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.extendTimeout).toBeUndefined()
+  })
+
   it("omits expose() and ports when the booted sandbox doesn't support them", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     const provider = fakeProvider()

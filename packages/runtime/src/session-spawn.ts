@@ -5270,6 +5270,10 @@ async function bootSandboxAgentSession(opts: {
       remoteSessionId,
       lifecyclePolicy,
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+      // A provider box outlives a host-daemon restart (shutdown detaches
+      // instead of killing it, boot re-attaches). Device sandboxes keep the
+      // old behavior: their box daemon is reached through a paired host.
+      ...(deviceTarget === undefined ? { detachable: true } : {}),
       // Device spawns only: surface a first-turn failure's raw host line
       // (see `surfaceHostTurnErrors`).
       ...(deviceTarget !== undefined ? { surfaceHostTurnErrors: true } : {}),

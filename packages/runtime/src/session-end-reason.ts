@@ -47,6 +47,10 @@ export const SESSION_END_REASONS = [
   // "killed", not "error") and never triggers `notifyParentOnCrash`
   // (`supervisor-notify.ts` gates on `status:"error"`/`reason:"crashed"`).
   "restarted",
+  // A detached sandbox session's box no longer exists on its provider when
+  // the host daemon came back (expired, reaped, deleted) — the reattach pass
+  // could not reconnect it. Distinct from `daemon-restart`: nothing survived.
+  "sandbox_gone",
 ] as const
 
 export type SessionEndReason = (typeof SESSION_END_REASONS)[number]

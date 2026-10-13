@@ -49,7 +49,7 @@ import type { ConversationStore } from "./conversations.js"
 import { isValidAppEmbedToken } from "./embed-tokens.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
-import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
+import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor, SandboxSessionStats } from "./sessions.js"
 import {
   SessionListFilterError,
   compileSessionListFilters,
@@ -1324,6 +1324,10 @@ export interface RuntimeHttpServerOptions {
      *  Kept in sync with the `daemon_health` MCP tool's field of the same
      *  name. */
     turnStallAfterMs?: number
+    /** Sandbox-session restart bookkeeping (how many a restart would detach,
+     *  and how the last boot's reattach pass went). Kept in sync with the
+     *  `daemon_health` MCP tool's `sandboxSessions`. */
+    sandboxSessions?: () => SandboxSessionStats
     /** Installed-app registry records that loaded partial/unusable. Kept in
      *  sync with the `daemon_health` MCP tool's `appRegistryIssues`. */
     appRegistryIssues?: () => readonly {
@@ -2156,6 +2160,7 @@ export async function startHttpServer(
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
         appRegistryIssues: opts.meta.appRegistryIssues?.() ?? [],
+        ...(opts.meta.sandboxSessions ? { sandboxSessions: opts.meta.sandboxSessions() } : {}),
       }),
     )
   }

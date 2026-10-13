@@ -289,6 +289,13 @@ function toBootedSandbox(
     async pause(): Promise<void> {
       await sandbox.pause({ keepMemory: true })
     },
+    /** Re-arm the box's remaining lifetime to `ms` from now — the same SDK
+     *  call `connect()` already uses to re-arm a resumed box's deadline
+     *  (see module docs above), exposed so a host can extend it again on
+     *  detach without a full reconnect. */
+    async extendTimeout(ms: number): Promise<void> {
+      await sandbox.setTimeout(ms)
+    },
     /**
      * Run ONE command inside the box (e2b `sandbox.commands.run`, foreground)
      * and return its exit code + captured streams. A NON-ZERO exit is a
