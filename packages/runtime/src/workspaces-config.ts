@@ -43,6 +43,12 @@ export interface WorkspaceEntry {
   /** Free-text label the user can attach so workspaces with similar
    *  slugs stay distinguishable in `agentproto workspace list`. */
   label?: string
+  /** Set when the entry was registered by an installed app (`app-<slug>`
+   *  workspaces, see `app-workspace.ts`) — the owning appId. Lets the
+   *  runtime tell app-owned entries from user workspaces: only the owning
+   *  app's uninstall removes it, and it is never picked as the implicit
+   *  active workspace. */
+  ownerApp?: string
 }
 
 export interface WorkspacesConfig {
@@ -157,7 +163,7 @@ export async function saveWorkspacesConfig(
  */
 export function addWorkspace(
   config: WorkspacesConfig,
-  input: { slug: string; path: string; label?: string }
+  input: { slug: string; path: string; label?: string; ownerApp?: string }
 ): WorkspacesConfig {
   if (!isAbsolute(input.path)) {
     throw new Error(
@@ -172,12 +178,14 @@ export function addWorkspace(
         ...config.workspaces[existingIdx]!,
         path: input.path,
         ...(input.label !== undefined ? { label: input.label } : {}),
+        ...(input.ownerApp !== undefined ? { ownerApp: input.ownerApp } : {}),
         updatedAt: now,
       }
     : {
         slug,
         path: input.path,
         ...(input.label ? { label: input.label } : {}),
+        ...(input.ownerApp ? { ownerApp: input.ownerApp } : {}),
         addedAt: now,
         updatedAt: now,
       }
@@ -185,9 +193,12 @@ export function addWorkspace(
   if (existingIdx >= 0) workspaces[existingIdx] = next
   else workspaces.push(next)
   // First-add becomes active automatically — saves the user a
-  // separate `workspace use` call right after a fresh `add`.
-  const active = config.active ?? slug
-  return { ...config, workspaces, active }
+  // separate `workspace use` call right after a fresh `add`. An app-owned
+  // entry never claims the active slot on its own.
+  const active = config.active ?? (input.ownerApp ? undefined : slug)
+  const out: WorkspacesConfig = { ...config, workspaces }
+  if (active !== undefined) out.active = active
+  return out
 }
 
 export function removeWorkspace(
@@ -201,7 +212,7 @@ export function removeWorkspace(
   // unreachable state when the user removes the only one.
   let active = config.active
   if (active === sanitised) {
-    active = workspaces[0]?.slug
+    active = firstUserWorkspace(workspaces)?.slug
   }
   const next: WorkspacesConfig = { ...config, workspaces }
   if (active !== undefined) next.active = active
@@ -265,8 +276,18 @@ export function findWorkspaceByPath(
 export function getActiveWorkspace(
   config: WorkspacesConfig
 ): WorkspaceEntry | undefined {
-  if (!config.active) return config.workspaces[0]
-  return findWorkspace(config, config.active) ?? config.workspaces[0]
+  if (!config.active) return firstUserWorkspace(config.workspaces)
+  return (
+    findWorkspace(config, config.active) ?? firstUserWorkspace(config.workspaces)
+  )
+}
+
+/** Implicit-active fallback: the first workspace a user registered. App-owned
+ *  entries only become active when explicitly chosen (`workspace use`). */
+function firstUserWorkspace(
+  workspaces: readonly WorkspaceEntry[]
+): WorkspaceEntry | undefined {
+  return workspaces.find(w => !w.ownerApp)
 }
 
 /**
@@ -296,6 +317,9 @@ function normalizeConfig(parsed: unknown): WorkspacesConfig {
       if (typeof e.label === "string" && e.label.trim()) {
         we.label = e.label.trim()
       }
+      if (typeof e.ownerApp === "string" && e.ownerApp.trim()) {
+        we.ownerApp = e.ownerApp.trim()
+      }
       workspaces.push(we)
     }
   }
@@ -307,7 +331,7 @@ function normalizeConfig(parsed: unknown): WorkspacesConfig {
   const active =
     typeof obj.active === "string" && finalList.some(w => w.slug === obj.active)
       ? (obj.active as string)
-      : finalList[0]?.slug
+      : firstUserWorkspace(finalList)?.slug
   const out: WorkspacesConfig = {
     version: WORKSPACES_CONFIG_VERSION,
     workspaces: finalList,
