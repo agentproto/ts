@@ -115,6 +115,18 @@ describe("e2bSandboxProvider.connect", () => {
     expect(sandbox.kill).not.toHaveBeenCalled()
   })
 
+  it("extendTimeout() re-arms the box's lifetime via sandbox.setTimeout", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const booted = await e2bSandboxProvider.boot(spec, { env: {} })
+    expect(booted.extendTimeout).toBeDefined()
+    await booted.extendTimeout!(60 * 60_000)
+    expect(sandbox.setTimeout).toHaveBeenCalledWith(60 * 60_000)
+  })
+
   it("never leaks the box when a reconnect's daemon never becomes healthy (kills, then rethrows)", async () => {
     const sandbox = fakeSandbox()
     sandboxConnectMock.mockResolvedValue(sandbox)

@@ -312,6 +312,55 @@ export interface DaemonHealthInfo {
   path?: string | null
   workspace?: string
   uptimeMs?: number
+  /** Sandbox-session restart bookkeeping — absent on a daemon that predates
+   *  detach-on-shutdown. `attached` is what a restart now would detach (the
+   *  box keeps running); `reattach` is how the booted daemon's reattach pass
+   *  is going. */
+  sandboxSessions?: {
+    attached: number
+    reattach: {
+      detachedAtBoot: number
+      reattached: number
+      gone: number
+      failed: number
+      pending: number
+    }
+  }
+}
+
+/** After a restart: wait for the booted daemon's reattach pass to settle, then
+ *  summarise it. Returns "" when nothing was detached. Detach, not kill: the
+ *  provider box and its agent keep running while the daemon is down, and the
+ *  next boot re-attaches to the same session ids. */
+export async function awaitSandboxReattach(
+  health: HealthFetchFn,
+  detachedBefore: number,
+  initial: DaemonHealthInfo | null,
+  attempts = 120,
+  delayMs = 500,
+): Promise<string> {
+  if (detachedBefore <= 0 && !initial?.sandboxSessions?.reattach.detachedAtBoot) return ""
+  let info = initial
+  for (let i = 0; i < attempts; i++) {
+    const r = info?.sandboxSessions?.reattach
+    if (r && r.pending === 0) break
+    await new Promise(res => setTimeout(res, delayMs))
+    info = (await health()) ?? info
+  }
+  const r = info?.sandboxSessions?.reattach
+  if (!r) {
+    return `  sandbox:   ${detachedBefore} detached; re-attach status unavailable\n`
+  }
+  const total = r.detachedAtBoot
+  const extras = [
+    r.gone > 0 ? `${r.gone} gone` : "",
+    r.failed > 0 ? `${r.failed} unreachable` : "",
+    r.pending > 0 ? `${r.pending} still pending` : "",
+  ].filter(Boolean)
+  return (
+    `  sandbox:   re-attached ${r.reattached}/${total} sandbox session${total === 1 ? "" : "s"}` +
+    `${extras.length > 0 ? ` (${extras.join(", ")})` : ""}\n`
+  )
 }
 
 /** " (workspace abc1234, built …)" — or "" when the daemon predates the
@@ -668,9 +717,18 @@ export async function runRestart(
   health: HealthFetchFn = fetchHealth,
   probeAttempts = 20,
   syncPath: PathSyncFn = selfHealDaemonPath,
+  reattachPollMs = 500,
 ): Promise<number> {
   await syncPath(run).catch(() => false)
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
+  // Read BEFORE the kickstart — the old daemon can't answer afterwards.
+  const detaching = (await health().catch(() => null))?.sandboxSessions?.attached ?? 0
+  if (detaching > 0) {
+    process.stdout.write(
+      `agentproto daemon: ${detaching} sandbox session${detaching === 1 ? "" : "s"} will be detached ` +
+        `(box + agent keep running — not killed) and re-attached after boot\n`,
+    )
+  }
   const out = await run(["kickstart", "-k", target])
   if (out.code !== 0) {
     process.stderr.write(
@@ -679,7 +737,10 @@ export async function runRestart(
     )
     return out.code
   }
-  printLifecycleInfo("restarted", await waitForHealth(health, probeAttempts, 300))
+  const booted = await waitForHealth(health, probeAttempts, 300)
+  printLifecycleInfo("restarted", booted)
+  const reattachLine = await awaitSandboxReattach(health, detaching, booted, 120, reattachPollMs)
+  if (reattachLine) process.stdout.write(reattachLine)
   return 0
 }
 
@@ -689,6 +750,8 @@ export interface DaemonStopStats {
   uptimeMs?: number
   version?: string | null
   sessions?: number
+  /** Sandbox sessions this stop detaches (box keeps running) — see `awaitSandboxReattach`. */
+  sandboxDetached?: number
   tokensIn?: number
   tokensOut?: number
   unpricedTokens?: number
@@ -706,6 +769,7 @@ async function gatherStopStats(): Promise<DaemonStopStats | null> {
   const stats: DaemonStopStats = {
     ...(health.uptimeMs !== undefined ? { uptimeMs: health.uptimeMs } : {}),
     version: health.version ?? null,
+    ...(health.sandboxSessions?.attached ? { sandboxDetached: health.sandboxSessions.attached } : {}),
   }
   try {
     const report = await discoverDaemon()
@@ -751,6 +815,11 @@ export async function runStop(
   let msg = "agentproto daemon: SIGTERM sent\n"
   if (stats) {
     msg += `  ran:       ${humaniseUptime(stats.uptimeMs ?? 0)}${stats.version ? ` · v${stats.version}` : ""}\n`
+    if (stats.sandboxDetached) {
+      msg +=
+        `  sandbox:   ${stats.sandboxDetached} sandbox session${stats.sandboxDetached === 1 ? "" : "s"} detached ` +
+        `(box + agent keep running — not killed); re-attached on next start\n`
+    }
     if (stats.sessions !== undefined) {
       const tokens = `${fmtTokens(stats.tokensIn ?? 0)} in / ${fmtTokens(stats.tokensOut ?? 0)} out tok`
       const unpriced = stats.unpricedTokens ? ` · ${fmtTokens(stats.unpricedTokens)} unpriced` : ""
