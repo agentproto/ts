@@ -43,6 +43,62 @@ describe("resolveRequestHttpBaseUrl", () => {
       ),
     ).toBe("http://127.0.0.1:18790")
   })
+
+  it("uses X-Forwarded-Host ahead of the rewritten request host", () => {
+    expect(
+      resolveRequestHttpBaseUrl({
+        host: "127.0.0.1:18790",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "abc.trycloudflare.com",
+      }),
+    ).toBe("https://abc.trycloudflare.com")
+  })
+
+  it("uses the first X-Forwarded-Host when Node exposes an array", () => {
+    expect(
+      resolveRequestHttpBaseUrl({
+        host: "127.0.0.1:18790",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": ["abc.trycloudflare.com", "other"],
+      }),
+    ).toBe("https://abc.trycloudflare.com")
+  })
+
+  it("takes the first comma-separated forwarded host", () => {
+    expect(
+      resolveRequestHttpBaseUrl({
+        host: "127.0.0.1:18790",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": " abc.trycloudflare.com , other",
+      }),
+    ).toBe("https://abc.trycloudflare.com")
+  })
+
+  it("falls back to the request host when the forwarded host is invalid", () => {
+    expect(
+      resolveRequestHttpBaseUrl({
+        host: "127.0.0.1:18790",
+        "x-forwarded-host": "evil.test/path",
+      }),
+    ).toBe("http://127.0.0.1:18790")
+    expect(
+      resolveRequestHttpBaseUrl({
+        host: "127.0.0.1:18790",
+        "x-forwarded-host": "user@evil.test",
+      }),
+    ).toBe("http://127.0.0.1:18790")
+  })
+
+  it("lets the configured origin beat X-Forwarded-Host", () => {
+    vi.stubEnv("AGENTPROTO_PUBLIC_HTTP_ORIGIN", "https://apps.example.test")
+    expect(
+      resolveRequestHttpBaseUrl({
+        host: "127.0.0.1:18790",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "abc.trycloudflare.com",
+      }),
+    ).toBe("https://apps.example.test")
+  })
 })
 
 describe("resolvePublicAppOrigins", () => {

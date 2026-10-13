@@ -5627,6 +5627,13 @@ export function buildSpawnSessionHttpArgs(
  *                                    pinned}. Pure sort/display state — the
  *                                    HTTP twin of the `session_set_pinned`
  *                                    MCP verb, never touches keepAlive/reaper.
+ *   POST   /sessions/:id/archive  → hide a TERMINAL session (exited/killed/
+ *                                    error) from the default list; returns
+ *                                    {ok, sessionId, archived, archivedAt}. The
+ *                                    HTTP twin of the `session_archive` MCP
+ *                                    verb: 404 unknown session, 409
+ *                                    "session_not_terminal" while it is still
+ *                                    running/starting. Transcript stays readable.
  *   POST   /sessions/pinned/order  → manually reorder the pinned group, body
  *                                    {ids: string[]}; returns {ok, ids}. Every
  *                                    id must exist and be pinned (404 unknown,
@@ -7876,7 +7883,7 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/retire|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/retire|\/pin|\/archive|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -8403,6 +8410,26 @@ async function handleSessions(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       json(msg.includes("no session") ? 404 : 500, { error: "set_pinned_failed", message: msg })
+    }
+    return true
+  }
+
+  // Archive — the HTTP twin of the `session_archive` MCP verb. The
+  // terminal-status guard lives in `registry.archiveSession`; a still-alive
+  // session is refused with 409 rather than hidden while it keeps running.
+  if (suffix === "/archive" && req.method === "POST") {
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    try {
+      const desc = registry.archiveSession(id)
+      json(200, { ok: true, sessionId: id, archived: true, archivedAt: desc.archivedAt })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes("no session")) json(404, { error: "session_not_found", id: rawIdOrName, message: msg })
+      else if (msg.includes("is still")) json(409, { error: "session_not_terminal", message: msg })
+      else json(500, { error: "archive_failed", message: msg })
     }
     return true
   }
