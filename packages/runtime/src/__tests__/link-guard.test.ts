@@ -16,6 +16,11 @@ function startTarget(): Promise<{ server: Server; port: number }> {
       res.end('{"version":3}')
       return
     }
+    if (req.url === "/echo-headers") {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify(req.headers))
+      return
+    }
     res.writeHead(200, { "content-type": "text/html" })
     res.end(`<html>hello ${req.url}</html>`)
   })
@@ -173,5 +178,29 @@ describe("createLinkGuard", () => {
     await guard.stop()
     guardStop = undefined
     await expect(fetch(`${base}/`)).rejects.toThrow()
+  })
+
+  it("forwards the client's Host as X-Forwarded-Host and rewrites Host to the target", async () => {
+    const { base, handle } = await setup()
+    const first = await fetch(`${base}/?t=${handle.token}`, { redirect: "manual" })
+    const cookie = readSetCookie(first)!.split(";")[0]!
+
+    const res = await fetch(`${base}/echo-headers`, { headers: { cookie } })
+    const seen = (await res.json()) as Record<string, string>
+    expect(seen["x-forwarded-host"]).toBe(`127.0.0.1:${handle.port}`)
+    expect(seen.host).toBe(`127.0.0.1:${target!.port}`)
+  })
+
+  it("preserves a pre-existing X-Forwarded-Host from an upstream proxy", async () => {
+    const { base, handle } = await setup()
+    const first = await fetch(`${base}/?t=${handle.token}`, { redirect: "manual" })
+    const cookie = readSetCookie(first)!.split(";")[0]!
+
+    const res = await fetch(`${base}/echo-headers`, {
+      headers: { cookie, "x-forwarded-host": "public.example.test" },
+    })
+    const seen = (await res.json()) as Record<string, string>
+    expect(seen["x-forwarded-host"]).toBe("public.example.test")
+    expect(seen.host).toBe(`127.0.0.1:${target!.port}`)
   })
 })
