@@ -4277,6 +4277,9 @@ export async function spawnAgentSession(
       ...(sandboxProvider ? { sandboxProvider } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
+      ...(sandboxDeliveryTarget && input.sandboxCheckpoint !== undefined
+        ? { sandboxCheckpointOverride: input.sandboxCheckpoint }
+        : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
       ...(commandSandbox ? { commandSandbox } : {}),

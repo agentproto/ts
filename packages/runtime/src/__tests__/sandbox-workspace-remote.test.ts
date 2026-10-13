@@ -70,6 +70,13 @@ describe("planSandboxWorkspace", () => {
     expect(restore).toContain('|| echo "checkpoint not restored"')
   })
 
+  it("reads the checkpoint snapshot back from a custom checkpointRefPrefix", () => {
+    const plan = planSandboxWorkspace({ ...request, worktree: { slug: "x" }, checkpointRefPrefix: "safety/" })
+    const restore = plan.steps.find(s => s.label === "restore-checkpoint")?.command ?? ""
+    expect(restore).toContain("'refs/remotes/origin/safety/wt/x'^")
+    expect(restore).not.toContain("agentproto-checkpoint/")
+  })
+
   it("plans no checkpoint restore without a work branch", () => {
     const plan = planSandboxWorkspace({ ...request })
     expect(plan.steps.some(s => s.label === "restore-checkpoint")).toBe(false)

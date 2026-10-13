@@ -743,16 +743,15 @@ export async function restartAgentSession(
   // adapter inside it instead (see `spawnInSandbox`).
   const sandboxId =
     prev.remote === true && prev.sandboxId !== undefined ? prev.sandboxId : undefined
-  // Sandbox restart only — resolves the SAME `defaults.sandbox.checkpoint`
-  // global policy a fresh spawn would see (restart has no per-spawn
-  // `sandboxCheckpoint` override surface of its own). `loadConfig` is a
-  // small file read, already called this often elsewhere.
+  // Sandbox restart only — the same `defaults.sandbox.checkpoint` →
+  // per-spawn resolution a fresh spawn runs; the spawn's own override rides
+  // the descriptor (`sandboxCheckpointOverride`).
   const checkpointConfig =
     sandboxId !== undefined
       ? resolveSandboxCheckpointConfig(
           (opts.loadDefaultsConfig ? await opts.loadDefaultsConfig() : (await loadConfig()).defaults)?.sandbox
             ?.checkpoint,
-          undefined,
+          prev.sandboxCheckpointOverride,
         )
       : undefined
   // `forceAgentResume` never consults `augmented` (see the `resumeVia`
@@ -1445,6 +1444,9 @@ export async function restartAgentSession(
       sandboxProvider: box.provider,
       sandboxTeardown: box.sandboxTeardown,
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
+      ...(deliveryTarget && prev.sandboxCheckpointOverride !== undefined
+        ? { sandboxCheckpointOverride: prev.sandboxCheckpointOverride }
+        : {}),
       ...(box.sandboxPorts ? { sandboxPorts: box.sandboxPorts } : {}),
       commandPreview: `sandbox:${box.provider} → ${adapterSlug}`,
       resumedFrom: prev.id,
