@@ -13,6 +13,7 @@ import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-w
 import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
 import { resolveSmallModelEnv } from "./small-model.js"
+import { applySessionSkills, readSessionSkillsMetadata } from "./session-skills.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
 import { resolveWindowsBatchSpawn, windowsBatchShellOption } from "./win32-spawn.js"
@@ -525,11 +526,37 @@ export function createAgentCliRuntime(
         env.CLAUDE_CONFIG_DIR = claudeConfigDir
       }
 
+      // ── Per-session skill delivery (skill imports) ──────────────────
+      // Copy each resolved imported skill into the session's isolated config
+      // dir where this adapter's harness discovers it natively. The location
+      // (and any env var naming it) comes from the manifest's
+      // `metadata.sessionSkills`; an adapter without it gets no delivery.
+      // Base dir: the claude-code isolation dir when that exists (its
+      // `CLAUDE_CONFIG_DIR` IS the session dir), else the caller's
+      // `opts.configDir` (the daemon always passes one for a real spawn).
+      const sessionSkillsMeta = readSessionSkillsMetadata(definition.metadata)
+      const sessionSkillsBase = claudeConfigDir ?? opts?.configDir
+      let sessionSkillsTargetDir: string | undefined
+      if (sessionSkillsMeta && opts?.sessionSkills?.length && sessionSkillsBase) {
+        const applied = applySessionSkills({
+          skills: opts.sessionSkills,
+          meta: sessionSkillsMeta,
+          baseDir: sessionSkillsBase,
+          env,
+        })
+        sessionSkillsTargetDir = applied.targetDir
+        // Delivery is additive — a single broken skill must not sink the spawn.
+        for (const warning of applied.warnings) {
+          console.warn(`[agent-cli] session skills: ${warning}`)
+        }
+      }
+
       // A CLI that keeps mutable state under `$HOME` (codex: `~/.codex`) can't
       // start once the OS sandbox denies `$HOME` — give a confined spawn its
       // own home instead of opening the operator's (see `state-home.ts`).
       const extraWritePaths = claudeConfigDir ? [claudeConfigDir] : []
       if (credentialDataDir) extraWritePaths.push(credentialDataDir)
+      if (sessionSkillsTargetDir) extraWritePaths.push(sessionSkillsTargetDir)
       if (
         definition.stateHome &&
         definition.protocol !== "proprietary" &&

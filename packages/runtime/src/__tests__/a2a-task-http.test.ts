@@ -20,8 +20,10 @@ import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 import {
+  extractLastAssistantText,
   extractSkillRequest,
   mapRunState,
+  sessionTurnDone,
   type A2aAppHandleLike,
   type A2aTask,
 } from "../a2a-tasks.js"
@@ -41,12 +43,14 @@ describe("A2A task ingress", () => {
   let runs: Map<string, { status: string; sessions: unknown[]; error?: string }>
   let dispatched: Array<{ name: string; args: Record<string, unknown> }>
   let handles: Record<string, A2aAppHandleLike>
+  let conversations: Map<string, { role: string; text: string }[]>
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "a2a-task-app-"))
     stateDir = await mkdtemp(join(tmpdir(), "a2a-task-state-"))
     runs = new Map()
     dispatched = []
+    conversations = new Map()
     handles = {
       [APP_ID]: { accepts: { tasks: true }, exposes: { agents: ["solo"], workflows: ["do-it"] } },
       [OTHER_APP_ID]: { exposes: { agents: ["solo"] } },
@@ -82,7 +86,27 @@ describe("A2A task ingress", () => {
     if (name === "app_status") {
       const run = runs.get(args.appRunId as string)
       if (!run) return envelope(`app_status: no app run "${String(args.appRunId)}".`, true)
-      return envelope({ appRunId: args.appRunId, appId: APP_ID, ...run })
+      const sessions =
+        args.full === true
+          ? run.sessions
+          : run.sessions.map(s => {
+              const sess = s as { agentId?: string; sessionId?: string }
+              return { agentId: sess.agentId, sessionId: sess.sessionId, status: run.status }
+            })
+      return envelope({ appRunId: args.appRunId, appId: APP_ID, status: run.status, sessions, ...(run.error ? { error: run.error } : {}) })
+    }
+    if (name === "conversation_read") {
+      const id = args.idOrName as string
+      const messages = conversations.get(id)
+      if (!messages) return envelope(`conversation_read: no conversation "${id}".`, true)
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${JSON.stringify({ meta: {}, messages })}\n\n---\n[window: messages 1–${messages.length} of ${messages.length}]`,
+          },
+        ],
+      }
     }
     if (name === "app_stop") {
       runs.get(args.appRunId as string)!.status = "cancelled"
@@ -145,12 +169,21 @@ describe("A2A task ingress", () => {
       expect(dispatched.find(d => d.name === "app_run")!.args).toEqual({ appId: APP_ID, agents: ["solo"], prompt: "summarise this" })
 
       runs.get("run-1")!.status = "succeeded"
+      conversations.set("s-run-1", [
+        { role: "user", text: "summarise this" },
+        { role: "assistant", text: "All done." },
+      ])
       const done = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
       const doneTask = done.json.result as A2aTask
       expect(doneTask.status.state).toBe("TASK_STATE_COMPLETED")
       expect(doneTask.contextId).toBe(task.contextId)
-      expect(doneTask.artifacts).toHaveLength(1)
-      const part = doneTask.artifacts![0]!.parts[0]!
+      // The agent's answer leads; the app's static HTML artifact follows it.
+      expect(doneTask.artifacts).toHaveLength(2)
+      expect(doneTask.artifacts![0]).toMatchObject({ artifactId: "agent-output-solo", name: "solo", parts: [{ text: "All done." }] })
+      expect(doneTask.status.message).toMatchObject({ role: "ROLE_AGENT", parts: [{ text: "All done." }], taskId: "run-1" })
+      expect(doneTask.status.message!.contextId).toBe(task.contextId)
+      expect(doneTask.status.message).not.toHaveProperty("kind")
+      const part = doneTask.artifacts![1]!.parts[0]!
       expect(part).toMatchObject({ mediaType: "text/html", filename: "Report.html" })
       expect(part).not.toHaveProperty("kind")
       expect(Buffer.from((part as { raw: string }).raw, "base64").toString()).toBe("<h1>done</h1>")
@@ -160,6 +193,76 @@ describe("A2A task ingress", () => {
       expect(failed.status.state).toBe("TASK_STATE_FAILED")
       expect(failed.status.message).toMatchObject({ role: "ROLE_AGENT", parts: [{ text: "agent crashed" }] })
       expect(failed.status.message).not.toHaveProperty("kind")
+    })
+  })
+
+  it("GetTask completes when the session's turn ended (run still running) and returns the agent's answer", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "what is the answer"))
+      runs.set("run-1", {
+        status: "running",
+        sessions: [
+          {
+            agentId: "solo",
+            sessionId: "s-run-1",
+            descriptor: { status: "running", busy: false, awaitingInput: false, turnsCompleted: 1, lastTurnReason: "completed", outcome: { summary: "the summary" } },
+          },
+        ],
+      })
+      conversations.set("s-run-1", [
+        { role: "user", text: "what is the answer" },
+        { role: "assistant", text: "   " },
+        { role: "assistant", text: "The answer is 42." },
+      ])
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_COMPLETED")
+      expect(task.artifacts![0]).toMatchObject({ artifactId: "agent-output-solo", name: "solo", parts: [{ text: "The answer is 42." }] })
+      expect(task.status.message).toMatchObject({ role: "ROLE_AGENT", parts: [{ text: "The answer is 42." }], taskId: "run-1" })
+    })
+  })
+
+  it("GetTask stays working while the session is busy, with no artifacts", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "keep going"))
+      runs.set("run-1", {
+        status: "running",
+        sessions: [
+          {
+            agentId: "solo",
+            sessionId: "s-run-1",
+            descriptor: { status: "running", busy: true, awaitingInput: false, turnsCompleted: 1 },
+          },
+        ],
+      })
+      conversations.set("s-run-1", [{ role: "assistant", text: "partial" }])
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_WORKING")
+      expect(task.artifacts).toBeUndefined()
+      expect(task.status.message).toBeUndefined()
+    })
+  })
+
+  it("GetTask falls back to the descriptor outcome summary when conversation_read fails", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "summarise"))
+      runs.set("run-1", {
+        status: "running",
+        sessions: [
+          {
+            agentId: "solo",
+            sessionId: "s-run-1",
+            descriptor: { status: "exited", turnsCompleted: 1, outcome: { summary: "the agent finished the job" } },
+          },
+        ],
+      })
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_COMPLETED")
+      expect(task.artifacts![0]).toMatchObject({ artifactId: "agent-output-solo", parts: [{ text: "the agent finished the job" }] })
+      expect(task.status.message).toMatchObject({ parts: [{ text: "the agent finished the job" }] })
+      expect(dispatched.some(d => d.name === "conversation_read" && d.args.idOrName === "s-run-1")).toBe(true)
     })
   })
 
@@ -320,6 +423,54 @@ describe("a2a-tasks mapping", () => {
     expect(mapRunState({ status: "failed" })).toBe("TASK_STATE_FAILED")
     expect(mapRunState({ status: "cancelled" })).toBe("TASK_STATE_CANCELED")
     expect(mapRunState({})).toBe("TASK_STATE_FAILED")
+  })
+
+  it("completes a still-running run once every session's turn is done", () => {
+    const done = { status: "running", busy: false, awaitingInput: false, turnsCompleted: 1 }
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: done }] })).toBe("TASK_STATE_COMPLETED")
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: { status: "exited" } }] })).toBe("TASK_STATE_COMPLETED")
+    // Busy, waiting on input, or zero turns done → still working.
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: { ...done, busy: true } }] })).toBe("TASK_STATE_WORKING")
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: { ...done, awaitingInput: true } }] })).toBe("TASK_STATE_WORKING")
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: { ...done, turnsCompleted: 0 } }] })).toBe("TASK_STATE_WORKING")
+    // Every session must carry a descriptor: a slim one keeps working.
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: done }, {}] })).toBe("TASK_STATE_WORKING")
+    expect(mapRunState({ status: "running", sessions: [{ agentId: "solo" }] })).toBe("TASK_STATE_WORKING")
+    // One still-busy session among finished ones keeps the run working.
+    expect(
+      mapRunState({
+        status: "running",
+        sessions: [{ descriptor: done }, { descriptor: { status: "running", busy: true, turnsCompleted: 1 } }],
+      }),
+    ).toBe("TASK_STATE_WORKING")
+    // An ended run ignores its sessions entirely.
+    expect(mapRunState({ status: "failed", sessions: [{ descriptor: done }] })).toBe("TASK_STATE_FAILED")
+  })
+
+  it("sessionTurnDone reads the descriptor", () => {
+    expect(sessionTurnDone({ status: "exited" })).toBe(true)
+    expect(sessionTurnDone({ status: "error" })).toBe(true)
+    expect(sessionTurnDone({ status: "starting" })).toBe(false)
+    expect(sessionTurnDone({ status: "running", busy: false, turnsCompleted: 1 })).toBe(true)
+    expect(sessionTurnDone({ status: "running", busy: true, turnsCompleted: 1 })).toBe(false)
+  })
+
+  it("extractLastAssistantText strips the window suffix and takes the last non-blank assistant text", () => {
+    const body = (messages: unknown[]) => `${JSON.stringify({ meta: {}, messages })}\n\n---\n[window: messages 1–2 of 3]`
+    expect(
+      extractLastAssistantText(
+        body([
+          { role: "user", text: "hi" },
+          { role: "assistant", text: "first" },
+          { role: "assistant", text: "  \n " },
+          { role: "assistant", text: "last one" },
+        ]),
+      ),
+    ).toBe("last one")
+    expect(extractLastAssistantText(body([{ role: "user", text: "hi" }]))).toBeUndefined()
+    expect(extractLastAssistantText(body([]))).toBeUndefined()
+    expect(extractLastAssistantText("not json at all")).toBeUndefined()
+    expect(extractLastAssistantText(JSON.stringify({ messages: "nope" }))).toBeUndefined()
   })
 
   it("extractSkillRequest prefers metadata over the text prefix", () => {

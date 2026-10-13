@@ -85,6 +85,14 @@ export {
 } from "./host-context.js"
 export { CREDENTIAL_DATA_SUBDIR } from "./state-home.js"
 export {
+  applySessionSkills,
+  readSessionSkillsMetadata,
+  SESSION_SKILLS_ABS_DIR,
+  type SessionSkillsMetadata,
+  type ApplySessionSkillsArgs,
+  type ApplySessionSkillsResult,
+} from "./session-skills.js"
+export {
   agentCliFrontmatterSchema,
   runtimeConfigSchema,
   type AgentCliFrontmatter,
@@ -135,6 +143,7 @@ export type {
   AgentCliRuntime,
   AgentCliRuntimeSession,
   AgentCliStartOptions,
+  AgentCliSessionSkill,
   AgentCliFsZones,
   AgentCliStateHome,
   AgentCliSmallModel,

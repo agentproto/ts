@@ -17,6 +17,7 @@ export default createTsupConfig({
     "config-schema": "src/config-schema.ts",
     bundles: "src/bundles.ts",
     "mcp-imports": "src/mcp-imports.ts",
+    "skill-imports": "src/skill-imports.ts",
     "resume-strategies": "src/resume-strategies.ts",
     "session-presence": "src/session-presence.ts",
     "providers-store": "src/providers-store.ts",

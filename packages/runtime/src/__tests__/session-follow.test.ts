@@ -313,6 +313,30 @@ describe("session-follow", () => {
   })
 
   describe("delivery", () => {
+    it("an fyi follow delivers its digest with urgency fyi", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true }, urgency: "fyi" })
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("fyi")
+    })
+
+    it("a follow without urgency delivers next-turn", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(sent[0]!.urgency).toBe("next-turn")
+    })
+
+    it("a batch mixing an fyi and a next-turn follow wakes the follower", async () => {
+      const { sent, store } = setup([running("chief"), running("a")], { selector: { sessionIds: ["a"] }, urgency: "fyi" })
+      store.upsert({ follower: "chief", selector: { sessionIds: ["a"] }, batchMs: 0 })
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("next-turn")
+    })
+
     it("coalesces events within batchMs into ONE system/notice next-turn message", async () => {
       vi.useFakeTimers()
       const { sent, sendMessage } = setup(

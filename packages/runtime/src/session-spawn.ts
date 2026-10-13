@@ -7,6 +7,7 @@
  */
 
 import type { AcpMcpServer } from "@agentproto/acp"
+import { randomBytes } from "node:crypto"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
@@ -18,6 +19,7 @@ import {
   findWorkspace,
   findWorkspaceByPath,
   getActiveWorkspace,
+  type WorkspaceRemote,
 } from "./workspaces-config.js"
 import { loadConfig } from "./config.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
@@ -43,6 +45,12 @@ import {
 import { loadBundles, type BundlesFile } from "./bundles.js"
 import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 import {
+  loadImportedSkills,
+  resolveSessionSkills,
+  type ImportedSkillsConfig,
+  type ResolvedSessionSkill,
+} from "./skill-imports.js"
+import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
@@ -64,6 +72,24 @@ import {
   suggestModelSlugs,
 } from "./catalog-models.js"
 import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-hint.js"
+import {
+  autoCredentialRefOf,
+  buildSandboxSecretResolver,
+  type SandboxSecretResolver,
+} from "./sandbox-secret-resolver.js"
+import {
+  GIT_TOKEN_ENV,
+  withoutReservedSandboxEnv,
+  planSandboxWorkspace,
+  runSandboxWorkspaceSetup,
+  type SandboxWorkspacePlan,
+} from "./sandbox-workspace-remote.js"
+import {
+  formatDeliveryNotice,
+  createDeliveryHook,
+  type SandboxDeliveryRecord,
+  type SandboxDeliveryTarget,
+} from "./sandbox-delivery.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -241,7 +267,9 @@ import {
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
-export type SandboxSpecInput = SandboxSpec & { reuse?: string }
+export type SandboxSpecInput = SandboxSpec & {
+  reuse?: string
+}
 
 /**
  * Retry-safety for the process-forking half of `agent_start`.
@@ -1067,6 +1095,10 @@ export interface SpawnAgentSessionDeps {
    *  `mcpImports` ids to their alias/snapshot and detects dangling ones.
    *  Defaults to the real loader when omitted; tests inject a stub. */
   loadImportedMcpsConfig?: () => Promise<ImportedMcpsConfig>
+  /** Loads `~/.agentproto/imported-skills.json` — resolves a spawn's resolved
+   *  skill ids to the imported copies delivered to the child's session config
+   *  dir. Defaults to the real loader when omitted; tests inject a stub. */
+  loadImportedSkillsConfig?: () => Promise<ImportedSkillsConfig>
   /** Builds the per-session headless-browser mount for `browser:
    *  "headless"` (see `browser-mount.ts`). Defaults to the real resolver
    *  (installs chrome-devtools-mcp on first use); tests inject a stub. */
@@ -1559,8 +1591,10 @@ export type SpawnAgentSessionResult =
         | "sandbox_proxy_failed"
         | "device_spawn_unreachable"
         | "sandbox_reuse_ambiguous"
+        | "sandbox_reuse_workspace_mismatch"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
+        | "sandbox_workspace_setup_failed"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -1926,6 +1960,11 @@ export async function spawnAgentSession(
   }
   let cwd = input.cwd ?? (appBoundary && !input.workspaceSlug ? appBoundary.root : undefined)
   let resolvedSlug = input.workspaceSlug
+  // The workspace's off-machine clone source, captured only for a sandbox
+  // spawn that named the workspace itself (no explicit `cwd`, not a device):
+  // that is the one shape where the host path is meaningless in the box and
+  // the box should hold a fresh checkout of the repo instead.
+  let sandboxWorkspace: { slug: string; remote: WorkspaceRemote } | undefined
   if (!cwd || !resolvedSlug) {
     try {
       const config = await loadWorkspacesConfig()
@@ -1935,6 +1974,9 @@ export async function spawnAgentSession(
           if (ws) {
             cwd = ws.path
             resolvedSlug = ws.slug
+            if (input.sandbox !== undefined && !isDeviceSpawn && ws.remote) {
+              sandboxWorkspace = { slug: ws.slug, remote: ws.remote }
+            }
           } else if (deviceBridgeArrival) {
             // DEVICE-BRIDGE ONLY (issue #1647): a spawn that crossed the
             // /device-spawn bridge carrying an explicit `workspaceSlug` that
@@ -2773,6 +2815,15 @@ export async function spawnAgentSession(
     bundleSkillsUnion.size > 0
       ? { ...baseSpawnDefaults, skills: Array.from(new Set([...baseSpawnDefaults.skills, ...bundleSkillsUnion])) }
       : baseSpawnDefaults
+  // ── Skill imports (per-session delivery) ──────────────────────────
+  // Resolve the imported subset of the resolved `skills` list into concrete
+  // `{alias, path}` entries the driver copies into the child's session config
+  // dir (see the adapter manifests' `metadata.sessionSkills`). Runs only when
+  // there ARE skills — a plain spawn does no registry read — AND the resolved
+  // adapter takes part in delivery (`deliversSessionSkills`, projected by the
+  // resolver from the manifest). Adapters that DON'T (hermes, whose `skills`
+  // is an opaque comma-joined option) keep their ids untouched and raise no
+  // "unknown skill id" warning.
   const resolvedContextContinuity: ResolvedContextContinuityPolicy =
     resolveContextContinuityPolicy(
       undefined,
@@ -2795,6 +2846,18 @@ export async function spawnAgentSession(
       (spawnDefaults.auth.explicitConfig && input.auth === undefined))
   const resolved =
     input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
+  // Non-imported ids are warnings, never throws (mirrors `mountImports`), and
+  // the adapter-facing `spawnDefaults.skills` stays unchanged either way.
+  // Sandboxed spawns resolve no host adapter (null) and so skip delivery.
+  let sessionSkills: ResolvedSessionSkill[] = []
+  if (resolved?.deliversSessionSkills && spawnDefaults.skills.length > 0) {
+    const importedSkills = deps.loadImportedSkillsConfig
+      ? await deps.loadImportedSkillsConfig()
+      : await loadImportedSkills()
+    const resolvedSkills = resolveSessionSkills(spawnDefaults.skills, importedSkills)
+    sessionSkills = resolvedSkills.resolved
+    spawnWarnings.push(...resolvedSkills.warnings)
+  }
   if (input.sandbox === undefined && !resolved) {
     // `resolveAgentAdapter` collapses every failure reason to `null` by
     // contract (it's injected across a dozen call sites that all assume it
@@ -3591,6 +3654,7 @@ export async function spawnAgentSession(
         ...(initialTitle ? { title: initialTitle } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
+        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
@@ -3718,6 +3782,7 @@ export async function spawnAgentSession(
             // can hand the respawned adapter the same dir (native-resume
             // store). Adapters that don't isolate a config dir ignore it.
             configDir: adapterConfigDirFor(mintedSessionId),
+            ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
             ...(input.mode ? { mode: input.mode } : {}),
             ...(launchConfig.options ? { options: launchConfig.options } : {}),
             ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
@@ -3851,6 +3916,7 @@ export async function spawnAgentSession(
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
+    let sandboxDeliveryTarget: SandboxDeliveryTarget | undefined
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
     let commandSandbox: SandboxMode | undefined
@@ -3899,8 +3965,21 @@ export async function spawnAgentSession(
         // can inject the credential's env-var NAME into `env.passthrough`
         // (never the value) before the box boots.
         ...(authSpec ? { authSpec } : {}),
+        ...(accessProfileEcho ? { authProfileRef: accessProfileEcho.profileRef } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
+        ...(sandboxWorkspace
+          ? {
+              workspace: sandboxWorkspace,
+              ...(normalizeWorktreeField(input.worktree) !== undefined
+                ? { worktree: normalizeWorktreeField(input.worktree) }
+                : {}),
+              sessionId: mintedSessionId,
+              onDelivery: (record: SandboxDeliveryRecord) => {
+                registry.recordSandboxDelivery(mintedSessionId, record, formatDeliveryNotice(record))
+              },
+            }
+          : {}),
         // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
         // prompt INSIDE the inner `agent_start` (see `bootSandboxAgentSession`'s
         // `initialPrompt`) so the device bridge makes ONE dial, not two. The
@@ -3916,6 +3995,7 @@ export async function spawnAgentSession(
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
       sandboxTeardown = booted.sandboxTeardown
+      sandboxDeliveryTarget = booted.deliveryTarget
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
       if (isDeviceSandboxTarget(input.sandbox)) {
@@ -3977,6 +4057,7 @@ export async function spawnAgentSession(
         // the respawned adapter the same dir (native-resume store).
         // Adapters that don't isolate a config dir ignore it.
         configDir: adapterConfigDirFor(mintedSessionId),
+        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(launchConfig.options ? { options: launchConfig.options } : {}),
         ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
@@ -4101,6 +4182,7 @@ export async function spawnAgentSession(
       ...(initialTitle ? { title: initialTitle } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
+      ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
       ...(bundleIds.length > 0 ? { bundles: bundleIds } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
@@ -4160,6 +4242,7 @@ export async function spawnAgentSession(
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
+      ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
       ...(commandSandbox ? { commandSandbox } : {}),
@@ -4393,6 +4476,9 @@ type SandboxBootResult =
        *  descriptor's `sandboxProvider` by the caller. */
       provider: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
+      /** The work branch checked out in the box, when a `worktree` was
+       *  requested — stamped onto the descriptor so a restart can deliver it. */
+      deliveryTarget?: SandboxDeliveryTarget
       sandboxPorts?: Record<number, string>
       /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
        *  the descriptor by the caller. Absent when no appServe was requested. */
@@ -4410,9 +4496,11 @@ type SandboxBootResult =
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
         | "sandbox_reuse_ambiguous"
+        | "sandbox_reuse_workspace_mismatch"
         | "sandbox_proxy_failed"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
+        | "sandbox_workspace_setup_failed"
         | "device_spawn_unreachable"
       message: string
       details?: Record<string, unknown>
@@ -4487,10 +4575,21 @@ function sandboxDeclaredInstallPackages(spec: SandboxSpec): string[] {
  * module, which the name-only contract forbids. Acceptable while the broker
  * is a local/env read; revisit with a cache only if the broker ever becomes
  * network-backed.
+ *
+ * Keychain-only credentials: a profile-backed credential (`credentialRef`)
+ * usually is NOT in the daemon env. `autoRef` (the profile's keychain slot)
+ * is registered in `refs` under the credential's env-var name, so the layered
+ * `resolve` finds it there and the box gets it anyway. An env value still
+ * wins; an unresolvable name degrades to the same warning as before.
  */
-async function withSandboxAuthAutoPassthrough(
+export async function withSandboxAuthAutoPassthrough(
   spec: SandboxSpec,
   authSpec: ResolvedAuthSpec | undefined,
+  secrets: {
+    resolve: SandboxSecretResolver
+    refs: Map<string, string>
+    autoRef: string | undefined
+  },
 ): Promise<SandboxSpec> {
   if (!spec.env?.autoPassthrough) return spec
   const declared = spec.env.passthrough ?? []
@@ -4502,7 +4601,10 @@ async function withSandboxAuthAutoPassthrough(
   if (!eligible) return spec
   const name = authSpec.setEnv
   if (declared.includes(name)) return spec
-  const resolvable = (await resolveSandboxSecret(name)) !== null
+  if (secrets.autoRef !== undefined && !secrets.refs.has(name)) {
+    secrets.refs.set(name, secrets.autoRef)
+  }
+  const resolvable = (await secrets.resolve(name)) !== null
   if (!resolvable) {
     console.warn(
       `[agent_start] sandbox env.autoPassthrough: the resolved billing credential env var ` +
@@ -4709,9 +4811,25 @@ async function bootSandboxAgentSession(opts: {
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
    *  never its value. */
   authSpec?: ResolvedAuthSpec
+  /** The attached access profile's id (`access.profileRef`), when one was
+   *  used. Lets `env.autoPassthrough` fall back to the profile's keychain
+   *  `credentialRef` for a credential absent from the daemon env. */
+  authProfileRef?: string
   /** WP3 — serve an app UI from inside the box; see
    *  `SpawnAgentSessionInput.appServe`. */
   appServe?: SandboxAppServeSpec
+  /** The registered workspace whose `remote` should be checked out in the box
+   *  (see `sandbox-workspace-remote.ts`). Honoured only for a provider with a
+   *  disjoint filesystem (`handle.defaultCwd`) — a same-machine provider keeps
+   *  using the host path. */
+  workspace?: { slug: string; remote: WorkspaceRemote }
+  /** The caller's normalized `agent_start.worktree`: cut `wt/<slug>` in the
+   *  box's checkout. Meaningful only together with `workspace`. */
+  worktree?: { slug?: string; base?: string }
+  /** The host session id this box serves — names the delivery output dir. */
+  sessionId?: string
+  /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
+  onDelivery?: (record: SandboxDeliveryRecord) => void
   /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
    *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
    *  `forwardHttpStream` dial delivers both the spawn and the first turn.
@@ -4776,14 +4894,62 @@ async function bootSandboxAgentSession(opts: {
       }
     }
   }
+  // Workspace `remote`: plan the in-box checkout up front so a bad slug/base
+  // rejects the spawn before a box boots. The session lands in the checkout.
+  let workspacePlan: SandboxWorkspacePlan | undefined
+  if (opts.workspace && handle.defaultCwd) {
+    try {
+      workspacePlan = planSandboxWorkspace({
+        workspaceSlug: opts.workspace.slug,
+        remote: opts.workspace.remote,
+        homeDir: handle.defaultCwd,
+        ...(opts.worktree ? { worktree: opts.worktree } : {}),
+        mintSlug: () => randomBytes(4).toString("hex"),
+      })
+    } catch (err) {
+      return {
+        ok: false,
+        code: "sandbox_workspace_setup_failed",
+        message: `agent_start: cannot check out workspace "${opts.workspace.slug}" in the sandbox — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      }
+    }
+    boxCwd = workspacePlan.checkoutDir
+  }
+  // Keychain refs are daemon-derived only: the resolved workspace's remote
+  // credential (→ AGENTPROTO_GIT_TOKEN) and, for `env.autoPassthrough`, the
+  // attached profile's own ref. A caller never names a keychain slot, and a
+  // device target never resolves any (its box is another machine).
+  const isDeviceBox = isDeviceSandboxTarget(opts.sandbox)
+  const credentialRefs = new Map<string, string>()
+  const gitCredentialRef = opts.workspace?.remote.credentialRef
+  if (workspacePlan && gitCredentialRef !== undefined && !isDeviceBox) {
+    credentialRefs.set(GIT_TOKEN_ENV, gitCredentialRef)
+  }
+  const resolveSecret = buildSandboxSecretResolver({
+    base: resolveSandboxSecret,
+    refs: credentialRefs,
+    keychainFirst: new Set([GIT_TOKEN_ENV]),
+  })
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(
       withSandboxAdapterPackages(
-        typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
+        withoutReservedSandboxEnv(
+          typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
+        ),
         opts.adapter,
       ),
     ),
     opts.authSpec,
+    {
+      resolve: resolveSecret,
+      refs: credentialRefs,
+      autoRef:
+        !isDeviceBox && typeof opts.sandbox === "object" && opts.sandbox.env?.autoPassthrough && opts.authProfileRef
+          ? autoCredentialRefOf(await getAuthProfile(opts.authProfileRef))
+          : undefined,
+    },
   )
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
@@ -4824,6 +4990,20 @@ async function bootSandboxAgentSession(opts: {
       }
     }
     if (reuseResolution.kind === "resolved") reuseSandboxId = reuseResolution.sandboxId
+    // A box booted with one workspace's git token keeps it in its env for
+    // life: another workspace (or a spawn with none) must not reattach it.
+    const tokenOwner = readSandboxLedger().find(e => e.sandboxId === reuseSandboxId)?.gitTokenWorkspace
+    if (tokenOwner !== undefined && tokenOwner !== opts.workspace?.slug) {
+      return {
+        ok: false,
+        code: "sandbox_reuse_workspace_mismatch",
+        message:
+          `agent_start: sandbox "${reuseSandboxId}" was booted with the git token of workspace ` +
+          `"${tokenOwner}" and cannot be reused ` +
+          (opts.workspace ? `by workspace "${opts.workspace.slug}"` : "outside that workspace") +
+          ". Omit sandbox.reuse to boot a fresh box.",
+      }
+    }
   }
   const lifecyclePolicy = resolveLifecyclePolicy(spec, reuseSandboxId !== undefined)
 
@@ -4833,7 +5013,7 @@ async function bootSandboxAgentSession(opts: {
   // yet, so this is the full slug set).
   const passthrough = spec.env?.passthrough ?? []
   const authEnv = spec.env?.auth?.state?.env ?? []
-  const declaredSlugs = new Set([...passthrough, ...authEnv])
+  const declaredSlugs = new Set([...passthrough, ...authEnv, ...credentialRefs.keys()])
   // `join.tokenEnv` — sugar over `env.passthrough` for the auto-join case:
   // forward a single host env var (a join-token URL) into the box under the
   // same name. Unlike an explicit `env.passthrough` entry, a missing value
@@ -4844,7 +5024,7 @@ async function bootSandboxAgentSession(opts: {
   // mirroring the `env.autoPassthrough` probe in `withSandboxAuthAutoPassthrough`.
   const joinTokenEnv = spec.join?.tokenEnv
   if (joinTokenEnv && !declaredSlugs.has(joinTokenEnv)) {
-    const resolvable = (await resolveSandboxSecret(joinTokenEnv)) !== null
+    const resolvable = (await resolveSecret(joinTokenEnv)) !== null
     if (resolvable) declaredSlugs.add(joinTokenEnv)
   }
   const slugs = Array.from(declaredSlugs)
@@ -4861,7 +5041,7 @@ async function bootSandboxAgentSession(opts: {
       // seam `resolveMcpCredentialHeaders` above uses), never the bare
       // `defaultProcessEnvResolver` fallback `@agentproto/sandbox` would
       // otherwise apply when `resolver` is omitted.
-      secrets: { slugs, resolver: resolveSandboxSecret },
+      secrets: { slugs, resolver: resolveSecret },
     })
   } catch (err) {
     // Two DISJOINT failure shapes, both needing a ledger stamp — see
@@ -4921,10 +5101,59 @@ async function bootSandboxAgentSession(opts: {
     state: reuseSandboxId !== undefined ? "connected" : "booted",
     ...(opts.label ? { label: opts.label } : {}),
     ...(boxCwd ? { cwd: boxCwd } : {}),
+    ...(credentialRefs.has(GIT_TOKEN_ENV) && opts.workspace
+      ? { gitTokenWorkspace: opts.workspace.slug }
+      : {}),
     ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
       ? { expiresAt: new Date(Date.now() + lifecyclePolicy.pauseAfterIdleMs).toISOString() }
       : {}),
   })
+
+  let deliveryTarget: SandboxDeliveryTarget | undefined
+  const deliverySessionId = opts.sessionId
+  const boxExec = host.exec
+  const boxReadFile = host.readFile
+  if (workspacePlan && opts.workspace) {
+    const slug = opts.workspace.slug
+    const failSetup = async (message: string, step?: string): Promise<SandboxBootResult> => {
+      // A reused box may hold earlier sessions' unpushed work: keep it
+      // reconnectable (pause) rather than kill it, as the reconnect-failure
+      // path does.
+      if (reuseSandboxId !== undefined && host.pause) {
+        await host.pause().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "paused")
+      } else {
+        await host.stop().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "stopped")
+      }
+      return {
+        ok: false,
+        code: "sandbox_workspace_setup_failed",
+        message,
+        ...(step ? { details: { step } } : {}),
+      }
+    }
+    if (!boxExec) {
+      return failSetup(
+        `agent_start: sandbox provider "${providerSlug}" cannot run commands in the box, so workspace ` +
+          `"${slug}" cannot be checked out from its remote.`,
+      )
+    }
+    const setup = await runSandboxWorkspaceSetup(boxExec, workspacePlan)
+    if (!setup.ok) {
+      return failSetup(
+        `agent_start: checking out workspace "${slug}" in the sandbox failed at "${setup.step}" — ${setup.message}`,
+        setup.step,
+      )
+    }
+    if (workspacePlan.branch) {
+      deliveryTarget = {
+        checkoutDir: workspacePlan.checkoutDir,
+        branch: workspacePlan.branch,
+        baseSha: setup.baseSha,
+      }
+    }
+  }
 
   // `omitCwdWhenImplicit` (device sandbox — see that field's doc): the
   // caller passed no explicit cwd, so don't forward the HOST's own
@@ -5037,12 +5266,24 @@ async function bootSandboxAgentSession(opts: {
       // F2 — when the first prompt rode the spawn dial, don't re-send it as a
       // second `agent_prompt` dial (see `promptCarriedInStart`).
       ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
+      ...(deliveryTarget && boxExec && deliverySessionId
+        ? {
+            onBeforeTeardown: createDeliveryHook({
+              exec: boxExec,
+              ...(boxReadFile ? { readFile: boxReadFile } : {}),
+              target: deliveryTarget,
+              outDir: sessionTranscriptDir(deliverySessionId),
+              ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
+            }),
+          }
+        : {}),
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     cwd: resolvedCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
+    ...(deliveryTarget ? { deliveryTarget } : {}),
     // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.

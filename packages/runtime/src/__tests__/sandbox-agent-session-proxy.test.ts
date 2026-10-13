@@ -360,3 +360,58 @@ describe("sandbox proxy — device first-turn failure surfacing (surfaceHostTurn
     expect(output).not.toHaveBeenCalled()
   })
 })
+
+describe("sandbox proxy — onBeforeTeardown", () => {
+  it("runs after the box's session is killed and before the box is stopped", async () => {
+    const order: string[] = []
+    const host = makeHost({
+      kill: vi.fn(async () => {
+        order.push("kill")
+      }),
+      stop: vi.fn(async () => {
+        order.push("stop")
+      }),
+    })
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      onBeforeTeardown: async () => {
+        order.push("deliver")
+      },
+    })
+
+    await proxy.close()
+
+    expect(order).toEqual(["kill", "deliver", "stop"])
+  })
+
+  it("a failing hook never blocks the box from stopping", async () => {
+    const host = makeHost()
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      onBeforeTeardown: async () => {
+        throw new Error("delivery exploded")
+      },
+    })
+
+    await expect(proxy.close()).resolves.toBeUndefined()
+    expect(host.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it("skips the hook on a daemon-shutdown close and still stops the box", async () => {
+    const host = makeHost()
+    const hook = vi.fn(async () => undefined)
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      onBeforeTeardown: hook,
+    })
+
+    await proxy.close({ daemonShutdown: true })
+
+    expect(hook).not.toHaveBeenCalled()
+    expect(host.kill).toHaveBeenCalledTimes(1)
+    expect(host.stop).toHaveBeenCalledTimes(1)
+  })
+})

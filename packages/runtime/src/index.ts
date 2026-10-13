@@ -117,6 +117,7 @@ import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler
 import { createTurnRetryController } from "./turn-retry.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
+import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { backfillSessionIndexesAsync } from "./session-index.js"
@@ -2177,10 +2178,18 @@ export async function createGateway(
     }
     return ok
   }
+  const resolveAutoWatchUrgency = async (): Promise<MessageUrgency> => {
+    const cfg = await loadConfig().catch((): { sentinel?: { autoWatchUrgency?: unknown } } => ({}))
+    const u = cfg.sentinel?.autoWatchUrgency
+    return typeof u === "string" && (MESSAGE_URGENCIES as readonly string[]).includes(u)
+      ? (u as MessageUrgency)
+      : "next-turn"
+  }
   const sentinelAutoLinker = createSentinelAutoLinker({
     store: sentinelStore,
     resolveProvider: resolveSentinelProviderResolved,
     autoWatchPrs: resolveAutoWatchPrs,
+    autoWatchUrgency: resolveAutoWatchUrgency,
   })
 
   // Sessions registry — single instance per gateway, captured by
@@ -2302,6 +2311,10 @@ export async function createGateway(
                 // (orchestrator WP1) — closes the gap where re-spawn
                 // dropped mcpServers.
                 ...(mcpServers ? { mcpServers } : {}),
+                // Re-deliver the persisted imported-skill folders on resume
+                // (skill imports) — the same set the original spawn delivered,
+                // so a revived session keeps its skills.
+                ...(descriptor.sessionSkills ? { sessionSkills: descriptor.sessionSkills } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
                 ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
                   ? { options: { base_url: resolvedBaseUrl } }

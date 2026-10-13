@@ -25,6 +25,8 @@ import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, t
 import { restartAgentSession } from "../session-restart-core.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
+import type { SandboxDeliveryTarget } from "../sandbox-delivery.js"
+import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 
 let acpCounter = 0
 function fakeAgentSession(prefix: string): AgentSessionLike {
@@ -151,6 +153,7 @@ describe("restartAgentSession on a sandboxed session", () => {
   async function setup(opts: {
     prevAgentSession?: AgentSessionLike
     killPrev?: boolean
+    deliveryTarget?: SandboxDeliveryTarget
   } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
@@ -171,6 +174,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       remote: true,
       sandboxId: "sbx_prev_1",
       sandboxTeardown: "pause",
+      ...(opts.deliveryTarget ? { sandboxDeliveryTarget: opts.deliveryTarget } : {}),
     })
     if (opts.killPrev ?? true) registry.kill(prev.id)
     return makeResolver(box)
@@ -286,5 +290,62 @@ describe("restartAgentSession on a sandboxed session", () => {
     // own replacement, which reconnected to the exact same box.
     expect(closed).toBe(false)
     expect(registry.get(prev.id)?.status).toBe("running")
+  })
+
+  it("delivers the work branch when a restarted sandbox session closes", async () => {
+    const sessionsDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-sessions-"))
+    setDefaultSessionsBaseDir(sessionsDir)
+    try {
+      const target: SandboxDeliveryTarget = {
+        checkoutDir: "/home/user/proj",
+        branch: "wt/restart-me",
+        baseSha: "c".repeat(40),
+      }
+      const { resolver, providerResolver } = await setup({ deliveryTarget: target })
+      const commands: string[] = []
+      const inner = box.provider
+      const withExec: (slug: string) => Promise<SandboxProviderHandle | null> = async slug => {
+        const handle = await providerResolver(slug)
+        if (!handle) return null
+        return {
+          ...handle,
+          provider: {
+            boot: inner.boot.bind(inner),
+            async connect(sandboxId: string, spec: SandboxSpec, connectOpts: Parameters<NonNullable<typeof inner.connect>>[2]) {
+              const booted = await inner.connect!(sandboxId, spec, connectOpts)
+              return {
+                ...booted,
+                async exec(o: { command: string }) {
+                  commands.push(o.command)
+                  return { exitCode: 0, stdout: "ahead=0\nuncommitted=0\n", stderr: "", durationMs: 1 }
+                },
+              }
+            },
+          },
+        }
+      }
+
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: withExec,
+      })
+      expect(result.desc.sandboxDeliveryTarget).toEqual(target)
+
+      registry.kill(result.desc.id)
+      await vi.waitFor(() => expect(registry.get(result.desc.id)?.sandboxDelivery).toBeDefined())
+
+      expect(commands.some(c => c.includes("wt/restart-me") && c.includes("rev-list"))).toBe(true)
+      expect(registry.get(result.desc.id)?.sandboxDelivery?.branch).toBe("wt/restart-me")
+    } finally {
+      setDefaultSessionsBaseDir(undefined)
+      await rm(sessionsDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+    }
+  })
+
+  it("a session with no work branch restarts without any delivery hook", async () => {
+    const { resolver, providerResolver } = await setup()
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+    expect(result.desc.sandboxDeliveryTarget).toBeUndefined()
   })
 })

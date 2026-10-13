@@ -443,12 +443,17 @@ export interface ApprovalsConfig {
  */
 export interface SentinelConfig {
   /** Auto-watch a PR when a session opens one (`recordOpenedPr`, fed by
-   *  `command_execute`'s stamper and both `pr-provenance-reconciler.ts`
-   *  lanes). When unset, the daemon defaults to `true` only when the
+   *  `command_execute`'s stamper and the reconciler's tool-call and
+   *  branch→PR lanes; PRs merely mentioned in a session's output are not
+   *  auto-watched). When unset, the daemon defaults to `true` only when the
    *  `local-gh` provider is available (i.e. `gh auth status` succeeds) —
    *  otherwise `false`, logged once. Explicitly setting this always wins
    *  over that probe. Per-spawn opt-out: `agent_start.sentinel: false`. */
   autoWatchPrs?: boolean
+  /** Urgency the auto-created PR sentinel delivers at (`fyi` | `next-turn` |
+   *  `steer` | `interrupt`). Default `"next-turn"`. Read per PR, so a
+   *  `config_set` applies to the next one without a restart. */
+  autoWatchUrgency?: "fyi" | "next-turn" | "steer" | "interrupt"
 }
 
 /**

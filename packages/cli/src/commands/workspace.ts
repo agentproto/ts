@@ -6,6 +6,9 @@
  *   list                                          show registered + active
  *   remove <slug>                                 drop an entry
  *   use <slug>                                    set the active workspace
+ *   remote set <slug> --url <https-url> [--branch <b>] [--credential-ref <ref>] [--token-stdin]
+ *   remote show <slug> [--json]                   print the workspace's git remote
+ *   remote unset <slug>                           drop the git remote
  *
  * Reads/writes `~/.agentproto/workspaces.json` via @agentproto/runtime.
  * Pure CLI shell — no daemon needed; the daemon picks up the file on
@@ -14,16 +17,23 @@
 import { parseArgs } from "node:util"
 import { resolve, basename } from "node:path"
 import { existsSync } from "node:fs"
+import { KeychainStore } from "@agentproto/auth"
 import {
   loadWorkspacesConfig,
   saveWorkspacesConfig,
   addWorkspace,
   removeWorkspace,
   setActiveWorkspace,
+  setWorkspaceRemote,
+  unsetWorkspaceRemote,
+  findWorkspace,
   sanitizeSlug,
   DEFAULT_CONFIG_PATH,
+  DEFAULT_REMOTE_BRANCH,
   type WorkspaceEntry,
+  type WorkspaceRemote,
 } from "@agentproto/runtime/workspaces-config"
+import { readSecretFromStdin } from "./auth.js"
 
 const USAGE = `agentproto workspace — manage local workspaces
 
@@ -32,7 +42,16 @@ Usage:
   agentproto workspace list  [--json]
   agentproto workspace remove <slug>
   agentproto workspace use <slug>
+  agentproto workspace remote set <slug> --url <https-url> [--branch <branch>]
+                                 [--credential-ref <ref> | --token-stdin]
+  agentproto workspace remote show <slug> [--json]
+  agentproto workspace remote unset <slug>
   agentproto workspace --help
+
+A workspace "remote" is the off-machine clone source a sandbox spawn
+(agent_start sandbox + workspaceSlug) checks out into the box. The git token
+is never a flag: pipe it on stdin with --token-stdin (stored in the OS keychain
+as agentproto.git.<slug>) or name an existing keychain slot with --credential-ref.
 
 Config file: ${DEFAULT_CONFIG_PATH()}
 `
@@ -55,6 +74,8 @@ export async function runWorkspace(args: readonly string[]): Promise<number> {
       return runRemove(rest)
     case "use":
       return runUse(rest)
+    case "remote":
+      return runRemote(rest)
     default:
       process.stderr.write(
         `agentproto workspace: unknown subcommand '${sub}'\n\n${USAGE}`
@@ -207,6 +228,198 @@ async function runUse(args: readonly string[]): Promise<number> {
       `agentproto workspace use: ${
         err instanceof Error ? err.message : String(err)
       }\n`
+    )
+    return 2
+  }
+}
+
+/** Keychain slot a `--token-stdin` PAT is stored under for `slug`. */
+export function gitTokenCredentialRef(slug: string): string {
+  return `agentproto.git.${slug}`
+}
+
+async function runRemote(args: readonly string[]): Promise<number> {
+  const action = args[0]
+  const rest = args.slice(1)
+  switch (action) {
+    case "set":
+      return runRemoteSet(rest)
+    case "show":
+      return runRemoteShow(rest)
+    case "unset":
+      return runRemoteUnset(rest)
+    default:
+      process.stderr.write(
+        `agentproto workspace remote: ${
+          action ? `unknown action '${action}'` : "missing action (set | show | unset)"
+        }\n\n${USAGE}`
+      )
+      return 2
+  }
+}
+
+async function runRemoteSet(args: readonly string[]): Promise<number> {
+  let parsed
+  try {
+    parsed = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        url: { type: "string" },
+        branch: { type: "string" },
+        "credential-ref": { type: "string" },
+        "token-stdin": { type: "boolean" },
+      },
+    })
+  } catch (err) {
+    // `--token <value>` (or any unknown flag) lands here: a secret on argv is
+    // refused outright, never half-processed.
+    process.stderr.write(
+      `agentproto workspace remote set: ${
+        err instanceof Error ? err.message : String(err)
+      }\n  The git token is never a flag — pipe it with --token-stdin.\n`
+    )
+    return 2
+  }
+  const { values, positionals } = parsed
+  const rawSlug = positionals[0]
+  if (!rawSlug || positionals.length > 1) {
+    process.stderr.write(
+      "agentproto workspace remote set: expected exactly one <slug>. " +
+        "Try: agentproto workspace remote set my-repo --url https://github.com/acme/repo.git --token-stdin\n"
+    )
+    return 2
+  }
+  if (!values.url) {
+    process.stderr.write("agentproto workspace remote set: missing --url <https-url>.\n")
+    return 2
+  }
+  if (values["token-stdin"] && values["credential-ref"]) {
+    process.stderr.write(
+      "agentproto workspace remote set: --token-stdin and --credential-ref are mutually exclusive.\n"
+    )
+    return 2
+  }
+  const slug = sanitizeSlug(rawSlug)
+  const config = await loadWorkspacesConfig()
+  const existing = findWorkspace(config, slug)
+  if (!existing) {
+    process.stderr.write(
+      `agentproto workspace remote set: no workspace named "${slug}". ` +
+        `Register it first: agentproto workspace add <path> --slug ${slug}\n`
+    )
+    return 2
+  }
+  const credentialRef = values["token-stdin"]
+    ? gitTokenCredentialRef(slug)
+    : (values["credential-ref"] ?? existing.remote?.credentialRef)
+  const defaultBranch = values.branch ?? existing.remote?.defaultBranch
+  const remote: WorkspaceRemote = {
+    url: values.url,
+    ...(defaultBranch !== undefined ? { defaultBranch } : {}),
+    ...(credentialRef !== undefined ? { credentialRef } : {}),
+  }
+  let next
+  try {
+    // Validate (and fail) BEFORE touching the keychain, so a bad URL never
+    // leaves an orphaned token behind.
+    next = setWorkspaceRemote(config, slug, remote)
+  } catch (err) {
+    process.stderr.write(
+      `agentproto workspace remote set: ${err instanceof Error ? err.message : String(err)}\n`
+    )
+    return 2
+  }
+  if (values["token-stdin"]) {
+    let token: string
+    try {
+      token = await readSecretFromStdin("Paste the git token")
+    } catch (err) {
+      process.stderr.write(
+        `agentproto workspace remote set: could not read the token — ${
+          err instanceof Error ? err.message : String(err)
+        }\n`
+      )
+      return 2
+    }
+    if (!token) {
+      process.stderr.write("agentproto workspace remote set: the token on stdin was empty.\n")
+      return 2
+    }
+    await new KeychainStore().write({ path: gitTokenCredentialRef(slug) }, { value: token, kind: "pat" })
+  }
+  await saveWorkspacesConfig(next)
+  const saved = findWorkspace(next, slug)?.remote
+  process.stdout.write(
+    `✓ ${slug} remote → ${saved?.url ?? remote.url}` +
+      `  (branch ${saved?.defaultBranch ?? DEFAULT_REMOTE_BRANCH}` +
+      (saved?.credentialRef ? `, credential ${saved.credentialRef}` : ", no credential") +
+      ")\n"
+  )
+  return 0
+}
+
+async function runRemoteShow(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { json: { type: "boolean" } },
+  })
+  const rawSlug = positionals[0]
+  if (!rawSlug) {
+    process.stderr.write("agentproto workspace remote show: missing <slug>.\n")
+    return 2
+  }
+  const config = await loadWorkspacesConfig()
+  const ws = findWorkspace(config, rawSlug)
+  if (!ws) {
+    process.stderr.write(`agentproto workspace remote show: no workspace named "${sanitizeSlug(rawSlug)}".\n`)
+    return 2
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify(ws.remote ?? null, null, 2) + "\n")
+    return ws.remote ? 0 : 1
+  }
+  if (!ws.remote) {
+    process.stdout.write(`${ws.slug}: no remote set.\n`)
+    return 1
+  }
+  process.stdout.write(
+    `${ws.slug}\n` +
+      `  url         ${ws.remote.url}\n` +
+      `  branch      ${ws.remote.defaultBranch ?? `${DEFAULT_REMOTE_BRANCH} (default)`}\n` +
+      `  credential  ${ws.remote.credentialRef ?? "(none)"}\n`
+  )
+  return 0
+}
+
+async function runRemoteUnset(args: readonly string[]): Promise<number> {
+  const { positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {},
+  })
+  const rawSlug = positionals[0]
+  if (!rawSlug) {
+    process.stderr.write("agentproto workspace remote unset: missing <slug>.\n")
+    return 2
+  }
+  const config = await loadWorkspacesConfig()
+  try {
+    const had = findWorkspace(config, rawSlug)?.remote !== undefined
+    await saveWorkspacesConfig(unsetWorkspaceRemote(config, rawSlug))
+    process.stdout.write(
+      had
+        ? `✗ removed remote from ${sanitizeSlug(rawSlug)}  (keychain token, if any, left in place)\n`
+        : `${sanitizeSlug(rawSlug)}: no remote set.\n`
+    )
+    return 0
+  } catch (err) {
+    process.stderr.write(
+      `agentproto workspace remote unset: ${err instanceof Error ? err.message : String(err)}\n`
     )
     return 2
   }

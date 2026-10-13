@@ -37,6 +37,16 @@ targets with no real usage yet, then what sentinels don't do.
      agentproto config set sentinel.autoWatchPrs true
      ```
      Takes effect on the next PR a session opens - no daemon restart.
+   - **`config.sentinel.autoWatchUrgency`.** The urgency the auto-created
+     sentinel delivers at: `fyi`, `next-turn` (default), `steer` or
+     `interrupt`.
+     ```bash
+     agentproto config set sentinel.autoWatchUrgency fyi
+     ```
+
+   Only PRs a session is known to have *created* are auto-watched. A PR url
+   that merely appears in a session's output (a supervisor reporting a
+   child's PR, say) is recorded for provenance but never auto-watched.
 
    You can also watch a PR (or any subject) by hand - see
    [`sentinel.md`](../verbs/sentinel.md):

@@ -706,7 +706,7 @@ export function setSecretInputStream(
  *  hidden prompt (raw mode, no echo) so the pasted secret never lands in
  *  terminal scrollback. The secret is returned trimmed — never logged, never
  *  echoed back. */
-async function readSecretFromStdin(what: string): Promise<string> {
+export async function readSecretFromStdin(what: string): Promise<string> {
   const stdin = process.stdin
   if (stdin.isTTY) {
     return await promptHidden(`${what}, then press Enter (input hidden): `)

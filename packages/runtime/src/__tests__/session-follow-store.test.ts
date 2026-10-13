@@ -28,6 +28,7 @@ describe("session-follow-store", () => {
     expect(follow.batchMs).toBe(15_000)
     expect(follow.skipEmptyTurns).toBe(true)
     expect(follow.excludeFollowerChildren).toBe(true)
+    expect(follow.urgency).toBe("next-turn")
     expect(follow.selector.rootOnly).toBe(true) // all => rootOnly
     expect(Number.isNaN(Date.parse(follow.createdAt))).toBe(false)
   })
@@ -50,6 +51,30 @@ describe("session-follow-store", () => {
     expect(b.follow.batchMs).toBe(200)
     expect(b.follow.selector.sessionIds).toEqual(["x"])
     expect(store.list()).toHaveLength(1)
+  })
+
+  it("upsert by key can change urgency", () => {
+    const store = createSessionFollowStore({ persist: false })
+    const a = store.upsert({ key: "k", follower: "c", selector: { all: true } })
+    expect(a.follow.urgency).toBe("next-turn")
+    const b = store.upsert({ key: "k", follower: "c", selector: { all: true }, urgency: "fyi" })
+    expect(b.created).toBe(false)
+    expect(b.follow.urgency).toBe("fyi")
+    expect(store.find("k")?.urgency).toBe("fyi")
+    expect(store.upsert({ key: "k", follower: "c", selector: { all: true }, urgency: "next-turn" }).follow.urgency).toBe(
+      "next-turn",
+    )
+  })
+
+  it("persists urgency fyi across reload; old records without urgency load as next-turn", () => {
+    const store = createSessionFollowStore({ filePath: file })
+    const f = store.upsert({ key: "k", follower: "c", selector: { all: true }, urgency: "fyi" }).follow
+    store.flushSync()
+    expect(createSessionFollowStore({ filePath: file }).find("k")?.urgency).toBe("fyi")
+
+    const { urgency: _omit, ...legacy } = f
+    writeFileSync(file, JSON.stringify({ [f.id]: legacy }))
+    expect(createSessionFollowStore({ filePath: file }).find("k")?.urgency).toBe("next-turn")
   })
 
   it("without a key every upsert creates a new follow", () => {

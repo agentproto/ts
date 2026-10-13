@@ -95,7 +95,7 @@ Usage:
                        [--workspace <dir>] [--port <n>] [--bind <ip>]
                        [--connect <url> [--token <jwt>] [--label <name>]]
                        [--allow-origin <url> …] [--interactive | -i]
-  agentproto workspace <add|list|remove|use> [args]
+  agentproto workspace <add|list|remove|use|remote> [args]
   agentproto sessions  [--watch] [--attach <id-or-name>] [--json]
   agentproto sessions  start <adapter> [--cwd <dir>] [--workspace <slug>]
                                        [--prompt <text>] [--label <text>] [--attach]

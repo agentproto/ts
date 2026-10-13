@@ -1347,6 +1347,29 @@ export interface AgentCliStartOptions {
    * caller is expected to warn (see `agentCliSupportsHostContextIsolation`).
    */
   isolateHostContext?: boolean
+  /**
+   * Skill folders to deliver into this session's isolated config dir before
+   * the child starts. Each `path` folder is copied to
+   * `<adapterConfigDir>/<dir>/<alias>/`, where `dir` (and optional `env` naming
+   * the dir for the child) come from the adapter manifest's
+   * `metadata.sessionSkills` — the adapter OWNS the location so its harness
+   * discovers the skills natively under the isolated home. Adapters that
+   * declare no `metadata.sessionSkills` get NO delivery (the field is
+   * ignored). Populated by the daemon from the skill-imports registry
+   * (`@agentproto/runtime`'s `resolveSessionSkills`); `path` is the durable
+   * imported copy, not the user's original folder. See
+   * {@link AgentCliSessionSkill}.
+   */
+  sessionSkills?: AgentCliSessionSkill[]
+}
+
+/** One skill folder handed to a session — see
+ *  {@link AgentCliStartOptions.sessionSkills}. */
+export interface AgentCliSessionSkill {
+  /** Directory name the skill is delivered under (`<dir>/<alias>/`). */
+  alias: string
+  /** Absolute path to the skill folder (must contain `SKILL.md`). */
+  path: string
 }
 
 /** See {@link AgentCliDefinition.stateHome}. */
