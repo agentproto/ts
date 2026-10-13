@@ -34,9 +34,8 @@ accepts:
 ```
 
 Each exposed agent becomes one **skill** on the app's Agent Card, and its id is
-the skill id a caller asks for. Only agent skills can run as tasks today: a
-workflow listed under `exposes.workflows` shows on the card, but `SendMessage`
-on it returns `unsupported operation`.
+the skill id a caller asks for. The same goes for a workflow listed under
+`exposes.workflows` — see [Call a workflow skill](#call-a-workflow-skill).
 
 The agent runs on the adapter it would get anywhere else: `metadata.adapter`
 (or `metadata.harness`) in its `AGENT.md` first, then the default for its
@@ -177,12 +176,54 @@ To stop a task that is still working:
 This stops the app run and kills its sessions. Cancelling a task that already
 reached a final state returns `task not cancelable`.
 
+## Call a workflow skill
+
+An exposed workflow whose id also appears in the app's bundled `workflows`
+(its `WORKFLOW.md`) runs as a task too. Send `SendMessage` with that skill id:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "SendMessage",
+  "params": { "message": {
+    "messageId": "m-2", "role": "ROLE_USER",
+    "metadata": { "skill": "nightly-report" },
+    "parts": [{ "text": "compile the October report" }]
+  } } }
+```
+
+The daemon starts the bundled workflow in the background through the same
+runner as `workflow_run_file` and answers with a task whose id **is the
+workflow run id** (poll it with `workflow_status` on the daemon side too).
+Two rules decide what the workflow sees as `$input`:
+
+1. The first `data` part on the message, when its value is an object, is
+   passed through as the input as is.
+2. Otherwise the prompt text becomes `{ "prompt": "…" }`; with neither, the
+   input is `{}`.
+
+An exposed workflow that the app does not bundle fails with
+`unsupported operation`. `CancelTask` on a running workflow task cancels the
+run (`workflow_cancel`) instead of stopping an app run.
+
+A workflow task's state maps from the run's status like this:
+
+| `workflow_status` | A2A task state |
+| --- | --- |
+| `running`, `idle` | `TASK_STATE_WORKING` |
+| `awaiting-input`, `awaiting-approval` | `TASK_STATE_INPUT_REQUIRED` |
+| `done` | `TASK_STATE_COMPLETED` |
+| `failed` | `TASK_STATE_FAILED` |
+| `cancelled` | `TASK_STATE_CANCELED` |
+
+A `done` run answers with one artifact named `output` — a `data` part when the
+workflow's output is an object, a `text` part (`String(output)`) otherwise. A
+`failed` run puts the run's error in `status.message` as a `ROLE_AGENT`
+message and carries no artifacts.
+
 ## What is not supported yet
 
 - `SendStreamingMessage`, `SubscribeToTask` and `ListTasks` return
   `unsupported operation`: poll `GetTask` instead.
 - Push notifications and the extended Agent Card are not configured.
-- Workflow skills cannot run as tasks (see step 1).
 - Only A2A version `1.0` is accepted (`A2A-Version` header or `?version=`
   query); anything else returns `version not supported`.
 - The task is complete when the agent's turn ends, not when it decides the job

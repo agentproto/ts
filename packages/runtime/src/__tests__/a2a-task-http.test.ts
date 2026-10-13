@@ -2,8 +2,9 @@
  * A2A task ingress — `POST /a2a/apps/:appId` (a2a-task-http.ts). Drives the
  * real REST layer via `startHttpServer` over the A2A 1.0 wire shapes
  * (PascalCase methods, flat parts, enum-prefixed states); `app_run` / `app_status` /
- * `app_stop` / `app_artifact_get` are faked behind `dispatchTool`, and the
- * manifest's `accepts` / `exposes` come from an injected `loadHandle` .
+ * `app_stop` / `app_artifact_get` and `workflow_run_file` / `workflow_status` /
+ * `workflow_cancel` are faked behind `dispatchTool`, and the
+ * manifest's `accepts` / `exposes` / bundled workflows come from an injected `loadHandle`.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -23,6 +24,7 @@ import {
   extractLastAssistantText,
   extractSkillRequest,
   mapRunState,
+  mapWorkflowState,
   sessionTurnDone,
   sessionTurnFailed,
   type A2aAppHandleLike,
@@ -31,6 +33,7 @@ import {
 
 const APP_ID = "@test/a2a-app"
 const OTHER_APP_ID = "@test/closed-app"
+const WF_PATH = "/apps/a2a-app/.agentproto/workflows/do-it/WORKFLOW.md"
 
 const envelope = (payload: unknown, isError = false) => ({
   content: [{ type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload) }],
@@ -42,6 +45,7 @@ describe("A2A task ingress", () => {
   let stateDir: string
   let appRegistry: AppRegistry
   let runs: Map<string, { status: string; sessions: unknown[]; error?: string }>
+  let workflowRuns: Map<string, { status: string; output?: unknown; error?: string; endedAt?: string }>
   let dispatched: Array<{ name: string; args: Record<string, unknown> }>
   let handles: Record<string, A2aAppHandleLike>
   let conversations: Map<string, { role: string; text: string }[]>
@@ -50,10 +54,15 @@ describe("A2A task ingress", () => {
     dir = await mkdtemp(join(tmpdir(), "a2a-task-app-"))
     stateDir = await mkdtemp(join(tmpdir(), "a2a-task-state-"))
     runs = new Map()
+    workflowRuns = new Map()
     dispatched = []
     conversations = new Map()
     handles = {
-      [APP_ID]: { accepts: { tasks: true }, exposes: { agents: ["solo"], workflows: ["do-it"] } },
+      [APP_ID]: {
+        accepts: { tasks: true },
+        exposes: { agents: ["solo"], workflows: ["do-it"] },
+        workflows: [{ id: "do-it", path: WF_PATH }],
+      },
       [OTHER_APP_ID]: { exposes: { agents: ["solo"] } },
     }
     appRegistry = createAppRegistry()
@@ -115,6 +124,29 @@ describe("A2A task ingress", () => {
     }
     if (name === "app_artifact_get") {
       return envelope({ appId: APP_ID, title: "Report", description: "the report", html: "<h1>done</h1>" })
+    }
+    if (name === "workflow_run_file") {
+      const runId = `wf-${workflowRuns.size + 1}`
+      workflowRuns.set(runId, { status: "running" })
+      return envelope({ runId, status: "running" })
+    }
+    if (name === "workflow_status") {
+      const run = workflowRuns.get(args.runId as string)
+      if (!run) return envelope({ error: "run not found", runId: args.runId })
+      return envelope({
+        runId: args.runId,
+        workflowId: "do-it",
+        status: run.status,
+        startedAt: "2026-10-13T11:00:00.000Z",
+        ...(run.endedAt ? { endedAt: run.endedAt } : {}),
+        ...(run.output !== undefined ? { output: run.output } : {}),
+        ...(run.error !== undefined ? { error: run.error } : {}),
+      })
+    }
+    if (name === "workflow_cancel") {
+      const run = workflowRuns.get(args.runId as string)
+      if (run) run.status = "cancelled"
+      return envelope({ runId: args.runId, status: run?.status ?? "not_found" })
     }
     throw new Error(`unexpected tool ${name}`)
   }
@@ -424,15 +456,13 @@ describe("A2A task ingress", () => {
     })
   })
 
-  it("rejects a missing, unknown, or workflow skill", async () => {
+  it("rejects a missing or unknown skill", async () => {
     await withServer(async rpc => {
       const none = await rpc(APP_ID, { ...sendReq("solo"), params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } } })
       expect(none.json.error.code).toBe(-32602)
       const unknown = await rpc(APP_ID, sendReq("ghost"))
       expect(unknown.json.error.code).toBe(-32602)
       expect(unknown.json.error.message).toContain("ghost")
-      const workflow = await rpc(APP_ID, sendReq("do-it"))
-      expect(workflow.json.error.code).toBe(-32004)
       const legacyRole = await rpc(APP_ID, { ...sendReq("solo"), params: { message: { role: "user", parts: [{ text: "hi" }], metadata: { skill: "solo" } } } })
       expect(legacyRole.json.error.code).toBe(-32602)
       const legacyPart = await rpc(APP_ID, { ...sendReq("solo"), params: { message: { role: "ROLE_USER", parts: [{ kind: "text", body: "hi" }], metadata: { skill: "solo" } } } })
@@ -471,6 +501,103 @@ describe("A2A task ingress", () => {
       expect(again.json.error.code).toBe(-32002)
       const missing = await rpc(APP_ID, { jsonrpc: "2.0", id: 4, method: "CancelTask", params: { id: "nope" } })
       expect(missing.json.error.code).toBe(-32001)
+    })
+  })
+
+  it("SendMessage starts an exposed workflow skill through workflow_run_file", async () => {
+    await withServer(async rpc => {
+      const sent = await rpc(APP_ID, sendReq("do-it", "compile the report"))
+      expect(sent.status).toBe(200)
+      const task = sent.json.result.task as A2aTask
+      expect(task.id).toBe("wf-1")
+      expect(task.status.state).toBe("TASK_STATE_WORKING")
+      expect(task.metadata).toMatchObject({ appId: APP_ID, skill: "do-it" })
+      expect(task.contextId).toBeTruthy()
+      expect(task.artifacts).toBeUndefined()
+      const start = dispatched.find(d => d.name === "workflow_run_file")!
+      expect(start.args).toEqual({ path: WF_PATH, input: { prompt: "compile the report" }, appId: APP_ID })
+      expect(dispatched.some(d => d.name === "app_run")).toBe(false)
+      const ledger = await readFile(join(stateDir, "a2a-tasks", `${encodeURIComponent(APP_ID)}.jsonl`), "utf8")
+      expect(JSON.parse(ledger.trim())).toMatchObject({ taskId: "wf-1", appId: APP_ID, skill: "do-it", kind: "workflow" })
+      // The task is the workflow run, readable through GetTask.
+      const polled = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "wf-1" } })
+      expect(polled.json.result.id).toBe("wf-1")
+      expect(polled.json.result.status.state).toBe("TASK_STATE_WORKING")
+    })
+  })
+
+  it("passes the message's data part through as the workflow input, as is", async () => {
+    await withServer(async rpc => {
+      const payload = { report: "october", filters: { region: "emea" } }
+      const res = await rpc(APP_ID, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "SendMessage",
+        params: {
+          message: {
+            messageId: "m1",
+            role: "ROLE_USER",
+            parts: [{ data: payload }, { text: "text rides along but never becomes the input" }],
+            metadata: { skill: "do-it" },
+          },
+        },
+      })
+      expect(res.json.result.task.id).toBe("wf-1")
+      const start = dispatched.find(d => d.name === "workflow_run_file")!
+      expect(start.args.input).toEqual(payload)
+      expect(start.args.path).toBe(WF_PATH)
+    })
+  })
+
+  it("GetTask on a done workflow run is Completed with the output artifact", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("do-it", "go"))
+      workflowRuns.set("wf-1", { status: "done", output: { total: 42 }, endedAt: "2026-10-13T12:00:00.000Z" })
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "wf-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_COMPLETED")
+      expect(task.status.timestamp).toBe("2026-10-13T12:00:00.000Z")
+      expect(task.artifacts).toHaveLength(1)
+      expect(task.artifacts![0]).toMatchObject({ artifactId: "output", name: "output", parts: [{ data: { total: 42 } }] })
+      expect(task.artifacts![0]!.parts[0]).not.toHaveProperty("kind")
+      expect(task.artifacts![0]!.parts[0]).not.toHaveProperty("text")
+      expect(dispatched.some(d => d.name === "app_status" || d.name === "conversation_read")).toBe(false)
+    })
+  })
+
+  it("GetTask on a failed workflow run is Failed with the error and no artifacts", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("do-it", "go"))
+      workflowRuns.set("wf-1", { status: "failed", error: "step 2 exploded", endedAt: "2026-10-13T12:05:00.000Z" })
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "wf-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_FAILED")
+      expect(task.status.message).toMatchObject({ role: "ROLE_AGENT", parts: [{ text: "step 2 exploded" }], taskId: "wf-1" })
+      expect(task.status.timestamp).toBe("2026-10-13T12:05:00.000Z")
+      expect(task.artifacts).toBeUndefined()
+    })
+  })
+
+  it("CancelTask cancels a running workflow task through workflow_cancel, not app_stop", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("do-it", "go"))
+      const cancel = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "CancelTask", params: { id: "wf-1" } })
+      expect(cancel.json.result.status.state).toBe("TASK_STATE_CANCELED")
+      expect(dispatched.find(d => d.name === "workflow_cancel")!.args).toEqual({ runId: "wf-1" })
+      expect(dispatched.some(d => d.name === "app_stop")).toBe(false)
+      const again = await rpc(APP_ID, { jsonrpc: "2.0", id: 3, method: "CancelTask", params: { id: "wf-1" } })
+      expect(again.json.error.code).toBe(-32002)
+    })
+  })
+
+  it("rejects an exposed workflow the app does not bundle", async () => {
+    handles[APP_ID] = { accepts: { tasks: true }, exposes: { agents: ["solo"], workflows: ["do-it"] } }
+    await withServer(async rpc => {
+      const res = await rpc(APP_ID, sendReq("do-it"))
+      expect(res.json.error.code).toBe(-32004)
+      expect(res.json.error.message).toContain("do-it")
+      expect(res.json.error.message).toContain("does not bundle it")
+      expect(dispatched).toHaveLength(0)
     })
   })
 
@@ -523,6 +650,19 @@ describe("a2a-tasks mapping", () => {
     expect(mapRunState({ status: "failed" })).toBe("TASK_STATE_FAILED")
     expect(mapRunState({ status: "cancelled" })).toBe("TASK_STATE_CANCELED")
     expect(mapRunState({})).toBe("TASK_STATE_FAILED")
+  })
+
+  it("maps workflow run status to task state", () => {
+    expect(mapWorkflowState("running")).toBe("TASK_STATE_WORKING")
+    expect(mapWorkflowState("idle")).toBe("TASK_STATE_WORKING")
+    expect(mapWorkflowState("awaiting-input")).toBe("TASK_STATE_INPUT_REQUIRED")
+    expect(mapWorkflowState("awaiting-approval")).toBe("TASK_STATE_INPUT_REQUIRED")
+    expect(mapWorkflowState("done")).toBe("TASK_STATE_COMPLETED")
+    expect(mapWorkflowState("failed")).toBe("TASK_STATE_FAILED")
+    expect(mapWorkflowState("cancelled")).toBe("TASK_STATE_CANCELED")
+    // An unrecognised status keeps the task working.
+    expect(mapWorkflowState("something-new")).toBe("TASK_STATE_WORKING")
+    expect(mapWorkflowState("")).toBe("TASK_STATE_WORKING")
   })
 
   it("completes a still-running run once every session's turn is done", () => {

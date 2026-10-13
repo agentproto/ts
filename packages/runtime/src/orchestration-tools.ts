@@ -1147,6 +1147,7 @@ export function registerOrchestrationTools(
       {
         path: z.string().describe("Absolute or workspace-relative path to a WORKFLOW.md file."),
         input: z.record(z.string(), z.unknown()).optional().describe("Workflow invocation input — bound to `$input` in the compiled workflow."),
+        appId: z.string().optional().describe("Owning app id (provenance); omit to infer"),
         cwd: z.string().optional().describe("Working directory for spawned sessions."),
         workspaceSlug: z.string().optional().describe("Workspace slug passed to each spawned session."),
         cacheKey: z.string().optional().describe("Enable journal caching for this run. Cacheable steps replay unchanged outputs on re-invocation with the same key."),
