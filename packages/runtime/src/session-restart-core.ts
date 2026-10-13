@@ -1240,6 +1240,37 @@ export async function restartAgentSession(
           `${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    // The box is alive, so the PRIOR session's adapter may still be running
+    // in it — a row that ended on a host-side error (lost event stream, box
+    // daemon briefly unreachable) never got its box session killed, and that
+    // process keeps editing the same checkout next to the new one. Stop it
+    // through the box's own daemon BEFORE starting the replacement. Detach
+    // prev's proxy first so its timers can't read the kill as a crash, and
+    // so closing prev below never tears down the box.
+    // The persisted ids cover a prev whose proxy is already gone (closed on
+    // a failed teardown, or a daemon restart since); rows from before
+    // `sandboxRemoteSessionId` existed fall back to the reattach record.
+    const releasedRemoteSessionId = registry.releaseSandboxSession(prev.id)
+    priorProxyReleased = releasedRemoteSessionId !== undefined
+    const priorRemoteSessionId =
+      releasedRemoteSessionId ??
+      prev.sandboxRemoteSessionId ??
+      prev.sandboxReattach?.remoteSessionId ??
+      prev.hostSessionId
+    if (priorRemoteSessionId !== undefined) {
+      try {
+        // `agent_kill` on an id the box daemon no longer knows is a no-op
+        // (`ok: false`), not an error — only a transport failure throws.
+        await host.kill(priorRemoteSessionId)
+      } catch (err) {
+        await host.close().catch(() => undefined)
+        throw new Error(
+          `restartAgentSession: could not stop the prior session "${priorRemoteSessionId}" ` +
+            `inside sandbox "${host.sandboxId}" — refusing to start a second adapter next to ` +
+            `it. ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
     let remoteSessionId: string
     try {
       const remoteDesc = await host.start({
@@ -1316,6 +1347,9 @@ export async function restartAgentSession(
 
   // Set once the restart left the old (dead) box behind for a new one.
   let movedToFreshBox = false
+  // Set once prev's proxy was detached from the re-attached box — closing
+  // prev is then safe again (its `close()` no longer touches the box).
+  let priorProxyReleased = false
   // Box gone: boot a fresh one from the workspace remote and check the work
   // branch out again. `undefined` when the session has nothing to resume
   // from (no work branch, or its workspace no longer carries a remote) — the
@@ -1534,7 +1568,9 @@ export async function restartAgentSession(
   // A restart that moved to a FRESH box shares nothing with `prev`'s dead
   // one, so closing `prev` is safe again — and stops its checkpoint/watchdog
   // timers.
-  if (sandboxId === undefined || movedToFreshBox) {
+  // Same once `spawnInSandbox` released prev's proxy: its `close()` is a
+  // no-op from then on, so the row closes without the box going with it.
+  if (sandboxId === undefined || movedToFreshBox || priorProxyReleased) {
     registry.kill(prev.id, "SIGTERM", "restarted")
   }
 

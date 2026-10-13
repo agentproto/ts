@@ -301,6 +301,94 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(registry.get(prev.id)?.status).toBe("running")
   })
 
+  // Regression (sess_6e3649d2, 2026-10-13): the prior row ended on a
+  // host-side error, so its proxy never killed its box session — the old
+  // adapter kept editing the checkout while the restart spawned a second one
+  // next to it. The restart must stop the prior box session through the box's
+  // own daemon before the new `agent_start`.
+  it("stops the prior session inside the box (via the box daemon) before starting the new one", async () => {
+    receivedStarts.length = 0
+    box = await bootReconnectableBox(receivedStarts)
+    hostWorkspace = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-host-"))
+    registry = createSessionsRegistry({ persist: false, transcriptDir: join(hostWorkspace, "transcripts") })
+    // The prior adapter, still alive on the BOX daemon.
+    const priorInBox = box.gateway.sessions.spawnAgent({
+      workspaceSlug: "default",
+      cwd: box.workspace,
+      agentSession: fakeAgentSession("box"),
+      adapterSlug: "fake-cli",
+    })
+    // The host row that drove it ended in error; its proxy is gone and never
+    // killed the box session (the incident's precondition).
+    prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/home/user",
+      agentSession: { ...fakeAgentSession("proxy"), sessionId: priorInBox.id },
+      adapterSlug: "fake-cli",
+      commandPreview: "sandbox:fake → fake-cli",
+      remote: true,
+      sandboxId: "sbx_prev_1",
+      sandboxTeardown: "pause",
+    })
+    expect(prev.sandboxRemoteSessionId).toBe(priorInBox.id)
+    registry.markCrashed(prev.id, "transport-closed")
+    const { resolver, providerResolver } = makeResolver(box)
+    const statusAtStart: Array<string | undefined> = []
+    const startSession = box.gateway.sessions.spawnAgent.bind(box.gateway.sessions)
+    vi.spyOn(box.gateway.sessions, "spawnAgent").mockImplementation(input => {
+      statusAtStart.push(box.gateway.sessions.get(priorInBox.id)?.status)
+      return startSession(input)
+    })
+
+    const result = await restartAgentSession(registry, resolver, registry.get(prev.id)!, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    // Killed BEFORE the replacement was registered on the box.
+    expect(statusAtStart).toEqual(["killed"])
+    expect(box.gateway.sessions.get(priorInBox.id)?.status).toBe("killed")
+    const replacement = result.desc.sandboxRemoteSessionId
+    expect(replacement).toBeDefined()
+    expect(replacement).not.toBe(priorInBox.id)
+    expect(box.gateway.sessions.get(replacement!)?.status).toBe("running")
+  })
+
+  it("detaches an ALIVE prior proxy (box untouched) and then closes the old row", async () => {
+    const calls: string[] = []
+    let detached = false
+    const { resolver, providerResolver } = await setup({
+      killPrev: false,
+      prevAgentSession: {
+        sessionId: "box_alive",
+        // eslint-disable-next-line require-yield
+        async *send(): AsyncIterable<AgentStreamEvent> {
+          return
+        },
+        async cancel() {},
+        // Mirrors the real proxy: once detached, close() never touches the box.
+        async close() {
+          calls.push(detached ? "close:noop" : "close:teardown")
+        },
+        detach() {
+          detached = true
+          calls.push("detach")
+          return { remoteSessionId: "box_alive", transcriptSeq: 0 }
+        },
+      },
+    })
+
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    expect(result.desc.sandboxId).toBe("sbx_prev_1")
+    expect(calls).toEqual(["detach", "close:noop"])
+    expect(registry.get(prev.id)?.status).toBe("killed")
+    expect(registry.get(prev.id)?.endedReason).toBe("restarted")
+    // A restart is not a shutdown detach: never queued for the boot reattach pass.
+    expect(registry.get(prev.id)?.hostDetached).toBeUndefined()
+  })
+
   async function restartCloseAndCollectCommands(patch: Partial<typeof prev> = {}) {
     const sessionsDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-sessions-"))
     setDefaultSessionsBaseDir(sessionsDir)

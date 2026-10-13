@@ -2476,6 +2476,15 @@ export interface SessionDescriptor {
    */
   sandboxReattach?: SandboxReattachRecord
   /**
+   * The session id on the BOX's own daemon (the sandbox proxy's `sessionId`)
+   * — stamped when the proxy is bound and kept for the row's whole life,
+   * unlike {@link sandboxReattach} which only exists while the row is live.
+   * `session_restart` reads it to stop the prior box session before starting
+   * a new one in the same box: a row that ended on a host-side error can
+   * leave its box session running, and nothing else remembers its id.
+   */
+  sandboxRemoteSessionId?: string
+  /**
    * BOOTSTRAP P7a — for a `device:<fp|name>` sandbox spawn: the id of the
    * session the HOST's own daemon created (`BootedSandbox`'s inner
    * `agent_start` descriptor.id, i.e. the sandbox proxy's `sessionId`). The
@@ -4788,6 +4797,17 @@ export interface SessionsRegistry {
    * lifetime extension. Idempotent.
    */
   detachSandboxSessions(): Promise<{ detached: number }>
+  /**
+   * `session_restart` of a sandbox session: cut this row's proxy loose from
+   * its box WITHOUT touching the box or its agent session — the connection
+   * and the proxy's timers are dropped, and the proxy's later `close()` (from
+   * `kill()`) becomes a no-op, so closing the row can no longer tear down the
+   * box its replacement now runs in. Unlike a shutdown detach, the row is NOT
+   * marked for the boot reattach pass. Returns the box-side session id the
+   * proxy was driving, when it had one to give; undefined for a row with no
+   * live detachable proxy (already closed, unbound, device-paired, local).
+   */
+  releaseSandboxSession(id: string): string | undefined
   /** Rows a previous daemon process detached (or crashed holding) that the
    *  boot reattach pass has not resolved yet. */
   sandboxReattachCandidates(): SessionDescriptor[]
@@ -7748,6 +7768,9 @@ export function createSessionsRegistry(opts?: {
    */
   const bindAgentSession = (rt: SessionRuntime, session: AgentSessionLike): void => {
     rt.agentSession = session
+    if (rt.desc.remote === true && typeof session.sessionId === "string" && session.sessionId.length > 0) {
+      rt.desc.sandboxRemoteSessionId = session.sessionId
+    }
     session.onDisconnect?.(err => {
       const id = rt.desc.id
       // Re-read the CURRENT binding rather than closing over `session`: by
@@ -12674,6 +12697,11 @@ export function createSessionsRegistry(opts?: {
       }
       if (detached > 0) schedulePersist()
       return { detached }
+    },
+    releaseSandboxSession(id) {
+      const session = sessions.get(id)?.agentSession
+      if (!session?.detach) return undefined
+      return session.detach()?.remoteSessionId
     },
     sandboxReattachCandidates() {
       return Array.from(sessions.values())
