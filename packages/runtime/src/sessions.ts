@@ -179,7 +179,7 @@ import {
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
-import type { SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import type { SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
 import {
   createSessionMessage,
   escapeHumanPrompt,
@@ -2439,6 +2439,10 @@ export interface SessionDescriptor {
    *  (`wt/<slug>` push + bundle fallback). Only set for a sandbox session that
    *  was spawned from a workspace `remote` with a `worktree`, once it closes. */
   sandboxDelivery?: SandboxDeliveryRecord
+  /** Where the session's work branch lives inside its box (checkout dir, branch,
+   *  base commit). Persisted so a restart that re-attaches the box can still
+   *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
+  sandboxDeliveryTarget?: SandboxDeliveryTarget
   /** App ports exposed at boot time (`SandboxSpec.extraPorts`) — maps port
    *  number to its public URL. Only present for sandbox sessions where the
    *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
@@ -4888,6 +4892,8 @@ export interface SpawnAgentInput {
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
+  /** The work branch inside the box — see `SessionDescriptor.sandboxDeliveryTarget`. */
+  sandboxDeliveryTarget?: SandboxDeliveryTarget
   /** Effective adapter confinement, resolved by the caller — see
    *  `SessionDescriptor.commandSandbox`. */
   commandSandbox?: "off" | "workspace" | "strict"
@@ -9933,6 +9939,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -10100,6 +10107,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,

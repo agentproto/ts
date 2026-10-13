@@ -244,6 +244,19 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   return await persist(record, input.outDir)
 }
 
+/** The proxy's `onBeforeTeardown` hook for a session whose branch lives in a box.
+ *  Shared by the spawn path and the restart path so both deliver identically. */
+export function createDeliveryHook(
+  input: Omit<RunSandboxDeliveryInput, "deadlineMs" | "now"> & {
+    onDelivery?: (record: SandboxDeliveryRecord) => void
+  },
+): () => Promise<void> {
+  const { onDelivery, ...run } = input
+  return async () => {
+    onDelivery?.(await runSandboxDelivery(run))
+  }
+}
+
 async function persist(record: SandboxDeliveryRecord, outDir: string): Promise<SandboxDeliveryRecord> {
   try {
     await mkdir(outDir, { recursive: true })

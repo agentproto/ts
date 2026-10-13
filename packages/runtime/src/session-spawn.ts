@@ -80,7 +80,7 @@ import {
 } from "./sandbox-workspace-remote.js"
 import {
   formatDeliveryNotice,
-  runSandboxDelivery,
+  createDeliveryHook,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
@@ -3882,6 +3882,7 @@ export async function spawnAgentSession(
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
+    let sandboxDeliveryTarget: SandboxDeliveryTarget | undefined
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
     let commandSandbox: SandboxMode | undefined
@@ -3960,6 +3961,7 @@ export async function spawnAgentSession(
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
       sandboxTeardown = booted.sandboxTeardown
+      sandboxDeliveryTarget = booted.deliveryTarget
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
       if (isDeviceSandboxTarget(input.sandbox)) {
@@ -4204,6 +4206,7 @@ export async function spawnAgentSession(
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
+      ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
       ...(commandSandbox ? { commandSandbox } : {}),
@@ -4437,6 +4440,9 @@ type SandboxBootResult =
        *  descriptor's `sandboxProvider` by the caller. */
       provider: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
+      /** The work branch checked out in the box, when a `worktree` was
+       *  requested — stamped onto the descriptor so a restart can deliver it. */
+      deliveryTarget?: SandboxDeliveryTarget
       sandboxPorts?: Record<number, string>
       /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
        *  the descriptor by the caller. Absent when no appServe was requested. */
@@ -5207,15 +5213,13 @@ async function bootSandboxAgentSession(opts: {
       ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
       ...(deliveryTarget && boxExec && deliverySessionId
         ? {
-            onBeforeTeardown: async () => {
-              const record = await runSandboxDelivery({
-                exec: boxExec,
-                ...(boxReadFile ? { readFile: boxReadFile } : {}),
-                target: deliveryTarget,
-                outDir: sessionTranscriptDir(deliverySessionId),
-              })
-              opts.onDelivery?.(record)
-            },
+            onBeforeTeardown: createDeliveryHook({
+              exec: boxExec,
+              ...(boxReadFile ? { readFile: boxReadFile } : {}),
+              target: deliveryTarget,
+              outDir: sessionTranscriptDir(deliverySessionId),
+              ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
+            }),
           }
         : {}),
     }),
@@ -5224,6 +5228,7 @@ async function bootSandboxAgentSession(opts: {
     cwd: resolvedCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
+    ...(deliveryTarget ? { deliveryTarget } : {}),
     // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.
