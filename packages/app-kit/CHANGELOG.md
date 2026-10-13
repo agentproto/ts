@@ -1,5 +1,13 @@
 # @agentproto/app-kit
 
+## 1.7.5
+
+### Patch Changes
+
+- Updated dependencies [fe3c879]
+  - @agentproto/agent@0.3.0
+  - @agentproto/mastra@0.2.17
+
 ## 1.7.4
 
 ### Patch Changes

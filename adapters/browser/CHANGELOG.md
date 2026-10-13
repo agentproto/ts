@@ -1,5 +1,18 @@
 # @agentproto/adapter-browser
 
+## 0.4.0
+
+### Minor Changes
+
+- 3c5c88f: Add the `chrome-live` browser provider: it attaches to the user's already running Chrome through the remote debugging toggle (chrome://inspect/#remote-debugging) over one memoized websocket, works in its own window, only addresses targets it created, never sends `Browser.close`, and keeps cookies read-only. Typed errors `browser:remote-debugging-off`, `browser:consent-timeout` and `browser:disconnected`. The `@agentproto/adapter-browser` facade registers it as the `chrome-live` adapter.
+- 3c5c88f: Add the `chrome-live` browser provider (attaches to the user's running Chrome via the remote debugging toggle) and register it in the `@agentproto/adapter-browser` facade. `@agentproto/runtime` only gets docs and test updates.
+
+### Patch Changes
+
+- Updated dependencies [3c5c88f]
+- Updated dependencies [3c5c88f]
+  - @agentproto/adapter-browser-chrome@0.3.0
+
 ## 0.3.2
 
 ### Patch Changes

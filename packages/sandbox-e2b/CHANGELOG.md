@@ -1,5 +1,26 @@
 # @agentproto/sandbox-e2b
 
+## 0.8.0
+
+### Minor Changes
+
+- d3549e7: The e2b provider sizes Node builds to the box: it derives `NODE_OPTIONS=--max-old-space-size=…` plus `npm_config_workspace_concurrency` / `TURBO_CONCURRENCY` from the resolved size preset (probed from the box with `nproc` / `free -m` for an explicit custom `template`) and ships them to every in-box process through the daemon's start env and `/etc/profile.d/agentproto-build.sh`, tunable or disableable via `config.buildEnv`, with a caller-provided value for the same var always winning.
+- 27700c4: Size presets for the e2b workstation: `config.size` (`nano`, `small`, `medium`, `large`, `x-large`, `xx-large`) boots that preset's published `agentproto-workstation-<size>` template. `config.template` still wins, and with neither set the bare `agentproto-workstation` template boots, now built at the default `large` (4 vCPU / 8 GB). An unknown size fails with the list of valid sizes; a size e2b refused to create (today `x-large` / `xx-large`, over the plan's 8 vCPU / 8192 MB cap) fails with the recorded e2b error. Exports `SIZES`, `DEFAULT_SIZE` and the `WorkstationSize` type. The workstation templates now bake the GitHub CLI (`gh`, pinned and checksum-verified).
+
+  Sandbox agents can open PRs themselves: a spawn whose workspace has a remote token now also gets that same daemon-derived token as `GH_TOKEN`, next to `AGENTPROTO_GIT_TOKEN`, so `gh pr create` works in the box (the token needs Contents + Pull requests write). `GH_TOKEN` is reserved like `AGENTPROTO_GIT_TOKEN`: it is stripped from caller-declared `env.passthrough` / `env.auth.state.env` / `join.tokenEnv`, and it never resolves to the daemon's own `GH_TOKEN`. A caller that used to pass `GH_TOKEN` through `env.passthrough` no longer gets it in the box.
+
+- c6f1288: Sandbox sessions survive a box that dies outside `close()`. The host now checkpoints a box's work branch periodically (every 5 min, `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS`, `0` = off) and at each turn end: it pushes `wt/<slug>` when ahead and force-pushes a snapshot of uncommitted work (built through a throwaway index) to `agentproto-checkpoint/wt/<slug>`, falling back to a host-side `checkpoint.bundle`. A watchdog probes the box daemon's `/health` and, after 3 failed or 10 unanswered probes, takes a last checkpoint and marks the session crashed so it can be restarted. `session_restart` on a session whose box is gone now boots a fresh box, re-clones the workspace remote, checks out the pushed branch and re-applies the snapshot, instead of failing. The e2b provider enables a 4 GiB swap file on fresh boots (`config.swapMb`, `0` = off).
+- 795c382: Sandbox sessions now survive a host daemon restart. Shutdown detaches provider-box sessions instead of killing them: the host closes its connection only, leaves the box and its agent session running, persists a re-attach record (`sandboxReattach`, row stays `running` with `hostDetached`), and asks the provider to extend the box lifetime to 60 minutes (`BootedSandbox.extendTimeout`, implemented for e2b via `setTimeout`; providers cap it, a rejected request leaves the existing lifetime). At boot, before eager resume, the daemon reconnects through `SandboxProvider.connect`, replays the events the box produced meanwhile from the saved transcript seq, and re-binds the same session id without re-prompting the agent. A box that no longer exists ends the row with the new `sandbox_gone` end reason and a `gone` ledger entry. `/health` and `daemon_health` gain `sandboxSessions`, and `agentproto daemon restart`/`stop` report how many sandbox sessions were detached and re-attached. Explicit kill, idle reap and cost kill still tear the box down; device-paired sandboxes and local sessions are unchanged.
+
+### Patch Changes
+
+- 36dac26: Sandbox boxes are kept alive while their session is working: the proxy re-arms the box lifetime (throttled to once per 60s) when a prompt is dispatched and as box events stream back, never while idle. The e2b `extendTimeout` clamps to the 1h account cap, and `BootedSandbox`/`SandboxAgentSessionHost` expose the box's configured `lifetimeMs`.
+- 2dda22e: Rebuild the `agentproto-workstation` e2b templates (stable and dev) on `@agentproto/cli` 1.20.0 with the latest adapters, so boxes apply the sub-account env forwarded from the host (#1890) and the sandbox exec fix (#1886).
+- Updated dependencies [36dac26]
+- Updated dependencies [795c382]
+- Updated dependencies [e74439f]
+  - @agentproto/sandbox@0.11.0
+
 ## 0.7.0
 
 ### Minor Changes
