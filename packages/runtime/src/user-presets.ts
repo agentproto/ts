@@ -19,7 +19,7 @@ import type {
 } from "./session-config.js"
 import type { SpawnBrowserMode } from "./browser-mount.js"
 import type { SessionDescriptor } from "./sessions.js"
-import { turnRetryInputSchema, type TurnRetryInput } from "./turn-retry-policy.js"
+import { turnRetryInputSchema, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
 
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultracode"])
 const postureSchema = z.union([
@@ -143,6 +143,8 @@ export async function getUserPreset(id: string): Promise<UserPreset | undefined>
  * rename/retune of a favorite must not erase its recency. */
 export async function saveUserPreset(preset: UserPreset): Promise<void> {
   const validated = userPresetSchema.parse(preset)
+  const rotateError = validateTurnRetryRotate(validated.turnRetry?.rotate, validated.model)
+  if (rotateError) throw new Error(`preset "${validated.id}": ${rotateError}`)
   const file = await loadUserPresets()
   const index = file.presets.findIndex(existing => existing.id === validated.id)
   const lastUsedAt = validated.lastUsedAt ?? (index === -1 ? undefined : file.presets[index]?.lastUsedAt)

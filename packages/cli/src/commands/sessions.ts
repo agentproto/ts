@@ -701,6 +701,32 @@ export function parseTurnRetryFlag(raw: string): Record<string, unknown> | strin
   if (obj.retryAfterToolCalls !== undefined && typeof obj.retryAfterToolCalls !== "boolean") {
     return `"retryAfterToolCalls" must be a boolean`
   }
+  const rotate = obj.rotate
+  if (rotate !== undefined) {
+    const ok =
+      Array.isArray(rotate) &&
+      rotate.length <= 16 &&
+      rotate.every(
+        t =>
+          t &&
+          typeof t === "object" &&
+          typeof (t as { model?: unknown }).model === "string" &&
+          (t as { model: string }).model.length > 0 &&
+          ((t as { profileRef?: unknown }).profileRef === undefined ||
+            typeof (t as { profileRef?: unknown }).profileRef === "string"),
+      )
+    if (!ok) return `"rotate" must be an array (max 16) of {"model": string, "profileRef"?: string}`
+  }
+  const rotateOn = obj.rotateOn
+  if (rotateOn !== undefined) {
+    if (!Array.isArray(rotateOn) || rotateOn.length === 0 || rotateOn.some(c => !TURN_RETRY_CLASSES.includes(c as string))) {
+      return `"rotateOn" must list at least one of ${TURN_RETRY_CLASSES.join(", ")}`
+    }
+  }
+  const cooldownMs = obj.cooldownMs
+  if (cooldownMs !== undefined && (typeof cooldownMs !== "number" || !Number.isInteger(cooldownMs) || cooldownMs < 1)) {
+    return `"cooldownMs" must be a positive integer (ms)`
+  }
   return obj
 }
 

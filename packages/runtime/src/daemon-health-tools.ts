@@ -14,6 +14,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { ModelCooldownEntry } from "./model-cooldowns.js"
 
 export interface RegisterDaemonHealthToolsOptions {
   workspace: string
@@ -68,6 +69,7 @@ export interface RegisterDaemonHealthToolsOptions {
   /** Installed-app registry records that loaded partial or unusable (see
    *  `AppRegistry.listIssues`). Surfaced as `appRegistryIssues` — empty when
    *  the registry is clean — so a bad record is reported, not thrown on. */
+  modelCooldowns?: () => readonly ModelCooldownEntry[]
   appRegistryIssues?: () => readonly {
     kind: string
     appId: string | null
@@ -118,6 +120,7 @@ export function registerDaemonHealthTools(
         version: opts.version ?? null,
         build: opts.build ?? null,
         appRegistryIssues: opts.appRegistryIssues?.() ?? [],
+        modelCooldowns: opts.modelCooldowns?.() ?? [],
       })
     },
   )

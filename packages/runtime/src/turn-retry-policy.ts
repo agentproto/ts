@@ -40,6 +40,26 @@ export interface TurnRetryPolicy {
    *  false: such a turn is NOT retried, because the continuation could
    *  repeat a write/exec the agent already did. */
   retryAfterToolCalls?: boolean
+  /** Ordered fallback models. When a retry fires for a class in `rotateOn`,
+   *  the session is switched (live, before the continuation prompt) to the
+   *  first target that is not cooling down and passes the eligibility checks.
+   *  v1 switches the model on the session's CURRENT profile only: a target
+   *  naming a different `profileRef` is skipped. Absent ⇒ never rotate. */
+  rotate?: TurnRetryRotateTarget[]
+  /** Classes that rotate (must be a subset of what `on` retries). Default
+   *  `rate-limit` + `no-output-stall`; add `upstream-5xx` to rotate on those too. */
+  rotateOn?: TurnRetryClass[]
+  /** How long a rate-limited model is skipped, daemon-wide, when the error
+   *  carries no retry-after hint (ms). Default {@link TURN_ROTATE_DEFAULTS}. */
+  cooldownMs?: number
+}
+
+/** One fallback target of `turnRetry.rotate`. */
+export interface TurnRetryRotateTarget {
+  model: string
+  /** Billing profile the target must run under. v1: must equal the session's
+   *  current profile (or be omitted = "the current profile"). */
+  profileRef?: string
 }
 
 export const TURN_RETRY_DEFAULTS = {
@@ -48,6 +68,33 @@ export const TURN_RETRY_DEFAULTS = {
   factor: 2,
   maxDelayMs: 60_000,
 } as const
+
+export const TURN_ROTATE_DEFAULTS = {
+  rotateOn: ["rate-limit", "no-output-stall"] as TurnRetryClass[],
+  cooldownMs: 10 * 60_000,
+} as const
+
+/** OpenCode free-tier ids: `…-free`, or `big-pickle`, with or without the
+ *  `opencode/` / `opencode-go/` route prefix. */
+export function isOpencodeFreeModel(model: string): boolean {
+  const id = (model.split("@")[0] ?? model).split("/").pop()?.toLowerCase() ?? ""
+  return id === "big-pickle" || id.endsWith("-free")
+}
+
+/** The "free stays free" spawn-time check: a free current model may only
+ *  rotate to free ids. Returns an error message, or undefined when fine. */
+export function validateTurnRetryRotate(
+  rotate: readonly TurnRetryRotateTarget[] | undefined,
+  currentModel: string | undefined,
+): string | undefined {
+  if (!rotate?.length || !currentModel || !isOpencodeFreeModel(currentModel)) return undefined
+  const paid = rotate.filter(t => !isOpencodeFreeModel(t.model)).map(t => t.model)
+  if (paid.length === 0) return undefined
+  return (
+    `turnRetry.rotate: "${currentModel}" is an OpenCode free model, so it may only rotate to free ids ` +
+    `(ending in "-free", or "big-pickle") — never onto a paid model. Remove: ${paid.join(", ")}.`
+  )
+}
 
 /** Input shape (agent_start / user preset): only `on` is required; the
  *  numeric knobs default to {@link TURN_RETRY_DEFAULTS}. */
@@ -58,6 +105,12 @@ export const turnRetryInputSchema = z.object({
   factor: z.number().min(1).optional(),
   maxDelayMs: z.number().int().nonnegative().optional(),
   retryAfterToolCalls: z.boolean().optional(),
+  rotate: z
+    .array(z.object({ model: z.string().min(1), profileRef: z.string().min(1).optional() }))
+    .max(16)
+    .optional(),
+  rotateOn: z.array(z.enum(TURN_RETRY_CLASSES)).min(1).optional(),
+  cooldownMs: z.number().int().positive().optional(),
 })
 
 export type TurnRetryInput = z.infer<typeof turnRetryInputSchema>
@@ -73,6 +126,13 @@ export function resolveTurnRetryPolicy(input: TurnRetryInput): TurnRetryPolicy {
     factor: input.factor ?? TURN_RETRY_DEFAULTS.factor,
     maxDelayMs: Math.max(input.maxDelayMs ?? TURN_RETRY_DEFAULTS.maxDelayMs, baseDelayMs),
     ...(input.retryAfterToolCalls ? { retryAfterToolCalls: true } : {}),
+    ...(input.rotate?.length
+      ? {
+          rotate: input.rotate.map(t => ({ model: t.model, ...(t.profileRef ? { profileRef: t.profileRef } : {}) })),
+          rotateOn: [...new Set(input.rotateOn ?? TURN_ROTATE_DEFAULTS.rotateOn)],
+        }
+      : {}),
+    ...(input.cooldownMs !== undefined ? { cooldownMs: input.cooldownMs } : {}),
   }
 }
 

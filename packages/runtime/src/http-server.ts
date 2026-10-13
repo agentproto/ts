@@ -288,6 +288,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
+import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import {
   attachFieldSchema,
@@ -1324,6 +1325,9 @@ export interface RuntimeHttpServerOptions {
      *  Kept in sync with the `daemon_health` MCP tool's field of the same
      *  name. */
     turnStallAfterMs?: number
+    /** Models currently rate-limited on this daemon (`turnRetry` cooldowns).
+     *  Kept in sync with the `daemon_health` MCP tool's `modelCooldowns`. */
+    modelCooldowns?: () => readonly ModelCooldownEntry[]
     /** Installed-app registry records that loaded partial/unusable. Kept in
      *  sync with the `daemon_health` MCP tool's `appRegistryIssues`. */
     appRegistryIssues?: () => readonly {
@@ -2156,6 +2160,7 @@ export async function startHttpServer(
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
         appRegistryIssues: opts.meta.appRegistryIssues?.() ?? [],
+        modelCooldowns: opts.meta.modelCooldowns?.() ?? [],
       }),
     )
   }

@@ -959,6 +959,8 @@ export interface WorkflowSuspendResumedEvent {
  * opted into `agent_start.turnRetry`:
  *   - `scheduled` — a failed turn matched a retry class; a continuation
  *     prompt lands after `delayMs`;
+ *   - `rotated` — `turnRetry.rotate` switched the session from `fromModel` to
+ *     `toModel` (reason: `errorClass`) just before the continuation prompt;
  *   - `sent` — the continuation prompt was sent (`attempt` is 1-based);
  *   - `cancelled` — a scheduled retry was dropped because the session moved
  *     on first (a new prompt, the stall cleared, exit, kill);
@@ -972,7 +974,7 @@ export interface WorkflowSuspendResumedEvent {
 export interface SessionTurnRetryEvent {
   type: "session:turn-retry"
   sessionId: string
-  phase: "scheduled" | "sent" | "cancelled" | "exhausted" | "skipped"
+  phase: "scheduled" | "rotated" | "sent" | "cancelled" | "exhausted" | "skipped"
   /** The failure class (`rate-limit`, `upstream-5xx`, `no-output-stall`, or
    *  a never-retried class such as `auth` / `usage-limit` / `other`). */
   errorClass: string
@@ -984,6 +986,9 @@ export interface SessionTurnRetryEvent {
   /** The failed turn's error text (truncated). */
   error?: string
   skipReason?: string
+  /** `rotated` only: the model the session was on, and the one it moved to. */
+  fromModel?: string
+  toModel?: string
   label?: string
   ts: string
 }

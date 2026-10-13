@@ -29,6 +29,16 @@
  * costs nothing against `maxRetries` — and emits `cancelled` instead, with the
  * same `[turn-retry]` transcript notice every other transition carries.
  *
+ * Rotation (`turnRetry.rotate`): instead of re-prompting the model that was
+ * just throttled, the controller first switches the live session to the next
+ * fallback target (`registry.setModel` — the `agent_set_model` path), then
+ * sends the continuation. A rate-limited / silently-stalled model is recorded
+ * in a DAEMON-WIDE cooldown map (the free-tier limit is per model per IP, so
+ * it binds every session), and rotation skips cooling models. A free session
+ * only ever rotates onto free ids. With no eligible target the retry falls
+ * back to today's same-model behaviour and says so in the `[turn-retry]`
+ * notice. v1 switches the model on the session's current profile only.
+ *
  * NEVER retries: an interrupted turn (user Stop, `interrupt:true` prompt), a
  * killed / exited / errored session (kill, `maxCostUsd` cost-cap kill — the
  * process-death path belongs to `restartPolicy`), a session with a failed
@@ -44,7 +54,14 @@
 import type { SessionDescriptor } from "./sessions.js"
 import type { SessionEventBus, SessionTurnRetryEvent } from "./session-event-bus.js"
 import { isProviderLimitError } from "./session-end-reason.js"
-import type { TurnRetryClass, TurnRetryPolicy } from "./turn-retry-policy.js"
+import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
+import {
+  isOpencodeFreeModel,
+  TURN_ROTATE_DEFAULTS,
+  type TurnRetryClass,
+  type TurnRetryPolicy,
+  type TurnRetryRotateTarget,
+} from "./turn-retry-policy.js"
 
 /** Must equal `NO_OUTPUT_STALL_TURN_ERROR` in `sessions.ts` — duplicated (and
  *  pinned by a test) so this module needs no runtime import of the registry. */
@@ -260,6 +277,39 @@ export interface TurnRetryRegistry {
       nextTurnRetryAt?: string | null
     },
   ): boolean
+  /** Live model switch (`agent_set_model`). Absent ⇒ rotation is unavailable. */
+  setModel?(id: string, modelId: string): Promise<{ applied: boolean; reason?: string }>
+  /** Cut the in-flight turn before a switch on a stalled session. */
+  interruptSession?(id: string): Promise<unknown>
+}
+
+/** Async eligibility verdict for a rotation target: `undefined` = eligible,
+ *  otherwise a short reason it is not. Runs the same checks a spawn would
+ *  (adapter/route match, the profile's model allow-list). */
+export type RotationTargetCheck = (
+  desc: SessionDescriptor,
+  target: TurnRetryRotateTarget,
+) => Promise<string | undefined>
+
+/** Pure part of rotation eligibility: same model, daemon-wide cooldown, free
+ *  stays free, and the v1 same-profile limit. `undefined` = passes. */
+export function rotationTargetRejection(
+  desc: SessionDescriptor,
+  target: TurnRetryRotateTarget,
+  cooldowns: ModelCooldowns,
+  now: number,
+): string | undefined {
+  if (target.model === desc.model) return "already the current model"
+  const until = cooldowns.until(target.model)
+  if (until !== undefined) return `cooling down for ${Math.max(1, Math.round((until - now) / 1000))}s more`
+  if (desc.model && isOpencodeFreeModel(desc.model) && !isOpencodeFreeModel(target.model)) {
+    return "paid model — a free session never rotates onto a paid id"
+  }
+  const current = desc.accessProfile?.profileRef
+  if (target.profileRef !== undefined && target.profileRef !== current) {
+    return `needs profile "${target.profileRef}" (session runs ${current ? `"${current}"` : "the host default"}) — profile switching is not supported live`
+  }
+  return undefined
 }
 
 interface PendingRetry {
@@ -284,12 +334,17 @@ export function createTurnRetryController(opts: {
   registry: TurnRetryRegistry
   sessionEvents: SessionEventBus
   now?: () => number
+  /** Daemon-wide model cooldowns. Defaults to a private map (tests/standalone). */
+  cooldowns?: ModelCooldowns
+  /** Extra async eligibility gate for rotation targets (adapter/route + profile allow-list). */
+  checkRotationTarget?: RotationTargetCheck
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   log?: (line: string) => void
 }): TurnRetryController {
   const { registry, sessionEvents } = opts
   const now = opts.now ?? Date.now
+  const cooldowns = opts.cooldowns ?? createModelCooldowns(now)
   const setTimer =
     opts.setTimer ??
     ((fn: () => void, ms: number) => {
@@ -335,6 +390,64 @@ export function createTurnRetryController(opts: {
     }
   }
 
+  /** Switch the session to the first eligible `turnRetry.rotate` target, if
+   *  the policy rotates for this class. Never throws: any failure to rotate
+   *  leaves the model unchanged and the retry proceeds on the same model. */
+  const rotateIfConfigured = async (desc: SessionDescriptor, p: PendingRetry): Promise<void> => {
+    const policy = desc.turnRetry
+    if (!policy?.rotate?.length) return
+    if (!(policy.rotateOn ?? TURN_ROTATE_DEFAULTS.rotateOn).includes(p.errorClass)) return
+    const id = desc.id
+    const from = desc.model
+    const same = (why: string): void => {
+      registry.recordNotice(
+        id,
+        `[turn-retry] no rotation target available (${why}) — retrying ${from ?? "the same model"} after backoff`,
+      )
+    }
+    if (!registry.setModel) return same("this registry cannot switch models")
+    const rejected: string[] = []
+    let interrupted = false
+    for (const target of policy.rotate) {
+      const why =
+        rotationTargetRejection(desc, target, cooldowns, now()) ?? (await opts.checkRotationTarget?.(desc, target))
+      if (why) {
+        rejected.push(`${target.model}: ${why}`)
+        continue
+      }
+      try {
+        // A stalled turn is still running — cut it before changing the model.
+        if (p.kind === "stall" && !interrupted) {
+          interrupted = true
+          await registry.interruptSession?.(id)
+        }
+        const res = await registry.setModel(id, target.model)
+        if (!res.applied) {
+          rejected.push(`${target.model}: switch not applied${res.reason ? ` (${res.reason})` : ""}`)
+          continue
+        }
+      } catch (err) {
+        rejected.push(`${target.model}: ${err instanceof Error ? err.message : String(err)}`)
+        continue
+      }
+      emit(registry.get(id) ?? desc, {
+        phase: "rotated",
+        errorClass: p.errorClass,
+        attempt: p.attempt,
+        ...(from ? { fromModel: from } : {}),
+        toModel: target.model,
+        ...(p.error ? { error: p.error } : {}),
+      })
+      registry.recordNotice(
+        id,
+        `[turn-retry] rotating model ${from ?? "?"} → ${target.model} (${p.errorClass})` +
+          (rejected.length ? `; skipped ${rejected.join("; ")}` : ""),
+      )
+      return
+    }
+    same(rejected.join("; ") || "none listed")
+  }
+
   const fire = (id: string, p: PendingRetry): void => {
     if (pending.get(id) !== p) return
     pending.delete(id)
@@ -363,12 +476,15 @@ export function createTurnRetryController(opts: {
     // still counts toward `maxRetries` — its turn-end can land before the
     // admission promise below settles, and the counter must already be spent.
     registry.patchTurnRetry(id, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
-    registry
-      .enqueuePrompt(id, buildContinuationPrompt(p.error), {
-        source: TURN_RETRY_PROMPT_SOURCE,
-        origin: "daemon",
-        ...(p.kind === "stall" ? { interrupt: true } : {}),
-      })
+    rotateIfConfigured(desc, p)
+      .catch(err => log(`[turn-retry] ${id}: rotation failed: ${err instanceof Error ? err.message : String(err)}`))
+      .then(() =>
+        registry.enqueuePrompt(id, buildContinuationPrompt(p.error), {
+          source: TURN_RETRY_PROMPT_SOURCE,
+          origin: "daemon",
+          ...(p.kind === "stall" ? { interrupt: true } : {}),
+        }),
+      )
       .then(
         () => {
           // Admission succeeded — only NOW is the retry actually "sent" (and
@@ -407,10 +523,26 @@ export function createTurnRetryController(opts: {
       )
   }
 
-  const handle = (id: string, trigger: Parameters<typeof decideTurnRetry>[1]): void => {
+  /** Record a rate-limit / silent-stall against the model in the daemon-wide
+   *  cooldown map, so rotation (in every session) skips it for a while. */
+  const noteThrottle = (desc: SessionDescriptor, trigger: TurnRetryTrigger, errorClass: TurnErrorClass): void => {
+    if (errorClass !== "rate-limit" && errorClass !== "no-output-stall") return
+    if (trigger.kind === "turn-end" && trigger.interrupted) return
+    if (!desc.model) return
+    const message = trigger.kind === "stall" ? NO_OUTPUT_STALL_MARKER : (trigger.error ?? desc.lastTurnErrorMessage)
+    const hint = errorClass === "rate-limit" ? extractRetryAfterMs(message) : undefined
+    cooldowns.mark(desc.model, {
+      durationMs: hint !== undefined && hint > 0 ? hint : (desc.turnRetry?.cooldownMs ?? TURN_ROTATE_DEFAULTS.cooldownMs),
+      reason: errorClass,
+      sessionId: desc.id,
+    })
+  }
+
+  const handle = (id: string, trigger: TurnRetryTrigger): void => {
     const desc = registry.get(id)
     if (!desc?.turnRetry) return
     const decision = decideTurnRetry(desc, trigger, { halted: halted.has(id) })
+    if (decision.action !== "ignore") noteThrottle(desc, trigger, decision.errorClass)
     switch (decision.action) {
       case "ignore":
         return

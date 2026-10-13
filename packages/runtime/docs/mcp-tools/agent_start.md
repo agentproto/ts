@@ -415,7 +415,60 @@ session transcript. Pending retries are in-memory: a daemon restart drops
 them.
 
 CLI: `agentproto sessions start --turn-retry all` (or a comma list of
-classes, or a JSON object). User presets accept the same `turnRetry` field.
+classes, or a JSON object). User presets and harness presets
+(`harness_preset_create`) accept the same `turnRetry` field.
+
+### Rotating to another model
+
+A 429 on a free-tier model is per model per IP, so retrying the SAME model
+usually fails again. Add `rotate` to move the session onto the next model
+instead:
+
+```json
+{ "on": ["rate-limit", "no-output-stall"],
+  "rotate": [{ "model": "opencode/minimax-m2.5-free" }, { "model": "opencode/big-pickle" }],
+  "rotateOn": ["rate-limit", "no-output-stall"], "cooldownMs": 600000 }
+```
+
+- `rotate`: ordered fallback targets `{ model, profileRef? }` (max 16).
+- `rotateOn`: classes that rotate, default `rate-limit` + `no-output-stall`.
+  Add `upstream-5xx` to rotate on those too. Other retried classes keep
+  retrying the same model.
+- `cooldownMs`: how long a rate-limited model is skipped when the error has no
+  retry-after hint. Default 10 min.
+
+When a retry fires for a rotating class, the daemon takes the first target
+that is not cooling down and is eligible, switches the live session to it (the
+same path as `agent_set_model`), and only then sends the continuation prompt.
+For a `no-output-stall` it interrupts the stuck turn first, then switches, then
+continues. The descriptor's `model` reflects the new model, the transcript gets
+`[turn-retry] rotating model A → B (class)`, and the `session:turn-retry`
+event has `phase: "rotated"` with `fromModel` / `toModel`.
+
+Cooldowns are daemon-wide: a model that rate-limits one session is skipped by
+rotation for every session until the cooldown expires. A retry-after hint wins
+over `cooldownMs`. They are read-only via `daemon_health` (`modelCooldowns`)
+and `GET /health`, and are in-memory (a daemon restart clears them). They are
+learned only from sessions that opted into `turnRetry`.
+
+A target is skipped, with the reason in the notice, when it:
+
+- is the current model, or is cooling down;
+- is not in the session profile's `models` allow-list, or fails the spawn
+  eligibility checks (adapter capability, wallet/route);
+- is a paid model while the session's model is OpenCode free (see below);
+- names a `profileRef` different from the session's current profile. v1
+  rotates within the current profile only; switching profile needs a
+  restart-with-override, which mints a new session id.
+
+If no target is eligible, the retry falls back to the SAME model after the
+backoff, and the notice says `no rotation target available (…)`.
+
+**Free stays free.** When the session's model is an OpenCode free id (ends in
+`-free`, or `big-pickle`, with or without an `opencode/` prefix), `rotate` may
+only list free ids. `agent_start` rejects a list with a paid id
+(`turn_retry_rotate_invalid`), so does saving a user or harness preset, and
+runtime rotation never selects a paid id for such a session.
 
 ## contextContinuity
 
