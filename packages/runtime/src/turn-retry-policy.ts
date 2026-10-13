@@ -21,7 +21,7 @@ export type TurnRetryClass = (typeof TURN_RETRY_CLASSES)[number]
 export interface TurnRetryPolicy {
   /** Which transient failure classes trigger a retry:
    *  - `rate-limit` — HTTP 429 / "rate limit" / "too many requests";
-   *  - `upstream-5xx` — HTTP 5xx / "overloaded" / "bad gateway" …;
+   *  - `upstream-5xx` — HTTP 5xx / "overloaded" / "bad gateway" / "endpoint unavailable" …;
    *  - `no-output-stall` — the stall watchdog flagged a turn that produced
    *    nothing since its prompt (`NO_OUTPUT_STALL_TURN_ERROR`, the opencode
    *    silent-429 loop). That turn is still running, so the retry interrupts

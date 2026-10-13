@@ -44,7 +44,9 @@ describe("classifyTurnError", () => {
     ['{"type":"error","error":{"type":"overloaded_error"}}', "upstream-5xx"],
     ["Internal server error", "upstream-5xx"],
     ["HTTP 504", "upstream-5xx"],
-    [NO_OUTPUT_STALL_MARKER, "no-output-stall"],
+    ["Endpoint is unavailable", "upstream-5xx"],
+    ["Endpoint is currently unavailable", "upstream-5xx"],
+    ["Endpoint unavailable", "upstream-5xx"],
     ["401 Unauthorized", "auth"],
     ["status: 403", "auth"],
     ["402 Payment Required", "auth"],
@@ -55,6 +57,8 @@ describe("classifyTurnError", () => {
     ["You've hit your session limit · resets 5pm", "usage-limit"],
     ["context length exceeded: max_tokens 500", "other"],
     ["Internal error: API Error: 400 ...", "other"],
+    ["missing_required_parameter: Missing required parameter 'messages[2].reasoning_content'", "other"],
+    [NO_OUTPUT_STALL_MARKER, "no-output-stall"],
     [undefined, "other"],
   ])("%s → %s", (message, expected) => {
     expect(classifyTurnError(message)).toBe(expected)
@@ -372,6 +376,33 @@ describe("turn retry — never retried", () => {
     const h = harness([fail("502 Bad Gateway")], { on: ["rate-limit"], ...FAST })
     await h.registry.sendPrompt(h.desc.id, "go")
     await expectNoRetry(h, ["skipped"])
+  })
+
+  it("retries an upstream-5xx error 'Endpoint is unavailable'", async () => {
+    const h = harness([fail("Endpoint is unavailable"), ok], {
+      on: ["upstream-5xx"],
+      ...FAST,
+    })
+    await h.registry.sendPrompt(h.desc.id, "go")
+    await until(() => h.prompts.length === 2 && h.registry.get(h.desc.id)?.busy === false, "continuation turn")
+
+    expect(h.prompts[1]).toContain(buildContinuationPrompt("Endpoint is unavailable"))
+    expect(h.phases()).toEqual(["scheduled", "sent"])
+    expect(h.events[0]).toMatchObject({ errorClass: "upstream-5xx", attempt: 1, maxRetries: 3, delayMs: 5, error: "Endpoint is unavailable" })
+    // The clean continuation turn reset the counter.
+    await until(() => h.registry.get(h.desc.id)?.turnRetryAttempts === undefined, "counter reset")
+    expect(h.registry.get(h.desc.id)?.nextTurnRetryAt).toBeUndefined()
+    h.done()
+  })
+
+  it("never retries a missing_required_parameter error", async () => {
+    const h = harness([fail("missing_required_parameter: Missing required parameter 'messages[2].reasoning_content'")], {
+      on: ["rate-limit", "upstream-5xx", "no-output-stall"],
+      ...FAST,
+    })
+    await h.registry.sendPrompt(h.desc.id, "go")
+    await expectNoRetry(h, ["skipped"])
+    expect(h.events[0]?.errorClass).toBe("other")
   })
 
   it("a turn that already made a side-effecting tool call", async () => {
