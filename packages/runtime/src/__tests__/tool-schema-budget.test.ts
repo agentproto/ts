@@ -31,9 +31,11 @@ import { measureToolList } from "../tool-schema-measure.js"
  *  ~63.6 KB baseline). Re-set to 61 KB when `session_list` grew ~0.35 KB for
  *  the `label`/`cwd` filters and the cold-history fallback (`includeCold`) —
  *  the measured total was already at the old 60 KB line, so the old number
- *  left no room for a normal field addition. Headroom for normal growth
+ *  left no room for a normal field addition. Re-set to 62 KB for the
+ *  `turnRetry.rotate`/`rotateOn`/`cooldownMs` fields on `agent_start`
+ *  (+~0.5 KB of schema; the prose lives in `tool_help`). Headroom for normal growth
  *  without re-opening this file on every field addition. */
-const ALWAYS_ON_BUDGET_BYTES = 61_000
+const ALWAYS_ON_BUDGET_BYTES = 62_000
 
 /** No single description — a tool's own, or any schema property's, at any
  *  nesting depth — may exceed this. The plan's own cap. */

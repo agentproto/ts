@@ -30,6 +30,18 @@ describe("parseTurnRetryFlag", () => {
       factor: 1,
     })
   })
+  it("passes a rotate list through", () => {
+    const raw = '{"on":["rate-limit"],"rotate":[{"model":"opencode/big-pickle"},{"model":"x","profileRef":"p"}],"rotateOn":["rate-limit"],"cooldownMs":1000}'
+    expect(parseTurnRetryFlag(raw)).toEqual(JSON.parse(raw))
+  })
+  it.each([
+    ['{"on":["rate-limit"],"rotate":"big-pickle"}', '"rotate" must be an array'],
+    ['{"on":["rate-limit"],"rotate":[{"profileRef":"p"}]}', '"rotate" must be an array'],
+    ['{"on":["rate-limit"],"rotateOn":["crashed"]}', '"rotateOn"'],
+    ['{"on":["rate-limit"],"cooldownMs":0}', '"cooldownMs"'],
+  ])("rejects bad rotation %s", (raw, fragment) => {
+    expect(parseTurnRetryFlag(raw)).toContain(fragment)
+  })
   it.each([
     ["crashed", "unknown class"],
     ["", "must list"],

@@ -16,6 +16,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { turnRetryInputSchema } from "./turn-retry-policy.js"
 import { getAuthProfile } from "@agentproto/auth"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { catchErrors, paginated } from "@agentproto/tool"
@@ -157,8 +158,11 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
         .boolean()
         .optional()
         .describe("Make this the harness's default preset (demotes any prior default). Default false."),
+      turnRetry: turnRetryInputSchema
+        .optional()
+        .describe("Optional turnRetry (incl. `rotate`) applied to spawns using this default preset; see tool_help agent_start."),
     },
-    async ({ id, harnessSlug, name, profileRef, defaultModel, isDefault }) => {
+    async ({ id, harnessSlug, name, profileRef, defaultModel, isDefault, turnRetry }) => {
       try {
         const preset = await addHarnessPreset({
           id,
@@ -167,6 +171,7 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
           profileRef,
           defaultModel,
           isDefault: isDefault ?? false,
+          ...(turnRetry ? { turnRetry } : {}),
         })
         return text({ preset })
       } catch (err) {

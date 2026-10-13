@@ -288,6 +288,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
+import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import {
   attachFieldSchema,
@@ -1324,6 +1325,9 @@ export interface RuntimeHttpServerOptions {
      *  Kept in sync with the `daemon_health` MCP tool's field of the same
      *  name. */
     turnStallAfterMs?: number
+    /** Models currently rate-limited on this daemon (`turnRetry` cooldowns).
+     *  Kept in sync with the `daemon_health` MCP tool's `modelCooldowns`. */
+    modelCooldowns?: () => readonly ModelCooldownEntry[]
     /** Sandbox-session restart bookkeeping (how many a restart would detach,
      *  and how the last boot's reattach pass went). Kept in sync with the
      *  `daemon_health` MCP tool's `sandboxSessions`. */
@@ -2160,6 +2164,7 @@ export async function startHttpServer(
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
         appRegistryIssues: opts.meta.appRegistryIssues?.() ?? [],
+        modelCooldowns: opts.meta.modelCooldowns?.() ?? [],
         ...(opts.meta.sandboxSessions ? { sandboxSessions: opts.meta.sandboxSessions() } : {}),
       }),
     )

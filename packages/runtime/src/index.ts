@@ -121,6 +121,8 @@ import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { createTurnRetryController } from "./turn-retry.js"
+import { createModelCooldowns } from "./model-cooldowns.js"
+import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
@@ -2395,7 +2397,19 @@ export async function createGateway(
   // a live session whose turn failed on a 429/5xx or stalled silently while
   // the provider retried. Inert for sessions without the policy. Disposed in
   // stop().
-  const turnRetryController = createTurnRetryController({ registry: sessions, sessionEvents })
+  // `modelCooldowns` is the daemon-wide "this model is rate-limited right now"
+  // map (the free-tier limit is per model per IP): the controller fills it and
+  // `turnRetry.rotate` reads it for every session; read-only in `daemon_health`.
+  const modelCooldowns = createModelCooldowns()
+  const turnRetryController = createTurnRetryController({
+    registry: sessions,
+    sessionEvents,
+    cooldowns: modelCooldowns,
+    checkRotationTarget: createRotationTargetCheck({
+      getProfile: getAuthProfile,
+      ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+    }),
+  })
 
   // Completion-policy supervisor — watches sessions and runs shell gates.
   // Declared after `sessions` so it can resolve session cwd at gate time.
@@ -3116,6 +3130,7 @@ export async function createGateway(
       restartSweepIntervalMs,
       turnStallAfterMs,
       appRegistryIssues: () => appRegistry.listIssues(),
+      modelCooldowns: () => modelCooldowns.list(),
       sandboxSessions: () => sessions.sandboxSessionStats(),
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
@@ -3903,6 +3918,7 @@ export async function createGateway(
       restartSweepIntervalMs,
       turnStallAfterMs,
       appRegistryIssues: () => appRegistry.listIssues(),
+      modelCooldowns: () => modelCooldowns.list(),
       sandboxSessions: () => sessions.sandboxSessionStats(),
     },
     cronScheduler,

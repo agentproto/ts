@@ -1,0 +1,6 @@
+---
+"@agentproto/runtime": minor
+"@agentproto/cli": patch
+---
+
+`turnRetry` can now rotate to another model instead of retrying the throttled one. `turnRetry.rotate` is an ordered list of `{ model, profileRef? }` fallbacks: on a rate-limit or no-output stall (`rotateOn`, add `upstream-5xx` to opt in) the live session is switched to the first eligible target before the continuation prompt, and the `[turn-retry]` notice and a `session:turn-retry` `rotated` event (with `fromModel`/`toModel`) record it. A daemon-wide model cooldown (Retry-After honoured, else `cooldownMs`, default 10 min) keeps every session off a throttled model and is exposed read-only as `modelCooldowns` in `daemon_health` and `/health`. Targets must pass the profile `models` allow-list and the spawn adapter/wallet checks; with none eligible the retry falls back to the same model. A free OpenCode model (`-free`, `big-pickle`) only rotates to free ids: `agent_start` rejects a paid id with `turn_retry_rotate_invalid`, as do user and harness presets. Harness presets (`harness_preset_create`) can now carry `turnRetry`. v1 rotates within the session's current profile only. The CLI `--turn-retry` JSON validates `rotate`, `rotateOn` and `cooldownMs`.
