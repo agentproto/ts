@@ -123,6 +123,31 @@ describe("runSandboxDelivery", () => {
     expect(timeouts[0]).toBeLessThanOrEqual(5_000)
   })
 
+  it("keeps a slice of the deadline for the bundle when the push hangs", async () => {
+    const commands: SandboxExecOpts[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o)
+      if (o.command.includes("rev-list")) return result(0, "ahead=2\nuncommitted=0\n")
+      if (o.command.includes(" push ")) return new Promise<SandboxExecResult>(() => undefined)
+      if (o.command.includes("bundle create")) return result(0, "4\n")
+      return result(1, "", "unexpected command")
+    }
+    const record = await runSandboxDelivery({
+      exec,
+      readFile: async () => new Uint8Array([1, 2, 3, 4]),
+      target,
+      outDir,
+      deadlineMs: 1_500,
+      bundleReserveMs: 1_000,
+    })
+
+    expect(record.push.status).toBe("failed")
+    const push = commands.find(c => c.command.includes(" push "))
+    expect(push?.timeoutMs).toBeLessThanOrEqual(500)
+    expect(record.bundle.status).toBe("saved")
+    expect(await readFile(join(outDir, DELIVERY_BUNDLE_FILE))).toEqual(Buffer.from([1, 2, 3, 4]))
+  })
+
   it("pushes an ahead branch and skips the bundle", async () => {
     const box = fakeBox({ ahead: 2 })
     const record = await runSandboxDelivery({ exec: box.exec, readFile: async () => new Uint8Array(), target, outDir })

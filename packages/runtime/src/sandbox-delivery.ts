@@ -30,8 +30,12 @@ const PROBE_TIMEOUT_MS = 30_000
 const PUSH_TIMEOUT_MS = 90_000
 const BUNDLE_TIMEOUT_MS = 60_000
 /** Wall-clock cap on the WHOLE delivery: the box keeps billing until teardown
- *  finishes, so every step's timeout is also capped by what is left of this. */
-export const DEFAULT_DELIVERY_DEADLINE_MS = 150_000
+ *  finishes, so every step's timeout is also capped by what is left of this.
+ *  Sized to fit probe + push + the bundle reserve with room to spare. */
+export const DEFAULT_DELIVERY_DEADLINE_MS = 240_000
+/** Slice of the deadline the push may never eat into: the bundle (create +
+ *  download of up to 50 MiB) is the fallback for a push that hangs or fails. */
+export const DEFAULT_BUNDLE_RESERVE_MS = 90_000
 
 export interface SandboxDeliveryTarget {
   checkoutDir: string
@@ -128,6 +132,8 @@ export interface RunSandboxDeliveryInput {
   maxBytes?: number
   /** Overall budget for probe + push + bundle + download. */
   deadlineMs?: number
+  /** Part of {@link deadlineMs} the push must leave for the bundle fallback. */
+  bundleReserveMs?: number
   now?: () => Date
 }
 
@@ -135,14 +141,16 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-/** Runs `step` with a timeout of at most `capMs`, never past the deadline. The
- *  race also covers a provider that ignores the exec timeout and hangs. */
+/** Runs `step` with a timeout of at most `capMs`, never past the deadline
+ *  (less `reserveMs` kept back for a later step). The race also covers a
+ *  provider that ignores the exec timeout and hangs. */
 async function withinDeadline<T>(
   deadlineAt: number,
   capMs: number,
   step: (timeoutMs: number) => Promise<T>,
+  reserveMs = 0,
 ): Promise<T> {
-  const timeoutMs = Math.min(capMs, deadlineAt - Date.now())
+  const timeoutMs = Math.min(capMs, deadlineAt - Date.now() - reserveMs)
   if (timeoutMs <= 0) throw new Error("delivery deadline reached")
   let timer: ReturnType<typeof setTimeout> | undefined
   const expired = new Promise<never>((_, reject) => {
@@ -159,6 +167,7 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   const { exec, target } = input
   const maxBytes = input.maxBytes ?? DEFAULT_BUNDLE_MAX_BYTES
   const deadlineAt = Date.now() + (input.deadlineMs ?? DEFAULT_DELIVERY_DEADLINE_MS)
+  const bundleReserveMs = input.bundleReserveMs ?? DEFAULT_BUNDLE_RESERVE_MS
   const record: SandboxDeliveryRecord = {
     at: (input.now?.() ?? new Date()).toISOString(),
     branch: target.branch,
@@ -196,6 +205,7 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   try {
     const result = await withinDeadline(deadlineAt, PUSH_TIMEOUT_MS, (timeoutMs) =>
       exec({ command: buildPushCommand(target), env: { GIT_TERMINAL_PROMPT: "0" }, timeoutMs }),
+      input.readFile ? bundleReserveMs : 0,
     )
     record.push =
       result.exitCode === 0
