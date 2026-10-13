@@ -13,7 +13,7 @@ export interface AgentStepFields {
   /** A literal prompt string, or a per-run selector (declarative manifest
    *  steps resolve `$steps.*` refs into one before calling this). */
   prompt: string | Selector<string>
-  adapter?: string
+  adapter?: Selector<string> | string
   /** See {@link AgentStep.cwd}. */
   cwd?: Selector<string>
   model?: Selector<string> | string

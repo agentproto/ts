@@ -194,13 +194,13 @@ function fakeWorktreeGc(inputs: Record<string, unknown>, applyOutcomes: Array<Re
  */
 function recordingAgentHost() {
   const byLabel = new Map<string, string>()
-  const spawns: Array<{ id: string; stepId?: string; stepKey?: string; model?: string }> = []
+  const spawns: Array<{ id: string; adapter: string; stepId?: string; stepKey?: string; model?: string }> = []
   const sends: Array<{ sessionId: string; prompt: string }> = []
   const host: AgentSessionHost = {
-    spawn: vi.fn(async (_adapter, opts) => {
+    spawn: vi.fn(async (adapter, opts) => {
       const o = opts as { stepId?: string; stepKey?: string; harness?: { model?: string } }
       const id = `sess_${spawns.length + 1}`
-      spawns.push({ id, stepId: o.stepId, stepKey: o.stepKey, model: o.harness?.model })
+      spawns.push({ id, adapter, stepId: o.stepId, stepKey: o.stepKey, model: o.harness?.model })
       if (o.stepKey) byLabel.set(o.stepKey, id)
       return id
     }),
@@ -916,7 +916,7 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
 })
 
 describe("repo-maintenance maintain workflow — reviewer models come from model roles", () => {
-  async function reviewerModels(input: Record<string, unknown>) {
+  async function reviewerSpawns(input: Record<string, unknown>) {
     let branchGcCallCount = 0
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       if (name === "worktree_gc") return fakeWorktreeGc(inputs)
@@ -939,10 +939,24 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
     await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", applyMerged: false, ...input } })
+    return spawns
+  }
+
+  async function reviewerModels(input: Record<string, unknown>) {
+    const spawns = await reviewerSpawns(input)
     return {
       small: spawns.find(s => s.stepId === "reviewOne" && s.stepKey === "reviewOne[0]")?.model,
       large: spawns.find(s => s.stepId === "reviewOne" && s.stepKey === "reviewOne[1]")?.model,
       retry: spawns.find(s => s.stepId === "reviewRetryLarge")?.model,
+    }
+  }
+
+  async function reviewerAdapters(input: Record<string, unknown>) {
+    const spawns = await reviewerSpawns(input)
+    return {
+      small: spawns.find(s => s.stepId === "reviewOne" && s.stepKey === "reviewOne[0]")?.adapter,
+      large: spawns.find(s => s.stepId === "reviewOne" && s.stepKey === "reviewOne[1]")?.adapter,
+      retry: spawns.find(s => s.stepId === "reviewRetryLarge")?.adapter,
     }
   }
 
@@ -966,6 +980,39 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
     } finally {
       daemonModels = {}
     }
+  })
+
+  // reviewPreset picks the model AND the adapter that model requires.
+  it("go-free runs every reviewer on the opencode Go free model, on the opencode adapter", async () => {
+    const free = "opencode-go/longcat-2.5-preview-free"
+    expect(await reviewerModels({ reviewPreset: "go-free" })).toEqual({ small: free, large: free, retry: free })
+    expect(await reviewerAdapters({ reviewPreset: "go-free" })).toEqual({ small: "opencode", large: "opencode", retry: "opencode" })
+  })
+
+  it("free-sonnet mixes adapters per item: opencode for the small residual, claude-code for large + retry", async () => {
+    expect(await reviewerAdapters({ reviewPreset: "free-sonnet" })).toEqual({
+      small: "opencode",
+      large: "claude-code",
+      retry: "claude-code",
+    })
+  })
+
+  it("haiku runs every reviewer on claude-haiku-5-5", async () => {
+    const haiku = "claude-haiku-5-5"
+    expect(await reviewerModels({ reviewPreset: "haiku" })).toEqual({ small: haiku, large: haiku, retry: haiku })
+  })
+
+  it("an explicit model input still beats the preset", async () => {
+    expect((await reviewerModels({ reviewPreset: "go-free", reviewModelLarge: "claude-opus-5-5" })).large).toBe("claude-opus-5-5")
+    expect((await reviewerAdapters({ reviewPreset: "go-free", reviewModelLarge: "claude-opus-5-5" })).large).toBe("claude-code")
+  })
+
+  it("a model id that implies no adapter keeps the reviewer agent's own adapter", async () => {
+    expect(await reviewerAdapters({ reviewModelSmall: "some-model", reviewModelLarge: "other-model" })).toEqual({
+      small: "mock-agent",
+      large: "mock-agent",
+      retry: "mock-agent",
+    })
   })
 })
 

@@ -340,7 +340,8 @@ key is a dotted role name; the value is either a bare model id string or
 `{ model: string, route?: string, profile?: string }`.
 
 Precedence (highest to lowest): explicit run input → the repo's
-`agentproto.json` `models` → this daemon config → built-in default. Read the
+`agentproto.json` `models` → this daemon config → the active preset
+(`modelRolePreset`, below) → built-in default. Read the
 resolved table and its sources with `config_get models` or the read-only
 `model_roles` MCP tool.
 
@@ -363,6 +364,29 @@ agentproto config set models.judge.session claude-opus-5-5
 An id unknown to the model catalog is warned about at set time but accepted.
 A `AGENT.md` step may reference a role with `model: role:<name>`, resolved
 before adapter selection.
+
+A role whose model id requires a specific adapter reports it as `adapter`
+(`opencode/…` and `opencode-go/…` → `opencode`, `claude-*` → `claude-code`).
+The repo-maintenance `review` step spawns each reviewer on that adapter.
+
+### `modelRolePreset: string`
+
+One key to switch the review roles (`review.small`, `review.large`) between
+named model sets. Applied hot. An explicit `models.<role>` still wins.
+
+| Preset | `review.small` | `review.large` (and retries) |
+| ------ | -------------- | ---------------------------- |
+| `opus` | `claude-sonnet-5-5` | `claude-opus-5-5` (same as the built-in defaults) |
+| `sonnet` | `claude-sonnet-5-5` | `claude-sonnet-5-5` |
+| `haiku` | `claude-haiku-5-5` | `claude-haiku-5-5` |
+| `go-free` | `opencode-go/longcat-2.5-preview-free` | `opencode-go/longcat-2.5-preview-free` |
+| `free-sonnet` | `opencode-go/longcat-2.5-preview-free` | `claude-sonnet-5-5` |
+
+```bash
+agentproto config set modelRolePreset go-free
+agentproto config unset modelRolePreset        # back to the built-in defaults
+agentproto maintain --review-preset haiku      # one run only
+```
 
 ### `jev: object`
 

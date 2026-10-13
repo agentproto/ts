@@ -12,7 +12,10 @@
  *   1. `input`      an explicit workflow/run input (`reviewModelSmall`, …)
  *   2. `workspace`  the repo's own `agentproto.json` → `models`
  *   3. `daemon`     `~/.agentproto/config.json` → `models`
- *   4. `default`    {@link DEFAULT_MODEL_ROLES} below — the only built-in table
+ *   4. `preset`     the active named preset ({@link MODEL_ROLE_PRESETS}),
+ *                   chosen by `modelRolePreset` in the daemon config or a
+ *                   per-run `preset` — a one-key switch between model sets
+ *   5. `default`    {@link DEFAULT_MODEL_ROLES} below — the only built-in table
  *
  * Every resolution reports which layer won (`source`). A layer value that is
  * empty or not a string / `{ model }` object is skipped, never fatal.
@@ -40,7 +43,7 @@ export type ModelRoleValue = string | ModelRoleEntry
 /** ROLE → value, the shape of the `models` block in every layer. */
 export type ModelRolesConfig = Record<string, ModelRoleValue>
 
-export type ModelRoleSource = "input" | "workspace" | "daemon" | "default"
+export type ModelRoleSource = "input" | "workspace" | "daemon" | "preset" | "default"
 
 /** The built-in defaults — the ONLY hard-coded model ids for these jobs. */
 export const DEFAULT_MODEL_ROLES: Readonly<Record<string, string>> = {
@@ -54,6 +57,58 @@ export const DEFAULT_MODEL_ROLES: Readonly<Record<string, string>> = {
   "judge.session": "claude-sonnet-5-5",
 }
 
+/** One named model set for the review roles — switch them all with one key. */
+export interface ModelRolePreset {
+  description: string
+  roles: Readonly<Record<string, string>>
+}
+
+/**
+ * Named presets, selected by `modelRolePreset` (daemon config) or a per-run
+ * `preset`. A preset fills only the roles it names; an explicit value in any
+ * higher layer still wins. `opus` is the built-in default spelled out, so
+ * switching back is one key too.
+ */
+export const MODEL_ROLE_PRESETS: Readonly<Record<string, ModelRolePreset>> = {
+  opus: {
+    description: "Sonnet for small residuals, Opus for large ones and retries (the built-in default).",
+    roles: { "review.small": "claude-sonnet-5-5", "review.large": "claude-opus-5-5" },
+  },
+  sonnet: {
+    description: "Sonnet for every review.",
+    roles: { "review.small": "claude-sonnet-5-5", "review.large": "claude-sonnet-5-5" },
+  },
+  haiku: {
+    description: "Haiku for every review: cheapest Claude option.",
+    roles: { "review.small": "claude-haiku-5-5", "review.large": "claude-haiku-5-5" },
+  },
+  "go-free": {
+    description: "OpenCode Go free model (longcat) for every review: zero cost, spawned on the opencode adapter.",
+    roles: {
+      "review.small": "opencode-go/longcat-2.5-preview-free",
+      "review.large": "opencode-go/longcat-2.5-preview-free",
+    },
+  },
+  "free-sonnet": {
+    description: "OpenCode Go free model for small residuals, Sonnet for large ones and retries.",
+    roles: { "review.small": "opencode-go/longcat-2.5-preview-free", "review.large": "claude-sonnet-5-5" },
+  },
+}
+
+/** The preset names, for schemas and help text. */
+export const MODEL_ROLE_PRESET_NAMES = Object.keys(MODEL_ROLE_PRESETS) as [string, ...string[]]
+
+/**
+ * The adapter a role's model has to run on, when the model id says so:
+ * `opencode/…` and `opencode-go/…` ids only exist on the opencode adapter (an
+ * `opencode-go/claude-*` id included), a bare `claude-*` id on claude-code.
+ * Undefined leaves the consumer's own default (e.g. the agent manifest's).
+ */
+export function adapterForModelId(model: string): string | undefined {
+  if (model.startsWith("opencode/") || model.startsWith("opencode-go/")) return "opencode"
+  return model.startsWith("claude-") ? "claude-code" : undefined
+}
+
 /** Prefix an agent manifest's `model:` uses to reference a role. */
 export const MODEL_ROLE_REF_PREFIX = "role:"
 
@@ -64,6 +119,8 @@ export interface ModelRoleContext {
   workspace?: Record<string, unknown> | undefined
   /** The daemon config `models` block (layer 3). */
   daemon?: Record<string, unknown> | undefined
+  /** Active preset name (layer 4); an unknown name is ignored. */
+  preset?: string | undefined
 }
 
 export interface ResolvedModelRole {
@@ -71,6 +128,8 @@ export interface ResolvedModelRole {
   model: string
   route?: string
   profile?: string
+  /** Adapter the model id requires ({@link adapterForModelId}), when it requires one. */
+  adapter?: string
   source: ModelRoleSource
 }
 
@@ -99,6 +158,10 @@ export function parseModelRoleRef(ref: string): string | undefined {
   return role || undefined
 }
 
+function presetRoles(name: string | undefined): Readonly<Record<string, string>> | undefined {
+  return name !== undefined && Object.hasOwn(MODEL_ROLE_PRESETS, name) ? MODEL_ROLE_PRESETS[name]!.roles : undefined
+}
+
 /**
  * Resolve ONE role through the precedence chain. `undefined` only when no
  * layer — including the built-in table — knows the role.
@@ -108,11 +171,15 @@ export function resolveModelRole(role: string, ctx: ModelRoleContext = {}): Reso
     ["input", ctx.input?.[role]],
     ["workspace", ctx.workspace?.[role]],
     ["daemon", ctx.daemon?.[role]],
+    ["preset", presetRoles(ctx.preset)?.[role]],
     ["default", DEFAULT_MODEL_ROLES[role]],
   ]
   for (const [source, raw] of layers) {
     const entry = normalizeModelRoleValue(raw)
-    if (entry) return { role, ...entry, source }
+    if (entry) {
+      const adapter = adapterForModelId(entry.model)
+      return { role, ...entry, ...(adapter !== undefined ? { adapter } : {}), source }
+    }
   }
   return undefined
 }
@@ -128,6 +195,7 @@ export function listModelRoles(ctx: ModelRoleContext = {}, roles?: readonly stri
     [
       ...new Set([
         ...Object.keys(DEFAULT_MODEL_ROLES),
+        ...Object.keys(presetRoles(ctx.preset) ?? {}),
         ...Object.keys(ctx.daemon ?? {}),
         ...Object.keys(ctx.workspace ?? {}),
         ...Object.keys(ctx.input ?? {}),

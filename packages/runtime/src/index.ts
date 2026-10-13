@@ -52,12 +52,16 @@ import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
 import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 export {
   DEFAULT_MODEL_ROLES,
+  MODEL_ROLE_PRESETS,
+  MODEL_ROLE_PRESET_NAMES,
   MODEL_ROLE_REF_PREFIX,
+  adapterForModelId,
   listModelRoles,
   parseModelRoleRef,
   resolveModelRole,
   type ModelRoleContext,
   type ModelRoleEntry,
+  type ModelRolePreset,
   type ModelRoleSource,
   type ModelRoleValue,
   type ModelRolesConfig,
