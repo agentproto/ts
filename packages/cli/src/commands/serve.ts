@@ -475,7 +475,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -505,6 +505,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
             ...(configDir ? { configDir } : {}),
             ...(Object.keys(config).length > 0 ? { config } : {}),
             ...(mcpServers ? { mcpServers } : {}),
+            // Imported skills to deliver into the session's isolated config
+            // dir (skill imports) — forwarded to the driver's
+            // `start({ sessionSkills })`. Without this the resolver silently
+            // dropped the runtime's per-session skill delivery.
+            ...(sessionSkills?.length ? { sessionSkills } : {}),
             ...(onActivity ? { onActivity } : {}),
             ...(permissionHold ? { permissionHold: true } : {}),
             ...(auth ? { auth } : {}),
@@ -525,6 +530,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // process) wraps its spawn through the OS sandbox, where zones apply.
         supportsFsZones: adapter.handle.protocol !== "proprietary",
         supportsHostContextIsolation: agentCliSupportsHostContextIsolation(slug),
+        // Only adapters whose manifest declares `metadata.sessionSkills`
+        // (a delivery dir the driver writes the imported skills into) take
+        // part in per-session skill delivery. Gating on this keeps hermes'
+        // opaque comma-joined `skills` option free of "unknown skill id"
+        // warnings.
+        deliversSessionSkills: adapter.handle.metadata?.sessionSkills !== undefined,
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),

@@ -350,6 +350,15 @@ export const opencode: AgentCliHandle = defineAgentCli({
     // project-local `.opencode/skills/`, `.claude/skills/`, `.agents/skills/`
     // — same flat-dir, one-subdir-per-skill shape as hermes.
     skills: { format: "flat-dir", dir: "~/.config/opencode/skills" },
+    // Per-session delivery (skill imports): the daemon copies each resolved
+    // imported skill to `<session configDir>/skills/<alias>/` and points
+    // OPENCODE_CONFIG_DIR at that dir. This is the ONLY route that survives
+    // `lean` mode — OPENCODE_DISABLE_EXTERNAL_SKILLS=1 gates opencode's
+    // auto-discovery of ~/.claude/skills, ~/.agents/skills and project-ancestor
+    // `.claude`/`.agents` dirs, but opencode's own config-dir scan (every dir
+    // in ConfigPaths.directories(), including $OPENCODE_CONFIG_DIR) runs
+    // unconditionally. So `lean` sessions still load the imported set.
+    sessionSkills: { dir: "skills", env: { OPENCODE_CONFIG_DIR: "<abs dir>" } },
   },
 })
 

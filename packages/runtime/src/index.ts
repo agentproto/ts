@@ -2302,6 +2302,10 @@ export async function createGateway(
                 // (orchestrator WP1) — closes the gap where re-spawn
                 // dropped mcpServers.
                 ...(mcpServers ? { mcpServers } : {}),
+                // Re-deliver the persisted imported-skill folders on resume
+                // (skill imports) — the same set the original spawn delivered,
+                // so a revived session keeps its skills.
+                ...(descriptor.sessionSkills ? { sessionSkills: descriptor.sessionSkills } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
                 ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
                   ? { options: { base_url: resolvedBaseUrl } }

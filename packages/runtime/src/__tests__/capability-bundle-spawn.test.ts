@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi } from "vitest"
 import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
 import type { AddressInfo } from "node:net"
@@ -28,6 +28,7 @@ import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 import { cdContractLine } from "../agents-md.js"
 import type { BundlesFile } from "../bundles.js"
 import type { ImportedMcpsConfig } from "../mcp-imports.js"
+import type { ImportedSkillsConfig } from "../skill-imports.js"
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -55,12 +56,24 @@ function fakeAgentSession(): AgentSessionLike {
 interface Captured {
   mcpServers?: AcpMcpServer[]
   options?: Record<string, unknown>
+  sessionSkills?: Array<{ alias: string; path: string }>
 }
 
-function makeResolver(captured: Captured[]): AgentAdapterResolver {
+function makeResolver(
+  captured: Captured[],
+  opts: { deliversSessionSkills?: boolean } = {},
+): AgentAdapterResolver {
   return async () => ({
-    startSession: (async (opts: { mcpServers?: AcpMcpServer[]; options?: Record<string, unknown> }) => {
-      captured.push({ mcpServers: opts.mcpServers, options: opts.options })
+    startSession: (async (opts: {
+      mcpServers?: AcpMcpServer[]
+      options?: Record<string, unknown>
+      sessionSkills?: Array<{ alias: string; path: string }>
+    }) => {
+      captured.push({
+        mcpServers: opts.mcpServers,
+        options: opts.options,
+        sessionSkills: opts.sessionSkills,
+      })
       return fakeAgentSession()
     }) as any,
     commandPreview: "mock-adapter",
@@ -69,6 +82,9 @@ function makeResolver(captured: Captured[]): AgentAdapterResolver {
     // bundle-skills-union tests observe it the same way the real hermes/
     // opencode adapters do.
     declaredOptions: [{ id: "skills", type: "string" }],
+    // Most adapters participate in imported-skill delivery; hermes-like
+    // adapters pass `deliversSessionSkills: false` to opt out.
+    deliversSessionSkills: opts.deliversSessionSkills ?? true,
   })
 }
 
@@ -247,6 +263,85 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
     const result = await spawnAgentSession(deps, { adapter: "opencode", cwd: "/tmp", bundles: ["nope"] })
     expect(result.ok).toBe(true)
     expect(result.ok && result.warnings?.some(w => w.includes('"nope" not found'))).toBe(true)
+  })
+
+  it("resolves imported skills into sessionSkills and warns on an unknown id, leaving the adapter-facing skills list unchanged", async () => {
+    const importedSkills: ImportedSkillsConfig = {
+      version: 1,
+      imports: [
+        {
+          id: "dataviz",
+          alias: "dataviz",
+          sourcePath: "/somewhere/dataviz",
+          sha: "0".repeat(64),
+          addedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const { deps, captured } = baseDeps({
+      loadBundlesConfig: async () =>
+        bundlesFile([
+          { id: "research", label: "Research", mcpImports: [], skills: ["dataviz", "ghost-skill"] },
+        ]),
+      loadImportedMcpsConfig: async () => ({ version: 1, imports: [] }),
+      loadImportedSkillsConfig: async () => importedSkills,
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      bundles: ["research"],
+    })
+    expect(result.ok).toBe(true)
+    // Only the imported id is delivered; its `path` is the durable copy under
+    // the registry root, never the entry's `sourcePath`.
+    expect(captured[0]?.sessionSkills).toEqual([
+      { alias: "dataviz", path: join(homedir(), ".agentproto", "skills", "dataviz") },
+    ])
+    // ...and recorded on the descriptor so restart/lazy-resume re-deliver it.
+    expect(result.ok && result.descriptor.sessionSkills).toEqual([
+      { alias: "dataviz", path: join(homedir(), ".agentproto", "skills", "dataviz") },
+    ])
+    expect(result.ok && result.warnings?.some(w => w.includes("ghost-skill"))).toBe(true)
+    // `normalizeSkillsOption` is untouched: BOTH ids still reach the
+    // adapter-facing option, imported or not.
+    expect(captured[0]?.options?.skills).toBe("dataviz,ghost-skill")
+  })
+
+  it("an adapter that does not deliver session skills keeps its ids and warns nothing", async () => {
+    const importedSkills: ImportedSkillsConfig = {
+      version: 1,
+      imports: [
+        {
+          id: "dataviz",
+          alias: "dataviz",
+          sourcePath: "/somewhere/dataviz",
+          sha: "0".repeat(64),
+          addedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const captured: Captured[] = []
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(captured, { deliversSessionSkills: false }),
+      loadBundlesConfig: async () =>
+        bundlesFile([
+          { id: "research", label: "Research", mcpImports: [], skills: ["dataviz", "ghost-skill"] },
+        ]),
+      loadImportedMcpsConfig: async () => ({ version: 1, imports: [] }),
+      loadImportedSkillsConfig: async () => importedSkills,
+    })
+
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp", bundles: ["research"] })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("spawn failed")
+    // No delivery, no descriptor skills, and crucially no "unknown skill id"
+    // warning for the id only the delivery path would have flagged.
+    expect(captured[0]?.sessionSkills).toBeUndefined()
+    expect(result.descriptor.sessionSkills).toBeUndefined()
+    expect(result.warnings?.some(w => w.includes("ghost-skill")) ?? false).toBe(false)
+    // The adapter-facing option still carries both ids verbatim.
+    expect(captured[0]?.options?.skills).toBe("dataviz,ghost-skill")
   })
 
   it("an explicit caller mcpServers entry wins a name collision with a bundle's import — warning, not a crash", async () => {
