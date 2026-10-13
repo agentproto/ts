@@ -26,6 +26,22 @@ import { dirname, isAbsolute, resolve } from "node:path"
 
 export const WORKSPACES_CONFIG_VERSION = 1 as const
 
+/** Where a workspace's code lives off this machine. Lets a sandbox spawn
+ *  (`agent_start({ sandbox, workspaceSlug })`) clone the repo into the box
+ *  instead of needing the host path. Holds no secret: `credentialRef` only
+ *  names the keychain slot of the PAT used to clone and push. */
+export interface WorkspaceRemote {
+  /** `https://` clone URL, never carrying userinfo (no `user:token@`). */
+  url: string
+  /** Branch new work branches from when no explicit base is given
+   *  (the box uses `origin/<defaultBranch>`). Absent ⇒ `main`. */
+  defaultBranch?: string
+  /** Keychain slot (`StoreRef.path`) holding the git PAT. */
+  credentialRef?: string
+}
+
+export const DEFAULT_REMOTE_BRANCH = "main"
+
 export interface WorkspaceEntry {
   /** Stable handle — what tools accept as `workspace`. Lowercase
    *  ASCII, hyphen-only. The CLI sanitises arbitrary names down to
@@ -43,6 +59,8 @@ export interface WorkspaceEntry {
   /** Free-text label the user can attach so workspaces with similar
    *  slugs stay distinguishable in `agentproto workspace list`. */
   label?: string
+  /** Optional off-machine clone source — see {@link WorkspaceRemote}. */
+  remote?: WorkspaceRemote
 }
 
 export interface WorkspacesConfig {
@@ -190,6 +208,122 @@ export function addWorkspace(
   return { ...config, workspaces, active }
 }
 
+/** Throws unless `raw` is a plain `https://` URL with a host and no
+ *  userinfo/query/fragment; returns it trimmed. A token embedded in a URL
+ *  would land in git config, process args and logs — the credential belongs
+ *  in `credentialRef`. */
+export function validateRemoteUrl(raw: string): string {
+  const trimmed = raw.trim()
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    throw new Error(`remote url "${trimmed}" is not a valid URL.`)
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(
+      `remote url must use https:// (got "${parsed.protocol}//") — ssh/git/http remotes are not supported.`
+    )
+  }
+  if (!parsed.hostname) {
+    throw new Error(`remote url "${trimmed}" has no host.`)
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(
+      "remote url must not embed credentials; store the token with " +
+        "`agentproto workspace remote set <slug> --url … --token-stdin` instead."
+    )
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("remote url must not carry a query string or fragment.")
+  }
+  return trimmed
+}
+
+/** Throws unless `raw` is a conservative git branch name; returns it trimmed.
+ *  It is interpolated into shell commands inside the box, so the charset is
+ *  deliberately narrow. */
+export function validateRemoteBranch(raw: string): string {
+  const trimmed = raw.trim()
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(trimmed) ||
+    trimmed.includes("..") ||
+    trimmed.endsWith("/") ||
+    trimmed.endsWith(".lock")
+  ) {
+    throw new Error(`remote default branch "${trimmed}" is not a valid branch name.`)
+  }
+  return trimmed
+}
+
+/** Throws unless `raw` is a non-empty single-token keychain slot; returns it trimmed. */
+export function validateCredentialRef(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed || /\s/.test(trimmed)) {
+    throw new Error("remote credentialRef must be a non-empty keychain slot name with no whitespace.")
+  }
+  return trimmed
+}
+
+/** Validate a candidate remote, returning a canonical copy. Throws on the
+ *  first problem. */
+export function validateWorkspaceRemote(input: WorkspaceRemote): WorkspaceRemote {
+  return {
+    url: validateRemoteUrl(input.url),
+    ...(input.defaultBranch !== undefined
+      ? { defaultBranch: validateRemoteBranch(input.defaultBranch) }
+      : {}),
+    ...(input.credentialRef !== undefined
+      ? { credentialRef: validateCredentialRef(input.credentialRef) }
+      : {}),
+  }
+}
+
+/** Attach (or replace) the remote on an existing workspace. Throws when the
+ *  slug is unknown or the remote is invalid. */
+export function setWorkspaceRemote(
+  config: WorkspacesConfig,
+  slug: string,
+  remote: WorkspaceRemote
+): WorkspacesConfig {
+  const sanitised = sanitizeSlug(slug)
+  const validated = validateWorkspaceRemote(remote)
+  const idx = config.workspaces.findIndex(w => w.slug === sanitised)
+  if (idx < 0) {
+    throw new Error(
+      `setWorkspaceRemote: no workspace registered with slug "${sanitised}".`
+    )
+  }
+  const workspaces = [...config.workspaces]
+  workspaces[idx] = {
+    ...workspaces[idx]!,
+    remote: validated,
+    updatedAt: new Date().toISOString(),
+  }
+  return { ...config, workspaces }
+}
+
+/** Drop the remote from a workspace. Throws when the slug is unknown; a
+ *  workspace that had no remote is returned unchanged. */
+export function unsetWorkspaceRemote(
+  config: WorkspacesConfig,
+  slug: string
+): WorkspacesConfig {
+  const sanitised = sanitizeSlug(slug)
+  const idx = config.workspaces.findIndex(w => w.slug === sanitised)
+  if (idx < 0) {
+    throw new Error(
+      `unsetWorkspaceRemote: no workspace registered with slug "${sanitised}".`
+    )
+  }
+  const current = config.workspaces[idx]!
+  if (current.remote === undefined) return config
+  const { remote: _dropped, ...rest } = current
+  const workspaces = [...config.workspaces]
+  workspaces[idx] = { ...rest, updatedAt: new Date().toISOString() }
+  return { ...config, workspaces }
+}
+
 export function removeWorkspace(
   config: WorkspacesConfig,
   slug: string
@@ -269,6 +403,24 @@ export function getActiveWorkspace(
   return findWorkspace(config, config.active) ?? config.workspaces[0]
 }
 
+/** Lenient read of a hand-editable `remote` block: an invalid one (non-https
+ *  URL, URL with userinfo, bad branch) is dropped rather than failing the
+ *  whole file, mirroring how malformed workspace entries are skipped. */
+function parseStoredRemote(raw: unknown): WorkspaceRemote | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const r = raw as Record<string, unknown>
+  if (typeof r.url !== "string") return undefined
+  try {
+    return validateWorkspaceRemote({
+      url: r.url,
+      ...(typeof r.defaultBranch === "string" ? { defaultBranch: r.defaultBranch } : {}),
+      ...(typeof r.credentialRef === "string" ? { credentialRef: r.credentialRef } : {}),
+    })
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Coerce arbitrary parsed JSON into a valid config. Skips entries
  * with missing required fields rather than throwing — partial recovery
@@ -296,6 +448,8 @@ function normalizeConfig(parsed: unknown): WorkspacesConfig {
       if (typeof e.label === "string" && e.label.trim()) {
         we.label = e.label.trim()
       }
+      const remote = parseStoredRemote(e.remote)
+      if (remote) we.remote = remote
       workspaces.push(we)
     }
   }
