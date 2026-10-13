@@ -9,7 +9,7 @@ agentproto browser list    [--alive]               [--json]
 agentproto browser status  <session-id>            [--json]
 ```
 
-Manage browser service sessions (Camofox, Bureau, Chromium) registered on
+Manage browser service sessions (Camofox, Bureau, Chromium, chrome-live) registered on
 the local daemon. The daemon hosts the MCP tools (`start_browser`,
 `stop_browser`, …); the CLI is an HTTP wrapper over the same routes for
 shell scripting and inspection.
@@ -24,6 +24,14 @@ Requires a running daemon ([`serve.md`](./serve.md) or
 | `camofox` | Stealth Firefox headless                 | 9377        |
 | `bureau`  | Camofox + MCP capability server          | 8830        |
 | `chromium`| Chromium browser service                 | 3200        |
+| `chrome-live` | Your own running Chrome, attached through `chrome://inspect/#remote-debugging` | 9222 |
+
+`chrome-live` launches nothing: turn on Chrome's remote debugging toggle
+first, then click **Allow** in the dialog Chrome shows when the session
+starts. The agent works in its own window and only touches tabs it opened;
+`stop` closes those tabs and its own connection, never your Chrome. Cookies
+are read-only. See the
+[adapter README](../../../adapters/browser-chrome/README.md#chrome-live-your-running-chrome).
 
 ## Subverbs
 
