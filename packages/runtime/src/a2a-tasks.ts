@@ -196,6 +196,16 @@ export interface A2aSessionDescriptor {
   awaitingInput?: boolean
   turnsCompleted?: number
   outcome?: { summary?: string }
+  /** Set when the last turn errored, cleared when a later turn completes
+   *  cleanly (mirrors `SessionDescriptor.lastTurnErroredAt`). */
+  lastTurnErroredAt?: string
+  /** Captured error text for `lastTurnErroredAt`. */
+  lastTurnErrorMessage?: string
+  /** The last completed turn's end reason (`"completed"`, `"error"`,
+   *  `"aborted"`, …). */
+  lastTurnReason?: string
+  /** ISO timestamp of the session's most recent activity. */
+  lastActivityAt?: string
 }
 
 /** One entry of `app_status`'s `sessions` array. */
@@ -218,6 +228,18 @@ export function sessionTurnDone(desc: A2aSessionDescriptor): boolean {
   )
 }
 
+/**
+ * True when this session's last turn ended in error: `lastTurnErroredAt` is a
+ * non-empty string, or the turn ended with reason `"error"`. `"aborted"` (and
+ * any other reason) is not a failure.
+ */
+export function sessionTurnFailed(desc: A2aSessionDescriptor): boolean {
+  return (
+    (typeof desc.lastTurnErroredAt === "string" && desc.lastTurnErroredAt !== "") ||
+    desc.lastTurnReason === "error"
+  )
+}
+
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v)
 
@@ -225,9 +247,11 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
  *  still `running` with no session yet is submitted; once a session exists it
  *  is working — unless every session carries a descriptor whose turn is done
  *  (see `sessionTurnDone`), in which case the run is completed even though the
- *  run status itself has not reconciled yet. A session with no descriptor
- *  (a slim `app_status` reply) keeps the submitted/working behaviour. An
- *  unrecognised status is treated as failed (1.0 has no `unknown` state). */
+ *  run status itself has not reconciled yet — unless any of those turns ended
+ *  in error (see `sessionTurnFailed`), which makes the task failed. A session
+ *  with no descriptor (a slim `app_status` reply) keeps the
+ *  submitted/working behaviour. An unrecognised status is treated as failed
+ *  (1.0 has no `unknown` state). */
 export function mapRunState(run: { status?: string; sessions?: readonly unknown[] }): A2aTaskState {
   switch (run.status) {
     case "succeeded":
@@ -239,11 +263,14 @@ export function mapRunState(run: { status?: string; sessions?: readonly unknown[
     case "running": {
       const sessions = run.sessions ?? []
       if (sessions.length === 0) return "TASK_STATE_SUBMITTED"
+      let failed = false
       for (const s of sessions) {
         if (!isPlainObject(s) || !isPlainObject(s.descriptor)) return "TASK_STATE_WORKING"
-        if (!sessionTurnDone(s.descriptor as A2aSessionDescriptor)) return "TASK_STATE_WORKING"
+        const desc = s.descriptor as A2aSessionDescriptor
+        if (!sessionTurnDone(desc)) return "TASK_STATE_WORKING"
+        if (sessionTurnFailed(desc)) failed = true
       }
-      return "TASK_STATE_COMPLETED"
+      return failed ? "TASK_STATE_FAILED" : "TASK_STATE_COMPLETED"
     }
     default:
       return "TASK_STATE_FAILED"
@@ -306,31 +333,28 @@ export function buildTask(input: {
   const { entry, run } = input
   const state = mapRunState(run)
   const outputs = state === "TASK_STATE_COMPLETED" ? (input.agentOutputs ?? []) : []
+  // The turn-done rule (run still `running`, every session's turn finished) —
+  // the only place a FAILED task can carry a per-session turn error.
+  const turnEnded =
+    run.status === "running" && (state === "TASK_STATE_COMPLETED" || state === "TASK_STATE_FAILED")
+  const agentMessage = (text: string): A2aMessage => ({
+    messageId: input.newId(),
+    role: "ROLE_AGENT" as const,
+    parts: [{ text }],
+    taskId: entry.taskId,
+    contextId: entry.contextId,
+  })
+  const turnErrorText = turnEnded && state === "TASK_STATE_FAILED" ? failedTurnText(run) : undefined
   const message =
     state === "TASK_STATE_FAILED" && run.error
-      ? {
-          messageId: input.newId(),
-          role: "ROLE_AGENT" as const,
-          parts: [{ text: run.error }],
-          taskId: entry.taskId,
-          contextId: entry.contextId,
-        }
-      : state === "TASK_STATE_COMPLETED" && outputs.length > 0
-        ? {
-            messageId: input.newId(),
-            role: "ROLE_AGENT" as const,
-            parts: [
-              {
-                text:
-                  outputs.length === 1
-                    ? outputs[0]!.text
-                    : outputs.map(o => `[${o.agentId}]\n${o.text}`).join("\n\n"),
-              },
-            ],
-            taskId: entry.taskId,
-            contextId: entry.contextId,
-          }
-        : undefined
+      ? agentMessage(run.error)
+      : turnErrorText !== undefined
+        ? agentMessage(turnErrorText)
+        : state === "TASK_STATE_COMPLETED" && outputs.length > 0
+          ? agentMessage(
+              outputs.length === 1 ? outputs[0]!.text : outputs.map(o => `[${o.agentId}]\n${o.text}`).join("\n\n"),
+            )
+          : undefined
   const artifacts = [
     ...outputs.map(o => ({
       artifactId: `agent-output-${o.agentId}`,
@@ -339,12 +363,13 @@ export function buildTask(input: {
     })),
     ...(input.artifacts ?? []),
   ]
+  const activityIso = turnEnded ? latestActivityIso(run.sessions) : undefined
   const task: A2aTask = {
     id: entry.taskId,
     contextId: entry.contextId,
     status: {
       state,
-      timestamp: run.endedAt ?? entry.createdAt,
+      timestamp: activityIso ?? run.endedAt ?? entry.createdAt,
       ...(message ? { message } : {}),
     },
     metadata: { appId: entry.appId, skill: entry.skill },
@@ -353,6 +378,38 @@ export function buildTask(input: {
     task.artifacts = artifacts
   }
   return task
+}
+
+/** Text for a FAILED task whose sessions' turns ended in error: the
+ *  `lastTurnErrorMessage` values (joined `[agentId] <msg>` when several
+ *  sessions carry one); `"agent turn failed"` when none is present. */
+function failedTurnText(run: A2aRunView): string | undefined {
+  const errored = (run.sessions ?? []).filter(s => s.descriptor && sessionTurnFailed(s.descriptor))
+  if (errored.length === 0) return undefined
+  const texts = errored.flatMap(s => {
+    const msg = s.descriptor?.lastTurnErrorMessage
+    return typeof msg === "string" && msg !== "" ? [{ agentId: s.agentId, msg }] : []
+  })
+  if (texts.length === 0) return "agent turn failed"
+  if (texts.length === 1) return texts[0]!.msg
+  return texts.map(t => `[${t.agentId ?? "?"}] ${t.msg}`).join("\n")
+}
+
+/** Latest valid-ISO `descriptor.lastActivityAt` across the sessions, if any. */
+function latestActivityIso(sessions: readonly A2aRunSession[] | undefined): string | undefined {
+  let latest: string | undefined
+  let latestMs = -Infinity
+  for (const s of sessions ?? []) {
+    const ts = s.descriptor?.lastActivityAt
+    if (typeof ts !== "string" || ts === "") continue
+    const ms = Date.parse(ts)
+    if (!Number.isFinite(ms)) continue
+    if (ms > latestMs) {
+      latestMs = ms
+      latest = ts
+    }
+  }
+  return latest
 }
 
 /** Map an `app_artifact_get` reply (the app's HTML dashboard artifact) to
