@@ -54,7 +54,7 @@ import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
-import { spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
@@ -93,7 +93,6 @@ import {
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
-  eligibleProfiles,
   KeychainStore,
   type AuthMethod,
   type AdapterAuthManifest,
@@ -528,7 +527,7 @@ function resolveProfileAwareRoute(
       (candidate): candidate is { manifest: AdapterAuthManifest; routeId: string; direct: boolean } =>
         candidate !== undefined,
     )
-    .filter(candidate => eligibleProfiles([profile], candidate.manifest, candidate.routeId).length > 0)
+    .filter(candidate => eligibleProfilesForRoute([profile], candidate.manifest, candidate.routeId, model).length > 0)
   return eligibleCandidates.length === 1 ? eligibleCandidates[0] : undefined
 }
 
@@ -623,7 +622,7 @@ export async function resolveAccessProfileAuth(input: {
   let resolvedRouteGateway: string | undefined
   if (
     route?.gateway === undefined &&
-    (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0)
+    (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0)
   ) {
     const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
     if (resolved) {
@@ -644,7 +643,7 @@ export async function resolveAccessProfileAuth(input: {
       }
     }
   }
-  if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
+  if (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0) {
     const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
     return {
       ok: false,
@@ -768,7 +767,9 @@ export async function resolveAccessProfileAuth(input: {
       descriptor: authDescriptor,
       ...(model ? { model } : {}),
       ...(effectiveRouteGateway ? { routeGateway: effectiveRouteGateway } : {}),
-      ...(!route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+      ...(!route?.gateway
+        ? { requestedProvider: (projected.manifest.endpointByRoute[projected.routeId] ?? profile.endpoint) as CatalogProvider }
+        : {}),
       requestedMode: authMode,
       // A profile reference is an explicit billing choice. Never consult the
       // ambient environment or a different provider-store key as fallback.

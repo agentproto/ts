@@ -86,7 +86,7 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
-import { spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
@@ -103,7 +103,6 @@ import type { SessionConfig, RouteSpec } from "./session-config.js"
 import type { SessionConfigChangedEvent, SessionConfigAxis } from "./session-event-bus.js"
 import {
   getAuthProfile,
-  eligibleProfiles,
   KeychainStore,
   type AuthProfile,
   type AuthMethod,
@@ -336,7 +335,7 @@ export async function resolveResumeAuth(
         )
       }
       const { manifest, routeId } = projected
-      if (eligibleProfiles([profile], manifest, routeId).length === 0) {
+      if (eligibleProfilesForRoute([profile], manifest, routeId, effModel ?? resolved.defaultModel).length === 0) {
         const billed = manifest.endpointByRoute[routeId]
         const methods = manifest.methodsByRoute[routeId] ?? []
         throw new RestartOverrideError(
@@ -350,7 +349,9 @@ export async function resolveResumeAuth(
         descriptor: resolved.authDescriptor,
         ...(effModel ? { model: effModel } : {}),
         ...(effRoute?.gateway ? { routeGateway: effRoute.gateway } : {}),
-        ...(!effRoute?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+        ...(!effRoute?.gateway
+          ? { requestedProvider: (manifest.endpointByRoute[routeId] ?? profile.endpoint) as CatalogProvider }
+          : {}),
         requestedMode: mode,
         // A named profile is an EXPLICIT billing choice — a missing credential
         // fails loud (driver `missing_auth_credential`), never ambient.
@@ -860,7 +861,7 @@ export async function restartAgentSession(
     // match the route's billed endpoint, or whose method the adapter can't
     // present on that route, is REJECTED (400) — never silently swapped for a
     // wallet that happens to fit.
-    if (eligibleProfiles([profile], manifest, routeId).length === 0) {
+    if (eligibleProfilesForRoute([profile], manifest, routeId, effModel ?? resolved.defaultModel).length === 0) {
       const billed = manifest.endpointByRoute[routeId]
       const methods = manifest.methodsByRoute[routeId] ?? []
       throw new RestartOverrideError(
@@ -875,7 +876,9 @@ export async function restartAgentSession(
       descriptor: resolved.authDescriptor,
       ...(effModel ? { model: effModel } : {}),
       ...(effRoute?.gateway ? { routeGateway: effRoute.gateway } : {}),
-      ...(!effRoute?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+      ...(!effRoute?.gateway
+          ? { requestedProvider: (manifest.endpointByRoute[routeId] ?? profile.endpoint) as CatalogProvider }
+          : {}),
       requestedMode: mode,
       // Attaching a named profile is always an EXPLICIT billing choice — so a
       // missing credential fails loud (driver `missing_auth_credential`) rather
