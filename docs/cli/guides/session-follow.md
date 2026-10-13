@@ -46,9 +46,13 @@ and `cwdPrefix`, like explicit `sessionIds`.
 ## Delivery
 
 Events for one follower are coalesced for `batchMs` (default 15000, `0` = next
-tick) into ONE `system` / `notice` / `next-turn` message. It never interrupts:
-an idle follower runs it as a turn, a busy one queues it behind the current
-turn. Same-session duplicates in a batch collapse (the latest wins). Format:
+tick) into ONE `system` / `notice` message. It never interrupts. With the
+default `urgency: "next-turn"`, an idle follower runs it as a turn and a busy one
+queues it behind the current turn. With `urgency: "fyi"` the digest is parked in
+the follower's inbox and never starts a turn, so a supervisor following many
+sessions is not woken for every digest. If a batch is fed by both an `fyi` and a
+`next-turn` follow, it is delivered as `next-turn`. Same-session duplicates in a
+batch collapse (the latest wins). Format:
 
 ```text
 [session-follow] automatic digest — 2 events from sessions you follow. Decide whether anything needs the human's attention; if not, no reply is needed.
@@ -67,8 +71,9 @@ Follows persist in `~/.agentproto/follows.json` (next to `sentinels.json`).
 
 ## MCP tools
 
-- `session_follow { follower?, key?, selector, exclude?, events?, batchMs?, skipEmptyTurns?, excludeFollowerChildren? }`
+- `session_follow { follower?, key?, selector, exclude?, events?, batchMs?, skipEmptyTurns?, urgency?, excludeFollowerChildren? }`
   - `follower` defaults to the calling session; re-using a `key` updates in place.
+  - `urgency` is `"next-turn"` (default) or `"fyi"`; existing follows keep `next-turn`.
 - `session_unfollow { id }` - follow id (`fol_...`) or key.
 - `session_follows { follower? }` - list.
 

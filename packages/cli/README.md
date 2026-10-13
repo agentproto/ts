@@ -24,7 +24,7 @@ agentproto chat-tui     <adapter> [--model <id>] [--cwd <dir>]      interactive 
 agentproto models       [adapter] [--json]                          runnable models + provider-key status
 agentproto run-swarm    --manifest <path> [--once] [--interval ...]  run a swarm manifest
 agentproto serve        [--port <n>] [--workspace <dir>] [--connect <wss>]  local daemon
-agentproto workspace    <add|list|remove|use>                       register spawn workspaces
+agentproto workspace    <add|list|remove|use|remote>                register spawn workspaces
 agentproto sessions     [start|terminal|mirror|prompt|stop|...]     browse / control live sessions
 agentproto browser      <install|start|list|stop|status>            manage browser sessions
 agentproto tunnel       <create|list|stop|revoke|status>                   public URL tunnels
@@ -206,6 +206,10 @@ agentproto workspace add ~/code/secret --slug secret --label "Skunkworks"
 agentproto workspace list
 agentproto workspace use my-project   # mark active
 agentproto workspace remove secret
+
+# Git clone source for sandbox spawns (token via stdin, stored in the OS keychain):
+echo "$GITHUB_PAT" | agentproto workspace remote set my-project \
+  --url https://github.com/acme/my-project.git --token-stdin
 ```
 
 The active workspace is what `serve` defaults to when launched with no `--workspace`, and what the daemon falls back to when an HTTP call omits both `cwd` and `workspaceSlug`.
@@ -419,6 +423,7 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 | `mcp_import` / `mcp_imported_remove` | Curate the set                                     |
 | `mcp_imported_status`         | Connection status of every imported MCP                   |
 | `mcp_imported_tool_list` / `mcp_imported_call` | Proxy the imported MCP's tools         |
+| `skill_import` / `skill_imported_list` / `skill_imported_remove` / `skill_resync` | Curate imported skills for per-session delivery |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app-kit` apps as live sessions |
 | `app_apply` / `app_unapply` / `app_list_applied` | Mount / unmount apps to scopes with dependency validation |
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (read/write/list + legacy migration), anchored at the app's `dataDir` (default `<dir>/data`) |

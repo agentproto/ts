@@ -83,7 +83,9 @@ agentproto app uninstall <appId>
 
 This removes the app from the daemon. Its data directory is kept, so a later
 reinstall picks up where it left off. Delete that directory yourself
-(`agentproto app list` shows it) if you want the data gone too.
+(`agentproto app list` shows it) if you want the data gone too. The app's own
+workspace (`app-<slug>` in `agentproto workspace list`) is unregistered on
+uninstall.
 
 ## Add other catalogs
 

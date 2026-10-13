@@ -10,6 +10,10 @@ agentproto workspace add <path> [--slug <slug>] [--label <text>]
 agentproto workspace list
 agentproto workspace use <slug>
 agentproto workspace remove <slug>
+agentproto workspace remote set <slug> --url <https-url> [--branch <branch>]
+                               [--credential-ref <ref> | --token-stdin]
+agentproto workspace remote show <slug> [--json]
+agentproto workspace remote unset <slug>
 ```
 
 Registry file: `~/.agentproto/workspaces.json` (mode 0600).
@@ -65,6 +69,41 @@ the registry entry is removed.
 ```bash
 agentproto workspace remove my-project
 ```
+
+### `remote set|show|unset <slug>`
+
+Attach an off-machine git clone source to a registered workspace. A
+sandbox spawn (`agent_start` with `workspaceSlug` + `sandbox`) clones this
+remote into the box, since the host path means nothing there.
+
+```bash
+echo "$GITHUB_PAT" | agentproto workspace remote set my-project \
+  --url https://github.com/acme/my-project.git --token-stdin
+agentproto workspace remote show my-project
+agentproto workspace remote unset my-project
+```
+
+- `set` requires `--url <https-url>` (https only) and an existing
+  workspace. `--branch <branch>` sets the default branch (default `main`).
+- The git token is never a flag. `--token-stdin` reads it from stdin and
+  stores it in the OS keychain as `agentproto.git.<slug>`;
+  `--credential-ref <ref>` names an existing keychain slot instead. The two
+  are mutually exclusive. With neither, an existing credential on the
+  workspace is kept.
+- `show` prints the remote (`--json` for machine-readable output); it exits
+  `1` when no remote is set.
+- `unset` drops the remote but leaves any keychain token in place.
+
+When a sandbox spawn also passes `worktree`, the daemon cuts `wt/<slug>`
+from `worktree.base` (default `origin/<branch>`) in the box and starts the
+session there. The token reaches the box only as the `AGENTPROTO_GIT_TOKEN`
+env var behind a git credential helper. Note that the agent running in the
+box can read that variable, so register a token scoped to the one repository
+and revoke it when the work is done; a box booted with a workspace's token
+can only be reused by that same workspace. At teardown the work branch is
+pushed to `origin` if it is ahead of its base, with a `git bundle` fallback
+saved to `~/.agentproto/sessions/<id>/delivery.bundle`; the outcome is
+recorded on the session descriptor as `sandboxDelivery`.
 
 ## Where workspaces are used
 
