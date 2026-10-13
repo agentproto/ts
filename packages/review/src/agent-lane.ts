@@ -119,9 +119,14 @@ export function buildAgentLanePrompt(input: AgentLanePromptInput): string {
     "- READ-ONLY: do not edit, commit, push, or switch branches. Your only permitted write is the verdict file below.",
     `- Time budget: about ${budgetMin} minute(s). Depth on the riskiest changes beats shallow coverage of all of them.`,
     "",
-    `When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON (no markdown fence):`,
-    `{ "decision": "approve" | "request_changes", "summary": "<one line>", "findings": [{ "severity": "high" | "medium" | "low", "title": "<one line>", "detail": "<why it matters>", "file": "<repo-relative path>", "line": <number> }] }`,
+    `When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY the verdict as raw JSON (no markdown fence, no text around it), shaped exactly like this example:`,
+    `{"decision":"request_changes","summary":"<one line>","findings":[{"severity":"high","title":"<one line>","detail":"<why it matters>","file":"<repo-relative path>","line":42}]}`,
+    `"severity" is "high", "medium" or "low"; "file" and "line" (a positive integer) are optional. Write the file as your LAST action. The file IS your verdict: a conclusion stated only in chat is not submitted and is lost.`,
     "",
-    `Severity semantics: this lane blocks on any "${check.blockOn}"-or-higher finding. Reserve "high" for real correctness or security regressions INTRODUCED by this range; pre-existing issues and nits are "medium"/"low". An empty "findings" array means you found nothing.`,
+    "One rule for the verdict:",
+    `- Only your "findings" decide the outcome: this lane blocks on any "${check.blockOn}"-or-higher finding. "decision" restates it — "request_changes" when you list at least one finding, "approve" only when you list no finding at or above "${check.blockOn}". Never "request_changes" with an empty "findings" array (nothing would block), and never "approve" next to a blocking finding.`,
+    `- Severity: reserve "high" for real correctness or security regressions INTRODUCED by this range; pre-existing issues and nits are "medium"/"low". A change the range makes ON PURPOSE (an intended API or behavior change its commit message, changelog or updated tests describe) is not a regression — flag it only if callers, tests or docs were left inconsistent with it.`,
+    `- An empty "findings" array with "approve" means you reviewed the whole range and found nothing.`,
+    `- Uncertainty is not approval. If you could not finish (out of budget, unreadable range, failing tools), do not write "approve": record what you verified as findings and say in "summary" what you could not cover — or, if you could not review at all, write no file and say why in chat (the lane is then reported incomplete, never passed).`,
   ].join("\n")
 }

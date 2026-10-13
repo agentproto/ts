@@ -57,4 +57,29 @@ describe("buildAgentLanePrompt", () => {
     expect(prompt).toContain('blocks on any "high"-or-higher finding')
     expect(prompt).toContain("about 12 minute(s)")
   })
+
+  it("states ONE consistent verdict rule with a schema-valid example", () => {
+    const check = parseReviewManifest(EXAMPLE).checks.find((c) => c.id === "correctness") as AgentCheck
+    const prompt = buildAgentLanePrompt({
+      reviewId: "r",
+      check,
+      target: { repoRemote: "r", baseSha: "aaa", headSha: "bbb" },
+      rubricPath: "/repo/rubrics/correctness.md",
+      verdictPath: "/state/v.json",
+    })
+    // The embedded example is valid JSON and passes the canonical parser.
+    const example = prompt.split("\n").find((l) => l.startsWith('{"decision"'))!
+    expect(parseAgentLaneReport(example)).toMatchObject({ decision: "request_changes", findings: [{ severity: "high", line: 42 }] })
+    // The file is the verdict; chat is not; uncertainty is never approval.
+    expect(prompt).toMatch(/file IS your verdict/)
+    expect(prompt).toMatch(/only in chat is not submitted/)
+    expect(prompt).toMatch(/Uncertainty is not approval/)
+    // decision/findings/blockOn can never contradict each other.
+    expect(prompt).toMatch(/Only your "findings" decide the outcome/)
+    expect(prompt).toMatch(/Never "request_changes" with an empty "findings"/)
+    expect(prompt).toMatch(/never "approve" next to a blocking finding/)
+    // Intentional API changes are not regressions.
+    expect(prompt).toMatch(/ON PURPOSE/)
+    expect(prompt).not.toMatch(/"approve" \| "request_changes"/)
+  })
 })
