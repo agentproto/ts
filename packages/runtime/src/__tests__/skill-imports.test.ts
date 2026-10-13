@@ -17,6 +17,7 @@ import {
   parseSkillFrontmatter,
   removeImportedSkill,
   resyncImportedSkill,
+  saveImportedSkills,
   skillImportDir,
   type SkillImportPaths,
 } from "../skill-imports.js"
@@ -138,6 +139,18 @@ describe("importSkill", () => {
     await expect(importSkill({ sourcePath: two, alias: "ap-one" }, paths)).rejects.toThrow(
       /already used/
     )
+  })
+
+  it("refuses a new id colliding with an existing alias (reverse direction)", async () => {
+    await importSkill({ sourcePath: await makeSkill("ap-foo"), alias: "taken" }, paths)
+    // The new skill's frontmatter name ("taken") now collides with ap-foo's
+    // ALIAS even though its own alias is fresh.
+    const src = await makeSkill("taken")
+    await expect(importSkill({ sourcePath: src, alias: "fresh" }, paths)).rejects.toThrow(
+      /already used/
+    )
+    const config = await loadImportedSkills(paths.registryPath)
+    expect(config.imports.map(e => e.id)).toEqual(["ap-foo"])
   })
 
   it("refuses a source inside the imports root (would delete itself)", async () => {
@@ -265,6 +278,29 @@ describe("resyncImportedSkill", () => {
     expect(r.changed).toBe(false)
     expect(r.warnings[0]).toMatch(/could not resync/)
     expect(r.config.imports.some(e => e.id === entry.id)).toBe(true)
+  })
+
+  it("refuses a symlinked sourcePath that resolves into the imports root", async () => {
+    await importSkill({ sourcePath: await makeSkill("ap-resync-foo") }, paths)
+    await importSkill({ sourcePath: await makeSkill("ap-resync-bar") }, paths)
+    // Hand-edit the registry so ap-foo's source is a symlink pointing INSIDE
+    // the root — only its realpath reveals the overlap.
+    const link = join(base, "sneaky-link")
+    await symlink(skillImportDir("ap-resync-bar", paths.root), link, "dir")
+    const config = await loadImportedSkills(paths.registryPath)
+    await saveImportedSkills(
+      {
+        ...config,
+        imports: config.imports.map(e =>
+          e.id === "ap-resync-foo" ? { ...e, sourcePath: link } : e
+        ),
+      },
+      paths.registryPath
+    )
+    const r = await resyncImportedSkill("ap-resync-foo", paths)
+    expect(r.changed).toBe(false)
+    expect(r.warnings.some(w => w.includes("overlaps"))).toBe(true)
+    expect(existsSync(join(skillImportDir("ap-resync-bar", paths.root), "SKILL.md"))).toBe(true)
   })
 })
 

@@ -495,15 +495,18 @@ export async function importSkill(
     assertValidAlias(alias)
 
     const config = await loadImportedSkills(registryPath)
-    // Resolution matches by id OR alias, so an alias that collides with a
-    // DIFFERENT entry's id or alias would make the resolution ambiguous (and
-    // two imports could target the same delivery dir). Refuse it up front.
+    // Resolution matches by id OR alias, so ANY collision — the new alias
+    // against an existing id OR alias, and the new id against an existing
+    // alias — would make resolution ambiguous (and two imports could target
+    // the same delivery dir). Check both directions. `e.id !== name` excludes
+    // this id's own prior entry (a re-import replaces it in place).
     const clash = config.imports.find(
-      e => e.id !== name && (e.id === alias || e.alias === alias),
+      e => e.id !== name && (e.id === alias || e.alias === alias || e.alias === name),
     )
     if (clash) {
       throw new Error(
-        `alias "${alias}" is already used by import "${clash.id}" — pick a different alias.`,
+        `id "${name}" or alias "${alias}" is already used by import "${clash.id}" ` +
+          `(alias "${clash.alias}") — pick a different alias.`,
       )
     }
 
@@ -578,10 +581,11 @@ export async function resyncImportedSkill(
     const entry = config.imports.find(e => e.id === id)
     if (!entry) return { config, changed: false, warnings: [`import "${id}" not found`] }
 
+    let sourceReal: string
     let sourceSha: string
     try {
-      await assertSkillSource(entry.sourcePath)
-      sourceSha = await computeSkillDirSha(entry.sourcePath)
+      sourceReal = await assertSkillSource(entry.sourcePath)
+      sourceSha = await computeSkillDirSha(sourceReal)
     } catch (err) {
       return {
         config,
@@ -606,12 +610,13 @@ export async function resyncImportedSkill(
       return { config, entry, changed: false, warnings: [] }
     }
 
-    // A legacy/hand-edited entry could carry a `sourcePath` that overlaps the
-    // root; re-copying it would delete the source. Warn and leave it intact.
-    const overlap = registryOverlapMessage(entry.sourcePath, await realRegistryRoot(root))
+    // A legacy/hand-edited entry could carry a `sourcePath` that — after
+    // resolving symlinks — overlaps the root; re-copying it would delete the
+    // source. Warn and leave it intact.
+    const overlap = registryOverlapMessage(sourceReal, await realRegistryRoot(root))
     if (overlap) return { config, entry, changed: false, warnings: [overlap] }
 
-    await copySkillDir(entry.sourcePath, dest)
+    await copySkillDir(sourceReal, dest)
     const updated: ImportedSkillEntry = { ...entry, sha: await computeSkillDirSha(dest) }
     const next: ImportedSkillsConfig = {
       ...config,
