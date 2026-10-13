@@ -167,6 +167,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `start_browser` / `stop_browser` / `browser_status` | Manage browser sessions |
 | `mcp_discovered_list` / `mcp_imported_list` / `mcp_import` / `mcp_imported_remove` | Discover and curate imported MCP servers |
 | `mcp_imported_status` / `mcp_imported_tool_list` / `mcp_imported_call` | Proxy imported MCP tools |
+| `skill_import` / `skill_imported_list` / `skill_imported_remove` / `skill_resync` | Curate imported skills (a `SKILL.md` folder is copied into `~/.agentproto/skills/<id>/`) for per-session delivery |
 | `permissions_list` / `permissions_respond` | Held permission requests across permission-hold sessions |
 | `cron_create` / `cron_list` / `cron_delete` / `cron_run` | Recurring daemon jobs (opt-in) |
 | `role_list` | Enumerate spawn-time roles and delegation privileges |

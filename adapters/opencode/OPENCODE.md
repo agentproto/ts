@@ -127,6 +127,13 @@ declared globally stay on (opencode has no flag to drop them). A supervisor
 with a `daemonMount` still gets the eager daemon tool list unless
 `deferredTools: true`.
 
+Imported skills (`skill_import`) still reach a `lean` session: the adapter's
+`metadata.sessionSkills` copies each resolved skill into
+`<session configDir>/skills/<alias>/` and points `OPENCODE_CONFIG_DIR` at that
+dir. opencode's config-dir skill scan is not gated by
+`OPENCODE_DISABLE_EXTERNAL_SKILLS`, which only disables its auto-discovery of
+external skill folders.
+
 ## Small model
 
 opencode runs a second, "small" model for background chores (session titles,

@@ -220,6 +220,16 @@ against the daemon's actual registered tools — a typo'd tool id is reported
 at install time, not buried in a failed run later. Re-installing the same
 `appId` upserts and keeps its existing `dataDir`.
 
+Every installed app also owns a registered workspace, `app-<slug>` (marked
+`ownerApp` in `~/.agentproto/workspaces.json`, visible in
+`agentproto workspace list`). It points at the `local-fs` `mount_path` or
+`dev-local` `root` declared in the app's `WORKSPACE.md` when that directory
+exists, else at the app dir. `app_run` (and app-attributed workflow runs)
+spawn sessions into it instead of `default`, unless you pass an explicit
+`cwd`. `app_uninstall` removes the workspace only if that app owns it; a user
+workspace with the same slug is never overwritten, and app-owned workspaces
+never become the implicit active workspace.
+
 Verified against a real local daemon:
 
 ```text
