@@ -760,13 +760,26 @@ export async function restartAgentSession(
   // is a box path, meaningless on the host FS.
   const augmented =
     sandboxId !== undefined || opts.forceAgentResume ? prev : await augmentWithFsResume(prev)
+  // The BOX-side adapter conversation id recorded on the prior descriptor at
+  // its (re-)spawn — `meta.boxAdapterSessionId`. `prev.adapterSessionId` is
+  // NOT this: for a sandbox row it holds the box DAEMON's session id (the
+  // proxy's `sessionId`, which registry.spawnAgent copies), useless as an
+  // ACP resume target. Absent on rows spawned before this field existed (or
+  // by a box daemon that reported no conversation id) — those keep today's
+  // flagged-fallback behaviour below.
+  const boxResumeAdapterSessionId = prev.meta?.boxAdapterSessionId
   const strategy: RestartStrategy =
     sandboxId !== undefined
-      ? // The adapter is re-spawned fresh inside the box (the box daemon's
-        // `agent_start` has no resume surface) — a flagged fallback, so the
-        // caller gets the honest `resumeFallback` marker and the digest
-        // injection below still runs off the host's own transcript.
-        { kind: "agent", resumeFallback: true }
+      ? // Re-attach the SAME box and resume the adapter's OWN conversation
+        // store (still on the box disk) via the box daemon's `agent_start.
+        // resume` — the same ACP-level resume a local restart uses, with the
+        // same rejected-id retry inside `spawnInSandbox`. Without a recorded
+        // box conversation id there is nothing to resume: a flagged fallback,
+        // so the caller gets the honest `resumeFallback` marker and the
+        // digest injection below still runs off the host's own transcript.
+        boxResumeAdapterSessionId
+          ? { kind: "agent", resumeSessionId: boxResumeAdapterSessionId }
+          : { kind: "agent", resumeFallback: true }
       : opts.forceAgentResume
         ? { kind: "agent", resumeSessionId: prev.adapterSessionId }
         : decideRestartStrategy(augmented)
@@ -1001,7 +1014,7 @@ export async function restartAgentSession(
     const restartedSessionId = mintSessionId()
     const restartMcpServers = buildRestartMcpServers(restartedSessionId)
     if (sandboxId !== undefined) {
-      return spawnInSandbox(sandboxId, restartedSessionId)
+      return spawnInSandbox(sandboxId, restartedSessionId, resumeSessionId)
     }
     if (!resolved) {
       throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
@@ -1187,9 +1200,15 @@ export async function restartAgentSession(
   // `resolveSandboxSecret`) are module-private in session-spawn.ts, so
   // byte-equivalent copies live at the bottom of this file — keep in sync
   // by inspection, same as the auth-resolution block above.
+  // Set when the box-side adapter rejected the resume id and
+  // `spawnInSandbox` already retried a fresh start on the same box — so the
+  // digest injection below still fires even though the retry itself
+  // succeeded (the conversation did NOT survive).
+  let boxResumeRejected = false
   const spawnInSandbox = async (
     boxSandboxId: string,
     restartedSessionId: string,
+    resumeAdapterSessionId?: string,
   ): Promise<SessionDescriptor> => {
     if (!opts.resolveSandboxProvider) {
       throw new Error(
@@ -1240,9 +1259,19 @@ export async function restartAgentSession(
           `${err instanceof Error ? err.message : String(err)}`,
       )
     }
-    let remoteSessionId: string
-    try {
-      const remoteDesc = await host.start({
+    // ONE adapter per box session: stop the PRIOR remote session on this
+    // box first, so the resumed/fresh adapter never races the old one on the
+    // same files (field-observed: a same-box restart left the old adapter
+    // running beside the new one). `prev.adapterSessionId` is the box
+    // DAEMON's session id for a sandbox row (the proxy's `sessionId`); the
+    // box's own `agent_kill` no-ops on an already-terminal row, and any
+    // lookup error (unknown id after a box-daemon restart) is swallowed —
+    // a missing kill must never sink the restart.
+    if (prev.adapterSessionId) {
+      await host.kill(prev.adapterSessionId).catch(() => undefined)
+    }
+    const startOnBox = (extra: { resume?: { adapterSessionId: string } }) =>
+      host.start({
         adapter: adapterSlug,
         ...(cwd ? { cwd } : {}),
         ...(effModel ? { model: effModel } : {}),
@@ -1258,14 +1287,58 @@ export async function restartAgentSession(
         ...(prev.label ? { label: prev.label } : {}),
         ...(sandboxMcpServers ? { mcpServers: toBoxMcpServerMounts(sandboxMcpServers) } : {}),
         ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho) } : {}),
+        // A restart is never a dropped-response retry of the spawn that made
+        // `prev` — it DELIBERATELY starts a new session continuing that
+        // conversation, so it must never dedupe-hit the claim `prev`'s own
+        // spawn staked on the box (same label/cwd within the implicit
+        // window) and silently get the superseded row back.
+        dedupe: false,
+        ...extra,
       })
-      remoteSessionId = remoteDesc.id
-    } catch (err) {
-      await host.stop().catch(() => undefined)
-      throw new Error(
-        `restartAgentSession: the sandbox's own agent_start failed for adapter ` +
-          `"${adapterSlug}" — ${err instanceof Error ? err.message : String(err)}`,
+    let remoteSessionId: string
+    let boxAdapterSessionId: string | undefined
+    let resumedAtAcpLevel = false
+    try {
+      const remoteDesc = await startOnBox(
+        resumeAdapterSessionId ? { resume: { adapterSessionId: resumeAdapterSessionId } } : {},
       )
+      remoteSessionId = remoteDesc.id
+      boxAdapterSessionId = remoteDesc.adapterSessionId
+      // Only a start that actually OFFERED the resume id counts as an
+      // ACP-level resume — a blank spawn succeeding is not one.
+      resumedAtAcpLevel = resumeAdapterSessionId !== undefined
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // Same rejected-id / lost-transport retry a LOCAL restart has
+      // (`RESUME_ID_REJECTED_RE` / `RESUME_CONNECTION_LOST_RE`): the stored
+      // conversation could not be rehydrated on the box, so retry ONE fresh
+      // start on the SAME live box — the box is fine, only this id was. The
+      // retry stays INSIDE this function (never propagates to the outer
+      // fallback below) because the outer path would tear the box down
+      // before retrying.
+      if (
+        resumeAdapterSessionId &&
+        (RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
+      ) {
+        boxResumeRejected = true
+        try {
+          const freshDesc = await startOnBox({})
+          remoteSessionId = freshDesc.id
+          boxAdapterSessionId = freshDesc.adapterSessionId
+        } catch (freshErr) {
+          await host.stop().catch(() => undefined)
+          throw new Error(
+            `restartAgentSession: the sandbox's own agent_start failed for adapter ` +
+              `"${adapterSlug}" — ${freshErr instanceof Error ? freshErr.message : String(freshErr)}`,
+          )
+        }
+      } else {
+        await host.stop().catch(() => undefined)
+        throw new Error(
+          `restartAgentSession: the sandbox's own agent_start failed for adapter ` +
+            `"${adapterSlug}" — ${msg}`,
+        )
+      }
     }
     // The prior session's work branch is still in the box: carry its delivery
     // target over so this session's teardown pushes (or bundles) it too.
@@ -1311,6 +1384,11 @@ export async function restartAgentSession(
       sandboxTeardown: lifecyclePolicy.teardown,
       ...(deliveryTarget ? { deliveryTarget } : {}),
       ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
+      // ACP-level resume on the box succeeded (the rejected-id retry above
+      // landed a BLANK adapter instead) — same label the local ACP resume
+      // uses, so readers can't tell the transport apart.
+      resumeVia: resumedAtAcpLevel ? "resumed via ACP" : "",
+      ...(boxAdapterSessionId ? { boxAdapterSessionId } : {}),
     })
   }
 
@@ -1368,6 +1446,10 @@ export async function restartAgentSession(
       cwd: booted.cwd,
       ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
+      // No continuity across boxes — but record the NEW box's adapter
+      // conversation id so a restart of THIS session can resume it.
+      resumeVia: "",
+      ...(booted.boxAdapterSessionId ? { boxAdapterSessionId: booted.boxAdapterSessionId } : {}),
     })
   }
 
@@ -1383,13 +1465,24 @@ export async function restartAgentSession(
       cwd?: string
       deliveryTarget?: SandboxDeliveryTarget
       sandboxPorts?: Record<number, string>
+      /** Which path this box re-attach took: `"resumed via ACP"` when the
+       *  box daemon's `agent_start.resume` rehydrated the adapter's own
+       *  conversation, `""` for a fresh (blank) adapter on the box. Mirrors
+       *  the local path's labels (see `resumeLineageFields`). */
+      resumeVia?: string
+      /** The BOX-side adapter conversation id the box's `agent_start`
+       *  reported — stamped into `meta.boxAdapterSessionId` so the NEXT
+       *  restart of this session resumes this conversation. */
+      boxAdapterSessionId?: string
     },
   ): SessionDescriptor => {
     const { agentSession, deliveryTarget } = box
-    // A fresh box-spawned adapter has no conversation continuity (the box
-    // daemon's `agent_start` has no resume surface) — `resumeVia: ""` plus
-    // the strategy's `resumeFallback` flag keeps that honest, and the host
-    // digest injection below still fires.
+    // `resumeVia` records which path this attempt took: `"resumed via ACP"`
+    // when the box daemon's `agent_start.resume` rehydrated the adapter's
+    // own conversation, `""` for a blank spawn (fresh box, no recorded box
+    // conversation id, or a rejected id) — the strategy's `resumeFallback`
+    // flag then marks that honesty, and the host digest injection below
+    // still fires.
     const desc = registry.spawnAgent({
       id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
@@ -1450,7 +1543,14 @@ export async function restartAgentSession(
       ...(box.sandboxPorts ? { sandboxPorts: box.sandboxPorts } : {}),
       commandPreview: `sandbox:${box.provider} → ${adapterSlug}`,
       resumedFrom: prev.id,
-      resumeVia: "",
+      resumeVia: box.resumeVia ?? "",
+      // The box-side adapter conversation id (from this attempt's own
+      // `agent_start` result) — echoed so the NEXT restart resumes it. Kept
+      // inside the deliberately generic `meta` bag (boardId/appBoundary
+      // precedent) rather than a dedicated descriptor field.
+      ...(box.boxAdapterSessionId
+        ? { meta: { boxAdapterSessionId: box.boxAdapterSessionId } }
+        : {}),
     })
     return desc
   }
@@ -1471,7 +1571,14 @@ export async function restartAgentSession(
     // connection closed" with no session at all). Both mean the stored
     // conversation couldn't be rehydrated, and both are better served by one
     // fresh-spawn retry + the transcript digest below than by an error.
+    //
+    // LOCAL rows only (`sandboxId === undefined`): a box re-attach handles
+    // its own rejected-id retry INSIDE `spawnInSandbox` (on the same live
+    // box, before any teardown) and never lets the rejection reach here —
+    // this gate keeps that guarantee explicit and preserves the pre-existing
+    // behaviour where the box path never entered this catch at all.
     if (
+      sandboxId === undefined &&
       strategy.resumeSessionId &&
       (RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
     ) {
@@ -1481,6 +1588,11 @@ export async function restartAgentSession(
       throw err
     }
   }
+  // Box path: `spawnInSandbox` already retried a fresh adapter on the same
+  // box after the box daemon rejected the resume id (never reached this
+  // catch) — the conversation did NOT survive, so the digest injection below
+  // must still fire. Same honesty contract as the local retry above.
+  if (boxResumeRejected) resumeFallback = true
 
   // Fix D: `resumeFallback` covers BOTH blank-fallback cases — the
   // capability-based downgrade above (adapter declared `resumable: false`)

@@ -1282,9 +1282,15 @@ export interface SpawnAgentSessionInput {
   appBoundary?: AppBoundary
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
-   *  blank. Not exposed on the MCP `agent_start` tool today — only the
-   *  HTTP route (`sessions restart`) passes this. */
+   *  blank. Passed by the HTTP route (`sessions restart`) and by the
+   *  box re-attach path, which lowers `agent_start.resume.adapterSessionId`
+   *  onto this field at the top of `spawnAgentSession`. */
   resumeSessionId?: string
+  /** CONTROLLER-INTERNAL wire shape (`agent_start.resume`) — lowered onto
+   *  `resumeSessionId` at the top of `spawnAgentSession` and stripped. Set
+   *  only by a controller restarting a sandbox session onto its live box
+   *  (`spawnInSandbox`, session-restart-core.ts). */
+  resume?: { adapterSessionId: string }
   /** The caller's initial ask — a plain string (the common case, composed
    *  with the role/AGENTS.md/RULES.md preamble below into one string turn),
    *  or a content block / block array (an attachment-bearing first message,
@@ -1697,6 +1703,19 @@ export async function spawnAgentSession(
   // captured value; after stripping, only the boolean stays in scope.
   const deviceBridgeArrival = input.deviceBridge === true
   if (input.deviceBridge !== undefined) delete input.deviceBridge
+  // CONTROLLER-INTERNAL (`agent_start.resume`) — the wire shape a box
+  // re-attach sends (`session_restart`'s `spawnInSandbox`). Lowered onto the
+  // ONE existing internal field (`resumeSessionId`) and stripped, so there is
+  // a single resume plumbing path — the ACP-level `startSession({
+  // resumeSessionId })` every local restart already uses — never a second
+  // parallel one. An explicit `resumeSessionId` (the HTTP route) still wins.
+  if (input.resume !== undefined) {
+    const resumeAdapterSessionId = input.resume.adapterSessionId
+    delete input.resume
+    if (resumeAdapterSessionId && input.resumeSessionId === undefined) {
+      input.resumeSessionId = resumeAdapterSessionId
+    }
+  }
   // `inference` (SESSION-INFERENCE-BINDING): resolved FIRST, before presets
   // or the model/route reconciliation below, into ordinary `model`/`route`/
   // `access`/`auth`/`deferredTools` values — everything downstream of this
@@ -3959,6 +3978,12 @@ export async function spawnAgentSession(
     // to the host id and the read paths can mirror host turns.
     let hostSessionId: string | undefined
     let hostFingerprint: string | undefined
+    // BOX-side adapter conversation id (from the box daemon's own
+    // `agent_start` result) — stamped into the descriptor's `meta` so a
+    // later restart onto this same live box can resume the adapter's
+    // conversation instead of starting blank (see
+    // `SandboxBootResult.boxAdapterSessionId`).
+    let boxAdapterSessionId: string | undefined
 
     // Global `defaults.sandbox.checkpoint` → per-spawn `agent_start.
     // sandboxCheckpoint` resolution — see `resolveSandboxCheckpointConfig`.
@@ -4039,6 +4064,7 @@ export async function spawnAgentSession(
       sandboxDeliveryTarget = booted.deliveryTarget
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
+      boxAdapterSessionId = booted.boxAdapterSessionId
       if (isDeviceSandboxTarget(input.sandbox)) {
         // BOOTSTRAP P7a — persist the controller→host id mapping. The proxy's
         // `sessionId` is the HOST's own session id (the inner `agent_start`'s
@@ -4237,11 +4263,14 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId || appBoundary
+      ...(input.boardId || appBoundary || boxAdapterSessionId
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
               ...(appBoundary ? boundaryMeta(appBoundary) : {}),
+              // BOX-side adapter conversation id — what a restart onto this
+              // same live box resumes (`spawnInSandbox` reads it back).
+              ...(boxAdapterSessionId ? { boxAdapterSessionId } : {}),
             },
           }
         : {}),
@@ -4532,6 +4561,14 @@ export type SandboxBootResult =
        *  device provider resolves a name target to its fingerprint at boot).
        *  Stamped onto the descriptor's `hostFingerprint` by the caller. */
       deviceFingerprint?: string
+      /** The BOX-side adapter conversation id reported by the box daemon's
+       *  own `agent_start` result (`remoteDesc.adapterSessionId`) — the id a
+       *  later re-attach passes as `agent_start.resume.adapterSessionId` to
+       *  resume the adapter's conversation on the same live box. Distinct
+       *  from `agentSession.sessionId` (the box DAEMON's session id). Stamped
+       *  onto the host descriptor's `meta.boxAdapterSessionId` by the caller.
+       *  Absent when the box reported no conversation id. */
+      boxAdapterSessionId?: string
     }
   | {
       ok: false
@@ -5242,6 +5279,12 @@ export async function bootSandboxAgentSession(opts: {
         : opts.initialPrompt
       : undefined
   let remoteSessionId: string
+  // The BOX-side adapter conversation id off the box's own `agent_start`
+  // result — recorded so a later restart onto this same live box can resume
+  // the adapter's conversation (`agent_start.resume.adapterSessionId`)
+  // instead of starting blank. `remoteSessionId` above is the box DAEMON's
+  // session id (a different thing — the proxy drives that one directly).
+  let boxAdapterSessionId: string | undefined
   let resolvedCwd = boxCwd
   try {
     const startArgs = {
@@ -5273,6 +5316,7 @@ export async function bootSandboxAgentSession(opts: {
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
         : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
+    boxAdapterSessionId = remoteDesc.adapterSessionId
     if (omitCwd && remoteDesc.cwd) resolvedCwd = remoteDesc.cwd
   } catch (err) {
     // The box was fully booted but its own `agent_start` failed — reap the
@@ -5367,6 +5411,7 @@ export async function bootSandboxAgentSession(opts: {
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(deliveryTarget ? { deliveryTarget } : {}),
+    ...(boxAdapterSessionId ? { boxAdapterSessionId } : {}),
     // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.

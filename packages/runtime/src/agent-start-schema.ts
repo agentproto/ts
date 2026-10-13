@@ -604,6 +604,25 @@ export const agentStartInputShape = {
         "`workspaceSlug` that the target daemon has not registered fails " +
         "instead of falling back to its active workspace."
     ),
+  // CONTROLLER-INTERNAL — NOT for tool callers. `session_restart`'s box
+  // re-attach path (`spawnInSandbox`, session-restart-core.ts) sends this
+  // when a sandbox session restarts on its still-live box: the box daemon
+  // resumes the adapter's OWN conversation (still on the box disk) at the
+  // ACP level — the same `resumeSessionId` a local restart uses — and falls
+  // back to a fresh spawn when the adapter rejects the id.
+  resume: jsonTolerant(
+    z.object({
+      adapterSessionId: z
+        .string()
+        .min(1)
+        .describe("Adapter conversation id to resume (the box-side id)."),
+    })
+  )
+    .optional()
+    .describe(
+      "Internal: resume the adapter's existing conversation on spawn " +
+        "(controller box re-attach only; fresh spawn when the id is rejected)."
+    ),
 }
 
 export const agentStartInputSchema = z.object(agentStartInputShape)

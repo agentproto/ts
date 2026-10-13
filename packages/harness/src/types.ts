@@ -96,6 +96,20 @@ export interface StartAgentArgs {
     token?: string
     apiKey?: string
   }
+  /** CONTROLLER-INTERNAL (`agent_start.resume`) — spawn resuming this
+   *  adapter-native conversation id instead of starting blank. Set by a
+   *  controller restarting a sandbox session onto its still-live box
+   *  (`session_restart`'s re-attach path in the runtime), where the prior
+   *  adapter's own conversation store still sits on the box disk. The box
+   *  daemon resumes it at the ACP level exactly like a local restart, and
+   *  falls back to a fresh spawn when the adapter rejects the id. Never set
+   *  on an ordinary spawn. */
+  resume?: { adapterSessionId: string }
+  /** Per-call override of the daemon's `spawn.dedupe` policy — forwarded to
+   *  `agent_start.dedupe`. A restart re-attach sets `false`: it deliberately
+   *  starts a NEW session continuing an old conversation, so it must never
+   *  dedupe-hit the claim the prior (now-superseded) spawn staked. */
+  dedupe?: boolean
 }
 
 /** Session descriptor as returned by `agent_start` (subset). */
@@ -108,6 +122,14 @@ export interface SessionDescriptor {
   parentSessionId?: string
   depth?: number
   startedAt: string
+  /** ACP-level session id (the adapter's own conversation handle — e.g.
+   *  claude-code's conversation uuid) — the id `resume.adapterSessionId`
+   *  accepts. The daemon records it on its full descriptor and the
+   *  `agent_start` result carries it verbatim; this client type only
+   *  declares it so a controller can read the box-side conversation id back
+   *  off a spawn (or re-attach) result. Absent on rows whose adapter never
+   *  persisted a conversation id. */
+  adapterSessionId?: string
 }
 
 /** Connection options for the shared MCP transport. */
