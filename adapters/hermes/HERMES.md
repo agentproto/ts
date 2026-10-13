@@ -146,6 +146,44 @@ Two consequences an operator should know:
 RuntimeConfigError — so the budget arm can never silently burn premium
 Anthropic spend.
 
+## System prompt (agentproto plugin)
+
+Hermes' ACP server exposes no system-prompt channel — it builds its agent
+without `ephemeral_system_prompt`, and `HERMES_EPHEMERAL_SYSTEM_PROMPT` is
+only read by the CLI/gateway, not by `hermes acp`. Hermes plugins, however,
+can add cache-safe system-prompt sections, so this package ships a small
+plugin (`plugin/agentproto-system-prompt/`):
+
+- it reads the path in `AGENTPROTO_SYSTEM_PROMPT_FILE` (set per session by
+  agentproto — one `hermes acp` process per session, so the env var always
+  reaches the plugin's process),
+- registers the file's text as sections `agentproto.system-prompt.00`,
+  `.01`, … at position `after_memory`, each ≤ 3900 chars (split on
+  paragraph boundaries when possible),
+- hermes renders the sections **once at session start and freezes the
+  rendered bytes** — the text survives resume without re-reading the file.
+
+Install and enable (enabling is an explicit consent — it makes the plugin
+part of every new hermes session on this machine):
+
+```sh
+agentproto adapters hermes-plugin install --enable
+agentproto adapters hermes-plugin status   # installed / enabled state
+```
+
+`--enable` runs `hermes plugins enable agentproto-system-prompt` (argv,
+never a shell); `~/.hermes/config.yaml` is never edited by hand.
+
+**Limit: 7500 chars** (`MAX_HERMES_SYSTEM_PROMPT_CHARS`). Hermes caps all
+plugin system-prompt sections — including the audit headings it prepends —
+at 8000 chars and 32 sections; 7500 leaves headroom for the headings.
+Longer text is not delivered through the plugin.
+
+Without the plugin (not installed, or not listed in `plugins.enabled` of
+`~/.hermes/config.yaml`), hermes has no system-prompt channel and projected
+AGENT.md text rides the first prompt as a prefix with a
+`session:harness-warning`.
+
 ## Protocol
 
 `protocol: acp` — Hermes ships an ACP server in

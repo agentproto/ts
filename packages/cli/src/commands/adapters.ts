@@ -24,6 +24,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
+import {
+  MAX_HERMES_SYSTEM_PROMPT_CHARS,
+  hermesSystemPromptPluginStatus,
+  installHermesSystemPromptPlugin,
+} from "@agentproto/adapter-hermes"
 import { readAdapterManifest } from "../registry/manifest-loader.js"
 import type {
   AdapterEntry,
@@ -44,10 +49,20 @@ Usage:
                                             [--local] [--skip-npm]
   agentproto adapters enable <pkg>          Add to config (assume installed)
   agentproto adapters disable <pkg>         Remove from config (keep installed)
+  agentproto adapters hermes-plugin status  hermes system-prompt plugin state [--json]
+  agentproto adapters hermes-plugin install Copy the bundled plugin into
+                                            $HERMES_HOME/plugins [--enable] [--json]
   agentproto adapters --help
 
   --local     install/uninstall into the local node_modules instead of -g
   --skip-npm  skip the npm install/remove; only touch the config entry
+
+hermes-plugin manages the agentproto-system-prompt hermes plugin — the
+channel that gives hermes a REAL system-prompt delivery path (hermes' ACP
+server has none of its own). Without it, system-prompt text falls back to a
+first-prompt prefix plus a harness warning. --enable is an explicit consent:
+it runs \`hermes plugins enable agentproto-system-prompt\` (config.yaml is
+never edited by hand). Delivery budget: ${MAX_HERMES_SYSTEM_PROMPT_CHARS} chars.
 
 Adapter list lives in ~/.agentproto/config.json under \`adapters[]\`.
 `
@@ -75,6 +90,8 @@ export async function runAdapters(args: readonly string[]): Promise<number> {
       return runEnable(rest)
     case "disable":
       return runDisable(rest)
+    case "hermes-plugin":
+      return runHermesPlugin(rest)
     default:
       process.stderr.write(
         `agentproto adapters: unknown subcommand '${sub}'.\n\n${USAGE}`
@@ -387,6 +404,120 @@ async function runDisable(args: readonly string[]): Promise<number> {
   }
   await removeFromConfig(pkg)
   process.stdout.write(`agentproto adapters: disabled '${pkg}'.\n`)
+  return 0
+}
+
+// ── hermes-plugin (system-prompt channel) ─────────────────────────────
+
+const HERMES_PLUGIN_USAGE = `agentproto adapters hermes-plugin — manage the hermes system-prompt plugin
+
+Usage:
+  agentproto adapters hermes-plugin status   Show installed/enabled state [--json]
+  agentproto adapters hermes-plugin install  Copy the bundled plugin into
+                                             $HERMES_HOME/plugins [--enable] [--json]
+
+The agentproto-system-prompt plugin is what gives hermes a real system-prompt
+channel: hermes' ACP server exposes none of its own, so without the plugin the
+projected system-prompt text falls back to a first-prompt prefix plus a
+harness warning (delivery budget: ${MAX_HERMES_SYSTEM_PROMPT_CHARS} chars).
+
+Enabling is an explicit consent — \`--enable\` runs
+\`hermes plugins enable agentproto-system-prompt\` (argv, never a shell;
+config.yaml is never edited by hand).
+`
+
+async function runHermesPlugin(args: readonly string[]): Promise<number> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case "status":
+      return runHermesPluginStatus(rest)
+    case "install":
+      return runHermesPluginInstall(rest)
+    default:
+      process.stderr.write(
+        `agentproto adapters hermes-plugin: unknown subcommand '${sub ?? ""}'.\n\n${HERMES_PLUGIN_USAGE}`
+      )
+      return 2
+  }
+}
+
+async function runHermesPluginStatus(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    options: { json: { type: "boolean" } },
+    strict: true,
+  })
+  const status = hermesSystemPromptPluginStatus()
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify(status, null, 2)}\n`)
+    return 0
+  }
+  process.stdout.write(
+    `hermes system-prompt plugin (${status.path})\n` +
+      `  installed: ${status.installed ? `yes (v${status.installedVersion})` : "no"}\n` +
+      `  enabled:   ${status.enabled ? "yes" : "no"}\n` +
+      `  bundled:   v${status.bundledVersion}\n`
+  )
+  if (!status.installed) {
+    process.stdout.write(
+      "\nNot installed — hermes has no system-prompt channel. Install it with:\n" +
+        "  agentproto adapters hermes-plugin install --enable\n"
+    )
+  } else if (!status.enabled) {
+    process.stdout.write(
+      "\nInstalled but not enabled — the plugin will not load. Enable it with:\n" +
+        "  agentproto adapters hermes-plugin install --enable\n"
+    )
+  }
+  return 0
+}
+
+async function runHermesPluginInstall(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    options: {
+      enable: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+    strict: true,
+  })
+  let result
+  try {
+    result = await installHermesSystemPromptPlugin({ enable: values.enable === true })
+  } catch (err) {
+    process.stderr.write(
+      `agentproto adapters hermes-plugin install: ${err instanceof Error ? err.message : String(err)}\n`
+    )
+    return 1
+  }
+
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  } else {
+    const verb =
+      result.action === "installed"
+        ? `installed v${result.bundledVersion}`
+        : result.action === "updated"
+          ? `updated v${result.installedVersion ?? "?"} → v${result.bundledVersion}`
+          : `already present (v${result.installedVersion ?? "?"}; bundled v${result.bundledVersion} is not newer)`
+    process.stdout.write(`hermes system-prompt plugin: ${verb} at ${result.path}\n`)
+    if (result.enable.requested) {
+      if (result.enable.exitCode === 0) {
+        process.stdout.write("enabled via `hermes plugins enable`.\n")
+      } else if (result.enable.error) {
+        process.stderr.write(`enable failed: ${result.enable.error}\n`)
+      } else {
+        process.stderr.write(
+          `enable failed: \`hermes plugins enable\` exited ${result.enable.exitCode ?? "?"}\n`
+        )
+      }
+    }
+  }
+
+  if (result.enable.requested && result.enable.exitCode !== 0) {
+    return result.enable.exitCode ?? 1
+  }
   return 0
 }
 
