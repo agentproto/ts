@@ -41,6 +41,7 @@ import {
   type AuthEcho,
   type AdapterAuthDescriptor,
   type CredentialSource,
+  forwardedSubaccountAuthInputs,
 } from "./spawn-defaults.js"
 import { loadBundles, type BundlesFile } from "./bundles.js"
 import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
@@ -126,6 +127,7 @@ import {
   resolveAgentsMd as realResolveAgentsMd,
   loadAgentsMdInlineMaxKb,
   cdContractLine,
+  agentsMdForSandbox,
   type AgentsMdResolution,
 } from "./agents-md.js"
 import {
@@ -3170,6 +3172,7 @@ export async function spawnAgentSession(
           ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
           : {}),
         ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
+        ...forwardedSubaccountAuthInputs(spawnDefaults.auth),
       })
       if (result) {
         authSpec = result.spec
@@ -3432,6 +3435,12 @@ export async function spawnAgentSession(
       // the one guarantee that never depended on the file being readable.
       agentsMdResolution = { mode: "absent", contractLine: cdContractLine }
     }
+  }
+  // A (non-device) sandbox box has its own filesystem: the host-resolved
+  // pointer path doesn't exist there, so never hand it over (inline content is
+  // kept, minus the host path). Device spawns already resolved to "absent".
+  if (input.sandbox !== undefined && !isDeviceSandboxSpawn) {
+    agentsMdResolution = agentsMdForSandbox(agentsMdResolution)
   }
   const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
     (p): p is string => !!p,
@@ -3960,7 +3969,7 @@ export async function spawnAgentSession(
         // A fresh box has neither the host's named profiles nor its keychain.
         // Forward the already-resolved credential when the caller selected a
         // profile; raw explicit auth remains supported for existing callers.
-        ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec) } : input.auth ? { auth: input.auth } : {}),
+        ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec, authEcho) } : input.auth ? { auth: input.auth } : {}),
         // PLAN-C — the resolved spec rides along so `env.autoPassthrough`
         // can inject the credential's env-var NAME into `env.passthrough`
         // (never the value) before the box boots.
@@ -5318,7 +5327,7 @@ async function bootSandboxAgentSession(opts: {
  * per-spawn auth shape accepted by the sandbox daemon.  The profile reference
  * itself is host-local; only its selected credential can cross this boundary.
  */
-function sandboxAuthFromResolved(auth: ResolvedAuthSpec): DefaultsAdapterAuthConfig {
+function sandboxAuthFromResolved(auth: ResolvedAuthSpec, echo?: AuthEcho): DefaultsAdapterAuthConfig {
   return {
     mode: auth.mode,
     ...(auth.mode === "api-key"
@@ -5328,6 +5337,28 @@ function sandboxAuthFromResolved(auth: ResolvedAuthSpec): DefaultsAdapterAuthCon
       : auth.credential !== undefined
         ? { token: auth.credential }
         : {}),
+    ...sandboxSubaccountScope(auth, echo),
+  }
+}
+
+/**
+ * A pinned sub-account's scoping (the env var its bearer rides in, the
+ * provider's extra env, the login-less data home) lives only in the host's
+ * resolved spec — the box has no profile and no provider to re-derive it.
+ * Forward it beside the credential so the box's own driver applies it exactly
+ * as the local one does: it layers `extraEnv` over its lean inline config
+ * rather than replacing it. Plain-key profiles forward nothing extra.
+ */
+function sandboxSubaccountScope(
+  auth: ResolvedAuthSpec,
+  echo: AuthEcho | undefined,
+): Pick<DefaultsAdapterAuthConfig, "credentialEnv" | "extraEnv" | "isolateDataHome"> {
+  if (auth.credential === undefined || auth.externalCredential) return {}
+  const subaccount = echo?.credentialSource === "subaccount"
+  return {
+    ...(subaccount && auth.setEnv !== "" ? { credentialEnv: auth.setEnv } : {}),
+    ...(auth.extraEnv ? { extraEnv: auth.extraEnv } : {}),
+    ...(auth.isolateDataHome === false ? { isolateDataHome: false } : {}),
   }
 }
 

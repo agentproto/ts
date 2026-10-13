@@ -73,6 +73,7 @@ import {
   resolveAuthSpec,
   SubscriptionSourceError,
   modelIdPrefixProvider,
+  forwardedSubaccountAuthInputs,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -420,6 +421,7 @@ export async function resolveResumeAuth(
       ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
       : {}),
     ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
+    ...forwardedSubaccountAuthInputs(spawnDefaults.auth),
   })
   let authSpec = result?.spec
   const authEcho = result?.echo
@@ -1219,7 +1221,7 @@ export async function restartAgentSession(
         ...(effEffort ? { effort: effEffort } : {}),
         ...(prev.label ? { label: prev.label } : {}),
         ...(sandboxMcpServers ? { mcpServers: toBoxMcpServerMounts(sandboxMcpServers) } : {}),
-        ...(authSpec ? { auth: sandboxAuthForBox(authSpec) } : {}),
+        ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho) } : {}),
       })
       remoteSessionId = remoteDesc.id
     } catch (err) {
@@ -1467,7 +1469,7 @@ function toBoxMcpServerMounts(entries: readonly AcpMcpServer[]): Array<{
 }
 
 /** session-spawn.ts's private `sandboxAuthFromResolved` — keep in sync by inspection. */
-function sandboxAuthForBox(auth: ResolvedAuthSpec): DefaultsAdapterAuthConfig {
+function sandboxAuthForBox(auth: ResolvedAuthSpec, echo?: AuthEcho): DefaultsAdapterAuthConfig {
   return {
     mode: auth.mode,
     ...(auth.mode === "api-key"
@@ -1477,6 +1479,15 @@ function sandboxAuthForBox(auth: ResolvedAuthSpec): DefaultsAdapterAuthConfig {
       : auth.credential !== undefined
         ? { token: auth.credential }
         : {}),
+    ...(auth.credential !== undefined && !auth.externalCredential
+      ? {
+          ...(echo?.credentialSource === "subaccount" && auth.setEnv !== ""
+            ? { credentialEnv: auth.setEnv }
+            : {}),
+          ...(auth.extraEnv ? { extraEnv: auth.extraEnv } : {}),
+          ...(auth.isolateDataHome === false ? { isolateDataHome: false } : {}),
+        }
+      : {}),
   }
 }
 

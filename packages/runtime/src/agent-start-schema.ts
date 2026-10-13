@@ -280,7 +280,9 @@ export const agentStartInputShape = {
       token: z.string().optional(),
       source: z.string().optional(),
       apiKey: z.string().optional(),
-    })
+    // Passthrough: a host forwards sub-account scope (credentialEnv/extraEnv/
+    // isolateDataHome) to its sandbox box; spawn-defaults validates those keys.
+    }).passthrough()
   )
     .optional()
     .describe(

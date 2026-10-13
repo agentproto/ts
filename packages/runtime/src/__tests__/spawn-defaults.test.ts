@@ -21,6 +21,7 @@ import {
   type SpawnDefaultsConfig,
   type AdapterAuthDescriptor,
   resolveDefaultContextProfile,
+  forwardedSubaccountAuthInputs,
 } from "../spawn-defaults.js"
 
 // resolveSpawnDefaults now surfaces RAW auth material; with nothing
@@ -1269,5 +1270,54 @@ describe("resolveDefaultContextProfile", () => {
     expect(resolveDefaultContextProfile({ ...base, roleName: "supervisor", defaults: lean })).toBe("lean")
     const full = { adapters: { opencode: { contextProfile: "full" } } }
     expect(resolveDefaultContextProfile({ ...base, defaults: full })).toBeUndefined()
+  })
+})
+
+describe("resolveSpawnDefaults auth — forwarded sub-account scope (sandbox box)", () => {
+  const scope = {
+    mode: "api-key" as const,
+    apiKey: "sk-scoped-fake",
+    credentialEnv: "OPENCODE_CONSOLE_TOKEN",
+    extraEnv: { OPENCODE_CONFIG_CONTENT: '{"provider":{"zen":{}}}' },
+    isolateDataHome: false,
+  }
+
+  it("surfaces the per-spawn scope and feeds it to resolveAuthSpec (env var, extra env, data home)", () => {
+    const { auth } = resolveSpawnDefaults(undefined, "opencode", { auth: scope })
+    expect(auth.credentialEnvOverride).toBe("OPENCODE_CONSOLE_TOKEN")
+    expect(auth.extraEnv).toEqual(scope.extraEnv)
+    expect(auth.isolateDataHome).toBe(false)
+
+    const result = resolveAuthSpec({
+      descriptor: { provider: "openai", authSubscription: undefined } as AdapterAuthDescriptor,
+      requestedMode: "api-key",
+      explicit: true,
+      apiKeyConfigCredential: "sk-scoped-fake",
+      ...forwardedSubaccountAuthInputs(auth),
+    })
+    expect(result?.spec.setEnv).toBe("OPENCODE_CONSOLE_TOKEN")
+    expect(result?.spec.credential).toBe("sk-scoped-fake")
+    expect(result?.spec.extraEnv).toEqual(scope.extraEnv)
+    expect(result?.spec.isolateDataHome).toBe(false)
+  })
+
+  it("never reads the scope from config defaults", () => {
+    const defaults = { adapters: { opencode: { auth: { ...scope } } } } as SpawnDefaultsConfig
+    const { auth } = resolveSpawnDefaults(defaults, "opencode", {})
+    expect(auth.credentialEnvOverride).toBeUndefined()
+    expect(auth.extraEnv).toBeUndefined()
+  })
+
+  it("drops malformed and process-control env names instead of forwarding them", () => {
+    const { auth } = resolveSpawnDefaults(undefined, "opencode", {
+      auth: {
+        mode: "api-key",
+        apiKey: "k",
+        credentialEnv: "PATH",
+        extraEnv: { LD_PRELOAD: "/x.so", NODE_OPTIONS: "--require x", "bad name": "v", OK_VAR: "fine" },
+      },
+    })
+    expect(auth.credentialEnvOverride).toBeUndefined()
+    expect(auth.extraEnv).toEqual({ OK_VAR: "fine" })
   })
 })
