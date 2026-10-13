@@ -262,11 +262,21 @@ export function parseSkillFrontmatter(raw: string): { name: string; description:
  * Recursively list files under `dir`, as POSIX-style relative paths. Symlinks
  * are FOLLOWED (matching `copySkillDir`'s dereference) so the hash reflects the
  * bytes actually delivered; visited realpaths are tracked so a link cycle can't
- * loop forever.
+ * loop forever. A symlink whose target resolves OUTSIDE `dir` is REFUSED: with
+ * dereference the copy would otherwise pull its target's content (e.g. a link
+ * to `~/.ssh`) into the registry — and from there into every session's config
+ * dir, bypassing fs-zone confinement — while a link to `/` or `$HOME` would
+ * make this walk traverse the whole tree (DoS).
  */
 async function listFiles(dir: string): Promise<string[]> {
   const out: string[] = []
   const visited = new Set<string>()
+  let rootReal: string
+  try {
+    rootReal = await fs.realpath(dir)
+  } catch {
+    return out
+  }
   const walk = async (abs: string): Promise<void> => {
     let real: string
     try {
@@ -279,6 +289,30 @@ async function listFiles(dir: string): Promise<string[]> {
     const entries = await fs.readdir(abs, { withFileTypes: true })
     for (const entry of entries) {
       const child = join(abs, entry.name)
+      const rel = relative(dir, child).split(sep).join("/")
+      let isLink = entry.isSymbolicLink()
+      if (!isLink) {
+        // Dirent type can be "unknown" on some filesystems; fall back to lstat.
+        try {
+          isLink = (await fs.lstat(child)).isSymbolicLink()
+        } catch {
+          continue
+        }
+      }
+      if (isLink) {
+        let target: string
+        try {
+          target = await fs.realpath(child)
+        } catch {
+          continue
+        }
+        if (!pathContains(rootReal, target)) {
+          throw new Error(
+            `skill source contains a symlink that escapes the skill folder: ` +
+              `"${rel}" -> "${target}" — copy the real content in instead.`
+          )
+        }
+      }
       let stat
       try {
         stat = await fs.stat(child)
@@ -286,7 +320,7 @@ async function listFiles(dir: string): Promise<string[]> {
         continue
       }
       if (stat.isDirectory()) await walk(child)
-      else if (stat.isFile()) out.push(relative(dir, child).split(sep).join("/"))
+      else if (stat.isFile()) out.push(rel)
     }
   }
   await walk(dir)
@@ -315,13 +349,41 @@ async function copySkillDir(source: string, dest: string): Promise<void> {
   // import of the same id can't observe a half-written tree, and a failure
   // mid-copy leaves the previous good copy untouched.
   await fs.mkdir(dirname(dest), { recursive: true })
+  let sourceReal: string
+  try {
+    sourceReal = await fs.realpath(source)
+  } catch {
+    sourceReal = resolvePath(source)
+  }
   const tmp = `${dest}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`
   await fs.rm(tmp, { recursive: true, force: true })
   try {
     // `dereference: true` so a symlink anywhere in the tree — the top-level
     // source itself, or a nested `scripts/` link — is copied as real content.
-    // The registry is a snapshot and must not depend on paths outside it.
-    await fs.cp(source, tmp, { recursive: true, dereference: true })
+    // The registry is a snapshot and must not depend on paths outside it. The
+    // `filter` is defence-in-depth on top of `listFiles`' pre-copy walk: it
+    // SKIPS any link whose realpath leaves the source, so the copy can never
+    // follow an escaping link even if validation were bypassed.
+    await fs.cp(source, tmp, {
+      recursive: true,
+      dereference: true,
+      filter: async src => {
+        let st
+        try {
+          st = await fs.lstat(src)
+        } catch {
+          return true
+        }
+        if (!st.isSymbolicLink()) return true
+        let real: string
+        try {
+          real = await fs.realpath(src)
+        } catch {
+          return false
+        }
+        return pathContains(sourceReal, real)
+      },
+    })
     await fs.rm(dest, { recursive: true, force: true })
     await fs.rename(tmp, dest)
   } catch (err) {
@@ -422,6 +484,11 @@ export async function importSkill(
     const sourcePath = await assertSkillSource(input.sourcePath)
     const overlap = registryOverlapMessage(sourcePath, await realRegistryRoot(root))
     if (overlap) throw new Error(overlap)
+    // Refuse an escaping symlink BEFORE the copy: with `dereference` the copy
+    // would otherwise pull the link target's content into the registry (and
+    // on into every session's config dir), and a link to `/` or `$HOME` would
+    // make the walk traverse the whole tree. In-tree links pass.
+    await listFiles(sourcePath)
     const raw = await fs.readFile(join(sourcePath, SKILL_FILE), "utf8")
     const { name } = parseSkillFrontmatter(raw)
     const alias = (input.alias ?? name).trim()

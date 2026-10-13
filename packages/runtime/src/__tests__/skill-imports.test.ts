@@ -86,9 +86,9 @@ describe("importSkill", () => {
     const link = join(base, "src-link")
     await symlink(realSrc, link, "dir")
 
-    const outside = join(base, "outside.txt")
-    await writeFile(outside, "external\n")
-    await symlink(outside, join(realSrc, "linked.txt"))
+    // A nested link that stays INSIDE the skill folder is dereferenced; one
+    // that escapes is refused (see the symlink-escape tests below).
+    await symlink(join(realSrc, "scripts", "run.sh"), join(realSrc, "linked.txt"))
 
     const { entry } = await importSkill({ sourcePath: link }, paths)
     expect(entry.sourcePath).toBe(await realpath(realSrc))
@@ -96,12 +96,12 @@ describe("importSkill", () => {
     const copied = skillImportDir("ap-link", paths.root)
     expect(lstatSync(copied).isSymbolicLink()).toBe(false)
     expect(lstatSync(join(copied, "linked.txt")).isSymbolicLink()).toBe(false)
-    expect(await readFile(join(copied, "linked.txt"), "utf8")).toBe("external\n")
+    expect(await readFile(join(copied, "linked.txt"), "utf8")).toBe("echo hi\n")
 
     // Snapshot: removing the real source tree leaves the copy intact.
     await rm(realSrc, { recursive: true, force: true })
     expect(existsSync(join(copied, "SKILL.md"))).toBe(true)
-    expect(await readFile(join(copied, "linked.txt"), "utf8")).toBe("external\n")
+    expect(await readFile(join(copied, "linked.txt"), "utf8")).toBe("echo hi\n")
   })
 
   it("honours an explicit alias and replaces an existing id", async () => {
@@ -155,6 +155,45 @@ describe("importSkill", () => {
     await writeFile(join(base, "SKILL.md"), "---\nname: ap-base\ndescription: d\n---\n")
     await expect(importSkill({ sourcePath: base }, paths)).rejects.toThrow(/overlaps/)
     expect(existsSync(skillImportDir("ap-seed", paths.root))).toBe(true)
+  })
+
+  it("refuses a symlink inside the skill that escapes to a directory", async () => {
+    const outside = join(base, "outside-secrets")
+    await mkdir(outside, { recursive: true })
+    await writeFile(join(outside, "id_rsa"), "PRIVATE KEY")
+    const src = await makeSkill("ap-escape-dir")
+    await symlink(outside, join(src, "leak"), "dir")
+    await expect(importSkill({ sourcePath: src }, paths)).rejects.toThrow(/escapes/)
+    // The copy was refused before it landed in the registry.
+    expect(existsSync(skillImportDir("ap-escape-dir", paths.root))).toBe(false)
+  })
+
+  it("refuses a symlink inside the skill that escapes to a file", async () => {
+    const secret = join(base, "credentials")
+    await writeFile(secret, "AKIA-SECRET")
+    const src = await makeSkill("ap-escape-file")
+    await symlink(secret, join(src, "creds"), "file")
+    await expect(importSkill({ sourcePath: src }, paths)).rejects.toThrow(/escapes/)
+    expect(existsSync(skillImportDir("ap-escape-file", paths.root))).toBe(false)
+  })
+
+  it("refuses a symlink to / without traversing it", async () => {
+    const src = await makeSkill("ap-escape-root")
+    await symlink("/", join(src, "everything"), "dir")
+    await expect(importSkill({ sourcePath: src }, paths)).rejects.toThrow(/escapes/)
+    expect(existsSync(skillImportDir("ap-escape-root", paths.root))).toBe(false)
+  })
+
+  it("allows a symlink that stays inside the skill folder", async () => {
+    const src = await makeSkill("ap-inlink")
+    await writeFile(join(src, "real.txt"), "hello")
+    await symlink(join(src, "real.txt"), join(src, "alias.txt"), "file")
+    const { entry } = await importSkill({ sourcePath: src }, paths)
+    expect(entry.id).toBe("ap-inlink")
+    // Dereferenced on copy: the delivered tree has a REAL alias.txt.
+    const delivered = join(skillImportDir("ap-inlink", paths.root), "alias.txt")
+    expect(existsSync(delivered)).toBe(true)
+    expect(lstatSync(delivered).isSymbolicLink()).toBe(false)
   })
 
   it("serializes concurrent imports so neither entry is lost", async () => {
