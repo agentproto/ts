@@ -47,6 +47,15 @@ const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000]
  *  1.0 kept the `token` field and every SDK still sends this header). */
 export const A2A_NOTIFICATION_TOKEN_HEADER = "X-A2A-Notification-Token"
 
+/** Log target: the URL origin only — a query string can carry secrets. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin
+  } catch {
+    return "(invalid url)"
+  }
+}
+
 /**
  * POST one `StreamResponse` member to one config. 2xx is done; a 4xx other
  * than 408/429 is not retried; anything else (5xx, 408, 429, network error,
@@ -63,6 +72,7 @@ export async function deliverPushEvent(
   const timeoutMs = deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
   const delays = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS
   const sleep = deps.sleep ?? ((ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms)))
+  const origin = originOf(config.url)
   const headers: Record<string, string> = { "content-type": "application/json" }
   if (config.token !== undefined && config.token !== "") headers[A2A_NOTIFICATION_TOKEN_HEADER] = config.token
   if (config.authentication !== undefined && config.authentication.credentials !== undefined) {
@@ -80,15 +90,15 @@ export async function deliverPushEvent(
       status = res.status
       if (res.status >= 200 && res.status < 300) return
     } catch (err) {
-      log(`a2a push: POST to ${config.url} for task ${config.taskId} failed: ${err instanceof Error ? err.message : String(err)} (attempt ${attempt + 1})`)
+      log(`a2a push: POST to ${origin} for task ${config.taskId} failed: ${err instanceof Error ? err.message : String(err)} (attempt ${attempt + 1})`)
       status = undefined
     }
     if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) {
-      log(`a2a push: POST to ${config.url} for task ${config.taskId} answered ${status}; not retried`)
+      log(`a2a push: POST to ${origin} for task ${config.taskId} answered ${status}; not retried`)
       return
     }
     if (attempt >= delays.length) {
-      log(`a2a push: POST to ${config.url} for task ${config.taskId} gave up after ${attempt + 1} attempt(s) (last status ${status ?? "network error"})`)
+      log(`a2a push: POST to ${origin} for task ${config.taskId} gave up after ${attempt + 1} attempt(s) (last status ${status ?? "network error"})`)
       return
     }
     await sleep(delays[attempt]!)
@@ -98,20 +108,22 @@ export async function deliverPushEvent(
 /** The one in-memory watcher registry: `taskId` → its running watcher. */
 export interface A2aPushService {
   /** Start one watcher for the task if none runs. The watcher re-reads
-   *  `listConfigs` before every delivery, ends on the terminal event (after
-   *  delivering it), at the 30 min cap, or when `readTask` fails. */
+   *  `listConfigs` before every delivery (so a deleted config stops
+   *  receiving), delivers one event to all configs in parallel (awaited
+   *  before the next event, so per-config order holds), and ends on the
+   *  terminal event (after delivering it), at the 30 min cap, or when
+   *  `readTask` fails. */
   ensureWatching(input: {
     appId: string
     taskId: string
     readTask: (taskId: string) => Promise<A2aTask>
     listConfigs: () => Promise<A2aTaskPushNotificationConfig[]>
   }): void
-  /** A config created on an already terminal task: store it, then send one
-   *  final `{statusUpdate: {final: true}}` — no watcher. */
-  deliverFinal(input: {
-    task: A2aTask
-    listConfigs: () => Promise<A2aTaskPushNotificationConfig[]>
-  }): Promise<void>
+  /** A config created on an already terminal task: send ONE final
+   *  `{statusUpdate: {final: true}}` to that config — not to the task's
+   *  other configs — and start no watcher. The caller fires this
+   *  fire-and-forget; a slow webhook must not stall its JSON-RPC answer. */
+  deliverFinal(input: { task: A2aTask; config: A2aTaskPushNotificationConfig }): Promise<void>
   /** True while a watcher runs for this task (one per task, never per
    *  config). */
   isWatching(taskId: string): boolean
@@ -141,9 +153,10 @@ export function createA2aPushService(deps: A2aPushDeps = {}, onIdle?: () => void
               return
             }
             const configs = await listConfigs()
-            for (const config of configs) {
-              await deliverPushEvent(config, ev, deps)
-            }
+            // Parallel across configs (one slow webhook must not delay the
+            // others), awaited before the next event so each config still
+            // sees artifactUpdate before its final statusUpdate.
+            await Promise.all(configs.map(config => deliverPushEvent(config, ev, deps)))
             if ("statusUpdate" in ev && ev.statusUpdate.final === true) return
           }
         } catch (err) {
@@ -155,9 +168,7 @@ export function createA2aPushService(deps: A2aPushDeps = {}, onIdle?: () => void
       })()
       running.set(taskId, run)
     },
-    async deliverFinal({ task, listConfigs }) {
-      const configs = await listConfigs()
-      if (configs.length === 0) return
+    async deliverFinal({ task, config }) {
       const body = {
         statusUpdate: {
           taskId: task.id,
@@ -166,9 +177,7 @@ export function createA2aPushService(deps: A2aPushDeps = {}, onIdle?: () => void
           final: true,
         },
       }
-      for (const config of configs) {
-        await deliverPushEvent(config, body, deps)
-      }
+      await deliverPushEvent(config, body, deps)
     },
     isWatching(taskId) {
       return running.has(taskId)
