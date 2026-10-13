@@ -297,8 +297,9 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
         .boolean()
         .optional()
         .describe(
-          "Cancel in-flight reviews of the same repo + binding + base whose head DIFFERS (an older push). Cancelled " +
-            "runs write no verdict. Default false — gates that re-run on every push should pass true.",
+          "Cancel in-flight reviews of the same repo + binding + base whose head DIFFERS (an older push) on the same " +
+            "line of work: the same checkout, or the same branch with an ancestor head. Sibling/stacked branches are " +
+            "left alone. Cancelled runs write no verdict. Default false — gates that re-run on every push should pass true.",
         ),
     },
     async (input) => {
