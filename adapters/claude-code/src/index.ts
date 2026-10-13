@@ -480,6 +480,12 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       unit: "whole-pack",
       outDir: "~/.claude/plugins/agentproto",
     },
+    // Per-session delivery (skill imports): the daemon copies each resolved
+    // imported skill to `<session configDir>/skills/<alias>/`. No `env` — the
+    // driver already points CLAUDE_CONFIG_DIR at that same session dir (see
+    // `define-agent-cli.ts`), and Claude Code discovers `$CLAUDE_CONFIG_DIR/
+    // skills/<name>/SKILL.md` natively.
+    sessionSkills: { dir: "skills" },
   },
 })
 
