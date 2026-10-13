@@ -691,6 +691,9 @@ describe("booted.readFile", () => {
     const booted = await e2bSandboxProvider.boot(spec, { env: {} })
 
     expect(await booted.readFile!("/tmp/agentproto-delivery.bundle")).toBe(bytes)
-    expect(read).toHaveBeenCalledWith("/tmp/agentproto-delivery.bundle", { format: "bytes" })
+    expect(read).toHaveBeenCalledWith("/tmp/agentproto-delivery.bundle", {
+      format: "bytes",
+      requestTimeoutMs: 5 * 60_000,
+    })
   })
 })

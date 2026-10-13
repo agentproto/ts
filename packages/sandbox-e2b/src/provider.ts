@@ -330,10 +330,14 @@ function toBootedSandbox(
       }
     },
     async readFile(path: string): Promise<Uint8Array> {
-      return sandbox.files.read(path, { format: "bytes" })
+      return sandbox.files.read(path, { format: "bytes", requestTimeoutMs: READ_FILE_TIMEOUT_MS })
     },
   }
 }
+
+/** `files.read` defaults to a 60s request timeout, too short for the largest
+ *  bundle the delivery path will pull (50 MiB) over a slow link. */
+const READ_FILE_TIMEOUT_MS = 5 * 60_000
 
 /** `e2bSandboxProvider.boot`/`.connect` — see module docs. */
 export const e2bSandboxProvider: SandboxProvider = {
