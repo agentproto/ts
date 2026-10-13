@@ -250,7 +250,7 @@ function resolveAgentSpawnAdapter(
  *  put this in an `app_run` run's `errors` list (per-agent) or throw it
  *  (workflow agent-ref resolution). */
 function noAdapterError(agentId: string): string {
-  return `agent "${agentId}" has no adapter: set metadata.adapter in its AGENT.md, use a claude-* or opencode/* model, or pass adapter to app_run`
+  return `agent "${agentId}" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run`
 }
 
 /**
