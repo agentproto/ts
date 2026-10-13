@@ -11,7 +11,13 @@
  * `@agentproto/model-catalog/llm`, which both already sit below the catalog.
  */
 
-import type { AuthMethod, AdapterAuthManifest } from "@agentproto/auth"
+import {
+  eligibleProfiles,
+  resolveEndpoint,
+  type AuthMethod,
+  type AuthProfile,
+  type AdapterAuthManifest,
+} from "@agentproto/auth"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
   modelIdPrefixProvider,
@@ -81,4 +87,49 @@ export function spawnEligibilityManifest(
     routeId,
     direct,
   }
+}
+
+const OPENCODE_CONSOLE_SOURCE = "opencode-console"
+const OPENCODE_GO_ENDPOINT = "opencode-go"
+const OPENCODE_ZEN_ENDPOINT = "opencode"
+
+function isOpencodeConsoleOrgProfile(profile: AuthProfile): boolean {
+  return (
+    profile.source === OPENCODE_CONSOLE_SOURCE &&
+    profile.subaccount?.kind === "org" &&
+    (profile.endpoint === OPENCODE_GO_ENDPOINT || profile.endpoint === OPENCODE_ZEN_ENDPOINT)
+  )
+}
+
+/** `eligibleProfiles` plus the one cross-endpoint rule: an OpenCode console
+ *  org login is a single login serving BOTH the `opencode-go` and `opencode`
+ *  (Zen) routes. Zen bills the org's pay-as-you-go wallet for paid ids, so on
+ *  the `opencode` route such a profile is eligible only when it carries an
+ *  explicit `models.mode: "allow"` list containing the route-qualified id
+ *  (`opencode/<id>`) being requested. Every other profile is judged by the
+ *  plain endpoint/method predicate. `model` is the requested model id. */
+export function eligibleProfilesForRoute(
+  profiles: readonly AuthProfile[],
+  manifest: AdapterAuthManifest,
+  route: string,
+  model: string | undefined,
+): AuthProfile[] {
+  const { endpoint } = resolveEndpoint(manifest, route)
+  const zenId =
+    model === undefined ? undefined : model.startsWith(`${OPENCODE_ZEN_ENDPOINT}/`) ? model : `${OPENCODE_ZEN_ENDPOINT}/${model}`
+  const pairs: Array<{ original: AuthProfile; judged: AuthProfile }> = []
+  for (const original of profiles) {
+    if (!isOpencodeConsoleOrgProfile(original) || (endpoint !== OPENCODE_GO_ENDPOINT && endpoint !== OPENCODE_ZEN_ENDPOINT)) {
+      pairs.push({ original, judged: original })
+      continue
+    }
+    if (endpoint === OPENCODE_ZEN_ENDPOINT) {
+      const allowed =
+        original.models?.mode === "allow" && zenId !== undefined && original.models.ids.includes(zenId)
+      if (!allowed) continue
+    }
+    pairs.push({ original, judged: { ...original, endpoint } })
+  }
+  const ok = new Set(eligibleProfiles(pairs.map(pair => pair.judged), manifest, route))
+  return pairs.filter(pair => ok.has(pair.judged)).map(pair => pair.original)
 }

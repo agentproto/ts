@@ -121,7 +121,7 @@ import {
   type SpawnClaim,
 } from "../session-spawn.js"
 import { buildCatalogModels, type CatalogAdapterInput } from "../catalog-models.js"
-import type { AuthProfile } from "@agentproto/auth"
+import { registerSubaccountProvider, unregisterSubaccountProvider, type AuthProfile } from "@agentproto/auth"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
@@ -4707,6 +4707,119 @@ describe("resolveAccessProfileAuth — catalog_models eligibility parity (route-
     expect(result.ok).toBe(false)
     if (result.ok) throw new Error("expected refusal")
     expect(result.code).toBe("auth_source_unresolved")
+  })
+})
+
+// An OpenCode console org login serves BOTH the `opencode-go` and `opencode`
+// (Zen) routes with one token + org selection. Zen bills the org's PAYG wallet,
+// so the Zen route admits the org profile only through an explicit allow-list.
+describe("resolveAccessProfileAuth — opencode console org profile on the Zen route", () => {
+  const OPENCODE_DESCRIPTOR: AdapterAuthDescriptor = { modelDerivedApiKey: true }
+  const ZEN_MODEL = "opencode/nemotron-3-ultra-free"
+  const orgProfile = (models?: AuthProfile["models"]): AuthProfile => ({
+    id: "opencode-default",
+    endpoint: "opencode-go",
+    method: "api-key",
+    source: "opencode-console",
+    subaccount: { kind: "org", id: "wrk_1" },
+    ...(models ? { models } : {}),
+  })
+
+  beforeEach(() => {
+    registerSubaccountProvider({
+      id: "opencode-console-test",
+      source: "opencode-console",
+      kinds: ["org"],
+      list: async () => ({ account: { id: "acct" }, subaccounts: [] }),
+      resolve: async () => ({
+        credential: "console-token",
+        credentialEnvOverride: "OPENCODE_CONSOLE_TOKEN",
+        env: { OPENCODE_CONFIG_CONTENT: "{}" },
+      }),
+    })
+  })
+  afterEach(() => {
+    unregisterSubaccountProvider("opencode-console-test")
+  })
+
+  it("accepts the org profile for an allow-listed Zen model and injects the console token", async () => {
+    authProfileState.profiles = { "opencode-default": orgProfile({ mode: "allow", ids: [ZEN_MODEL] }) }
+    const result = await resolveAccessProfileAuth({
+      adapter: "opencode",
+      profileRef: "opencode-default",
+      authDescriptor: OPENCODE_DESCRIPTOR,
+      model: ZEN_MODEL,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.authSpec?.setEnv).toBe("OPENCODE_CONSOLE_TOKEN")
+    expect(result.authSpec?.credential).toBe("console-token")
+    expect(result.authSpec?.extraEnv).toEqual({ OPENCODE_CONFIG_CONTENT: "{}" })
+    expect(result.authEcho?.provider).toBe("opencode")
+    expect(result.accessProfileEcho.subaccount).toEqual({ kind: "org", id: "wrk_1" })
+  })
+
+  it("still serves the opencode-go route with the same token", async () => {
+    authProfileState.profiles = { "opencode-default": orgProfile() }
+    const result = await resolveAccessProfileAuth({
+      adapter: "opencode",
+      profileRef: "opencode-default",
+      authDescriptor: OPENCODE_DESCRIPTOR,
+      model: "opencode-go/kimi-k2.7",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.authSpec?.setEnv).toBe("OPENCODE_CONSOLE_TOKEN")
+    expect(result.authEcho?.provider).toBe("opencode-go")
+  })
+
+  it("refuses a Zen id that is not in the allow-list", async () => {
+    authProfileState.profiles = { "opencode-default": orgProfile({ mode: "allow", ids: [ZEN_MODEL] }) }
+    const result = await resolveAccessProfileAuth({
+      adapter: "opencode",
+      profileRef: "opencode-default",
+      authDescriptor: OPENCODE_DESCRIPTOR,
+      model: "opencode/gpt-5.4-nano",
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("access_profile_ineligible")
+  })
+
+  it("refuses an uncurated org profile on the Zen route (pay-as-you-go wallet)", async () => {
+    authProfileState.profiles = { "opencode-default": orgProfile() }
+    const result = await resolveAccessProfileAuth({
+      adapter: "opencode",
+      profileRef: "opencode-default",
+      authDescriptor: OPENCODE_DESCRIPTOR,
+      model: ZEN_MODEL,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(result.message).toMatch(/not eligible for adapter "opencode" on route "opencode"/)
+  })
+
+  it("keeps a plain opencode-go api-key profile single-route", async () => {
+    authProfileState.profiles = {
+      "opencode-go-api": {
+        id: "opencode-go-api",
+        endpoint: "opencode-go",
+        method: "api-key",
+        credentialRef: "agentproto.auth.opencode-go.key",
+        models: { mode: "allow", ids: [ZEN_MODEL] },
+      },
+    }
+    authProfileState.keychain = { "agentproto.auth.opencode-go.key": "sk-go" }
+    const result = await resolveAccessProfileAuth({
+      adapter: "opencode",
+      profileRef: "opencode-go-api",
+      authDescriptor: OPENCODE_DESCRIPTOR,
+      model: ZEN_MODEL,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("access_profile_ineligible")
   })
 })
 

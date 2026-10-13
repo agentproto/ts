@@ -33,7 +33,7 @@
  */
 
 import type { AuthMethod, AuthProfile } from "@agentproto/auth"
-import { eligibleProfiles, type AdapterAuthManifest } from "@agentproto/auth"
+import type { AdapterAuthManifest } from "@agentproto/auth"
 import {
   resolveLlmModelRoute,
   tryParseModelRef,
@@ -49,7 +49,7 @@ import {
 } from "@agentproto/model-catalog/llm"
 import { getAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { subscriptionSurfaceFor, type AdapterAuthDescriptor } from "./spawn-defaults.js"
-import { spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import type { RouteSpec } from "./session-config.js"
 import { WIDENING_ROUTES, normalizeRouterPrefixedId } from "./router-routes.js"
 
@@ -684,7 +684,7 @@ export function buildCatalogModels(
     // byte-identical to before.
     const eligible =
       walletEligible && projected !== null
-        ? eligibleProfiles(input.profiles, manifest, projected?.routeId ?? row.route).filter(p =>
+        ? eligibleProfilesForRoute(input.profiles, manifest, projected?.routeId ?? row.route, `${row.vendor}/${row.product}`).filter(p =>
             profileAllowsModel(p, row.ref, `${row.vendor}/${row.product}`),
           )
         : []
