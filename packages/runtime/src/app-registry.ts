@@ -176,8 +176,9 @@ export interface AppRun {
   /** AIP-58 §10 error code for `error`, when the failure has one — today
    *  only the orphan sweep sets this (`"orphaned"`). */
   errorCode?: string
-  /** Adapter slug the run's sessions were spawned under. Defaults to
-   *  `DEFAULT_AGENT_ADAPTER` when unset. */
+  /** Adapter slug the run's sessions were spawned under: the caller-given
+   *  adapter, else the first agent's resolved one (see `app_run` in
+   *  app-tools.ts). */
   readonly adapter?: string
   /** Canonical harness slug (defaults to `adapter` when unset). */
   readonly harness?: string

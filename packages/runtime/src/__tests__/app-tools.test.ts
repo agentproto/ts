@@ -1381,20 +1381,21 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
     await app.emit(dir)
   }
 
-  /** mastra-agent can be pointed at the AGENT.md path; claude-code/opencode
-   *  positively declare options WITHOUT `agent` (the fallback-path signal). */
+  /** mastra-agent can be pointed at the AGENT.md path; claude-code/opencode/
+   *  hermes positively declare options WITHOUT `agent` (the fallback-path
+   *  signal). */
   function adapterResolverFor(startSession: ReturnType<typeof fakeStartSession>): AgentAdapterResolver {
     return async slug =>
       slug === "mastra-agent"
         ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
-        : slug === "claude-code" || slug === "opencode"
+        : slug === "claude-code" || slug === "opencode" || slug === "hermes"
           ? { startSession, commandPreview: `mock-${slug}`, declaredOptions: [] }
           : null
   }
 
-  it("an AGENT.md `metadata.adapter` beats the model-based default and the blanket default", async () => {
-    // Non-claude model ⇒ the model-based default would be mastra-agent; the
-    // metadata override is what has to win.
+  it("an AGENT.md `metadata.adapter` beats the model-based route", async () => {
+    // The model has no route of its own; the metadata override is what has
+    // to win.
     await emitAgentsApp("@test/meta-adapter-app", [
       { id: "meta-worker", model: "gpt-5", metadata: { adapter: "claude-code" } },
     ])
@@ -1440,9 +1441,9 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
     expect(startSession.mock.calls[0]![0].options).toBeUndefined()
   })
 
-  it("an `input.model` steers the model-based default instead of the AGENT.md model", async () => {
-    // AGENT.md says gpt-5 (mastra-agent by default); the caller-pinned model
-    // is what the adapter decision must use.
+  it("an `input.model` steers the model-based route instead of the AGENT.md model", async () => {
+    // AGENT.md says gpt-5 (no model route of its own); the caller-pinned
+    // model is what the adapter decision must use.
     await emitAgentsApp("@test/model-override-app", [{ id: "gpt-worker", model: "gpt-5" }])
     const startSession = fakeStartSession()
     const { client, registry } = await setup({
@@ -1463,8 +1464,10 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
     expect(desc.model).toBe("claude-haiku-5-5")
   })
 
-  it("a non-claude model with no metadata keeps today's mastra-agent spawn (with the `agent` option)", async () => {
-    await emitAgentsApp("@test/plain-model-app", [{ id: "gpt-worker", model: "gpt-5" }])
+  it("an `opencode/` AGENT.md model with no metadata resolves to opencode", async () => {
+    await emitAgentsApp("@test/opencode-model-app", [
+      { id: "oc-worker", model: "opencode/mimo-v2.6-flash-free" },
+    ])
     const startSession = fakeStartSession()
     const { client, registry } = await setup({
       resolveAgentAdapter: adapterResolverFor(startSession),
@@ -1473,12 +1476,104 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
     await client.callTool({ name: "app_install", arguments: { dir } })
 
     const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/opencode-model-app" } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("opencode")
+    expect(desc.model).toBe("opencode/mimo-v2.6-flash-free")
+    // opencode declares no `agent` option ⇒ no path-pointing.
+    expect(startSession.mock.calls[0]![0].options).toBeUndefined()
+  })
+
+  it("an `opencode-go/` AGENT.md model with no metadata resolves to opencode", async () => {
+    await emitAgentsApp("@test/opencode-go-model-app", [
+      { id: "ocgo-worker", model: "opencode-go/glm-5.3" },
+    ])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/opencode-go-model-app" } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("opencode")
+    expect(desc.model).toBe("opencode-go/glm-5.3")
+    expect(startSession.mock.calls[0]![0].options).toBeUndefined()
+  })
+
+  it("an unroutable model with no metadata and no caller adapter fails that agent with a clear error — never a silent mastra-agent spawn", async () => {
+    await emitAgentsApp("@test/plain-model-app", [
+      { id: "foo-worker", model: "some-provider/foo-1" },
+    ])
+    const startSession = fakeStartSession()
+    const { client } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
       await client.callTool({ name: "app_run", arguments: { appId: "@test/plain-model-app" } }),
+    )
+    expect(startSession).not.toHaveBeenCalled()
+    expect(ran.sessions).toEqual([])
+    expect(ran.errors).toEqual([
+      {
+        agentId: "foo-worker",
+        error:
+          'agent "foo-worker" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run',
+      },
+    ])
+  })
+
+  it("an unroutable model with `metadata.adapter: mastra-agent` spawns mastra-agent with the `agent` option", async () => {
+    await emitAgentsApp("@test/mastra-metadata-app", [
+      { id: "mastra-worker", model: "some-provider/foo-1", metadata: { adapter: "mastra-agent" } },
+    ])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/mastra-metadata-app" } }),
     )
     expect(ran.errors).toBeUndefined()
     const desc = registry.get(ran.sessions[0].sessionId)!
     expect(desc.adapterSlug).toBe("mastra-agent")
     expect(startSession.mock.calls[0]![0].options).toEqual({ agent: expect.stringContaining("AGENT.md") })
+  })
+
+  it("a caller-given `adapter` rescues an unroutable model — hermes wins for that agent", async () => {
+    await emitAgentsApp("@test/caller-adapter-app", [
+      { id: "foo-worker", model: "some-provider/foo-1" },
+    ])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/caller-adapter-app", adapter: "hermes" },
+      }),
+    )
+    expect(ran.errors).toBeUndefined()
+    expect(ran.adapter).toBe("hermes")
+    expect(ran.harness).toBe("hermes")
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("hermes")
   })
 
   it("a caller-given `adapter` wins for EVERY agent, over its AGENT.md metadata", async () => {
@@ -1511,7 +1606,8 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
   it("two agents in one run resolve to different adapters — each spawn gets its own", async () => {
     await emitAgentsApp("@test/mixed-adapters-app", [
       { id: "claude-worker", model: "claude-sonnet-5" },
-      { id: "gpt-worker", model: "gpt-5" },
+      // gpt-5 has no model route; mastra-agent comes from its own metadata.
+      { id: "gpt-worker", model: "gpt-5", metadata: { adapter: "mastra-agent" } },
     ])
     const startSession = fakeStartSession()
     const { client, registry } = await setup({
@@ -1615,7 +1711,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     expect(step.agentTools).toEqual(["read_file", "branch_gc_verdict"])
   })
 
-  it("agent.ref resolution: no AGENT.md model and no adapter override keeps the blanket mastra-agent default", async () => {
+  it("agent.ref resolution: an unroutable AGENT.md model with `metadata.adapter: mastra-agent` keeps the mastra-agent ref (with the `agent` option)", async () => {
     const app = defineApp({
       id: "@test/agent-step-app-no-model",
       name: "Agent Step App (no model)",
@@ -1626,6 +1722,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
             id: "worker",
             description: "A worker agent.",
             model: { ref: "some-non-string-model-ref" },
+            metadata: { adapter: "mastra-agent" },
             workflows: [{ ref: "do-thing-no-model" }],
           }),
           body: "You do the thing.",
@@ -1661,6 +1758,44 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     const step = compiled.steps[0] as AgentStep
     expect(step.adapter).toBe("mastra-agent")
     expect(step.options).toEqual({ agent: installed.agents[0].path })
+  })
+
+  it("agent.ref resolution: an agent with an unresolvable model and no adapter override rejects instead of silently defaulting", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-unroutable",
+      name: "Agent Step App (unroutable model)",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "some-provider/foo-1",
+            workflows: [{ ref: "do-thing-unroutable" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-unroutable",
+          name: "Do thing",
+          description: "Does a thing.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [{ id: "step1", kind: "agent", agent: { ref: "worker" }, prompt: "Do the thing." }],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    const handle = await loadWorkflowHandle(join(dir, ".agentproto", "workflows", "do-thing-unroutable", "WORKFLOW.md"))
+    await expect(resolveAgentRefsForWorkflow(appRegistry, handle.id)).rejects.toThrow(
+      'agent "worker" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run',
+    )
   })
 
   it("agent.ref resolution: a step-level adapter wins over both the AGENT.md metadata override and the model-based default (F26)", async () => {
@@ -1777,9 +1912,11 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     expect(resolved.model).toBe("claude-sonnet-5-5")
     expect(resolved.adapter).toBe("claude-code")
 
-    // No resolver / an unresolvable role never leaks the raw `role:` string.
-    expect((await compileWith()).model).toBeUndefined()
-    expect((await compileWith(async () => undefined)).model).toBeUndefined()
+    // No resolver / an unresolvable role never leaks the raw `role:` string —
+    // and with no metadata adapter the ref now fails loudly (no adapter)
+    // instead of silently falling back to mastra-agent.
+    await expect(compileWith()).rejects.toThrow(/has no adapter/)
+    await expect(compileWith(async () => undefined)).rejects.toThrow(/has no adapter/)
   })
 
   it("resolveAgentModelRef passes plain ids through and only resolves role: refs", async () => {
