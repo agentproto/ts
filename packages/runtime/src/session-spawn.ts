@@ -64,6 +64,13 @@ import {
   suggestModelSlugs,
 } from "./catalog-models.js"
 import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-hint.js"
+import {
+  autoCredentialRefOf,
+  buildSandboxSecretResolver,
+  credentialRefMap,
+  type SandboxCredentialRefEntry,
+  type SandboxSecretResolver,
+} from "./sandbox-secret-resolver.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -239,9 +246,13 @@ import {
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
 
-/** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
+/** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field and the
+ *  keychain-backed `credentialRefs` passthrough. See
  *  `SpawnAgentSessionInput.sandbox`. */
-export type SandboxSpecInput = SandboxSpec & { reuse?: string }
+export type SandboxSpecInput = SandboxSpec & {
+  reuse?: string
+  credentialRefs?: SandboxCredentialRefEntry[]
+}
 
 /**
  * Retry-safety for the process-forking half of `agent_start`.
@@ -3899,6 +3910,7 @@ export async function spawnAgentSession(
         // can inject the credential's env-var NAME into `env.passthrough`
         // (never the value) before the box boots.
         ...(authSpec ? { authSpec } : {}),
+        ...(accessProfileEcho ? { authProfileRef: accessProfileEcho.profileRef } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
         // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
@@ -4487,10 +4499,21 @@ function sandboxDeclaredInstallPackages(spec: SandboxSpec): string[] {
  * module, which the name-only contract forbids. Acceptable while the broker
  * is a local/env read; revisit with a cache only if the broker ever becomes
  * network-backed.
+ *
+ * Keychain-only credentials: a profile-backed credential (`credentialRef`)
+ * usually is NOT in the daemon env. `autoRef` (the profile's keychain slot)
+ * is registered in `refs` under the credential's env-var name, so the layered
+ * `resolve` finds it there and the box gets it anyway. An env value still
+ * wins; an unresolvable name degrades to the same warning as before.
  */
-async function withSandboxAuthAutoPassthrough(
+export async function withSandboxAuthAutoPassthrough(
   spec: SandboxSpec,
   authSpec: ResolvedAuthSpec | undefined,
+  secrets: {
+    resolve: SandboxSecretResolver
+    refs: Map<string, string>
+    autoRef: string | undefined
+  },
 ): Promise<SandboxSpec> {
   if (!spec.env?.autoPassthrough) return spec
   const declared = spec.env.passthrough ?? []
@@ -4502,7 +4525,10 @@ async function withSandboxAuthAutoPassthrough(
   if (!eligible) return spec
   const name = authSpec.setEnv
   if (declared.includes(name)) return spec
-  const resolvable = (await resolveSandboxSecret(name)) !== null
+  if (secrets.autoRef !== undefined && !secrets.refs.has(name)) {
+    secrets.refs.set(name, secrets.autoRef)
+  }
+  const resolvable = (await secrets.resolve(name)) !== null
   if (!resolvable) {
     console.warn(
       `[agent_start] sandbox env.autoPassthrough: the resolved billing credential env var ` +
@@ -4709,6 +4735,10 @@ async function bootSandboxAgentSession(opts: {
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
    *  never its value. */
   authSpec?: ResolvedAuthSpec
+  /** The attached access profile's id (`access.profileRef`), when one was
+   *  used. Lets `env.autoPassthrough` fall back to the profile's keychain
+   *  `credentialRef` for a credential absent from the daemon env. */
+  authProfileRef?: string
   /** WP3 — serve an app UI from inside the box; see
    *  `SpawnAgentSessionInput.appServe`. */
   appServe?: SandboxAppServeSpec
@@ -4776,6 +4806,17 @@ async function bootSandboxAgentSession(opts: {
       }
     }
   }
+  // Keychain-backed secrets: the explicit `credentialRefs` entries plus (for
+  // `env.autoPassthrough`) the attached profile's own `credentialRef`. The
+  // layered resolver tries the daemon env first, so a ref only matters for a
+  // name the daemon process does not itself hold.
+  const credentialRefs = credentialRefMap(
+    typeof opts.sandbox === "object" ? opts.sandbox.credentialRefs : undefined,
+  )
+  const resolveSecret = buildSandboxSecretResolver({
+    base: resolveSandboxSecret,
+    refs: credentialRefs,
+  })
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(
       withSandboxAdapterPackages(
@@ -4784,6 +4825,14 @@ async function bootSandboxAgentSession(opts: {
       ),
     ),
     opts.authSpec,
+    {
+      resolve: resolveSecret,
+      refs: credentialRefs,
+      autoRef:
+        typeof opts.sandbox === "object" && opts.sandbox.env?.autoPassthrough && opts.authProfileRef
+          ? autoCredentialRefOf(await getAuthProfile(opts.authProfileRef))
+          : undefined,
+    },
   )
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
@@ -4833,7 +4882,7 @@ async function bootSandboxAgentSession(opts: {
   // yet, so this is the full slug set).
   const passthrough = spec.env?.passthrough ?? []
   const authEnv = spec.env?.auth?.state?.env ?? []
-  const declaredSlugs = new Set([...passthrough, ...authEnv])
+  const declaredSlugs = new Set([...passthrough, ...authEnv, ...credentialRefs.keys()])
   // `join.tokenEnv` — sugar over `env.passthrough` for the auto-join case:
   // forward a single host env var (a join-token URL) into the box under the
   // same name. Unlike an explicit `env.passthrough` entry, a missing value
@@ -4844,7 +4893,7 @@ async function bootSandboxAgentSession(opts: {
   // mirroring the `env.autoPassthrough` probe in `withSandboxAuthAutoPassthrough`.
   const joinTokenEnv = spec.join?.tokenEnv
   if (joinTokenEnv && !declaredSlugs.has(joinTokenEnv)) {
-    const resolvable = (await resolveSandboxSecret(joinTokenEnv)) !== null
+    const resolvable = (await resolveSecret(joinTokenEnv)) !== null
     if (resolvable) declaredSlugs.add(joinTokenEnv)
   }
   const slugs = Array.from(declaredSlugs)
@@ -4861,7 +4910,7 @@ async function bootSandboxAgentSession(opts: {
       // seam `resolveMcpCredentialHeaders` above uses), never the bare
       // `defaultProcessEnvResolver` fallback `@agentproto/sandbox` would
       // otherwise apply when `resolver` is omitted.
-      secrets: { slugs, resolver: resolveSandboxSecret },
+      secrets: { slugs, resolver: resolveSecret },
     })
   } catch (err) {
     // Two DISJOINT failure shapes, both needing a ledger stamp — see

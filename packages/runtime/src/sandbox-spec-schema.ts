@@ -32,5 +32,21 @@ export const sandboxSpecWithReuseSchema = z
           "`sandbox_reuse_ambiguous` listing the candidates. Requires the provider to " +
           "support reconnect (e.g. e2b); omit to boot fresh (default)."
       ),
+    credentialRefs: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1).describe("Env-var name the box sees."),
+            credentialRef: z.string().min(1).describe("Keychain slot holding the value."),
+          })
+          .strict(),
+      )
+      .optional()
+      .describe(
+        "Forward keychain-held secrets into the box: each `{ name, credentialRef }` entry " +
+          "is added to `env.passthrough` and, when the daemon's own env has no `name`, " +
+          "its value is read from the OS keychain at `credentialRef`. Only the ref " +
+          "travels in the spec — never the value.",
+      ),
   })
   .strict()
