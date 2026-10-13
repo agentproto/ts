@@ -69,12 +69,11 @@ import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-h
 import {
   autoCredentialRefOf,
   buildSandboxSecretResolver,
-  credentialRefMap,
-  type SandboxCredentialRefEntry,
   type SandboxSecretResolver,
 } from "./sandbox-secret-resolver.js"
 import {
   GIT_TOKEN_ENV,
+  withoutReservedSandboxEnv,
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
   type SandboxWorkspacePlan,
@@ -260,12 +259,10 @@ import {
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
 
-/** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field and the
- *  keychain-backed `credentialRefs` passthrough. See
+/** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
 export type SandboxSpecInput = SandboxSpec & {
   reuse?: string
-  credentialRefs?: SandboxCredentialRefEntry[]
 }
 
 /**
@@ -4877,15 +4874,14 @@ async function bootSandboxAgentSession(opts: {
     }
     boxCwd = workspacePlan.checkoutDir
   }
-  // Keychain-backed secrets: the explicit `credentialRefs` entries plus (for
-  // `env.autoPassthrough`) the attached profile's own `credentialRef`. The
-  // layered resolver tries the daemon env first, so a ref only matters for a
-  // name the daemon process does not itself hold.
-  const credentialRefs = credentialRefMap(
-    typeof opts.sandbox === "object" ? opts.sandbox.credentialRefs : undefined,
-  )
+  // Keychain refs are daemon-derived only: the resolved workspace's remote
+  // credential (→ AGENTPROTO_GIT_TOKEN) and, for `env.autoPassthrough`, the
+  // attached profile's own ref. A caller never names a keychain slot, and a
+  // device target never resolves any (its box is another machine).
+  const isDeviceBox = isDeviceSandboxTarget(opts.sandbox)
+  const credentialRefs = new Map<string, string>()
   const gitCredentialRef = opts.workspace?.remote.credentialRef
-  if (workspacePlan && gitCredentialRef !== undefined && !credentialRefs.has(GIT_TOKEN_ENV)) {
+  if (workspacePlan && gitCredentialRef !== undefined && !isDeviceBox) {
     credentialRefs.set(GIT_TOKEN_ENV, gitCredentialRef)
   }
   const resolveSecret = buildSandboxSecretResolver({
@@ -4895,7 +4891,9 @@ async function bootSandboxAgentSession(opts: {
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(
       withSandboxAdapterPackages(
-        typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
+        withoutReservedSandboxEnv(
+          typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
+        ),
         opts.adapter,
       ),
     ),
@@ -4904,7 +4902,7 @@ async function bootSandboxAgentSession(opts: {
       resolve: resolveSecret,
       refs: credentialRefs,
       autoRef:
-        typeof opts.sandbox === "object" && opts.sandbox.env?.autoPassthrough && opts.authProfileRef
+        !isDeviceBox && typeof opts.sandbox === "object" && opts.sandbox.env?.autoPassthrough && opts.authProfileRef
           ? autoCredentialRefOf(await getAuthProfile(opts.authProfileRef))
           : undefined,
     },

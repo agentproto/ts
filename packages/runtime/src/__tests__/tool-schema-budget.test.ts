@@ -32,10 +32,8 @@ import { measureToolList } from "../tool-schema-measure.js"
  *  the `label`/`cwd` filters and the cold-history fallback (`includeCold`) —
  *  the measured total was already at the old 60 KB line, so the old number
  *  left no room for a normal field addition. Headroom for normal growth
- *  without re-opening this file on every field addition. Re-set to 62 KB for
- *  `agent_start.sandbox.credentialRefs` (~0.4 KB), which the 61 KB line had
- *  no room for. */
-const ALWAYS_ON_BUDGET_BYTES = 62_000
+ *  without re-opening this file on every field addition. */
+const ALWAYS_ON_BUDGET_BYTES = 61_000
 
 /** No single description — a tool's own, or any schema property's, at any
  *  nesting depth — may exceed this. The plan's own cap. */

@@ -13,7 +13,6 @@ import type { SandboxSpec } from "@agentproto/sandbox"
 import {
   autoCredentialRefOf,
   buildSandboxSecretResolver,
-  credentialRefMap,
 } from "../sandbox-secret-resolver.js"
 import { withSandboxAuthAutoPassthrough } from "../session-spawn.js"
 import type { ResolvedAuthSpec } from "../spawn-defaults.js"
@@ -105,20 +104,7 @@ describe("buildSandboxSecretResolver", () => {
   })
 })
 
-describe("credentialRefMap / autoCredentialRefOf", () => {
-  it("collapses entries by name, later wins", () => {
-    const refs = credentialRefMap([
-      { name: "A", credentialRef: "one" },
-      { name: "A", credentialRef: "two" },
-      { name: "B", credentialRef: "three" },
-    ])
-    expect([...refs.entries()]).toEqual([
-      ["A", "two"],
-      ["B", "three"],
-    ])
-    expect(credentialRefMap(undefined).size).toBe(0)
-  })
-
+describe("autoCredentialRefOf", () => {
   it("exposes a profile's credentialRef, but not for a sub-account pin or no ref", () => {
     expect(autoCredentialRefOf({ credentialRef: "slot" })).toBe("slot")
     expect(autoCredentialRefOf({})).toBeUndefined()
@@ -193,19 +179,13 @@ describe("withSandboxAuthAutoPassthrough — keychain fallback", () => {
   })
 })
 
-describe("sandboxSpecWithReuseSchema — credentialRefs", () => {
-  it("accepts explicit { name, credentialRef } entries and rejects stray keys", () => {
-    const ok = sandboxSpecWithReuseSchema.safeParse({
+describe("sandboxSpecWithReuseSchema — no caller-supplied keychain refs", () => {
+  it("rejects a credentialRefs payload so a caller can never name a keychain slot", () => {
+    const parsed = sandboxSpecWithReuseSchema.safeParse({
       provider: "e2b",
       config: {},
-      credentialRefs: [{ name: "GH", credentialRef: "agentproto.git.x" }],
+      credentialRefs: [{ name: "STOLEN", credentialRef: "agentproto.auth.victim" }],
     })
-    expect(ok.success).toBe(true)
-    const bad = sandboxSpecWithReuseSchema.safeParse({
-      provider: "e2b",
-      config: {},
-      credentialRefs: [{ name: "GH", credentialRef: "x", value: "nope" }],
-    })
-    expect(bad.success).toBe(false)
+    expect(parsed.success).toBe(false)
   })
 })

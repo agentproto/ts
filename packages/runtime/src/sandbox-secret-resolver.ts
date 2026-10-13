@@ -6,7 +6,9 @@
  * process's own env (`serve.ts`). A credential that lives ONLY in the OS
  * keychain — an auth profile's `credentialRef`, a workspace's git PAT — never
  * reaches the box that way. This module layers a keychain read behind the
- * broker, scoped to an explicit `name → credentialRef` map:
+ * broker, scoped to a `name → credentialRef` map the DAEMON derives (the resolved
+ * workspace's remote ref, the attached auth profile's ref) — never one a
+ * caller supplies, since a free-form ref would read any keychain slot:
  *
  *   1. the broker (daemon env) wins when it has a value, so existing
  *      deployments resolve exactly as before;
@@ -18,14 +20,6 @@
  */
 
 import { KeychainStore, type AuthProfile, type CredentialStore } from "@agentproto/auth"
-
-/** An explicit `{ name, credentialRef }` entry on `agent_start.sandbox.credentialRefs`. */
-export interface SandboxCredentialRefEntry {
-  /** The env-var name the box sees (and the passthrough slug it is resolved as). */
-  name: string
-  /** Keychain slot (`StoreRef.path`) holding the value. */
-  credentialRef: string
-}
 
 export type SandboxSecretResolver = (slug: string) => Promise<string | null>
 
@@ -59,16 +53,6 @@ export function buildSandboxSecretResolver(
       return null
     }
   }
-}
-
-/** Collapse explicit entries into the resolver's `name → credentialRef` map.
- *  A later duplicate name overrides an earlier one. */
-export function credentialRefMap(
-  entries: readonly SandboxCredentialRefEntry[] | undefined,
-): Map<string, string> {
-  const refs = new Map<string, string>()
-  for (const entry of entries ?? []) refs.set(entry.name, entry.credentialRef)
-  return refs
 }
 
 /**

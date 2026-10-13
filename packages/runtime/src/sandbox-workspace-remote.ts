@@ -15,11 +15,41 @@
  * from the environment when git asks.
  */
 
-import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
+import type { SandboxExecOpts, SandboxExecResult, SandboxSpec } from "@agentproto/sandbox"
 import { DEFAULT_REMOTE_BRANCH, validateRemoteBranch, type WorkspaceRemote } from "./workspaces-config.js"
 
 /** Env var the box sees the git token under. */
 export const GIT_TOKEN_ENV = "AGENTPROTO_GIT_TOKEN"
+
+/**
+ * {@link GIT_TOKEN_ENV} is reserved for the daemon's own workspace-remote
+ * injection. Drop it from any caller-declared env slot (`env.passthrough`,
+ * `env.auth.state.env`, `join.tokenEnv`) so a caller can neither shadow the
+ * workspace token nor pull a same-named daemon env var into the box by hand.
+ */
+export function withoutReservedSandboxEnv<T extends SandboxSpec>(spec: T): T {
+  const keep = (names: string[] | undefined): string[] | undefined =>
+    names?.filter(name => name !== GIT_TOKEN_ENV)
+  const env = spec.env
+  const stripped =
+    env === undefined
+      ? spec
+      : {
+          ...spec,
+          env: {
+            ...env,
+            ...(env.passthrough ? { passthrough: keep(env.passthrough) } : {}),
+            ...(env.auth?.state?.env
+              ? { auth: { ...env.auth, state: { ...env.auth.state, env: keep(env.auth.state.env) } } }
+              : {}),
+          },
+        }
+  if (stripped.join?.tokenEnv === GIT_TOKEN_ENV) {
+    const { tokenEnv: _dropped, ...join } = stripped.join
+    return { ...stripped, join }
+  }
+  return stripped
+}
 
 /** Prefix of the work branch cut inside the box (`wt/<slug>`), matching the
  *  local worktree convention. */

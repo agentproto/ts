@@ -17,15 +17,29 @@ import type { AddressInfo } from "node:net"
 import type { SandboxExecOpts, SandboxExecResult, SandboxProvider } from "@agentproto/sandbox"
 
 import { createGateway, type GatewayHandle } from "../index.js"
-import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import { spawnAgentSession, type SandboxSpecInput, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
+import { sandboxSpecWithReuseSchema } from "../sandbox-spec-schema.js"
 
 const FAKE_TOKEN = "ghp_fake_spawn_token_0005"
 const BASE_SHA = "c".repeat(40)
+
+const keychain = vi.hoisted(() => ({ reads: [] as string[], values: {} as Record<string, string> }))
+vi.mock("@agentproto/auth", async importOriginal => {
+  const actual = await importOriginal<typeof import("@agentproto/auth")>()
+  class FakeKeychainStore {
+    async read(ref: { path: string }) {
+      keychain.reads.push(ref.path)
+      const value = keychain.values[ref.path]
+      return value === undefined ? undefined : { value, kind: "pat" }
+    }
+  }
+  return { ...actual, KeychainStore: FakeKeychainStore }
+})
 
 const wsConfigState = vi.hoisted(() => ({
   value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
@@ -150,6 +164,8 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       }),
     }
     registry = createSessionsRegistry({ persist: false, transcriptDir: join(hostDir, "transcripts") })
+    keychain.reads.length = 0
+    keychain.values = {}
     setMcpCredentialDeps({ resolveSandboxSecret: async slug => (slug === "AGENTPROTO_GIT_TOKEN" ? FAKE_TOKEN : null) })
     wsConfigState.value = {
       version: 1,
@@ -294,5 +310,64 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(result.ok).toBe(true)
     expect(execCalls).toHaveLength(0)
     expect(receivedStarts[0]?.cwd).toBe("/home/user")
+  })
+
+  describe("keychain refs are daemon-derived only", () => {
+    const ATTACKER_SLOT = "agentproto.auth.victim"
+    const WORKSPACE_SLOT = "agentproto.git.agentproto"
+
+    it("a caller-supplied credentialRefs payload is rejected by the schema and never read from the keychain", async () => {
+      keychain.values[ATTACKER_SLOT] = "victim-secret-value"
+      setMcpCredentialDeps({ resolveSandboxSecret: async () => null })
+      keychain.values[WORKSPACE_SLOT] = FAKE_TOKEN
+      const sandbox = {
+        provider: "fake",
+        config: {},
+        credentialRefs: [{ name: "STOLEN", credentialRef: ATTACKER_SLOT }],
+      }
+      expect(sandboxSpecWithReuseSchema.safeParse(sandbox).success).toBe(false)
+
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: sandbox as unknown as SandboxSpecInput,
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+      })
+      expect(result.ok).toBe(true)
+      expect(keychain.reads).not.toContain(ATTACKER_SLOT)
+      expect(bootEnvs[0]).not.toHaveProperty("STOLEN")
+      expect(JSON.stringify(bootEnvs)).not.toContain("victim-secret-value")
+    })
+
+    it("a caller cannot override AGENTPROTO_GIT_TOKEN: it always resolves from the workspace's own ref", async () => {
+      keychain.values[ATTACKER_SLOT] = "attacker-chosen-value"
+      keychain.values[WORKSPACE_SLOT] = FAKE_TOKEN
+      setMcpCredentialDeps({ resolveSandboxSecret: async () => null })
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: {
+          provider: "fake",
+          config: {},
+          env: { passthrough: ["AGENTPROTO_GIT_TOKEN"] },
+          credentialRefs: [{ name: "AGENTPROTO_GIT_TOKEN", credentialRef: ATTACKER_SLOT }],
+        } as unknown as SandboxSpecInput,
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+      })
+      expect(result.ok).toBe(true)
+      expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBe(FAKE_TOKEN)
+      expect(keychain.reads).toEqual([WORKSPACE_SLOT])
+    })
+
+    it("env.passthrough naming AGENTPROTO_GIT_TOKEN cannot pull the token into a box with no workspace remote", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {}, env: { passthrough: ["AGENTPROTO_GIT_TOKEN"] } },
+        cwd: "/home/user",
+      })
+      expect(result.ok).toBe(true)
+      expect(bootEnvs[0] ?? {}).not.toHaveProperty("AGENTPROTO_GIT_TOKEN")
+      expect(keychain.reads).toEqual([])
+    })
   })
 })

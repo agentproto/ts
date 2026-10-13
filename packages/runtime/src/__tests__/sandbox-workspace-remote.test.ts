@@ -13,6 +13,7 @@ import {
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
   shellQuote,
+  withoutReservedSandboxEnv,
   type SandboxWorkspaceRequest,
 } from "../sandbox-workspace-remote.js"
 
@@ -140,5 +141,27 @@ describe("runSandboxWorkspaceSetup", () => {
     expect(thrown).toMatchObject({ ok: false, step: "git-identity", message: "envd unreachable" })
     const garbled = await runSandboxWorkspaceSetup(async opts => ok(opts.command.includes("rev-parse") ? "nope" : ""), plan)
     expect(garbled).toMatchObject({ ok: false, step: "resolve-base" })
+  })
+})
+
+describe("withoutReservedSandboxEnv", () => {
+  it("drops AGENTPROTO_GIT_TOKEN from every caller-declared env slot and keeps the rest", () => {
+    const spec = withoutReservedSandboxEnv({
+      provider: "e2b",
+      config: {},
+      env: {
+        passthrough: ["KEEP_ME", GIT_TOKEN_ENV],
+        auth: { state: { env: [GIT_TOKEN_ENV, "ALSO_KEPT"] } },
+      },
+      join: { tokenEnv: GIT_TOKEN_ENV },
+    } as Parameters<typeof withoutReservedSandboxEnv>[0])
+    expect(spec.env?.passthrough).toEqual(["KEEP_ME"])
+    expect(spec.env?.auth?.state?.env).toEqual(["ALSO_KEPT"])
+    expect(spec.join?.tokenEnv).toBeUndefined()
+  })
+
+  it("returns a spec without env untouched", () => {
+    const spec = { provider: "e2b", config: {} }
+    expect(withoutReservedSandboxEnv(spec)).toBe(spec)
   })
 })
