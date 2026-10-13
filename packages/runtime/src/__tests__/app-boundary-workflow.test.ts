@@ -17,6 +17,7 @@ import type { AgentAdapterResolver } from "../http-server.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionDescriptor, SessionsRegistry } from "../sessions.js"
 import { createWorkflowRunner } from "../workflow-runner.js"
+import { registerAppWorkspace } from "../app-workspace.js"
 
 let tmp: string
 
@@ -110,6 +111,45 @@ async function runToEnd(runner: ReturnType<typeof createWorkflowRunner>, runId: 
 }
 
 describe("workflow agent step of an installed app", () => {
+  it("lands in the app's own workspace when registered, and an explicit cwd wins", async () => {
+    const { bus, registry, resolveAgentAdapter, spawned } = fixture({})
+    const appDir = join(tmp, "apps", "yt")
+    const path = writeApp(appDir, "transcribe")
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/yt",
+      dir: appDir,
+      dataDir: join(appDir, "data"),
+      agents: [],
+      workflows: [{ id: "transcribe", path }],
+      unvalidatedAgentTools: [],
+    })
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter,
+      compileWorkflow: handle => compileWorkflow(handle, { tools: {}, candidates: [] }),
+      appRegistry,
+      persist: true,
+      persistPath: join(tmp, "runs.json"),
+      runsRoot: join(tmp, "runs"),
+    })
+
+    // Not registered yet (pre-feature install): the run is not re-bucketed.
+    const before = await runner.startFromFile({ path })
+    await runToEnd(runner, before.runId)
+    expect(spawned[0]!).not.toHaveProperty("workspaceSlug", "app-test-yt")
+
+    await registerAppWorkspace({ appId: "@test/yt", dir: appDir })
+    const run = await runner.startFromFile({ path })
+    await runToEnd(runner, run.runId)
+    expect(spawned[1]).toMatchObject({ workspaceSlug: "app-test-yt", cwd: appDir })
+
+    const explicit = await runner.startFromFile({ path, cwd: tmp })
+    await runToEnd(runner, explicit.runId)
+    expect(spawned[2]!).not.toHaveProperty("workspaceSlug", "app-test-yt")
+  })
+
   it("spawns with zones: app dir read-only; run workspace + data dir writable; daemon workspace hidden", async () => {
     const { bus, registry, startSession, resolveAgentAdapter, spawned } = fixture({
       supportsFsZones: true,

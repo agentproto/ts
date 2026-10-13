@@ -38,6 +38,7 @@ import { runTool } from "@agentproto/driver"
 import { createDaemonToolRegistry, type AppToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
 import { buildAppBoundary } from "./app-boundary.js"
+import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
@@ -1022,6 +1023,10 @@ export interface RegisterAppToolsOptions {
    *  however it was started (`workflow_run_file`, `workflow_start`, …).
    *  Omitted → `app_status` reports sessions only. */
   workflowRunner?: WorkflowRunner
+  /** `workspaces.json` that app-owned workspaces (`app-<slug>`) are registered
+   *  in at install and removed from at uninstall. Defaults to
+   *  `~/.agentproto/workspaces.json`. */
+  workspacesConfigPath?: string
   /** Absolute path for the persistence file. Defaults to `~/.agentproto/apps.json`. */
   persistPath?: string
   /** Root for remote-installed apps (`<appsDir>/<slug>`, `app_install {url|file}`).
@@ -1142,6 +1147,8 @@ export interface PerformInstallOptions {
    *  otherwise identical to the one `app_install {dir}` writes, and those two
    *  checks are redone by whoever runs the app. */
   readonly skipDaemonChecks?: boolean
+  /** `workspaces.json` the app-owned workspace is registered in. Default `~/.agentproto/workspaces.json`. */
+  readonly workspacesConfigPath?: string
 }
 
 /**
@@ -1370,6 +1377,13 @@ export async function performInstall(
       : {}),
   })
 
+  await registerAppWorkspace({
+    appId: record.appId,
+    dir,
+    workspace: handle.workspace,
+    ...(opts?.workspacesConfigPath !== undefined ? { configPath: opts.workspacesConfigPath } : {}),
+  })
+
   return { ok: true, record }
 }
 
@@ -1496,6 +1510,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     try {
       result = await performInstall(appDir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
         ...(dataDir !== undefined ? { dataDir } : {}),
+        ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
         source: staged.source,
         // Only a git source may build, and only with explicit consent.
         allowUiBuild: staged.source.kind === "git" && allowBuild === true,
@@ -1590,6 +1605,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       if ("dir" in input) {
         const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
           ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
+          ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
         })
         if (!result.ok) return errorResult(`app_install: ${result.error}`)
         return textResult(result.record)
@@ -1910,7 +1926,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       cwd: z
         .string()
         .optional()
-        .describe("Working directory for spawned sessions. Defaults to the app's installed `dir`."),
+        .describe(
+          "Working directory for spawned sessions. Defaults to the app's installed `dir`, and the " +
+            "sessions then belong to the app's own workspace (`app-<slug>`).",
+        ),
       scopeId: z
         .string()
         .optional()
@@ -1965,6 +1984,18 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         )
       }
       const app = appRegistry.upsertApp({ ...installed, agents: refs.agents, workflows: refs.workflows })
+
+      // The app's own workspace (`app-<slug>`), backfilled here for apps
+      // installed before app-owned workspaces existed. An explicit caller
+      // `cwd` keeps the spawn path's own cwd → workspace matching instead.
+      const appWorkspaceSlug =
+        input.cwd === undefined
+          ? await ensureAppWorkspace({
+              appId: app.appId,
+              dir: app.dir,
+              ...(opts.workspacesConfigPath !== undefined ? { configPath: opts.workspacesConfigPath } : {}),
+            })
+          : undefined
 
       if (app.agents.length === 0) {
         return errorResult(`app_run: app "${app.appId}" declares no agents; open its UI panel instead.`)
@@ -2045,6 +2076,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             ...(harness !== adapter ? { harness } : {}),
             ...(spawnModel !== undefined ? { model: spawnModel } : {}),
             cwd: input.cwd ?? app.dir,
+            ...(appWorkspaceSlug !== undefined ? { workspaceSlug: appWorkspaceSlug } : {}),
             appBoundary: buildAppBoundary({
               app,
               // An operator-chosen cwd outside the app is readable, never writable.
@@ -2320,6 +2352,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       if (!installed && input.dir) {
         const installResult = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
           ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
+          ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
         })
         if (!installResult.ok) return errorResult(`app_apply: ${installResult.error}`)
         installed = installResult.record
@@ -2558,6 +2591,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       if (!removed) {
         return errorResult(`app_uninstall: no installed app "${input.appId}".`)
       }
+      await unregisterAppWorkspace(removed.appId, opts.workspacesConfigPath)
       return textResult({ appId: removed.appId })
     },
   )
