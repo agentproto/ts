@@ -612,6 +612,64 @@ describe("compileWorkflow — declarative agent step", () => {
     expect(step.agentTools).toBeUndefined()
   })
 
+  it("a projected agent ref leads the prompt with its instructions, fills harness.skills and carries its warnings", () => {
+    const wf = defineWorkflow({
+      name: "Projected ref",
+      id: "projected-ref",
+      description: "Agent ref resolved for a harness that doesn't read AGENT.md itself.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", agent: { ref: "@my-app/scout" }, prompt: "Zone: Luberon." }],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: {
+        "@my-app/scout": {
+          adapter: "opencode",
+          instructions: "You are a scout.\n\nHard rules — these MUST be followed:\n- Never invent",
+          skills: ["trip-research"],
+          tools: ["file_write"],
+          warnings: ["no system-prompt channel"],
+        },
+      },
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe(
+      "You are a scout.\n\nHard rules — these MUST be followed:\n- Never invent\n\nZone: Luberon.",
+    )
+    expect(step.harness?.skills).toEqual(["trip-research"])
+    expect(step.agentTools).toEqual(["file_write"])
+    expect(step.agentWarnings).toEqual(["no system-prompt channel"])
+  })
+
+  it("a step's own harness.skills wins over the agent ref's declared skills", () => {
+    const wf = defineWorkflow({
+      name: "Own skills",
+      id: "own-skills",
+      description: "Step pins its own skills.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "s1",
+          kind: "agent",
+          agent: { ref: "@my-app/scout" },
+          prompt: "Go.",
+          harness: { skills: ["step-skill"] },
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: { "@my-app/scout": { adapter: "opencode", skills: ["trip-research"] } },
+    })
+    expect((compiled.steps[0] as AgentStep).harness?.skills).toEqual(["step-skill"])
+  })
+
   it("explicit step.adapter and step.options override the agent-ref resolution", () => {
     const wf = defineWorkflow({
       name: "Explicit adapter",

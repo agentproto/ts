@@ -14,6 +14,9 @@ import {
   withGhTokenAlias,
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
+  buildLearnBranchCommand,
+  parseLearnedWorkBranch,
+  learnWorkBranch,
   shellQuote,
   withoutReservedSandboxEnv,
   type SandboxWorkspaceRequest,
@@ -34,8 +37,17 @@ function ok(stdout = ""): SandboxExecResult {
 }
 
 describe("planSandboxWorkspace", () => {
-  it("clones into <home>/<slug> and checks out the default branch when no worktree is requested", () => {
+  it("mints a default wt/<slug> work branch when no worktree is given", () => {
     const plan = planSandboxWorkspace(request)
+    expect(plan.checkoutDir).toBe("/home/user/agentproto")
+    expect(plan.branch).toBe("wt/minted01")
+    expect(plan.baseRef).toBe("origin/main")
+    const checkout = plan.steps.find(s => s.label === "git-checkout")?.command ?? ""
+    expect(checkout).toContain("git checkout -b 'wt/minted01' 'origin/main'")
+  })
+
+  it("clones into <home>/<slug> and checks out the default branch when worktree is false", () => {
+    const plan = planSandboxWorkspace({ ...request, worktree: false })
     expect(plan.checkoutDir).toBe("/home/user/agentproto")
     expect(plan.branch).toBeUndefined()
     expect(plan.baseRef).toBe("origin/main")
@@ -77,8 +89,8 @@ describe("planSandboxWorkspace", () => {
     expect(restore).not.toContain("agentproto-checkpoint/")
   })
 
-  it("plans no checkpoint restore without a work branch", () => {
-    const plan = planSandboxWorkspace({ ...request })
+  it("plans no checkpoint restore without a work branch (worktree: false)", () => {
+    const plan = planSandboxWorkspace({ ...request, worktree: false })
     expect(plan.steps.some(s => s.label === "restore-checkpoint")).toBe(false)
   })
 
@@ -227,5 +239,44 @@ describe("withGhTokenAlias", () => {
     const aliased = withGhTokenAlias(resolve, false)
     expect(await aliased(GH_TOKEN_ENV)).toBeNull()
     expect(await aliased("OTHER")).toBe("other")
+  })
+})
+
+describe("learnWorkBranch", () => {
+  const SHA = "b".repeat(40)
+
+  it("reads the current branch and its merge-base with the base ref in one command", () => {
+    const cmd = buildLearnBranchCommand("/home/user/agentproto", "origin/main")
+    expect(cmd).toContain("cd '/home/user/agentproto'")
+    expect(cmd).toContain("git rev-parse --abbrev-ref HEAD")
+    expect(cmd).toContain("git merge-base HEAD 'origin/main^{commit}'")
+  })
+
+  it("parses a wt/ branch with its fork point", () => {
+    expect(parseLearnedWorkBranch(`branch=wt/by-hand\nbase=${SHA}\n`)).toEqual({ branch: "wt/by-hand", baseSha: SHA })
+  })
+
+  it("keeps the branch but no baseSha when git could not compute a merge-base", () => {
+    expect(parseLearnedWorkBranch("branch=wt/by-hand\nbase=\n")).toEqual({ branch: "wt/by-hand" })
+  })
+
+  it("records nothing for the default branch, a detached HEAD or garbage", () => {
+    expect(parseLearnedWorkBranch(`branch=main\nbase=${SHA}`)).toBeUndefined()
+    expect(parseLearnedWorkBranch(`branch=HEAD\nbase=${SHA}`)).toBeUndefined()
+    expect(parseLearnedWorkBranch("")).toBeUndefined()
+  })
+
+  it("resolves undefined on a failed or throwing exec instead of throwing", async () => {
+    const failed = async () => ({ exitCode: 128, stdout: "", stderr: "fatal", durationMs: 1 })
+    expect(await learnWorkBranch(failed, "/x", "origin/main")).toBeUndefined()
+    const boom = async (): Promise<SandboxExecResult> => {
+      throw new Error("box gone")
+    }
+    expect(await learnWorkBranch(boom, "/x", "origin/main")).toBeUndefined()
+  })
+
+  it("returns the learned branch from a successful exec", async () => {
+    const exec = async () => ok(`branch=wt/by-hand\nbase=${SHA}\n`)
+    expect(await learnWorkBranch(exec, "/x", "origin/main")).toEqual({ branch: "wt/by-hand", baseSha: SHA })
   })
 })

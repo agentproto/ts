@@ -557,15 +557,71 @@ describe("restartAgentSession on a sandboxed session", () => {
       expect(registry.get(prev.id)?.status).not.toBe("running")
     })
 
-    it("still fails loud when the session has no workspace remote to resume from", async () => {
-      const { resolver, providerResolver } = await setup({ deliveryTarget: target, workspaceSlug: "agentproto" })
+    const remoteWorkspace = {
+      slug: "agentproto",
+      path: "/Users/op/projects/agentproto",
+      addedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      remote: { url: "https://github.com/acme/agentproto.git" },
+    }
+
+    it("with no recorded work branch but a workspace remote, restarts on a fresh box from the base branch", async () => {
+      wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+      const { resolver, providerResolver } = await setup({ workspaceSlug: "agentproto" })
+      const execCalls: SandboxExecOpts[] = []
       const boots = { count: 0 }
+
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: goneBoxResolver(providerResolver, execCalls, boots),
+      })
+
+      expect(boots.count).toBe(1)
+      expect(result.desc.sandboxId).toBe("sbx_fresh_2")
+      expect(result.desc.cwd).toBe("/home/user/agentproto")
+      // a fresh default work branch is cut from the base and recorded for the next restart
+      const branch = result.desc.sandboxDeliveryTarget?.branch
+      expect(branch).toMatch(/^wt\/[0-9a-f]{8}$/)
+      expect(execCalls.map(c => c.command).some(c => c.includes(`git checkout -b '${branch}' 'origin/main'`))).toBe(true)
+    })
+
+    it("a non-wt/ recorded branch is not resumed: the fresh box starts from the base branch", async () => {
+      wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+      const { resolver, providerResolver } = await setup({
+        deliveryTarget: { ...target, branch: "feature/hand-made" },
+        workspaceSlug: "agentproto",
+      })
+      const execCalls: SandboxExecOpts[] = []
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: goneBoxResolver(providerResolver, execCalls, { count: 0 }),
+      })
+      expect(result.desc.sandboxDeliveryTarget?.branch).toMatch(/^wt\//)
+      expect(execCalls.some(c => c.command.includes("feature/hand-made"))).toBe(false)
+    })
+
+    it("fails loud, saying why and how to fix it, when the workspace has no remote", async () => {
+      wsConfigState.value = {
+        version: 1,
+        workspaces: [{ ...remoteWorkspace, remote: undefined }],
+      }
+      const { resolver, providerResolver } = await setup({ workspaceSlug: "agentproto" })
+      const boots = { count: 0 }
+      const run = restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+      })
+      await expect(run).rejects.toThrow(/sbx_prev_1.*expired or is unreachable/i)
+      await expect(run).rejects.toThrow(/workspace "agentproto" has no remote configured/)
+      await expect(run).rejects.toThrow(/no work branch/)
+      await expect(run).rejects.toThrow(/agentproto workspace remote set agentproto --url … --token-stdin/)
+      expect(boots.count).toBe(0)
+    })
+
+    it("fails loud saying the workspace is no longer registered when it was removed", async () => {
+      const { resolver, providerResolver } = await setup({ deliveryTarget: target })
       await expect(
         restartAgentSession(registry, resolver, prev, {
-          resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+          resolveSandboxProvider: goneBoxResolver(providerResolver, [], { count: 0 }),
         }),
-      ).rejects.toThrow(/sbx_prev_1.*expired.*spawn a fresh session/i)
-      expect(boots.count).toBe(0)
+      ).rejects.toThrow(/workspace "default" is no longer registered.*workspace remote set default --url … --token-stdin/s)
     })
   })
 })

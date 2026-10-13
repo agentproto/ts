@@ -172,3 +172,42 @@ describe("SessionsRegistryAgentHost.spawn — harness (sandbox branch)", () => {
     vi.resetModules()
   })
 })
+
+describe("SessionsRegistryAgentHost.spawn — projected agent manifest (host branch)", () => {
+  it("surfaces agentWarnings as a session:harness-warning", async () => {
+    const { registry, sessionEvents, resolveAgentAdapter, events } = makeFixture()
+    const host = new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter)
+
+    await host.spawn("mock", { cwd: "/tmp", stepId: "s1", agentWarnings: ["agent \"scout\": no system-prompt channel"] })
+
+    const warning = events.find((e) => e.type === "session:harness-warning")
+    expect(warning && "warnings" in warning ? warning.warnings : []).toEqual(['agent "scout": no system-prompt channel'])
+  })
+
+  it("delivers harness.skills as session skills to an adapter with session-skill delivery", async () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = vi.fn(async () => ({
+      startSession,
+      commandPreview: "mock-opencode",
+      deliversSessionSkills: true,
+      declaredOptions: [],
+    }))
+    const events: SessionEvent[] = []
+    sessionEvents.onAny((ev) => events.push(ev))
+    const host = new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter, {
+      loadImportedSkills: async () => ({
+        version: 1,
+        imports: [{ id: "trip-research", alias: "trip-research", sourcePath: "/src", sha: "x", addedAt: "t" }],
+      }),
+    })
+
+    await host.spawn("opencode", { cwd: "/tmp", stepId: "s1", harness: { skills: ["trip-research", "unknown"] } })
+
+    const call = startSession.mock.calls[0]![0] as { sessionSkills?: { alias: string }[] }
+    expect(call.sessionSkills?.map((s) => s.alias)).toEqual(["trip-research"])
+    const warnings = events.flatMap((e) => (e.type === "session:harness-warning" ? e.warnings : []))
+    expect(warnings.join("\n")).toMatch(/skill "unknown" is not in the imported-skills registry/)
+  })
+})

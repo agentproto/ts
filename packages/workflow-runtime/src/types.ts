@@ -461,6 +461,11 @@ export interface AgentStep {
    *  nothing). Unset ⇒ the agent declared no tools list. Only meaningful
    *  with `adapter`; ignored on a `sessionRef` reuse. */
   agentTools?: readonly string[]
+  /** What the spawned harness cannot honour of the resolved agent manifest
+   *  (set by {@link CompileWorkflowOptions.agentRefs} resolution). Forwarded
+   *  to the host's `spawn`, which surfaces them as harness warnings on the
+   *  session — never a silent drop. */
+  agentWarnings?: readonly string[]
 }
 
 /**
@@ -631,6 +636,18 @@ export interface AgentRefResolution {
   /** AGENT.md's declared `tools` (string ids only) — becomes the compiled
    *  step's {@link AgentStep.agentTools}. */
   tools?: readonly string[]
+  /** AGENT.md's declared `skills` (string ids only), for an adapter that can
+   *  load them — the compiled step's `harness.skills` when the step pins
+   *  none of its own. */
+  skills?: readonly string[]
+  /** The AGENT.md rendered as instructions (body + persona + boundaries +
+   *  traits) for an adapter that does NOT consume the manifest itself —
+   *  prepended to the step's prompt. Absent when `options` already hands
+   *  the adapter the manifest (mastra-agent's `agent` path). */
+  instructions?: string
+  /** What `adapter` cannot honour of the manifest — becomes the compiled
+   *  step's {@link AgentStep.agentWarnings}. */
+  warnings?: readonly string[]
 }
 
 /**
@@ -756,6 +773,8 @@ export interface AgentSessionHost {
       harness?: AgentHarness
       /** The agent manifest's declared tools (see {@link AgentStep.agentTools}). */
       agentTools?: readonly string[]
+      /** See {@link AgentStep.agentWarnings}. */
+      agentWarnings?: readonly string[]
       /** Run-unique key of the spawning step when it runs inside a
        *  `map`/`pipeline` item: `stepId[<index>]`, the same key the run's step
        *  hooks report. Absent outside a fan-out (the key is then `stepId`). */

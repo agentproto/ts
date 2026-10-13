@@ -165,7 +165,7 @@ export interface SandboxAgentSessionProxyOpts {
     | "pause"
     | "mcpUrl"
   > &
-    Partial<Pick<SandboxAgentSessionHost, "close" | "extendTimeout">>
+    Partial<Pick<SandboxAgentSessionHost, "close" | "extendTimeout" | "lifetimeMs">>
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
    *  proxy's local session id (the registry mints its own on `spawnAgent`). */
   remoteSessionId: string
@@ -243,6 +243,11 @@ const REPLAY_QUIET_END_MS = 10_000
  *  moment of detach. Providers cap this on their own (e2b hobby: 1h); a
  *  rejected request leaves the box's original deadline in place. */
 export const DETACHED_BOX_LIFETIME_MS = 60 * 60_000
+
+/** Activity renewals re-arm the box at most this often. */
+export const BOX_RENEW_THROTTLE_MS = 60_000
+/** Renewal lifetime when the host reports none (`host.lifetimeMs` unset). */
+export const DEFAULT_BOX_RENEW_LIFETIME_MS = 45 * 60_000
 
 /**
  * Best-effort extraction of the prompt text from whatever `sessions.ts`'s
@@ -583,6 +588,24 @@ export function createSandboxAgentSessionProxy(
   // error surfacing (see `surfaceHostTurnErrors`).
   let turnsSent = 0
   let lastProbeState: SandboxReattachProbe["state"] | undefined
+  let lastRenewAt = 0
+
+  /** Re-arm the box's lifetime because the session is actively working.
+   *  Throttled, fire-and-forget; a failed renewal is logged, never thrown.
+   *  Only called on activity — an idle box is left to expire. */
+  const renewBoxLifetime = (): void => {
+    if (!host.extendTimeout || closed || detached) return
+    const now = Date.now()
+    if (now - lastRenewAt < BOX_RENEW_THROTTLE_MS) return
+    lastRenewAt = now
+    try {
+      host.extendTimeout(host.lifetimeMs ?? DEFAULT_BOX_RENEW_LIFETIME_MS).catch(err => {
+        console.warn("[sandbox-proxy] failed to renew box lifetime:", err)
+      })
+    } catch (err) {
+      console.warn("[sandbox-proxy] failed to renew box lifetime:", err)
+    }
+  }
 
   /** After a detach every path out of an in-flight turn lands here and never
    *  returns: a throw or a normal return would make the registry's turn loop
@@ -619,7 +642,10 @@ export function createSandboxAgentSessionProxy(
 
     if (!sseBody) {
       try {
-        yield* pollAgentOutputFallback(host, remoteSessionId, since)
+        for await (const evt of pollAgentOutputFallback(host, remoteSessionId, since)) {
+          if (quietEndMs === undefined) renewBoxLifetime()
+          yield evt
+        }
       } catch (err) {
         await parkIfDetached()
         throw err
@@ -640,6 +666,8 @@ export function createSandboxAgentSessionProxy(
         if (typeof record.seq === "number") transcriptCursor = record.seq
         const evt = recordToStreamEvent(record)
         if (!evt) continue
+        // An idle re-attach replay (`quietEndMs` set) is stale backlog, not work.
+        if (quietEndMs === undefined) renewBoxLifetime()
         if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
         else if (evt.kind === "tool-call") sawToolCall = true
         if (evt.kind === "turn-end") {
@@ -810,6 +838,7 @@ export function createSandboxAgentSessionProxy(
       // `forwardHttpStream` dial this fix removes (and would double-deliver
       // the turn). Just consume the stream below.
       if (!(opts.promptCarriedInStart && isFirstTurn)) {
+        renewBoxLifetime()
         await host.prompt(remoteSessionId, prompt)
       }
     } catch (err) {

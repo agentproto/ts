@@ -27,7 +27,6 @@ import {
   resolveAgentRefsForWorkflow,
   resolveAppToolsForWorkflow,
   sanitizeOutputBlocks,
-  buildAgentRunSpawnConfig,
   loadAgentPromptDefaults,
   resolveAgentModelRef,
 } from "../app-tools.js"
@@ -36,6 +35,7 @@ import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { boundaryFromMeta } from "../app-boundary.js"
 import { resolveCommandSandbox } from "@agentproto/command-sandbox"
 import { createSessionsRegistry } from "../sessions.js"
+import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "../app-ui-apps.js"
@@ -104,8 +104,12 @@ async function setup(opts: {
   catalogCacheDir?: string
   fallbackCatalogEntries?: RegisterAppToolsOptions["fallbackCatalogEntries"]
   waitForSessionTerminal?: (sessionId: string) => Promise<void>
+  daemonMcpUrl?: string
 } = {}) {
-  const registry = createSessionsRegistry({ persist: false })
+  const sessionEvents = createSessionEventBus()
+  const events: SessionEvent[] = []
+  sessionEvents.onAny(ev => events.push(ev))
+  const registry = createSessionsRegistry({ sessionEvents, persist: false })
   const startSession = opts.startSession ?? fakeStartSession()
   const resolveAgentAdapter: AgentAdapterResolver | undefined =
     opts.resolveAgentAdapter === null
@@ -113,12 +117,13 @@ async function setup(opts: {
       : opts.resolveAgentAdapter ??
         // The fixture agents declare a `claude-*` model, so `app_run`'s
         // per-agent F26 resolution picks claude-code for them — resolve that
-        // slug too, with the same "no option info" shape mastra-agent gets
-        // (`declaredOptions` omitted ⇒ "might declare the `agent` option"),
-        // so a run that names no adapter still spawns like before.
+        // slug too, both stubbed as taking the AGENT.md path
+        // (`agentManifestOption`), so a run that names no adapter still
+        // spawns like before. Projection onto a plain harness has its own
+        // tests below.
         (async (slug: string) =>
           slug === "mastra-agent" || slug === "claude-code"
-            ? { startSession, commandPreview: "mock-adapter" }
+            ? { startSession, commandPreview: "mock-adapter", agentManifestOption: "agent" }
             : null)
   const listRegisteredToolIds = opts.listRegisteredToolIds ?? (async () => ["known_tool"])
   const appRegistry = opts.appRegistry ?? createAppRegistry()
@@ -138,6 +143,7 @@ async function setup(opts: {
     listRegisteredToolIds,
     appRegistry,
     waitForSessionTerminal,
+    ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
     ...(resolveAgentAdapter ? { resolveAgentAdapter } : {}),
     ...(opts.dispatchTool ? { dispatchTool: opts.dispatchTool } : {}),
     ...(opts.callImportedTool ? { callImportedTool: opts.callImportedTool } : {}),
@@ -158,7 +164,7 @@ async function setup(opts: {
   await server.connect(serverTransport)
   const client = new Client({ name: "app-tools-test-client", version: "0.0.0" })
   await client.connect(clientTransport)
-  return { client, registry, startSession, appRegistry }
+  return { client, registry, startSession, appRegistry, events }
 }
 
 describe("app_* verbs", () => {
@@ -1182,47 +1188,6 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
   })
 })
 
-describe("buildAgentRunSpawnConfig (P7 deliverable 2 — multi-adapter app_run)", () => {
-  it("uses the AGENT.md body as the prompt and its frontmatter model when the caller gives neither", () => {
-    expect(buildAgentRunSpawnConfig({ model: "claude-sonnet-5", body: "You do the thing." }, {})).toEqual({
-      model: "claude-sonnet-5",
-      prompt: "You do the thing.",
-    })
-  })
-
-  it("appends a caller-given prompt after the AGENT.md body, separated by a blank line", () => {
-    expect(
-      buildAgentRunSpawnConfig(
-        { model: "claude-sonnet-5", body: "You do the thing." },
-        { prompt: "Now go do it for site X." },
-      ),
-    ).toEqual({
-      model: "claude-sonnet-5",
-      prompt: "You do the thing.\n\nNow go do it for site X.",
-    })
-  })
-
-  it("an explicit input.model wins over the AGENT.md frontmatter model", () => {
-    expect(
-      buildAgentRunSpawnConfig({ model: "claude-sonnet-5", body: "You do the thing." }, { model: "gpt-5" }),
-    ).toEqual({ model: "gpt-5", prompt: "You do the thing." })
-  })
-
-  it("a caller prompt stands alone when the AGENT.md has no body", () => {
-    expect(buildAgentRunSpawnConfig({ body: "   " }, { prompt: "hello" })).toEqual({ prompt: "hello" })
-  })
-
-  it("returns neither field when there's no body and no caller prompt or model", () => {
-    expect(buildAgentRunSpawnConfig({ body: "" }, {})).toEqual({})
-  })
-
-  it("trims the AGENT.md body before using it as the prompt", () => {
-    expect(buildAgentRunSpawnConfig({ body: "\n  You do the thing.  \n" }, {})).toEqual({
-      prompt: "You do the thing.",
-    })
-  })
-})
-
 describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
   let dir: string
   beforeEach(async () => {
@@ -1294,7 +1259,7 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     const startSession = fakeStartSession()
     const resolveAgentAdapter: AgentAdapterResolver = async slug =>
       slug === "mastra-agent"
-        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
+        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }], agentManifestOption: "agent" }
         : null
     const { client } = await setup({ resolveAgentAdapter, startSession })
     await client.callTool({ name: "app_install", arguments: { dir } })
@@ -1316,7 +1281,7 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     const startSession = fakeStartSession()
     const resolveAgentAdapter: AgentAdapterResolver = async slug =>
       slug === "mastra-agent"
-        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
+        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }], agentManifestOption: "agent" }
         : null
     const { client } = await setup({ resolveAgentAdapter, startSession })
     await client.callTool({ name: "app_install", arguments: { dir } })
@@ -1346,6 +1311,156 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     )
     expect(ran.errors).toHaveLength(1)
     expect(ran.errors[0].error).toMatch(/agent_start: no auth profile "no-such-profile" found/)
+  })
+})
+
+describe("app_run: the AGENT.md reaches every harness (AIP-42 projection)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-projection-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const DAEMON_MCP = "http://127.0.0.1:65530/mcp"
+
+  /** A trip-scout-shaped agent: its critical rules live in `boundaries`. */
+  async function emitScoutApp(adapter: string) {
+    const app = defineApp({
+      id: "@test/scout-app",
+      name: "Scout",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "scout",
+            description: "Scouts a zone.",
+            model: "opencode-go/kimi-k2",
+            metadata: { adapter },
+            boundaries: ["Never invent a sourceUrl"],
+            tools: ["file_write", "file_read"],
+            skills: ["trip-research"],
+          }),
+          body: "You are a trip scout.",
+        },
+      ],
+    })
+    await app.emit(dir)
+  }
+
+  /** `app_install` checks mastra-agent resolves; the run itself never uses it. */
+  const withInstallCheck =
+    (inner: AgentAdapterResolver): AgentAdapterResolver =>
+    async slug =>
+      slug === "mastra-agent" ? { startSession: fakeStartSession(), commandPreview: "mock-mastra" } : inner(slug)
+
+  /** A fake whose `send` records every prompt the session receives. */
+  function recordingStartSession(prompts: unknown[]) {
+    return vi.fn(async (_opts: Record<string, unknown>) => ({
+      sessionId: "adapter_projection_test",
+      // eslint-disable-next-line require-yield
+      send: async function* (prompt: unknown) {
+        prompts.push(prompt)
+      },
+      cancel: async () => {},
+      close: async () => {},
+    }))
+  }
+
+  const warningsOf = (events: SessionEvent[]): string =>
+    events.flatMap(e => (e.type === "session:harness-warning" ? e.warnings : [])).join("\n")
+
+  async function waitFor(check: () => boolean): Promise<void> {
+    for (let i = 0; i < 50 && !check(); i++) await new Promise(r => setTimeout(r, 10))
+  }
+
+  it("an opencode-like harness gets skills, the gateway tool scope and the boundaries (prefix + warning)", async () => {
+    await emitScoutApp("opencode")
+    const prompts: unknown[] = []
+    const startSession = recordingStartSession(prompts)
+    const resolveAgentAdapter: AgentAdapterResolver = withInstallCheck(async slug =>
+      slug === "opencode"
+        ? {
+            startSession,
+            commandPreview: "mock-opencode",
+            declaredOptions: [
+              { id: "model", type: "string" },
+              { id: "skills", type: "string" },
+            ],
+          }
+        : null)
+    const { client, events } = await setup({ resolveAgentAdapter, startSession, daemonMcpUrl: DAEMON_MCP })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/scout-app", prompt: "Zone: Luberon." } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    const spawnArgs = startSession.mock.calls[0]![0] as {
+      options?: Record<string, unknown>
+      model?: string
+      mcpServers?: { name: string; ref: string }[]
+    }
+    // Skills reach the harness's own `skills` option; no AGENT.md path.
+    expect(spawnArgs.options).toEqual({ skills: "trip-research" })
+    expect(spawnArgs.model).toBe("opencode-go/kimi-k2")
+    // The gateway is mounted for opencode (no default self-mount) and
+    // scoped to the declared tools, deferred loading off.
+    const gateway = spawnArgs.mcpServers?.find(m => m.name === "agentproto")
+    expect(gateway?.ref).toContain(`${DAEMON_MCP}?allowTools=file_write%2Cfile_read&deferred=0`)
+    // Body + boundaries lead the first prompt, the caller's ask after them.
+    await waitFor(() => prompts.length > 0)
+    const first = JSON.stringify(prompts[0])
+    expect(first).toContain("You are a trip scout.")
+    expect(first).toContain("Never invent a sourceUrl")
+    expect(first).toContain("Zone: Luberon.")
+    // Never silent: the prefix delivery and the unfiltered native tools are said out loud.
+    expect(warningsOf(events)).toMatch(/first prompt's prefix/)
+    expect(warningsOf(events)).toMatch(/native tools stay available/)
+  })
+
+  it("a harness that can take no skills runs without them, with a warning", async () => {
+    await emitScoutApp("codex")
+    const startSession = fakeStartSession()
+    const resolveAgentAdapter: AgentAdapterResolver = withInstallCheck(async slug =>
+      slug === "codex" ? { startSession, commandPreview: "mock-codex", declaredOptions: [] } : null)
+    const { client, events } = await setup({ resolveAgentAdapter, startSession, daemonMcpUrl: DAEMON_MCP })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    await client.callTool({ name: "app_run", arguments: { appId: "@test/scout-app" } })
+    const spawnArgs = startSession.mock.calls[0]![0] as { options?: Record<string, unknown> }
+    expect(spawnArgs.options).toBeUndefined()
+    expect(warningsOf(events)).toMatch(/cannot load skills — trip-research not delivered/)
+  })
+
+  it("antigravity's `agent` option (an agy agent NAME) is never handed the AGENT.md path", async () => {
+    await emitScoutApp("antigravity")
+    const prompts: unknown[] = []
+    const startSession = recordingStartSession(prompts)
+    const resolveAgentAdapter: AgentAdapterResolver = withInstallCheck(async slug =>
+      slug === "antigravity"
+        ? { startSession, commandPreview: "mock-agy", declaredOptions: [{ id: "agent", type: "string" }] }
+        : null)
+    const { client } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    const ran = parseToolJson(await client.callTool({ name: "app_run", arguments: { appId: "@test/scout-app" } }))
+    expect(ran.errors).toBeUndefined()
+    const spawnArgs = startSession.mock.calls[0]![0] as { options?: Record<string, unknown> }
+    expect(spawnArgs.options?.agent).toBeUndefined()
+    await waitFor(() => prompts.length > 0)
+    expect(JSON.stringify(prompts[0])).toContain("Never invent a sourceUrl")
+  })
+
+  it("without a daemon /mcp URL the tool scope is reported as not applied", async () => {
+    await emitScoutApp("opencode")
+    const startSession = fakeStartSession()
+    const resolveAgentAdapter: AgentAdapterResolver = withInstallCheck(async slug =>
+      slug === "opencode" ? { startSession, commandPreview: "mock-opencode", declaredOptions: [] } : null)
+    const { client } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    await client.callTool({ name: "app_run", arguments: { appId: "@test/scout-app" } })
+    const spawnArgs = startSession.mock.calls[0]![0] as { mcpServers?: unknown[] }
+    expect(spawnArgs.mcpServers ?? []).toEqual([])
   })
 })
 
@@ -1387,7 +1502,7 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
   function adapterResolverFor(startSession: ReturnType<typeof fakeStartSession>): AgentAdapterResolver {
     return async slug =>
       slug === "mastra-agent"
-        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
+        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }], agentManifestOption: "agent" }
         : slug === "claude-code" || slug === "opencode" || slug === "hermes"
           ? { startSession, commandPreview: `mock-${slug}`, declaredOptions: [] }
           : null
@@ -1704,9 +1819,12 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     expect(step.adapter).toBe("claude-code")
     expect(step.options).toBeUndefined()
     expect(step.model).toBe("claude-sonnet-5")
+    // claude-code doesn't consume the AGENT.md itself, so its body leads the
+    // step's prompt (agent-projection.ts) — said out loud as a warning.
     expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe(
-      "Do the thing.",
+      "You do the thing.\n\nDo the thing.",
     )
+    expect(step.agentWarnings?.join("\n")).toMatch(/first prompt's prefix/)
     // AGENT.md's declared tools ride along to scope the step's daemon mount.
     expect(step.agentTools).toEqual(["read_file", "branch_gc_verdict"])
   })
@@ -1750,14 +1868,23 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     )
     const workflowPath = installed.workflows[0].path as string
     const handle = await loadWorkflowHandle(workflowPath)
+    // mastra-agent's manifest names its AGENT.md-path option
+    // (`agentManifestOption`) — the resolver reports it.
+    const resolver: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent"
+        ? { startSession: fakeStartSession(), commandPreview: "mock", agentManifestOption: "agent" }
+        : null
     const compiled = compileWorkflow(handle, {
       tools: {},
       candidates: [],
-      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
+      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id, undefined, resolver),
     })
     const step = compiled.steps[0] as AgentStep
     expect(step.adapter).toBe("mastra-agent")
     expect(step.options).toEqual({ agent: installed.agents[0].path })
+    // The adapter renders the manifest itself: no prompt prefix, no warning.
+    expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe("Do the thing.")
+    expect(step.agentWarnings).toBeUndefined()
   })
 
   it("agent.ref resolution: an agent with an unresolvable model and no adapter override rejects instead of silently defaulting", async () => {

@@ -789,6 +789,7 @@ async function spawnOrResolveSession(
         ...(step.options !== undefined ? { options: step.options } : {}),
         ...(harness !== undefined ? { harness } : {}),
         ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
+        ...(step.agentWarnings !== undefined ? { agentWarnings: step.agentWarnings } : {}),
         ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
       })
     } catch (err) {

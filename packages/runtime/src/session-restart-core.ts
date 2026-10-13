@@ -121,9 +121,8 @@ import {
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import {
-  createDeliveryHook,
   formatDeliveryNotice,
-  sandboxCheckpointOpts,
+  trackedSandboxDeliveryOpts,
   resolveSandboxCheckpointConfig,
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
@@ -1230,13 +1229,15 @@ export async function restartAgentSession(
       // work branch out again (pushed commits + the last checkpoint snapshot,
       // see `sandbox-delivery.ts`).
       const boxGone = isSandboxBoxGoneError(err) || err instanceof SandboxHostBootFailedError
+      let freshBlocker: string | undefined
       if (boxGone) {
         const fresh = await spawnOnFreshBox(providerSlug, restartedSessionId, sandboxMcpServers)
-        if (fresh) return fresh
+        if (fresh.ok) return fresh.desc
+        freshBlocker = fresh.blocker
       }
       throw new Error(
         `restartAgentSession: sandbox "${boxSandboxId}" expired or is unreachable ` +
-          `(provider "${providerSlug}") — spawn a fresh session. ` +
+          `(provider "${providerSlug}")${freshBlocker ? ` and it cannot be restarted on a fresh box: ${freshBlocker}` : " — spawn a fresh session."} ` +
           `${err instanceof Error ? err.message : String(err)}`,
       )
     }
@@ -1308,30 +1309,23 @@ export async function restartAgentSession(
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
       ...(providerSlug.startsWith("device:") ? {} : { detachable: true }),
       ...(deliveryTarget && host.exec
-        ? {
-            onBeforeTeardown: createDeliveryHook({
-              exec: host.exec,
-              ...(host.readFile ? { readFile: host.readFile } : {}),
-              target: deliveryTarget,
-              outDir: sessionTranscriptDir(restartedSessionId),
-              snapshotUncommitted: checkpointConfig?.onTeardown ?? true,
-              onDelivery: record => {
-                registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
-              },
-            }),
-            ...sandboxCheckpointOpts(
-              {
-                exec: host.exec,
-                ...(host.readFile ? { readFile: host.readFile } : {}),
-                target: deliveryTarget,
-                outDir: sessionTranscriptDir(restartedSessionId),
-                onCheckpoint: record => {
-                  registry.recordSandboxCheckpoint(restartedSessionId, record, formatDeliveryNotice(record))
-                },
-              },
-              checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
-            ),
-          }
+        ? trackedSandboxDeliveryOpts({
+            exec: host.exec,
+            ...(host.readFile ? { readFile: host.readFile } : {}),
+            target: deliveryTarget,
+            outDir: sessionTranscriptDir(restartedSessionId),
+            config: checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            baseRef: "origin/HEAD",
+            onDelivery: record => {
+              registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
+            },
+            onCheckpoint: record => {
+              registry.recordSandboxCheckpoint(restartedSessionId, record, formatDeliveryNotice(record))
+            },
+            onTargetChanged: target => {
+              registry.setSandboxDeliveryTarget(restartedSessionId, target)
+            },
+          })
         : {}),
       watchdog: {},
     })
@@ -1350,19 +1344,38 @@ export async function restartAgentSession(
   // Set once prev's proxy was detached from the re-attached box — closing
   // prev is then safe again (its `close()` no longer touches the box).
   let priorProxyReleased = false
-  // Box gone: boot a fresh one from the workspace remote and check the work
-  // branch out again. `undefined` when the session has nothing to resume
-  // from (no work branch, or its workspace no longer carries a remote) — the
-  // caller then reports the dead box as before.
+  // Box gone: boot a fresh one from the workspace remote. With a recorded
+  // `wt/` work branch it is checked out again (pushed commits + checkpoint
+  // snapshot); without one the fresh box starts from the workspace's base
+  // branch on a new default work branch. `blocker` says why the restart
+  // cannot proceed — only when the workspace has no remote to clone.
   const spawnOnFreshBox = async (
     providerSlug: string,
     restartedSessionId: string,
     sandboxMcpServers: SessionDescriptor["mcpServers"],
-  ): Promise<SessionDescriptor | undefined> => {
+  ): Promise<{ ok: true; desc: SessionDescriptor } | { ok: false; blocker: string }> => {
     const target = prev.sandboxDeliveryTarget
-    if (!target || !prev.workspaceSlug || !target.branch.startsWith(SANDBOX_BRANCH_PREFIX)) return undefined
+    const resumeBranch = target?.branch.startsWith(SANDBOX_BRANCH_PREFIX) ? target.branch : undefined
+    const noBranchNote = resumeBranch ? "" : " and the session recorded no work branch to resume from"
+    if (!prev.workspaceSlug) {
+      return {
+        ok: false,
+        blocker:
+          `the session is not tied to a registered workspace${noBranchNote}, so there is no remote to clone ` +
+          "into a new box. Spawn a fresh session on a workspace that has a remote " +
+          "(`agentproto workspace remote set <slug> --url … --token-stdin`).",
+      }
+    }
     const workspace = findWorkspace(await loadWorkspacesConfig(), prev.workspaceSlug)
-    if (!workspace?.remote) return undefined
+    if (!workspace?.remote) {
+      return {
+        ok: false,
+        blocker:
+          `workspace "${prev.workspaceSlug}" ${workspace ? "has no remote configured" : "is no longer registered"}` +
+          `${noBranchNote}, so a new box has nothing to clone. Configure one with ` +
+          `\`agentproto workspace remote set ${prev.workspaceSlug} --url … --token-stdin\` and restart the session.`,
+      }
+    }
     const booted = await bootSandboxAgentSession({
       sandbox: providerSlug,
       resolveSandboxProvider: opts.resolveSandboxProvider,
@@ -1378,13 +1391,16 @@ export async function restartAgentSession(
       ...(prev.label ? { label: prev.label } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
       workspace: { slug: workspace.slug, remote: workspace.remote },
-      worktree: { slug: target.branch.slice(SANDBOX_BRANCH_PREFIX.length) },
+      ...(resumeBranch ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } } : {}),
       sessionId: restartedSessionId,
       onDelivery: record => {
         registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
       },
       onCheckpoint: record => {
         registry.recordSandboxCheckpoint(restartedSessionId, record, formatDeliveryNotice(record))
+      },
+      onDeliveryTargetChanged: target => {
+        registry.setSandboxDeliveryTarget(restartedSessionId, target)
       },
     })
     if (booted.ok) movedToFreshBox = true
@@ -1394,15 +1410,18 @@ export async function restartAgentSession(
           `workspace "${workspace.slug}" could not be started — ${booted.message}`,
       )
     }
-    return registerBoxSession(restartedSessionId, sandboxMcpServers, {
-      agentSession: booted.agentSession,
-      sandboxId: booted.sandboxId,
-      provider: booted.provider,
-      sandboxTeardown: booted.sandboxTeardown,
-      cwd: booted.cwd,
-      ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
-      ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
-    })
+    return {
+      ok: true,
+      desc: registerBoxSession(restartedSessionId, sandboxMcpServers, {
+        agentSession: booted.agentSession,
+        sandboxId: booted.sandboxId,
+        provider: booted.provider,
+        sandboxTeardown: booted.sandboxTeardown,
+        cwd: booted.cwd,
+        ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
+        ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
+      }),
+    }
   }
 
   const registerBoxSession = (

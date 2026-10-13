@@ -15,6 +15,7 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineAgent } from "./define-agent.js"
 export { loadAgent } from "./load-agent.js"
+export { composeInstructions } from "./instructions.js"
 export {
   validateExtendsChain,
   EXTENDS_MAX_DEPTH,

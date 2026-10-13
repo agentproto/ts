@@ -20,10 +20,13 @@ import { loadAppHandle } from "@agentproto/app-kit"
 import type { AppRegistry } from "./app-registry.js"
 import {
   A2A_SUPPORTED_VERSIONS,
+  A2A_TASK_STATE_VALUES,
   JSON_RPC_ERROR,
   buildTask,
   buildWorkflowTask,
   createA2aTaskLedger,
+  decodePageToken,
+  encodePageToken,
   extractLastAssistantText,
   extractSkillRequest,
   mapAppArtifact,
@@ -39,6 +42,7 @@ import {
   type A2aRunView,
   type A2aTask,
   type A2aTaskLedger,
+  type A2aTaskState,
   type A2aWorkflowRunView,
   type JsonRpcId,
   type JsonRpcResponse,
@@ -61,6 +65,11 @@ export interface A2aTaskHttpDeps extends A2aTaskHttpConfig {
 
 const A2A_APP_PATH_RE = /^\/a2a\/apps\/(.+)$/
 const MAX_BODY_BYTES = 1024 * 1024
+const A2A_TASK_STATES: ReadonlySet<string> = new Set<string>(A2A_TASK_STATE_VALUES)
+/** With a `status` / `statusTimestampAfter` filter, `ListTasks` reads the
+ *  newest this many ledger entries and keeps the matches. */
+const LIST_TASKS_FILTER_CAP = 500
+const LIST_TASKS_DEFAULT_PAGE_SIZE = 50
 
 class RpcFailure extends Error {
   constructor(
@@ -369,9 +378,111 @@ export async function handleA2aTaskRequest(
         send(res, 200, { jsonrpc: "2.0", id, result: await readTask(params.id) })
         return true
       }
+      case "ListTasks": {
+        let pageSize = LIST_TASKS_DEFAULT_PAGE_SIZE
+        if (params.pageSize !== undefined) {
+          if (typeof params.pageSize !== "number" || !Number.isInteger(params.pageSize) || params.pageSize < 1 || params.pageSize > 100) {
+            throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "params.pageSize must be an integer between 1 and 100")
+          }
+          pageSize = params.pageSize
+        }
+        let offset = 0
+        if (params.pageToken !== undefined) {
+          if (typeof params.pageToken !== "string") throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "params.pageToken must be a string")
+          const decoded = decodePageToken(params.pageToken)
+          if (decoded === undefined) throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "params.pageToken is not a valid page token")
+          offset = decoded
+        }
+        let status: A2aTaskState | undefined
+        if (params.status !== undefined) {
+          if (typeof params.status !== "string" || !A2A_TASK_STATES.has(params.status)) {
+            throw new RpcFailure(JSON_RPC_ERROR.invalidParams, `params.status is not a valid task state: ${JSON.stringify(params.status)}`)
+          }
+          status = params.status as A2aTaskState
+        }
+        let statusAfterMs: number | undefined
+        if (params.statusTimestampAfter !== undefined) {
+          if (typeof params.statusTimestampAfter !== "string") {
+            throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "params.statusTimestampAfter must be a string")
+          }
+          statusAfterMs = Date.parse(params.statusTimestampAfter)
+          if (!Number.isFinite(statusAfterMs)) {
+            throw new RpcFailure(JSON_RPC_ERROR.invalidParams, `params.statusTimestampAfter is not a parsable ISO timestamp: ${params.statusTimestampAfter}`)
+          }
+        }
+        const includeArtifacts = params.includeArtifacts === true
+        const historyLength =
+          typeof params.historyLength === "number" && Number.isInteger(params.historyLength) && params.historyLength >= 0
+            ? params.historyLength
+            : undefined
+
+        /** A ledger entry whose backing run is gone is skipped, not fatal. */
+        const readTaskIfPresent = async (taskId: string): Promise<A2aTask | undefined> => {
+          try {
+            return await readTask(taskId)
+          } catch (err) {
+            if (err instanceof RpcFailure && err.code === JSON_RPC_ERROR.taskNotFound) return undefined
+            throw err
+          }
+        }
+
+        let entries = await ledger.list(appId)
+        if (typeof params.contextId === "string" && params.contextId !== "") {
+          const contextId = params.contextId
+          entries = entries.filter(entry => entry.contextId === contextId)
+        }
+        let totalSize: number
+        let pageTasks: A2aTask[]
+        if (status === undefined && statusAfterMs === undefined) {
+          totalSize = entries.length
+          pageTasks = []
+          for (const entry of entries.slice(offset, offset + pageSize)) {
+            const task = await readTaskIfPresent(entry.taskId)
+            if (task) pageTasks.push(task)
+          }
+        } else {
+          // Status / timestamp filters must read each candidate task, so only
+          // the LIST_TASKS_FILTER_CAP newest entries are considered.
+          const matches: A2aTask[] = []
+          for (const entry of entries.slice(0, LIST_TASKS_FILTER_CAP)) {
+            const task = await readTaskIfPresent(entry.taskId)
+            if (!task) continue
+            if (status !== undefined && task.status.state !== status) continue
+            if (statusAfterMs !== undefined) {
+              const ts = task.status.timestamp === undefined ? NaN : Date.parse(task.status.timestamp)
+              if (!Number.isFinite(ts) || ts <= statusAfterMs) continue
+            }
+            matches.push(task)
+          }
+          totalSize = matches.length
+          pageTasks = matches.slice(offset, offset + pageSize)
+        }
+        const tasks = pageTasks.map(task => {
+          const history =
+            historyLength === undefined ? task.history : historyLength === 0 ? undefined : task.history?.slice(-historyLength)
+          return {
+            id: task.id,
+            ...(task.contextId !== undefined ? { contextId: task.contextId } : {}),
+            status: task.status,
+            ...(includeArtifacts && task.artifacts !== undefined ? { artifacts: task.artifacts } : {}),
+            ...(history !== undefined && history.length > 0 ? { history } : {}),
+            ...(task.metadata !== undefined ? { metadata: task.metadata } : {}),
+          }
+        })
+        send(res, 200, {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            tasks,
+            nextPageToken: offset + pageSize < totalSize ? encodePageToken(offset + pageSize) : "",
+            pageSize,
+            totalSize,
+          },
+        })
+        return true
+      }
       case "SendStreamingMessage":
       case "SubscribeToTask":
-      case "ListTasks":
         throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "${method}" is not supported by this endpoint`)
       case "GetExtendedAgentCard":
         throw new RpcFailure(JSON_RPC_ERROR.extendedAgentCardNotConfigured, "this agent has no extended agent card")

@@ -219,9 +219,39 @@ workflow's output is an object, a `text` part (`String(output)`) otherwise. A
 `failed` run puts the run's error in `status.message` as a `ROLE_AGENT`
 message and carries no artifacts.
 
+## List tasks
+
+`ListTasks` pages through every task the endpoint created for the app, newest
+first. All params are optional:
+
+| Param | Meaning |
+| --- | --- |
+| `contextId` | Only tasks of that context. |
+| `status` | Only tasks in that `TASK_STATE_*`. |
+| `pageSize` | 1–100, default 50. Outside that range is `invalid params`. |
+| `pageToken` | Opaque token from a previous reply's `nextPageToken`. |
+| `historyLength` | `0` drops each task's `history`; `n > 0` keeps its last `n` messages. |
+| `statusTimestampAfter` | Only tasks whose status timestamp is after this ISO timestamp. |
+| `includeArtifacts` | `true` keeps each task's `artifacts`; the default drops them. |
+
+```json
+{ "jsonrpc": "2.0", "id": 4, "method": "ListTasks",
+  "params": { "pageSize": 2, "status": "TASK_STATE_COMPLETED" } }
+```
+
+The result is `{ tasks, nextPageToken, pageSize, totalSize }`; tasks are
+ordered newest first (by ledger creation, ties broken by write order), and
+`nextPageToken` is `""` on the last page. Feeding a token back with the same
+filters yields the next page; `totalSize` is the number of matching tasks.
+
+With a `status` or `statusTimestampAfter` filter the daemon has to read each
+candidate task, so only the **500 newest** ledger entries are considered for
+the match. A ledger entry whose backing run is gone is skipped rather than
+failing the call.
+
 ## What is not supported yet
 
-- `SendStreamingMessage`, `SubscribeToTask` and `ListTasks` return
+- `SendStreamingMessage` and `SubscribeToTask` return
   `unsupported operation`: poll `GetTask` instead.
 - Push notifications and the extended Agent Card are not configured.
 - Only A2A version `1.0` is accepted (`A2A-Version` header or `?version=`

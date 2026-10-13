@@ -4731,6 +4731,13 @@ export interface SessionsRegistry {
    */
   recordSandboxCheckpoint(id: string, record: SandboxDeliveryRecord, notice: string): boolean
   /**
+   * Replace a box session's delivery target — the turn-end safety net found
+   * the agent on a different `wt/` branch than the one recorded. No notice,
+   * no transcript write: it only updates the field a restart reads. Returns
+   * false for an unknown id or a non-`agent-cli` session.
+   */
+  setSandboxDeliveryTarget(id: string, target: SandboxDeliveryTarget): boolean
+  /**
    * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
    * `device-mirror.ts`) into an agent-cli session's durable transcript.
    * Each record already carries its own `kind` + `origin: "device"` +
@@ -12302,6 +12309,13 @@ export function createSessionsRegistry(opts?: {
         appendLine(rt, notice, "stdout")
         transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: notice })
       }
+      schedulePersist()
+      return true
+    },
+    setSandboxDeliveryTarget(id, target) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.kind !== "agent-cli") return false
+      rt.desc.sandboxDeliveryTarget = target
       schedulePersist()
       return true
     },
