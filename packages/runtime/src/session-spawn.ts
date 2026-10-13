@@ -43,6 +43,12 @@ import {
 import { loadBundles, type BundlesFile } from "./bundles.js"
 import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 import {
+  loadImportedSkills,
+  resolveSessionSkills,
+  type ImportedSkillsConfig,
+  type ResolvedSessionSkill,
+} from "./skill-imports.js"
+import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
@@ -1067,6 +1073,10 @@ export interface SpawnAgentSessionDeps {
    *  `mcpImports` ids to their alias/snapshot and detects dangling ones.
    *  Defaults to the real loader when omitted; tests inject a stub. */
   loadImportedMcpsConfig?: () => Promise<ImportedMcpsConfig>
+  /** Loads `~/.agentproto/imported-skills.json` — resolves a spawn's resolved
+   *  skill ids to the imported copies delivered to the child's session config
+   *  dir. Defaults to the real loader when omitted; tests inject a stub. */
+  loadImportedSkillsConfig?: () => Promise<ImportedSkillsConfig>
   /** Builds the per-session headless-browser mount for `browser:
    *  "headless"` (see `browser-mount.ts`). Defaults to the real resolver
    *  (installs chrome-devtools-mcp on first use); tests inject a stub. */
@@ -2773,6 +2783,23 @@ export async function spawnAgentSession(
     bundleSkillsUnion.size > 0
       ? { ...baseSpawnDefaults, skills: Array.from(new Set([...baseSpawnDefaults.skills, ...bundleSkillsUnion])) }
       : baseSpawnDefaults
+  // ── Skill imports (per-session delivery) ──────────────────────────
+  // Resolve the imported subset of the resolved `skills` list into concrete
+  // `{alias, path}` entries the driver copies into the child's session config
+  // dir (see the adapter manifests' `metadata.sessionSkills`). Runs only when
+  // there ARE skills — a plain spawn does no registry read. Non-imported ids
+  // are warnings, never throws (mirrors `mountImports`), and stay in the
+  // adapter-facing `spawnDefaults.skills` above unchanged (hermes' comma-joined
+  // `options.skills` behaviour is untouched).
+  let sessionSkills: ResolvedSessionSkill[] = []
+  if (spawnDefaults.skills.length > 0) {
+    const importedSkills = deps.loadImportedSkillsConfig
+      ? await deps.loadImportedSkillsConfig()
+      : await loadImportedSkills()
+    const resolvedSkills = resolveSessionSkills(spawnDefaults.skills, importedSkills)
+    sessionSkills = resolvedSkills.resolved
+    spawnWarnings.push(...resolvedSkills.warnings)
+  }
   const resolvedContextContinuity: ResolvedContextContinuityPolicy =
     resolveContextContinuityPolicy(
       undefined,
@@ -3718,6 +3745,7 @@ export async function spawnAgentSession(
             // can hand the respawned adapter the same dir (native-resume
             // store). Adapters that don't isolate a config dir ignore it.
             configDir: adapterConfigDirFor(mintedSessionId),
+            ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
             ...(input.mode ? { mode: input.mode } : {}),
             ...(launchConfig.options ? { options: launchConfig.options } : {}),
             ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
@@ -3977,6 +4005,7 @@ export async function spawnAgentSession(
         // the respawned adapter the same dir (native-resume store).
         // Adapters that don't isolate a config dir ignore it.
         configDir: adapterConfigDirFor(mintedSessionId),
+        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(launchConfig.options ? { options: launchConfig.options } : {}),
         ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),

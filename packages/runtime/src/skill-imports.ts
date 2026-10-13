@@ -145,6 +145,55 @@ export function resolveImportedSkill(
   return config.imports.find(e => e.id === idOrAlias || e.alias === idOrAlias)
 }
 
+/** A skill resolved for per-session delivery: the alias names the dir the
+ *  driver copies into, `path` is the durable imported copy (NOT `sourcePath`). */
+export interface ResolvedSessionSkill {
+  alias: string
+  path: string
+}
+
+export interface ResolveSessionSkillsResult {
+  resolved: ResolvedSessionSkill[]
+  warnings: string[]
+}
+
+/**
+ * Map a spawn's resolved skill ids onto the imported registry. Each id matches
+ * by `id` OR `alias`. An id that isn't imported is NOT an error — it stays in
+ * the adapter-facing `skills` list (hermes resolves it; others may
+ * auto-discover) — but it IS reported as a warning so the operator can see why
+ * nothing was delivered for it (same shape/style as `mountImports` warnings).
+ * Duplicate matches (id and alias both listed) collapse to one delivery.
+ *
+ * `path` points at the copied tree under the registry root, not the entry's
+ * `sourcePath`: delivery must survive the source folder moving or being
+ * deleted (that's the whole point of importing a snapshot).
+ */
+export function resolveSessionSkills(
+  ids: readonly string[],
+  config: ImportedSkillsConfig,
+  root: string = IMPORTED_SKILLS_ROOT()
+): ResolveSessionSkillsResult {
+  const resolved: ResolvedSessionSkill[] = []
+  const warnings: string[] = []
+  const seen = new Set<string>()
+  for (const id of ids) {
+    const entry = resolveImportedSkill(config, id)
+    if (!entry) {
+      warnings.push(
+        `agent_start: skill "${id}" is not in the imported-skills registry — not ` +
+          "delivered to this session. Import it with the skill_import tool to have " +
+          "it delivered.",
+      )
+      continue
+    }
+    if (seen.has(entry.id)) continue
+    seen.add(entry.id)
+    resolved.push({ alias: entry.alias, path: skillImportDir(entry.id, root) })
+  }
+  return { resolved, warnings }
+}
+
 /**
  * Parse a `SKILL.md`'s frontmatter, enforcing the AIP-3 minimum (a valid
  * `name` + a `description`). Throws with a field-naming message.
