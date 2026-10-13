@@ -81,7 +81,7 @@ const AUTH_RE =
 const RATE_LIMIT_RE =
   /\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b|\bresource[ _-]exhausted\b|\bthrottl(?:ed|ing)\b/i
 const UPSTREAM_5XX_RE =
-  /\binternal server error\b|\bbad gateway\b|\bservice unavailable\b|\bgateway time-?out\b|\boverloaded(?:_error)?\b|\bupstream (?:error|connect|request timeout)\b|\bserver_error\b|\bendpoint (?:is (?:currently )?)?unavailable\b/i
+  /\binternal server error\b|\bbad gateway\b|\bservice unavailable\b|\bgateway time-?out\b|\boverloaded(?:_error)?\b|\bupstream (?:error|connect|request timeout)\b|\bserver_error\b|\bendpoint (?:is )?(?:currently )?unavailable\b/i
 
 /**
  * Classify a turn's error text. Order matters: the stall marker is exact;

@@ -58,6 +58,7 @@ describe("classifyTurnError", () => {
     ["context length exceeded: max_tokens 500", "other"],
     ["Internal error: API Error: 400 ...", "other"],
     ["missing_required_parameter: Missing required parameter 'messages[2].reasoning_content'", "other"],
+    [NO_OUTPUT_STALL_MARKER, "no-output-stall"],
     [undefined, "other"],
   ])("%s → %s", (message, expected) => {
     expect(classifyTurnError(message)).toBe(expected)
