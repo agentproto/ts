@@ -664,6 +664,22 @@ POSTs `/sessions/:id/pin`. A pinned session sorts to the top of the
 indicator. Pinning is list-visibility only — it has no effect on
 keep-alive, the idle reaper, or notifications.
 
+### `POST /sessions/:id/archive` (HTTP)
+
+```bash
+curl -X POST http://127.0.0.1:<port>/sessions/ses_abc12/archive
+```
+
+HTTP twin of the `session_archive` MCP verb, placed next to `/pin` for
+clients that only speak HTTP (e.g. a UI archiving its own throwaway
+sessions). Hides a **terminal** session (exited/killed/error) from the
+default `GET /sessions` list; the transcript stays readable and
+`?includeArchived=true` still returns it. Returns
+`{ ok, sessionId, archived: true, archivedAt }`. A session that is still
+running/starting is refused with `409 session_not_terminal` (kill it first),
+and an unknown id is `404 session_not_found`. Archiving an already-archived
+session is a no-op `200`.
+
 ### `mirror <id-or-name>`
 
 ```bash

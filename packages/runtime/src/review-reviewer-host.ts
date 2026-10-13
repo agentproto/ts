@@ -301,6 +301,13 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         // already gone
       }
     }
+    const archive = () => {
+      try {
+        if (!registry.get(sessionId)?.archived) registry.archiveSession(sessionId)
+      } catch {
+        // Best-effort: a refused archive just leaves the row visible.
+      }
+    }
     // Cancel = kill through the lifecycle; the kill's `session:exited`
     // settles the wait below.
     const onAbort = () => kill()
@@ -372,9 +379,12 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     } finally {
       input.signal?.removeEventListener("abort", onAbort)
       // One-shot reviewer: its verdict is on disk (or it failed) — release
-      // the adapter process. The session row and transcript stay
-      // inspectable.
+      // the adapter process, then archive the row so finished lanes don't
+      // pile up in the session list. `kill()` flips the status to a terminal
+      // one synchronously (what `archiveSession` requires); the transcript
+      // stays readable. By now the result (incl. `withModel`) is built.
       kill()
+      archive()
     }
   }
 

@@ -20,7 +20,7 @@ function normalizeOrigin(
   }
 }
 
-/** Resolve the daemon HTTP origin as seen by one proxied request. */
+/** Resolve the daemon HTTP origin as seen by one proxied request, honoring X-Forwarded-Host. */
 export function resolveRequestHttpBaseUrl(
   headers: IncomingHttpHeaders,
   configuredOrigin = process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN,
@@ -34,10 +34,17 @@ export function resolveRequestHttpBaseUrl(
     ?.trim()
     .toLowerCase()
   const protocol = firstForwarded === "https" ? "https" : "http"
-  return (
-    normalizeOrigin(`${protocol}://${headers.host ?? "127.0.0.1"}`, HTTP_PROTOCOLS) ??
-    `${protocol}://127.0.0.1`
-  )
+
+  const forwardedHost = headers["x-forwarded-host"]
+  const firstForwardedHost = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost)
+    ?.split(",")[0]
+    ?.trim()
+  for (const host of [firstForwardedHost, headers.host, "127.0.0.1"]) {
+    if (!host) continue
+    const origin = normalizeOrigin(`${protocol}://${host}`, HTTP_PROTOCOLS)
+    if (origin) return origin
+  }
+  return `${protocol}://127.0.0.1`
 }
 
 /** Resolve the public HTTP + PTY WebSocket origins used at gateway boot. */

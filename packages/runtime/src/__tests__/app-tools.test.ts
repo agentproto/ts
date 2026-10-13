@@ -111,8 +111,15 @@ async function setup(opts: {
     opts.resolveAgentAdapter === null
       ? undefined
       : opts.resolveAgentAdapter ??
+        // The fixture agents declare a `claude-*` model, so `app_run`'s
+        // per-agent F26 resolution picks claude-code for them — resolve that
+        // slug too, with the same "no option info" shape mastra-agent gets
+        // (`declaredOptions` omitted ⇒ "might declare the `agent` option"),
+        // so a run that names no adapter still spawns like before.
         (async (slug: string) =>
-          slug === "mastra-agent" ? { startSession, commandPreview: "mock-adapter" } : null)
+          slug === "mastra-agent" || slug === "claude-code"
+            ? { startSession, commandPreview: "mock-adapter" }
+            : null)
   const listRegisteredToolIds = opts.listRegisteredToolIds ?? (async () => ["known_tool"])
   const appRegistry = opts.appRegistry ?? createAppRegistry()
   // Default sequential waiter: immediately flip the spawned session to a
@@ -476,7 +483,7 @@ describe("app_* verbs", () => {
     const { client, registry, appRegistry } = await setup({
       startSession,
       resolveAgentAdapter: async (slug: string) =>
-        slug === "mastra-agent"
+        slug === "mastra-agent" || slug === "claude-code"
           ? { startSession, commandPreview: "mock-adapter", supportsFsZones: true, supportsHostContextIsolation: true }
           : null,
     })
@@ -1292,14 +1299,19 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     const { client } = await setup({ resolveAgentAdapter, startSession })
     await client.callTool({ name: "app_install", arguments: { dir } })
 
-    await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } })
+    // Pinned so the fixture's `claude-*` model (which now resolves claude-code
+    // per agent) can't win: this is the mastra-agent `agent`-option path.
+    await client.callTool({
+      name: "app_run",
+      arguments: { appId: "@test/fixture-app", adapter: "mastra-agent" },
+    })
 
     const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
     expect(spawnArgs.model).toBe("claude-sonnet-5")
     expect(spawnArgs.options).toEqual({ agent: expect.stringContaining("AGENT.md") })
   })
 
-  it("keeps pointing mastra-agent at the AGENT.md path via the `agent` option (unchanged default behaviour)", async () => {
+  it("keeps pointing mastra-agent at the AGENT.md path via the `agent` option", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
     const startSession = fakeStartSession()
     const resolveAgentAdapter: AgentAdapterResolver = async slug =>
@@ -1309,7 +1321,10 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     const { client } = await setup({ resolveAgentAdapter, startSession })
     await client.callTool({ name: "app_install", arguments: { dir } })
 
-    await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } })
+    await client.callTool({
+      name: "app_run",
+      arguments: { appId: "@test/fixture-app", adapter: "mastra-agent" },
+    })
     const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
     expect(spawnArgs.options).toEqual({ agent: expect.stringContaining("AGENT.md") })
   })
@@ -1331,6 +1346,193 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     )
     expect(ran.errors).toHaveLength(1)
     expect(ran.errors[0].error).toMatch(/agent_start: no auth profile "no-such-profile" found/)
+  })
+})
+
+describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harness)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-per-agent-adapter-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  /** Emit an app whose agents vary only in `model`/`metadata` — the two inputs
+   *  per-agent adapter resolution reads. */
+  async function emitAgentsApp(
+    appId: string,
+    agents: Array<{ id: string; model: string; metadata?: Record<string, unknown> }>,
+  ) {
+    const app = defineApp({
+      id: appId,
+      name: appId,
+      agents: agents.map(a => ({
+        agent: defineAgent({
+          schema: "agent/v1",
+          id: a.id,
+          description: `${a.id} agent.`,
+          model: a.model,
+          ...(a.metadata !== undefined ? { metadata: a.metadata } : {}),
+        }),
+        body: `Body of ${a.id}.`,
+      })),
+    })
+    await app.emit(dir)
+  }
+
+  /** mastra-agent can be pointed at the AGENT.md path; claude-code/opencode
+   *  positively declare options WITHOUT `agent` (the fallback-path signal). */
+  function adapterResolverFor(startSession: ReturnType<typeof fakeStartSession>): AgentAdapterResolver {
+    return async slug =>
+      slug === "mastra-agent"
+        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
+        : slug === "claude-code" || slug === "opencode"
+          ? { startSession, commandPreview: `mock-${slug}`, declaredOptions: [] }
+          : null
+  }
+
+  it("an AGENT.md `metadata.adapter` beats the model-based default and the blanket default", async () => {
+    // Non-claude model ⇒ the model-based default would be mastra-agent; the
+    // metadata override is what has to win.
+    await emitAgentsApp("@test/meta-adapter-app", [
+      { id: "meta-worker", model: "gpt-5", metadata: { adapter: "claude-code" } },
+    ])
+    const startSession = fakeStartSession()
+    const { client, appRegistry, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/meta-adapter-app" } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    expect(ran.adapter).toBe("claude-code")
+    expect(ran.harness).toBe("claude-code")
+    const run = appRegistry.getRun(ran.appRunId)!
+    expect(run.adapter).toBe("claude-code")
+    expect(run.harness).toBe("claude-code")
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("claude-code")
+    expect(desc.harness).toBe("claude-code")
+    // claude-code's manifest declares no `agent` option ⇒ no path-pointing.
+    expect(startSession.mock.calls[0]![0].options).toBeUndefined()
+  })
+
+  it("a `claude-*` AGENT.md model with no metadata resolves to claude-code (the A2A SendMessage case)", async () => {
+    await emitAgentsApp("@test/claude-model-app", [{ id: "claude-worker", model: "claude-haiku-5-5" }])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/claude-model-app" } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("claude-code")
+    expect(desc.model).toBe("claude-haiku-5-5")
+    expect(startSession.mock.calls[0]![0].options).toBeUndefined()
+  })
+
+  it("an `input.model` steers the model-based default instead of the AGENT.md model", async () => {
+    // AGENT.md says gpt-5 (mastra-agent by default); the caller-pinned model
+    // is what the adapter decision must use.
+    await emitAgentsApp("@test/model-override-app", [{ id: "gpt-worker", model: "gpt-5" }])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/model-override-app", model: "claude-haiku-5-5" },
+      }),
+    )
+    expect(ran.errors).toBeUndefined()
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("claude-code")
+    expect(desc.model).toBe("claude-haiku-5-5")
+  })
+
+  it("a non-claude model with no metadata keeps today's mastra-agent spawn (with the `agent` option)", async () => {
+    await emitAgentsApp("@test/plain-model-app", [{ id: "gpt-worker", model: "gpt-5" }])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/plain-model-app" } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("mastra-agent")
+    expect(startSession.mock.calls[0]![0].options).toEqual({ agent: expect.stringContaining("AGENT.md") })
+  })
+
+  it("a caller-given `adapter` wins for EVERY agent, over its AGENT.md metadata", async () => {
+    await emitAgentsApp("@test/caller-wins-app", [
+      { id: "meta-worker", model: "gpt-5", metadata: { adapter: "claude-code" } },
+      { id: "plain-worker", model: "gpt-5" },
+    ])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/caller-wins-app", adapter: "opencode" },
+      }),
+    )
+    expect(ran.errors).toBeUndefined()
+    expect(ran.adapter).toBe("opencode")
+    expect(ran.harness).toBe("opencode")
+    expect(startSession).toHaveBeenCalledTimes(2)
+    for (const s of ran.sessions) {
+      expect(registry.get(s.sessionId)!.adapterSlug).toBe("opencode")
+    }
+  })
+
+  it("two agents in one run resolve to different adapters — each spawn gets its own", async () => {
+    await emitAgentsApp("@test/mixed-adapters-app", [
+      { id: "claude-worker", model: "claude-sonnet-5" },
+      { id: "gpt-worker", model: "gpt-5" },
+    ])
+    const startSession = fakeStartSession()
+    const { client, registry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/mixed-adapters-app" } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    expect(ran.sessions.map((s: { agentId: string }) => s.agentId)).toEqual(["claude-worker", "gpt-worker"])
+    expect(registry.get(ran.sessions[0].sessionId)!.adapterSlug).toBe("claude-code")
+    expect(registry.get(ran.sessions[1].sessionId)!.adapterSlug).toBe("mastra-agent")
+    // Each spawn was shaped for ITS adapter: claude-code can't take the
+    // `agent` option, mastra-agent still gets it.
+    expect(startSession.mock.calls[0]![0].options).toBeUndefined()
+    expect(startSession.mock.calls[1]![0].options).toEqual({ agent: expect.stringContaining("AGENT.md") })
+    // The run itself reports the FIRST agent's resolved runner.
+    expect(ran.adapter).toBe("claude-code")
   })
 })
 
