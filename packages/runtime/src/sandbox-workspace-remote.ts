@@ -100,6 +100,10 @@ export interface SandboxWorkspaceRequest {
   worktree?: { slug?: string; base?: string }
   /** Mints a slug when `worktree` is requested without one. */
   mintSlug: () => string
+  /** Remote branch namespace the checkpoint snapshot is read back from — must
+   *  match the `refPrefix` the checkpoint was pushed with. Default
+   *  {@link CHECKPOINT_BRANCH_PREFIX}. */
+  checkpointRefPrefix?: string
 }
 
 export interface SandboxSetupStep {
@@ -209,7 +213,7 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
         `else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
       timeoutMs: STEP_TIMEOUT_MS,
     })
-    const checkpoint = shellQuote(`refs/remotes/origin/${CHECKPOINT_BRANCH_PREFIX}${branch}`)
+    const checkpoint = shellQuote(`refs/remotes/origin/${req.checkpointRefPrefix ?? CHECKPOINT_BRANCH_PREFIX}${branch}`)
     steps.push({
       label: "restore-checkpoint",
       // A dead box's uncommitted work, snapshotted by `sandbox-delivery`: put

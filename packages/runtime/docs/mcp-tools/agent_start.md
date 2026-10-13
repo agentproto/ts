@@ -589,3 +589,25 @@ combining the two is rejected. Defaults to true for any spawn that
 provisions a worktree, UNLESS this call also sets `wait` (which falls back
 to the old synchronous path instead of conflicting). Pass `false`
 explicitly to force the old blocking ok/fail contract even without `wait`.
+
+## sandboxCheckpoint
+
+Per-spawn override of the sandbox checkpoint safety net — only meaningful
+for a `sandbox` spawn that also has a workspace-remote delivery target
+(`workspaceSlug` + `worktree`, so there's a branch to checkpoint). The
+daemon force-pushes a snapshot of uncommitted work to a side ref
+(`agentproto-checkpoint/<branch>` by default) at every turn end and once
+more at teardown, so work is never lost to a box that dies abruptly — see
+`defaults.sandbox.checkpoint` in config.json for the daemon-wide default
+this overrides.
+
+`false` disables checkpointing entirely for this spawn (teardown still
+delivers the branch itself — pushes committed commits — it just stops
+rescuing uncommitted work). An object overrides individual knobs over the
+global default: `enabled` (master switch), `on` (`["turn-end",
+"teardown"]` — which triggers take a checkpoint; `"turn-end"` controls the
+periodic timer AND the per-turn hook together, `"teardown"` controls
+whether the teardown delivery snapshots uncommitted work or only counts
+it), `refPrefix` (remote branch namespace the snapshot lands under —
+changing this only affects a FUTURE checkpoint), `minIntervalMs` (periodic
+checkpoint spacing), `timeoutMs` (per-checkpoint wall-clock budget).

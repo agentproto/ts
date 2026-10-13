@@ -216,8 +216,9 @@ export interface SandboxAgentSessionProxyOpts {
    *  declares the box daemon dead (the VM often outlives its daemon, and its
    *  filesystem is still reachable through the provider). Stops at `close()`,
    *  which awaits an in-flight run before its own teardown delivery. A
-   *  rejection is swallowed. */
-  checkpoint?: { run: () => Promise<unknown>; intervalMs?: number }
+   *  rejection is swallowed. `run`'s `turn` is the number of turns the proxy
+   *  has completed so far, stamped onto the checkpoint record. */
+  checkpoint?: { run: (turn?: number) => Promise<unknown>; intervalMs?: number }
   /** Box-daemon liveness watchdog. Without it a daemon that dies BETWEEN
    *  turns (OOM-killed in a small box) leaves the host row `running` forever:
    *  nothing reads the box until the next prompt. When `failureThreshold`
@@ -700,11 +701,14 @@ export function createSandboxAgentSessionProxy(
 
   // ── checkpoint + watchdog (both optional, both stop at close/death) ──
   let checkpointInFlight: Promise<unknown> | undefined
-  const runCheckpoint = (): Promise<unknown> => {
+  // `turnsSent` at call time — the number of turns completed so far — is
+  // stamped onto the checkpoint record/commit message as a breadcrumb; a
+  // coalesced call (one already in flight) keeps whichever turn started it.
+  const runCheckpoint = (turn?: number): Promise<unknown> => {
     if (!opts.checkpoint) return Promise.resolve()
     if (checkpointInFlight) return checkpointInFlight
     checkpointInFlight = opts.checkpoint
-      .run()
+      .run(turn)
       .catch(() => undefined)
       .finally(() => {
         checkpointInFlight = undefined
@@ -717,7 +721,7 @@ export function createSandboxAgentSessionProxy(
   }
   if (opts.checkpoint) {
     const timer = setInterval(() => {
-      if (!closed && !detached) void runCheckpoint()
+      if (!closed && !detached) void runCheckpoint(turnsSent)
     }, opts.checkpoint.intervalMs ?? DEFAULT_CHECKPOINT_INTERVAL_MS)
     timer.unref?.()
     timers.push(timer)
@@ -759,7 +763,7 @@ export function createSandboxAgentSessionProxy(
               " (crash, OOM, or the box is gone).",
           )
           // Last-chance rescue while the VM may still be up.
-          await runCheckpoint()
+          await runCheckpoint(turnsSent)
           if (closed) return
           for (const listener of disconnectListeners.splice(0)) {
             try {
@@ -835,7 +839,7 @@ export function createSandboxAgentSessionProxy(
       } finally {
         // Each turn's end — clean or not — is a natural checkpoint: the
         // agent just stopped writing. Never awaited: the turn is over.
-        if (!closed && !detached) void runCheckpoint()
+        if (!closed && !detached) void runCheckpoint(turnsSent)
       }
     },
 

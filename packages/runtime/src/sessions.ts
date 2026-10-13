@@ -180,6 +180,7 @@ import {
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
+import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
 import type { SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
 import {
   createSessionMessage,
@@ -12229,6 +12230,27 @@ export function createSessionsRegistry(opts?: {
       // Delivery runs during teardown, after kill() already closed the writer,
       // so the record above reopened an append stream nothing else will end.
       void transcriptWriter.close(rt.desc.id)
+      // Teardown notice above lands in THIS (now-dead) session's own
+      // transcript — nobody's next turn reads that. When uncommitted work
+      // stayed in the box, tell the PARENT explicitly, same in-band channel
+      // `supervisor-notify.ts` uses for a crash notice.
+      const rescue = formatUncommittedRescueNotice(record)
+      const parentId = rt.desc.parentSessionId
+      if (rescue !== undefined && parentId && parentId !== rt.desc.id && sessions.has(parentId)) {
+        void registry
+          .sendMessage(
+            createSessionMessage({
+              to: parentId,
+              from: { relation: "system" },
+              kind: "notice",
+              urgency: "next-turn",
+              text: rescue,
+              data: { kind: "sandbox-uncommitted-work", sessionId: rt.desc.id, ref: record.checkpoint?.ref },
+            }),
+            { source: `sandbox:${rt.desc.id}`, origin: `sandbox:${rt.desc.id}` },
+          )
+          .catch(() => {})
+      }
       schedulePersist()
       return true
     },

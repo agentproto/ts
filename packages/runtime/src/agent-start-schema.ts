@@ -16,6 +16,7 @@ import { z } from "zod"
 import { jsonTolerant } from "./json-tolerant.js"
 import { turnRetryInputSchema } from "./turn-retry-policy.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import { sandboxCheckpointConfigShape } from "./sandbox-checkpoint-schema.js"
 import {
   attachFieldSchema,
   commandSandboxSchema,
@@ -515,6 +516,18 @@ export const agentStartInputShape = {
         "`adapter` on its own agentproto daemon, and proxies the conversation " +
         "back here. DISTINCT from `commandSandbox` (whole separate machine vs. " +
         `confining this host's own process). Omit to run locally. ${help("sandbox")}`
+    ),
+  sandboxCheckpoint: jsonTolerant(
+    z.union([z.literal(false), z.object(sandboxCheckpointConfigShape).strict()])
+  )
+    .optional()
+    .describe(
+      "Per-spawn override of the sandbox checkpoint safety net (snapshot of the " +
+        "box's uncommitted work pushed to a side branch each turn end and at " +
+        "teardown). `false` disables it; an object overrides `enabled`/`on`/" +
+        "`refPrefix`/`minIntervalMs`/`timeoutMs` over the daemon's " +
+        "`defaults.sandbox.checkpoint`. Only meaningful with `sandbox` + a " +
+        `workspace-remote \`worktree\`. ${help("sandboxCheckpoint")}`
     ),
   appServe: jsonTolerant(
     z

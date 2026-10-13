@@ -91,8 +91,11 @@ import {
   formatDeliveryNotice,
   createDeliveryHook,
   sandboxCheckpointOpts,
+  resolveSandboxCheckpointConfig,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
+  type SandboxCheckpointConfig,
+  type ResolvedSandboxCheckpointConfig,
 } from "./sandbox-delivery.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
@@ -1432,6 +1435,13 @@ export interface SpawnAgentSessionInput {
    *  `SandboxAgentSessionProxy` in place of the local `resolveAgentAdapter`
    *  path — see `sandbox-agent-session-proxy.ts`. */
   sandbox?: string | SandboxSpecInput
+  /** Per-spawn override of the sandbox checkpoint safety net (`sandbox-
+   *  delivery.ts`'s `resolveSandboxCheckpointConfig`) — `false` disables it
+   *  entirely for THIS spawn; an object overrides individual knobs
+   *  (`enabled`/`on`/`refPrefix`/`minIntervalMs`/`timeoutMs`) over the global
+   *  `defaults.sandbox.checkpoint`. Meaningful only for a `sandbox` spawn
+   *  with a workspace-remote delivery target; ignored otherwise. */
+  sandboxCheckpoint?: SandboxCheckpointConfig | false
   /** WP3 — serve an agentproto app's UI from INSIDE the sandbox box and
    *  return its public URL on the descriptor + result. Requires `sandbox`
    *  (a non-sandbox spawn carrying `appServe` is rejected): the app dir is
@@ -3943,11 +3953,19 @@ export async function spawnAgentSession(
     let hostSessionId: string | undefined
     let hostFingerprint: string | undefined
 
+    // Global `defaults.sandbox.checkpoint` → per-spawn `agent_start.
+    // sandboxCheckpoint` resolution — see `resolveSandboxCheckpointConfig`.
+    // Computed here (rather than inside `bootSandboxAgentSession`) so it can
+    // feed BOTH the workspace-checkout plan's `checkpointRefPrefix` and the
+    // checkpoint/delivery wiring below from one resolved value.
+    const checkpointConfig = resolveSandboxCheckpointConfig(configDefaults?.sandbox?.checkpoint, input.sandboxCheckpoint)
+
     if (input.sandbox !== undefined) {
       const booted = await bootSandboxAgentSession({
         sandbox: input.sandbox,
         resolveSandboxProvider,
         adapter: input.adapter,
+        checkpointConfig,
         // controllers half of the #1647 pairing: the caller's EXPLICIT slug
         // rides the bridge so the TARGET daemon resolves it against ITS
         // registry (and fails loudly there when it can't). Undefined for
@@ -4848,6 +4866,13 @@ export async function bootSandboxAgentSession(opts: {
   onDelivery?: (record: SandboxDeliveryRecord) => void
   /** Receives each periodic checkpoint outcome of the work branch. */
   onCheckpoint?: (record: SandboxDeliveryRecord) => void
+  /** Resolved `defaults.sandbox.checkpoint` → `agent_start.sandboxCheckpoint`
+   *  (`resolveSandboxCheckpointConfig`) — drives whether/how the checkpoint
+   *  timer + per-turn hook are wired, whether the teardown delivery
+   *  snapshots uncommitted work, and the checkpoint ref namespace. Only
+   *  consulted together with `workspace` below (meaningless without a
+   *  delivery target); absent ⇒ the all-defaults resolution. */
+  checkpointConfig?: ResolvedSandboxCheckpointConfig
   /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
    *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
    *  `forwardHttpStream` dial delivers both the spawn and the first turn.
@@ -4922,6 +4947,7 @@ export async function bootSandboxAgentSession(opts: {
         remote: opts.workspace.remote,
         homeDir: handle.defaultCwd,
         ...(opts.worktree ? { worktree: opts.worktree } : {}),
+        ...(opts.checkpointConfig?.refPrefix ? { checkpointRefPrefix: opts.checkpointConfig.refPrefix } : {}),
         mintSlug: () => randomBytes(4).toString("hex"),
       })
     } catch (err) {
@@ -5306,15 +5332,19 @@ export async function bootSandboxAgentSession(opts: {
               ...(boxReadFile ? { readFile: boxReadFile } : {}),
               target: deliveryTarget,
               outDir: sessionTranscriptDir(deliverySessionId),
+              snapshotUncommitted: opts.checkpointConfig?.onTeardown ?? true,
               ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
             }),
-            ...sandboxCheckpointOpts({
-              exec: boxExec,
-              ...(boxReadFile ? { readFile: boxReadFile } : {}),
-              target: deliveryTarget,
-              outDir: sessionTranscriptDir(deliverySessionId),
-              ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
-            }),
+            ...sandboxCheckpointOpts(
+              {
+                exec: boxExec,
+                ...(boxReadFile ? { readFile: boxReadFile } : {}),
+                target: deliveryTarget,
+                outDir: sessionTranscriptDir(deliverySessionId),
+                ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
+              },
+              opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            ),
           }
         : {}),
       // A device target is another daemon reached over the E2E bridge, not
