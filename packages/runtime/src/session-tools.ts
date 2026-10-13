@@ -55,6 +55,13 @@ import {
   removeImport,
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
+import {
+  loadImportedSkills,
+  importSkill,
+  removeImportedSkill,
+  resyncImportedSkill,
+  type ImportedSkillEntry,
+} from "./skill-imports.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   loadBundles,
@@ -938,6 +945,26 @@ export const compactImportedMcpEntry = (
   source: e.snapshot.source,
   name: e.snapshot.name,
   type: e.snapshot.type,
+})
+
+/** Default per-item shape for `skill_imported_list`: the curated-set
+ *  bookkeeping (id/alias/addedAt) plus the content hash used to detect
+ *  drift. The `sourcePath` (the folder the user pointed at) stays behind
+ *  `full: true`. */
+export interface ImportedSkillCompactEntry {
+  id: string
+  alias: string
+  addedAt: string
+  sha: string
+}
+
+export const compactImportedSkillEntry = (
+  e: ImportedSkillEntry,
+): ImportedSkillCompactEntry => ({
+  id: e.id,
+  alias: e.alias,
+  addedAt: e.addedAt,
+  sha: e.sha,
 })
 
 /** Default per-item shape for `mcp_imported_tool_list`: name + description.
@@ -2743,6 +2770,168 @@ export function registerSessionTools(
             {
               type: "text",
               text: `mcp_imported_remove failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── skill_imported_list ─────────────────────────────────────────
+  // Mirror of `mcp_imported_list` for skills. Entries are compact by
+  // default (id/alias/addedAt/sha); `sourcePath` stays behind `full: true`.
+  const skillImportedListSchema = z.object({})
+  registerPaginatedListTool<Record<string, never>, ImportedSkillEntry>({
+    id: "skill_imported_list",
+    description:
+      "Return the user's curated set of imported skills — the SKILL.md " +
+      "folders they've copied into the daemon for delivery to spawned " +
+      "sessions. Read-only; does not touch the source folders. " +
+      "COMPACT BY DEFAULT: each entry carries id/alias/addedAt/sha; pass " +
+      "`full: true` for the complete entry including sourcePath.",
+    schema: skillImportedListSchema,
+    body: async () => {
+      const config = await loadImportedSkills()
+      return config.imports
+    },
+    project: compactImportedSkillEntry,
+    keyOf: e => e.id,
+    itemKey: "imports",
+  })
+
+  // ── skill_import ────────────────────────────────────────────────
+  server.tool(
+    "skill_import",
+    "Import a skill folder into the daemon's curated set so it can be " +
+      "delivered to spawned sessions. Copies the folder holding `SKILL.md` " +
+      "into ~/.agentproto/skills/<id>/ and records it. The copy is a " +
+      "snapshot — the entry stays usable if the source later moves or is " +
+      "removed; re-run `skill_resync` to pick up edits.",
+    {
+      path: z
+        .string()
+        .min(1)
+        .describe(
+          "Absolute path to the skill folder — the one containing SKILL.md."
+        ),
+      alias: z
+        .string()
+        .optional()
+        .describe(
+          "Optional display/dir name. Defaults to the skill's frontmatter `name`."
+        ),
+    },
+    async input => {
+      try {
+        const { entry } = await importSkill({
+          sourcePath: input.path,
+          ...(input.alias ? { alias: input.alias } : {}),
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(entry) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `skill_import failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── skill_imported_remove ────────────────────────────────────────
+  server.tool(
+    "skill_imported_remove",
+    "Remove a previously-imported skill from the daemon's curated set and " +
+      "delete its copied folder. Use when the operator no longer wants it " +
+      "delivered to spawned sessions.",
+    {
+      id: z
+        .string()
+        .min(1)
+        .describe("The imported skill id — the SKILL.md frontmatter `name`."),
+    },
+    async input => {
+      try {
+        const { removed } = await removeImportedSkill(input.id)
+        if (!removed) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `skill_imported_remove: id "${input.id}" not in imports. Use skill_imported_list to see current entries.`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ ok: true, id: input.id }) },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `skill_imported_remove failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── skill_resync ────────────────────────────────────────────────
+  server.tool(
+    "skill_resync",
+    "Re-copy an imported skill from its original source folder when the " +
+      "source's contents changed — the daemon keeps a content hash, so an " +
+      "unchanged resync is a no-op. A missing source is reported as a " +
+      "warning and leaves the existing entry intact.",
+    {
+      id: z
+        .string()
+        .min(1)
+        .describe("The imported skill id to re-copy from its source folder."),
+    },
+    async input => {
+      try {
+        const result = await resyncImportedSkill(input.id)
+        if (!result.entry) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `skill_resync: ${
+                  result.warnings[0] ?? `id "${input.id}" not found`
+                }. Use skill_imported_list to see current entries.`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        const out =
+          result.warnings.length > 0
+            ? { ...result.entry, changed: result.changed, warnings: result.warnings }
+            : { ...result.entry, changed: result.changed }
+        return {
+          content: [{ type: "text", text: JSON.stringify(out) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `skill_resync failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
