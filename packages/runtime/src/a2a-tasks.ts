@@ -189,10 +189,45 @@ export function extractSkillRequest(
 
 // ── run → task mapping ─────────────────────────────────────────────────
 
+/** The `descriptor` an `app_status` session carries (`full: true`). */
+export interface A2aSessionDescriptor {
+  status?: string
+  busy?: boolean
+  awaitingInput?: boolean
+  turnsCompleted?: number
+  outcome?: { summary?: string }
+}
+
+/** One entry of `app_status`'s `sessions` array. */
+export interface A2aRunSession {
+  agentId?: string
+  sessionId?: string
+  descriptor?: A2aSessionDescriptor
+}
+
+/**
+ * True when this session's current turn is finished: it is no longer running
+ * at all, or it has completed at least one turn and is neither busy nor
+ * waiting on input (an agent-cli session stays `running`/idle after its turn
+ * ends, until the idle reaper retires it).
+ */
+export function sessionTurnDone(desc: A2aSessionDescriptor): boolean {
+  if (desc.status !== "running" && desc.status !== "starting") return true
+  return (
+    (desc.turnsCompleted ?? 0) >= 1 && desc.busy !== true && desc.awaitingInput !== true
+  )
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v)
+
 /** `app_status`'s reconciled run status → A2A task state. A run that is
  *  still `running` with no session yet is submitted; once a session exists it
- *  is working. An unrecognised status is treated as failed (1.0 has no
- *  `unknown` state). */
+ *  is working — unless every session carries a descriptor whose turn is done
+ *  (see `sessionTurnDone`), in which case the run is completed even though the
+ *  run status itself has not reconciled yet. A session with no descriptor
+ *  (a slim `app_status` reply) keeps the submitted/working behaviour. An
+ *  unrecognised status is treated as failed (1.0 has no `unknown` state). */
 export function mapRunState(run: { status?: string; sessions?: readonly unknown[] }): A2aTaskState {
   switch (run.status) {
     case "succeeded":
@@ -201,8 +236,15 @@ export function mapRunState(run: { status?: string; sessions?: readonly unknown[
       return "TASK_STATE_FAILED"
     case "cancelled":
       return "TASK_STATE_CANCELED"
-    case "running":
-      return (run.sessions?.length ?? 0) === 0 ? "TASK_STATE_SUBMITTED" : "TASK_STATE_WORKING"
+    case "running": {
+      const sessions = run.sessions ?? []
+      if (sessions.length === 0) return "TASK_STATE_SUBMITTED"
+      for (const s of sessions) {
+        if (!isPlainObject(s) || !isPlainObject(s.descriptor)) return "TASK_STATE_WORKING"
+        if (!sessionTurnDone(s.descriptor as A2aSessionDescriptor)) return "TASK_STATE_WORKING"
+      }
+      return "TASK_STATE_COMPLETED"
+    }
     default:
       return "TASK_STATE_FAILED"
   }
@@ -215,39 +257,100 @@ export interface A2aRunView {
   status?: string
   endedAt?: string
   error?: string
-  sessions?: readonly unknown[]
+  sessions?: readonly A2aRunSession[]
+}
+
+/** One agent's answer, ready to become an A2A artifact + status message. */
+export interface A2aAgentOutput {
+  agentId: string
+  text: string
+}
+
+const CONVERSATION_WINDOW_SUFFIX = "\n\n---\n[window:"
+
+/**
+ * Pull the last assistant reply out of a `conversation_read` `format:"json"`
+ * text: JSON `{meta, messages}` FOLLOWED BY a non-JSON window suffix like
+ * `"\n\n---\n[window: messages 1–2 of 3]"`, so the suffix is cut before
+ * parsing. Returns the `text` of the last `assistant` message with a non-blank
+ * text, else undefined (unparseable text, no messages, or all blank).
+ */
+export function extractLastAssistantText(text: string): string | undefined {
+  const cut = text.split(CONVERSATION_WINDOW_SUFFIX)[0] ?? text
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(cut)
+  } catch {
+    return undefined
+  }
+  if (!isPlainObject(parsed) || !Array.isArray(parsed.messages)) {
+    return undefined
+  }
+  const messages = parsed.messages
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!isPlainObject(m)) continue
+    if (m.role !== "assistant" || typeof m.text !== "string" || m.text.trim() === "") continue
+    return m.text
+  }
+  return undefined
 }
 
 export function buildTask(input: {
   entry: A2aLedgerEntry
   run: A2aRunView
   artifacts?: A2aArtifact[]
+  agentOutputs?: A2aAgentOutput[]
   newId: () => string
 }): A2aTask {
   const { entry, run } = input
   const state = mapRunState(run)
+  const outputs = state === "TASK_STATE_COMPLETED" ? (input.agentOutputs ?? []) : []
+  const message =
+    state === "TASK_STATE_FAILED" && run.error
+      ? {
+          messageId: input.newId(),
+          role: "ROLE_AGENT" as const,
+          parts: [{ text: run.error }],
+          taskId: entry.taskId,
+          contextId: entry.contextId,
+        }
+      : state === "TASK_STATE_COMPLETED" && outputs.length > 0
+        ? {
+            messageId: input.newId(),
+            role: "ROLE_AGENT" as const,
+            parts: [
+              {
+                text:
+                  outputs.length === 1
+                    ? outputs[0]!.text
+                    : outputs.map(o => `[${o.agentId}]\n${o.text}`).join("\n\n"),
+              },
+            ],
+            taskId: entry.taskId,
+            contextId: entry.contextId,
+          }
+        : undefined
+  const artifacts = [
+    ...outputs.map(o => ({
+      artifactId: `agent-output-${o.agentId}`,
+      name: o.agentId,
+      parts: [{ text: o.text }],
+    })),
+    ...(input.artifacts ?? []),
+  ]
   const task: A2aTask = {
     id: entry.taskId,
     contextId: entry.contextId,
     status: {
       state,
       timestamp: run.endedAt ?? entry.createdAt,
-      ...(state === "TASK_STATE_FAILED" && run.error
-        ? {
-            message: {
-              messageId: input.newId(),
-              role: "ROLE_AGENT" as const,
-              parts: [{ text: run.error }],
-              taskId: entry.taskId,
-              contextId: entry.contextId,
-            },
-          }
-        : {}),
+      ...(message ? { message } : {}),
     },
     metadata: { appId: entry.appId, skill: entry.skill },
   }
-  if (state === "TASK_STATE_COMPLETED" && input.artifacts && input.artifacts.length > 0) {
-    task.artifacts = input.artifacts
+  if (state === "TASK_STATE_COMPLETED" && artifacts.length > 0) {
+    task.artifacts = artifacts
   }
   return task
 }

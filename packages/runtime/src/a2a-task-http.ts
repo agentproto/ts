@@ -21,6 +21,7 @@ import {
   JSON_RPC_ERROR,
   buildTask,
   createA2aTaskLedger,
+  extractLastAssistantText,
   extractSkillRequest,
   mapAppArtifact,
   mapRunState,
@@ -28,6 +29,7 @@ import {
   resolveExposedSkill,
   TERMINAL_TASK_STATES,
   unwrapToolResult,
+  type A2aAgentOutput,
   type A2aAppHandleLike,
   type A2aArtifact,
   type A2aPart,
@@ -182,20 +184,58 @@ export async function handleA2aTaskRequest(
     return unwrapToolResult(await deps.dispatchTool(tool, args))
   }
 
+  /** Collect each session's answer for a completed run: the last assistant
+   *  reply from `conversation_read`, falling back to the descriptor's
+   *  `outcome.summary`. Never throws — a session with no readable answer
+   *  simply contributes no output. */
+  const collectAgentOutputs = async (run: A2aRunView): Promise<A2aAgentOutput[]> => {
+    const outputs: A2aAgentOutput[] = []
+    for (const session of run.sessions ?? []) {
+      const agentId = typeof session.agentId === "string" ? session.agentId : undefined
+      if (!agentId) continue
+      let text: string | undefined
+      if (typeof session.sessionId === "string" && session.sessionId) {
+        try {
+          const conv = await call("conversation_read", { idOrName: session.sessionId, format: "json", lastN: 6 })
+          if (conv.ok) text = extractLastAssistantText(conv.text)
+        } catch {
+          // Fall through to the descriptor summary below.
+        }
+      }
+      if (text === undefined) {
+        const summary = session.descriptor?.outcome?.summary
+        if (typeof summary === "string" && summary.trim() !== "") text = summary
+      }
+      if (text !== undefined) outputs.push({ agentId, text })
+    }
+    return outputs
+  }
+
   const readTask = async (taskId: string): Promise<A2aTask> => {
     const entry = await ledger.find(appId, taskId)
     if (!entry) throw new RpcFailure(JSON_RPC_ERROR.taskNotFound, `task "${taskId}" not found for app "${appId}"`)
-    const status = await call("app_status", { appRunId: taskId })
+    const status = await call("app_status", { appRunId: taskId, full: true })
     if (!status.ok || !status.data) {
       throw new RpcFailure(JSON_RPC_ERROR.taskNotFound, `task "${taskId}" has no backing app run: ${status.text}`)
     }
     const run = status.data as unknown as A2aRunView
     let artifacts: A2aArtifact[] | undefined
-    if (mapRunState(run) === "TASK_STATE_COMPLETED" && installed.artifact) {
-      const art = await call("app_artifact_get", { appId })
-      if (art.ok && art.data) artifacts = mapAppArtifact(art.data)
+    let agentOutputs: A2aAgentOutput[] | undefined
+    if (mapRunState(run) === "TASK_STATE_COMPLETED") {
+      const outputs = await collectAgentOutputs(run)
+      if (outputs.length > 0) agentOutputs = outputs
+      if (installed.artifact) {
+        const art = await call("app_artifact_get", { appId })
+        if (art.ok && art.data) artifacts = mapAppArtifact(art.data)
+      }
     }
-    return buildTask({ entry, run, ...(artifacts ? { artifacts } : {}), newId: randomUUID })
+    return buildTask({
+      entry,
+      run,
+      ...(artifacts ? { artifacts } : {}),
+      ...(agentOutputs ? { agentOutputs } : {}),
+      newId: randomUUID,
+    })
   }
 
   try {
