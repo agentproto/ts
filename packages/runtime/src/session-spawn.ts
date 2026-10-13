@@ -89,8 +89,7 @@ import {
 } from "./sandbox-workspace-remote.js"
 import {
   formatDeliveryNotice,
-  createDeliveryHook,
-  sandboxCheckpointOpts,
+  trackedSandboxDeliveryOpts,
   resolveSandboxCheckpointConfig,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
@@ -4009,15 +4008,22 @@ export async function spawnAgentSession(
         ...(sandboxWorkspace
           ? {
               workspace: sandboxWorkspace,
-              ...(normalizeWorktreeField(input.worktree) !== undefined
-                ? { worktree: normalizeWorktreeField(input.worktree) }
-                : {}),
+              // `worktree: false` is the only opt-out of the default `wt/`
+              // work branch; absent mints one inside the workspace plan.
+              ...(input.worktree === false
+                ? { worktree: false as const }
+                : normalizeWorktreeField(input.worktree) !== undefined
+                  ? { worktree: normalizeWorktreeField(input.worktree) }
+                  : {}),
               sessionId: mintedSessionId,
               onDelivery: (record: SandboxDeliveryRecord) => {
                 registry.recordSandboxDelivery(mintedSessionId, record, formatDeliveryNotice(record))
               },
               onCheckpoint: (record: SandboxDeliveryRecord) => {
                 registry.recordSandboxCheckpoint(mintedSessionId, record, formatDeliveryNotice(record))
+              },
+              onDeliveryTargetChanged: (target: SandboxDeliveryTarget) => {
+                registry.setSandboxDeliveryTarget(mintedSessionId, target)
               },
             }
           : {}),
@@ -4520,8 +4526,8 @@ export type SandboxBootResult =
        *  descriptor's `sandboxProvider` by the caller. */
       provider: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
-      /** The work branch checked out in the box, when a `worktree` was
-       *  requested — stamped onto the descriptor so a restart can deliver it. */
+      /** The work branch checked out in the box — stamped onto the descriptor
+       *  so a restart can deliver it. Absent only for `worktree: false`. */
       deliveryTarget?: SandboxDeliveryTarget
       sandboxPorts?: Record<number, string>
       /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
@@ -4867,15 +4873,20 @@ export async function bootSandboxAgentSession(opts: {
    *  disjoint filesystem (`handle.defaultCwd`) — a same-machine provider keeps
    *  using the host path. */
   workspace?: { slug: string; remote: WorkspaceRemote }
-  /** The caller's normalized `agent_start.worktree`: cut `wt/<slug>` in the
-   *  box's checkout. Meaningful only together with `workspace`. */
-  worktree?: { slug?: string; base?: string }
+  /** The caller's normalized `agent_start.worktree`: pins the `wt/<slug>` cut
+   *  in the box's checkout. Absent mints a default one; `false` opts out
+   *  (plain default-branch checkout, no delivery). Meaningful only together
+   *  with `workspace`. */
+  worktree?: { slug?: string; base?: string } | false
   /** The host session id this box serves — names the delivery output dir. */
   sessionId?: string
   /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
   onDelivery?: (record: SandboxDeliveryRecord) => void
   /** Receives each periodic checkpoint outcome of the work branch. */
   onCheckpoint?: (record: SandboxDeliveryRecord) => void
+  /** Called when the turn-end safety net adopts a different `wt/` branch the
+   *  agent moved to in the box — the caller persists it on the session record. */
+  onDeliveryTargetChanged?: (target: SandboxDeliveryTarget) => void
   /** Resolved `defaults.sandbox.checkpoint` → `agent_start.sandboxCheckpoint`
    *  (`resolveSandboxCheckpointConfig`) — drives whether/how the checkpoint
    *  timer + per-turn hook are wired, whether the teardown delivery
@@ -4956,7 +4967,7 @@ export async function bootSandboxAgentSession(opts: {
         workspaceSlug: opts.workspace.slug,
         remote: opts.workspace.remote,
         homeDir: handle.defaultCwd,
-        ...(opts.worktree ? { worktree: opts.worktree } : {}),
+        ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
         ...(opts.checkpointConfig?.refPrefix ? { checkpointRefPrefix: opts.checkpointConfig.refPrefix } : {}),
         mintSlug: () => randomBytes(4).toString("hex"),
       })
@@ -5335,27 +5346,18 @@ export async function bootSandboxAgentSession(opts: {
       // F2 — when the first prompt rode the spawn dial, don't re-send it as a
       // second `agent_prompt` dial (see `promptCarriedInStart`).
       ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
-      ...(deliveryTarget && boxExec && deliverySessionId
-        ? {
-            onBeforeTeardown: createDeliveryHook({
-              exec: boxExec,
-              ...(boxReadFile ? { readFile: boxReadFile } : {}),
-              target: deliveryTarget,
-              outDir: sessionTranscriptDir(deliverySessionId),
-              snapshotUncommitted: opts.checkpointConfig?.onTeardown ?? true,
-              ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
-            }),
-            ...sandboxCheckpointOpts(
-              {
-                exec: boxExec,
-                ...(boxReadFile ? { readFile: boxReadFile } : {}),
-                target: deliveryTarget,
-                outDir: sessionTranscriptDir(deliverySessionId),
-                ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
-              },
-              opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
-            ),
-          }
+      ...(deliveryTarget && boxExec && deliverySessionId && workspacePlan
+        ? trackedSandboxDeliveryOpts({
+            exec: boxExec,
+            ...(boxReadFile ? { readFile: boxReadFile } : {}),
+            target: deliveryTarget,
+            outDir: sessionTranscriptDir(deliverySessionId),
+            config: opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            baseRef: workspacePlan.baseRef,
+            ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
+            ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
+            ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),
+          })
         : {}),
       // A device target is another daemon reached over the E2E bridge, not
       // a box whose `/health` this host can probe directly.
