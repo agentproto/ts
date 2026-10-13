@@ -11,8 +11,8 @@
     "opencode-ai": "1.18.35"
   },
   "resources": {
-    "cpuCount": 2,
-    "memoryMb": 4096
+    "cpuCount": 4,
+    "memoryMb": 8192
   },
   "templates": {
     "stable": {

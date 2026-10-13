@@ -2448,6 +2448,11 @@ export interface SessionDescriptor {
    *  (`wt/<slug>` push + bundle fallback). Only set for a sandbox session that
    *  was spawned from a workspace `remote` with a `worktree`, once it closes. */
   sandboxDelivery?: SandboxDeliveryRecord
+  /** The latest periodic checkpoint of that branch while the session runs
+   *  (`mode: "checkpoint"` — branch push, uncommitted-work snapshot pushed to
+   *  `agentproto-checkpoint/<branch>`, bundle fallback). What survives a box
+   *  that dies outside `close()`. */
+  sandboxCheckpoint?: SandboxDeliveryRecord
   /** Where the session's work branch lives inside its box (checkout dir, branch,
    *  base commit). Persisted so a restart that re-attaches the box can still
    *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
@@ -4631,6 +4636,13 @@ export interface SessionsRegistry {
    *  and transcript (`notice`). Returns false for an unknown id or a
    *  non-`agent-cli` session. */
   recordSandboxDelivery(id: string, record: SandboxDeliveryRecord, notice: string): boolean
+  /**
+   * Stamp a periodic checkpoint of a sandbox session's work branch
+   * (`sandbox-delivery.ts`'s checkpoint mode) onto the descriptor. Unlike
+   * {@link recordSandboxDelivery} the session is still live: the transcript
+   * writer stays open, and a checkpoint that changed nothing writes no notice.
+   */
+  recordSandboxCheckpoint(id: string, record: SandboxDeliveryRecord, notice: string): boolean
   /**
    * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
    * `device-mirror.ts`) into an agent-cli session's durable transcript.
@@ -12054,6 +12066,21 @@ export function createSessionsRegistry(opts?: {
       // Delivery runs during teardown, after kill() already closed the writer,
       // so the record above reopened an append stream nothing else will end.
       void transcriptWriter.close(rt.desc.id)
+      schedulePersist()
+      return true
+    },
+    recordSandboxCheckpoint(id, record, notice) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.kind !== "agent-cli") return false
+      rt.desc.sandboxCheckpoint = record
+      const touchedRemote =
+        record.push.status !== "skipped" ||
+        record.checkpoint !== undefined ||
+        record.bundle.status !== "skipped"
+      if (!record.unchanged && touchedRemote) {
+        appendLine(rt, notice, "stdout")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: notice })
+      }
       schedulePersist()
       return true
     },
