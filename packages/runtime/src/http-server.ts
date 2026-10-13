@@ -595,6 +595,17 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  replayed on restart/lazy-resume so a revived session keeps its skills.
      *  Adapters that declare no `metadata.sessionSkills` ignore it. */
     sessionSkills?: ResolvedSessionSkill[]
+    /** Extra system-prompt text for this session — forwarded verbatim to the
+     *  driver's `start({ appendSystemPrompt })` (see
+     *  `AgentCliStartOptions.appendSystemPrompt`), which applies it per the
+     *  adapter manifest's declared `systemPrompt.via` channel (`acp-meta`
+     *  `_meta.systemPrompt.append` on new+load, `inline-config` the
+     *  inline-config env, `argv` the CLI flag). ONLY meaningful when this
+     *  adapter's resolver entry sets `supportsSystemPrompt` — the runtime
+     *  (`session-spawn.ts`) falls back to a first-prompt prefix + harness
+     *  warning when that flag is absent/false, so the text is never
+     *  silently dropped. */
+    appendSystemPrompt?: string
   }): Promise<AgentSessionLike>
   /** True when `startSession` honours `fsZones` (native tools confined by the
    *  OS sandbox). Omitted/false ⇒ an app-boundary spawn on this adapter gets
@@ -603,6 +614,14 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   supportsFsZones?: boolean
   /** True when `startSession` honours `isolateHostContext`. */
   supportsHostContextIsolation?: boolean
+  /** True when this adapter declares a real system-prompt channel for
+   *  `startSession({ appendSystemPrompt })` — i.e. its AIP-45 manifest has
+   *  `systemPrompt` (`acp-meta` / `inline-config` / `argv`). Absent/false ⇒
+   *  `session-spawn.ts` falls back to prefixing the text onto the first
+   *  prompt and raising an `agent_start` harness warning (never-silent,
+   *  matching `allowTools`); when true the text rides the channel instead
+   *  and NO warning is raised. */
+  supportsSystemPrompt?: boolean
   /** True when this adapter takes part in per-session imported-skill delivery
    *  — i.e. its manifest declares `metadata.sessionSkills` telling the driver
    *  where to materialize `start({ sessionSkills })`. Adapters without it

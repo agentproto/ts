@@ -644,6 +644,57 @@ describe("compileWorkflow — declarative agent step", () => {
     expect(step.agentWarnings).toEqual(["no system-prompt channel"])
   })
 
+  it("a ref with a system-prompt channel keeps the text out of the prompt and carries it on harness.systemPrompt", () => {
+    const wf = defineWorkflow({
+      name: "Channelled ref",
+      id: "channelled-ref",
+      description: "Agent ref resolved for a harness with a real system-prompt channel.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", agent: { ref: "@my-app/scout" }, prompt: "Zone: Luberon." }],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: {
+        "@my-app/scout": {
+          adapter: "claude-code",
+          systemPrompt: "You are a scout.\n\nHard rules — these MUST be followed:\n- Never invent",
+        },
+      },
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe("Zone: Luberon.")
+    expect(step.harness?.systemPrompt).toBe(
+      "You are a scout.\n\nHard rules — these MUST be followed:\n- Never invent",
+    )
+  })
+
+  it("a sandbox step or another adapter falls back to the prompt prefix, with a warning", () => {
+    const agentRefs = {
+      "@my-app/scout": { adapter: "claude-code", systemPrompt: "You are a scout." },
+    }
+    const ctx = { input: undefined, item: undefined, index: undefined, steps: {} }
+    const compileStep = (extra: Record<string, unknown>) => {
+      const wf = defineWorkflow({
+        name: "Fallback ref",
+        id: "fallback-ref",
+        description: "Channel resolved for one adapter, step runs elsewhere.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [{ id: "s1", kind: "agent", agent: { ref: "@my-app/scout" }, prompt: "Zone: Luberon.", ...extra }],
+      })
+      return compileWorkflow(wf, { tools, candidates, agentRefs }).steps[0] as AgentStep
+    }
+    for (const step of [compileStep({ sandbox: "e2b" }), compileStep({ adapter: "hermes" })]) {
+      expect(step.harness?.systemPrompt).toBeUndefined()
+      expect(step.prompt(ctx)).toBe("You are a scout.\n\nZone: Luberon.")
+      expect(step.agentWarnings?.join("\n")).toMatch(/does not apply to this step.*prefix/)
+    }
+  })
+
   it("a step's own harness.skills wins over the agent ref's declared skills", () => {
     const wf = defineWorkflow({
       name: "Own skills",

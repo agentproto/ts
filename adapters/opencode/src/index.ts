@@ -157,6 +157,17 @@ export const opencode: AgentCliHandle = defineAgentCli({
       projectDisableEnv: "OPENCODE_DISABLE_PROJECT_CONFIG",
     },
   },
+  // AGENT.md-system-prompt channel: opencode concatenates `instructions`
+  // arrays across config layers, so the driver writes the text to
+  // `<configDir>/agentproto-system-prompt.md` and appends that path to
+  // OPENCODE_CONFIG_CONTENT's `instructions` array (after the small-model
+  // pin, which shares the same env var).
+  systemPrompt: {
+    via: "inline-config",
+    env: "OPENCODE_CONFIG_CONTENT",
+    key: "instructions",
+    shape: "file-list",
+  },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./opencode-acp.ACP.md",

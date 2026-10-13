@@ -306,6 +306,13 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           ...(opts.harness?.effort !== undefined ? { effort: opts.harness.effort } : {}),
           ...(opts.harness?.role !== undefined ? { role: opts.harness.role } : {}),
           ...(opts.harness?.skills !== undefined ? { skills: [...opts.harness.skills] } : {}),
+          // AGENT.md text — `spawnAgentSession` re-decides the path on the
+          // box (sandbox ⇒ its own prefix + never-silent warning; there is
+          // no step prompt at spawn time, so the warning is the honest
+          // fallback surface).
+          ...(opts.harness?.systemPrompt !== undefined
+            ? { appendSystemPrompt: opts.harness.systemPrompt }
+            : {}),
         },
       )
       if (!result.ok) {
@@ -318,7 +325,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       // runtime can drive — `run-workflow.ts` already records
       // `toolsApplied: false` on the step's own output; this is the
       // "never silently ignore" warning event alongside it.
-      const sandboxWarnings = [...(opts.agentWarnings ?? [])]
+      const sandboxWarnings = [...(opts.agentWarnings ?? []), ...(result.warnings ?? [])]
       if (opts.harness?.tools && opts.harness.tools.length > 0) {
         sandboxWarnings.push("harness.tools: no generic per-spawn tool allowlist exists for this adapter — not applied")
       }
@@ -382,6 +389,21 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         `harness.role ("${harness.role}"): this spawn path applies no role-based tool policy — not applied`,
       )
     }
+    // AGENT.md system-prompt channel (harness.systemPrompt, compiled from
+    // the agent ref's projected `systemPrompt`): a channel-capable adapter
+    // takes it through `startSession({ appendSystemPrompt })`. This host
+    // path has NO prompt at spawn time (the step's prompt arrives later via
+    // `agent_prompt`), so an adapter without a channel gets the never-silent
+    // warning here — there is nothing to prefix onto yet.
+    const appendSystemPrompt =
+      harness?.systemPrompt !== undefined && resolved.supportsSystemPrompt === true
+        ? harness.systemPrompt
+        : undefined
+    if (harness?.systemPrompt !== undefined && appendSystemPrompt === undefined) {
+      harnessWarnings.push(
+        `harness.systemPrompt: this harness has no system-prompt channel — the AGENT.md text is not delivered.`,
+      )
+    }
     let fsZones: ReturnType<typeof boundaryToSandboxZones> | undefined
     let isolateHostContext = false
     if (boundary) {
@@ -426,6 +448,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       ...(harness?.effort !== undefined ? { effort: harness.effort } : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
+      ...(appendSystemPrompt !== undefined ? { appendSystemPrompt } : {}),
     })
     const desc = this.registry.spawnAgent({
       id: stepSessionId,
@@ -452,6 +475,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
+      // Recorded regardless of delivery path, like `spawnAgentSession`
+      // does, so a later restart/fresh-continuation still knows the text.
+      ...(harness?.systemPrompt !== undefined
+        ? { appendSystemPrompt: harness.systemPrompt }
+        : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
       // Echo the pinned model/effort onto the descriptor the way agent_start
       // does (session-spawn.ts), so a `wf:*` step session shows its model —

@@ -70,7 +70,7 @@ adapter runs it (`packages/runtime/src/agent-projection.ts`):
 
 | AGENT.md field | Becomes | When the harness can't take it |
 | --- | --- | --- |
-| body + `persona` (inline) + `boundaries` + `traits` | one instructions text (the same rendering mastra-agent uses), placed before the caller's prompt | always the case today — there is no system-prompt channel on a spawn yet, so the text rides as the first prompt's prefix and a `session:harness-warning` says so |
+| body + `persona` (inline) + `boundaries` + `traits` | one instructions text (the same rendering mastra-agent uses) — on the adapter's system-prompt channel when its manifest declares one: claude-code via ACP `_meta.systemPrompt.append`, opencode via an `instructions` file, codex via `developer_instructions` in `CODEX_CONFIG`, pi via `--append-system-prompt` | hermes, gemini and every other adapter with no declared channel: the text rides the first prompt's prefix and a `session:harness-warning` says so — same for a sandbox spawn, whose box starts its own adapter build |
 | `tools` (string ids) | the daemon gateway mount, scoped with `?allowTools=` (deferred loading off) — mounted for ANY adapter | the harness's own native tools stay available (warned); no daemon `/mcp` URL or a caller-supplied `mcpServers` ⇒ warned as not applied |
 | `skills` (string ids) | the spawn's `skills` — session-skill delivery (claude-code, opencode) or the adapter's `skills` option (hermes) | warned as not delivered |
 | `model` | the spawn model (`app_run`'s `model` arg wins) | — |

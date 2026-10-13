@@ -297,6 +297,14 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
       const args = ["--mode", "rpc"]
       if (opts.model) args.push("--model", opts.model)
       if (opts.resumeSessionId) args.push("--session", opts.resumeSessionId)
+      // `systemPrompt.via: "argv"` (see index.ts): the flag rides EVERY
+      // connect's argv — a `--session` resume recomposes args the same way,
+      // so the appended text survives a cold resume too.
+      const systemPromptFlag =
+        definition.systemPrompt?.via === "argv" ? definition.systemPrompt.flag : undefined
+      if (opts.appendSystemPrompt && systemPromptFlag) {
+        args.push(systemPromptFlag, opts.appendSystemPrompt)
+      }
 
       // Lean review mode (manifest `modes[]` id "lean", forwarded here as
       // `opts.mode` via `apply: "config"` — see index.ts's mode doc for why
