@@ -109,6 +109,11 @@
       "import": "./dist/mcp-imports.mjs",
       "default": "./dist/mcp-imports.mjs"
     },
+    "./skill-imports": {
+      "types": "./dist/skill-imports.d.ts",
+      "import": "./dist/skill-imports.mjs",
+      "default": "./dist/skill-imports.mjs"
+    },
     "./resume-strategies": {
       "types": "./dist/resume-strategies.d.ts",
       "import": "./dist/resume-strategies.mjs",

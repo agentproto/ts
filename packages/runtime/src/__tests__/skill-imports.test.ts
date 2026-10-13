@@ -1,0 +1,164 @@
+/**
+ * `skill-imports.ts` registry: import copies a skill folder (never a symlink),
+ * records a content sha, and resync/remove keep the copy and the registry in
+ * step. Fully hermetic — temp dirs, injected registry path + root.
+ */
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import {
+  computeSkillDirSha,
+  importSkill,
+  listImportedSkills,
+  loadImportedSkills,
+  parseSkillFrontmatter,
+  removeImportedSkill,
+  resyncImportedSkill,
+  skillImportDir,
+  type SkillImportPaths,
+} from "../skill-imports.js"
+
+let base: string
+let paths: SkillImportPaths
+
+beforeEach(async () => {
+  base = await mkdtemp(join(tmpdir(), "skill-imports-"))
+  paths = { registryPath: join(base, "imported-skills.json"), root: join(base, "skills") }
+})
+
+afterEach(async () => {
+  await rm(base, { recursive: true, force: true })
+})
+
+async function makeSkill(
+  name: string,
+  opts: { description?: string; extraFiles?: Record<string, string>; frontmatter?: string } = {}
+): Promise<string> {
+  const dir = join(base, `src-${name}`)
+  await mkdir(join(dir, "scripts"), { recursive: true })
+  const frontmatter =
+    opts.frontmatter ??
+    `---\nname: ${name}\ndescription: ${opts.description ?? "does things"}\n---\n\n# ${name}\n`
+  await writeFile(join(dir, "SKILL.md"), frontmatter)
+  for (const [rel, content] of Object.entries(opts.extraFiles ?? {})) {
+    const abs = join(dir, rel)
+    await mkdir(join(abs, ".."), { recursive: true })
+    await writeFile(abs, content)
+  }
+  return dir
+}
+
+describe("parseSkillFrontmatter", () => {
+  it("requires a valid name", () => {
+    expect(() => parseSkillFrontmatter("---\ndescription: x\n---\n")).toThrow(/name/)
+    expect(() => parseSkillFrontmatter("no frontmatter")).toThrow(/name/)
+    expect(parseSkillFrontmatter("---\nname: my-skill\ndescription: d\n---\n").name).toBe("my-skill")
+  })
+})
+
+describe("importSkill", () => {
+  it("copies the folder as a snapshot and records id/alias/sha", async () => {
+    const src = await makeSkill("ap-foo", { extraFiles: { "scripts/run.sh": "echo hi\n" } })
+    const { config, entry } = await importSkill({ sourcePath: src }, paths)
+
+    expect(entry.id).toBe("ap-foo")
+    expect(entry.alias).toBe("ap-foo")
+    expect(entry.sourcePath).toBe(src)
+    expect(entry.sha).toMatch(/^[0-9a-f]{64}$/)
+    expect(config.imports).toHaveLength(1)
+
+    const copied = skillImportDir("ap-foo", paths.root)
+    expect(await readFile(join(copied, "SKILL.md"), "utf8")).toContain("# ap-foo")
+    expect(await readFile(join(copied, "scripts/run.sh"), "utf8")).toBe("echo hi\n")
+
+    // Snapshot, not symlink: deleting the source leaves the copy intact.
+    await rm(src, { recursive: true, force: true })
+    expect(existsSync(join(copied, "SKILL.md"))).toBe(true)
+
+    expect(await listImportedSkills(paths)).toEqual([entry])
+  })
+
+  it("honours an explicit alias and replaces an existing id", async () => {
+    const src = await makeSkill("ap-bar")
+    await importSkill({ sourcePath: src, alias: "friendly" }, paths)
+    const again = await importSkill({ sourcePath: src, alias: "friendly-2" }, paths)
+    expect(again.config.imports).toHaveLength(1)
+    expect(again.entry.alias).toBe("friendly-2")
+  })
+
+  it("rejects a source with no SKILL.md", async () => {
+    const dir = join(base, "empty")
+    await mkdir(dir, { recursive: true })
+    await expect(importSkill({ sourcePath: dir }, paths)).rejects.toThrow(/SKILL\.md/)
+    await expect(importSkill({ sourcePath: join(base, "nope") }, paths)).rejects.toThrow(/does not exist/)
+  })
+
+  it("tolerates extra frontmatter keys", async () => {
+    const src = await makeSkill("ap-extra", {
+      frontmatter: "---\nname: ap-extra\ndescription: d\nlicense: MIT\nmetadata:\n  aip3:\n    schema: skills/v1\n---\n",
+    })
+    const { entry } = await importSkill({ sourcePath: src }, paths)
+    expect(entry.id).toBe("ap-extra")
+  })
+})
+
+describe("computeSkillDirSha", () => {
+  it("moves on a content change, not on a no-op re-copy", async () => {
+    const src = await makeSkill("ap-sha", { extraFiles: { "a.txt": "one\n" } })
+    const { entry } = await importSkill({ sourcePath: src }, paths)
+    expect(await computeSkillDirSha(skillImportDir("ap-sha", paths.root))).toBe(entry.sha)
+
+    await writeFile(join(src, "a.txt"), "two\n")
+    expect(await computeSkillDirSha(src)).not.toBe(entry.sha)
+  })
+})
+
+describe("resyncImportedSkill", () => {
+  it("re-copies when the source changed and reports changed", async () => {
+    const src = await makeSkill("ap-resync", { extraFiles: { "a.txt": "one\n" } })
+    const { entry } = await importSkill({ sourcePath: src }, paths)
+
+    await writeFile(join(src, "a.txt"), "two\n")
+    const r = await resyncImportedSkill(entry.id, paths)
+    expect(r.changed).toBe(true)
+    expect(r.entry?.sha).not.toBe(entry.sha)
+    expect(await readFile(join(skillImportDir("ap-resync", paths.root), "a.txt"), "utf8")).toBe("two\n")
+  })
+
+  it("is a no-op when nothing changed", async () => {
+    const src = await makeSkill("ap-stable")
+    const { entry } = await importSkill({ sourcePath: src }, paths)
+    const r = await resyncImportedSkill(entry.id, paths)
+    expect(r.changed).toBe(false)
+    expect(r.warnings).toEqual([])
+  })
+
+  it("warns instead of throwing when the source is gone, keeping the entry", async () => {
+    const src = await makeSkill("ap-gone")
+    const { entry } = await importSkill({ sourcePath: src }, paths)
+    await rm(src, { recursive: true, force: true })
+    const r = await resyncImportedSkill(entry.id, paths)
+    expect(r.changed).toBe(false)
+    expect(r.warnings[0]).toMatch(/could not resync/)
+    expect(r.config.imports.some(e => e.id === entry.id)).toBe(true)
+  })
+})
+
+describe("removeImportedSkill", () => {
+  it("drops the entry and deletes the copied tree", async () => {
+    const src = await makeSkill("ap-rm")
+    const { entry } = await importSkill({ sourcePath: src }, paths)
+    const r = await removeImportedSkill(entry.id, paths)
+    expect(r.removed).toBe(true)
+    expect(existsSync(skillImportDir("ap-rm", paths.root))).toBe(false)
+    expect((await loadImportedSkills(paths.registryPath)).imports).toHaveLength(0)
+  })
+
+  it("reports removed:false for an unknown id", async () => {
+    const r = await removeImportedSkill("ghost", paths)
+    expect(r.removed).toBe(false)
+  })
+})
