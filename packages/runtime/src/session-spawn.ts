@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
-import { resolveTurnRetryPolicy, type TurnRetryInput } from "./turn-retry-policy.js"
+import { resolveTurnRetryPolicy, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
@@ -1618,6 +1618,7 @@ export type SpawnAgentSessionResult =
         | "device_spawn_requires_repo_identity"
         | "device_bridge_workspace_unknown"
         | "worktree_async_wait_conflict"
+        | "turn_retry_rotate_invalid"
       message: string
       details?: Record<string, unknown>
     }
@@ -1816,6 +1817,7 @@ export async function spawnAgentSession(
         ...input,
         access: { profileRef: preset.profileRef },
         model: input.model ?? preset.defaultModel,
+        ...((input.turnRetry ?? preset.turnRetry) ? { turnRetry: input.turnRetry ?? preset.turnRetry } : {}),
       }
     }
   }
@@ -1833,6 +1835,11 @@ export async function spawnAgentSession(
     ...(reconciled.model !== undefined ? { model: reconciled.model } : {}),
     ...(reconciled.route !== undefined ? { route: reconciled.route } : {}),
   }
+  // Free stays free: a `turnRetry.rotate` list must never move a free OpenCode
+  // session onto a paid id. Checked here against the model we know; the
+  // controller re-applies the same rule at rotation time.
+  const rotateError = validateTurnRetryRotate(input.turnRetry?.rotate, input.model)
+  if (rotateError) return { ok: false, code: "turn_retry_rotate_invalid", message: `agent_start: ${rotateError}` }
   const {
     registry,
     resolveAgentAdapter,

@@ -33,7 +33,10 @@ import { measureToolList } from "../tool-schema-measure.js"
  *  the measured total was already at the old 60 KB line, so the old number
  *  left no room for a normal field addition. Re-set to 62 KB for the
  *  `sandboxCheckpoint` spawn override (kept opaque in the schema, ~0.15 KB).
- *  Headroom for normal growth without re-opening this file on every field addition. */
+ *  Headroom for normal growth without re-opening this file on every field addition.
+ *  `turnRetry.rotate`/`rotateOn`/`cooldownMs` fields on `agent_start`
+ *  (+~0.5 KB of schema; the prose lives in `tool_help`). Headroom for normal growth
+ *  without re-opening this file on every field addition. */
 const ALWAYS_ON_BUDGET_BYTES = 62_000
 
 /** No single description — a tool's own, or any schema property's, at any

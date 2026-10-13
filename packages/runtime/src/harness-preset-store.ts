@@ -33,6 +33,7 @@ import { join, resolve } from "node:path"
 import { z } from "zod"
 import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
 import { splitContextWindowHint } from "@agentproto/model-catalog/llm"
+import { turnRetryInputSchema, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
 
 /**
  * A persisted harness→profile binding: for one adapter harness, which auth
@@ -55,6 +56,10 @@ export interface HarnessPreset {
   /** Whether this is THE default preset for its `harnessSlug`. At most one per
    *  harness — enforced on write. */
   isDefault: boolean
+  /** `agent_start.turnRetry` applied to spawns that resolve THIS preset as the
+   *  harness default (an explicit `turnRetry` on the spawn wins), so e.g. a
+   *  free-model preset can rotate by default. Absent ⇒ no turn retry. */
+  turnRetry?: TurnRetryInput
 }
 
 const harnessPresetSchema = z.object({
@@ -64,6 +69,7 @@ const harnessPresetSchema = z.object({
   profileRef: z.string().min(1),
   defaultModel: z.string().min(1),
   isDefault: z.boolean(),
+  turnRetry: turnRetryInputSchema.optional(),
 }) satisfies z.ZodType<HarnessPreset>
 
 const harnessPresetsFileSchema = z.object({
@@ -150,7 +156,7 @@ export async function getDefaultHarnessPreset(
  *  profile bills only the model ids it lists; `mode: "all"` (or no curation)
  *  services everything. Mirrors the intent of the catalog eligibility join,
  *  applied here as a create-time guard, not the runtime billing gate. */
-function profileServicesModel(profile: AuthProfile, model: string): boolean {
+export function profileServicesModel(profile: AuthProfile, model: string): boolean {
   const models = profile.models
   if (!models || models.mode === "all") return true
   // A `[1m]` context-lane hint selects a lane of a listed model, not a
@@ -181,6 +187,8 @@ async function validateProfileBinding(
       `defaultModel "${preset.defaultModel}" is not in profile "${preset.profileRef}"'s model allowlist.`,
     )
   }
+  const rotateError = validateTurnRetryRotate(preset.turnRetry?.rotate, preset.defaultModel)
+  if (rotateError) throw new HarnessPresetValidationError(rotateError)
 }
 
 /**
