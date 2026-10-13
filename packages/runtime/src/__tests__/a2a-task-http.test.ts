@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:http"
@@ -21,6 +21,9 @@ import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 import {
+  createA2aTaskLedger,
+  decodePageToken,
+  encodePageToken,
   extractLastAssistantText,
   extractSkillRequest,
   mapRunState,
@@ -504,6 +507,124 @@ describe("A2A task ingress", () => {
     })
   })
 
+  const listReq = (params: Record<string, unknown> = {}, id: number | string = 1) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "ListTasks",
+    params,
+  })
+
+  const sendWithContext = (contextId: string, id: number | string = 1) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "SendMessage",
+    params: {
+      message: {
+        messageId: `m-${id}`,
+        role: "ROLE_USER",
+        contextId,
+        parts: [{ text: "hello" }],
+        metadata: { skill: "solo" },
+      },
+    },
+  })
+
+  it("ListTasks returns every task newest first with empty nextPageToken", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "one"))
+      await rpc(APP_ID, sendReq("solo", "two"))
+      await rpc(APP_ID, sendReq("solo", "three"))
+      const res = await rpc(APP_ID, listReq())
+      expect(res.json.error).toBeUndefined()
+      expect(res.json.result.totalSize).toBe(3)
+      expect(res.json.result.pageSize).toBe(50)
+      expect(res.json.result.nextPageToken).toBe("")
+      const tasks = res.json.result.tasks as A2aTask[]
+      expect(tasks.map(t => t.id)).toEqual(["run-3", "run-2", "run-1"])
+      expect(tasks.every(t => t.status.state === "TASK_STATE_WORKING")).toBe(true)
+    })
+  })
+
+  it("ListTasks pages with pageSize and the returned pageToken", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "one"))
+      await rpc(APP_ID, sendReq("solo", "two"))
+      await rpc(APP_ID, sendReq("solo", "three"))
+      const first = await rpc(APP_ID, listReq({ pageSize: 2 }))
+      expect((first.json.result.tasks as A2aTask[]).map(t => t.id)).toEqual(["run-3", "run-2"])
+      expect(first.json.result.totalSize).toBe(3)
+      expect(first.json.result.pageSize).toBe(2)
+      expect(first.json.result.nextPageToken).toBeTruthy()
+      const second = await rpc(APP_ID, listReq({ pageSize: 2, pageToken: first.json.result.nextPageToken }))
+      expect((second.json.result.tasks as A2aTask[]).map(t => t.id)).toEqual(["run-1"])
+      expect(second.json.result.nextPageToken).toBe("")
+    })
+  })
+
+  it("ListTasks filters by contextId", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendWithContext("ctx-a", 1))
+      await rpc(APP_ID, sendWithContext("ctx-a", 2))
+      await rpc(APP_ID, sendWithContext("ctx-b", 3))
+      const res = await rpc(APP_ID, listReq({ contextId: "ctx-a" }))
+      expect(res.json.result.totalSize).toBe(2)
+      expect((res.json.result.tasks as A2aTask[]).map(t => t.id).sort()).toEqual(["run-1", "run-2"])
+      expect((res.json.result.tasks as A2aTask[]).every(t => t.contextId === "ctx-a")).toBe(true)
+    })
+  })
+
+  it("ListTasks filters by status, reading each candidate task", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "done one"))
+      await rpc(APP_ID, sendReq("solo", "still going"))
+      runs.set("run-1", { status: "succeeded", sessions: [{ agentId: "solo", sessionId: "s-run-1" }] })
+      conversations.set("s-run-1", [{ role: "assistant", text: "All done." }])
+      const completed = await rpc(APP_ID, listReq({ status: "TASK_STATE_COMPLETED" }))
+      expect(completed.json.result.totalSize).toBe(1)
+      expect((completed.json.result.tasks as A2aTask[]).map(t => t.id)).toEqual(["run-1"])
+      expect(completed.json.result.tasks[0].status.state).toBe("TASK_STATE_COMPLETED")
+      const working = await rpc(APP_ID, listReq({ status: "TASK_STATE_WORKING" }))
+      expect(working.json.result.totalSize).toBe(1)
+      expect((working.json.result.tasks as A2aTask[]).map(t => t.id)).toEqual(["run-2"])
+    })
+  })
+
+  it("ListTasks drops artifacts by default and keeps them with includeArtifacts", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "make a report"))
+      runs.set("run-1", { status: "succeeded", sessions: [{ agentId: "solo", sessionId: "s-run-1" }] })
+      conversations.set("s-run-1", [{ role: "assistant", text: "Report ready." }])
+      const slim = await rpc(APP_ID, listReq())
+      expect(slim.json.result.tasks[0].artifacts).toBeUndefined()
+      const full = await rpc(APP_ID, listReq({ includeArtifacts: true }))
+      expect(full.json.result.tasks[0].artifacts).toHaveLength(2)
+      expect(full.json.result.tasks[0].artifacts[0]).toMatchObject({ artifactId: "agent-output-solo" })
+    })
+  })
+
+  it("ListTasks skips a task whose backing run is gone", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "one"))
+      await rpc(APP_ID, sendReq("solo", "two"))
+      await rpc(APP_ID, sendReq("solo", "three"))
+      runs.delete("run-2")
+      const res = await rpc(APP_ID, listReq())
+      expect(res.json.error).toBeUndefined()
+      expect((res.json.result.tasks as A2aTask[]).map(t => t.id)).toEqual(["run-3", "run-1"])
+      expect(res.json.result.totalSize).toBe(3)
+    })
+  })
+
+  it("ListTasks rejects an out-of-range pageSize or a garbage pageToken", async () => {
+    await withServer(async rpc => {
+      for (const params of [{ pageSize: 0 }, { pageSize: 101 }, { pageSize: 1.5 }, { pageToken: "!!not-a-token!!" }]) {
+        const res = await rpc(APP_ID, listReq(params))
+        expect(res.json.error.code).toBe(-32602)
+      }
+      expect(dispatched).toHaveLength(0)
+    })
+  })
+
   it("SendMessage starts an exposed workflow skill through workflow_run_file", async () => {
     await withServer(async rpc => {
       const sent = await rpc(APP_ID, sendReq("do-it", "compile the report"))
@@ -611,6 +732,7 @@ describe("A2A task ingress", () => {
         expect((await rpc(APP_ID, { ...sendReq("solo"), method: legacy })).json.error.code).toBe(-32601)
       }
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SendStreamingMessage" })).json.error.code).toBe(-32004)
+      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SubscribeToTask" })).json.error.code).toBe(-32004)
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "CreateTaskPushNotificationConfig" })).json.error.code).toBe(-32003)
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "GetExtendedAgentCard" })).json.error.code).toBe(-32007)
       expect(dispatched).toHaveLength(0)
@@ -640,6 +762,74 @@ describe("A2A task ingress", () => {
     })
   })
 
+})
+
+describe("a2a task ledger", () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "a2a-ledger-"))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const entry = (taskId: string, createdAt: string, appId = "@t/app") => ({
+    taskId,
+    appId,
+    contextId: "ctx",
+    skill: "solo",
+    createdAt,
+  })
+
+  it("list returns every entry newest first, ties by file order reversed, torn lines and other apps skipped", async () => {
+    const ledger = createA2aTaskLedger(dir)
+    await ledger.append(entry("t1", "2026-10-13T10:00:00.000Z"))
+    await ledger.append(entry("t2", "2026-10-13T12:00:00.000Z"))
+    await ledger.append(entry("t3", "2026-10-13T11:00:00.000Z"))
+    // A torn line from a crash mid-append: partial JSON, not parseable.
+    await appendFile(join(dir, `${encodeURIComponent("@t/app")}.jsonl`), '{"taskId":"torn","appId":"@t/app"\n', "utf8")
+    // Another app's ledger file must not leak into this app's list.
+    await ledger.append(entry("other-1", "2026-10-13T13:00:00.000Z", "@t/other"))
+    await ledger.append(entry("t4", "2026-10-13T11:00:00.000Z"))
+    // A duplicate taskId is kept once, first write wins.
+    await ledger.append(entry("t1", "2026-10-13T23:00:00.000Z"))
+    const listed = await ledger.list("@t/app")
+    expect(listed.map(e => e.taskId)).toEqual(["t2", "t4", "t3", "t1"])
+    expect(listed.find(e => e.taskId === "t1")!.createdAt).toBe("2026-10-13T10:00:00.000Z")
+    expect(await ledger.list("@t/none")).toEqual([])
+  })
+
+  it("append after a torn trailing line closes it so the new entry survives", async () => {
+    const ledger = createA2aTaskLedger(dir)
+    await ledger.append(entry("t1", "2026-10-13T10:00:00.000Z"))
+    // A torn trailing line from a crash mid-append: partial JSON, no newline.
+    await appendFile(join(dir, `${encodeURIComponent("@t/app")}.jsonl`), '{"taskId":"torn","appId":"@t/app"', "utf8")
+    await ledger.append(entry("t2", "2026-10-13T11:00:00.000Z"))
+    expect((await ledger.find("@t/app", "t2"))!.taskId).toBe("t2")
+    expect(await ledger.find("@t/app", "torn")).toBeUndefined()
+    expect((await ledger.list("@t/app")).map(e => e.taskId)).toEqual(["t2", "t1"])
+  })
+
+  it("find still resolves a task and skips torn lines", async () => {
+    const ledger = createA2aTaskLedger(dir)
+    await ledger.append(entry("t1", "2026-10-13T10:00:00.000Z"))
+    await appendFile(join(dir, `${encodeURIComponent("@t/app")}.jsonl`), '{"taskId":"torn"', "utf8")
+    expect((await ledger.find("@t/app", "t1"))!.taskId).toBe("t1")
+    expect(await ledger.find("@t/app", "torn")).toBeUndefined()
+    expect(await ledger.find("@t/app", "nope")).toBeUndefined()
+  })
+
+  it("page tokens round-trip and reject anything malformed", () => {
+    expect(decodePageToken(encodePageToken(0))).toBe(0)
+    expect(decodePageToken(encodePageToken(42))).toBe(42)
+    expect(decodePageToken("!!not-base64!!")).toBeUndefined()
+    expect(decodePageToken(Buffer.from("not json", "utf8").toString("base64url"))).toBeUndefined()
+    expect(decodePageToken(Buffer.from(JSON.stringify({ o: -1 }), "utf8").toString("base64url"))).toBeUndefined()
+    expect(decodePageToken(Buffer.from(JSON.stringify({ o: 1.5 }), "utf8").toString("base64url"))).toBeUndefined()
+    expect(decodePageToken(Buffer.from(JSON.stringify({ o: "2" }), "utf8").toString("base64url"))).toBeUndefined()
+  })
 })
 
 describe("a2a-tasks mapping", () => {

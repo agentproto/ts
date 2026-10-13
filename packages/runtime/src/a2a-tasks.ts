@@ -13,7 +13,7 @@
  * the runtime does not depend on `@agentproto/a2a`.
  */
 
-import { appendFile, mkdir, readFile } from "node:fs/promises"
+import { appendFile, mkdir, open, readFile } from "node:fs/promises"
 import { join } from "node:path"
 
 /** A2A spec version the field names and error codes below follow. */
@@ -129,6 +129,18 @@ export const TERMINAL_TASK_STATES: ReadonlySet<A2aTaskState> = new Set([
   "TASK_STATE_CANCELED",
   "TASK_STATE_REJECTED",
 ])
+
+/** Every `A2aTaskState` value, for validating a `ListTasks` `status` filter. */
+export const A2A_TASK_STATE_VALUES: readonly A2aTaskState[] = [
+  "TASK_STATE_SUBMITTED",
+  "TASK_STATE_WORKING",
+  "TASK_STATE_INPUT_REQUIRED",
+  "TASK_STATE_COMPLETED",
+  "TASK_STATE_CANCELED",
+  "TASK_STATE_FAILED",
+  "TASK_STATE_REJECTED",
+  "TASK_STATE_AUTH_REQUIRED",
+]
 
 // ── manifest surface (lane 2's `handle.accepts` / `handle.exposes`) ────
 
@@ -533,34 +545,101 @@ export interface A2aLedgerEntry {
 export interface A2aTaskLedger {
   append(entry: A2aLedgerEntry): Promise<void>
   find(appId: string, taskId: string): Promise<A2aLedgerEntry | undefined>
+  /** Every entry of one app, newest first (by `createdAt`, ties by file order
+   *  reversed). Torn lines are skipped and a duplicate `taskId` is kept once
+   *  (first write wins). */
+  list(appId: string): Promise<A2aLedgerEntry[]>
+}
+
+/** Opaque `ListTasks` page token: base64url of `{"o": offset}`. */
+export function encodePageToken(offset: number): string {
+  return Buffer.from(JSON.stringify({ o: offset }), "utf8").toString("base64url")
+}
+
+/** Inverse of `encodePageToken`; anything malformed decodes to `undefined`. */
+export function decodePageToken(token: string): number | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf8"))
+  } catch {
+    return undefined
+  }
+  if (!isPlainObject(parsed)) return undefined
+  const { o } = parsed
+  if (typeof o !== "number" || !Number.isInteger(o) || o < 0) return undefined
+  return o
 }
 
 /** Append-only JSONL ledger, one file per app: `<dir>/<encoded appId>.jsonl`
  *  (the id is URI-encoded so a scoped `@scope/name` stays one path segment). */
 export function createA2aTaskLedger(dir: string): A2aTaskLedger {
   const fileFor = (appId: string): string => join(dir, `${encodeURIComponent(appId)}.jsonl`)
+  /** One app's parsed entries in file order: torn lines skipped, a duplicate
+   *  `taskId` kept once (first write wins). An unreadable file is empty. */
+  const readEntries = async (appId: string): Promise<A2aLedgerEntry[]> => {
+    let raw: string
+    try {
+      raw = await readFile(fileFor(appId), "utf8")
+    } catch {
+      return []
+    }
+    const seen = new Set<string>()
+    const entries: A2aLedgerEntry[] = []
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line) as A2aLedgerEntry
+        if (entry.appId !== appId || typeof entry.taskId !== "string" || seen.has(entry.taskId)) continue
+        seen.add(entry.taskId)
+        entries.push(entry)
+      } catch {
+        // A torn trailing line from a crash mid-append is skipped.
+      }
+    }
+    return entries
+  }
   return {
     async append(entry) {
       await mkdir(dir, { recursive: true })
-      await appendFile(fileFor(entry.appId), `${JSON.stringify(entry)}\n`, "utf8")
+      const line = `${JSON.stringify(entry)}\n`
+      const file = fileFor(entry.appId)
+      // A torn trailing line from a crash mid-append has no newline: writing
+      // onto it would glue both entries into one unparsable line, so close it
+      // first. Only the last byte is read, never the whole file.
+      let needsLeadingNewline = false
+      try {
+        const fh = await open(file, "r")
+        try {
+          const { size } = await fh.stat()
+          if (size > 0) {
+            const buf = Buffer.alloc(1)
+            await fh.read(buf, 0, 1, size - 1)
+            needsLeadingNewline = buf[0] !== 0x0a
+          }
+        } finally {
+          await fh.close()
+        }
+      } catch {
+        // Missing/unreadable file: appendFile starts a fresh file anyway.
+      }
+      await appendFile(file, needsLeadingNewline ? `\n${line}` : line, "utf8")
     },
     async find(appId, taskId) {
-      let raw: string
-      try {
-        raw = await readFile(fileFor(appId), "utf8")
-      } catch {
-        return undefined
-      }
-      for (const line of raw.split("\n")) {
-        if (!line.trim()) continue
-        try {
-          const entry = JSON.parse(line) as A2aLedgerEntry
-          if (entry.taskId === taskId && entry.appId === appId) return entry
-        } catch {
-          // A torn trailing line from a crash mid-append is skipped.
-        }
-      }
-      return undefined
+      const entries = await readEntries(appId)
+      return entries.find(entry => entry.taskId === taskId)
+    },
+    async list(appId) {
+      const entries = await readEntries(appId)
+      return entries
+        .map((entry, fileIndex) => ({ entry, fileIndex }))
+        .sort((a, b) => {
+          // A hand-edited entry may carry a non-string createdAt: sort it last.
+          const aCreated = typeof a.entry.createdAt === "string" ? a.entry.createdAt : ""
+          const bCreated = typeof b.entry.createdAt === "string" ? b.entry.createdAt : ""
+          const byCreatedAt = bCreated.localeCompare(aCreated)
+          return byCreatedAt !== 0 ? byCreatedAt : b.fileIndex - a.fileIndex
+        })
+        .map(wrapped => wrapped.entry)
     },
   }
 }

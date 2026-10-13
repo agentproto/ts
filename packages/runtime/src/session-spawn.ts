@@ -90,8 +90,7 @@ import {
 } from "./sandbox-workspace-remote.js"
 import {
   formatDeliveryNotice,
-  createDeliveryHook,
-  sandboxCheckpointOpts,
+  trackedSandboxDeliveryOpts,
   resolveSandboxCheckpointConfig,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
@@ -926,12 +925,17 @@ export function buildDaemonSelfMountEntry(
     delegationDenied: boolean
     deferredToolsOverride?: boolean
     callerSessionId: string
+    /** `?allowTools=` scope (see `SpawnAgentSessionInput.allowTools`);
+     *  forces deferred loading off. */
+    allowTools?: readonly string[]
   },
 ): AcpMcpServer {
   let ref = opts.delegationDenied
     ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
     : daemonMcpUrl
-  if (opts.deferredToolsOverride !== undefined) {
+  if (opts.allowTools !== undefined && opts.allowTools.length > 0) {
+    ref += `${ref.includes("?") ? "&" : "?"}allowTools=${encodeURIComponent(opts.allowTools.join(","))}&deferred=0`
+  } else if (opts.deferredToolsOverride !== undefined) {
     ref += `${ref.includes("?") ? "&" : "?"}deferred=${opts.deferredToolsOverride ? "1" : "0"}`
   }
   ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`
@@ -1369,6 +1373,19 @@ export interface SpawnAgentSessionInput {
    */
   auth?: DefaultsAdapterAuthConfig
   mcpServers?: AcpMcpServer[]
+  /** Scope the daemon self-mount to exactly these tool names
+   *  (`?allowTools=`, deferred loading off so nothing hides behind
+   *  `tool_search`) and mount it for ANY adapter — an AIP-42 agent's
+   *  declared `tools` (`app_run`, see `agent-projection.ts`), the same
+   *  scoping a workflow agent step gets (`agentStepMcpServers`). Ignored
+   *  (with a warning) when the caller supplied its own `mcpServers` or for
+   *  a sandbox spawn. Not on the `agent_start` MCP schema. */
+  allowTools?: string[]
+  /** Caller-computed warnings about what this harness cannot honour (an
+   *  AIP-42 manifest projected onto it — `agent-projection.ts`). Emitted as
+   *  a `session:harness-warning` with the spawn's own boundary warnings and
+   *  returned in the result's `warnings`. */
+  harnessWarnings?: string[]
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   notifyUrl?: string
   notifySecret?: string
@@ -2245,7 +2262,7 @@ export async function spawnAgentSession(
   let worktreeAutoProvisioned = false
   // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
   // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
-  const spawnWarnings: string[] = []
+  const spawnWarnings: string[] = [...(input.harnessWarnings ?? [])]
   if (input.sandbox === undefined && !appBoundary) {
     const mode = resolveWorktreeIsolation
       ? await resolveWorktreeIsolation()
@@ -2552,12 +2569,32 @@ export async function spawnAgentSession(
   // `command_execute` call this child makes back through that URL can be
   // attributed to it (PR 7 / Gap 7) — `handleMcp` (http-server.ts) reads
   // the query param and threads it into `registerCommandTools`.
-  if (!mcpServers && shouldInjectDaemonSelfMount(input.adapter, input.sandbox) && daemonMcpUrl) {
+  //
+  // `allowTools` (an AIP-42 agent's declared tools) mounts the gateway for
+  // ANY adapter, scoped to exactly that list — the declaration is the
+  // capability ask, same as a workflow agent step (`agentStepMcpServers`).
+  const allowTools = input.allowTools?.length ? input.allowTools : undefined
+  if (allowTools && (mcpServers || input.sandbox !== undefined || !daemonMcpUrl)) {
+    spawnWarnings.push(
+      `agent_start: tools allowlist (${allowTools.join(", ")}) not applied — ` +
+        (mcpServers
+          ? "the caller supplied its own mcpServers."
+          : input.sandbox !== undefined
+            ? "a sandbox spawn cannot reach this daemon's loopback /mcp."
+            : "the daemon has no /mcp URL configured."),
+    )
+  }
+  if (
+    !mcpServers &&
+    daemonMcpUrl &&
+    (allowTools ? input.sandbox === undefined : shouldInjectDaemonSelfMount(input.adapter, input.sandbox))
+  ) {
     mcpServers = [
       buildDaemonSelfMountEntry(daemonMcpUrl, {
         delegationDenied,
         deferredToolsOverride,
         callerSessionId: mintedSessionId,
+        ...(allowTools ? { allowTools } : {}),
       }),
     ]
   }
@@ -4015,15 +4052,22 @@ export async function spawnAgentSession(
         ...(sandboxWorkspace
           ? {
               workspace: sandboxWorkspace,
-              ...(normalizeWorktreeField(input.worktree) !== undefined
-                ? { worktree: normalizeWorktreeField(input.worktree) }
-                : {}),
+              // `worktree: false` is the only opt-out of the default `wt/`
+              // work branch; absent mints one inside the workspace plan.
+              ...(input.worktree === false
+                ? { worktree: false as const }
+                : normalizeWorktreeField(input.worktree) !== undefined
+                  ? { worktree: normalizeWorktreeField(input.worktree) }
+                  : {}),
               sessionId: mintedSessionId,
               onDelivery: (record: SandboxDeliveryRecord) => {
                 registry.recordSandboxDelivery(mintedSessionId, record, formatDeliveryNotice(record))
               },
               onCheckpoint: (record: SandboxDeliveryRecord) => {
                 registry.recordSandboxCheckpoint(mintedSessionId, record, formatDeliveryNotice(record))
+              },
+              onDeliveryTargetChanged: (target: SandboxDeliveryTarget) => {
+                registry.setSandboxDeliveryTarget(mintedSessionId, target)
               },
             }
           : {}),
@@ -4313,6 +4357,7 @@ export async function spawnAgentSession(
     // calls `sendPrompt` at all.
     if (initialTitle) desc.title = initialTitle
     if (boundaryWarnings.length > 0) registry.emitHarnessWarning(desc.id, boundaryWarnings, input.label)
+    if (input.harnessWarnings?.length) registry.emitHarnessWarning(desc.id, input.harnessWarnings, input.label)
     // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
     // `sessions --json` / the summaries view can report the resolved path +
     // mode. `agentsMdMode` is non-optional once resolution ran — always set
@@ -4526,8 +4571,8 @@ export type SandboxBootResult =
        *  descriptor's `sandboxProvider` by the caller. */
       provider: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
-      /** The work branch checked out in the box, when a `worktree` was
-       *  requested — stamped onto the descriptor so a restart can deliver it. */
+      /** The work branch checked out in the box — stamped onto the descriptor
+       *  so a restart can deliver it. Absent only for `worktree: false`. */
       deliveryTarget?: SandboxDeliveryTarget
       sandboxPorts?: Record<number, string>
       /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
@@ -4873,15 +4918,20 @@ export async function bootSandboxAgentSession(opts: {
    *  disjoint filesystem (`handle.defaultCwd`) — a same-machine provider keeps
    *  using the host path. */
   workspace?: { slug: string; remote: WorkspaceRemote }
-  /** The caller's normalized `agent_start.worktree`: cut `wt/<slug>` in the
-   *  box's checkout. Meaningful only together with `workspace`. */
-  worktree?: { slug?: string; base?: string }
+  /** The caller's normalized `agent_start.worktree`: pins the `wt/<slug>` cut
+   *  in the box's checkout. Absent mints a default one; `false` opts out
+   *  (plain default-branch checkout, no delivery). Meaningful only together
+   *  with `workspace`. */
+  worktree?: { slug?: string; base?: string } | false
   /** The host session id this box serves — names the delivery output dir. */
   sessionId?: string
   /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
   onDelivery?: (record: SandboxDeliveryRecord) => void
   /** Receives each periodic checkpoint outcome of the work branch. */
   onCheckpoint?: (record: SandboxDeliveryRecord) => void
+  /** Called when the turn-end safety net adopts a different `wt/` branch the
+   *  agent moved to in the box — the caller persists it on the session record. */
+  onDeliveryTargetChanged?: (target: SandboxDeliveryTarget) => void
   /** Resolved `defaults.sandbox.checkpoint` → `agent_start.sandboxCheckpoint`
    *  (`resolveSandboxCheckpointConfig`) — drives whether/how the checkpoint
    *  timer + per-turn hook are wired, whether the teardown delivery
@@ -4964,7 +5014,7 @@ export async function bootSandboxAgentSession(opts: {
         workspaceSlug: opts.workspace.slug,
         remote: opts.workspace.remote,
         homeDir: handle.defaultCwd,
-        ...(opts.worktree ? { worktree: opts.worktree } : {}),
+        ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
         ...(opts.checkpointConfig?.refPrefix ? { checkpointRefPrefix: opts.checkpointConfig.refPrefix } : {}),
         ...(opts.checkpointSnapshot !== undefined ? { checkpointSnapshot: opts.checkpointSnapshot } : {}),
         mintSlug: () => randomBytes(4).toString("hex"),
@@ -5344,27 +5394,18 @@ export async function bootSandboxAgentSession(opts: {
       // F2 — when the first prompt rode the spawn dial, don't re-send it as a
       // second `agent_prompt` dial (see `promptCarriedInStart`).
       ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
-      ...(deliveryTarget && boxExec && deliverySessionId
-        ? {
-            onBeforeTeardown: createDeliveryHook({
-              exec: boxExec,
-              ...(boxReadFile ? { readFile: boxReadFile } : {}),
-              target: deliveryTarget,
-              outDir: sessionTranscriptDir(deliverySessionId),
-              snapshotUncommitted: opts.checkpointConfig?.onTeardown ?? true,
-              ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
-            }),
-            ...sandboxCheckpointOpts(
-              {
-                exec: boxExec,
-                ...(boxReadFile ? { readFile: boxReadFile } : {}),
-                target: deliveryTarget,
-                outDir: sessionTranscriptDir(deliverySessionId),
-                ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
-              },
-              opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
-            ),
-          }
+      ...(deliveryTarget && boxExec && deliverySessionId && workspacePlan
+        ? trackedSandboxDeliveryOpts({
+            exec: boxExec,
+            ...(boxReadFile ? { readFile: boxReadFile } : {}),
+            target: deliveryTarget,
+            outDir: sessionTranscriptDir(deliverySessionId),
+            config: opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            baseRef: workspacePlan.baseRef,
+            ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
+            ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
+            ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),
+          })
         : {}),
       // A device target is another daemon reached over the E2E bridge, not
       // a box whose `/health` this host can probe directly.

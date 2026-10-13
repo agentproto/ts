@@ -536,6 +536,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // opaque comma-joined `skills` option free of "unknown skill id"
         // warnings.
         deliversSessionSkills: adapter.handle.metadata?.sessionSkills !== undefined,
+        // Only an adapter whose manifest names the option that takes an
+        // AIP-42 AGENT.md path (`metadata.agentManifestOption`, mastra-agent
+        // today) is handed the manifest itself; every other adapter gets it
+        // projected onto spawn fields (agent-projection.ts).
+        ...(typeof adapter.handle.metadata?.agentManifestOption === "string"
+          ? { agentManifestOption: adapter.handle.metadata.agentManifestOption }
+          : {}),
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),

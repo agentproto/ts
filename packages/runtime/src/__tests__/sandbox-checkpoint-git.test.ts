@@ -14,7 +14,13 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 
-import { checkpointBranchOf, runSandboxDelivery, type SandboxDeliveryTarget } from "../sandbox-delivery.js"
+import {
+  checkpointBranchOf,
+  resolveSandboxCheckpointConfig,
+  runSandboxDelivery,
+  trackedSandboxDeliveryOpts,
+  type SandboxDeliveryTarget,
+} from "../sandbox-delivery.js"
 import {
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
@@ -244,6 +250,43 @@ describe("checkpoint round trip (real git)", () => {
       // A second setup in the same (reused) box finds local edits and leaves them be.
       const again = await checkout(home, "dirty", { sha: record.checkpoint?.sha as string })
       expect(await readFile(join(again.plan.checkoutDir, "mine.txt"), "utf8")).toBe("mine\n")
+    })
+  })
+
+  describe("turn-end work-branch safety net", () => {
+    async function trackedBox(slug: string) {
+      const { plan, baseSha } = await checkout(join(root, "box"), slug)
+      const changed: SandboxDeliveryTarget[] = []
+      const target: SandboxDeliveryTarget = { checkoutDir: plan.checkoutDir, branch: `wt/${slug}`, baseSha }
+      const opts = trackedSandboxDeliveryOpts({
+        exec: shExec,
+        target,
+        outDir: join(root, "out"),
+        config: resolveSandboxCheckpointConfig(undefined, undefined),
+        baseRef: plan.baseRef,
+        onTargetChanged: t => changed.push(t),
+      })
+      return { dir: plan.checkoutDir, baseSha, changed, opts }
+    }
+
+    it("adopts a wt/ branch the agent cut by hand and checkpoints THAT branch", async () => {
+      const { dir, baseSha, changed, opts } = await trackedBox("minted")
+      await git(dir, "checkout", "-q", "-b", "wt/by-hand")
+      await writeFile(join(dir, "hand.txt"), "hand\n")
+      await git(dir, "add", "-A")
+      await git(dir, "commit", "-m", "hand work")
+
+      await opts.checkpoint?.run(1)
+
+      expect(changed).toEqual([{ checkoutDir: dir, branch: "wt/by-hand", baseSha }])
+      expect(await git(remote, "rev-parse", "--verify", "wt/by-hand")).toBe(await git(dir, "rev-parse", "HEAD"))
+    })
+
+    it("ignores a switch to a non-wt/ branch", async () => {
+      const { dir, changed, opts } = await trackedBox("stay")
+      await git(dir, "checkout", "-q", "main")
+      await opts.checkpoint?.run(1)
+      expect(changed).toEqual([])
     })
   })
 })

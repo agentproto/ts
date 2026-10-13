@@ -306,6 +306,24 @@ describe("createSandboxAgentSessionHost", () => {
     expect(extendTimeoutFn).toHaveBeenCalledWith(45 * 60_000)
   })
 
+  it("forwards the booted sandbox's lifetimeMs", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: vi.fn(async () => {}),
+        lifetimeMs: 20 * 60_000,
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.lifetimeMs).toBe(20 * 60_000)
+  })
+
   it("omits extendTimeout() when the booted sandbox doesn't support it", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     const provider = fakeProvider()

@@ -146,6 +146,10 @@ export interface BootedSandbox {
    * from under it. Optional: providers with no fixed lifetime cap omit it.
    */
   extendTimeout?(ms: number): Promise<void>
+  /** The lifetime (ms) this box was booted/re-armed with — what a host should
+   *  pass to `extendTimeout` when renewing during activity. Absent when the
+   *  provider has no fixed lifetime. */
+  lifetimeMs?: number
 }
 
 /** One-shot command-execution request, as passed to `BootedSandbox.exec` by
@@ -323,6 +327,8 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
    *  `BootedSandbox.extendTimeout`. Absent when the provider has no fixed
    *  lifetime cap to re-arm. */
   extendTimeout?: BootedSandbox["extendTimeout"]
+  /** The box's configured lifetime — forwarded from `BootedSandbox.lifetimeMs`. */
+  lifetimeMs?: BootedSandbox["lifetimeMs"]
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
   /** Close the daemon connection and PAUSE the sandbox instead of killing
@@ -383,6 +389,7 @@ export async function createSandboxAgentSessionHost(
     ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
     ...(booted.readFile ? { readFile: booted.readFile.bind(booted) } : {}),
     ...(booted.extendTimeout ? { extendTimeout: booted.extendTimeout.bind(booted) } : {}),
+    ...(booted.lifetimeMs !== undefined ? { lifetimeMs: booted.lifetimeMs } : {}),
     async stop(): Promise<void> {
       await host.close()
       await booted.stop()

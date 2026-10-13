@@ -20,6 +20,7 @@ import { shouldInjectDaemonSelfMount, spawnAgentSession, type SandboxSpecInput }
 import { exportAgentSession } from "./transcript-export.js"
 import type { RoutinePolicy } from "./step-run-types.js"
 import { normalizeSkillsOption } from "./spawn-defaults.js"
+import { loadImportedSkills, resolveSessionSkills, type ImportedSkillsConfig, type ResolvedSessionSkill } from "./skill-imports.js"
 import type { EffortLevel } from "./session-config.js"
 import {
   APP_BOUNDARY_UNENFORCEABLE,
@@ -200,6 +201,9 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
        * confine its file/command tools. Omitted ⇒ unchanged behaviour.
        */
       boundary?: AppBoundary
+      /** Imported-skills registry reader for session-skill delivery
+       *  (test seam). Omitted ⇒ `~/.agentproto/imported-skills.json`. */
+      loadImportedSkills?: () => Promise<ImportedSkillsConfig>
     },
   ) {}
 
@@ -232,6 +236,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       options?: Record<string, boolean | number | string>
       harness?: AgentHarness
       agentTools?: readonly string[]
+      agentWarnings?: readonly string[]
       stepKey?: string
     },
   ): Promise<string> {
@@ -313,13 +318,15 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       // runtime can drive — `run-workflow.ts` already records
       // `toolsApplied: false` on the step's own output; this is the
       // "never silently ignore" warning event alongside it.
+      const sandboxWarnings = [...(opts.agentWarnings ?? [])]
       if (opts.harness?.tools && opts.harness.tools.length > 0) {
+        sandboxWarnings.push("harness.tools: no generic per-spawn tool allowlist exists for this adapter — not applied")
+      }
+      if (sandboxWarnings.length > 0) {
         this.sessionEvents.emit({
           type: "session:harness-warning",
           sessionId: result.descriptor.id,
-          warnings: [
-            "harness.tools: no generic per-spawn tool allowlist exists for this adapter — not applied",
-          ],
+          warnings: sandboxWarnings,
           ...(opts.stepId ? { label: opts.stepId } : {}),
           ts: new Date().toISOString(),
         })
@@ -346,7 +353,20 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       opts.agentTools,
       resolved.declaredOptions,
     )
-    const harnessWarnings: string[] = []
+    // What the harness can't honour of the step's agent manifest
+    // (agent-projection.ts) — surfaced with this path's own warnings.
+    const harnessWarnings: string[] = [...(opts.agentWarnings ?? [])]
+    // Session-skill delivery (claude-code, opencode: imported skills copied
+    // into the session's config dir), the same resolution `agent_start`
+    // runs (session-spawn.ts) — without it a step's `harness.skills` (an
+    // AGENT.md's declared skills included) reached only adapters with a
+    // `skills` OPTION and vanished silently everywhere else.
+    let sessionSkills: ResolvedSessionSkill[] = []
+    if (resolved.deliversSessionSkills && harness?.skills && harness.skills.length > 0) {
+      const resolvedSkills = resolveSessionSkills([...harness.skills], await (this.opts?.loadImportedSkills ?? loadImportedSkills)())
+      sessionSkills = resolvedSkills.resolved
+      harnessWarnings.push(...resolvedSkills.warnings)
+    }
     if (harness?.tools && harness.tools.length > 0) {
       harnessWarnings.push(
         "harness.tools: no generic per-spawn tool allowlist exists for this adapter — not applied",
@@ -405,6 +425,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       ...(harness?.model !== undefined ? { model: harness.model } : {}),
       ...(harness?.effort !== undefined ? { effort: harness.effort } : {}),
       ...(mcpServers ? { mcpServers } : {}),
+      ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
     })
     const desc = this.registry.spawnAgent({
       id: stepSessionId,
@@ -430,6 +451,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           }
         : {}),
       ...(mcpServers ? { mcpServers } : {}),
+      ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
       // Echo the pinned model/effort onto the descriptor the way agent_start
       // does (session-spawn.ts), so a `wf:*` step session shows its model —
