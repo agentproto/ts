@@ -111,9 +111,12 @@ function paginatedLegacyList<TItem extends object>(opts: {
   }
 }
 
-/** The only agent adapter this WP knows how to run an emitted AGENT.md
- *  under — see `adapters/mastra-agent`'s `agent` option (`--agent <path>`). */
-export const DEFAULT_AGENT_ADAPTER = "mastra-agent"
+/** mastra-agent's adapter slug — the one agent adapter this WP knows how to
+ *  run an emitted AGENT.md under via its `agent` option (`--agent <path>`).
+ *  No longer a silent fallback: an agent only lands here when its own
+ *  `metadata.adapter`/`metadata.harness` (or a caller-passed `adapter`)
+ *  names it. */
+const DEFAULT_AGENT_ADAPTER = "mastra-agent"
 
 /** A spawned session descriptor's terminal statuses (see `SessionStatus` in
  *  sessions.ts): clean exit, operator kill, or a crash/error. Any of these
@@ -162,10 +165,10 @@ async function waitForSessionTerminal(
   }
 }
 
-/** F26 model-based adapter default: a `claude-*` model id (bare, or after a
+/** F26 model-based adapter route: a `claude-*` model id (bare, or after a
  *  `provider/` prefix — AIP-42's `modelRef` allows either shorthand) runs on
  *  `claude-code`, matching the daemon's own routing rule that Claude models
- *  run on claude-code. Anything else keeps the pre-F26 blanket default. */
+ *  run on claude-code. */
 export const MODEL_ROUTED_ADAPTER = "claude-code"
 
 /** Resolves a model ROLE (`review.large`) to a model id — see `model-roles.ts`. */
@@ -174,8 +177,9 @@ export type ModelRoleResolver = (role: string) => Promise<string | undefined>
 /**
  * An AGENT.md `model:` may be `role:<name>` (see `model-roles.ts`) instead of
  * a model id: resolve it now, before adapter selection or spawn. A role that
- * cannot be resolved yields `undefined` (the adapter's own default) rather
- * than leaking the raw `role:` string to a model API.
+ * cannot be resolved yields `undefined` (no model route — the agent then
+ * needs `metadata.adapter` or a caller-passed `adapter`) rather than leaking
+ * the raw `role:` string to a model API.
  */
 export async function resolveAgentModelRef(
   model: string | undefined,
@@ -187,10 +191,17 @@ export async function resolveAgentModelRef(
   return resolveRole ? resolveRole(role) : undefined
 }
 
-function defaultAdapterForModel(model: string | undefined): string {
-  if (model === undefined) return DEFAULT_AGENT_ADAPTER
+/** Model-route adapter mapping (see {@link MODEL_ROUTED_ADAPTER}): a
+ *  `claude-*` bare id routes to claude-code; `opencode/`/`opencode-go/`
+ *  models route to opencode. Anything else — including no model at all —
+ *  has NO model-based route: the agent must declare
+ *  `metadata.adapter`/`metadata.harness`, or the caller must pass `adapter`
+ *  to `app_run`, rather than silently falling back to mastra-agent. */
+function defaultAdapterForModel(model: string | undefined): string | undefined {
+  if (model === undefined) return undefined
+  if (model.startsWith("opencode/") || model.startsWith("opencode-go/")) return "opencode"
   const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model
-  return bare.startsWith("claude-") ? MODEL_ROUTED_ADAPTER : DEFAULT_AGENT_ADAPTER
+  return bare.startsWith("claude-") ? MODEL_ROUTED_ADAPTER : undefined
 }
 
 /**
@@ -214,23 +225,32 @@ function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): s
  * The F26 per-agent adapter order, in one place, shared by
  * {@link resolveAgentRefsForWorkflow} (workflow agent refs) and `app_run`
  * (one spawn per agent): the agent's OWN AGENT.md `metadata.adapter`/
- * `metadata.harness` override > a model-based default (see
- * {@link defaultAdapterForModel}) > the blanket {@link DEFAULT_AGENT_ADAPTER}
- * fallback (WP-B4's original behaviour).
+ * `metadata.harness` override > a model-based route (see
+ * {@link defaultAdapterForModel}). There is NO blanket fallback: an agent
+ * that resolves to nothing here fails with {@link noAdapterError} instead
+ * of silently running on mastra-agent.
  *
  * Takes the already-loaded AGENT.md facts instead of a path so neither caller
  * reads the file twice: `model` is the agent's declared model AFTER
  * {@link resolveAgentModelRef} role resolution, `metadata` its raw
  * frontmatter `metadata`, and `modelOverride` a caller-pinned model (app_run's
- * `input.model`) which — when set — decides the model-based default INSTEAD of
+ * `input.model`) which — when set — decides the model-based route INSTEAD of
  * the agent's own.
  */
 function resolveAgentSpawnAdapter(
   model: string | undefined,
   metadata: { [k: string]: unknown } | undefined,
   modelOverride?: string,
-): string {
+): string | undefined {
   return agentMetadataAdapter(metadata) ?? defaultAdapterForModel(modelOverride ?? model)
+}
+
+/** The shared failure for an agent whose adapter cannot be resolved: no
+ *  `metadata.adapter`/`metadata.harness` and no model route. Callers either
+ *  put this in an `app_run` run's `errors` list (per-agent) or throw it
+ *  (workflow agent-ref resolution). */
+function noAdapterError(agentId: string): string {
+  return `agent "${agentId}" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run`
 }
 
 /**
@@ -238,8 +258,9 @@ function resolveAgentSpawnAdapter(
  * installed app — every agent id the app bundles resolves to a spawn adapter
  * chosen in order (F26, see {@link resolveAgentSpawnAdapter}): the agent's OWN
  * AGENT.md `metadata.adapter`/`metadata.harness` override > a model-based
- * default (see {@link defaultAdapterForModel}) > the blanket
- * {@link DEFAULT_AGENT_ADAPTER} fallback (WP-B4's original behaviour). A step's own `adapter:` still wins
+ * route (see {@link defaultAdapterForModel}). An agent that resolves to
+ * nothing throws ({@link noAdapterError}) — there is no silent
+ * mastra-agent fallback. A step's own `adapter:` still wins
  * over all of this — `compileAgentStep` only applies `resolved.adapter` when
  * the step itself sets none. AGENT.md's declared `model` is forwarded too
  * (`AgentRefResolution.model`), so a step that sets no `model` of its own
@@ -278,11 +299,12 @@ export async function resolveAgentRefsForWorkflow(
       if (declared.length > 0) tools = declared
     } catch {
       // AGENT.md unreadable/invalid at run time (already validated at
-      // install) — degrade to the pre-F26 blanket default for this one
-      // agent rather than failing agent-ref resolution for the whole
-      // workflow.
+      // install) — leave model/metadata unset for this one agent; if that
+      // leaves it with no adapter at all, the no-adapter error below names
+      // it rather than silently degrading the whole workflow.
     }
     const adapter = resolveAgentSpawnAdapter(model, metadata)
+    if (adapter === undefined) throw new Error(noAdapterError(agent.id))
     refs[agent.id] = {
       adapter,
       ...(adapter === DEFAULT_AGENT_ADAPTER ? { options: { agent: agent.path } } : {}),
@@ -2045,8 +2067,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // agent resolves its own inside `spawnOne` (F26, the same order
       // `resolveAgentRefsForWorkflow` applies to workflow agent refs), so the
       // A2A task route — which calls `app_run` with only `{appId, agents,
-      // prompt}` — no longer forces every agent onto the blanket default.
-      // A caller-given adapter/harness still wins for EVERY agent.
+      // prompt}` — no longer forces every agent onto a blanket default; an
+      // agent whose metadata and model route resolve to nothing lands in the
+      // run's `errors` instead. A caller-given adapter/harness still wins for
+      // EVERY agent.
       const callerAdapter = input.adapter ?? input.harness
       const callerHarness = callerAdapter === undefined ? undefined : (input.harness ?? input.adapter)!
       const model = input.model
@@ -2131,8 +2155,16 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         if (callerAdapter === undefined) {
           const loaded = await loadDefaults()
           if (loaded === null) return null
-          adapterSlug = resolveAgentSpawnAdapter(loaded.model, loaded.metadata, model)
-          harnessSlug = adapterSlug
+          const resolved = resolveAgentSpawnAdapter(loaded.model, loaded.metadata, model)
+          if (resolved === undefined) {
+            // No metadata adapter/harness and no model route — fail THIS
+            // agent like any other spawn failure, never a silent
+            // mastra-agent fallback the author never asked for.
+            errors.push({ agentId, error: noAdapterError(agentId) })
+            return null
+          }
+          adapterSlug = resolved
+          harnessSlug = resolved
         } else {
           adapterSlug = callerAdapter
           harnessSlug = callerHarness ?? callerAdapter
