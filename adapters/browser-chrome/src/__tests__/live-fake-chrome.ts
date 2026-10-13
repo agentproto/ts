@@ -22,6 +22,8 @@ export interface FakeChrome {
   wsUrl: string
   /** Websocket connections opened so far (each one is a consent dialog on real Chrome). */
   connections: number
+  /** Plain HTTP requests (`/json/*`) received. */
+  httpRequests: number
   commands: FakeCommand[]
   /** Commands that addressed a target the client did not create. */
   violations: FakeCommand[]
@@ -38,6 +40,7 @@ const USER_WINDOW = 1
 export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<FakeChrome> {
   const server: Server = createServer((_req, res) => {
     // The toggle answers HTTP with an empty body.
+    fake.httpRequests++
     res.writeHead(200).end()
   })
   const sockets = new Set<WebSocket>()
@@ -55,6 +58,7 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
     port: 0,
     wsUrl: "",
     connections: 0,
+    httpRequests: 0,
     commands: [],
     violations: [],
     userTargets: ["user-tab-1", "user-tab-2"],

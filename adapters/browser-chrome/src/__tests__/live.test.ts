@@ -216,8 +216,8 @@ describe("chrome-live: typed errors", () => {
     )
     expect(err.code).toBe(BROWSER_REMOTE_DEBUGGING_OFF_CODE)
     expect(err.message).toContain("Enable remote debugging at chrome://inspect/#remote-debugging")
-    // Without discovery the websocket itself reports the closed port the same way.
-    expect(await codeOf(createChromeLiveProvider({ port, env: {}, discover: false }).launch({}, {}))).toBe(BROWSER_REMOTE_DEBUGGING_OFF_CODE)
+    // With the opt-in discovery, the HTTP probe reports the closed port the same way.
+    expect(await codeOf(createChromeLiveProvider({ port, env: {}, discover: true }).launch({}, {}))).toBe(BROWSER_REMOTE_DEBUGGING_OFF_CODE)
   })
 
   it("no Allow click within consentTimeoutMs -> browser:consent-timeout", async () => {
@@ -272,6 +272,27 @@ describe("chrome-live: typed errors", () => {
 })
 
 describe("chrome-live: config", () => {
+  it("connects straight to the fixed browser URL by default, with no /json/* request", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, {})
+    expect(instance.endpoints.cdp).toBe(`ws://127.0.0.1:${f.port}/devtools/browser`)
+    expect(f.httpRequests).toBe(0)
+    expect(f.connections).toBe(1)
+    await instance.stop()
+  })
+
+  it("discover: true is opt-in: one /json/version probe, then the fixed URL when it answers empty", async () => {
+    const f = await fake()
+    const p = provider(f, { discover: true })
+    const instance = await p.launch({}, {})
+    expect(f.httpRequests).toBe(1)
+    expect(instance.endpoints.cdp).toBe(f.wsUrl)
+    await p.launch({}, {})
+    expect(f.httpRequests).toBe(1)
+    expect(f.connections).toBe(1)
+    await instance.stop()
+  })
+
   it("reads CHROME_LIVE_PORT and CHROME_LIVE_WS_URL, treating blank as unset", () => {
     expect(readChromeLiveEnv({ CHROME_LIVE_PORT: "9333" })).toEqual({ port: 9333 })
     expect(readChromeLiveEnv({ CHROME_LIVE_PORT: "", CHROME_LIVE_WS_URL: " " })).toEqual({})

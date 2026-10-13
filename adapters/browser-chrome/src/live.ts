@@ -116,7 +116,7 @@ export interface ChromeLiveProviderConfig {
   port?: number
   /** How long to wait for the user to click "Allow". Default 60s. */
   consentTimeoutMs?: number
-  /** Try `GET /json/version` for a `webSocketDebuggerUrl` first. Default true; the toggle answers empty, so the fixed URL is the fallback. */
+  /** Opt-in: try `GET /json/version` for a `webSocketDebuggerUrl` first. Default false: the toggle answers /json/* empty, so the fixed URL is used directly. */
   discover?: boolean
   /** Env read for `CHROME_LIVE_*`. Default `process.env`; `launch({ env })` is merged over it. */
   env?: Readonly<Record<string, string | undefined>>
@@ -269,7 +269,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
 
   async function discover(port: number): Promise<string> {
     const fixed = chromeLiveWsUrl(port)
-    if (config.discover === false) return fixed
+    if (config.discover !== true) return fixed
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) })
       const text = res.ok ? await res.text() : ""

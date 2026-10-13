@@ -93,12 +93,15 @@ Turn the toggle off again to cut every connection.
 | `createChromeLiveProvider({ port })` / `CHROME_LIVE_PORT` | `9222` | Port on 127.0.0.1 |
 | `createChromeLiveProvider({ wsUrl })` / `CHROME_LIVE_WS_URL` | `ws://127.0.0.1:<port>/devtools/browser` | Full browser websocket URL; beats the port |
 | `consentTimeoutMs` | `60000` | How long to wait for the Allow click |
-| `discover` | `true` | Try `GET /json/version` first |
+| `discover` | `false` | Opt-in: try `GET /json/version` for a `webSocketDebuggerUrl` first |
 
 `launch({ wsUrl, port })` wins over the provider config, which wins over the
 env. In toggle mode Chrome answers only the browser websocket without an id:
-`/json/version` and `/json/list` come back empty, so discovery is optional and
-the fixed URL is the fallback. `DevToolsActivePort` in the Chrome profile is not
+`/json/version` and `/json/list` come back empty. So by default the provider
+connects straight to `ws://127.0.0.1:<port>/devtools/browser` and sends no HTTP
+request at all, which also avoids any extra consent prompt. `discover: true`
+probes `/json/version` first (for a Chrome started with
+`--remote-debugging-port`) and falls back to the fixed URL. `DevToolsActivePort` in the Chrome profile is not
 read (macOS does not let other apps read it); the port comes from config.
 
 ### One connection, one consent
