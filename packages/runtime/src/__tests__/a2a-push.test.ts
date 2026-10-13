@@ -201,6 +201,15 @@ describe("a2a push config store", () => {
     // Another task has its own budget.
     await expect(store.create(APP_ID, cfg("c0", "task-2"))).resolves.toBeDefined()
   })
+
+  it("serializes writes: 5 concurrent creates on one task all survive", async () => {
+    const store = createA2aPushConfigStore(dir)
+    await Promise.all(Array.from({ length: 5 }, (_, i) => store.create(APP_ID, cfg(`c${i}`))))
+    expect((await store.list(APP_ID, TASK_ID)).map(c => c.id).sort()).toEqual(["c0", "c1", "c2", "c3", "c4"])
+    // A create racing a delete on the same file keeps both effects.
+    await Promise.all([store.create(APP_ID, cfg("c5")), store.delete(APP_ID, TASK_ID, "c0")])
+    expect((await store.list(APP_ID, TASK_ID)).map(c => c.id).sort()).toEqual(["c1", "c2", "c3", "c4", "c5"])
+  })
 })
 
 describe("a2a push delivery", () => {
@@ -387,7 +396,8 @@ describe("a2a push delivery", () => {
     await store.create(APP_ID, { id: "c1", taskId: TASK_ID, url: "https://example.com/a" })
     const { posts, fetchImpl } = makeFetch()
     const service = createA2aPushService(deps(fetchImpl))
-    await service.deliverFinal({ task: completedTask(), listConfigs: () => store.list(APP_ID, TASK_ID) })
+    const c1 = (await store.get(APP_ID, TASK_ID, "c1"))!
+    await service.deliverFinal({ task: completedTask(), config: c1 })
     expect(posts).toHaveLength(1)
     expect(posts[0]!.body).toEqual({
       statusUpdate: {
@@ -399,6 +409,51 @@ describe("a2a push delivery", () => {
     })
     expect(service.activeWatchers()).toBe(0)
     expect(service.isWatching(TASK_ID)).toBe(false)
+  })
+
+  it("deliverFinal sends only to the config just created, not the task's other configs", async () => {
+    const store = createA2aPushConfigStore(dir)
+    await store.create(APP_ID, { id: "c1", taskId: TASK_ID, url: "https://example.com/a" })
+    await store.create(APP_ID, { id: "c2", taskId: TASK_ID, url: "https://example.com/b" })
+    const { posts, fetchImpl } = makeFetch()
+    const service = createA2aPushService(deps(fetchImpl))
+    const c2 = (await store.get(APP_ID, TASK_ID, "c2"))!
+    await service.deliverFinal({ task: completedTask(), config: c2 })
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.url).toBe("https://example.com/b")
+  })
+
+  it("delivers one event to all configs in parallel: a slow webhook does not delay the others", async () => {
+    const store = createA2aPushConfigStore(dir)
+    await store.create(APP_ID, { id: "slow", taskId: TASK_ID, url: "https://example.com/slow" })
+    await store.create(APP_ID, { id: "fast", taskId: TASK_ID, url: "https://example.com/fast" })
+    const times: Array<{ url: string; at: number }> = []
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input)
+      if (url.endsWith("/slow")) await sleep(40)
+      times.push({ url, at: Date.now() })
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    const service = createA2aPushService(deps(fetchImpl))
+    const state = { task: workingTask() }
+    service.ensureWatching({
+      appId: APP_ID,
+      taskId: TASK_ID,
+      readTask: async () => state.task,
+      listConfigs: () => store.list(APP_ID, TASK_ID),
+    })
+    state.task = completedTask()
+    await waitFor(
+      () => times.filter(t => t.url.endsWith("/fast")).length === 2 && times.filter(t => t.url.endsWith("/slow")).length === 2,
+      "both configs to receive both events",
+    )
+    await waitFor(() => !service.isWatching(TASK_ID), "watcher to end")
+    // The fast config's final lands before the slow config's final: the
+    // per-event fan-out is parallel, not serial in list order (where the
+    // slow config is first).
+    const lastFast = times.filter(t => t.url.endsWith("/fast"))[1]!.at
+    const lastSlow = times.filter(t => t.url.endsWith("/slow"))[1]!.at
+    expect(lastFast).toBeLessThan(lastSlow)
   })
 })
 

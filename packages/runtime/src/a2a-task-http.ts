@@ -493,9 +493,9 @@ export async function handleA2aTaskRequest(
   const pushConfigsFor = (taskId: string): (() => Promise<A2aTaskPushNotificationConfig[]>) => () => configs.list(appId, taskId)
 
   /** Store one config, mapping the per-task limit to `invalidParams`. */
-  const storePushConfig = async (config: A2aTaskPushNotificationConfig): Promise<void> => {
+  const storePushConfig = async (config: A2aTaskPushNotificationConfig): Promise<A2aTaskPushNotificationConfig> => {
     try {
-      await configs.create(appId, config)
+      return await configs.create(appId, config)
     } catch (err) {
       if (err instanceof A2aPushConfigLimitError) throw new RpcFailure(JSON_RPC_ERROR.invalidParams, err.message)
       throw err
@@ -527,15 +527,21 @@ export async function handleA2aTaskRequest(
   }
 
   /**
-   * A push config now exists for a live task: start its one background
-   * watcher (none per config) unless one runs or the task is already
-   * terminal — a terminal task gets one final `{statusUpdate: {final: true}}`
-   * instead, with no watcher.
+   * A push config now exists for a task: start its one background watcher
+   * (none per config) unless one runs — or, when the task is already
+   * terminal, send that one config a final `{statusUpdate: {final: true}}`
+   * instead, with no watcher (the task's other configs are not re-notified).
+   * The final delivery is fire-and-forget: a slow webhook (3 attempts × 10 s
+   * + backoff) must never stall the JSON-RPC answer. Only the `readTask`
+   * that decides terminal vs live is awaited.
    */
-  const armPushDelivery = async (taskId: string): Promise<void> => {
+  const armPushDelivery = async (taskId: string, config: A2aTaskPushNotificationConfig): Promise<void> => {
     const task = await readTask(taskId)
     if (TERMINAL_TASK_STATES.has(task.status.state)) {
-      await push.deliverFinal({ task, listConfigs: pushConfigsFor(taskId) })
+      const log = deps.push?.log ?? ((): void => {})
+      void push.deliverFinal({ task, config }).catch((err: unknown) => {
+        log(`a2a push: final delivery for task ${taskId} failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
       return
     }
     push.ensureWatching({ appId, taskId, readTask, listConfigs: pushConfigsFor(taskId) })
@@ -567,8 +573,8 @@ export async function handleA2aTaskRequest(
         const requestPushConfig = takeRequestPushConfig(params)
         const taskId = await startMessageTask(params, "SendMessage")
         if (requestPushConfig) {
-          await storePushConfig({ ...requestPushConfig, taskId })
-          await armPushDelivery(taskId)
+          const stored = await storePushConfig({ ...requestPushConfig, taskId })
+          await armPushDelivery(taskId, stored)
         }
         send(res, 200, { jsonrpc: "2.0", id, result: { task: await readTask(taskId) } })
         return true
@@ -577,8 +583,8 @@ export async function handleA2aTaskRequest(
         const requestPushConfig = takeRequestPushConfig(params)
         const taskId = await startMessageTask(params, method)
         if (requestPushConfig) {
-          await storePushConfig({ ...requestPushConfig, taskId })
-          await armPushDelivery(taskId)
+          const stored = await storePushConfig({ ...requestPushConfig, taskId })
+          await armPushDelivery(taskId, stored)
         }
         await streamTask(taskId, res, id, { initial: "task" })
         return true
@@ -732,7 +738,7 @@ export async function handleA2aTaskRequest(
           throw new RpcFailure(JSON_RPC_ERROR.invalidParams, err instanceof Error ? err.message : String(err))
         }
         await storePushConfig(config)
-        await armPushDelivery(taskId)
+        await armPushDelivery(taskId, config)
         send(res, 200, { jsonrpc: "2.0", id, result: config })
         return true
       }

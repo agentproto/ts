@@ -789,6 +789,9 @@ export interface A2aPushConfigStore {
   delete(appId: string, taskId: string, id: string): Promise<boolean>
 }
 
+/** Write chains of every push config store, keyed by file path. */
+const pushConfigWriteChains = new Map<string, Promise<unknown>>()
+
 /** Per-app JSON file beside the task ledger
  *  (`<dir>/<encoded appId>.push.json`): `{ [taskId]: TaskPushNotificationConfig[] }`.
  *  Every write is atomic (tmp file + rename). */
@@ -822,19 +825,40 @@ export function createA2aPushConfigStore(dir: string): A2aPushConfigStore {
     await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, "utf8")
     await rename(tmp, file)
   }
+  /** In-process write lock: create/delete are read-modify-write, so two
+   *  concurrent calls on the same file would lose one write. Each mutation
+   *  chains onto the previous one for that file (reads stay lock-free). The
+   *  chain map is module-level: the HTTP handler builds a fresh store per
+   *  request, so a per-store map would never see the other request. */
+  const chains = pushConfigWriteChains
+  const withLock = <T>(file: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = chains.get(file) ?? Promise.resolve()
+    const run = prev.then(fn)
+    const guard = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    chains.set(file, guard)
+    void guard.then(() => {
+      if (chains.get(file) === guard) chains.delete(file)
+    })
+    return run
+  }
   return {
-    async create(appId, config) {
-      const all = await readAll(appId)
-      const configs = all[config.taskId] ?? []
-      const existing = configs.findIndex(c => c.id === config.id)
-      if (existing === -1 && configs.length >= A2A_PUSH_CONFIG_LIMIT) {
-        throw new A2aPushConfigLimitError(config.taskId)
-      }
-      if (existing === -1) configs.push(config)
-      else configs[existing] = config
-      all[config.taskId] = configs
-      await writeAll(appId, all)
-      return config
+    create(appId, config) {
+      return withLock(fileFor(appId), async () => {
+        const all = await readAll(appId)
+        const configs = all[config.taskId] ?? []
+        const existing = configs.findIndex(c => c.id === config.id)
+        if (existing === -1 && configs.length >= A2A_PUSH_CONFIG_LIMIT) {
+          throw new A2aPushConfigLimitError(config.taskId)
+        }
+        if (existing === -1) configs.push(config)
+        else configs[existing] = config
+        all[config.taskId] = configs
+        await writeAll(appId, all)
+        return config
+      })
     },
     async get(appId, taskId, id) {
       const all = await readAll(appId)
@@ -844,17 +868,19 @@ export function createA2aPushConfigStore(dir: string): A2aPushConfigStore {
       const all = await readAll(appId)
       return all[taskId] ?? []
     },
-    async delete(appId, taskId, id) {
-      const all = await readAll(appId)
-      const configs = all[taskId]
-      if (!configs) return false
-      const idx = configs.findIndex(c => c.id === id)
-      if (idx === -1) return false
-      configs.splice(idx, 1)
-      if (configs.length === 0) delete all[taskId]
-      else all[taskId] = configs
-      await writeAll(appId, all)
-      return true
+    delete(appId, taskId, id) {
+      return withLock(fileFor(appId), async () => {
+        const all = await readAll(appId)
+        const configs = all[taskId]
+        if (!configs) return false
+        const idx = configs.findIndex(c => c.id === id)
+        if (idx === -1) return false
+        configs.splice(idx, 1)
+        if (configs.length === 0) delete all[taskId]
+        else all[taskId] = configs
+        await writeAll(appId, all)
+        return true
+      })
     },
   }
 }

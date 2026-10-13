@@ -1177,6 +1177,25 @@ describe("A2A task ingress", () => {
     )
   })
 
+  it("CreateTaskPushNotificationConfig on a completed task answers right away even when the webhook never responds", async () => {
+    // A fetch that never settles: the fire-and-forget final delivery hangs
+    // in the background, but the JSON-RPC answer must not wait on it.
+    const fetchImpl = (() => new Promise<Response>(() => {})) as unknown as typeof fetch
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "already done" }])
+        const started = Date.now()
+        const created = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook"))
+        expect(created.json.error).toBeUndefined()
+        expect(typeof created.json.result.id).toBe("string")
+        expect(Date.now() - started).toBeLessThan(1000)
+      },
+      { push: { fetchImpl, requestTimeoutMs: 50 } },
+    )
+  })
+
 })
 
 describe("a2a task ledger", () => {
