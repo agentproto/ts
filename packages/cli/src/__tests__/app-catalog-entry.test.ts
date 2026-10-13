@@ -66,6 +66,7 @@ describe("buildCatalogEntry", () => {
     const entry = buildCatalogEntry({ ...base, name: undefined, description: undefined, category: undefined, icon: undefined, placement: undefined, publisher: undefined })
     expect(entry.name).toBeUndefined()
     expect(entry.publisher).toBeUndefined()
+    expect(entry.publisherUrl).toBeUndefined()
     expect(entry.icon).toBeUndefined()
     expect(entry.placement).toBeUndefined()
     expect(AppCatalogEntrySchema.safeParse(entry).success).toBe(true)

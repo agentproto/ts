@@ -251,6 +251,7 @@ describe("app-catalog/v1 listing fields", () => {
       icon: "https://m/icon.svg",
       categories: ["productivity", "notes"],
       publisher: "Acme",
+      publisherUrl: "https://acme.dev",
       homepage: "https://acme.dev/notes",
       repository: "https://github.com/acme/notes",
     }

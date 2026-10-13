@@ -2689,7 +2689,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "catalog first (config `catalog.defaultSource`, `false` turns it off), then config " +
       "`catalog.sources` (else `sources` in the catalog file) — extra sources ADD to the default " +
       "one. Remote entries carry `source` (for `app_install`), `origin` (default|config|file|" +
-      "embedded), `catalogUrl`, the optional v1 fields (version, tier, icon, publisher, license, " +
+      "embedded), `catalogUrl`, the optional v1 fields (version, tier, icon, publisher, publisherUrl, license, " +
       "requires, minAgentprotoVersion, featured), and `stale: true` when served from the disk " +
       "cache (or, for the default catalog when it was never reachable, from the embedded " +
       "first-party list). A failing source is reported in a trailing `{ warnings: [...] }` " +
@@ -2758,6 +2758,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           ...(entry.tier ? { tier: entry.tier } : {}),
           ...(entry.icon ? { icon: entry.icon } : {}),
           ...(entry.publisher ? { publisher: entry.publisher } : {}),
+          ...(entry.publisherUrl ? { publisherUrl: entry.publisherUrl } : {}),
           ...(entry.license ? { license: entry.license } : {}),
           ...(entry.requires ? { requires: entry.requires } : {}),
           ...(entry.minAgentprotoVersion ? { minAgentprotoVersion: entry.minAgentprotoVersion } : {}),

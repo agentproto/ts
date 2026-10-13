@@ -245,6 +245,11 @@ app folder's *contents* (not a wrapping folder). Extraction therefore yields
 | `--media-base-url <url>` | `https://raw.githubusercontent.com/agentproto/apps/main/media/<appId>/<version>` | With `--entry`: base URL of the store listing's local media (APP.md `store:` icon/screenshots), copied to `media/<appId>/<version>/` next to the entry. See [Store listing](../guides/distribute-an-app.md#store-listing-the-page-at-agentprotoshappsslug). |
 | `--json` | `false` | Print the generated `manifest.json` on stdout instead of a human summary (with `--entry`: the bundle path, entry file path, and the entry itself). |
 
+The optional APP.md `store:` block supports `tagline`, `categories`,
+`publisher`, `publisherUrl`, `homepage`, `repository`, `icon`, a `listing`
+markdown file, and `screenshots` with alt text. `publisherUrl`, `homepage`,
+and `repository` must use HTTPS.
+
 Fails with exit code `2` if `<appDir>` has no `.agentproto/APP.md`.
 
 **What ships.** Every file except `node_modules/` and `.git/`, filtered by the
