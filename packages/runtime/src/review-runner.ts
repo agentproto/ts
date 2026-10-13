@@ -494,10 +494,12 @@ export interface ReviewRunInput {
   pr?: ReviewPrRef
   /** Before running, cancel in-flight runs for the same repo + binding + base
    *  whose head DIFFERS (an older push nobody will read the verdict of) — as
-   *  long as that run is the same line of work: the same checkout, or a head
-   *  that is an ancestor of this one. A sibling branch reviewed from another
-   *  worktree off the same base is never cancelled. Gates should pass
-   *  `true`; the default is `false`. */
+   *  long as that run is the same line of work: the same checkout, or the same
+   *  branch name with a head that is an ancestor of this one (a re-push from
+   *  another worktree after amend/fixup). A sibling or stacked branch reviewed
+   *  from another worktree is never cancelled, even when its head is an
+   *  ancestor of this one; a detached HEAD only matches its own checkout.
+   *  Gates should pass `true`; the default is `false`. */
   supersede?: boolean
 }
 
@@ -517,6 +519,9 @@ export interface ReviewRun {
   headSha?: string
   /** The checkout the run reviews, once resolved. */
   repoRoot?: string
+  /** The branch checked out in `repoRoot` when the range resolved; absent on a
+   *  detached HEAD. */
+  branch?: string
   /** Set on a run cancelled because a newer head superseded it. */
   supersededBy?: string
   /** Lanes settled so far (live progress while `running`). */
@@ -615,6 +620,8 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
     const { root, repoRemote } = await resolveRepo(input.cwd)
     run.repoRemote = repoRemote
     run.repoRoot = root
+    const branch = await git(root, ["symbolic-ref", "--short", "-q", "HEAD"]).catch(() => "")
+    if (branch) run.branch = branch
     const manifestPath = input.manifestPath
       ? resolve(input.cwd, input.manifestPath)
       : join(root, "REVIEW.md")
@@ -764,8 +771,9 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
 
   /** Cancel every OTHER running run with the same repo + binding + base but
    *  a different head than `run`, when it's the same line of work (same
-   *  checkout, or its head is an ancestor of `run`'s). Runs whose range isn't
-   *  resolved yet are left alone (nothing to compare). */
+   *  checkout, or same branch name and its head is an ancestor of `run`'s —
+   *  ancestry alone would cancel the base of a stacked branch). Runs whose
+   *  range isn't resolved yet are left alone (nothing to compare). */
   async function supersedeStale(run: ReviewRun): Promise<void> {
     for (const [id, other] of [...runs]) {
       if (id === run.runId || other.run.status !== "running") continue
@@ -775,10 +783,12 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       if (o.headSha === run.headSha || other.heads.has(run.headSha!)) continue
       const sameLine =
         o.repoRoot === run.repoRoot ||
-        (await git(run.repoRoot!, ["merge-base", "--is-ancestor", o.headSha, run.headSha!]).then(
-          () => true,
-          () => false,
-        ))
+        (run.branch !== undefined &&
+          o.branch === run.branch &&
+          (await git(run.repoRoot!, ["merge-base", "--is-ancestor", o.headSha, run.headSha!]).then(
+            () => true,
+            () => false,
+          )))
       if (!sameLine || other.run.status !== "running") continue
       o.supersededBy = run.runId
       cancel(id)

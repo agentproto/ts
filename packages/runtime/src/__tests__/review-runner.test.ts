@@ -579,6 +579,106 @@ describe("review runner — verdicts over a real repo", () => {
     await Promise.all([runner.wait(a.runId), runner.wait(b.runId)])
   })
 
+  async function commitFile(dir: string, file: string, msg: string): Promise<void> {
+    await writeFile(join(dir, file), `${msg}\n`)
+    sh(dir, "add", "-A")
+    sh(dir, "commit", "-qm", msg)
+  }
+
+  it("supersede never cancels the base branch of a stacked branch reviewed from a sibling worktree", async () => {
+    const repo = await makeRepo(manifest(['{id: slow, kind: command, run: "sleep 30"}']))
+    cleanup.push(repo.dir)
+    const sibling = `${repo.dir}-stacked`
+    cleanup.push(sibling)
+    sh(repo.dir, "checkout", "-q", "-b", "p1")
+    await commitFile(repo.dir, "p1.txt", "p1 change")
+    sh(repo.dir, "worktree", "add", "-q", "-b", "p2", sibling, "p1")
+    await commitFile(sibling, "p2.txt", "p2 change")
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const a = runner.start({ cwd: repo.dir, supersede: true })
+    await waitFor(() => a.headSha !== undefined)
+    const b = runner.start({ cwd: sibling, supersede: true })
+    await waitFor(() => b.headSha !== undefined)
+    // p1's head is an ancestor of p2's head, same base — but a different branch.
+    expect(b.baseSha).toBe(a.baseSha)
+    expect(a.branch).toBe("p1")
+    expect(b.branch).toBe("p2")
+    sh(sibling, "merge-base", "--is-ancestor", a.headSha!, b.headSha!)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(a.status).toBe("running")
+    expect(a.supersededBy).toBeUndefined()
+    runner.cancel(a.runId)
+    runner.cancel(b.runId)
+    await Promise.all([runner.wait(a.runId), runner.wait(b.runId)])
+  })
+
+  it("supersede cancels the same branch re-pushed from another worktree with a descendant head", async () => {
+    const repo = await makeRepo(manifest(['{id: slow, kind: command, run: "sleep 30"}']))
+    cleanup.push(repo.dir)
+    const other = `${repo.dir}-reprovisioned`
+    cleanup.push(other)
+    sh(repo.dir, "checkout", "-q", "-b", "p1")
+    await commitFile(repo.dir, "p1.txt", "p1 change")
+    // Branches share one ref across worktrees; pin run `a` to the pre-fixup head.
+    const oldHead = sh(repo.dir, "rev-parse", "HEAD")
+    sh(repo.dir, "worktree", "add", "-q", "--force", other, "p1")
+    await commitFile(other, "fix.txt", "fixup")
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const a = runner.start({ cwd: repo.dir, head: oldHead, supersede: true })
+    await waitFor(() => a.headSha !== undefined)
+    const b = runner.start({ cwd: other, supersede: true })
+    await waitFor(() => b.headSha !== undefined)
+    expect(b.branch).toBe("p1")
+    await runner.wait(a.runId)
+    expect(a).toMatchObject({ status: "cancelled", supersededBy: b.runId })
+    runner.cancel(b.runId)
+    await runner.wait(b.runId)
+  })
+
+  it("supersede cancels an amended head in the same checkout (not an ancestor)", async () => {
+    const repo = await makeRepo(manifest(['{id: slow, kind: command, run: "sleep 30"}']))
+    cleanup.push(repo.dir)
+    sh(repo.dir, "checkout", "-q", "-b", "p1")
+    await commitFile(repo.dir, "p1.txt", "p1 change")
+    const oldHead = sh(repo.dir, "rev-parse", "HEAD")
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const a = runner.start({ cwd: repo.dir, head: oldHead, supersede: true })
+    await waitFor(() => a.headSha !== undefined)
+    sh(repo.dir, "commit", "-q", "--amend", "-m", "p1 change, amended")
+    const b = runner.start({ cwd: repo.dir, supersede: true })
+    await waitFor(() => b.headSha !== undefined)
+    expect(b.headSha).not.toBe(oldHead)
+    expect(() => sh(repo.dir, "merge-base", "--is-ancestor", oldHead, b.headSha!)).toThrow()
+
+    await runner.wait(a.runId)
+    expect(a).toMatchObject({ status: "cancelled", supersededBy: b.runId })
+    runner.cancel(b.runId)
+    await runner.wait(b.runId)
+  })
+
+  it("supersede never cancels a descendant head reviewed from a detached-HEAD sibling worktree", async () => {
+    const repo = await makeRepo(manifest(['{id: slow, kind: command, run: "sleep 30"}']))
+    cleanup.push(repo.dir)
+    const sibling = `${repo.dir}-detached`
+    cleanup.push(sibling)
+    sh(repo.dir, "checkout", "-q", "-b", "p1")
+    await commitFile(repo.dir, "p1.txt", "p1 change")
+    sh(repo.dir, "worktree", "add", "-q", "--detach", sibling, "p1")
+    await commitFile(sibling, "d.txt", "detached change")
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const a = runner.start({ cwd: repo.dir, supersede: true })
+    await waitFor(() => a.headSha !== undefined)
+    const b = runner.start({ cwd: sibling, supersede: true })
+    await waitFor(() => b.headSha !== undefined)
+    expect(b.branch).toBeUndefined()
+    await new Promise((r) => setTimeout(r, 300))
+    expect(a.status).toBe("running")
+    expect(a.supersededBy).toBeUndefined()
+    runner.cancel(a.runId)
+    runner.cancel(b.runId)
+    await Promise.all([runner.wait(a.runId), runner.wait(b.runId)])
+  })
+
   it("supersede leaves a different binding, and a run without the flag, alone", async () => {
     const repo = await makeRepo(
       manifest(['{id: slow, kind: command, run: "sleep 30"}', '{id: quick, kind: command, run: "true"}'], [

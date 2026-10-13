@@ -131,7 +131,7 @@ daemon's ledger (`~/.agentproto/reviews`).
 | Flag | Description |
 |------|-------------|
 | `--binding <name>` | Binding to run. Default: the sole binding, or `default`. |
-| `--supersede` | Cancel the daemon's in-flight review of an **older head** of the same repo + binding + base (same checkout, or an ancestor head). Cancelled runs record nothing. What a pre-push gate wants. |
+| `--supersede` | Cancel the daemon's in-flight review of an **older head** of the same repo + binding + base on the same line of work (same checkout, or the same branch name with an ancestor head). Sibling and stacked branches in other worktrees are never cancelled. Cancelled runs record nothing. What a pre-push gate wants. |
 | `--pr <url>` | Record the PR (`https://github.com/<owner>/<repo>/pull/<n>`) in the attestation and as the ledger entry's PR link. |
 | `--headless` | Run in-process, no daemon: command lanes run; agent lanes settle `skipped`, so a binding with an agent lane is `incomplete`. The CI mode. |
 | `--annotate github` | Also print GitHub Actions `::error` / `::warning` lines — `block` and `incomplete` are distinct annotations. |
