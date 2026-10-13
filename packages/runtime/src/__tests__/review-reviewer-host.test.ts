@@ -27,6 +27,7 @@ import {
   WALLET_EXHAUSTED_COOLDOWN_MS,
   WALLET_RATE_LIMIT_COOLDOWN_MS,
 } from "../review-reviewer-host.js"
+import { createReviewExecutionShare, type ReviewExecutionShare } from "../review-execution-share.js"
 import type { HarnessPreset } from "../harness-preset-store.js"
 import type { UserPreset } from "../user-presets.js"
 
@@ -58,7 +59,26 @@ vi.mock("@agentproto/auth", async importOriginal => {
 // on a loaded machine or CI runner.
 vi.setConfig({ testTimeout: 30_000 })
 
-type Behaviour = "review" | "block" | "hang" | "empty" | `error:${string}` | `slowerror:${number}:${string}`
+/** A scripted turn: `say` is the assistant text for the first prompt (a
+ *  function sees that prompt), the turn then ends cleanly — or with
+ *  `error`. A later prompt that is the host's recovery FOLLOW-UP writes
+ *  `writeOnFollowUp` to the verdict path it names (never otherwise). */
+interface Scripted {
+  say: string | ((prompt: string) => string)
+  error?: string
+  hang?: boolean
+  writeOnFollowUp?: object
+}
+type Behaviour =
+  | "review"
+  | "block"
+  | "hang"
+  | "empty"
+  | `error:${string}`
+  | `slowerror:${number}:${string}`
+  | `slow:${number}`
+  | `slowblock:${number}`
+  | Scripted
 
 /** Fake adapter session. `review`: write the verdict file the prompt names,
  *  say something, end the turn. `block`: the same, but the verdict is a real
@@ -72,6 +92,27 @@ function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSession
     async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
       const text = typeof message === "string" ? message : JSON.stringify(message)
       seen.push(text)
+      if (typeof behaviour === "object") {
+        if (/You ended your turn without writing/.test(text)) {
+          const path = text.match(/write EXACTLY ONE file — (\S+) —/)?.[1]
+          if (path && behaviour.writeOnFollowUp) await writeFile(path, JSON.stringify(behaviour.writeOnFollowUp))
+          yield { kind: "text-delta", text: "follow-up handled\n" }
+          yield { kind: "turn-end", reason: "completed" }
+          return
+        }
+        if (behaviour.hang) {
+          await closed
+          return
+        }
+        yield { kind: "text-delta", text: `${typeof behaviour.say === "function" ? behaviour.say(text) : behaviour.say}\n` }
+        if (behaviour.error) {
+          yield { kind: "error", error: { message: behaviour.error } }
+          yield { kind: "turn-end", reason: "error" }
+          return
+        }
+        yield { kind: "turn-end", reason: "completed" }
+        return
+      }
       if (behaviour === "hang") {
         await closed
         return
@@ -92,9 +133,13 @@ function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSession
         yield { kind: "turn-end", reason: "error" }
         return
       }
+      const verdictKind: "review" | "block" = behaviour === "block" || behaviour.startsWith("slowblock:") ? "block" : "review"
+      if (behaviour.startsWith("slow:") || behaviour.startsWith("slowblock:")) {
+        await new Promise((r) => setTimeout(r, Number(behaviour.split(":")[1])))
+      }
       const path = text.match(/write EXACTLY ONE file — (\S+) —/)?.[1]
       const report =
-        behaviour === "block"
+        verdictKind === "block"
           ? {
               decision: "request_changes",
               summary: "one high-severity finding",
@@ -102,7 +147,7 @@ function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSession
             }
           : { findings: [] }
       if (path) await writeFile(path, JSON.stringify(report))
-      yield { kind: "text-delta", text: behaviour === "block" ? "blocked\n" : "reviewed\n" }
+      yield { kind: "text-delta", text: verdictKind === "block" ? "blocked\n" : "reviewed\n" }
       yield { kind: "turn-end", reason: "completed" }
     },
     async cancel() {
@@ -139,6 +184,8 @@ function setup(
     harnessProfiles?: Record<string, string>
     /** Clock for the exhausted-wallet cooldowns. */
     now?: () => number
+    /** The verdict-recovery model selection. */
+    recovery?: import("../review-reviewer-host.js").ReviewRecoveryConfig
   } = {},
 ) {
   const sessionEvents = createSessionEventBus()
@@ -192,10 +239,13 @@ function setup(
         ? { id, label: id, adapter: "broken" }
         : ["rev", "rev2", "rev3", "rev-openrouter"].includes(id)
           ? { id, label: id, adapter: "fake", model: `model-${id}` }
-          : undefined,
+          : id === "rev3-alias" || id === "rev3-openrouter-alias"
+            ? { id, label: id, adapter: "fake", model: "model-rev3" }
+            : undefined,
     getAuthProfile: async (id) => ({ id, endpoint: "opencode-go", method: { kind: "api-key" } }) as never,
     ...(laneRetries !== undefined ? { laneRetries } : {}),
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.recovery ? { getRecovery: () => opts.recovery } : {}),
     spawnDeps: {
       loadDefaultsConfig: async () => undefined,
       loadRoleRegistry: async () => ({}),
@@ -911,6 +961,497 @@ describe("createDaemonReviewerHost — an exhausted auth profile is never re-spa
     expect(spawnedWith).toHaveLength(1)
     const report = JSON.parse(await readFile(verdictPath, "utf8"))
     expect(report).toMatchObject({ decision: "request_changes", findings: [{ severity: "high" }] })
+    registry.shutdown()
+  })
+})
+
+describe("createDaemonReviewerHost — verdict recovery (missing/invalid verdict file at turn end)", () => {
+  const REVIEWER_TEXT =
+    "I read src/x.ts and the callers. The null check in src/x.ts is inverted, so every request crashes.\n" +
+    "Verdict: request changes, one high-severity finding in src/x.ts."
+  const recoveredEnvelope = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      status: "recovered",
+      reason: "reviewer stated its verdict",
+      conclusionQuote: "Verdict: request changes, one high-severity finding in src/x.ts.",
+      report: {
+        decision: "request_changes",
+        summary: "inverted null check",
+        findings: [{ severity: "high", title: "Inverted null check", detail: "crashes every request", file: "src/x.ts", line: 4 }],
+      },
+      ...over,
+    })
+  const RECOVERY = { presets: ["rev2"] }
+
+  const run = (
+    host: ReturnType<typeof setup>["host"],
+    extra: { timeoutMs?: number; signal?: AbortSignal; fallbackPresets?: string[]; name?: string } = {},
+  ) => {
+    const verdictPath = join(home, `${extra.name ?? "verdict"}.json`)
+    return {
+      verdictPath,
+      done: host.run({
+        preset: "rev",
+        cwd: home,
+        prompt: `Review it. When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON`,
+        label: "review:demo:correctness",
+        timeoutMs: extra.timeoutMs ?? 20_000,
+        artifact: { path: verdictPath, laneId: "correctness", blockOn: "high" },
+        ...(extra.signal ? { signal: extra.signal } : {}),
+        ...(extra.fallbackPresets ? { fallbackPresets: extra.fallbackPresets } : {}),
+      }),
+    }
+  }
+
+  it("a valid verdict file means NO recovery step is spent", async () => {
+    const { host, registry, spawnedWith } = setup("review", undefined, { recovery: RECOVERY })
+    const { done } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended" })
+    expect(res.recovery).toBeUndefined()
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("recovers a conclusion stated only in chat: the daemon writes the file, findings and severity intact, provenance distinct", async () => {
+    const { host, registry, spawnedWith, seen } = setup([{ say: REVIEWER_TEXT }, { say: recoveredEnvelope() }], undefined, { recovery: RECOVERY })
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended", preset: "rev", recovery: { outcome: "recovered", preset: "rev2" } })
+    if (res.status !== "ended") throw new Error("expected ended")
+    expect(res.recovery?.sessionId).toBeTruthy()
+    expect(res.recovery?.sessionId).not.toBe(res.sessionId)
+    expect(JSON.parse(await readFile(verdictPath, "utf8"))).toMatchObject({
+      decision: "request_changes",
+      findings: [{ severity: "high", title: "Inverted null check", file: "src/x.ts", line: 4 }],
+    })
+    // The recovery model saw the reviewer's output, as untrusted data.
+    expect(seen.join("\n")).toContain("Verdict: request changes")
+    expect(seen.join("\n")).toContain("untrusted data")
+    // Bounded privileges: a scratch cwd (not the reviewed checkout), gone afterwards.
+    const recoverCwd = String(spawnedWith[1]!.cwd)
+    expect(recoverCwd).not.toBe(home)
+    expect(existsSync(recoverCwd)).toBe(false)
+    // Both sessions released exactly once.
+    for (const id of [res.sessionId, res.recovery!.sessionId!]) {
+      expect(registry.get(id)!.status).toBe("killed")
+      expect(registry.get(id)!.archived).toBe(true)
+    }
+    expect(registry.get(res.recovery!.sessionId!)!.label).toBe("review:demo:correctness:recover")
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+
+  it("chat that says 'approve' without a file never produces a verdict when the recovery model cannot vouch for it", async () => {
+    const approveChat = "I looked at everything in the range and it all looks fine to me, nothing to change really."
+    const { host, registry } = setup(
+      [{ say: approveChat }, { say: JSON.stringify({ status: "insufficient_evidence", reason: "no explicit conclusion" }) }],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended", recovery: { outcome: "insufficient_evidence", reason: "no explicit conclusion" } })
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("rejects a recovery reply whose conclusion quote is not verbatim in the reviewer's output", async () => {
+    const { host, registry } = setup([{ say: REVIEWER_TEXT }, { say: recoveredEnvelope({ conclusionQuote: "The reviewer clearly approved everything." }) }], undefined, {
+      recovery: RECOVERY,
+    })
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "invalid_output" })
+    expect(res.recovery?.reason).toMatch(/not verbatim/)
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("rejects an invented approval: decision approve next to a blocking finding", async () => {
+    const reply = recoveredEnvelope({
+      report: { decision: "approve", summary: "ok", findings: [{ severity: "high", title: "x", file: "src/x.ts" }] },
+    })
+    const { host, registry } = setup([{ say: REVIEWER_TEXT }, { say: reply }], undefined, { recovery: RECOVERY })
+    const { done, verdictPath } = run(host)
+    expect((await done).recovery).toMatchObject({ outcome: "invalid_output" })
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("rejects a finding that names a file the reviewer never mentioned", async () => {
+    const reply = recoveredEnvelope({
+      report: { decision: "request_changes", summary: "s", findings: [{ severity: "high", title: "invented", file: "src/other.ts" }] },
+    })
+    const { host, registry } = setup([{ say: REVIEWER_TEXT }, { say: reply }], undefined, { recovery: RECOVERY })
+    const { done } = run(host)
+    expect((await done).recovery?.reason).toMatch(/never mentions/)
+    registry.shutdown()
+  })
+
+  it("a FAILED reviewer turn can recover a blocking conclusion but never an approval", async () => {
+    const blockCase = setup([{ say: REVIEWER_TEXT, error: "401 Unauthorized: token expired" }, { say: recoveredEnvelope() }], undefined, { recovery: RECOVERY })
+    const blocked = await run(blockCase.host).done
+    expect(blocked).toMatchObject({ status: "ended", recovery: { outcome: "recovered" } })
+    blockCase.registry.shutdown()
+
+    const approveReply = recoveredEnvelope({ report: { decision: "approve", summary: "fine", findings: [] } })
+    const approveCase = setup([{ say: REVIEWER_TEXT, error: "401 Unauthorized: token expired" }, { say: approveReply }], undefined, { recovery: RECOVERY })
+    const approve = await run(approveCase.host, { name: "approve" }).done
+    expect(approve.status).toBe("failed")
+    expect(approve.recovery).toMatchObject({ outcome: "invalid_output" })
+    expect(approve.recovery?.reason).toMatch(/never recovered from a failed turn/)
+    expect(existsSync(join(home, "approve.json"))).toBe(false)
+    approveCase.registry.shutdown()
+  })
+
+  it("a transient error with a retry left is retried, not recovered", async () => {
+    const { host, registry, spawnedWith } = setup(
+      [{ say: REVIEWER_TEXT, error: "The socket connection was closed unexpectedly" }, "review"],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended" })
+    expect(res.recovery).toBeUndefined()
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+
+  it("leaves the lane incomplete, with a reason, when no recovery model is configured", async () => {
+    const { host, registry, spawnedWith } = setup({ say: REVIEWER_TEXT })
+    const { done, verdictPath } = run(host)
+    const res = await done
+    expect(res).toMatchObject({ status: "ended", recovery: { outcome: "unavailable" } })
+    expect(res.recovery?.reason).toMatch(/no recovery model configured/)
+    expect(spawnedWith).toHaveLength(1)
+    expect(existsSync(verdictPath)).toBe(false)
+    registry.shutdown()
+  })
+
+  it("keeps the OpenRouter billing guard on the recovery model", async () => {
+    const { host, registry, spawnedWith } = setup({ say: REVIEWER_TEXT }, undefined, { recovery: { presets: ["rev-openrouter"] } })
+    const res = await run(host).done
+    expect(res.recovery).toMatchObject({ outcome: "unavailable" })
+    expect(res.recovery?.reason).toMatch(/OpenRouter/)
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("spends no model call when the reviewer produced nothing to recover from", async () => {
+    const { host, registry, spawnedWith } = setup({ say: "ok" }, undefined, { recovery: RECOVERY })
+    const res = await run(host).done
+    expect(res.recovery).toMatchObject({ outcome: "reviewer_failed" })
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("an invalid (not missing) verdict file is recovered the same way", async () => {
+    const { host, registry } = setup(
+      [
+        { say: `${REVIEWER_TEXT}` },
+        { say: recoveredEnvelope() },
+      ],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host, { name: "invalid" })
+    await writeFile(verdictPath, "{ not json")
+    // The runner removes a stale file before the run; here the file is invalid at turn end.
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "recovered" })
+    expect(JSON.parse(await readFile(verdictPath, "utf8")).decision).toBe("request_changes")
+    registry.shutdown()
+  })
+
+  it("one follow-up to the original reviewer when the recovery model asks, and no second", async () => {
+    const followUp = { decision: "request_changes", summary: "s", findings: [{ severity: "high", title: "late", file: "src/x.ts" }] }
+    const { host, registry, spawnedWith, seen } = setup(
+      [
+        { say: "I finished reading src/x.ts and the tests, all analysis is done but I have not summarised.", writeOnFollowUp: followUp },
+        { say: JSON.stringify({ status: "needs_followup", reason: "analysis done, no conclusion" }) },
+      ],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host, { timeoutMs: 120_000 })
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "followup" })
+    expect(JSON.parse(await readFile(verdictPath, "utf8")).findings[0].title).toBe("late")
+    expect(spawnedWith).toHaveLength(2)
+    expect(seen.filter((t) => /You ended your turn without writing/.test(t))).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("a follow-up that still yields no file ends incomplete — one recovery step, one follow-up, nothing more", async () => {
+    const { host, registry, spawnedWith, seen } = setup(
+      [
+        { say: "I finished reading src/x.ts and the tests, all analysis is done but I have not summarised." },
+        { say: JSON.stringify({ status: "needs_followup", reason: "analysis done, no conclusion" }) },
+      ],
+      undefined,
+      { recovery: RECOVERY },
+    )
+    const { done, verdictPath } = run(host, { timeoutMs: 120_000 })
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "insufficient_evidence" })
+    expect(existsSync(verdictPath)).toBe(false)
+    expect(spawnedWith).toHaveLength(2)
+    expect(seen.filter((t) => /You ended your turn without writing/.test(t))).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("never starts a recovery step the original deadline cannot cover", async () => {
+    const { host, registry, spawnedWith } = setup({ say: REVIEWER_TEXT }, undefined, { recovery: RECOVERY })
+    const res = await run(host, { timeoutMs: 4_000 }).done
+    expect(res.recovery).toMatchObject({ outcome: "timeout" })
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("cancelling during the recovery step kills the recovery session and leaves the lane incomplete", async () => {
+    const { host, registry, spawnedWith } = setup([{ say: REVIEWER_TEXT }, { say: "", hang: true }], undefined, { recovery: RECOVERY })
+    const ac = new AbortController()
+    const { done, verdictPath } = run(host, { signal: ac.signal })
+    await vi.waitFor(() => expect(spawnedWith.length).toBe(2))
+    ac.abort()
+    const res = await done
+    expect(res.recovery).toMatchObject({ outcome: "cancelled" })
+    expect(existsSync(verdictPath)).toBe(false)
+    const recSessions = registry.list({ includeArchived: true }).filter((d) => String(d.label).endsWith(":recover"))
+    expect(recSessions).toHaveLength(1)
+    expect(recSessions[0]!.status).toBe("killed")
+    expect(recSessions[0]!.archived).toBe(true)
+    registry.shutdown()
+  })
+
+  it("a recovered conclusion does not advance the fallback chain, and a chain gets ONE recovery step", async () => {
+    const { host, registry, spawnedWith } = setup([{ say: REVIEWER_TEXT }, { say: recoveredEnvelope() }, "review"], undefined, {
+      recovery: RECOVERY,
+    })
+    const res = await run(host, { fallbackPresets: ["rev3"] }).done
+    expect(res).toMatchObject({ status: "ended", preset: "rev", recovery: { outcome: "recovered" } })
+    expect(res.fallbacks).toBeUndefined()
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+})
+
+describe("createDaemonReviewerHost — run-scoped sharing of equivalent fallback executions", () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+  /** A lane whose primary reviewer cannot be spawned (`broken-rev`, an adapter
+   *  the daemon cannot resolve) and so falls back to `fallback`. */
+  const lane = (
+    host: ReturnType<typeof setup>["host"],
+    coordinator: ReviewExecutionShare,
+    name: string,
+    over: {
+      fallback?: string
+      key?: string
+      timeoutMs?: number
+      signal?: AbortSignal
+      withArtifact?: boolean
+    } = {},
+  ) => {
+    const verdictPath = join(home, `${name}.verdict.json`)
+    return {
+      verdictPath,
+      done: host.run({
+        preset: "broken-rev",
+        fallbackPresets: [over.fallback ?? "rev3"],
+        cwd: home,
+        prompt: `Review it. When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON`,
+        label: `review:demo:${name}`,
+        timeoutMs: over.timeoutMs ?? 10_000,
+        ...(over.withArtifact === false ? {} : { artifact: { path: verdictPath, laneId: name, blockOn: "high" as const } }),
+        share: { coordinator, key: over.key ?? "same-rubric-same-range", laneId: name },
+        ...(over.signal ? { signal: over.signal } : {}),
+      }),
+    }
+  }
+
+  it("three lanes converging on one fallback run ONE reviewer; each gets the verdict at its own path, marked as shared", async () => {
+    const { host, registry, spawnedWith } = setup("slow:150")
+    const coordinator = createReviewExecutionShare()
+    const a = lane(host, coordinator, "correctness-a")
+    const b = lane(host, coordinator, "correctness-b", { fallback: "rev3-alias" })
+    const c = lane(host, coordinator, "correctness-c")
+    const [ra, rb, rc] = await Promise.all([a.done, b.done, c.done])
+
+    expect(spawnedWith).toHaveLength(1)
+    for (const r of [ra, rb, rc]) expect(r).toMatchObject({ status: "ended" })
+    expect(new Set([ra, rb, rc].map((r) => (r.status === "ended" ? r.sessionId : ""))).size).toBe(1)
+    for (const lanePath of [a.verdictPath, b.verdictPath, c.verdictPath]) {
+      expect(JSON.parse(await readFile(lanePath, "utf8"))).toEqual({ findings: [] })
+    }
+    const marks = [ra, rb, rc].map((r) => r.sharedExecution)
+    expect(marks[0]).toMatchObject({ role: "owner", ownerLane: "correctness-a" })
+    expect(marks[1]).toMatchObject({ role: "joiner", ownerLane: "correctness-a" })
+    expect(marks[2]).toMatchObject({ role: "joiner", ownerLane: "correctness-a" })
+    expect(new Set(marks.map((m) => m?.executionId)).size).toBe(1)
+    // Each lane still records its OWN unavailable primary.
+    for (const r of [ra, rb, rc]) expect(r.fallbacks).toHaveLength(1)
+    expect(coordinator.stats().inFlight).toBe(0)
+    registry.shutdown()
+  })
+
+  it("a settled BLOCKING verdict is retained for the run: a later lane reuses it without a new reviewer", async () => {
+    const { host, registry, spawnedWith } = setup("block")
+    const coordinator = createReviewExecutionShare()
+    const first = lane(host, coordinator, "correctness-a")
+    const r1 = await first.done
+    expect(r1).toMatchObject({ status: "ended" })
+    const late = lane(host, coordinator, "correctness-b")
+    const r2 = await late.done
+    expect(spawnedWith).toHaveLength(1)
+    expect(r2).toMatchObject({ status: "ended", sharedExecution: { role: "joiner", ownerLane: "correctness-a" } })
+    expect(JSON.parse(await readFile(late.verdictPath, "utf8"))).toMatchObject({
+      decision: "request_changes",
+      findings: [{ severity: "high", title: "breaks it" }],
+    })
+    registry.shutdown()
+  })
+
+  it("a different resolved model, rubric/range key, or no share input never shares", async () => {
+    const { host, registry, spawnedWith } = setup("review")
+    const coordinator = createReviewExecutionShare()
+    await Promise.all([
+      lane(host, coordinator, "a", { fallback: "rev3" }).done,
+      lane(host, coordinator, "b", { fallback: "rev2" }).done,
+      lane(host, coordinator, "c", { fallback: "rev3", key: "claims-rubric" }).done,
+    ])
+    expect(spawnedWith.map((o) => o.model).sort()).toEqual(["model-rev2", "model-rev3", "model-rev3"])
+    registry.shutdown()
+  })
+
+  it("keeps the OpenRouter guard for a joiner whose preset NAME trips it, even though the resolved reviewer is identical", async () => {
+    const { host, registry, spawnedWith } = setup("slow:150")
+    const coordinator = createReviewExecutionShare()
+    const owner = lane(host, coordinator, "a", { fallback: "rev3" })
+    const named = lane(host, coordinator, "b", { fallback: "rev3-openrouter-alias" })
+    const [ra, rb] = await Promise.all([owner.done, named.done])
+    expect(ra).toMatchObject({ status: "ended" })
+    expect(rb).toMatchObject({ status: "failed" })
+    expect(rb.status === "failed" && rb.error).toMatch(/would bill OpenRouter/)
+    expect(rb.sharedExecution).toBeUndefined()
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("exactly ONE recovery step per shared execution; joiners reuse the recovered verdict and its provenance", async () => {
+    const reviewerText =
+      "I read src/x.ts and the callers. The null check in src/x.ts is inverted, so every request crashes.\n" +
+      "Verdict: request changes, one high-severity finding in src/x.ts."
+    const envelope = JSON.stringify({
+      status: "recovered",
+      reason: "reviewer stated its verdict",
+      conclusionQuote: "Verdict: request changes, one high-severity finding in src/x.ts.",
+      report: {
+        decision: "request_changes",
+        summary: "inverted null check",
+        findings: [{ severity: "high", title: "Inverted null check", detail: "crashes", file: "src/x.ts", line: 4 }],
+      },
+    })
+    const { host, registry, spawnedWith } = setup([{ say: reviewerText }, { say: envelope }], undefined, {
+      recovery: { presets: ["rev2"] },
+    })
+    const coordinator = createReviewExecutionShare()
+    const lanes = ["a", "b", "c"].map((n) => lane(host, coordinator, `correctness-${n}`, { timeoutMs: 20_000 }))
+    const results = await Promise.all(lanes.map((l) => l.done))
+    // One reviewer + one recovery model, not three of each.
+    expect(spawnedWith).toHaveLength(2)
+    for (const r of results) expect(r).toMatchObject({ status: "ended", recovery: { outcome: "recovered", preset: "rev2" } })
+    expect(new Set(results.map((r) => r.recovery?.sessionId)).size).toBe(1)
+    for (const l of lanes) {
+      expect(JSON.parse(await readFile(l.verdictPath, "utf8"))).toMatchObject({ decision: "request_changes" })
+    }
+    registry.shutdown()
+  })
+
+  it("a shared execution that FAILED is shared only in flight: a later lane starts its own reviewer", async () => {
+    const { host, registry, spawnedWith } = setup(["error:unauthorized: bad key", "review"])
+    const coordinator = createReviewExecutionShare()
+    const first = await lane(host, coordinator, "a").done
+    // The chain was only [broken-rev, rev3]; rev3 failed on a permanent error.
+    expect(first.status).toBe("failed")
+    const second = await lane(host, coordinator, "b").done
+    expect(second).toMatchObject({ status: "ended" })
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+
+  it("cancelling every participant kills the single shared reviewer — nothing stranded", async () => {
+    const { host, registry, spawnedWith } = setup("hang")
+    const coordinator = createReviewExecutionShare()
+    const ac = new AbortController()
+    const runs = ["a", "b", "c"].map((n) => lane(host, coordinator, n, { signal: ac.signal }).done)
+    setTimeout(() => ac.abort(), 250)
+    const results = await Promise.all(runs)
+    expect(spawnedWith).toHaveLength(1)
+    for (const r of results) expect(r.status).toBe("failed")
+    for (const d of registry.list({ includeArchived: true })) {
+      expect(d.status).toBe("killed")
+      expect(d.archived).toBe(true)
+    }
+    expect(coordinator.stats()).toEqual({ inFlight: 0, retained: 0 })
+    registry.shutdown()
+  })
+
+  it("cancelling the owner alone leaves the joiner's shared reviewer running", async () => {
+    const { host, registry, spawnedWith } = setup("slow:400")
+    const coordinator = createReviewExecutionShare()
+    const ownerCtl = new AbortController()
+    const owner = lane(host, coordinator, "a", { signal: ownerCtl.signal })
+    const joiner = lane(host, coordinator, "b")
+    setTimeout(() => ownerCtl.abort(), 150)
+    const [ro, rj] = await Promise.all([owner.done, joiner.done])
+    expect(ro.status).toBe("failed")
+    expect(ro.status === "failed" && ro.error).toMatch(/cancelled/)
+    expect(rj).toMatchObject({ status: "ended", sharedExecution: { role: "joiner", ownerLane: "a" } })
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("a joiner never extends the deadline: it leaves on its own, while the owner's reviewer finishes", async () => {
+    const { host, registry } = setup("slow:600")
+    const coordinator = createReviewExecutionShare()
+    const owner = lane(host, coordinator, "a", { timeoutMs: 10_000 })
+    const joiner = lane(host, coordinator, "b", { timeoutMs: 200 })
+    const [ro, rj] = await Promise.all([owner.done, joiner.done])
+    expect(ro).toMatchObject({ status: "ended" })
+    expect(rj).toMatchObject({ status: "failed", sharedExecution: { role: "joiner" } })
+    expect(rj.status === "failed" && rj.error).toMatch(/no time left/)
+    registry.shutdown()
+  })
+
+  it("the owner's timeout is what its joiners see, and the hung reviewer is killed", async () => {
+    const { host, registry, spawnedWith } = setup("hang")
+    const coordinator = createReviewExecutionShare()
+    const owner = lane(host, coordinator, "a", { timeoutMs: 300 })
+    await sleep(20)
+    const joiner = lane(host, coordinator, "b", { timeoutMs: 5_000 })
+    const [ro, rj] = await Promise.all([owner.done, joiner.done])
+    expect(ro).toMatchObject({ status: "timeout" })
+    expect(rj).toMatchObject({ status: "timeout", sharedExecution: { role: "joiner", ownerLane: "a" } })
+    expect(spawnedWith).toHaveLength(1)
+    for (const d of registry.list({ includeArchived: true })) expect(d.status).toBe("killed")
+    registry.shutdown()
+  })
+
+  it("without a share input nothing changes: every lane runs its own reviewer", async () => {
+    const { host, registry, spawnedWith } = setup("review")
+    const run = (name: string) =>
+      host.run({
+        preset: "rev3",
+        cwd: home,
+        prompt: `x ${join(home, name)}`,
+        label: `review:demo:${name}`,
+        timeoutMs: 10_000,
+      })
+    await Promise.all([run("a"), run("b")])
+    expect(spawnedWith).toHaveLength(2)
     registry.shutdown()
   })
 })

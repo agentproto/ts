@@ -165,6 +165,30 @@
             }
           }
         },
+        "recovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcome"],
+          "description": "Agent lanes only. Present when the reviewer's turn ended without a valid verdict file and the host ran its bounded output-recovery step. `sessionId`/`preset`/`model` here name the RECOVERY model and are always distinct from the lane's own reviewer fields. `recovered` = the host wrote the verdict file from the reviewer's own explicit conclusion; `followup` = the original reviewer wrote it after one targeted follow-up; every other outcome leaves the lane incomplete.",
+          "properties": {
+            "outcome": { "enum": ["recovered", "followup", "insufficient_evidence", "reviewer_failed", "invalid_output", "unavailable", "timeout", "cancelled"] },
+            "reason": { "type": "string" },
+            "sessionId": { "type": "string" },
+            "preset": { "type": "string" },
+            "model": { "type": "string" }
+          }
+        },
+        "sharedExecution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executionId", "role", "ownerLane"],
+          "description": "Agent lanes only. Present when this lane's result came from a reviewer execution shared with other lanes of the same run that resolved to the same model, configuration, rubric and range. Every lane naming the same `executionId` is ONE reviewer's verdict, not independent agreement.",
+          "properties": {
+            "executionId": { "type": "string" },
+            "role": { "enum": ["owner", "joiner"] },
+            "ownerLane": { "type": "string" }
+          }
+        },
         "composedFrom": {
           "type": "object",
           "additionalProperties": false,

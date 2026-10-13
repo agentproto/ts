@@ -329,6 +329,21 @@ describe("toLaneResult", () => {
     expect("fallbacks" in toLaneResult(correctness, { outcome: "skipped", error: "x", fallbacks: [] }, 1)).toBe(false)
   })
 
+  it("carries recovery and shared-execution provenance on every agent outcome", () => {
+    const recovery = { outcome: "recovered" as const, sessionId: "rec", preset: "small", model: "m" }
+    const sharedExecution = { executionId: "exec-1", role: "joiner" as const, ownerLane: "correctness-a" }
+    const extras = { sessionId: "s", preset: "glm", recovery, sharedExecution }
+    expect(toLaneResult(correctness, { outcome: "reported", report: { findings: [] }, ...extras }, 1)).toMatchObject({
+      sessionId: "s",
+      recovery,
+      sharedExecution,
+    })
+    expect(toLaneResult(correctness, { outcome: "timeout", error: "t", ...extras }, 1)).toMatchObject({ recovery, sharedExecution })
+    expect(toLaneResult(correctness, { outcome: "skipped", error: "x", ...extras }, 1)).toMatchObject({ recovery, sharedExecution })
+    const bare = toLaneResult(correctness, { outcome: "skipped", error: "x" }, 1)
+    expect("recovery" in bare || "sharedExecution" in bare).toBe(false)
+  })
+
   it("carries the reviewer summary", () => {
     const r = toLaneResult(correctness, { outcome: "reported", report: { summary: "lgtm", findings: [] } }, 1)
     expect(r).toMatchObject({ status: "pass", summary: "lgtm", blocking: true, kind: "agent" })

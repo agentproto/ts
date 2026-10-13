@@ -37,6 +37,44 @@ export interface LaneFallback {
   error: string
 }
 
+/** How an agent lane's verdict file was obtained when the reviewer's turn
+ *  ended without a valid one.
+ *   - `recovered`  — the host's recovery model quoted the reviewer's own
+ *                    explicit conclusion and the host wrote the verdict file.
+ *   - `followup`   — the original reviewer wrote the file after one targeted
+ *                    follow-up in the same session.
+ *   - the rest     — the lane stays incomplete; `reason` says why. */
+export type LaneRecoveryOutcome =
+  | "recovered"
+  | "followup"
+  | "insufficient_evidence"
+  | "reviewer_failed"
+  | "invalid_output"
+  | "unavailable"
+  | "timeout"
+  | "cancelled"
+
+/** Provenance of a lane's output recovery. `sessionId`/`preset`/`model` name
+ *  the RECOVERY model, never the original reviewer (that stays in the lane's
+ *  own `sessionId`/`preset`/`model`). */
+export interface LaneRecovery {
+  outcome: LaneRecoveryOutcome
+  reason?: string
+  sessionId?: string
+  preset?: string
+  model?: string
+}
+
+/** Present when a lane's result came from a reviewer execution shared with
+ *  other lanes of the same run (same resolved model/config, rubric and
+ *  range). Lanes naming one `executionId` are ONE reviewer's verdict, never
+ *  independent agreement. */
+export interface LaneSharedExecution {
+  executionId: string
+  role: "owner" | "joiner"
+  ownerLane: string
+}
+
 /** One lane of a review run — one attesting check. */
 export interface LaneResult {
   id: string
@@ -68,6 +106,12 @@ export interface LaneResult {
   /** Agent lanes: the model the reviewer session ran on, when the host knows
    *  it (the session record's active model). Omitted when unknown. */
   model?: string
+  /** Agent lanes: set when the reviewer's turn ended without a valid verdict
+   *  file and the host ran its bounded output-recovery step. */
+  recovery?: LaneRecovery
+  /** Agent lanes: set when the result came from a reviewer execution shared
+   *  with other lanes of this run. */
+  sharedExecution?: LaneSharedExecution
   /** Agent lanes only: set when this lane reused a prior PASSING attestation
    *  and reviewed only the delta on top of it, instead of the full range —
    *  see "attestation composition" in the package doc. `rangeSha` is the

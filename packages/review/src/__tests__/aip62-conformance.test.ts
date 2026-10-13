@@ -112,6 +112,21 @@ describe("EXAMPLES.md reference blocks", () => {
     expect(ok({ ...lane, fallbacks: [{ preset: "kimi", error: "x", extra: 1 }] })).toBe(false)
   })
 
+  it("recovery and shared-execution provenance validate; malformed ones do not", () => {
+    const att = JSON.parse(EXAMPLE_ATTESTATION)
+    const lane = {
+      ...att.lanes[0],
+      recovery: { outcome: "recovered", reason: "quoted conclusion", sessionId: "rec", preset: "small", model: "m" },
+      sharedExecution: { executionId: "exec-1", role: "joiner", ownerLane: "correctness-a" },
+    }
+    const ok = (l: unknown) => attestationFrontmatterSchema.safeParse({ ...att, lanes: [l, ...att.lanes.slice(1)] }).success
+    expect(ok(lane)).toBe(true)
+    expect(ok({ ...lane, recovery: { outcome: "guessed" } })).toBe(false)
+    expect(ok({ ...lane, recovery: { outcome: "recovered", extra: 1 } })).toBe(false)
+    expect(ok({ ...lane, sharedExecution: { executionId: "e", role: "owner" } })).toBe(false)
+    expect(ok({ ...lane, sharedExecution: { executionId: "e", role: "peer", ownerLane: "x" } })).toBe(false)
+  })
+
   it("a buildAttestation output validates against the attestation schema", () => {
     const att = buildAttestation({
       runId: "review-6f0b9a52-3f43-4c1c-a4d5-0f3f6c1f5a10",

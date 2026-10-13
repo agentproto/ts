@@ -72,6 +72,54 @@ unavailable the lane settles `skipped` (verdict `incomplete`) and its error
 lists each preset tried with its error. A preset may appear only once in
 `[preset, ...fallbackPresets]` — a duplicate is a manifest error.
 
+### Verdict recovery (`review.recoveryPresets`)
+
+A reviewer is told its verdict **is** the file it writes. When its turn ends
+and that file is missing or fails `parseAgentLaneReport`, the review workflow
+runs one bounded, passive recovery step before the reviewer session is torn
+down — not a standalone watcher, and not a second review:
+
+- A small recovery model — the first usable preset in `review.recoveryPresets`
+  (daemon config), with the `review.recovery` model role overriding its
+  model/auth profile when set — is given only the reviewer's latest substantive messages plus lifecycle/error
+  evidence (bounded; no repo access, no tools, an empty scratch cwd).
+- It answers `recovered`, `needs_followup`, `insufficient_evidence` or
+  `reviewer_failed`. The daemon — not the model — validates the report and
+  writes the canonical verdict file, and only when the conclusion quote is
+  found verbatim in the reviewer's own output.
+- An approval is never recovered from a turn that ended in an error, and
+  partial analysis is never turned into a pass. A recovered
+  `request_changes` must carry findings.
+- `needs_followup` sends one targeted message to the original reviewer, then
+  re-checks the file. At most one recovery model step and one follow-up per
+  reviewer execution, all inside the lane's original `timeoutMs` deadline;
+  cancel is honored throughout.
+- OpenRouter stays refused for the recovery step too.
+
+The lane keeps the reviewer's own provenance and records the recovery apart:
+`recovery: { outcome, reason?, sessionId?, preset?, model? }`. With no
+recovery preset configured, nothing changes: a missing verdict file fails the
+lane as before.
+
+### Shared fallback executions
+
+Within one run, lanes whose fallback chains resolve to the same reviewer —
+same actual adapter/model/auth profile, same rubric bytes, same effective
+frozen git range (a composed delta base counts as its own range) and same
+check options — share **one** reviewer execution. The claims rubric is a
+different rubric and never shares with correctness. Sharing is scoped to the
+run; a later run starts fresh.
+
+Every participating lane records `sharedExecution: { executionId, role:
+"owner"|"joiner", ownerLane }`: lanes with one `executionId` are one
+reviewer's verdict, not independent agreement. A joiner never extends the
+owner's deadline and stops waiting at its own; the execution is cancelled only
+when every participant has left. Cooldowns, the OpenRouter guard and delta
+composition are the existing mechanisms and apply unchanged. A settled
+success is kept for later lanes of the run; a failure or timeout is shared
+with the lanes already waiting and then forgotten, so a later lane retries for
+itself.
+
 ## `run`
 
 Runs the binding over `merge-base(<target.base>, HEAD)..HEAD` (or

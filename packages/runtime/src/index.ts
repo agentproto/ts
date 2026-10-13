@@ -49,6 +49,7 @@ import {
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
+import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 export {
   DEFAULT_MODEL_ROLES,
   MODEL_ROLE_REF_PREFIX,
@@ -2650,6 +2651,17 @@ export async function createGateway(
             eventRing,
             resolveAgentAdapter: opts.resolveAgentAdapter,
             ...(daemonConfig.review?.laneRetries !== undefined ? { laneRetries: daemonConfig.review.laneRetries } : {}),
+            getRecovery: () => {
+              const presets = (daemonConfig.review?.recoveryPresets ?? []).filter(
+                (p): p is string => typeof p === "string" && p.trim().length > 0,
+              )
+              if (presets.length === 0) return undefined
+              const role = resolveModelRoleEntry("review.recovery", { daemon: daemonConfig.models })
+              return {
+                presets,
+                ...(role ? { model: { model: role.model, ...(role.profile ? { profile: role.profile } : {}) } } : {}),
+              }
+            },
             spawnDeps: {
               resolveSandboxProvider: resolveSandboxProviderResolved,
               ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
