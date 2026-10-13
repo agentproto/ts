@@ -25,9 +25,18 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { SandboxSpec } from "@agentproto/sandbox"
+import { scrubCommandFromMessage } from "@agentproto/sandbox"
 import { makeSandboxResolver, makeSandboxCredsStore } from "./sandbox-adapters.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { recordSandboxBoot } from "./sandbox-ledger.js"
+import { isDeviceSandboxTarget } from "./sandbox-providers/device.js"
+import {
+  makeRedactor,
+  resolveEnvProfiles,
+  secretishLiteralValues,
+  validateEnvProfiles,
+  type EnvProfilesDeps,
+} from "./sandbox-exec-env-profiles.js"
 
 /** Per-stream display cap, in characters. Anything longer is cut to this
  *  many leading chars with a `…[truncated]` marker (the cap is generous —
@@ -35,6 +44,25 @@ import { recordSandboxBoot } from "./sandbox-ledger.js"
  *  `cat` of a binary database does not, and that's exactly the case the
  *  marker exists for). */
 export const SANDBOX_EXEC_STREAM_MAX_CHARS = 20_000
+
+/** Command text ceiling, bytes. E2B rejects a ~30 KB inline command with an opaque
+ *  `[invalid_argument] error starting process`; 16 KB stays well under that. */
+export const SANDBOX_EXEC_MAX_COMMAND_BYTES = 16 * 1024
+/** Total env ceiling (names + values), bytes — same conservative reasoning. */
+export const SANDBOX_EXEC_MAX_ENV_BYTES = 32 * 1024
+/** Per-file / file-count ceilings for the `files` upload. */
+export const SANDBOX_EXEC_MAX_FILE_BYTES = 25 * 1024 * 1024
+export const SANDBOX_EXEC_MAX_FILES = 32
+
+/** One file written into the box before the command runs. */
+export interface SandboxExecFile {
+  /** Absolute path INSIDE the box. Parent directories are created. */
+  path: string
+  /** File content, interpreted per `encoding`. */
+  content: string
+  /** `utf8` (default) or `base64` for binary content. */
+  encoding?: "utf8" | "base64"
+}
 
 /** Options for `execSandboxCommand` — the `sandbox_exec` MCP tool's input. */
 export interface SandboxExecCommandChoices {
@@ -53,8 +81,19 @@ export interface SandboxExecCommandChoices {
    *  `/home/user`). Never a HOST path — a host path can never resolve in
    *  the box. */
   cwd?: string
-  /** Extra env vars for THIS command only. */
+  /** Extra env vars for THIS command only. Literal values: anything the caller
+   *  puts here is visible in its own context — prefer `envProfiles` for secrets. */
   env?: Record<string, string>
+  /**
+   * `ENV_NAME → auth profile id`: the daemon reads that profile's credential
+   * (keychain, or its sub-account provider) and sets it as `ENV_NAME` in the
+   * command's env, so the caller never holds the value. The caller names a
+   * PROFILE, never a keychain ref. Same var in `env` too → rejected.
+   */
+  envProfiles?: Record<string, string>
+  /** Files written into the box before the command runs (instead of inlining
+   *  a large script in `command`). */
+  files?: SandboxExecFile[]
   /** Per-command timeout, ms. Provider-dependent expiry error. */
   timeoutMs?: number
 }
@@ -79,6 +118,10 @@ export type SandboxExecResult =
         | "sandbox_no_exec"
         | "sandbox_exec_failed"
         | "sandbox_no_connect"
+        | "sandbox_exec_invalid_input"
+        | "sandbox_exec_env_profile"
+        | "sandbox_exec_too_large"
+        | "sandbox_no_write_file"
       message: string
     }
 
@@ -95,10 +138,50 @@ function truncateStream(stream: string): { text: string; truncated: boolean } {
   }
 }
 
-export interface ExecSandboxCommandOptions {
+export interface ExecSandboxCommandOptions extends EnvProfilesDeps {
   /** Injectable resolver — defaults to the same creds-backed resolver
    *  `sandbox_attach` uses. Override for tests. */
   resolveSandboxProvider?: SandboxProviderResolver
+}
+
+const kb = (bytes: number): string => `${Math.ceil(bytes / 1024)} KB`
+
+/** Validate `files` and decode them to bytes. Error string on bad input. */
+function decodeFiles(
+  files: readonly SandboxExecFile[],
+): { ok: true; files: { path: string; data: Uint8Array }[] } | { ok: false; message: string } {
+  if (files.length > SANDBOX_EXEC_MAX_FILES) {
+    return { ok: false, message: `sandbox_exec: ${files.length} files exceeds the limit of ${SANDBOX_EXEC_MAX_FILES}.` }
+  }
+  const out: { path: string; data: Uint8Array }[] = []
+  const seen = new Set<string>()
+  for (const f of files) {
+    if (!f.path.startsWith("/") || f.path.includes("\0")) {
+      return { ok: false, message: `sandbox_exec: file path "${f.path}" must be an absolute path INSIDE the box.` }
+    }
+    if (seen.has(f.path)) {
+      return { ok: false, message: `sandbox_exec: file path "${f.path}" is listed twice.` }
+    }
+    seen.add(f.path)
+    let data: Buffer
+    if (f.encoding === "base64") {
+      const compact = f.content.replace(/\s+/g, "")
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length % 4 === 1) {
+        return { ok: false, message: `sandbox_exec: file "${f.path}" is not valid base64.` }
+      }
+      data = Buffer.from(compact, "base64")
+    } else {
+      data = Buffer.from(f.content, "utf8")
+    }
+    if (data.byteLength > SANDBOX_EXEC_MAX_FILE_BYTES) {
+      return {
+        ok: false,
+        message: `sandbox_exec: file "${f.path}" is ${kb(data.byteLength)}, over the ${kb(SANDBOX_EXEC_MAX_FILE_BYTES)} limit.`,
+      }
+    }
+    out.push({ path: f.path, data })
+  }
+  return { ok: true, files: out }
 }
 
 /**
@@ -113,6 +196,42 @@ export async function execSandboxCommand(
   opts: SandboxExecCommandChoices,
   deps: ExecSandboxCommandOptions = {},
 ): Promise<SandboxExecResult> {
+  const invalid = (message: string): SandboxExecResult => ({
+    ok: false,
+    code: "sandbox_exec_invalid_input",
+    message: `sandbox_exec: ${message}`,
+  })
+
+  // Input checks that need no I/O run first, so a bad call never touches a
+  // keychain or boots a box.
+  const envProfiles = opts.envProfiles !== undefined && Object.keys(opts.envProfiles).length > 0 ? opts.envProfiles : undefined
+  if (envProfiles !== undefined) {
+    const problem = validateEnvProfiles(envProfiles, opts.env)
+    if (problem !== undefined) return invalid(problem)
+    if (isDeviceSandboxTarget(opts.provider)) {
+      return invalid(
+        "envProfiles are not supported on device targets — the box is another machine and " +
+          "keychain-backed credentials never leave this one.",
+      )
+    }
+  }
+  const commandBytes = Buffer.byteLength(opts.command, "utf8")
+  if (commandBytes > SANDBOX_EXEC_MAX_COMMAND_BYTES) {
+    return {
+      ok: false,
+      code: "sandbox_exec_too_large",
+      message:
+        `sandbox_exec: command is ${kb(commandBytes)}, over the ${kb(SANDBOX_EXEC_MAX_COMMAND_BYTES)} limit — ` +
+        "upload the script as a file (`files: [{ path, content }]`) and run it by path, or pass the payload via env.",
+    }
+  }
+  let files: { path: string; data: Uint8Array }[] = []
+  if (opts.files !== undefined && opts.files.length > 0) {
+    const decoded = decodeFiles(opts.files)
+    if (!decoded.ok) return invalid(decoded.message.replace(/^sandbox_exec: /, ""))
+    files = decoded.files
+  }
+
   const resolver = deps.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore())
   const handle = await resolver(opts.provider)
   if (!handle) {
@@ -122,6 +241,52 @@ export async function execSandboxCommand(
       message:
         `sandbox_exec: sandbox provider "${opts.provider}" not found. Check ` +
         "`list_sandbox_providers`, then `setup_sandbox_provider` if it needs credentials.",
+    }
+  }
+
+  // Resolve profile-backed env AFTER the provider is known to exist. Values
+  // live only in `env` (the provider's exec env) and the redactor below.
+  let env = opts.env
+  const secretValues = secretishLiteralValues(opts.env)
+  if (envProfiles !== undefined) {
+    const resolved = await resolveEnvProfiles(envProfiles, opts.env, deps)
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        code: resolved.code === "invalid_input" ? "sandbox_exec_invalid_input" : "sandbox_exec_env_profile",
+        message: `sandbox_exec: ${resolved.message}`,
+      }
+    }
+    env = { ...opts.env, ...resolved.env }
+    secretValues.push(...resolved.secretValues)
+  }
+  const redact = makeRedactor(secretValues)
+  // Provider/SDK error text: strip the echoed command, drop secrets, cap length.
+  const sanitize = (message: string): string => {
+    const cleaned = redact(scrubCommandFromMessage(message, opts.command))
+    const capped = cleaned.length > 2_000 ? `${cleaned.slice(0, 2_000)}…(${cleaned.length} chars)` : cleaned
+    return /invalid_argument/.test(capped)
+      ? `${capped} (the provider rejected the request — if the command or env is large, upload scripts via \`files\`)`
+      : capped
+  }
+
+  if (env !== undefined) {
+    let envBytes = 0
+    let largest: { name: string; bytes: number } | undefined
+    for (const [name, value] of Object.entries(env)) {
+      const bytes = Buffer.byteLength(name, "utf8") + Buffer.byteLength(value, "utf8") + 2
+      envBytes += bytes
+      if (largest === undefined || bytes > largest.bytes) largest = { name, bytes }
+    }
+    if (envBytes > SANDBOX_EXEC_MAX_ENV_BYTES) {
+      return {
+        ok: false,
+        code: "sandbox_exec_too_large",
+        message:
+          `sandbox_exec: env is ${kb(envBytes)} in total, over the ${kb(SANDBOX_EXEC_MAX_ENV_BYTES)} limit` +
+          (largest ? ` (largest: ${largest.name}, ${kb(largest.bytes)})` : "") +
+          " — upload large payloads as files (`files: [{ path, content }]`) instead of env.",
+      }
     }
   }
 
@@ -146,9 +311,10 @@ export async function execSandboxCommand(
       return {
         ok: false,
         code: "sandbox_exec_failed",
-        message:
+        message: sanitize(
           `sandbox_exec: connect failed for provider "${opts.provider}" sandbox ` +
-          `"${opts.sandboxId}" — ${err instanceof Error ? err.message : String(err)}`,
+            `"${opts.sandboxId}" — ${err instanceof Error ? err.message : String(err)}`,
+        ),
       }
     }
     // The box was already there — stamp it connected (best-effort, never
@@ -172,9 +338,10 @@ export async function execSandboxCommand(
       return {
         ok: false,
         code: "sandbox_exec_failed",
-        message:
+        message: sanitize(
           `sandbox_exec: boot failed for provider "${opts.provider}" — ` +
-          `${err instanceof Error ? err.message : String(err)}`,
+            `${err instanceof Error ? err.message : String(err)}`,
+        ),
       }
     }
   }
@@ -190,16 +357,41 @@ export async function execSandboxCommand(
     if (ephemeral) await booted.stop().catch(() => undefined)
     return { ok: false, code: "sandbox_no_exec", message }
   }
+  if (files.length > 0 && !booted.writeFile) {
+    if (ephemeral) await booted.stop().catch(() => undefined)
+    return {
+      ok: false,
+      code: "sandbox_no_write_file",
+      message:
+        `sandbox_exec: provider "${opts.provider}" cannot upload files — its sandbox has no ` +
+        "writeFile() capability. Known provider implementations: e2b.",
+    }
+  }
 
   try {
+    for (const f of files) {
+      try {
+        await booted.writeFile!(f.path, f.data)
+      } catch (err) {
+        return {
+          ok: false,
+          code: "sandbox_exec_failed",
+          message: sanitize(
+            `sandbox_exec: writing file "${f.path}" into sandbox "${booted.sandboxId}" failed — ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          ),
+        }
+      }
+    }
     const result = await booted.exec({
       command: opts.command,
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-      ...(opts.env !== undefined ? { env: opts.env } : {}),
+      ...(env !== undefined ? { env } : {}),
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     })
-    const stdout = truncateStream(result.stdout)
-    const stderr = truncateStream(result.stderr)
+    // Redact BEFORE truncating, so a secret straddling the cut isn't half-shown.
+    const stdout = truncateStream(redact(result.stdout))
+    const stderr = truncateStream(redact(result.stderr))
     return {
       ok: true,
       result: {
@@ -216,9 +408,10 @@ export async function execSandboxCommand(
     return {
       ok: false,
       code: "sandbox_exec_failed",
-      message:
+      message: sanitize(
         `sandbox_exec: command exec failed in sandbox "${booted.sandboxId}" on provider ` +
-        `"${opts.provider}" — ${err instanceof Error ? err.message : String(err)}`,
+          `"${opts.provider}" — ${err instanceof Error ? err.message : String(err)}`,
+      ),
     }
   } finally {
     if (ephemeral) await booted.stop().catch(() => undefined)
@@ -230,6 +423,90 @@ export interface RegisterSandboxExecToolOptions {
    *  — pass the daemon's shared resolver so this tool sees the same provider
    *  set as `list_sandbox_providers` / `agent_start.sandbox`. */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Test seams for `envProfiles` resolution (profile lookup, keychain, sub-account). */
+  envProfiles?: EnvProfilesDeps
+}
+
+/** Input shape shared by the MCP tool and the daemon's `POST /sandboxes/exec`. */
+export const sandboxExecInputShape = {
+  provider: z.string().describe('Sandbox provider slug, e.g. "e2b" or "box".'),
+  command: z.string().describe("Command to run inside the box, verbatim."),
+  sandboxId: z
+    .string()
+    .optional()
+    .describe(
+      "Provider-assigned sandbox id to run against; omit for an EPHEMERAL box " +
+        "(booted and torn down around the single command).",
+    ),
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Absolute path INSIDE the box to run the command from (e.g. e2b's `/home/user`); " +
+        "never a host path.",
+    ),
+  env: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe(
+      "Extra env vars for THIS command only (literal values — they pass through your own " +
+        "context; use `envProfiles` for secrets).",
+    ),
+  envProfiles: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe(
+      'Secrets WITHOUT holding them: { "ENV_NAME": "<auth profile id>" }. The daemon reads ' +
+        "that profile's credential and sets it as ENV_NAME in the command's env; the value " +
+        "never enters your context, the result, or argv. Name a PROFILE id (see " +
+        "`auth_profile_list`), never a keychain ref. Disabled/unknown profiles and ENV_NAMEs " +
+        "also present in `env` are rejected. Not supported on device targets.",
+    ),
+  files: z
+    .array(
+      z.object({
+        path: z.string().describe("Absolute path INSIDE the box; parent dirs are created."),
+        content: z.string().describe("File content (utf8, or base64 per `encoding`)."),
+        encoding: z.enum(["utf8", "base64"]).optional(),
+      }),
+    )
+    .optional()
+    .describe(
+      "Files written into the box BEFORE the command runs — use instead of inlining a large " +
+        `script in \`command\` (commands over ${SANDBOX_EXEC_MAX_COMMAND_BYTES / 1024} KB are rejected).`,
+    ),
+  timeoutMs: z
+    .number()
+    .optional()
+    .describe(
+      "Per-command timeout, ms (provider kills the process on expiry). Omit to let the " +
+        "command run as long as the box lives.",
+    ),
+}
+export const sandboxExecInputSchema = z.object(sandboxExecInputShape)
+
+/** Zod-parsed input → the function's choices (drops absent optionals). */
+export function sandboxExecChoicesFromInput(
+  input: z.infer<typeof sandboxExecInputSchema>,
+): SandboxExecCommandChoices {
+  return {
+    provider: input.provider,
+    command: input.command,
+    ...(input.sandboxId !== undefined ? { sandboxId: input.sandboxId } : {}),
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.env !== undefined ? { env: input.env } : {}),
+    ...(input.envProfiles !== undefined ? { envProfiles: input.envProfiles } : {}),
+    ...(input.files !== undefined
+      ? {
+          files: input.files.map(f => ({
+            path: f.path,
+            content: f.content,
+            ...(f.encoding !== undefined ? { encoding: f.encoding } : {}),
+          })),
+        }
+      : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  }
 }
 
 /** Register the `sandbox_exec` MCP tool. */
@@ -245,53 +522,22 @@ export function registerSandboxExecTool(
       "`sandboxId`, boots a fresh EPHEMERAL box, runs the command, then ALWAYS tears " +
       "it down, success or non-zero exit or failure. With `sandboxId`, attaches to the " +
       "existing box and leaves it exactly as found (never stops or pauses it). " +
-      "`cwd` is absolute INSIDE the box, `env` applies to this command only, " +
+      "`cwd` is absolute INSIDE the box, `env` applies to this command only (use " +
+      "`envProfiles` to inject a stored credential by auth profile id without ever seeing it; " +
+      "use `files` to ship a large script instead of inlining it), " +
       "`timeoutMs` caps the per-command wall clock. Output streams are truncated " +
       "with an explicit marker when oversized (each at " +
-      `${SANDBOX_EXEC_STREAM_MAX_CHARS} chars). Use \`list_sandbox_providers\` to see ` +
+      `${SANDBOX_EXEC_STREAM_MAX_CHARS} chars); resolved secrets are redacted from output and ` +
+      "errors, and errors show at most 200 chars of the command. Use `list_sandbox_providers` to see " +
       "available providers and `setup_sandbox_provider` to configure credentials first.",
-    {
-      provider: z.string().describe('Sandbox provider slug, e.g. "e2b" or "box".'),
-      command: z.string().describe("Command to run inside the box, verbatim."),
-      sandboxId: z
-        .string()
-        .optional()
-        .describe(
-          "Provider-assigned sandbox id to run against; omit for an EPHEMERAL box " +
-            "(booted and torn down around the single command).",
-        ),
-      cwd: z
-        .string()
-        .optional()
-        .describe(
-          "Absolute path INSIDE the box to run the command from (e.g. e2b's `/home/user`); " +
-            "never a host path.",
-        ),
-      env: z
-        .record(z.string(), z.string())
-        .optional()
-        .describe("Extra env vars for THIS command only."),
-      timeoutMs: z
-        .number()
-        .optional()
-        .describe(
-          "Per-command timeout, ms (provider kills the process on expiry). Omit to let the " +
-            "command run as long as the box lives.",
-        ),
-    },
+    sandboxExecInputShape,
     async input => {
       const result = await execSandboxCommand(
+        sandboxExecChoicesFromInput(input),
         {
-          provider: input.provider,
-          command: input.command,
-          ...(input.sandboxId !== undefined ? { sandboxId: input.sandboxId } : {}),
-          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-          ...(input.env !== undefined ? { env: input.env } : {}),
-          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+          ...opts.envProfiles,
         },
-        opts.resolveSandboxProvider
-          ? { resolveSandboxProvider: opts.resolveSandboxProvider }
-          : {},
       )
       if (!result.ok) {
         return {

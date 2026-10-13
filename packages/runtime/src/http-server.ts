@@ -295,6 +295,11 @@ import {
 } from "./spawn-field-schemas.js"
 import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import { readSandboxLedger, recordSandboxLiveness } from "./sandbox-ledger.js"
+import {
+  execSandboxCommand,
+  sandboxExecChoicesFromInput,
+  sandboxExecInputSchema,
+} from "./sandbox-exec.js"
 import { parseJsonRecordText, DEFAULT_APP_SERVE_PORT, type SandboxAppServeSpec } from "./sandbox-app-serve.js"
 import { listPresets } from "./preset-tools.js"
 import {
@@ -6121,6 +6126,29 @@ async function handleSandboxes(
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
     res.end(JSON.stringify(body))
+  }
+  // POST /sandboxes/exec — the CLI twin of the `sandbox_exec` MCP tool (same
+  // input schema, same function). Token-gated by the caller (non-GET). Runs in
+  // the daemon so `envProfiles` resolve against the daemon's keychain/profiles;
+  // the response never carries a resolved secret (redacted in execSandboxCommand).
+  if (path === "/sandboxes/exec") {
+    if (_req.method !== "POST") return false
+    const parsed = sandboxExecInputSchema.safeParse(await readJsonBody(_req))
+    if (!parsed.success) {
+      json(400, {
+        ok: false,
+        code: "sandbox_exec_invalid_input",
+        message: `sandbox_exec: invalid request body — ${parsed.error.issues
+          .map(i => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+      })
+      return true
+    }
+    const result = await execSandboxCommand(sandboxExecChoicesFromInput(parsed.data), {
+      ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+    })
+    json(result.ok ? 200 : 422, result)
+    return true
   }
   const match = path.match(/^\/sandboxes\/([^/]+)\/alive$/)
   if (!match || _req.method !== "GET") return false

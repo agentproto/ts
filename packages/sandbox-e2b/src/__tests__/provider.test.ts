@@ -659,6 +659,20 @@ describe("booted.exec", () => {
     expect(commandsRun).toHaveBeenCalledWith("date", { timeoutMs: 0 })
   })
 
+  it("cuts the SDK's echo of a huge command out of a start-process error", async () => {
+    const command = "echo " + "z".repeat(9000)
+    const commandsRun = vi.fn(async () => {
+      throw new Error(`[invalid_argument] error starting process '/bin/bash -l -c ${command}'`)
+    })
+    const { booted } = await bootedOf(commandsRun)
+
+    const err = (await booted.exec!({ command }).catch((e: unknown) => e)) as Error
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toContain("[invalid_argument] error starting process")
+    expect(err.message).toContain("…(9005 chars)")
+    expect(err.message.length).toBeLessThan(500)
+  })
+
   it("propagates non-exit errors (command timeout etc.) as rejections", async () => {
     const commandsRun = vi.fn(async () => {
       throw new Error("timeout: exceeded command timeoutMs")
@@ -695,5 +709,29 @@ describe("booted.readFile", () => {
       format: "bytes",
       requestTimeoutMs: 5 * 60_000,
     })
+  })
+})
+
+describe("booted.writeFile", () => {
+  beforeEach(() => {
+    sandboxCreateMock.mockReset()
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("writes the bytes into the box through files.write", async () => {
+    const write = vi.fn(async () => ({}))
+    sandboxCreateMock.mockResolvedValue(fakeSandbox({ files: { write } }))
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const booted = await e2bSandboxProvider.boot({ provider: "e2b", config: {} }, { env: {} })
+    await booted.writeFile!("/home/user/run.sh", new Uint8Array([104, 105]))
+
+    expect(write).toHaveBeenCalledTimes(1)
+    const [path, data] = write.mock.calls[0] as unknown as [string, ArrayBuffer]
+    expect(path).toBe("/home/user/run.sh")
+    expect(Array.from(new Uint8Array(data))).toEqual([104, 105])
   })
 })

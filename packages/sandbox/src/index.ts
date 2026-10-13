@@ -45,4 +45,10 @@ export {
   type SandboxAgentSessionHost,
 } from "./agent-session-host.js"
 
+export {
+  EXEC_ERROR_COMMAND_MAX_CHARS,
+  shortenCommand,
+  scrubCommandFromMessage,
+} from "./exec-errors.js"
+
 export { resolveLifecyclePolicy, type SandboxLifecyclePolicy } from "./lifecycle.js"
