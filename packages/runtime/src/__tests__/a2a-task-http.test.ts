@@ -24,6 +24,7 @@ import {
   extractSkillRequest,
   mapRunState,
   sessionTurnDone,
+  sessionTurnFailed,
   type A2aAppHandleLike,
   type A2aTask,
 } from "../a2a-tasks.js"
@@ -219,6 +220,105 @@ describe("A2A task ingress", () => {
       expect(task.status.state).toBe("TASK_STATE_COMPLETED")
       expect(task.artifacts![0]).toMatchObject({ artifactId: "agent-output-solo", name: "solo", parts: [{ text: "The answer is 42." }] })
       expect(task.status.message).toMatchObject({ role: "ROLE_AGENT", parts: [{ text: "The answer is 42." }], taskId: "run-1" })
+    })
+  })
+
+  it("GetTask fails a still-running run whose session's turn ended in error, with the error message and no artifacts", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "do the thing"))
+      runs.set("run-1", {
+        status: "running",
+        sessions: [
+          {
+            agentId: "solo",
+            sessionId: "s-run-1",
+            descriptor: {
+              status: "running",
+              busy: false,
+              awaitingInput: false,
+              turnsCompleted: 1,
+              lastTurnErroredAt: "2026-10-13T10:00:00.000Z",
+              lastTurnErrorMessage: "boom",
+            },
+          },
+        ],
+      })
+      // Even a readable conversation must not be fetched for a FAILED task.
+      conversations.set("s-run-1", [{ role: "assistant", text: "partial" }])
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_FAILED")
+      expect(task.status.message).toMatchObject({ role: "ROLE_AGENT", parts: [{ text: expect.stringContaining("boom") }], taskId: "run-1" })
+      expect(task.artifacts).toBeUndefined()
+      expect(dispatched.some(d => d.name === "conversation_read")).toBe(false)
+    })
+  })
+
+  it("GetTask completes a still-running run whose session ended with reason aborted", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "do the thing"))
+      runs.set("run-1", {
+        status: "running",
+        sessions: [
+          {
+            agentId: "solo",
+            sessionId: "s-run-1",
+            descriptor: { status: "running", busy: false, awaitingInput: false, turnsCompleted: 1, lastTurnReason: "aborted" },
+          },
+        ],
+      })
+      conversations.set("s-run-1", [{ role: "assistant", text: "stopped early" }])
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_COMPLETED")
+    })
+  })
+
+  it("GetTask stamps a turn-ended task with the latest session lastActivityAt", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "do the thing"))
+      const later = "2030-01-02T03:04:05.000Z"
+      runs.set("run-1", {
+        status: "running",
+        sessions: [
+          {
+            agentId: "solo",
+            sessionId: "s-run-1",
+            descriptor: { status: "running", busy: false, awaitingInput: false, turnsCompleted: 1, lastActivityAt: later },
+          },
+        ],
+      })
+      conversations.set("s-run-1", [{ role: "assistant", text: "done" }])
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_COMPLETED")
+      expect(task.status.timestamp).toBe(later)
+    })
+  })
+
+  it("GetTask fails a still-running run when any session's turn ended in error", async () => {
+    await withServer(async rpc => {
+      await rpc(APP_ID, sendReq("solo", "do the thing"))
+      runs.set("run-1", {
+        status: "running",
+        sessions: [
+          {
+            agentId: "solo",
+            sessionId: "s-run-1",
+            descriptor: { status: "running", busy: false, awaitingInput: false, turnsCompleted: 1, lastTurnReason: "completed" },
+          },
+          {
+            agentId: "other",
+            sessionId: "s-run-1b",
+            descriptor: { status: "running", busy: false, awaitingInput: false, turnsCompleted: 1, lastTurnErroredAt: "2026-10-13T10:00:00.000Z", lastTurnErrorMessage: "kaboom" },
+          },
+        ],
+      })
+      const res = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTask", params: { id: "run-1" } })
+      const task = res.json.result as A2aTask
+      expect(task.status.state).toBe("TASK_STATE_FAILED")
+      expect(task.status.message!.parts[0]).toMatchObject({ text: expect.stringContaining("kaboom") })
+      expect(task.artifacts).toBeUndefined()
     })
   })
 
@@ -447,12 +547,55 @@ describe("a2a-tasks mapping", () => {
     expect(mapRunState({ status: "failed", sessions: [{ descriptor: done }] })).toBe("TASK_STATE_FAILED")
   })
 
+  it("fails a still-running run once any session's turn ended in error", () => {
+    const done = { status: "running", busy: false, awaitingInput: false, turnsCompleted: 1 }
+    expect(
+      mapRunState({
+        status: "running",
+        sessions: [{ descriptor: { ...done, lastTurnErroredAt: "2026-10-13T10:00:00.000Z", lastTurnErrorMessage: "boom" } }],
+      }),
+    ).toBe("TASK_STATE_FAILED")
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: { ...done, lastTurnReason: "error" } }] })).toBe(
+      "TASK_STATE_FAILED",
+    )
+    // Aborted is not a failure.
+    expect(mapRunState({ status: "running", sessions: [{ descriptor: { ...done, lastTurnReason: "aborted" } }] })).toBe(
+      "TASK_STATE_COMPLETED",
+    )
+    // One failed session among completed ones fails the run.
+    expect(
+      mapRunState({
+        status: "running",
+        sessions: [{ descriptor: done }, { descriptor: { ...done, lastTurnErroredAt: "2026-10-13T10:00:00.000Z" } }],
+      }),
+    ).toBe("TASK_STATE_FAILED")
+    // A still-busy session keeps the run working even with a prior error.
+    expect(
+      mapRunState({
+        status: "running",
+        sessions: [{ descriptor: { ...done, lastTurnErroredAt: "2026-10-13T10:00:00.000Z", busy: true } }],
+      }),
+    ).toBe("TASK_STATE_WORKING")
+  })
+
   it("sessionTurnDone reads the descriptor", () => {
     expect(sessionTurnDone({ status: "exited" })).toBe(true)
     expect(sessionTurnDone({ status: "error" })).toBe(true)
     expect(sessionTurnDone({ status: "starting" })).toBe(false)
     expect(sessionTurnDone({ status: "running", busy: false, turnsCompleted: 1 })).toBe(true)
     expect(sessionTurnDone({ status: "running", busy: true, turnsCompleted: 1 })).toBe(false)
+  })
+
+  it("sessionTurnFailed reads the descriptor", () => {
+    expect(sessionTurnFailed({})).toBe(false)
+    expect(sessionTurnFailed({ lastTurnErroredAt: "2026-10-13T10:00:00.000Z" })).toBe(true)
+    expect(sessionTurnFailed({ lastTurnErroredAt: "" })).toBe(false)
+    expect(sessionTurnFailed({ lastTurnReason: "error" })).toBe(true)
+    expect(sessionTurnFailed({ lastTurnReason: "completed" })).toBe(false)
+    expect(sessionTurnFailed({ lastTurnReason: "aborted" })).toBe(false)
+    expect(
+      sessionTurnFailed({ status: "running", busy: false, turnsCompleted: 1, lastTurnErroredAt: "2026-10-13T10:00:00.000Z", lastTurnErrorMessage: "boom" }),
+    ).toBe(true)
   })
 
   it("extractLastAssistantText strips the window suffix and takes the last non-blank assistant text", () => {

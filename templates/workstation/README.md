@@ -10,7 +10,11 @@ boots by default. Everything it bakes is pinned in
 - `resources` — sandbox `cpuCount` / `memoryMb` the template is created with.
   These are passed as `e2b template create` **flags** (`--cpu-count` /
   `--memory-mb`), NOT read from any toml — see [Build](#build). The e2b default
-  is 512 MB, which OOMs a heavy adapter install (mastra); we bake 4096 MB / 2 vCPU.
+  is 512 MB, which OOMs a heavy adapter install (mastra); we bake 8192 MB / 4 vCPU.
+  4096 MB was not enough for an agent building and testing this monorepo: a
+  parallel `pnpm build` outgrew it, the box's daemon was OOM-killed mid-session
+  (2026-10-13) and the box wedged. The provider also adds a 4 GiB swap file on
+  boot (`swapMb`, `@agentproto/sandbox-e2b`).
 - `templates.stable` / `templates.dev` — published e2b template id + alias,
   plus the `baked` block recording what the published image was PROVEN to
   contain (`cli`, `adapters`, `builtAt`; all null = unproven bake)
@@ -33,7 +37,7 @@ runs from this repo's CI — publishing is a deliberate, credentialed act.**
 
 ```sh
 cd templates/workstation
-e2b template create agentproto-workstation --cpu-count 2 --memory-mb 4096 -d Dockerfile
+e2b template create agentproto-workstation --cpu-count 4 --memory-mb 8192 -d Dockerfile
 ```
 
 **The `--cpu-count` / `--memory-mb` flags are required, not optional.** `e2b
@@ -41,7 +45,7 @@ template create -d Dockerfile` builds the Dockerfile directly and does **not**
 read `e2b.template.toml` (the e2b CLI's own config file is `e2b.toml`; ours is a
 record only), so the `cpu_count` / `memory_mb` keys recorded there are ignored
 at build time — resources come only from the flags. The e2b default is **512 MB**,
-which OOMs the mastra adapter's runtime install and wedges the box; 4096 MB / 2
+which OOMs the mastra adapter's runtime install and wedges the box; 8192 MB / 4
 vCPU (the `resources` block in `versions.json`) is what the generator threads
 into every documented build command. Keep the flag values in sync with
 `versions.json` — re-run `node scripts/sync-templates.mjs` and copy the command
@@ -62,7 +66,7 @@ The dev channel is the **same generated Dockerfile** published under the
 ones):
 
 ```sh
-e2b template create agentproto-workstation-dev --cpu-count 2 --memory-mb 4096 -d Dockerfile
+e2b template create agentproto-workstation-dev --cpu-count 4 --memory-mb 8192 -d Dockerfile
 ```
 
 ## Publish / release

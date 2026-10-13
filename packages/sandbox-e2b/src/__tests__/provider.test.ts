@@ -307,12 +307,47 @@ describe("e2bSandboxProvider.boot", () => {
     fetchMock.mockResolvedValue({ ok: true })
 
     const { e2bSandboxProvider } = await import("../provider.js")
-    const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
+    const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0, swapMb: 0 } }
     await e2bSandboxProvider.boot(bootSpec, { env: {} })
 
     // proven stable bake + no cliVersion → install skipped; only the daemon
     // serve command runs (no stray provision commands)
     expect(sandbox.commands.run).toHaveBeenCalledTimes(1)
+  })
+
+  it("enables swap on a fresh boot, before the daemon starts, unless swapMb is 0", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider, buildSwapCommand, DEFAULT_SWAP_MB } = await import("../provider.js")
+    await e2bSandboxProvider.boot({ provider: "e2b", config: { healthProbeTimeoutMs: 0 } }, { env: {} })
+
+    const commands = (sandbox.commands.run as ReturnType<typeof vi.fn>).mock.calls.map(c => String(c[0]))
+    expect(commands[0]).toBe(buildSwapCommand(DEFAULT_SWAP_MB))
+    expect(commands[0]).toContain("fallocate -l 4096M /swapfile")
+    expect(commands[0]).toContain("swapon --show")
+    expect(commands.findIndex(c => c.startsWith("agentproto serve"))).toBeGreaterThan(0)
+  })
+
+  it("a box that cannot enable swap still boots", async () => {
+    const sandbox = fakeSandbox()
+    const run = sandbox.commands.run as ReturnType<typeof vi.fn>
+    const original = run.getMockImplementation()
+    run.mockImplementation(async (command: string, opts: unknown) => {
+      if (command.includes("swapon")) throw new Error("permission denied")
+      return original ? original(command, opts) : { exitCode: 0, stdout: "", stderr: "" }
+    })
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    await expect(
+      e2bSandboxProvider.boot({ provider: "e2b", config: { healthProbeTimeoutMs: 0, swapMb: 2048 } }, { env: {} }),
+    ).resolves.toBeDefined()
+    expect(sandbox.kill).not.toHaveBeenCalled()
   })
 
   it("defaults the sandbox LIFETIME to 45min — never e2b's 5-minute default (mid-turn reaper)", async () => {
@@ -375,7 +410,7 @@ describe("e2bSandboxProvider.boot", () => {
     fetchMock.mockResolvedValue({ ok: true })
 
     const { e2bSandboxProvider } = await import("../provider.js")
-    await e2bSandboxProvider.boot(spec, { env: {} })
+    await e2bSandboxProvider.boot({ ...spec, config: { ...spec.config, swapMb: 0 } }, { env: {} })
 
     expect(sandbox.commands.run).not.toHaveBeenCalled()
   })
@@ -388,7 +423,7 @@ describe("e2bSandboxProvider.boot", () => {
     const { e2bSandboxProvider } = await import("../provider.js")
     const bootSpec: SandboxSpec = {
       provider: "e2b",
-      config: { setupCommands: ["install-hook-a"] },
+      config: { setupCommands: ["install-hook-a"], swapMb: 0 },
     }
     await e2bSandboxProvider.boot(bootSpec, { env: { OPENROUTER_API_KEY: "k" } })
 

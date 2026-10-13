@@ -131,8 +131,9 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     stopSpy = vi.fn(async () => undefined)
     pauseSpy = vi.fn(async () => undefined)
     execImpl = async opts => {
-      if (opts.command.includes("rev-parse")) return ok(`${BASE_SHA}\n`)
+      // The delivery probe also calls rev-parse (HEAD): match it first.
       if (opts.command.includes("rev-list")) return ok("ahead=2\nuncommitted=0\n")
+      if (opts.command.includes("rev-parse")) return ok(`${BASE_SHA}\n`)
       return ok()
     }
     boxWorkspace = await mkdtemp(join(tmpdir(), "agentproto-sandbox-ws-box-"))

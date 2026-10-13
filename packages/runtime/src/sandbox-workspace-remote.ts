@@ -54,6 +54,9 @@ export function withoutReservedSandboxEnv<T extends SandboxSpec>(spec: T): T {
 /** Prefix of the work branch cut inside the box (`wt/<slug>`), matching the
  *  local worktree convention. */
 export const SANDBOX_BRANCH_PREFIX = "wt/"
+/** Remote branch namespace holding the uncommitted-work snapshot of a work
+ *  branch (`agentproto-checkpoint/wt/<slug>`, pushed by `sandbox-delivery`). */
+export const CHECKPOINT_BRANCH_PREFIX = "agentproto-checkpoint/"
 
 const CLONE_TIMEOUT_MS = 15 * 60_000
 const STEP_TIMEOUT_MS = 2 * 60_000
@@ -168,11 +171,33 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
   )
   if (branch !== undefined) {
     const ref = shellQuote(branch)
+    const remoteRef = `refs/remotes/origin/${branch}`
     steps.push({
       label: "git-checkout",
+      // Local branch (a reused box) first, then the branch a previous box
+      // pushed (a restart on a fresh box resumes its work), else cut it.
       command:
         `cd ${dir} && if git show-ref --verify --quiet ${shellQuote(`refs/heads/${branch}`)}; ` +
-        `then git checkout ${ref}; else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
+        `then git checkout ${ref}; ` +
+        `elif git show-ref --verify --quiet ${shellQuote(remoteRef)}; ` +
+        `then git checkout -b ${ref} --track ${shellQuote(`origin/${branch}`)}; ` +
+        `else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
+      timeoutMs: STEP_TIMEOUT_MS,
+    })
+    const checkpoint = shellQuote(`refs/remotes/origin/${CHECKPOINT_BRANCH_PREFIX}${branch}`)
+    steps.push({
+      label: "restore-checkpoint",
+      // A dead box's uncommitted work, snapshotted by `sandbox-delivery`: put
+      // its tree back as uncommitted changes, but only onto the exact commit
+      // it was taken from and a clean checkout — anything else means the
+      // snapshot is stale or would clobber work, so it is left on the remote.
+      // Never fatal: the session can start without it.
+      command:
+        `cd ${dir} && if git show-ref --verify --quiet ${checkpoint} && ` +
+        `[ "$(git rev-parse ${checkpoint}^)" = "$(git rev-parse HEAD)" ] && ` +
+        `[ -z "$(git status --porcelain)" ]; ` +
+        `then { git read-tree -u --reset ${checkpoint} && git reset -q && echo "restored checkpoint"; } ` +
+        `|| echo "checkpoint not restored"; fi`,
       timeoutMs: STEP_TIMEOUT_MS,
     })
   } else {

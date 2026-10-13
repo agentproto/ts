@@ -1,5 +1,80 @@
 # @agentproto/runtime
 
+## 5.19.0
+
+### Minor Changes
+
+- 0922fcf: Every installed app now owns a registered workspace (`app-<slug>`, marked with `ownerApp` in `workspaces.json`). `app_install`/`app_apply` register it (WORKSPACE.md `local-fs.mount_path` / `dev-local.root` when present, else the app dir), `app_uninstall` removes it only when that app owns it, and `app_run` plus app-attributed workflow runs spawn sessions into it instead of `default` unless the caller passes an explicit `cwd`. Apps installed earlier are backfilled lazily at `app_run`. App-owned entries never become the implicit active workspace, and a user workspace with the same slug is never overwritten.
+- c0c2fd8: Session follows take an optional `urgency` (`"next-turn"` default, or `"fyi"`). An `fyi` follow parks its digests in the follower's inbox without starting a turn, so a supervisor following many sessions is no longer woken for every digest. Existing follows keep `next-turn`.
+- ebfbfe2: Add bounded verdict recovery (`recovery` lane provenance, `review.recoveryPresets` config) and shared reviewer execution across lanes (`sharedExecution` provenance); attestation schema and AIP-62 draft extended with the new optional fields.
+- ebfbfe2: Review reliability: a reviewer that ends its turn without a valid verdict file now gets one bounded, passive recovery step inside the review workflow (`review.recoveryPresets` + the `review.recovery` model role; inert unless configured). A small tool-less model may recover the reviewer's own conclusion and findings (the daemon validates and writes the verdict file, never fabricates an approval from partial or errored analysis) or classify why the review failed; it is bounded by the lane's original deadline and cancel, keeps the OpenRouter guard, and is recorded apart from the reviewer as the lane's `recovery` field. Lanes whose fallback chains resolve to the same actual reviewer, rubric bytes, effective frozen range and options now share one run-scoped reviewer execution, marked with `sharedExecution` so they are not read as independent agreement. The agent-lane prompt states one consistent verdict rule with a schema-valid example. AIP-62 attestation lanes gain optional `recovery` and `sharedExecution`.
+- 877bc60: `sandbox_exec` can take secrets without the caller holding them: `envProfiles: { ENV_NAME: authProfileId }` has the daemon read the profile's credential (keychain, or its sub-account provider) into the command's env. Exec errors are now cut to ~200 chars of the command (`…(N chars)`) and resolved secrets are redacted from errors, stdout and stderr; commands over 16 KB / env over 32 KB are rejected with an actionable error, and an optional `files` input uploads scripts via the new optional `BootedSandbox.writeFile` (implemented for e2b). New `agentproto sandbox exec` CLI and daemon route `POST /sandboxes/exec`, whose exit code is the box command's exit code.
+- d7e24ba: Sandbox spawns can now work from a workspace's git remote. `agentproto workspace remote` (with `--token-stdin`) registers an https clone URL and a keychain credential for a workspace; `agent_start({ workspaceSlug, sandbox, worktree })` then clones it into the box, cuts `wt/<slug>` from `worktree.base`, and starts the session there with the token injected only as the `AGENTPROTO_GIT_TOKEN` env var behind a credential helper. When the box is torn down, the work branch is pushed to `origin` if it is ahead of its base, with a `git bundle` fallback saved to `~/.agentproto/sessions/<id>/delivery.bundle`, and the outcome is recorded on the session descriptor (`sandboxDelivery`). `BootedSandbox` gains an optional `readFile`, implemented for E2B.
+
+  Behaviour changes to be aware of:
+
+  - With `env.autoPassthrough` on a sandbox spawn that uses a Claude subscription profile (claude-code), the profile's long-lived `CLAUDE_CODE_OAUTH_TOKEN` is now resolved from the OS keychain and sent into the box. Previously it was only forwarded when it was already present in the daemon's environment, so the credential now reaches a third-party box where it did not before. Sub-account pins are unaffected.
+  - `AGENTPROTO_GIT_TOKEN` is an ordinary environment variable inside the box, so the agent running there can read it (and `sandbox_exec` can print it). Register a token scoped to the one repository and revoke it when the work is done. A box booted with a workspace's token can only be reused by that same workspace.
+
+- 245ece0: Skill imports: a per-session skill registry + delivery, mirroring the MCP-import model.
+
+  - `@agentproto/runtime` gains `skill-imports.ts` (`~/.agentproto/imported-skills.json`; import COPIES a `SKILL.md` folder into `~/.agentproto/skills/<id>/` with a content sha, snapshot-not-symlink), the `skill_import` / `skill_imported_list` / `skill_imported_remove` / `skill_resync` MCP tools, and spawn-time resolution (`resolveSessionSkills`) that turns the resolved `skills` list into concrete `sessionSkills` entries — non-imported ids warn (never throw) and stay in the adapter-facing list unchanged.
+  - `@agentproto/driver-agent-cli` gains `AgentCliStartOptions.sessionSkills` and the adapter-manifest `metadata.sessionSkills` field (`{ dir, env? }`); before the child starts it copies each resolved skill into `<session configDir>/<dir>/<alias>/`, wiping stale entries first.
+  - `@agentproto/adapter-claude-code` delivers into `$CLAUDE_CONFIG_DIR/skills/` (no env needed). `@agentproto/adapter-opencode` delivers into `<configDir>/skills/` and points `OPENCODE_CONFIG_DIR` at it — the only route that survives `lean` mode's `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`, which gates opencode's auto-discovery but not its config-dir skill scan.
+  - `@agentproto/cli` (`serve`) forwards `sessionSkills` to the driver and reports `deliversSessionSkills` from the adapter manifest's `metadata.sessionSkills`, so the daemon's adapter resolver no longer drops per-session skill delivery.
+
+- 54a63fb: Store listings: optional `publisherUrl` (https) next to `publisher`, carried to app-catalog/v1 entries and checked by `catalog verify`.
+
+### Patch Changes
+
+- 34f035b: Agent Cards and app UI URLs now keep the public host behind a private tunnel: the link guard forwards the client's Host as `X-Forwarded-Host`, and the request base URL honors it (the configured public origin still wins).
+- 66fc997: A2A GetTask completes when the agent's turn ends and returns its answer
+- 8f5d7de: `app_run` without an explicit `adapter`/`harness` now resolves each agent's adapter like workflow agent refs do (AGENT.md `metadata.adapter`/`metadata.harness`, then `claude-*` model → `claude-code`, then `mastra-agent`), so A2A `SendMessage` tasks are no longer forced onto mastra-agent.
+- f9375e0: Archive one-shot reviewer sessions once their review lane finishes (success, failure, timeout, abort and each retry attempt) so they stop piling up in the session list; the transcript and verdict stay readable. Add `POST /sessions/:id/archive`, the HTTP twin of the `session_archive` MCP verb (404 unknown session, 409 `session_not_terminal` while the session is still running), so HTTP clients can archive their own throwaway sessions.
+- 3ce88cc: A session no longer becomes the sentinel owner of a PR it merely mentions: PRs found by the reconciler's output-scan lane are recorded for provenance but never auto-watched. The auto-watch delivery urgency is now configurable via `config.sentinel.autoWatchUrgency` (default `next-turn`).
+- ddb440c: An OpenCode console org auth profile (`source: "opencode-console"` with an org sub-account) is now eligible for the opencode adapter on the `opencode` (Zen) route as well as `opencode-go`, injecting the same console token and org config. Because Zen bills the org's pay-as-you-go wallet, the Zen route admits such a profile only when it has an explicit `models.mode: "allow"` list containing the route-qualified id (e.g. `opencode/nemotron-3-ultra-free`); uncurated org profiles and plain api-key profiles stay single-route.
+- 3bf44a7: Document that `hardStopAtPct` triggers auto-compaction and context-rescue before a hard stop.
+- 0e5a8bc: Fix: `review_run({supersede: true})` no longer cancels a stacked sibling branch's review
+
+  - `supersedeStale` in `packages/runtime/src/review-runner.ts` used to cancel
+    any in-flight run with the same repo + binding + base whose head was an
+    ancestor of the new run's head, regardless of branch. A stacked branch
+    (e.g. `wt/p2` built on top of `wt/p1`) pushed from another worktree would
+    then cancel `wt/p1`'s own in-flight review even though `p1` was never
+    re-pushed, because `p1`'s head is trivially an ancestor of `p2`'s head.
+  - Ancestry now only counts toward "same line of work" when both runs also
+    share the same branch name — the intended case (a re-push of the same
+    branch from a re-provisioned/another worktree after amend/fixup) still
+    supersedes; same-checkout re-runs still always supersede regardless of
+    branch; a detached `HEAD` only matches its own checkout.
+  - Added `ReviewRun.branch` (the branch resolved in `repoRoot` when the range
+    resolves; `undefined` on detached `HEAD`) and updated the `supersede` doc
+    comments in `review-runner.ts`, the `review_run` tool description in
+    `review-tools.ts`, and `docs/cli/verbs/review.md`.
+
+- d16c74c: Fix: classify `endpoint is unavailable` as `upstream-5xx` transient error
+
+  - Add `endpoint (is currently )?unavailable` pattern to `UPSTREAM_5XX_RE` regex in
+    `packages/runtime/src/turn-retry.ts` so that messages like
+    `AI_APICallError: Upstream request failed: Endpoint is unavailable` are classified
+    as `upstream-5xx` and retried instead of being skipped as `other`.
+  - Update doc comment in `packages/runtime/src/turn-retry-policy.ts` to mention
+    "endpoint unavailable" as part of upstream-5xx.
+  - Add test cases in `packages/runtime/src/__tests__/turn-retry.test.ts`:
+    - "Endpoint is unavailable", "Endpoint is currently unavailable", and
+      "Endpoint unavailable" now classify as `upstream-5xx`.
+    - `missing_required_parameter` message stays as `other` (not retried).
+
+- 0e01bd3: Sandbox spawns now carry a sub-account profile's scoping into the box: the provider's extra env (e.g. an opencode console org's inline `provider` config), the env var its bearer rides in, and the login-less data-home opt-out are forwarded beside the credential in `auth` (`credentialEnv` / `extraEnv` / `isolateDataHome`) and applied by the box's own driver, which layers the extra env over the adapter's lean inline config instead of replacing it — fixes `Workspace selection is required` for `access.profileRef` on a sub-account profile with `sandbox`. Sandbox spawns also never hand the box a host path to `AGENTS.md`: pointer mode is dropped and inline mode omits the host path from the fence header.
+- Updated dependencies [ebfbfe2]
+- Updated dependencies [ebfbfe2]
+- Updated dependencies [877bc60]
+- Updated dependencies [d7e24ba]
+- Updated dependencies [245ece0]
+  - @agentproto/review@0.6.0
+  - @agentproto/sandbox@0.10.0
+  - @agentproto/driver-agent-cli@2.12.0
+
 ## 5.18.0
 
 ### Minor Changes

@@ -18,7 +18,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
 import type { AddressInfo } from "node:net"
-import type { SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
+import { SandboxBoxGoneError, type SandboxExecOpts, type SandboxProvider, type SandboxSpec } from "@agentproto/sandbox"
 
 import { createGateway, type GatewayHandle } from "../index.js"
 import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
@@ -27,6 +27,14 @@ import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 import type { SandboxDeliveryTarget } from "../sandbox-delivery.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
+
+const wsConfigState = vi.hoisted(() => ({
+  value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
+}))
+vi.mock("../workspaces-config.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../workspaces-config.js")>()
+  return { ...actual, loadWorkspacesConfig: vi.fn(async () => wsConfigState.value) }
+})
 
 let acpCounter = 0
 function fakeAgentSession(prefix: string): AgentSessionLike {
@@ -154,6 +162,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     prevAgentSession?: AgentSessionLike
     killPrev?: boolean
     deliveryTarget?: SandboxDeliveryTarget
+    workspaceSlug?: string
   } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
@@ -166,7 +175,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       transcriptDir: join(hostWorkspace, "transcripts"),
     })
     prev = registry.spawnAgent({
-      workspaceSlug: "default",
+      workspaceSlug: opts.workspaceSlug ?? "default",
       cwd: "/home/user",
       agentSession: opts.prevAgentSession ?? fakeAgentSession("box"),
       adapterSlug: "fake-cli",
@@ -347,5 +356,116 @@ describe("restartAgentSession on a sandboxed session", () => {
       resolveSandboxProvider: providerResolver,
     })
     expect(result.desc.sandboxDeliveryTarget).toBeUndefined()
+  })
+
+  describe("when the box is gone", () => {
+    const target: SandboxDeliveryTarget = {
+      checkoutDir: "/home/user/agentproto",
+      branch: "wt/resume-me",
+      baseSha: "c".repeat(40),
+    }
+
+    afterEach(() => {
+      wsConfigState.value = { version: 1, workspaces: [] }
+    })
+
+    function goneBoxResolver(
+      providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>,
+      execCalls: SandboxExecOpts[],
+      boots: { count: number },
+    ): (slug: string) => Promise<SandboxProviderHandle | null> {
+      return async slug => {
+        const handle = await providerResolver(slug)
+        if (!handle) return null
+        return {
+          ...handle,
+          defaultCwd: "/home/user",
+          provider: {
+            async connect(sandboxId: string): Promise<never> {
+              throw new SandboxBoxGoneError(sandboxId, new Error("Sandbox not found"))
+            },
+            async boot() {
+              boots.count++
+              return {
+                mcpUrl: `${box.gateway.url}/mcp`,
+                sandboxId: "sbx_fresh_2",
+                async stop() {},
+                async exec(o: SandboxExecOpts) {
+                  execCalls.push(o)
+                  const stdout = o.command.includes("rev-list")
+                    ? "ahead=0\nuncommitted=0\n"
+                    : o.command.includes("rev-parse --verify")
+                      ? `${"e".repeat(40)}\n`
+                      : ""
+                  return { exitCode: 0, stdout, stderr: "", durationMs: 1 }
+                },
+              }
+            },
+          },
+        }
+      }
+    }
+
+    it("boots a FRESH box, re-clones the workspace remote and resumes the pushed work branch", async () => {
+      wsConfigState.value = {
+        version: 1,
+        workspaces: [
+          {
+            slug: "agentproto",
+            path: "/Users/op/projects/agentproto",
+            addedAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            remote: { url: "https://github.com/acme/agentproto.git" },
+          },
+        ],
+      }
+      let prevClosed = false
+      const { resolver, providerResolver } = await setup({
+        deliveryTarget: target,
+        workspaceSlug: "agentproto",
+        killPrev: false,
+        prevAgentSession: {
+          sessionId: "box_dead",
+          // eslint-disable-next-line require-yield
+          async *send(): AsyncIterable<AgentStreamEvent> {
+            return
+          },
+          async cancel() {},
+          async close() {
+            prevClosed = true
+          },
+        },
+      })
+      const execCalls: SandboxExecOpts[] = []
+      const boots = { count: 0 }
+
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: goneBoxResolver(providerResolver, execCalls, boots),
+      })
+
+      expect(boots.count).toBe(1)
+      expect(result.desc.sandboxId).toBe("sbx_fresh_2")
+      expect(result.desc.cwd).toBe("/home/user/agentproto")
+      expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
+      expect(result.desc.sandboxDeliveryTarget).toMatchObject({ branch: "wt/resume-me", baseSha: "e".repeat(40) })
+      const commands = execCalls.map(c => c.command)
+      expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/agentproto.git'"))).toBe(true)
+      expect(commands.some(c => c.includes("--track 'origin/wt/resume-me'"))).toBe(true)
+      expect(commands.some(c => c.includes("agentproto-checkpoint/wt/resume-me"))).toBe(true)
+      // The dead box's row is closed: nothing is shared with the new one.
+      expect(prevClosed).toBe(true)
+      expect(registry.get(prev.id)?.status).not.toBe("running")
+    })
+
+    it("still fails loud when the session has no workspace remote to resume from", async () => {
+      const { resolver, providerResolver } = await setup({ deliveryTarget: target, workspaceSlug: "agentproto" })
+      const boots = { count: 0 }
+      await expect(
+        restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+        }),
+      ).rejects.toThrow(/sbx_prev_1.*expired.*spawn a fresh session/i)
+      expect(boots.count).toBe(0)
+    })
   })
 })

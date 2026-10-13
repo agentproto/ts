@@ -55,7 +55,7 @@ import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
-import { spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
@@ -88,13 +88,13 @@ import {
 import {
   formatDeliveryNotice,
   createDeliveryHook,
+  sandboxCheckpointOpts,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
-  eligibleProfiles,
   KeychainStore,
   type AuthMethod,
   type AdapterAuthManifest,
@@ -530,7 +530,7 @@ function resolveProfileAwareRoute(
       (candidate): candidate is { manifest: AdapterAuthManifest; routeId: string; direct: boolean } =>
         candidate !== undefined,
     )
-    .filter(candidate => eligibleProfiles([profile], candidate.manifest, candidate.routeId).length > 0)
+    .filter(candidate => eligibleProfilesForRoute([profile], candidate.manifest, candidate.routeId, model).length > 0)
   return eligibleCandidates.length === 1 ? eligibleCandidates[0] : undefined
 }
 
@@ -625,7 +625,7 @@ export async function resolveAccessProfileAuth(input: {
   let resolvedRouteGateway: string | undefined
   if (
     route?.gateway === undefined &&
-    (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0)
+    (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0)
   ) {
     const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
     if (resolved) {
@@ -646,7 +646,7 @@ export async function resolveAccessProfileAuth(input: {
       }
     }
   }
-  if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
+  if (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0) {
     const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
     return {
       ok: false,
@@ -770,7 +770,9 @@ export async function resolveAccessProfileAuth(input: {
       descriptor: authDescriptor,
       ...(model ? { model } : {}),
       ...(effectiveRouteGateway ? { routeGateway: effectiveRouteGateway } : {}),
-      ...(!route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+      ...(!route?.gateway
+        ? { requestedProvider: (projected.manifest.endpointByRoute[projected.routeId] ?? profile.endpoint) as CatalogProvider }
+        : {}),
       requestedMode: authMode,
       // A profile reference is an explicit billing choice. Never consult the
       // ambient environment or a different provider-store key as fallback.
@@ -3987,6 +3989,9 @@ export async function spawnAgentSession(
               onDelivery: (record: SandboxDeliveryRecord) => {
                 registry.recordSandboxDelivery(mintedSessionId, record, formatDeliveryNotice(record))
               },
+              onCheckpoint: (record: SandboxDeliveryRecord) => {
+                registry.recordSandboxCheckpoint(mintedSessionId, record, formatDeliveryNotice(record))
+              },
             }
           : {}),
         // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
@@ -4469,7 +4474,7 @@ async function resolveMcpCredentialHeaders(
   )
 }
 
-type SandboxBootResult =
+export type SandboxBootResult =
   | {
       ok: true
       agentSession: AgentSessionLike
@@ -4784,7 +4789,7 @@ async function startDeviceSessionWithRetry(
  * distinguish "no such provider" from "the box never came up" from "the
  * box's own agent_start rejected the adapter".
  */
-async function bootSandboxAgentSession(opts: {
+export async function bootSandboxAgentSession(opts: {
   sandbox: string | SandboxSpecInput
   resolveSandboxProvider?: SandboxProviderResolver
   adapter: string
@@ -4839,6 +4844,8 @@ async function bootSandboxAgentSession(opts: {
   sessionId?: string
   /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
   onDelivery?: (record: SandboxDeliveryRecord) => void
+  /** Receives each periodic checkpoint outcome of the work branch. */
+  onCheckpoint?: (record: SandboxDeliveryRecord) => void
   /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
    *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
    *  `forwardHttpStream` dial delivers both the spawn and the first turn.
@@ -5284,8 +5291,18 @@ async function bootSandboxAgentSession(opts: {
               outDir: sessionTranscriptDir(deliverySessionId),
               ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
             }),
+            ...sandboxCheckpointOpts({
+              exec: boxExec,
+              ...(boxReadFile ? { readFile: boxReadFile } : {}),
+              target: deliveryTarget,
+              outDir: sessionTranscriptDir(deliverySessionId),
+              ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
+            }),
           }
         : {}),
+      // A device target is another daemon reached over the E2E bridge, not
+      // a box whose `/health` this host can probe directly.
+      ...(deviceTarget === undefined ? { watchdog: {} } : {}),
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
