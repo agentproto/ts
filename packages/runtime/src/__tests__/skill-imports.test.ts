@@ -4,7 +4,7 @@
  * step. Fully hermetic — temp dirs, injected registry path + root.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { existsSync, lstatSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -138,6 +138,14 @@ describe("importSkill", () => {
     await expect(importSkill({ sourcePath: two, alias: "ap-one" }, paths)).rejects.toThrow(
       /already used/
     )
+  })
+
+  it("leaves no temp copy behind after an import (atomic rename)", async () => {
+    const src = await makeSkill("ap-atomic")
+    await importSkill({ sourcePath: src }, paths)
+    const entries = await readdir(paths.root!)
+    expect(entries).toContain("ap-atomic")
+    expect(entries.filter(e => e.includes(".tmp."))).toEqual([])
   })
 
   it("tolerates extra frontmatter keys", async () => {

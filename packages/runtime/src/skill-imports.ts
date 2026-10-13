@@ -27,7 +27,7 @@
  * to decide whether a re-copy is needed.
  */
 
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve as resolvePath, sep } from "node:path"
@@ -286,12 +286,23 @@ export async function computeSkillDirSha(dir: string): Promise<string> {
 }
 
 async function copySkillDir(source: string, dest: string): Promise<void> {
-  await fs.rm(dest, { recursive: true, force: true })
+  // Copy into a unique temp dir, then rename into place: a concurrent resync/
+  // import of the same id can't observe a half-written tree, and a failure
+  // mid-copy leaves the previous good copy untouched.
   await fs.mkdir(dirname(dest), { recursive: true })
-  // `dereference: true` so a symlink anywhere in the tree — the top-level
-  // source itself, or a nested `scripts/` link — is copied as real content.
-  // The registry is a snapshot and must not depend on paths outside it.
-  await fs.cp(source, dest, { recursive: true, dereference: true })
+  const tmp = `${dest}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`
+  await fs.rm(tmp, { recursive: true, force: true })
+  try {
+    // `dereference: true` so a symlink anywhere in the tree — the top-level
+    // source itself, or a nested `scripts/` link — is copied as real content.
+    // The registry is a snapshot and must not depend on paths outside it.
+    await fs.cp(source, tmp, { recursive: true, dereference: true })
+    await fs.rm(dest, { recursive: true, force: true })
+    await fs.rename(tmp, dest)
+  } catch (err) {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {})
+    throw err
+  }
 }
 
 async function assertSkillSource(sourcePath: string): Promise<string> {

@@ -538,12 +538,17 @@ export function createAgentCliRuntime(
       const sessionSkillsBase = claudeConfigDir ?? opts?.configDir
       let sessionSkillsTargetDir: string | undefined
       if (sessionSkillsMeta && opts?.sessionSkills?.length && sessionSkillsBase) {
-        sessionSkillsTargetDir = applySessionSkills({
+        const applied = applySessionSkills({
           skills: opts.sessionSkills,
           meta: sessionSkillsMeta,
           baseDir: sessionSkillsBase,
           env,
-        }).targetDir
+        })
+        sessionSkillsTargetDir = applied.targetDir
+        // Delivery is additive — a single broken skill must not sink the spawn.
+        for (const warning of applied.warnings) {
+          console.warn(`[agent-cli] session skills: ${warning}`)
+        }
       }
 
       // A CLI that keeps mutable state under `$HOME` (codex: `~/.codex`) can't

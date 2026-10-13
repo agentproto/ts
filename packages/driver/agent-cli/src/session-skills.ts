@@ -86,12 +86,17 @@ export interface ApplySessionSkillsArgs {
 export interface ApplySessionSkillsResult {
   /** The delivered skills dir — an extra write path for a confined spawn. */
   targetDir: string
+  /** Non-fatal per-skill problems (a bad alias, a copy failure). Delivery is
+   *  additive and must NEVER sink the spawn — one broken skill is reported and
+   *  skipped, the rest still land. */
+  warnings: string[]
 }
 
 /**
  * Copy each skill folder into `<baseDir>/<dir>/<alias>/`, wiping `<dir>` first.
  * A copy (not a symlink) so the delivered tree survives the source moving, and
  * a recursive copy so multi-file skills (`scripts/`, references) come along.
+ * Per-skill failures are collected as warnings, never thrown.
  */
 export function applySessionSkills(args: ApplySessionSkillsArgs): ApplySessionSkillsResult {
   const targetDir = join(args.baseDir, args.meta.dir)
@@ -99,6 +104,7 @@ export function applySessionSkills(args: ApplySessionSkillsArgs): ApplySessionSk
   // renamed) must not linger for the next spawn to accidentally discover.
   rmSync(targetDir, { recursive: true, force: true })
   mkdirSync(targetDir, { recursive: true })
+  const warnings: string[] = []
   for (const skill of args.skills) {
     // Defense in depth: the registry validates `alias` as a bare slug, but a
     // hand-edited/corrupt registry could carry `..`/separators — never let a
@@ -106,16 +112,23 @@ export function applySessionSkills(args: ApplySessionSkillsArgs): ApplySessionSk
     const dest = resolvePath(targetDir, skill.alias)
     const rel = relative(targetDir, dest)
     if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
-      throw new Error(
-        `refusing to deliver skill "${skill.alias}": alias escapes ${targetDir}`,
+      warnings.push(`skill "${skill.alias}" has an invalid alias — not delivered`)
+      continue
+    }
+    try {
+      cpSync(skill.path, dest, { recursive: true })
+    } catch (err) {
+      warnings.push(
+        `skill "${skill.alias}" could not be delivered: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       )
     }
-    cpSync(skill.path, dest, { recursive: true })
   }
   if (args.meta.env) {
     for (const [name, value] of Object.entries(args.meta.env)) {
       args.env[name] = value.split(SESSION_SKILLS_ABS_DIR).join(args.baseDir)
     }
   }
-  return { targetDir }
+  return { targetDir, warnings }
 }

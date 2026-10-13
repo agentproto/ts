@@ -139,17 +139,34 @@ describe("session-skills delivery (define-agent-cli wiring)", () => {
     expect(existsSync(join(configDir, "skills"))).toBe(false)
   })
 
-  it("applySessionSkills refuses an alias that escapes the target dir", () => {
+  it("applySessionSkills skips an alias that escapes the target dir with a warning", () => {
     const configDir = join(base, "sess_evil")
     const src = makeSkill(base, "ap-ev")
-    expect(() =>
-      applySessionSkills({
-        skills: [{ alias: "../evil", path: src }],
-        meta: { dir: "skills" },
-        baseDir: configDir,
-        env: {},
-      })
-    ).toThrow(/escapes/)
+    const result = applySessionSkills({
+      skills: [{ alias: "../evil", path: src }],
+      meta: { dir: "skills" },
+      baseDir: configDir,
+      env: {},
+    })
+    expect(result.warnings.some(w => w.includes("invalid alias"))).toBe(true)
     expect(existsSync(join(base, "evil"))).toBe(false)
+  })
+
+  it("delivers the good skills and warns on a broken one instead of throwing", () => {
+    const configDir = join(base, "sess_mixed")
+    const good = makeSkill(base, "ap-good")
+    const result = applySessionSkills({
+      skills: [
+        { alias: "ap-good", path: good },
+        { alias: "ap-bad", path: join(base, "no-such-skill") },
+      ],
+      meta: { dir: "skills" },
+      baseDir: configDir,
+      env: {},
+    })
+    expect(result.warnings.some(w => w.includes("ap-bad"))).toBe(true)
+    expect(readFileSync(join(configDir, "skills", "ap-good", "SKILL.md"), "utf8")).toContain(
+      "name: ap-good"
+    )
   })
 })
