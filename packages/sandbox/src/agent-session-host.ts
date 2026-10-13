@@ -115,6 +115,13 @@ export interface BootedSandbox {
    */
   readFile?(path: string): Promise<Uint8Array>
   /**
+   * Write ONE file into the box (creating parent directories) — how the
+   * runtime's `sandbox_exec` ships a script/payload too large to inline in the
+   * command. `path` is absolute INSIDE the box. Optional: providers that
+   * cannot upload files omit it; callers report a clear unsupported error.
+   */
+  writeFile?(path: string, data: Uint8Array): Promise<void>
+  /**
    * The paired host's identity, present ONLY for the `device` sandbox
    * provider (`device:<fingerprint-or-name>` targets — the provider can
    * never guarantee it for a generic vendor sandbox). `fingerprint` is the

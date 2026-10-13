@@ -203,6 +203,7 @@ Usage:
   agentproto devices   revoke <fingerprint|name>
   agentproto rendezvous serve [--port <n>] [--host <ip>]
   agentproto sandbox   list [--json] | attach <provider> <sandboxId> | rm <id|label> [--box] | gc [--apply]
+  agentproto sandbox   exec <provider> [--sandbox-id <id>] [--env-profile NAME=<profile>] [--file <local>:<box>] -- <command...>
   agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app       unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app       install <appDir>

@@ -518,11 +518,14 @@ export {
 } from "./sandbox-attach.js"
 export {
   SANDBOX_EXEC_STREAM_MAX_CHARS,
+  SANDBOX_EXEC_MAX_COMMAND_BYTES,
+  SANDBOX_EXEC_MAX_ENV_BYTES,
   execSandboxCommand,
   registerSandboxExecTool,
   type ExecSandboxCommandOptions,
   type RegisterSandboxExecToolOptions,
   type SandboxExecCommandChoices,
+  type SandboxExecFile,
   type SandboxExecOutput,
   type SandboxExecResult,
 } from "./sandbox-exec.js"

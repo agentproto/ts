@@ -37,7 +37,7 @@ import type {
   SandboxSpec,
   SandboxProvider,
 } from "@agentproto/sandbox"
-import { SandboxBoxGoneError } from "@agentproto/sandbox"
+import { SandboxBoxGoneError, scrubCommandFromMessage } from "@agentproto/sandbox"
 import { DEFAULT_TEMPLATE, TEMPLATES } from "./template-versions.generated.js"
 
 /** Re-exported from the generated module (single source:
@@ -326,11 +326,29 @@ function toBootedSandbox(
             durationMs: Date.now() - startedAt,
           }
         }
+        // The SDK echoes the whole shelled command in its error message
+        // (`error starting process '/bin/bash -l -c <command>'`): cut it down so
+        // a 9 KB script is not dumped and a secret inlined in it does not leak.
+        if (err instanceof Error) {
+          const scrubbed = scrubCommandFromMessage(err.message, opts.command)
+          if (scrubbed !== err.message) {
+            const wrapped = new Error(scrubbed)
+            wrapped.name = err.name
+            throw wrapped
+          }
+        }
         throw err
       }
     },
     async readFile(path: string): Promise<Uint8Array> {
       return sandbox.files.read(path, { format: "bytes", requestTimeoutMs: READ_FILE_TIMEOUT_MS })
+    },
+    async writeFile(path: string, data: Uint8Array): Promise<void> {
+      // `data` is copied into a fresh ArrayBuffer: the SDK accepts ArrayBuffer,
+      // not a (possibly offset) Uint8Array view.
+      const copy = new Uint8Array(data.byteLength)
+      copy.set(data)
+      await sandbox.files.write(path, copy.buffer, { requestTimeoutMs: READ_FILE_TIMEOUT_MS })
     },
   }
 }

@@ -18,9 +18,17 @@
  *     side the provider (destructive — requires `--yes` on a non-TTY, an
  *     interactive confirmation otherwise).
  *
+ * `exec` runs one command in a sandbox via the RUNNING DAEMON's
+ * `POST /sandboxes/exec` (the CLI twin of the `sandbox_exec` MCP tool), so
+ * `--env-profile` resolves against the daemon's keychain and the secret never
+ * touches this process. The exit code is the box command's exit code.
+ *
  * `attach` prints the connection descriptor and a paste-ready `.mcp.json`
  * snippet. Never stops or pauses the sandbox.
  */
+import { readFile } from "node:fs/promises"
+import http from "node:http"
+import https from "node:https"
 import { createInterface } from "node:readline/promises"
 import { parseArgs } from "node:util"
 import {
@@ -36,7 +44,8 @@ import {
   reapGcEntry,
   type SandboxLedgerEntry,
 } from "@agentproto/runtime"
-import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
+import { parseDuration } from "../util/duration.js"
+import { discoverDaemon, httpGetJson, type DaemonDiscoveryReport } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto sandbox — connect to sandbox providers
 
@@ -45,6 +54,9 @@ Usage:
   agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
   agentproto sandbox rm <sandboxId|label|id-prefix> [--box] [--yes] [--json]
   agentproto sandbox gc [--apply] [--pause] [--json]
+  agentproto sandbox exec <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
+                          [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
+                          [--file <local>:<boxPath> ...] [--json] -- <command...>
 
 list   Show the sandbox ledger — every box the daemon booted, reconnected
        to, paused, or stopped, with its current state and idle-expiry.
@@ -104,6 +116,38 @@ gc     Reap ORPHAN boxes: ledger entries whose origin session ended in a
            the default kill is usually what you want for orphans.
   --json   Print the plan / outcomes as JSON.
 
+exec   Runs ONE command inside a sandbox, through the running daemon
+       (\`POST /sandboxes/exec\`, same function as the \`sandbox_exec\` MCP
+       tool). Without --sandbox-id an EPHEMERAL box is booted for the command
+       and always torn down after; with it, the existing box is reused and left
+       as found. Everything after \`--\` is the command: a single argument is
+       passed verbatim (a shell snippet), several are shell-quoted and joined.
+
+  <provider>             Sandbox provider slug, e.g. "e2b" or "box".
+  --sandbox-id <id>      Run against this existing box (default: ephemeral).
+  --cwd <dir>            Working directory INSIDE the box (absolute).
+  --timeout <dur>        Per-command wall clock: 500ms, 30s, 10m, 2h.
+  --env NAME=value       Literal env var for this command. Repeatable.
+                         WARNING: the value is on this process's command line
+                         (shell history, \`ps\`) — do NOT pass secrets here;
+                         use --env-profile.
+  --env-profile NAME=<profileId>
+                         Set NAME from the stored credential of auth profile
+                         <profileId> (see the \`auth_profile_list\` MCP tool). The
+                         DAEMON reads it; the value never reaches this CLI, the
+                         command line, or the output (redacted if echoed).
+                         Repeatable. Also covers sub-account profiles.
+  --file <local>:<boxPath>
+                         Upload a local file into the box (absolute <boxPath>)
+                         BEFORE the command runs — use it instead of inlining a
+                         big script (a command over 16 KB is rejected). Repeatable.
+  --json                 Print the daemon's response as JSON instead of
+                         streaming stdout/stderr.
+
+  Exit code is the box command's own exit code (0-255). Failures that never
+  produced one — no daemon, bad input, provider/profile error — exit 125 with
+  the reason on stderr; usage errors exit 2.
+
 Credentials: provider API keys (e.g. BOX_API_KEY, E2B_API_KEY) must be set
 in this process's environment — same as \`agent_start.sandbox\` uses.
 
@@ -114,6 +158,8 @@ Examples:
   agentproto sandbox attach e2b sbx_abc123 --json
   agentproto sandbox rm my-task-label
   agentproto sandbox rm bx_abc123 --box --yes
+  agentproto sandbox exec e2b --env-profile OPENAI_API_KEY=openai-main -- python run.py
+  agentproto sandbox exec e2b --sandbox-id sbx_abc --file ./job.sh:/home/user/job.sh -- bash /home/user/job.sh
 `
 
 export interface SandboxGcCliDeps {
@@ -129,7 +175,18 @@ type SandboxGcProviderHandleResolver = (
   slug: string,
 ) => Promise<import("@agentproto/runtime").SandboxGcProviderHandle | null>
 
-export async function runSandbox(args: readonly string[], gcDeps?: SandboxGcCliDeps): Promise<number> {
+export interface SandboxExecCliDeps {
+  /** Defaults to `discoverDaemon()`. */
+  discover?: () => Promise<DaemonDiscoveryReport>
+  /** Defaults to a Node-http POST (no response timeout: an exec can run for hours). */
+  post?: (url: string, body: unknown, token?: string) => Promise<{ status: number; body: unknown }>
+}
+
+export async function runSandbox(
+  args: readonly string[],
+  gcDeps?: SandboxGcCliDeps,
+  execDeps?: SandboxExecCliDeps,
+): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(USAGE)
     return 0
@@ -140,13 +197,14 @@ export async function runSandbox(args: readonly string[], gcDeps?: SandboxGcCliD
   if (sub === "list") return runList(args.slice(1))
   if (sub === "rm") return runRm(args.slice(1))
   if (sub === "gc") return runGc(args.slice(1), gcDeps)
+  if (sub === "exec") return runExec(args.slice(1), execDeps)
 
   if (!sub) {
     process.stdout.write(USAGE)
     return 0
   }
   process.stderr.write(
-    `agentproto sandbox: unknown subcommand "${sub}"\n` + `  Known: list, attach, rm, gc\n`,
+    `agentproto sandbox: unknown subcommand "${sub}"\n` + `  Known: list, attach, rm, gc, exec\n`,
   )
   return 2
 }
@@ -624,4 +682,193 @@ async function runAttach(args: readonly string[]): Promise<number> {
       `Paste into .mcp.json:\n${JSON.stringify(mcpConfig, null, 2)}\n`,
   )
   return 0
+}
+
+/** Exit code for failures that never produced the box command's own code. */
+export const SANDBOX_EXEC_INFRA_EXIT = 125
+
+const posixQuote = (arg: string): string =>
+  /^[A-Za-z0-9_\/.:=@%+,-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`
+
+/** `NAME=value` → [name, value], splitting at the FIRST `=`. */
+function splitAssignment(raw: string): [string, string] | undefined {
+  const i = raw.indexOf("=")
+  if (i <= 0) return undefined
+  return [raw.slice(0, i), raw.slice(i + 1)]
+}
+
+function defaultPost(
+  url: string,
+  body: unknown,
+  token?: string,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const payload = Buffer.from(JSON.stringify(body), "utf8")
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "content-length": payload.byteLength.toString(),
+    }
+    if (token) headers.authorization = `Bearer ${token}`
+    const lib = u.protocol === "https:" ? https : http
+    const req = lib.request(u, { method: "POST", headers }, res => {
+      let raw = ""
+      res.setEncoding("utf8")
+      res.on("data", c => (raw += c))
+      res.on("end", () => {
+        let parsed: unknown = raw
+        try {
+          parsed = JSON.parse(raw)
+        } catch {
+          // non-JSON error body — surfaced verbatim below
+        }
+        resolve({ status: res.statusCode ?? 0, body: parsed })
+      })
+    })
+    req.on("error", reject)
+    req.write(payload)
+    req.end()
+  })
+}
+
+async function runExec(args: readonly string[], deps: SandboxExecCliDeps = {}): Promise<number> {
+  const usage = (message: string): number => {
+    process.stderr.write(
+      `agentproto sandbox exec: ${message}\n` +
+        "  Usage: agentproto sandbox exec <provider> [flags] -- <command...>\n",
+    )
+    return 2
+  }
+
+  const dashdash = args.indexOf("--")
+  const flagArgs = dashdash === -1 ? [...args] : args.slice(0, dashdash)
+  const commandArgs = dashdash === -1 ? [] : args.slice(dashdash + 1)
+
+  let parsed
+  try {
+    parsed = parseArgs({
+      args: flagArgs,
+      allowPositionals: true,
+      strict: true,
+      options: {
+        "sandbox-id": { type: "string" },
+        cwd: { type: "string" },
+        timeout: { type: "string" },
+        env: { type: "string", multiple: true },
+        "env-profile": { type: "string", multiple: true },
+        file: { type: "string", multiple: true },
+        json: { type: "boolean" },
+      },
+    })
+  } catch (err) {
+    return usage(err instanceof Error ? err.message : String(err))
+  }
+  const { values, positionals } = parsed
+
+  const provider = positionals[0]
+  if (!provider) return usage("missing <provider>.")
+  if (positionals.length > 1) {
+    return usage(`unexpected argument "${positionals[1]}" — put the command after \`--\`.`)
+  }
+  if (commandArgs.length === 0 || commandArgs.every(a => a === "")) {
+    return usage("missing the command — pass it after `--`.")
+  }
+  const command =
+    commandArgs.length === 1 ? (commandArgs[0] as string) : commandArgs.map(posixQuote).join(" ")
+
+  const env: Record<string, string> = {}
+  for (const raw of values.env ?? []) {
+    const kv = splitAssignment(raw)
+    if (!kv) return usage(`--env expects NAME=value, got "${raw}".`)
+    env[kv[0]] = kv[1]
+  }
+  const envProfiles: Record<string, string> = {}
+  for (const raw of values["env-profile"] ?? []) {
+    const kv = splitAssignment(raw)
+    if (!kv || kv[1] === "") return usage(`--env-profile expects NAME=<profileId>, got "${raw}".`)
+    if (Object.hasOwn(envProfiles, kv[0])) return usage(`--env-profile ${kv[0]} given twice.`)
+    envProfiles[kv[0]] = kv[1]
+  }
+
+  let timeoutMs: number | undefined
+  if (values.timeout !== undefined) {
+    const d = parseDuration(values.timeout, "--timeout")
+    if (!d.ok) return usage(d.error)
+    timeoutMs = d.ms
+  }
+
+  const files: Array<{ path: string; content: string; encoding: "base64" }> = []
+  for (const raw of values.file ?? []) {
+    const i = raw.lastIndexOf(":/")
+    if (i <= 0) return usage(`--file expects <local>:<absolute boxPath>, got "${raw}".`)
+    const local = raw.slice(0, i)
+    const boxPath = raw.slice(i + 1)
+    try {
+      files.push({ path: boxPath, content: (await readFile(local)).toString("base64"), encoding: "base64" })
+    } catch (err) {
+      return usage(`--file: cannot read "${local}" — ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const infra = (message: string): number => {
+    process.stderr.write(`agentproto sandbox exec: ${message}\n`)
+    return SANDBOX_EXEC_INFRA_EXIT
+  }
+
+  const report = await (deps.discover ?? discoverDaemon)()
+  if (!report.found) {
+    return infra(
+      "no live daemon found — exec runs through the daemon (start one with `agentproto serve`, " +
+        "or set AGENTPROTO_DAEMON_URL).",
+    )
+  }
+
+  const body = {
+    provider,
+    command,
+    ...(values["sandbox-id"] !== undefined ? { sandboxId: values["sandbox-id"] } : {}),
+    ...(values.cwd !== undefined ? { cwd: values.cwd } : {}),
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+    ...(Object.keys(envProfiles).length > 0 ? { envProfiles } : {}),
+    ...(files.length > 0 ? { files } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }
+
+  let res: { status: number; body: unknown }
+  try {
+    res = await (deps.post ?? defaultPost)(`${report.found.url}/sandboxes/exec`, body, report.found.token)
+  } catch (err) {
+    return infra(`could not reach the daemon at ${report.found.url} — ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  const payload = (res.body ?? {}) as {
+    ok?: boolean
+    code?: string
+    message?: string
+    result?: { exitCode: number; stdout: string; stderr: string }
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify(res.body, null, 2) + "\n")
+  }
+
+  if (res.status === 200 && payload.ok === true && payload.result) {
+    const { exitCode, stdout, stderr } = payload.result
+    if (!values.json) {
+      if (stdout) process.stdout.write(stdout)
+      if (stderr) process.stderr.write(stderr)
+    }
+    if (exitCode === 0) return 0
+    const low = exitCode & 0xff
+    return low === 0 ? 1 : low
+  }
+
+  if (values.json) return SANDBOX_EXEC_INFRA_EXIT
+  if (res.status === 401 || res.status === 403) {
+    return infra(`the daemon rejected the request (HTTP ${res.status}) — check AGENTPROTO_DAEMON_TOKEN.`)
+  }
+  const reason =
+    typeof payload.message === "string"
+      ? `${payload.code ? `[${payload.code}] ` : ""}${payload.message}`
+      : `HTTP ${res.status}: ${typeof res.body === "string" ? res.body.slice(0, 500) : JSON.stringify(res.body).slice(0, 500)}`
+  return infra(reason)
 }

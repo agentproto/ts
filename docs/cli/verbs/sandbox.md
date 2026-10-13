@@ -5,6 +5,9 @@ agentproto sandbox list   [--no-probe] [--reconcile] [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
 agentproto sandbox gc     [--apply] [--pause] [--json]
+agentproto sandbox exec   <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
+                          [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
+                          [--file <local>:<boxPath> ...] [--json] -- <command...>
 ```
 
 Browse the daemon's **sandbox ledger** (every box the daemon has booted,
@@ -109,6 +112,54 @@ Requires a running daemon to look up origin-session statuses.
 | `--pause` | `false` | With `--apply`: pause the boxes instead of killing them, keeping them reattachable via `sandbox attach`. Note: a paused e2b box still bills, so the default kill is usually preferable for orphans. |
 | `--json` | `false` | Print the plan / outcomes as JSON instead of the human summary. |
 
+### `exec <provider>`
+
+```bash
+# Secret from an auth profile — the daemon reads it, you never hold it
+agentproto sandbox exec e2b --env-profile OPENAI_API_KEY=openai-main -- python run.py
+
+# Reuse an existing box, upload a script instead of inlining it
+agentproto sandbox exec e2b --sandbox-id sbx_abc \
+  --file ./job.sh:/home/user/job.sh --cwd /home/user --timeout 10m -- bash job.sh
+
+# Machine-readable
+agentproto sandbox exec e2b --json -- 'uname -a && id'
+```
+
+Runs **one command** inside a sandbox — the CLI twin of the `sandbox_exec`
+MCP tool. It talks to the **running daemon** (`POST /sandboxes/exec`,
+token-gated like every mutating route) so `--env-profile` resolves against
+the daemon's keychain and auth profiles; the secret value never reaches the
+CLI process, its argv, or its output.
+
+Everything after `--` is the command. One argument is passed verbatim (so
+`-- 'a && b'` is a shell snippet); several arguments are shell-quoted and
+joined. Without `--sandbox-id` an **ephemeral** box is booted for the command
+and always torn down afterwards; with it, the existing box is reused and left
+as found.
+
+**Exit code = the box command's exit code** (0-255). A failure that never
+produced one — no live daemon, rejected input, unknown/disabled profile,
+provider error — exits **125** with the reason on stderr (`--json` still prints
+the daemon's `{ok:false, code, message}` body); usage errors exit **2**. The
+two overlap if the box command itself exits 125 — read `--json` to tell them
+apart.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sandbox-id <id>` | ephemeral | Run against this existing box. |
+| `--cwd <dir>` | provider default | Absolute working directory **inside** the box. |
+| `--timeout <dur>` | none | Per-command wall clock (`500ms`, `30s`, `10m`, `2h`; a bare integer is ms, and `<1000` is rejected as a likely units slip). |
+| `--env NAME=value` | — | Literal env var for this command; repeatable. **Don't put secrets here**: the value sits in your shell history and `ps`. |
+| `--env-profile NAME=<profileId>` | — | Set `NAME` from the stored credential of auth profile `<profileId>` (list ids with the `auth_profile_list` MCP tool); repeatable. Names a **profile**, never a keychain ref. Sub-account (source-backed) profiles resolve through their `SubaccountProvider`. Unknown or disabled profiles, invalid names, and a `NAME` also given via `--env` are rejected before anything boots. Not supported on `device:` targets. Resolved values are redacted from stdout, stderr and errors (`<redacted>`). |
+| `--file <local>:<boxPath>` | — | Upload a local file to the absolute `<boxPath>` **before** the command runs; repeatable. Needs a provider whose boxes can write files (e2b today). |
+| `--json` | `false` | Print the daemon's response as JSON instead of streaming stdout/stderr. |
+
+Limits: a command over **16 KB** or an env over **32 KB** (literal + profile
+values) is rejected with an actionable error — upload the script with `--file`
+and run it by path. Provider errors never echo the full command: it is cut to
+~200 characters with a `…(N chars)` marker.
+
 ### The always-on model (`--keep-alive`)
 
 `--keep-alive` is for a sandbox meant to stay reachable indefinitely rather
@@ -157,6 +208,9 @@ agentproto sandbox attach e2b sbx_abc123 --json
 
 # Override the port the daemon listens on inside the box
 agentproto sandbox attach box bx_abc123 --config-json '{"port":19000}'
+
+# Run a command in a fresh box with a secret taken from an auth profile
+agentproto sandbox exec e2b --env-profile OPENAI_API_KEY=openai-main -- python run.py
 ```
 
 Non-JSON output:
