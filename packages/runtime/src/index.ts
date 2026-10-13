@@ -50,6 +50,33 @@ import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
 import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
+import { registerDecisionTools } from "./decision-tools.js"
+export {
+  DECISION_POLICY_SCHEMA_VERSION,
+  decisionPolicyHash,
+  hashStable,
+  parseDecisionPolicy,
+  stableStringify,
+  type DecisionPolicy,
+  type DecisionPolicyFrontmatter,
+  type DecisionPolicyParse,
+  type DecisionWhen,
+} from "./decision-policy.js"
+export {
+  buildEscalationPacket,
+  clearDecisionCache,
+  decide,
+  decisionCacheSize,
+  evaluateWhen,
+  projectTier1Evidence,
+  type ClassifierOutcome,
+  type DecideDeps,
+  type DecisionEscalationHistoryEntry,
+  type DecisionOutcome,
+  type DecisionSource,
+  type EscalationOutcome,
+} from "./decision.js"
+export { makeJevDecisionClassifier } from "./decision-tools.js"
 export {
   DEFAULT_MODEL_ROLES,
   MODEL_ROLE_PRESETS,
@@ -3307,6 +3334,11 @@ export async function createGateway(
     // `model_roles` — read-only role → model listing (model-roles.ts). Same
     // root-only exposure; workflow `tool` steps reach it through dispatchTool.
     registerModelRolesTools(server)
+    // `decision_decide` — the DECISION.md decision router (decision.ts).
+    // Root-only like `model_roles`; workflows pass policy markdown + evidence
+    // from `tool` steps. Classifier = the generic Jev client; no escalation
+    // backend is wired at the tool layer.
+    registerDecisionTools(server)
     // Persisted harness→profile bindings (harness_preset_list/create/delete/
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
