@@ -129,6 +129,30 @@ describe("sandbox proxy — detach", () => {
     expect(host.close).toHaveBeenCalledTimes(1)
   })
 
+  it("detach() stops the watchdog and checkpoint timers: a deliberately detached box is never probed, snapshotted, or reported dead", async () => {
+    vi.useFakeTimers()
+    try {
+      const probe = vi.fn(async () => "dead" as const)
+      const run = vi.fn(async () => {})
+      const proxy = createSandboxAgentSessionProxy({
+        host: makeHost(),
+        remoteSessionId: "remote_1",
+        detachable: true,
+        checkpoint: { run, intervalMs: 1_000 },
+        watchdog: { probe, intervalMs: 1_000, failureThreshold: 1 },
+      })
+      const onDisconnect = vi.fn()
+      proxy.onDisconnect?.(onDisconnect)
+      proxy.detach?.()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(probe).not.toHaveBeenCalled()
+      expect(run).not.toHaveBeenCalled()
+      expect(onDisconnect).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("close() after detach is a no-op — a late safety-net close never kills the surviving box", async () => {
     const host = makeHost()
     const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "r", detachable: true })
