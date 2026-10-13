@@ -86,12 +86,13 @@ pack:
   <slug>-<version>.agentapp; override with --asset-url) and whose
   sha256/size are the bundle's own manifest digest and file size. Feed the
   entries to \`agentproto catalog build\`.
-  With an APP.md \`store:\` block (tagline, categories, publisher, homepage,
-  repository, icon, listing markdown file, screenshots with alt text), the
-  entry also carries the store listing; local icon/screenshot files are
-  checked (format, size), copied to media/<appId>/<version>/ next to the
-  entry and referenced as <media-base-url>/<file> (default: the agentproto/apps
-  repo, raw.githubusercontent.com/agentproto/apps/main/media/<appId>/<version>).
+  With an APP.md \`store:\` block (tagline, categories, publisher,
+  publisherUrl, homepage, repository, icon, listing markdown file,
+  screenshots with alt text), the entry also carries the store listing;
+  local icon/screenshot files are checked (format, size), copied to
+  media/<appId>/<version>/ next to the entry and referenced as
+  <media-base-url>/<file> (default: the agentproto/apps repo,
+  raw.githubusercontent.com/agentproto/apps/main/media/<appId>/<version>).
 
 unpack:
   Extract a .agentapp, verify format agentapp/v1 and the sha256 aggregate,

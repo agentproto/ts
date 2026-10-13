@@ -61,6 +61,8 @@ export interface AppCatalogEntry {
   version?: string
   tier?: AppCatalogTier
   publisher?: string
+  /** https URL of the publisher (their site), rendered as the publisher link. */
+  publisherUrl?: string
   license?: AppCatalogLicense
   minAgentprotoVersion?: string
   requires?: AppCatalogRequires
@@ -140,6 +142,10 @@ export const AppCatalogEntrySchema: z.ZodType<AppCatalogEntry> = z.object({
   version: z.string().optional(),
   tier: z.enum(["git", "bundle", "hosted"]).optional(),
   publisher: z.string().optional(),
+  publisherUrl: z
+    .string()
+    .regex(/^https:\/\/[^\s]+$/i, "publisherUrl must be an https URL")
+    .optional(),
   license: z
     .object({ kind: z.enum(["free", "paid", "private"]), url: z.string().optional() })
     .optional(),

@@ -2671,6 +2671,8 @@ describe("app_catalog", () => {
             appId: "@remote/store-app",
             name: "Store App",
             placement: "box",
+            publisher: "Acme",
+            publisherUrl: "https://acme.dev",
             source: { kind: "git", url: "https://example.com/r.git", ref: "main", sha: "abc123" },
           },
           { appId: "@test/not-installed", source: { kind: "agentapp", url: "https://example.com/x.agentapp", sha256: "f".repeat(64), version: "1.0.0" } },
@@ -2710,6 +2712,8 @@ describe("app_catalog", () => {
       expect(entries[1]).toMatchObject({
         installed: false,
         placement: "box",
+        publisher: "Acme",
+        publisherUrl: "https://acme.dev",
         source: { kind: "git", url: "https://example.com/r.git", ref: "main", sha: "abc123" },
       })
       expect((res as { content: unknown[] }).content).toHaveLength(1)

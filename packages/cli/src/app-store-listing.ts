@@ -1,15 +1,16 @@
 /**
  * Store listing of an app: the APP.md `store:` block turned into the
  * `app-catalog/v1` listing fields (tagline, longDescription, screenshots,
- * icon, categories, publisher, homepage, repository) for `app pack --release
- * --entry`, plus the limit checks `catalog verify` re-runs on a published
- * entry. Limits live in the runtime (`CATALOG_LISTING_LIMITS`).
+ * icon, categories, publisher, publisherUrl, homepage, repository) for `app
+ * pack --release --entry`, plus the limit checks `catalog verify` re-runs on
+ * a published entry. Limits live in the runtime (`CATALOG_LISTING_LIMITS`).
  *
  * ```yaml
  * store:
  *   tagline: Chat with any agentproto session.
  *   categories: [chat, sessions]
  *   publisher: Agentik
+ *   publisherUrl: https://agentik.net
  *   homepage: https://agentproto.sh/apps/session-chat
  *   repository: https://github.com/acme/session-chat
  *   icon: store/icon.svg            # path in the app, or an https URL
@@ -36,7 +37,7 @@ export function defaultMediaBaseUrl(appId: string, version: string): string {
 
 export type ListingFields = Pick<
   AppCatalogEntry,
-  "tagline" | "longDescription" | "screenshots" | "icon" | "categories" | "publisher" | "homepage" | "repository"
+  "tagline" | "longDescription" | "screenshots" | "icon" | "categories" | "publisher" | "publisherUrl" | "homepage" | "repository"
 >
 
 export interface ListingMedia {
@@ -133,7 +134,7 @@ export function listingIssues(fields: ListingFields): string[] {
   for (const c of cats) {
     if (!L.categoryPattern.test(c)) issues.push(`category '${c}' must match ${L.categoryPattern}`)
   }
-  for (const k of ["homepage", "repository"] as const) {
+  for (const k of ["homepage", "repository", "publisherUrl"] as const) {
     const v = fields[k]
     if (v !== undefined && !isHttps(v)) issues.push(`${k} must be an https URL (got "${v}")`)
   }
@@ -192,6 +193,8 @@ export async function readStoreListing(
   if (tagline !== undefined) fields.tagline = tagline
   const publisher = str(s.publisher)
   if (publisher !== undefined) fields.publisher = publisher
+  const publisherUrl = str(s.publisherUrl)
+  if (publisherUrl !== undefined) fields.publisherUrl = publisherUrl
   for (const k of ["homepage", "repository"] as const) {
     const v = str(s[k])
     if (v !== undefined) fields[k] = v

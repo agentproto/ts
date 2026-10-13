@@ -159,6 +159,7 @@ Any catalog is still just a **static JSON file** on any HTTP host, in the
       "version": "1.2.0",
       "tier": "bundle",
       "publisher": "example",
+      "publisherUrl": "https://example.com",
       "license": { "kind": "free" },
       "source": {
         "kind": "agentapp",
@@ -176,10 +177,10 @@ Only `appId` and `source` are required. A `.agentapp` source needs `url`,
 `agentproto app pack --release --json`) and `version`; a git source needs
 `url` and the pinned commit `sha` (plus optional `ref` / `subdir`). The
 other fields (`name`, `description`, `category`, `icon`, `version`, `tier`
--- `git` | `bundle` | `hosted`, `placement`, `publisher`, `license`,
-`requires`, `minAgentprotoVersion`, `featured`) are optional metadata for a
-store UI. Unknown fields are ignored; an entry that fails validation is
-skipped with a warning, the rest of the catalog still loads.
+-- `git` | `bundle` | `hosted`, `placement`, `publisher`, `publisherUrl`,
+`license`, `requires`, `minAgentprotoVersion`, `featured`) are optional
+metadata for a store UI. Unknown fields are ignored; an entry that fails
+validation is skipped with a warning, the rest of the catalog still loads.
 
 ### Publishing with the CLI: pack --release --entry, then catalog build
 
@@ -263,14 +264,15 @@ An entry can carry a store listing, shown on the public page
 `https://agentproto.sh/apps/<slug>` and in the daemon's `/store`: `tagline`,
 `longDescription` (markdown; raw HTML is not rendered), `screenshots`
 (`{url, alt, width?, height?}`), `icon`, `categories`, `publisher`,
-`homepage`, `repository`. All are optional. Declare them in APP.md and
-`app pack --release --entry` puts them in the entry:
+`publisherUrl`, `homepage`, `repository`. All are optional. Declare them in
+APP.md and `app pack --release --entry` puts them in the entry:
 
 ```yaml
 store:
   tagline: Notes with your agents.            # 1 to 120 characters
   categories: [productivity, notes]            # at most 5, [a-z0-9-]
   publisher: Acme
+  publisherUrl: https://acme.dev                # https only
   homepage: https://acme.dev/notes             # https only
   repository: https://github.com/acme/notes
   icon: store/icon.svg                         # app path or https URL; png/jpeg/webp/svg, 256 KB max
