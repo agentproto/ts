@@ -719,7 +719,7 @@ describe("restartAgentSession on a sandboxed session", () => {
           restartAgentSession(registry, resolver, prev, {
             resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots, { writes: [] }),
           }),
-        ).rejects.toThrow(/expired.*spawn a fresh session.*no tarball checkpoint was saved.*workspace remote set scratch/is)
+        ).rejects.toThrow(/expired.*workspace "scratch" has no git remote and no tarball checkpoint was saved.*workspace remote set scratch/is)
         expect(boots.count).toBe(0)
       })
 
@@ -731,7 +731,7 @@ describe("restartAgentSession on a sandboxed session", () => {
           restartAgentSession(registry, resolver, prev, {
             resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
           }),
-        ).rejects.toThrow(/spawn a fresh session.*no work branch and no tarball checkpoint/is)
+        ).rejects.toThrow(/workspace "scratch" has no remote configured and the session recorded no work branch.*not a git repository/is)
         expect(boots.count).toBe(0)
       })
 
@@ -758,6 +758,19 @@ describe("restartAgentSession on a sandboxed session", () => {
         expect(commands.some(c => c.includes("tar --no-same-owner"))).toBe(false)
       })
 
+      it("a derived remote with no recorded work branch starts the fresh box on a default wt/ branch", async () => {
+        deriveState.hasCredential = true
+        setMcpCredentialDeps({ resolveSandboxSecret: async () => "test-token-not-real" })
+        noRemoteWorkspace(await gitRepoWithOrigin("git@github.com:acme/derived.git"))
+        const { resolver, providerResolver } = await setup({ workspaceSlug: "scratch" })
+        const boots = { count: 0 }
+        const result = await restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+        })
+        expect(boots.count).toBe(1)
+        expect(result.desc.sandboxDeliveryTarget?.branch).toMatch(/^wt\//)
+      })
+
       it("fails loud, explaining the missing credential, when the origin is private and none is registered", async () => {
         deriveState.hasCredential = false
         noRemoteWorkspace(await gitRepoWithOrigin("git@github.com:acme/private.git"))
@@ -770,7 +783,7 @@ describe("restartAgentSession on a sandboxed session", () => {
           restartAgentSession(registry, resolver, prev, {
             resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
           }),
-        ).rejects.toThrow(/spawn a fresh session.*not publicly cloneable and no credential is registered/is)
+        ).rejects.toThrow(/workspace "scratch" has no remote configured.*not publicly cloneable and no credential is registered/is)
         expect(boots.count).toBe(0)
       })
     })

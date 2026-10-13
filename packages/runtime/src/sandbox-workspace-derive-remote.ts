@@ -147,19 +147,30 @@ function anonymousLsRemote(git: GitRunner): (url: string) => Promise<boolean> {
     ).ok
 }
 
+/** The host's current branch may be an unpushed local one the box cannot clone. */
+async function existsOnOrigin(git: GitRunner, cwd: string, branch: string): Promise<boolean> {
+  if ((await git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd })).ok) return true
+  return (await git(["ls-remote", "--exit-code", "--heads", "origin", branch], { cwd, timeoutMs: 15_000 })).ok
+}
+
 async function originDefaultBranch(git: GitRunner, cwd: string): Promise<string> {
-  const attempts: Array<[string[], (out: string) => string]> = [
-    [["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], out => out.replace(/^origin\//, "")],
-    [["rev-parse", "--abbrev-ref", "HEAD"], out => out],
-  ]
-  for (const [args, pick] of attempts) {
-    const result = await git(args, { cwd })
-    const branch = pick(result.stdout.trim())
-    if (!result.ok || !branch || branch === "HEAD") continue
+  const head = await git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { cwd })
+  const fromOrigin = head.stdout.trim().replace(/^origin\//, "")
+  if (head.ok && fromOrigin) {
     try {
-      return validateRemoteBranch(branch)
+      return validateRemoteBranch(fromOrigin)
     } catch {
-      // not usable inside a shell command in the box — try the next source
+      // not usable inside a shell command in the box — try the current branch
+    }
+  }
+  const current = await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd })
+  const branch = current.stdout.trim()
+  if (current.ok && branch && branch !== "HEAD") {
+    try {
+      const valid = validateRemoteBranch(branch)
+      if (await existsOnOrigin(git, cwd, valid)) return valid
+    } catch {
+      // fall through to the default
     }
   }
   return DEFAULT_REMOTE_BRANCH

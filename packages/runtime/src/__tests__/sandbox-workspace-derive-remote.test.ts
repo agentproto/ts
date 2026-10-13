@@ -45,6 +45,8 @@ interface FakeRepo {
   remotes?: Record<string, string>
   originHead?: string
   currentBranch?: string
+  /** Branches that exist on origin (tracking ref or ls-remote). */
+  onOrigin?: string[]
 }
 
 function fakeGit(repo: FakeRepo): { git: GitRunner; calls: string[][] } {
@@ -64,6 +66,13 @@ function fakeGit(repo: FakeRepo): { git: GitRunner; calls: string[][] } {
     }
     if (key === "rev-parse --abbrev-ref HEAD") {
       return repo.currentBranch ? { ok: true, stdout: `${repo.currentBranch}\n` } : { ok: false, stdout: "" }
+    }
+    if (args[0] === "rev-parse" && args[1] === "--verify") {
+      const name = args[3]!.replace("refs/remotes/origin/", "")
+      return repo.onOrigin?.includes(name) ? { ok: true, stdout: "sha\n" } : { ok: false, stdout: "" }
+    }
+    if (args[0] === "ls-remote" && args.includes("origin")) {
+      return repo.onOrigin?.includes(args[args.length - 1]!) ? { ok: true, stdout: "sha\n" } : { ok: false, stdout: "" }
     }
     return { ok: false, stdout: "" }
   }
@@ -95,14 +104,32 @@ describe("deriveWorkspaceRemote", () => {
     expect(result.notice).toContain("nothing was saved")
   })
 
-  it("falls back to the current branch when origin/HEAD is unset", async () => {
-    const { git } = fakeGit({ remotes: { origin: "https://github.com/acme/repo.git" }, currentBranch: "develop" })
+  it("falls back to the current branch when origin/HEAD is unset and the branch exists on origin", async () => {
+    const { git } = fakeGit({
+      remotes: { origin: "https://github.com/acme/repo.git" },
+      currentBranch: "develop",
+      onOrigin: ["develop"],
+    })
     const result = await deriveWorkspaceRemote(workspace, {
       git,
       hasCredential: async () => true,
       isPubliclyCloneable: async () => false,
     })
     expect(result.ok && result.remote.defaultBranch).toBe("develop")
+  })
+
+  it("ignores an unpushed current branch and uses the default branch", async () => {
+    const { git } = fakeGit({
+      remotes: { origin: "https://github.com/acme/repo.git" },
+      currentBranch: "local-only",
+      onOrigin: ["main"],
+    })
+    const result = await deriveWorkspaceRemote(workspace, {
+      git,
+      hasCredential: async () => true,
+      isPubliclyCloneable: async () => false,
+    })
+    expect(result.ok && result.remote.defaultBranch).toBe("main")
   })
 
   it("derives a public repo without a credential (no credentialRef)", async () => {
