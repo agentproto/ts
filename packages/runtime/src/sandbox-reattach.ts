@@ -28,7 +28,14 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
-import { createDeliveryHook, formatDeliveryNotice, sandboxCheckpointOpts } from "./sandbox-delivery.js"
+import {
+  createDeliveryHook,
+  formatDeliveryNotice,
+  resolveSandboxCheckpointConfig,
+  sandboxCheckpointOpts,
+} from "./sandbox-delivery.js"
+import { loadConfig } from "./config.js"
+import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import { recordSandboxState } from "./sandbox-ledger.js"
 import { resolveSandboxSecretFromBroker } from "./session-restart-core.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
@@ -77,6 +84,9 @@ export async function runSandboxReattachPass(opts: {
   concurrency?: number
   /** Cross-process gate, same meaning as the eager-resume pass's. */
   isServed?: (desc: SessionDescriptor) => boolean
+  /** `defaults` block the checkpoint policy is resolved from; defaults to the
+   *  config file. */
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
 }): Promise<SandboxReattachSummary> {
   const { registry } = opts
   const limit = Math.max(1, Math.floor(opts.concurrency ?? 4))
@@ -133,6 +143,11 @@ export async function runSandboxReattachPass(opts: {
     }
     const teardown = desc.sandboxTeardown ?? resolveLifecyclePolicy(spec, true).teardown
     const deliveryTarget = desc.sandboxDeliveryTarget
+    const checkpointConfig = resolveSandboxCheckpointConfig(
+      (await (opts.loadDefaultsConfig?.() ?? loadConfig().then(cfg => cfg.defaults)).catch(() => undefined))?.sandbox
+        ?.checkpoint,
+      desc.sandboxCheckpointOverride,
+    )
     const agentSession = createSandboxAgentSessionProxy({
       host,
       remoteSessionId: record.remoteSessionId,
@@ -147,19 +162,23 @@ export async function runSandboxReattachPass(opts: {
               ...(host.readFile ? { readFile: host.readFile } : {}),
               target: deliveryTarget,
               outDir: sessionTranscriptDir(desc.id),
+              snapshotUncommitted: checkpointConfig.onTeardown,
               onDelivery: delivery => {
                 registry.recordSandboxDelivery(desc.id, delivery, formatDeliveryNotice(delivery))
               },
             }),
-            ...sandboxCheckpointOpts({
-              exec: host.exec,
-              ...(host.readFile ? { readFile: host.readFile } : {}),
-              target: deliveryTarget,
-              outDir: sessionTranscriptDir(desc.id),
-              onCheckpoint: record => {
-                registry.recordSandboxCheckpoint(desc.id, record, formatDeliveryNotice(record))
+            ...sandboxCheckpointOpts(
+              {
+                exec: host.exec,
+                ...(host.readFile ? { readFile: host.readFile } : {}),
+                target: deliveryTarget,
+                outDir: sessionTranscriptDir(desc.id),
+                onCheckpoint: record => {
+                  registry.recordSandboxCheckpoint(desc.id, record, formatDeliveryNotice(record))
+                },
               },
-            }),
+              checkpointConfig,
+            ),
           }
         : {}),
       watchdog: {},

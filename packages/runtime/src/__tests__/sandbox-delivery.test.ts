@@ -17,17 +17,25 @@ import {
   buildProbeCommand,
   buildCheckpointPushCommand,
   buildPushCommand,
+  checkpointBranchOf,
   CHECKPOINT_BUNDLE_FILE,
   CHECKPOINT_RECORD_FILE,
   createSandboxCheckpointer,
   decideBundle,
   isFullyDelivered,
   resolveCheckpointIntervalMs,
+  resolveSandboxCheckpointConfig,
+  sandboxCheckpointOpts,
   formatDeliveryNotice,
+  formatUncommittedRescueNotice,
   parseProbe,
   runSandboxDelivery,
   shouldPush,
   withinBundleLimit,
+  DEFAULT_CHECKPOINT_INTERVAL_MS,
+  DEFAULT_CHECKPOINT_DEADLINE_MS,
+  CHECKPOINT_BRANCH_PREFIX,
+  type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
 } from "../sandbox-delivery.js"
 
@@ -401,5 +409,180 @@ describe("uncommitted-work snapshot", () => {
     expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "60000" })).toBe(60_000)
     expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "0" })).toBe(0)
     expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "soon" })).toBe(5 * 60_000)
+  })
+
+  it("stamps the turn number onto the snapshot commit message and the record", async () => {
+    const box = snapshotBox({ ahead: 0 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir, turn: 7 })
+    expect(record.turn).toBe(7)
+    const probe = box.commands.find(c => c.command.includes("rev-list"))?.command ?? ""
+    expect(probe).toContain("agentproto checkpoint: uncommitted work on wt/x turn 7")
+  })
+
+  it("a checkpointer stamps whichever turn started the coalesced run", async () => {
+    const box = snapshotBox({ ahead: 0 })
+    const checkpointer = createSandboxCheckpointer({ exec: box.exec, target, outDir })
+    const [a, b] = await Promise.all([checkpointer.run(3), checkpointer.run(99)])
+    expect(a.turn).toBe(3)
+    expect(b.turn).toBe(3)
+  })
+
+  it("skips the snapshot entirely when snapshotUncommitted is false — count only, like teardown before checkpoints existed", async () => {
+    const commands: SandboxExecOpts[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o)
+      return result(0, `ahead=0\nuncommitted=3\nhead=${HEAD}\n`)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, snapshotUncommitted: false })
+    expect(record.uncommittedFiles).toBe(3)
+    expect(record.checkpoint).toBeUndefined()
+    expect(commands).toHaveLength(1)
+    const probe = commands[0]!.command
+    expect(probe).not.toContain("git commit-tree")
+    expect(probe).not.toContain("GIT_INDEX_FILE")
+  })
+
+  it("buildProbeCommand with snapshotUncommitted:false drops the snapshot subshell but keeps the counts", () => {
+    const full = buildProbeCommand(target)
+    const countOnly = buildProbeCommand(target, { snapshotUncommitted: false })
+    expect(full).toContain("git commit-tree")
+    expect(countOnly).not.toContain("git commit-tree")
+    expect(countOnly).toContain("uncommitted=$n")
+    expect(countOnly).toContain("head=$(git rev-parse HEAD)")
+  })
+
+  it("checkpointBranchOf/buildCheckpointPushCommand take a custom refPrefix, defaulting to the legacy one", () => {
+    expect(checkpointBranchOf("wt/x")).toBe("agentproto-checkpoint/wt/x")
+    expect(checkpointBranchOf("wt/x", "custom/")).toBe("custom/wt/x")
+    expect(buildCheckpointPushCommand(target, "custom/")).toBe(
+      "git -C '/home/user/agentproto' push origin '+refs/agentproto/checkpoint:refs/heads/custom/wt/x'",
+    )
+  })
+
+  it("pushes the checkpoint snapshot to a custom refPrefix end to end", async () => {
+    const box = snapshotBox({ ahead: 0 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir, refPrefix: "custom/" })
+    expect(record.checkpoint).toMatchObject({ status: "pushed", ref: "custom/wt/x" })
+    const push = box.commands.find(c => c.command.includes("refs/agentproto/checkpoint:"))?.command ?? ""
+    expect(push).toContain("refs/heads/custom/wt/x")
+  })
+})
+
+describe("resolveSandboxCheckpointConfig", () => {
+  it("defaults to enabled, both triggers, the legacy ref prefix, and the env-derived interval", () => {
+    const resolved = resolveSandboxCheckpointConfig(undefined, undefined, {})
+    expect(resolved).toEqual({
+      enabled: true,
+      onTurnEnd: true,
+      onTeardown: true,
+      refPrefix: CHECKPOINT_BRANCH_PREFIX,
+      minIntervalMs: DEFAULT_CHECKPOINT_INTERVAL_MS,
+      timeoutMs: DEFAULT_CHECKPOINT_DEADLINE_MS,
+    })
+  })
+
+  it("falls back to the legacy env var only when neither config layer sets minIntervalMs", () => {
+    const env = { AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "90000" }
+    expect(resolveSandboxCheckpointConfig(undefined, undefined, env).minIntervalMs).toBe(90_000)
+    expect(resolveSandboxCheckpointConfig({ minIntervalMs: 1_000 }, undefined, env).minIntervalMs).toBe(1_000)
+    expect(resolveSandboxCheckpointConfig(undefined, { minIntervalMs: 2_000 }, env).minIntervalMs).toBe(2_000)
+  })
+
+  it("minIntervalMs <= 0 disables turn-end checkpoints, same as the legacy env off-switch", () => {
+    expect(resolveSandboxCheckpointConfig({ minIntervalMs: 0 }, undefined, {}).onTurnEnd).toBe(false)
+    expect(resolveSandboxCheckpointConfig(undefined, undefined, { AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "0" }).onTurnEnd).toBe(
+      false,
+    )
+  })
+
+  it("per-spawn wins key-by-key over the global default", () => {
+    const resolved = resolveSandboxCheckpointConfig(
+      { on: ["turn-end", "teardown"], refPrefix: "global/", minIntervalMs: 10_000 },
+      { on: ["turn-end"], timeoutMs: 5_000 },
+      {},
+    )
+    expect(resolved.onTurnEnd).toBe(true)
+    expect(resolved.onTeardown).toBe(false)
+    expect(resolved.refPrefix).toBe("global/")
+    expect(resolved.minIntervalMs).toBe(10_000)
+    expect(resolved.timeoutMs).toBe(5_000)
+  })
+
+  it("per-spawn false disables both triggers for this spawn regardless of the global config", () => {
+    const resolved = resolveSandboxCheckpointConfig({ enabled: true, on: ["turn-end", "teardown"] }, false, {})
+    expect(resolved.enabled).toBe(false)
+    expect(resolved.onTurnEnd).toBe(false)
+    expect(resolved.onTeardown).toBe(false)
+  })
+
+  it("global enabled:false disables both triggers absent a per-spawn override", () => {
+    const resolved = resolveSandboxCheckpointConfig({ enabled: false }, undefined, {})
+    expect(resolved.onTurnEnd).toBe(false)
+    expect(resolved.onTeardown).toBe(false)
+  })
+
+  it("on omitting a trigger turns off only that one", () => {
+    expect(resolveSandboxCheckpointConfig({ on: ["teardown"] }, undefined, {})).toMatchObject({
+      onTurnEnd: false,
+      onTeardown: true,
+    })
+    expect(resolveSandboxCheckpointConfig({ on: ["turn-end"] }, undefined, {})).toMatchObject({
+      onTurnEnd: true,
+      onTeardown: false,
+    })
+  })
+})
+
+describe("sandboxCheckpointOpts", () => {
+  it("wires the checkpoint object only when onTurnEnd is true, carrying minIntervalMs/timeoutMs/refPrefix through", () => {
+    const config = resolveSandboxCheckpointConfig(
+      { on: ["turn-end"], minIntervalMs: 42, timeoutMs: 999, refPrefix: "custom/" },
+      undefined,
+      {},
+    )
+    const opts = sandboxCheckpointOpts({ exec: async () => result(1), target, outDir: "/tmp" }, config)
+    expect(opts.checkpoint?.intervalMs).toBe(42)
+  })
+
+  it("returns no checkpoint object when onTurnEnd is false", () => {
+    const config = resolveSandboxCheckpointConfig({ on: ["teardown"] }, undefined, {})
+    const opts = sandboxCheckpointOpts({ exec: async () => result(1), target, outDir: "/tmp" }, config)
+    expect(opts.checkpoint).toBeUndefined()
+  })
+})
+
+describe("formatUncommittedRescueNotice", () => {
+  const base: SandboxDeliveryRecord = {
+    at: "t",
+    branch: "wt/x",
+    baseSha: target.baseSha,
+    push: { status: "pushed" },
+    bundle: { status: "skipped" },
+  }
+
+  it("names the ref and gives a fetch command when uncommitted work was rescued", () => {
+    const notice = formatUncommittedRescueNotice({
+      ...base,
+      uncommittedFiles: 2,
+      checkpoint: { status: "pushed", ref: "agentproto-checkpoint/wt/x", sha: SNAP },
+    })
+    expect(notice).toContain("2 uncommitted file(s)")
+    expect(notice).toContain("agentproto-checkpoint/wt/x")
+    expect(notice).toContain("git fetch origin agentproto-checkpoint/wt/x && git checkout FETCH_HEAD -- .")
+  })
+
+  it("is undefined when there is nothing uncommitted", () => {
+    expect(formatUncommittedRescueNotice({ ...base, uncommittedFiles: 0 })).toBeUndefined()
+    expect(formatUncommittedRescueNotice(base)).toBeUndefined()
+  })
+
+  it("is undefined when the rescue snapshot never reached the remote — nothing to fetch", () => {
+    expect(
+      formatUncommittedRescueNotice({
+        ...base,
+        uncommittedFiles: 2,
+        checkpoint: { status: "failed", ref: "agentproto-checkpoint/wt/x", detail: "denied" },
+      }),
+    ).toBeUndefined()
   })
 })

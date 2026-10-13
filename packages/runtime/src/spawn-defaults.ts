@@ -30,6 +30,7 @@ import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { providerEnvVar } from "./providers-store.js"
 import type { ContextContinuityPolicy } from "./context-continuity.js"
 import type { DeferredToolsConfig } from "./deferred-tools.js"
+import type { SandboxCheckpointConfig } from "./sandbox-delivery.js"
 
 /**
  * `defaults.mcp` block — daemon-wide MCP gateway policy, distinct from the
@@ -187,6 +188,15 @@ export interface SpawnDefaultsConfig {
   spawn?: {
     /** Default `agent_start.browser` (`"headless"` | `false`). Default off. */
     browser?: SpawnBrowserMode
+  }
+  /** Daemon-wide sandbox safety-net policy. */
+  sandbox?: {
+    /** Checkpoint-per-turn safety net for a sandbox session with a
+     *  workspace-remote delivery target — see
+     *  `sandbox-delivery.ts`'s `SandboxCheckpointConfig`/
+     *  `resolveSandboxCheckpointConfig`. Overridden per-spawn by
+     *  `agent_start.sandboxCheckpoint`. */
+    checkpoint?: SandboxCheckpointConfig
   }
 }
 

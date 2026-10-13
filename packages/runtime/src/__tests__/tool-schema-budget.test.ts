@@ -32,6 +32,8 @@ import { measureToolList } from "../tool-schema-measure.js"
  *  the `label`/`cwd` filters and the cold-history fallback (`includeCold`) —
  *  the measured total was already at the old 60 KB line, so the old number
  *  left no room for a normal field addition. Re-set to 62 KB for the
+ *  `sandboxCheckpoint` spawn override (kept opaque in the schema, ~0.15 KB).
+ *  Headroom for normal growth without re-opening this file on every field addition.
  *  `turnRetry.rotate`/`rotateOn`/`cooldownMs` fields on `agent_start`
  *  (+~0.5 KB of schema; the prose lives in `tool_help`). Headroom for normal growth
  *  without re-opening this file on every field addition. */

@@ -180,7 +180,8 @@ import {
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
-import type { SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
+import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
+import type { SandboxCheckpointConfig, SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
 import {
   createSessionMessage,
   escapeHumanPrompt,
@@ -2517,6 +2518,11 @@ export interface SessionDescriptor {
    *  base commit). Persisted so a restart that re-attaches the box can still
    *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** The spawn's own `agent_start.sandboxCheckpoint` override, persisted so a
+   *  restart or a boot-time re-attach re-resolves the same checkpoint policy
+   *  (`false` stays off across a daemon restart). Absent ⇒ the global
+   *  `defaults.sandbox.checkpoint` alone. */
+  sandboxCheckpointOverride?: SandboxCheckpointConfig | false
   /** App ports exposed at boot time (`SandboxSpec.extraPorts`) — maps port
    *  number to its public URL. Only present for sandbox sessions where the
    *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
@@ -5046,6 +5052,8 @@ export interface SpawnAgentInput {
   sandboxTeardown?: "kill" | "pause"
   /** The work branch inside the box — see `SessionDescriptor.sandboxDeliveryTarget`. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** Per-spawn checkpoint override — see `SessionDescriptor.sandboxCheckpointOverride`. */
+  sandboxCheckpointOverride?: SandboxCheckpointConfig | false
   /** Effective adapter confinement, resolved by the caller — see
    *  `SessionDescriptor.commandSandbox`. */
   commandSandbox?: "off" | "workspace" | "strict"
@@ -10138,6 +10146,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxCheckpointOverride !== undefined
+          ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
+          : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -10309,6 +10320,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxCheckpointOverride !== undefined
+          ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
+          : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -12229,6 +12243,27 @@ export function createSessionsRegistry(opts?: {
       // Delivery runs during teardown, after kill() already closed the writer,
       // so the record above reopened an append stream nothing else will end.
       void transcriptWriter.close(rt.desc.id)
+      // Teardown notice above lands in THIS (now-dead) session's own
+      // transcript — nobody's next turn reads that. When uncommitted work
+      // stayed in the box, tell the PARENT explicitly, same in-band channel
+      // `supervisor-notify.ts` uses for a crash notice.
+      const rescue = formatUncommittedRescueNotice(record)
+      const parentId = rt.desc.parentSessionId
+      if (rescue !== undefined && parentId && parentId !== rt.desc.id && sessions.has(parentId)) {
+        void registry
+          .sendMessage(
+            createSessionMessage({
+              to: parentId,
+              from: { relation: "system" },
+              kind: "notice",
+              urgency: "next-turn",
+              text: rescue,
+              data: { kind: "sandbox-uncommitted-work", sessionId: rt.desc.id, ref: record.checkpoint?.ref },
+            }),
+            { source: `sandbox:${rt.desc.id}`, origin: `sandbox:${rt.desc.id}` },
+          )
+          .catch(() => {})
+      }
       schedulePersist()
       return true
     },

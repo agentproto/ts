@@ -301,7 +301,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(registry.get(prev.id)?.status).toBe("running")
   })
 
-  it("delivers the work branch when a restarted sandbox session closes", async () => {
+  async function restartCloseAndCollectCommands(patch: Partial<typeof prev> = {}) {
     const sessionsDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-sessions-"))
     setDefaultSessionsBaseDir(sessionsDir)
     try {
@@ -334,7 +334,7 @@ describe("restartAgentSession on a sandboxed session", () => {
         }
       }
 
-      const result = await restartAgentSession(registry, resolver, prev, {
+      const result = await restartAgentSession(registry, resolver, { ...prev, ...patch }, {
         resolveSandboxProvider: withExec,
       })
       expect(result.desc.sandboxDeliveryTarget).toEqual(target)
@@ -344,10 +344,22 @@ describe("restartAgentSession on a sandboxed session", () => {
 
       expect(commands.some(c => c.includes("wt/restart-me") && c.includes("rev-list"))).toBe(true)
       expect(registry.get(result.desc.id)?.sandboxDelivery?.branch).toBe("wt/restart-me")
+      return { commands, desc: registry.get(result.desc.id)! }
     } finally {
       setDefaultSessionsBaseDir(undefined)
       await rm(sessionsDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
     }
+  }
+
+  it("delivers the work branch when a restarted sandbox session closes", async () => {
+    const { commands } = await restartCloseAndCollectCommands()
+    expect(commands.some(c => c.includes("commit-tree"))).toBe(true)
+  })
+
+  it("keeps the spawn's sandboxCheckpoint:false override across a restart — teardown only counts uncommitted files", async () => {
+    const { commands, desc } = await restartCloseAndCollectCommands({ sandboxCheckpointOverride: false })
+    expect(commands.some(c => c.includes("commit-tree"))).toBe(false)
+    expect(desc.sandboxCheckpointOverride).toBe(false)
   })
 
   it("a session with no work branch restarts without any delivery hook", async () => {

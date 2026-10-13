@@ -124,6 +124,7 @@ import {
   createDeliveryHook,
   formatDeliveryNotice,
   sandboxCheckpointOpts,
+  resolveSandboxCheckpointConfig,
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
@@ -742,6 +743,17 @@ export async function restartAgentSession(
   // adapter inside it instead (see `spawnInSandbox`).
   const sandboxId =
     prev.remote === true && prev.sandboxId !== undefined ? prev.sandboxId : undefined
+  // Sandbox restart only — the same `defaults.sandbox.checkpoint` →
+  // per-spawn resolution a fresh spawn runs; the spawn's own override rides
+  // the descriptor (`sandboxCheckpointOverride`).
+  const checkpointConfig =
+    sandboxId !== undefined
+      ? resolveSandboxCheckpointConfig(
+          (opts.loadDefaultsConfig ? await opts.loadDefaultsConfig() : (await loadConfig()).defaults)?.sandbox
+            ?.checkpoint,
+          prev.sandboxCheckpointOverride,
+        )
+      : undefined
   // `forceAgentResume` never consults `augmented` (see the `resumeVia`
   // comment below) — skip the FS probe entirely rather than pay for I/O
   // whose result is discarded. A sandbox session skips it too: its `cwd`
@@ -1271,19 +1283,23 @@ export async function restartAgentSession(
               ...(host.readFile ? { readFile: host.readFile } : {}),
               target: deliveryTarget,
               outDir: sessionTranscriptDir(restartedSessionId),
+              snapshotUncommitted: checkpointConfig?.onTeardown ?? true,
               onDelivery: record => {
                 registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
               },
             }),
-            ...sandboxCheckpointOpts({
-              exec: host.exec,
-              ...(host.readFile ? { readFile: host.readFile } : {}),
-              target: deliveryTarget,
-              outDir: sessionTranscriptDir(restartedSessionId),
-              onCheckpoint: record => {
-                registry.recordSandboxCheckpoint(restartedSessionId, record, formatDeliveryNotice(record))
+            ...sandboxCheckpointOpts(
+              {
+                exec: host.exec,
+                ...(host.readFile ? { readFile: host.readFile } : {}),
+                target: deliveryTarget,
+                outDir: sessionTranscriptDir(restartedSessionId),
+                onCheckpoint: record => {
+                  registry.recordSandboxCheckpoint(restartedSessionId, record, formatDeliveryNotice(record))
+                },
               },
-            }),
+              checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            ),
           }
         : {}),
       watchdog: {},
@@ -1316,6 +1332,7 @@ export async function restartAgentSession(
     const booted = await bootSandboxAgentSession({
       sandbox: providerSlug,
       resolveSandboxProvider: opts.resolveSandboxProvider,
+      checkpointConfig,
       adapter: adapterSlug,
       // Replaced by the fresh checkout's path (`explicitCwd: false`).
       cwd: prev.cwd ?? "",
@@ -1427,6 +1444,9 @@ export async function restartAgentSession(
       sandboxProvider: box.provider,
       sandboxTeardown: box.sandboxTeardown,
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
+      ...(deliveryTarget && prev.sandboxCheckpointOverride !== undefined
+        ? { sandboxCheckpointOverride: prev.sandboxCheckpointOverride }
+        : {}),
       ...(box.sandboxPorts ? { sandboxPorts: box.sandboxPorts } : {}),
       commandPreview: `sandbox:${box.provider} → ${adapterSlug}`,
       resumedFrom: prev.id,

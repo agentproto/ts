@@ -65,9 +65,15 @@ export const DEFAULT_BUNDLE_RESERVE_MS = 90_000
 /** A checkpoint runs while the agent works: keep it well inside one interval. */
 export const DEFAULT_CHECKPOINT_DEADLINE_MS = 120_000
 
-/** The remote branch carrying `branch`'s uncommitted-work snapshot. */
-export function checkpointBranchOf(branch: string): string {
-  return `${CHECKPOINT_BRANCH_PREFIX}${branch}`
+/** The remote branch carrying `branch`'s uncommitted-work snapshot.
+ *  `refPrefix` defaults to {@link CHECKPOINT_BRANCH_PREFIX} — the value
+ *  every checkpoint used before it became configurable
+ *  ({@link SandboxCheckpointConfig.refPrefix}); passing a custom prefix only
+ *  changes where a FUTURE checkpoint lands, so the caller is responsible for
+ *  also using it when reading a checkpoint back (`sandbox-workspace-remote.
+ *  ts`'s `planSandboxWorkspace` takes the same `refPrefix` for that reason). */
+export function checkpointBranchOf(branch: string, refPrefix: string = CHECKPOINT_BRANCH_PREFIX): string {
+  return `${refPrefix}${branch}`
 }
 
 export interface SandboxDeliveryTarget {
@@ -105,6 +111,11 @@ export interface SandboxDeliveryRecord {
   /** True when a checkpoint found nothing new since the last delivered one. */
   unchanged?: boolean
   bundle: { status: DeliveryBundleStatus; path?: string; bytes?: number; detail?: string }
+  /** Turn count this checkpoint/delivery was taken after, when the caller
+   *  knew one (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — also baked
+   *  into the snapshot commit message. Absent when no turn context was
+   *  given (a bare periodic tick, or a call outside the proxy). */
+  turn?: number
 }
 
 export interface DeliveryProbe {
@@ -127,9 +138,33 @@ export interface DeliveryProbe {
  * (node_modules, dist) stay out. A failing snapshot never fails the probe:
  * commits can still be delivered without it.
  */
-export function buildProbeCommand(target: SandboxDeliveryTarget): string {
+export function buildProbeCommand(
+  target: SandboxDeliveryTarget,
+  opts?: {
+    /** `false` reverts to the pre-checkpoint behaviour: only COUNT
+     *  uncommitted files, never snapshot/commit them. Default true. Driven
+     *  by {@link ResolvedSandboxCheckpointConfig.onTeardown} for the
+     *  teardown delivery call — `"teardown"` absent from `on` means
+     *  "deliver the branch, but don't bother rescuing uncommitted work". */
+    snapshotUncommitted?: boolean
+    /** Recorded in the snapshot commit message when taking a checkpoint
+     *  mid-session (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — purely
+     *  a human-readable breadcrumb, not parsed back. */
+    turn?: number
+  },
+): string {
+  const snapshotUncommitted = opts?.snapshotUncommitted ?? true
   const range = shellQuote(`${target.baseSha}..refs/heads/${target.branch}`)
-  const message = shellQuote(`agentproto checkpoint: uncommitted work on ${target.branch}`)
+  if (!snapshotUncommitted) {
+    return (
+      `cd ${shellQuote(target.checkoutDir)} && ` +
+      `echo "ahead=$(git rev-list --count ${range})" && ` +
+      `n=$(git status --porcelain | wc -l | tr -d ' ') && echo "uncommitted=$n" && ` +
+      `echo "head=$(git rev-parse HEAD)"`
+    )
+  }
+  const turnSuffix = opts?.turn !== undefined ? ` turn ${opts.turn}` : ""
+  const message = shellQuote(`agentproto checkpoint: uncommitted work on ${target.branch}${turnSuffix}`)
   const snapshot =
     `idx=$(mktemp -u) && { cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true; } && ` +
     `GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ` +
@@ -169,9 +204,10 @@ export function buildPushCommand(target: SandboxDeliveryTarget): string {
   return `git -C ${shellQuote(target.checkoutDir)} push -u origin ${shellQuote(target.branch)}`
 }
 
-/** Force-push the snapshot: each checkpoint replaces the previous one. */
-export function buildCheckpointPushCommand(target: SandboxDeliveryTarget): string {
-  const refspec = shellQuote(`+${SNAPSHOT_REF}:refs/heads/${checkpointBranchOf(target.branch)}`)
+/** Force-push the snapshot: each checkpoint replaces the previous one.
+ *  `refPrefix` — see {@link checkpointBranchOf}. */
+export function buildCheckpointPushCommand(target: SandboxDeliveryTarget, refPrefix?: string): string {
+  const refspec = shellQuote(`+${SNAPSHOT_REF}:refs/heads/${checkpointBranchOf(target.branch, refPrefix)}`)
   return `git -C ${shellQuote(target.checkoutDir)} push origin ${refspec}`
 }
 
@@ -239,6 +275,13 @@ export interface RunSandboxDeliveryInput {
   mode?: DeliveryMode
   /** Key of the last checkpoint whose pushes all landed. */
   previousKey?: string
+  /** `false` skips snapshotting uncommitted work (see {@link buildProbeCommand}).
+   *  Default true. */
+  snapshotUncommitted?: boolean
+  /** Remote branch namespace for the checkpoint push — see {@link checkpointBranchOf}. */
+  refPrefix?: string
+  /** Turn count to stamp on the record/commit message — see {@link SandboxDeliveryRecord.turn}. */
+  turn?: number
 }
 
 function errorText(err: unknown): string {
@@ -302,6 +345,7 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
     branch: target.branch,
     baseSha: target.baseSha,
     ...(checkpointMode ? { mode: "checkpoint" as const } : {}),
+    ...(input.turn !== undefined ? { turn: input.turn } : {}),
     push: { status: "skipped" },
     bundle: { status: "skipped" },
   }
@@ -311,7 +355,11 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
     const result = await withinDeadline(deadlineAt, PROBE_TIMEOUT_MS, (timeoutMs) =>
       // GIT_OPTIONAL_LOCKS=0: `git status` must not take the agent's
       // index.lock while it may be committing.
-      exec({ command: buildProbeCommand(target), env: { GIT_OPTIONAL_LOCKS: "0" }, timeoutMs }),
+      exec({
+        command: buildProbeCommand(target, { snapshotUncommitted: input.snapshotUncommitted, turn: input.turn }),
+        env: { GIT_OPTIONAL_LOCKS: "0" },
+        timeoutMs,
+      }),
     )
     probe = result.exitCode === 0 ? parseProbe(result.stdout) : undefined
     if (!probe) {
@@ -349,10 +397,14 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   }
 
   if (probe.snapshot !== undefined) {
-    const ref = checkpointBranchOf(target.branch)
+    const ref = checkpointBranchOf(target.branch, input.refPrefix)
     try {
       const result = await withinDeadline(deadlineAt, PUSH_TIMEOUT_MS, (timeoutMs) =>
-        exec({ command: buildCheckpointPushCommand(target), env: { GIT_TERMINAL_PROMPT: "0" }, timeoutMs }),
+        exec({
+          command: buildCheckpointPushCommand(target, input.refPrefix),
+          env: { GIT_TERMINAL_PROMPT: "0" },
+          timeoutMs,
+        }),
         input.readFile ? bundleReserveMs : 0,
       )
       record.checkpoint =
@@ -431,8 +483,12 @@ export function isFullyDelivered(record: SandboxDeliveryRecord): boolean {
 }
 
 export interface SandboxCheckpointer {
-  /** Take one checkpoint now. Concurrent calls share the in-flight run. */
-  run(): Promise<SandboxDeliveryRecord>
+  /** Take one checkpoint now. Concurrent calls share the in-flight run.
+   *  `turn`, when given, is stamped onto the record and the snapshot commit
+   *  message (see {@link SandboxDeliveryRecord.turn}) — a coalesced call
+   *  (one already in flight) keeps whichever turn number started IT, not
+   *  the caller's. */
+  run(turn?: number): Promise<SandboxDeliveryRecord>
 }
 
 /**
@@ -449,13 +505,14 @@ export function createSandboxCheckpointer(
   let lastKey: string | undefined
   let inFlight: Promise<SandboxDeliveryRecord> | undefined
   return {
-    run() {
+    run(turn) {
       if (inFlight) return inFlight
       inFlight = (async () => {
         const record = await runSandboxDelivery({
           ...run,
           mode: "checkpoint",
           ...(lastKey !== undefined ? { previousKey: lastKey } : {}),
+          ...(turn !== undefined ? { turn } : {}),
         })
         if (isFullyDelivered(record)) lastKey = record.key
         try {
@@ -473,7 +530,11 @@ export function createSandboxCheckpointer(
 }
 
 /** Spacing of periodic checkpoints. `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS`
- *  overrides it; `0` turns periodic and turn-end checkpoints off. */
+ *  overrides it; `0` turns periodic and turn-end checkpoints off. Legacy
+ *  knob — {@link SandboxCheckpointConfig.minIntervalMs} is the config-object
+ *  equivalent and wins when set; this env var remains the ultimate fallback
+ *  (see {@link resolveSandboxCheckpointConfig}) so an existing deployment
+ *  that only ever touched it keeps behaving identically. */
 export const DEFAULT_CHECKPOINT_INTERVAL_MS = 5 * 60_000
 export const CHECKPOINT_INTERVAL_ENV = "AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS"
 
@@ -484,16 +545,113 @@ export function resolveCheckpointIntervalMs(env: NodeJS.ProcessEnv = process.env
   return Number.isFinite(value) && value >= 0 ? value : DEFAULT_CHECKPOINT_INTERVAL_MS
 }
 
-/** The proxy's `checkpoint` option for a box with a work branch — empty when
- *  checkpoints are turned off. Shared by the spawn and restart paths. */
-export function sandboxCheckpointOpts(
-  input: Parameters<typeof createSandboxCheckpointer>[0],
+/**
+ * `defaults.sandbox.checkpoint` / `agent_start({ sandboxCheckpoint })` — the
+ * daemon-config/per-spawn knob replacing the single
+ * `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS` env var with a composable
+ * object. See {@link resolveSandboxCheckpointConfig} for the global →
+ * per-spawn precedence.
+ */
+export interface SandboxCheckpointConfig {
+  /** Master switch. Default true. */
+  enabled?: boolean
+  /** Which triggers take a checkpoint. `"turn-end"` wires the periodic
+   *  timer AND the per-turn hook (today's single on/off knob — there is no
+   *  separate dial for the timer vs. the hook); absent, both stay off.
+   *  `"teardown"` makes the teardown delivery SNAPSHOT uncommitted work
+   *  (not just count it, {@link buildProbeCommand}'s `snapshotUncommitted`);
+   *  absent, teardown still pushes the branch but leaves uncommitted work
+   *  in the box uncounted-for-rescue, matching the pre-checkpoint behaviour.
+   *  Default both. */
+  on?: Array<"turn-end" | "teardown">
+  /** Remote branch namespace the snapshot is force-pushed to
+   *  (`<refPrefix><branch>`). Default {@link CHECKPOINT_BRANCH_PREFIX} —
+   *  changing this only affects a FUTURE checkpoint; see
+   *  {@link checkpointBranchOf}. */
+  refPrefix?: string
+  /** Periodic-checkpoint timer interval (replaces
+   *  `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS`). Default
+   *  {@link DEFAULT_CHECKPOINT_INTERVAL_MS}. */
+  minIntervalMs?: number
+  /** Per-checkpoint wall-clock budget (`runSandboxDelivery`'s `deadlineMs`).
+   *  Default {@link DEFAULT_CHECKPOINT_DEADLINE_MS}. */
+  timeoutMs?: number
+}
+
+export interface ResolvedSandboxCheckpointConfig {
+  enabled: boolean
+  /** Resolved `enabled && on.includes("turn-end")` — the proxy wires the
+   *  timer + per-turn hook iff this is true. */
+  onTurnEnd: boolean
+  /** Resolved `enabled && on.includes("teardown")` — whether the teardown
+   *  delivery snapshots uncommitted work. */
+  onTeardown: boolean
+  refPrefix: string
+  minIntervalMs: number
+  timeoutMs: number
+}
+
+const DEFAULT_CHECKPOINT_ON: ReadonlyArray<"turn-end" | "teardown"> = ["turn-end", "teardown"]
+
+/**
+ * `global → per-spawn` resolution, same precedence shape as
+ * `resolveSpawnDefaults` (per-spawn wins key-by-key). `perSpawn: false`
+ * (`agent_start({ sandboxCheckpoint: false })`) turns everything off for
+ * this spawn regardless of the global config. The legacy
+ * `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS` env var still seeds
+ * `minIntervalMs` when NEITHER config layer sets it, so an existing
+ * deployment that only ever touched the env var keeps working unchanged.
+ */
+export function resolveSandboxCheckpointConfig(
+  global: SandboxCheckpointConfig | undefined,
+  perSpawn: SandboxCheckpointConfig | false | undefined,
   env: NodeJS.ProcessEnv = process.env,
-): { checkpoint?: { run: () => Promise<SandboxDeliveryRecord>; intervalMs: number } } {
-  const intervalMs = resolveCheckpointIntervalMs(env)
-  if (intervalMs <= 0) return {}
-  const checkpointer = createSandboxCheckpointer(input)
-  return { checkpoint: { run: () => checkpointer.run(), intervalMs } }
+): ResolvedSandboxCheckpointConfig {
+  const refPrefix = perSpawn === false ? global?.refPrefix : perSpawn?.refPrefix ?? global?.refPrefix
+  const minIntervalMs =
+    (perSpawn === false ? global?.minIntervalMs : perSpawn?.minIntervalMs ?? global?.minIntervalMs) ??
+    resolveCheckpointIntervalMs(env)
+  const timeoutMs = (perSpawn === false ? global?.timeoutMs : perSpawn?.timeoutMs ?? global?.timeoutMs) ??
+    DEFAULT_CHECKPOINT_DEADLINE_MS
+  if (perSpawn === false) {
+    return {
+      enabled: false,
+      onTurnEnd: false,
+      onTeardown: false,
+      refPrefix: refPrefix ?? CHECKPOINT_BRANCH_PREFIX,
+      minIntervalMs,
+      timeoutMs,
+    }
+  }
+  const enabled = perSpawn?.enabled ?? global?.enabled ?? true
+  const on = perSpawn?.on ?? global?.on ?? DEFAULT_CHECKPOINT_ON
+  return {
+    enabled,
+    // `minIntervalMs <= 0` keeps disabling the timer + per-turn hook on its
+    // own — the pre-config-object off-switch (`AGENTPROTO_SANDBOX_
+    // CHECKPOINT_INTERVAL_MS=0`), preserved so an existing deployment that
+    // only ever set the env var keeps behaving identically.
+    onTurnEnd: enabled && on.includes("turn-end") && minIntervalMs > 0,
+    onTeardown: enabled && on.includes("teardown"),
+    refPrefix: refPrefix ?? CHECKPOINT_BRANCH_PREFIX,
+    minIntervalMs,
+    timeoutMs,
+  }
+}
+
+/** The proxy's `checkpoint` option for a box with a work branch — empty when
+ *  `config.onTurnEnd` is false. Shared by the spawn and restart paths. */
+export function sandboxCheckpointOpts(
+  input: Omit<Parameters<typeof createSandboxCheckpointer>[0], "deadlineMs" | "refPrefix">,
+  config: ResolvedSandboxCheckpointConfig,
+): { checkpoint?: { run: (turn?: number) => Promise<SandboxDeliveryRecord>; intervalMs: number } } {
+  if (!config.onTurnEnd) return {}
+  const checkpointer = createSandboxCheckpointer({
+    ...input,
+    deadlineMs: config.timeoutMs,
+    refPrefix: config.refPrefix,
+  })
+  return { checkpoint: { run: (turn) => checkpointer.run(turn), intervalMs: config.minIntervalMs } }
 }
 
 async function persistRecord(
@@ -533,4 +691,24 @@ export function formatDeliveryNotice(record: SandboxDeliveryRecord): string {
     parts.push(`${record.uncommittedFiles} uncommitted file(s) NOT delivered`)
   }
   return parts.join(" — ")
+}
+
+/**
+ * Teardown-only rescue notice for the session's PARENT (distinct from
+ * {@link formatDeliveryNotice}, which is written into the sandbox session's
+ * OWN transcript — a session whose box died has no next turn to read that):
+ * names the ref the uncommitted-work snapshot was force-pushed to and a
+ * copy-pasteable command to recover it. Undefined when there is nothing to
+ * rescue — no uncommitted files, or the snapshot push itself never landed
+ * (then the ref doesn't exist and there's no fetch command to give).
+ */
+export function formatUncommittedRescueNotice(record: SandboxDeliveryRecord): string | undefined {
+  if (!record.uncommittedFiles || record.checkpoint?.status !== "pushed") return undefined
+  const ref = record.checkpoint.ref
+  const sha = record.checkpoint.sha?.slice(0, 7) ?? "?"
+  return (
+    `[sandbox] ${record.uncommittedFiles} uncommitted file(s) on ${record.branch} were still uncommitted ` +
+    `when the box went away — rescued at ${ref} (${sha}). Recover with: ` +
+    `git fetch origin ${ref} && git checkout FETCH_HEAD -- .`
+  )
 }

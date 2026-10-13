@@ -44,6 +44,13 @@ import type {
 import type { ContextContinuityPolicy } from "./context-continuity.js"
 import type { DeferredToolsConfig } from "./deferred-tools.js"
 import type { SpawnBrowserMode } from "./browser-mount.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, type SandboxCheckpointConfig } from "./sandbox-delivery.js"
+import { CHECKPOINT_BRANCH_PREFIX } from "./sandbox-workspace-remote.js"
+import {
+  checkpointRefPrefixSchema,
+  sandboxCheckpointConfigShape,
+  sandboxCheckpointOnSchema,
+} from "./sandbox-checkpoint-schema.js"
 
 import {
   DEFAULT_WORKTREE_ISOLATION,
@@ -95,6 +102,10 @@ const spawnBrowserModeSchema: z.ZodType<SpawnBrowserMode> = z.union([
   z.literal("headless"),
   z.literal(false),
 ])
+
+const sandboxCheckpointConfigSchema: z.ZodType<SandboxCheckpointConfig> = z
+  .object(sandboxCheckpointConfigShape)
+  .passthrough()
 
 const optionsMapSchema = z.record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
 
@@ -152,6 +163,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .optional(),
     mcp: mcpDefaultsConfigSchema.optional(),
     spawn: z.object({ browser: spawnBrowserModeSchema.optional() }).passthrough().optional(),
+    sandbox: z.object({ checkpoint: sandboxCheckpointConfigSchema.optional() }).passthrough().optional(),
   })
   .passthrough()
 
@@ -1036,6 +1048,57 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Background-task wake grace (ms)",
     help: "How long the daemon waits for the agent to wake itself before prompting it.",
     default: DEFAULT_BG_TASK_WAKE_GRACE_MS,
+  },
+  {
+    path: "defaults.sandbox.checkpoint.enabled",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Sandbox checkpoint enabled",
+    help: "Master switch for the sandbox work safety net (snapshot of uncommitted work pushed to a side branch). Applies to the next sandbox spawn.",
+    default: true,
+  },
+  {
+    path: "defaults.sandbox.checkpoint.on",
+    schema: sandboxCheckpointOnSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Sandbox checkpoint triggers",
+    help: "Which events take a checkpoint: \"turn-end\" (timer + after every turn) and/or \"teardown\" (snapshot uncommitted work before delivery). Applies to the next sandbox spawn.",
+    default: ["turn-end", "teardown"],
+  },
+  {
+    path: "defaults.sandbox.checkpoint.refPrefix",
+    schema: checkpointRefPrefixSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Sandbox checkpoint branch prefix",
+    help: "Remote branch namespace the snapshot is force-pushed to (<prefix><work-branch>). Applies to the next sandbox spawn.",
+    default: CHECKPOINT_BRANCH_PREFIX,
+  },
+  {
+    path: "defaults.sandbox.checkpoint.minIntervalMs",
+    schema: z.number().int().min(0),
+    apply: "hot",
+    env: "AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS",
+    writable: true,
+    section: "defaults",
+    label: "Sandbox checkpoint interval (ms)",
+    help: "Spacing of periodic checkpoints while a sandbox session runs; 0 turns the timer and the per-turn checkpoint off.",
+    default: DEFAULT_CHECKPOINT_INTERVAL_MS,
+  },
+  {
+    path: "defaults.sandbox.checkpoint.timeoutMs",
+    schema: z.number().int().positive(),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Sandbox checkpoint timeout (ms)",
+    help: "Wall-clock budget of one checkpoint (probe + push + bundle fallback).",
+    default: DEFAULT_CHECKPOINT_DEADLINE_MS,
   },
 
   // ── defaults: messaging ──
