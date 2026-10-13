@@ -30,6 +30,12 @@ export const FOLLOW_EVENTS = [
 ] as const
 export type FollowEvent = (typeof FOLLOW_EVENTS)[number]
 
+/** How a follow's digest is delivered: `next-turn` wakes the follower for a
+ *  turn; `fyi` parks it in the follower's inbox without starting one. */
+export const FOLLOW_URGENCIES = ["next-turn", "fyi"] as const
+export type FollowUrgency = (typeof FOLLOW_URGENCIES)[number]
+export const DEFAULT_FOLLOW_URGENCY: FollowUrgency = "next-turn"
+
 export const DEFAULT_FOLLOW_BATCH_MS = 15_000
 export const MAX_FOLLOW_BATCH_MS = 10 * 60_000
 
@@ -73,6 +79,9 @@ export interface SessionFollow {
    *  they are delivered whenever the selector is broad (`all`/`cwdPrefix`),
    *  bypassing `rootOnly`/`cwdPrefix` like explicit ids. */
   excludeFollowerChildren: boolean
+  /** Digest delivery mode. Default "next-turn"; records persisted before this
+   *  field existed load as "next-turn". */
+  urgency: FollowUrgency
 }
 
 /** Fully-resolved input for {@link SessionFollowStore.upsert}. */
@@ -85,6 +94,7 @@ export interface SessionFollowInput {
   batchMs?: number
   skipEmptyTurns?: boolean
   excludeFollowerChildren?: boolean
+  urgency?: FollowUrgency
 }
 
 export interface SessionFollowStore {
@@ -139,6 +149,7 @@ export function resolveFollowDefaults(input: SessionFollowInput): Omit<SessionFo
     batchMs: input.batchMs ?? DEFAULT_FOLLOW_BATCH_MS,
     skipEmptyTurns: input.skipEmptyTurns ?? true,
     excludeFollowerChildren: input.excludeFollowerChildren ?? true,
+    urgency: input.urgency ?? DEFAULT_FOLLOW_URGENCY,
   }
 }
 
@@ -182,7 +193,9 @@ export function createSessionFollowStore(opts?: SessionFollowStoreOptions): Sess
     try {
       const parsed = JSON.parse(raw) as Record<string, SessionFollow>
       for (const [id, follow] of Object.entries(parsed)) {
-        if (follow && typeof follow === "object" && typeof follow.follower === "string") out.set(id, follow)
+        if (follow && typeof follow === "object" && typeof follow.follower === "string") {
+          out.set(id, { ...follow, urgency: follow.urgency === "fyi" ? "fyi" : DEFAULT_FOLLOW_URGENCY })
+        }
       }
     } catch (err) {
       console.warn(
