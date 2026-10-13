@@ -45,6 +45,21 @@
  * Anything else is `unmerged` and — once older than `minAgeDays` and not
  * protected — becomes `review`, carrying everything a reviewer needs (coverage
  * summary, the files NOT provably in base, push state).
+ *
+ * One ref family is classified against something other than base: a SANDBOX
+ * CHECKPOINT branch (remote kind, name `agentproto-checkpoint/<work>` — the
+ * force-pushed snapshot of a sandbox box's uncommitted work). Its tip is a
+ * snapshot commit that never merges, so the ladder on the tip proves nothing;
+ * instead the branch is judged by its WORK branch, pinned to the snapshot's
+ * PARENT commit (`<checkpoint>^`, the work-branch HEAD the box snapshotted
+ * on — branch names get reused, so "the branch is merged" alone may prove a
+ * different generation landed): reclaim (`checkpoint-superseded`) only when
+ * that parent landed too (equals/is an ancestor of a merged work-branch tip,
+ * or equals a merged PR head that landed the same name while the branch is
+ * gone), work is the head of an open PR ⇒ `hold` (`open-pr`), anything else
+ * — including a parentless snapshot or a failed parent lookup — ⇒ `review`,
+ * a dead box's checkpoint may be the only copy of its work.
+ * `young`/`protected` holds still apply first.
  */
 
 import { spawn } from "node:child_process"
@@ -62,6 +77,13 @@ export const BRANCH_GC_SCOPES = ["local", "remote", "orphan"] as const
 /** `local` = refs/heads, `remote` = the base remote's tracking refs, `orphan` = refs/remotes/<ns>/* of a remote that no longer exists. */
 export type BranchRefKind = (typeof BRANCH_GC_SCOPES)[number]
 
+/** Remote-branch namespace a sandbox session snapshots uncommitted work into
+ *  (`agentproto-checkpoint/<work-branch>`) — `sandbox-delivery.ts`'s
+ *  `CHECKPOINT_BRANCH_PREFIX`, duplicated here so the worktree package keeps
+ *  no runtime dependency. A remote ref under this prefix is classified
+ *  against its WORK branch, not against base. */
+export const CHECKPOINT_BRANCH_PREFIX = "agentproto-checkpoint/"
+
 /** The verdict for one tip, in order of increasing cost (`pr-merged` is the forge shortcut that overrides an "unmerged" ladder verdict, not a check that skips the ladder). */
 export type BranchStatus = "pr-merged" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
 
@@ -75,8 +97,12 @@ export type BranchHistory = "current" | "pre-rewrite" | "unrelated"
 
 export type BranchGcClass = "reclaim" | "review" | "hold"
 
-/** Why a `reclaim` entry is reclaimable: one of the ladder's proven tiers, or a stored gate verdict (`includeReviewed`). */
-export type BranchGcReclaimReason = Exclude<BranchStatus, "unmerged"> | "reviewed"
+/**
+ * Why a `reclaim` entry is reclaimable: one of the ladder's proven tiers, a
+ * stored gate verdict (`includeReviewed`), or a sandbox checkpoint branch
+ * whose work branch is merged (`checkpoint-superseded`).
+ */
+export type BranchGcReclaimReason = Exclude<BranchStatus, "unmerged"> | "reviewed" | "checkpoint-superseded"
 
 /**
  * Why an entry is `hold`:
@@ -732,23 +758,157 @@ async function openPrHeads(forge: ForgeClient | undefined): Promise<OpenPrHeads>
 }
 
 /**
- * Merged PR head sha → PR number, for the `pr-merged` shortcut. On any error
- * or a forge without `listMergedPullRequests` this returns an empty map —
- * never throws: unavailable just means "no shortcut", not "no merged PRs",
- * and the ladder still classifies every ref on its own.
+ * Merged PRs, indexed two ways for the `pr-merged` shortcut and for
+ * checkpoint classification: head sha → PR number, and head ref name →
+ * { number, headRefOid } (a checkpoint whose work branch is GONE is still
+ * superseded when a merged PR landed that branch by name AND the snapshot's
+ * parent is that PR's exact head — the name alone proves nothing, names get
+ * reused). On any error or a forge without `listMergedPullRequests` both
+ * maps are empty — never throws: unavailable just means "no shortcut", not
+ * "no merged PRs", and the ladder still classifies every ref on its own.
  */
-async function mergedPrHeads(forge: ForgeClient | undefined): Promise<Map<string, number>> {
-  if (!forge?.listMergedPullRequests) return new Map()
+interface MergedPrIndex {
+  shas: Map<string, number>
+  names: Map<string, { number: number; headRefOid: string }>
+}
+
+async function mergedPrIndex(forge: ForgeClient | undefined): Promise<MergedPrIndex> {
+  if (!forge?.listMergedPullRequests) return { shas: new Map(), names: new Map() }
   try {
-    const heads = new Map<string, number>()
-    for (const pr of await forge.listMergedPullRequests()) heads.set(pr.headRefOid, pr.number)
-    return heads
+    const shas = new Map<string, number>()
+    const names = new Map<string, { number: number; headRefOid: string }>()
+    for (const pr of await forge.listMergedPullRequests()) {
+      shas.set(pr.headRefOid, pr.number)
+      names.set(pr.headRefName, { number: pr.number, headRefOid: pr.headRefOid })
+    }
+    return { shas, names }
   } catch {
-    return new Map()
+    return { shas: new Map(), names: new Map() }
   }
 }
 
 // ── classification of one ref ──────────────────────────────────────────
+
+/** For a remote checkpoint ref (`agentproto-checkpoint/<work>`), the WORK
+ *  branch it snapshots; `undefined` for every other ref. */
+function checkpointWorkBranchOf(b: BranchRef): string | undefined {
+  if (b.kind !== "remote" || !b.name.startsWith(CHECKPOINT_BRANCH_PREFIX)) return undefined
+  const work = b.name.slice(CHECKPOINT_BRANCH_PREFIX.length)
+  return work.length > 0 ? work : undefined
+}
+
+/** The snapshot's parent (`<checkpoint>^`) — the work-branch HEAD the box
+ *  snapshotted on. `undefined` for a root commit or a failed lookup: such a
+ *  checkpoint is never reclaimed. */
+async function checkpointParent(env: ClassifyEnv, sha: string): Promise<string | undefined> {
+  try {
+    const res = await git(env.ctx.repoRoot, ["rev-parse", "--verify", "--quiet", `${sha}^`])
+    if (res.exitCode !== 0) return undefined
+    const parent = res.stdout.trim()
+    return parent.length > 0 ? parent : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** `maybeAncestor === tip` or a real ancestor of it (`git merge-base --is-ancestor`). */
+async function isAncestorOf(env: ClassifyEnv, maybeAncestor: string, tip: string): Promise<boolean> {
+  if (maybeAncestor === tip) return true
+  try {
+    const res = await git(env.ctx.repoRoot, ["merge-base", "--is-ancestor", maybeAncestor, tip])
+    return res.exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A sandbox checkpoint branch never merges (its tip is a snapshot commit), so
+ * the ladder on its OWN tip proves nothing — it is classified against its
+ * WORK branch instead, pinned to the snapshot's PARENT commit (`<checkpoint>^`,
+ * the work-branch HEAD the box snapshotted on): branch names get reused, so
+ * "the branch is merged" alone may prove a DIFFERENT generation of the branch
+ * landed. Reclaim (`checkpoint-superseded`) only when that parent landed too —
+ * it equals or is an ancestor of a merged work-branch tip (ladder), or equals
+ * a merged PR's head that landed the same name while the branch is gone
+ * (by-name); the head of an open PR ⇒ `hold` (`open-pr`); anything else —
+ * including a parentless snapshot or a failed parent lookup — ⇒ `review`,
+ * never auto-reclaimed: a dead box's checkpoint may be the only copy of its
+ * uncommitted work. `young` and `protected` holds (on the WORK branch's name)
+ * still apply first.
+ */
+async function classifyCheckpointRef(b: BranchRef, work: string, env: ClassifyEnv): Promise<BranchGcPlanEntry> {
+  const ageDays = Math.floor((env.nowMs - new Date(b.date).getTime()) / 86_400_000)
+  const workRefs = env.workBranchRefs.get(work) ?? []
+  // Classify every distinct work-branch tip through the shared ladder memo;
+  // any merged status supersedes the checkpoint (a local twin may have landed
+  // while its remote twin lags, or vice versa) — subject to the snapshot's
+  // parent having landed too (see below).
+  let tip: TipClassification = { status: "unmerged", history: "unrelated", ahead: null, behind: null }
+  let mergedLadder: TipClassification | undefined
+  const mergedTips: string[] = []
+  const seen = new Set<string>()
+  for (const wr of workRefs) {
+    if (seen.has(wr.sha)) continue
+    seen.add(wr.sha)
+    let pending = env.tips.get(wr.sha)
+    if (!pending) {
+      pending = classifyTip(env.ctx, wr.sha)
+      env.tips.set(wr.sha, pending)
+    }
+    let cls = await pending
+    if (cls.status === "unmerged" && env.mergedPrShas.has(wr.sha)) cls = { ...cls, status: "pr-merged" }
+    if (cls.status !== "unmerged") {
+      mergedLadder ??= cls
+      if (!mergedTips.includes(wr.sha)) mergedTips.push(wr.sha)
+    } else if (tip.status === "unmerged" && tip.ahead === null) tip = cls
+  }
+  const entry: BranchGcPlanEntry = { ...b, ...tip, ageDays, class: "hold" }
+  if (ageDays < env.minAgeDays) {
+    entry.holdReason = "young"
+    entry.holdDetail = `${ageDays}d < ${env.minAgeDays}d`
+    return entry
+  }
+  if (PROTECTED_NAMES.has(work) || work === env.baseName) {
+    entry.holdReason = "protected"
+    return entry
+  }
+  const pr = env.prs.heads.get(work)
+  if (pr !== undefined) {
+    entry.holdReason = "open-pr"
+    entry.holdDetail = `PR #${pr}`
+    return entry
+  }
+  const mergedByName = workRefs.length === 0 ? env.mergedPrNames.get(work) : undefined
+  if (mergedLadder || mergedByName !== undefined) {
+    // The snapshot's parent is the work-branch HEAD the box was ON when it
+    // snapshotted: reclaim only when THAT commit landed, not merely the
+    // branch name or some other tip the branch used to have.
+    const parent = await checkpointParent(env, b.sha)
+    if (parent !== undefined) {
+      if (mergedLadder) {
+        for (const mergedTip of mergedTips) {
+          if (await isAncestorOf(env, parent, mergedTip)) {
+            Object.assign(entry, mergedLadder)
+            entry.class = "reclaim"
+            entry.reclaimReason = "checkpoint-superseded"
+            return entry
+          }
+        }
+      }
+      if (mergedByName !== undefined && parent === mergedByName.headRefOid) {
+        entry.class = "reclaim"
+        entry.reclaimReason = "checkpoint-superseded"
+        entry.mergedPr = mergedByName.number
+        return entry
+      }
+    }
+    entry.class = "review"
+    return entry
+  }
+  entry.class = "review"
+  return entry
+}
 
 interface ClassifyEnv {
   ctx: LadderContext
@@ -761,6 +921,10 @@ interface ClassifyEnv {
   prs: OpenPrHeads
   /** Merged PR head sha → PR number (`pr-merged` shortcut). Empty = no shortcut available. */
   mergedPrShas: Map<string, number>
+  /** Merged PR head ref name → { number, headRefOid } (checkpoint supersession when the work branch is gone — the snapshot's parent must equal `headRefOid`). */
+  mergedPrNames: Map<string, { number: number; headRefOid: string }>
+  /** Work-branch name → its local/remote refs, for classifying checkpoint branches against their work branch. */
+  workBranchRefs: Map<string, BranchRef[]>
   remoteShas: Set<string>
   remoteNames: Set<string>
   /**
@@ -817,6 +981,8 @@ async function pushStateOf(b: BranchRef, env: ClassifyEnv): Promise<BranchPushSt
 }
 
 async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlanEntry> {
+  const checkpointWork = checkpointWorkBranchOf(b)
+  if (checkpointWork !== undefined) return classifyCheckpointRef(b, checkpointWork, env)
   let pending = env.tips.get(b.sha)
   if (!pending) {
     pending = classifyTip(env.ctx, b.sha)
@@ -900,7 +1066,7 @@ async function snapshot(input: {
     listBranchRefs(input.repoRoot, remote, remotes),
     worktreeBranches(input.repoRoot),
     openPrHeads(input.forge),
-    mergedPrHeads(input.forge),
+    mergedPrIndex(input.forge),
   ])
   const baseSha = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.base}^{commit}`])).trim()
   let anchor: string | null
@@ -911,6 +1077,13 @@ async function snapshot(input: {
   else anchor = null
   const ctx = await createLadderContext(input.repoRoot, baseSha, anchor, related, mergeBases)
   const remoteRefs = refs.filter((r) => r.kind === "remote")
+  // Work-branch name → its local/remote refs: a checkpoint branch
+  // (`agentproto-checkpoint/<work>`) is classified against THIS, not base.
+  const workBranchRefs = new Map<string, BranchRef[]>()
+  for (const r of refs) {
+    if (r.kind === "orphan") continue
+    workBranchRefs.set(r.name, [...(workBranchRefs.get(r.name) ?? []), r])
+  }
   // ONE `git rev-list` per question, memoized: every commit reachable from
   // the base remote's refs (for `contained-in-remote`), and from local
   // branches + those refs (for orphan `contained-elsewhere`). Above
@@ -937,7 +1110,9 @@ async function snapshot(input: {
       baseName: remote && input.base.startsWith(`${remote}/`) ? input.base.slice(remote.length + 1) : input.base,
       worktrees,
       prs,
-      mergedPrShas: mergedPrs,
+      mergedPrShas: mergedPrs.shas,
+      mergedPrNames: mergedPrs.names,
+      workBranchRefs,
       remoteShas: new Set(remoteRefs.map((r) => r.sha)),
       remoteNames: new Set(remoteRefs.map((r) => r.name)),
       ...(remote
