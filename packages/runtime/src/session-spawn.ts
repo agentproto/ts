@@ -84,6 +84,7 @@ import {
   withGhTokenAlias,
   withoutReservedSandboxEnv,
   planSandboxWorkspace,
+  type CheckpointRestoreSnapshot,
   runSandboxWorkspaceSetup,
   type SandboxWorkspacePlan,
 } from "./sandbox-workspace-remote.js"
@@ -1442,6 +1443,10 @@ export interface SpawnAgentSessionInput {
    *  `defaults.sandbox.checkpoint`. Meaningful only for a `sandbox` spawn
    *  with a workspace-remote delivery target; ignored otherwise. */
   sandboxCheckpoint?: SandboxCheckpointConfig | false
+  /** INTERNAL (`session_migrate`, never an `agent_start` argument): which
+   *  checkpoint snapshot the new box restores onto the work branch's
+   *  checkout. Default `"any"` — see `CheckpointRestoreSnapshot`. */
+  sandboxCheckpointRestore?: CheckpointRestoreSnapshot
   /** WP3 — serve an agentproto app's UI from INSIDE the sandbox box and
    *  return its public URL on the descriptor + result. Requires `sandbox`
    *  (a non-sandbox spawn carrying `appServe` is rejected): the app dir is
@@ -3973,6 +3978,7 @@ export async function spawnAgentSession(
         resolveSandboxProvider,
         adapter: input.adapter,
         checkpointConfig,
+        ...(input.sandboxCheckpointRestore !== undefined ? { checkpointSnapshot: input.sandboxCheckpointRestore } : {}),
         // controllers half of the #1647 pairing: the caller's EXPLICIT slug
         // rides the bridge so the TARGET daemon resolves it against ITS
         // registry (and fails loudly there when it can't). Undefined for
@@ -4883,6 +4889,8 @@ export async function bootSandboxAgentSession(opts: {
    *  consulted together with `workspace` below (meaningless without a
    *  delivery target); absent ⇒ the all-defaults resolution. */
   checkpointConfig?: ResolvedSandboxCheckpointConfig
+  /** Which checkpoint snapshot to restore onto the checkout (default `"any"`). */
+  checkpointSnapshot?: CheckpointRestoreSnapshot
   /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
    *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
    *  `forwardHttpStream` dial delivers both the spawn and the first turn.
@@ -4958,6 +4966,7 @@ export async function bootSandboxAgentSession(opts: {
         homeDir: handle.defaultCwd,
         ...(opts.worktree ? { worktree: opts.worktree } : {}),
         ...(opts.checkpointConfig?.refPrefix ? { checkpointRefPrefix: opts.checkpointConfig.refPrefix } : {}),
+        ...(opts.checkpointSnapshot !== undefined ? { checkpointSnapshot: opts.checkpointSnapshot } : {}),
         mintSlug: () => randomBytes(4).toString("hex"),
       })
     } catch (err) {

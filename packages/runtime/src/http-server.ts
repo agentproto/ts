@@ -260,6 +260,7 @@ import {
 } from "./context-checkpoint.js"
 import { computeContextPct } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -5652,6 +5653,13 @@ export function buildSpawnSessionHttpArgs(
  *                                    harness; body { to, model?, access?,
  *                                    notes?, dryRun? }; dryRun builds the
  *                                    checkpoint only (no write, no spawn)
+ *   POST   /sessions/:id/migrate  → resume a SANDBOX session on a NEW box from
+ *                                    its checkpoint; body { sandbox?, model?,
+ *                                    profile?, notes? }; 201 { migratedFrom,
+ *                                    migratedTo, restore, oldSessionKilled,
+ *                                    session }. 400/409 + `error` code when the
+ *                                    session can't be migrated; old session is
+ *                                    untouched on failure
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
  *                                    {pinned: boolean}; returns {ok, sessionId,
@@ -7333,6 +7341,79 @@ async function handleSessions(
         return true
       }
       json(500, { error: "handoff_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  // POST /sessions/:id/migrate — resume a sandbox session on a NEW box from
+  // its checkpoint (the REST twin of `session_migrate`). Body `{ sandbox?,
+  // model?, profile?, notes? }`; the old session is left untouched on any
+  // failure.
+  const migrateMatch = path.match(/^\/sessions\/([^/]+)\/migrate$/)
+  if (migrateMatch && req.method === "POST") {
+    const id = decodeURIComponent(migrateMatch[1] ?? "")
+    if (!id) return false
+    const prev = registry.findByIdOrName(id)
+    if (!prev) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    for (const field of ["sandbox", "model", "profile", "notes"] as const) {
+      const v = b[field]
+      if (v !== undefined && (typeof v !== "string" || v.length === 0)) {
+        json(400, { error: `invalid_${field}`, message: `${field} must be a non-empty string` })
+        return true
+      }
+    }
+    if (!resolveAgentAdapter) {
+      json(501, {
+        error: "migrate_not_enabled",
+        message: "POST /sessions/:id/migrate needs the host to inject `resolveAgentAdapter`.",
+      })
+      return true
+    }
+    try {
+      const result = await migrateSandboxSession(
+        {
+          registry,
+          resolveAgentAdapter,
+          buildOrchestratorMcp,
+          daemonMcpUrl,
+          ...(provisionWorktree ? { provisionWorktree } : {}),
+          ...(listCatalogModels ? { listCatalogModels } : {}),
+          ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+          ...(webhookNotifier ? { webhookNotifier } : {}),
+          ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+          ...(listAgentAdapters ? { listAgentAdapters } : {}),
+        },
+        prev,
+        {
+          ...(typeof b.sandbox === "string" ? { sandbox: b.sandbox } : {}),
+          ...(typeof b.model === "string" ? { model: b.model } : {}),
+          ...(typeof b.profile === "string" ? { access: { profileRef: b.profile } } : {}),
+          ...(typeof b.notes === "string" ? { notes: b.notes } : {}),
+        },
+      )
+      json(201, {
+        ok: true,
+        ...summarizeMigration(result),
+        session: sessionDescriptorForHttp(result.descriptor),
+      })
+    } catch (err) {
+      if (err instanceof SessionMigrateError) {
+        json(err.code === "not_sandbox_session" || err.code === "unsupported_sandbox" || err.code === "no_work_branch" ? 400 : 409, {
+          error: err.code,
+          message: err.message,
+          id: prev.id,
+        })
+        return true
+      }
+      if (err instanceof ContinueFreshSpawnError) {
+        json(spawnFailureStatus(err.code), { error: err.code, message: err.message, ...err.details })
+        return true
+      }
+      json(500, { error: "migrate_failed", message: err instanceof Error ? err.message : String(err) })
     }
     return true
   }

@@ -1585,7 +1585,7 @@ export async function restartAgentSession(
 const SANDBOX_PREVIEW_RE = /^sandbox:(\S+) → /
 
 /** The sandbox provider slug a prior sandbox session was spawned with. */
-function parseSandboxProviderSlug(command: string | undefined): string | undefined {
+export function parseSandboxProviderSlug(command: string | undefined): string | undefined {
   return command?.match(SANDBOX_PREVIEW_RE)?.[1]
 }
 

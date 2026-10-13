@@ -104,6 +104,9 @@ export interface SandboxWorkspaceRequest {
    *  match the `refPrefix` the checkpoint was pushed with. Default
    *  {@link CHECKPOINT_BRANCH_PREFIX}. */
   checkpointRefPrefix?: string
+  /** Which checkpoint snapshot may be restored onto the checkout. Default
+   *  `"any"`. See {@link CheckpointRestoreSnapshot}. */
+  checkpointSnapshot?: CheckpointRestoreSnapshot
 }
 
 export interface SandboxSetupStep {
@@ -130,6 +133,51 @@ export interface SandboxWorkspacePlan {
 export type SandboxWorkspaceSetupResult =
   | { ok: true; baseSha: string }
   | { ok: false; step: string; message: string }
+
+/** Which snapshot {@link restoreCheckpointSteps} may put back: `"any"` — the
+ *  one on the remote, if it fits the checkout (restart on a dead box);
+ *  `"none"` — none (the last checkpoint was clean, so a stale snapshot left on
+ *  the remote must not resurface); `{ sha }` — only that exact snapshot commit
+ *  (migrate: the one the final checkpoint just pushed). */
+export type CheckpointRestoreSnapshot = "any" | "none" | { sha: string }
+
+export interface RestoreCheckpointRequest {
+  checkoutDir: string
+  /** The work branch (`wt/<slug>`) already checked out in `checkoutDir`. */
+  branch: string
+  /** Remote branch namespace of the snapshot. Default {@link CHECKPOINT_BRANCH_PREFIX}. */
+  refPrefix?: string
+  snapshot?: CheckpointRestoreSnapshot
+}
+
+/**
+ * Pure planner: the setup steps that put a checkpoint snapshot back on a
+ * checkout whose work branch is already checked out. Commits stay commits (a
+ * branch tip the old box never pushed is fast-forwarded to the snapshot's
+ * parent, which the snapshot push carried along); the snapshot's tree is
+ * restored as UNCOMMITTED changes. Restores only onto a clean tree and only a
+ * snapshot that descends from HEAD — anything else is stale or would clobber
+ * work, so it is left on the remote. The step is never fatal: the session can
+ * start without it.
+ */
+export function restoreCheckpointSteps(req: RestoreCheckpointRequest): SandboxSetupStep[] {
+  const snapshot = req.snapshot ?? "any"
+  if (snapshot === "none") return []
+  if (typeof snapshot === "object" && !/^[0-9a-f]{40,64}$/.test(snapshot.sha)) {
+    throw new Error(`checkpoint snapshot sha "${snapshot.sha}" is not a commit id.`)
+  }
+  const dir = shellQuote(req.checkoutDir)
+  const ckpt = shellQuote(`refs/remotes/origin/${req.refPrefix ?? CHECKPOINT_BRANCH_PREFIX}${req.branch}`)
+  const exact = typeof snapshot === "object" ? ` && [ "$(git rev-parse ${ckpt})" = ${shellQuote(snapshot.sha)} ]` : ""
+  const command =
+    `cd ${dir} && if git show-ref --verify --quiet ${ckpt}${exact} && ` +
+    `[ -z "$(git status --porcelain)" ]; ` +
+    `then { { [ "$(git rev-parse ${ckpt}^)" = "$(git rev-parse HEAD)" ] || ` +
+    `{ git merge-base --is-ancestor HEAD ${ckpt}^ && git merge --ff-only -q ${ckpt}^; }; } && ` +
+    `git read-tree -u --reset ${ckpt} && git reset -q && echo "restored checkpoint"; } ` +
+    `|| echo "checkpoint not restored"; fi`
+  return [{ label: "restore-checkpoint", command, timeoutMs: STEP_TIMEOUT_MS }]
+}
 
 /** POSIX single-quote a value for safe interpolation into a shell command. */
 export function shellQuote(value: string): string {
@@ -213,22 +261,14 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
         `else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
       timeoutMs: STEP_TIMEOUT_MS,
     })
-    const checkpoint = shellQuote(`refs/remotes/origin/${req.checkpointRefPrefix ?? CHECKPOINT_BRANCH_PREFIX}${branch}`)
-    steps.push({
-      label: "restore-checkpoint",
-      // A dead box's uncommitted work, snapshotted by `sandbox-delivery`: put
-      // its tree back as uncommitted changes, but only onto the exact commit
-      // it was taken from and a clean checkout — anything else means the
-      // snapshot is stale or would clobber work, so it is left on the remote.
-      // Never fatal: the session can start without it.
-      command:
-        `cd ${dir} && if git show-ref --verify --quiet ${checkpoint} && ` +
-        `[ "$(git rev-parse ${checkpoint}^)" = "$(git rev-parse HEAD)" ] && ` +
-        `[ -z "$(git status --porcelain)" ]; ` +
-        `then { git read-tree -u --reset ${checkpoint} && git reset -q && echo "restored checkpoint"; } ` +
-        `|| echo "checkpoint not restored"; fi`,
-      timeoutMs: STEP_TIMEOUT_MS,
-    })
+    steps.push(
+      ...restoreCheckpointSteps({
+        checkoutDir,
+        branch,
+        ...(req.checkpointRefPrefix !== undefined ? { refPrefix: req.checkpointRefPrefix } : {}),
+        ...(req.checkpointSnapshot !== undefined ? { snapshot: req.checkpointSnapshot } : {}),
+      }),
+    )
   } else {
     steps.push({
       label: "git-checkout",
