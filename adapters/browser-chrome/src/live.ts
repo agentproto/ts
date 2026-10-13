@@ -135,6 +135,8 @@ export const chromeLiveDriverCapabilities: BrowserDriverCapabilities = {
   ...chromeDriverCapabilities,
   canMultiTarget: true,
   isUserVisible: true,
+  // Read-only: Network.getCookies works, nothing is written into the user's profile.
+  canCookies: false,
 }
 
 /** Domains and methods an agent may not send through `driver.send` (cdp_send) on the user's own Chrome. */
