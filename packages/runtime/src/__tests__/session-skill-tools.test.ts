@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -121,7 +121,7 @@ describe("skill_import / skill_imported_remove round trip", () => {
     const imported = parse(
       await client.callTool({ name: "skill_import", arguments: { path: src, alias: "friendly" } })
     )
-    expect(imported).toMatchObject({ id: "ap-round-trip", alias: "friendly", sourcePath: src })
+    expect(imported).toMatchObject({ id: "ap-round-trip", alias: "friendly", sourcePath: await realpath(src) })
     expect(imported.sha).toMatch(/^[0-9a-f]{64}$/)
 
     const listed = parse(await client.callTool({ name: "skill_imported_list", arguments: {} }))

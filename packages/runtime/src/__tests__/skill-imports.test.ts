@@ -4,8 +4,8 @@
  * step. Fully hermetic — temp dirs, injected registry path + root.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
-import { existsSync } from "node:fs"
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { existsSync, lstatSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -66,7 +66,7 @@ describe("importSkill", () => {
 
     expect(entry.id).toBe("ap-foo")
     expect(entry.alias).toBe("ap-foo")
-    expect(entry.sourcePath).toBe(src)
+    expect(entry.sourcePath).toBe(await realpath(src))
     expect(entry.sha).toMatch(/^[0-9a-f]{64}$/)
     expect(config.imports).toHaveLength(1)
 
@@ -79,6 +79,29 @@ describe("importSkill", () => {
     expect(existsSync(join(copied, "SKILL.md"))).toBe(true)
 
     expect(await listImportedSkills(paths)).toEqual([entry])
+  })
+
+  it("dereferences a symlinked source (and nested symlinks) into a real copy", async () => {
+    const realSrc = await makeSkill("ap-link", { extraFiles: { "scripts/run.sh": "echo hi\n" } })
+    const link = join(base, "src-link")
+    await symlink(realSrc, link, "dir")
+
+    const outside = join(base, "outside.txt")
+    await writeFile(outside, "external\n")
+    await symlink(outside, join(realSrc, "linked.txt"))
+
+    const { entry } = await importSkill({ sourcePath: link }, paths)
+    expect(entry.sourcePath).toBe(await realpath(realSrc))
+
+    const copied = skillImportDir("ap-link", paths.root)
+    expect(lstatSync(copied).isSymbolicLink()).toBe(false)
+    expect(lstatSync(join(copied, "linked.txt")).isSymbolicLink()).toBe(false)
+    expect(await readFile(join(copied, "linked.txt"), "utf8")).toBe("external\n")
+
+    // Snapshot: removing the real source tree leaves the copy intact.
+    await rm(realSrc, { recursive: true, force: true })
+    expect(existsSync(join(copied, "SKILL.md"))).toBe(true)
+    expect(await readFile(join(copied, "linked.txt"), "utf8")).toBe("external\n")
   })
 
   it("honours an explicit alias and replaces an existing id", async () => {

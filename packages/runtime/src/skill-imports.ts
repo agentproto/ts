@@ -233,18 +233,35 @@ export function parseSkillFrontmatter(raw: string): { name: string; description:
   return { name: parsed.data.name, description: parsed.data.description }
 }
 
-/** Recursively list regular files under `dir`, as POSIX-style relative paths. */
+/**
+ * Recursively list files under `dir`, as POSIX-style relative paths. Symlinks
+ * are FOLLOWED (matching `copySkillDir`'s dereference) so the hash reflects the
+ * bytes actually delivered; visited realpaths are tracked so a link cycle can't
+ * loop forever.
+ */
 async function listFiles(dir: string): Promise<string[]> {
   const out: string[] = []
+  const visited = new Set<string>()
   const walk = async (abs: string): Promise<void> => {
+    let real: string
+    try {
+      real = await fs.realpath(abs)
+    } catch {
+      return
+    }
+    if (visited.has(real)) return
+    visited.add(real)
     const entries = await fs.readdir(abs, { withFileTypes: true })
     for (const entry of entries) {
       const child = join(abs, entry.name)
-      if (entry.isDirectory()) {
-        await walk(child)
-      } else if (entry.isFile()) {
-        out.push(relative(dir, child).split(sep).join("/"))
+      let stat
+      try {
+        stat = await fs.stat(child)
+      } catch {
+        continue
       }
+      if (stat.isDirectory()) await walk(child)
+      else if (stat.isFile()) out.push(relative(dir, child).split(sep).join("/"))
     }
   }
   await walk(dir)
@@ -253,8 +270,8 @@ async function listFiles(dir: string): Promise<string[]> {
 
 /**
  * sha256 over the sorted relative paths + bytes of a skill tree. A rename or
- * any byte change moves the hash; directory mtimes do not. Symlinks are not
- * followed (they aren't copied either).
+ * any byte change moves the hash; directory mtimes do not. Symlinks are
+ * dereferenced (matching the copy), so the hash is over the delivered bytes.
  */
 export async function computeSkillDirSha(dir: string): Promise<string> {
   const files = (await listFiles(dir)).sort()
@@ -271,7 +288,10 @@ export async function computeSkillDirSha(dir: string): Promise<string> {
 async function copySkillDir(source: string, dest: string): Promise<void> {
   await fs.rm(dest, { recursive: true, force: true })
   await fs.mkdir(dirname(dest), { recursive: true })
-  await fs.cp(source, dest, { recursive: true })
+  // `dereference: true` so a symlink anywhere in the tree — the top-level
+  // source itself, or a nested `scripts/` link — is copied as real content.
+  // The registry is a snapshot and must not depend on paths outside it.
+  await fs.cp(source, dest, { recursive: true, dereference: true })
 }
 
 async function assertSkillSource(sourcePath: string): Promise<string> {
@@ -285,13 +305,22 @@ async function assertSkillSource(sourcePath: string): Promise<string> {
   if (!stat.isDirectory()) {
     throw new Error(`skill source "${sourcePath}" is not a directory`)
   }
-  const skillFile = join(abs, SKILL_FILE)
+  // Resolve symlinks so the COPY is a real snapshot: `fs.cp` would otherwise
+  // reproduce a symlinked source as a symlink into the registry, and the
+  // "durable snapshot" guarantee would be a lie.
+  let real: string
+  try {
+    real = await fs.realpath(abs)
+  } catch {
+    throw new Error(`skill source "${sourcePath}" could not be resolved`)
+  }
+  const skillFile = join(real, SKILL_FILE)
   try {
     await fs.access(skillFile)
   } catch {
     throw new Error(`skill source "${sourcePath}" has no ${SKILL_FILE}`)
   }
-  return abs
+  return real
 }
 
 export interface ImportSkillResult {
