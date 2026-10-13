@@ -223,6 +223,7 @@ describe("createDaemonReviewerHost — child reviewer sessions", () => {
     expect(desc.label).toBe("review:demo:correctness")
     expect(desc.adapterSlug).toBe("fake")
     expect(desc.status).toBe("killed")
+    expect(desc.archived).toBe(true)
     registry.shutdown()
   })
 
@@ -232,6 +233,7 @@ describe("createDaemonReviewerHost — child reviewer sessions", () => {
     expect(res).toMatchObject({ status: "timeout", preset: "rev" })
     if (res.status !== "timeout") throw new Error("expected timeout")
     expect(registry.get(res.sessionId)!.status).toBe("killed")
+    expect(registry.get(res.sessionId)!.archived).toBe(true)
     registry.shutdown()
   })
 
@@ -249,6 +251,7 @@ describe("createDaemonReviewerHost — child reviewer sessions", () => {
     })
     expect(res).toMatchObject({ status: "failed", error: "review cancelled while the reviewer was running" })
     expect(res.status === "failed" && res.sessionId && registry.get(res.sessionId)!.status).toBe("killed")
+    expect(res.status === "failed" && res.sessionId && registry.get(res.sessionId)!.archived).toBe(true)
     registry.shutdown()
   })
 
@@ -328,6 +331,74 @@ describe("createDaemonReviewerHost — child reviewer sessions", () => {
     const { host, registry, spawnedWith } = setup("empty")
     await host.run({ preset: "rev", cwd: home, prompt: "review", label: "review:demo:empty2", timeoutMs: 10_000 })
     expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("archives every reviewer session — failed turns and each retry attempt too", async () => {
+    const { host, registry, spawnedWith } = setup([
+      "error:Cannot connect to API: The socket connection was closed unexpectedly",
+      "empty",
+    ])
+    const res = await host.run({ preset: "rev", cwd: home, prompt: "review", label: "review:demo:archive", timeoutMs: 10_000 })
+    expect(res.status).toBe("failed")
+    expect(spawnedWith).toHaveLength(2)
+    const sessions = registry.list({ includeArchived: true }).filter((d) => d.label?.startsWith("review:demo:archive"))
+    expect(sessions.map((d) => d.label).sort()).toEqual(["review:demo:archive", "review:demo:archive:retry1"])
+    for (const d of sessions) {
+      expect(d.status).toBe("killed")
+      expect(d.archived).toBe(true)
+    }
+    // Hidden from the default session list.
+    expect(registry.list().filter((d) => d.label?.startsWith("review:demo:archive"))).toEqual([])
+    registry.shutdown()
+  })
+
+  it("archives a reviewer whose session exits on its own", async () => {
+    const { host, registry } = setup("review")
+    const res = await host.run({ preset: "rev", cwd: home, prompt: "review", label: "review:demo:archive-ended", timeoutMs: 10_000 })
+    if (res.status !== "ended") throw new Error("expected ended")
+    expect(registry.list().some((d) => d.id === res.sessionId)).toBe(false)
+    expect(registry.list({ includeArchived: true }).some((d) => d.id === res.sessionId)).toBe(true)
+    registry.shutdown()
+  })
+
+  it("keeps the verdict and the session record readable after archiving", async () => {
+    const { host, registry } = setup("review")
+    const verdictPath = join(home, "verdict-archived.json")
+    const res = await host.run({
+      preset: "rev",
+      cwd: home,
+      prompt: `Review it. When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON`,
+      label: "review:demo:readable",
+      timeoutMs: 10_000,
+    })
+    if (res.status !== "ended") throw new Error("expected ended")
+    expect(registry.get(res.sessionId)!.archived).toBe(true)
+    expect(JSON.parse(await readFile(verdictPath, "utf8"))).toEqual({ findings: [] })
+    expect(res.model).toBe("model-rev")
+    expect(registry.get(res.sessionId)).toMatchObject({ label: "review:demo:readable", adapterSlug: "fake" })
+    registry.shutdown()
+  })
+
+  it("an archive that throws never fails the review", async () => {
+    const { host, registry } = setup("review")
+    const archive = vi.spyOn(registry, "archiveSession").mockImplementation(() => {
+      throw new Error("archive refused")
+    })
+    const verdictPath = join(home, "verdict-archive-error.json")
+    const res = await host.run({
+      preset: "rev",
+      cwd: home,
+      prompt: `Review it. When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON`,
+      label: "review:demo:archive-error",
+      timeoutMs: 10_000,
+    })
+    expect(archive).toHaveBeenCalledTimes(1)
+    expect(res).toMatchObject({ status: "ended", preset: "rev" })
+    if (res.status !== "ended") throw new Error("expected ended")
+    expect(registry.get(res.sessionId)!.status).toBe("killed")
+    expect(registry.get(res.sessionId)!.archived).toBeUndefined()
+    expect(JSON.parse(await readFile(verdictPath, "utf8"))).toEqual({ findings: [] })
     registry.shutdown()
   })
 
