@@ -2,7 +2,7 @@
 # DO NOT EDIT — edit versions.json and re-run the sync script instead.
 #
 # agentproto-workstation e2b template image. Build (from this directory):
-#   e2b template create agentproto-workstation --cpu-count 2 --memory-mb 4096 -d Dockerfile   # see README.md
+#   e2b template create agentproto-workstation --cpu-count 4 --memory-mb 8192 -d Dockerfile   # see README.md
 # (the resource flags are REQUIRED — e2b.template.toml is not read by `template create`).
 #
 # The e2b CLI has NO --build-arg; the pins below are ARG DEFAULTS resolved
@@ -13,11 +13,11 @@
 # single AGENTPROTO_ADAPTERS="a b" arg silently installed hermes only and the
 # per-package smoke loop passed by accident (verified live). Pre-FROM defaults
 # reach the post-FROM stage ONLY if not re-declared bare after FROM.
-ARG AGENTPROTO_CLI_VERSION=1.16.0
-ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.34
-ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.29
-ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.6.8
-ARG OPENCODE_RUNTIME_VERSION=1.18.35
+ARG AGENTPROTO_CLI_VERSION=1.20.0
+ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.38
+ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.33
+ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.8.2
+ARG OPENCODE_RUNTIME_VERSION=1.19.0
 
 # FROM is NOT parameterized — E2B does not interpolate build args into FROM
 # (verified live: invalid image reference '${BASE_IMAGE}'). Regenerated to
@@ -63,7 +63,7 @@ RUN npm i -g \
 #     inspecting /usr/lib/node_modules/@agentproto. ---
 
 # 1. The pinned CLI is on PATH. `agentproto --version` prints e.g.
-#    "agentproto 1.16.0 (sha, built ...)" — match the pin as a substring.
+#    "agentproto 1.20.0 (sha, built ...)" — match the pin as a substring.
 RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
   || (echo "smoke: agentproto --version does not contain ${AGENTPROTO_CLI_VERSION}" && agentproto --version && exit 1)
 

@@ -28,7 +28,7 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
-import { createDeliveryHook, formatDeliveryNotice } from "./sandbox-delivery.js"
+import { createDeliveryHook, formatDeliveryNotice, sandboxCheckpointOpts } from "./sandbox-delivery.js"
 import { recordSandboxState } from "./sandbox-ledger.js"
 import { resolveSandboxSecretFromBroker } from "./session-restart-core.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
@@ -70,7 +70,7 @@ const readUsageFor =
 export async function runSandboxReattachPass(opts: {
   registry: Pick<
     SessionsRegistry,
-    "sandboxReattachCandidates" | "finishSandboxReattach" | "recordSandboxDelivery"
+    "sandboxReattachCandidates" | "finishSandboxReattach" | "recordSandboxDelivery" | "recordSandboxCheckpoint"
   >
   resolveSandboxProvider: SandboxProviderResolver
   /** Max boxes reconnected concurrently. */
@@ -151,8 +151,18 @@ export async function runSandboxReattachPass(opts: {
                 registry.recordSandboxDelivery(desc.id, delivery, formatDeliveryNotice(delivery))
               },
             }),
+            ...sandboxCheckpointOpts({
+              exec: host.exec,
+              ...(host.readFile ? { readFile: host.readFile } : {}),
+              target: deliveryTarget,
+              outDir: sessionTranscriptDir(desc.id),
+              onCheckpoint: record => {
+                registry.recordSandboxCheckpoint(desc.id, record, formatDeliveryNotice(record))
+              },
+            }),
           }
         : {}),
+      watchdog: {},
     })
     const probe = (await agentSession.probeReattach?.()) ?? {
       state: "unreachable" as const,

@@ -61,6 +61,15 @@ const HEALTH_PROBE_TIMEOUT_MS = 3_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 500
 const UPDATE_CLI_TIMEOUT_MS = 120_000
+/** Swap a fresh box gets unless `config.swapMb` says otherwise. The template
+ *  ships with none, and a box without swap does not fail cleanly when a
+ *  parallel build outgrows its RAM: it either has its agentproto daemon
+ *  OOM-killed (the host sees 502, the session's work is stranded) or wedges
+ *  for good — reproduced live: a monorepo `pnpm build` at ~3.5 GB usable left
+ *  the VM "running" with envd and `/health` unanswering for 10+ minutes. Swap
+ *  turns that into a slow build. */
+export const DEFAULT_SWAP_MB = 4096
+const SWAP_SETUP_TIMEOUT_MS = 60_000
 
 interface E2bSandboxConfig {
   /** Template name or id. Defaults to the `agentproto-workstation` template. */
@@ -113,6 +122,11 @@ interface E2bSandboxConfig {
    *  `sandbox.commands.run`. Runs on EVERY boot/connect, even when the health
    *  probe finds the daemon already autostarted — entries must be idempotent. */
   setupCommands?: string[]
+  /** Swap file (MiB) enabled on a FRESH boot, before the daemon starts.
+   *  Default {@link DEFAULT_SWAP_MB}; `0` disables. Best-effort: a box that
+   *  cannot enable swap still boots. Not re-run on `connect()` (a resumed box
+   *  keeps its swap). */
+  swapMb?: number
 }
 
 function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
@@ -137,6 +151,10 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
     setupCommands: Array.isArray(config.setupCommands)
       ? config.setupCommands.filter((c): c is string => typeof c === "string" && c.length > 0)
       : undefined,
+    swapMb:
+      typeof config.swapMb === "number" && Number.isFinite(config.swapMb) && config.swapMb >= 0
+        ? Math.floor(config.swapMb)
+        : undefined,
   }
 }
 
@@ -174,6 +192,26 @@ export function resolveUpdateCli(
  * reconnect"). Throws (after killing the sandbox) if the daemon never comes
  * up.
  */
+/** The command {@link enableSwap} runs: idempotent (no-op when any swap is
+ *  already active) and never failing. */
+export function buildSwapCommand(swapMb: number): string {
+  return (
+    `if [ -z "$(swapon --show --noheadings 2>/dev/null)" ]; then ` +
+    `{ sudo fallocate -l ${swapMb}M /swapfile && sudo chmod 600 /swapfile && ` +
+    `sudo mkswap /swapfile >/dev/null && sudo swapon /swapfile; } >/dev/null 2>&1 || ` +
+    `echo "swap not enabled"; fi`
+  )
+}
+
+async function enableSwap(sandbox: Sandbox, swapMb: number): Promise<void> {
+  if (swapMb <= 0) return
+  try {
+    await sandbox.commands.run(buildSwapCommand(swapMb), { timeoutMs: SWAP_SETUP_TIMEOUT_MS })
+  } catch {
+    // best-effort: a box without swap is still a working box
+  }
+}
+
 async function ensureDaemonHealthy(
   sandbox: Sandbox,
   host: string,
@@ -386,6 +424,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     // only owner of that cleanup — `ensureDaemonHealthy` never kills.
     try {
       const host = sandbox.getHost(port)
+      await enableSwap(sandbox, config.swapMb ?? DEFAULT_SWAP_MB)
       await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
       return toBootedSandbox(sandbox, host, undefined, spec.extraPorts)
     } catch (err) {

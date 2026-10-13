@@ -51,6 +51,28 @@ describe("planSandboxWorkspace", () => {
     expect(checkout).toContain("git checkout -b 'wt/x' 'origin/develop'")
   })
 
+  it("resumes a branch a previous box pushed, then restores its checkpoint snapshot onto the exact commit", () => {
+    const plan = planSandboxWorkspace({ ...request, worktree: { slug: "x" } })
+    const checkout = plan.steps.find(s => s.label === "git-checkout")?.command ?? ""
+    expect(checkout).toContain("git show-ref --verify --quiet 'refs/remotes/origin/wt/x'")
+    expect(checkout).toContain("git checkout -b 'wt/x' --track 'origin/wt/x'")
+    // local branch first, then the pushed one, then a fresh cut
+    expect(checkout.indexOf("refs/heads/wt/x")).toBeLessThan(checkout.indexOf("refs/remotes/origin/wt/x"))
+    expect(checkout.indexOf("refs/remotes/origin/wt/x")).toBeLessThan(checkout.indexOf("git checkout -b 'wt/x' 'origin/"))
+    const labels = plan.steps.map(s => s.label)
+    expect(labels.indexOf("restore-checkpoint")).toBe(labels.indexOf("git-checkout") + 1)
+    const restore = plan.steps.find(s => s.label === "restore-checkpoint")?.command ?? ""
+    expect(restore).toContain("'refs/remotes/origin/agentproto-checkpoint/wt/x'^")
+    expect(restore).toContain('= "$(git rev-parse HEAD)"')
+    expect(restore).toContain("git read-tree -u --reset")
+    expect(restore).toContain('|| echo "checkpoint not restored"')
+  })
+
+  it("plans no checkpoint restore without a work branch", () => {
+    const plan = planSandboxWorkspace({ ...request })
+    expect(plan.steps.some(s => s.label === "restore-checkpoint")).toBe(false)
+  })
+
   it("defaults the base to origin/<defaultBranch> and mints a slug when none is given", () => {
     const plan = planSandboxWorkspace({
       ...request,
