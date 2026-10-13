@@ -115,6 +115,8 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { createDeliveryHook, formatDeliveryNotice } from "./sandbox-delivery.js"
+import { sessionTranscriptDir } from "./transcript-writer.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { AcpMcpServer } from "@agentproto/acp"
@@ -1227,10 +1229,26 @@ export async function restartAgentSession(
           `"${adapterSlug}" — ${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    // The prior session's work branch is still in the box: carry its delivery
+    // target over so this session's teardown pushes (or bundles) it too.
+    const deliveryTarget = prev.sandboxDeliveryTarget
     const agentSession = createSandboxAgentSessionProxy({
       host,
       remoteSessionId,
       lifecyclePolicy,
+      ...(deliveryTarget && host.exec
+        ? {
+            onBeforeTeardown: createDeliveryHook({
+              exec: host.exec,
+              ...(host.readFile ? { readFile: host.readFile } : {}),
+              target: deliveryTarget,
+              outDir: sessionTranscriptDir(restartedSessionId),
+              onDelivery: record => {
+                registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
+              },
+            }),
+          }
+        : {}),
     })
     // A fresh box-spawned adapter has no conversation continuity (the box
     // daemon's `agent_start` has no resume surface) — `resumeVia: ""` plus
@@ -1289,6 +1307,7 @@ export async function restartAgentSession(
       sandboxId: host.sandboxId,
       sandboxProvider: providerSlug,
       sandboxTeardown: lifecyclePolicy.teardown,
+      ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
       ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
       commandPreview: `sandbox:${providerSlug} → ${adapterSlug}`,
       resumedFrom: prev.id,

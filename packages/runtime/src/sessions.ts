@@ -180,6 +180,7 @@ import {
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
+import type { SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
 import {
   createSessionMessage,
   escapeHumanPrompt,
@@ -313,7 +314,10 @@ export interface AgentSessionLike {
    *  (no host turn in flight — deliver as a normal prompt), `"unsupported"`.
    *  Never throws. Absent for sessions that can't steer. */
   steer?(content: unknown): Promise<"steered" | "promptRequired" | "unsupported">
-  close(): Promise<void>
+  /** `daemonShutdown` ⇒ the daemon process is exiting: skip any slow
+   *  pre-teardown work (a sandbox's work-branch delivery) and release the
+   *  underlying resource immediately. */
+  close(opts?: { daemonShutdown?: boolean }): Promise<void>
 }
 
 /** Result of `SessionsRegistry.setModel` — see that method's doc comment. */
@@ -2440,6 +2444,14 @@ export interface SessionDescriptor {
    *  default, ephemeral) or `"pause"` (keeps `sandboxId` reconnectable via
    *  `agent_start.sandbox.reuse`). Only set when `remote` is true. */
   sandboxTeardown?: "kill" | "pause"
+  /** What teardown did with the branch the session worked on inside its box
+   *  (`wt/<slug>` push + bundle fallback). Only set for a sandbox session that
+   *  was spawned from a workspace `remote` with a `worktree`, once it closes. */
+  sandboxDelivery?: SandboxDeliveryRecord
+  /** Where the session's work branch lives inside its box (checkout dir, branch,
+   *  base commit). Persisted so a restart that re-attaches the box can still
+   *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
+  sandboxDeliveryTarget?: SandboxDeliveryTarget
   /** App ports exposed at boot time (`SandboxSpec.extraPorts`) — maps port
    *  number to its public URL. Only present for sandbox sessions where the
    *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
@@ -4615,6 +4627,10 @@ export interface SessionsRegistry {
    *  one. Returns false (no-op) for an unknown id or a non-`agent-cli`
    *  session. */
   recordNotice(id: string, text: string): boolean
+  /** Stamp a sandbox session's teardown delivery outcome onto its descriptor
+   *  and transcript (`notice`). Returns false for an unknown id or a
+   *  non-`agent-cli` session. */
+  recordSandboxDelivery(id: string, record: SandboxDeliveryRecord, notice: string): boolean
   /**
    * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
    * `device-mirror.ts`) into an agent-cli session's durable transcript.
@@ -4889,6 +4905,8 @@ export interface SpawnAgentInput {
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
+  /** The work branch inside the box — see `SessionDescriptor.sandboxDeliveryTarget`. */
+  sandboxDeliveryTarget?: SandboxDeliveryTarget
   /** Effective adapter confinement, resolved by the caller — see
    *  `SessionDescriptor.commandSandbox`. */
   commandSandbox?: "off" | "workspace" | "strict"
@@ -9944,6 +9962,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -10114,6 +10133,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -12025,6 +12045,18 @@ export function createSessionsRegistry(opts?: {
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
       return true
     },
+    recordSandboxDelivery(id, record, notice) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.kind !== "agent-cli") return false
+      rt.desc.sandboxDelivery = record
+      appendLine(rt, notice, "stdout")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: notice })
+      // Delivery runs during teardown, after kill() already closed the writer,
+      // so the record above reopened an append stream nothing else will end.
+      void transcriptWriter.close(rt.desc.id)
+      schedulePersist()
+      return true
+    },
     appendDeviceMirrorRecords(id, records) {
       const rt = sessions.get(id)
       if (!rt || rt.desc.kind !== "agent-cli" || !rt.desc.hostSessionId) return 0
@@ -12463,7 +12495,7 @@ export function createSessionsRegistry(opts?: {
         clearInFlightFlags(rt.desc)
         if (rt.agentSession) {
           recordExitUsageSnapshot(rt)
-          void rt.agentSession.close().catch(() => undefined)
+          void rt.agentSession.close({ daemonShutdown: true }).catch(() => undefined)
         }
         if (rt.pty) {
           try {
