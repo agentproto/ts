@@ -34,19 +34,12 @@ export const sandboxSpecWithReuseSchema = z
       ),
     credentialRefs: z
       .array(
-        z
-          .object({
-            name: z.string().min(1).describe("Env-var name the box sees."),
-            credentialRef: z.string().min(1).describe("Keychain slot holding the value."),
-          })
-          .strict(),
+        z.object({ name: z.string().min(1), credentialRef: z.string().min(1) }).strict(),
       )
       .optional()
       .describe(
-        "Forward keychain-held secrets into the box: each `{ name, credentialRef }` entry " +
-          "is added to `env.passthrough` and, when the daemon's own env has no `name`, " +
-          "its value is read from the OS keychain at `credentialRef`. Only the ref " +
-          "travels in the spec — never the value.",
+        "Keychain-held secrets for the box: `name` is added to env.passthrough, its value read " +
+          "from keychain slot `credentialRef` when the daemon env lacks it.",
       ),
   })
   .strict()
