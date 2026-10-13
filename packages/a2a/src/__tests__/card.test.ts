@@ -34,7 +34,7 @@ describe("buildAppAgentCard", () => {
         protocolVersion: "1.0",
       },
     ])
-    expect(card.capabilities).toEqual({ streaming: true, pushNotifications: false })
+    expect(card.capabilities).toEqual({ streaming: true, pushNotifications: true })
     expect(card.securitySchemes).toEqual({
       bearer: { httpAuthSecurityScheme: { scheme: "Bearer" } },
     })
