@@ -2078,13 +2078,13 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // Run-level `adapter`/`harness` (recorded on the run, echoed by the
       // result): a caller-given pair keeps today's semantics; resolved per
       // agent, the run reports the FIRST agent's resolved runner — `spawnOne`
-      // fills this in before the run record is created, at most once.
+      // fills this in before the run record is created, at most once. When
+      // no agent resolved one (every agent failed before spawn), the run
+      // reports no runner at all rather than a mastra-agent nobody ran on.
       let runAdapter = callerAdapter
       let runHarness = callerHarness
-      const reportedRunner = () => ({
-        adapter: runAdapter ?? DEFAULT_AGENT_ADAPTER,
-        harness: runHarness ?? runAdapter ?? DEFAULT_AGENT_ADAPTER,
-      })
+      const reportedRunner = (): { adapter?: string; harness?: string } =>
+        runAdapter === undefined ? {} : { adapter: runAdapter, harness: runHarness ?? runAdapter }
 
       // B — multi-adapter support (P7 deliverable 2), now per RESOLVED adapter
       // (adapters may differ per agent in one run), so the probe is cached by

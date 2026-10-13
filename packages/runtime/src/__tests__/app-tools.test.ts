@@ -1523,6 +1523,10 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
     )
     expect(startSession).not.toHaveBeenCalled()
     expect(ran.sessions).toEqual([])
+    // No agent resolved a runner, so the run reports none — not a
+    // mastra-agent label nobody ran on.
+    expect(ran.adapter).toBeUndefined()
+    expect(ran.harness).toBeUndefined()
     expect(ran.errors).toEqual([
       {
         agentId: "foo-worker",
