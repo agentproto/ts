@@ -12025,6 +12025,9 @@ export function createSessionsRegistry(opts?: {
       rt.desc.sandboxDelivery = record
       appendLine(rt, notice, "stdout")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: notice })
+      // Delivery runs during teardown, after kill() already closed the writer,
+      // so the record above reopened an append stream nothing else will end.
+      void transcriptWriter.close(rt.desc.id)
       schedulePersist()
       return true
     },
