@@ -1,5 +1,12 @@
 # @agentproto/a2a
 
+## 0.2.0
+
+### Minor Changes
+
+- 22cfadd: A2A app tasks support push notifications: the four config methods store per-task webhooks, task updates are delivered to them as `StreamResponse` POSTs (also from `SendMessage`/`SendStreamingMessage`'s `configuration.pushNotificationConfig`), and the Agent Card advertises `capabilities.pushNotifications`.
+- 8ad6546: Stream A2A tasks over SSE with `SendStreamingMessage` and `SubscribeToTask`, and advertise `capabilities.streaming` on the Agent Card.
+
 ## 0.1.0
 
 ### Minor Changes
