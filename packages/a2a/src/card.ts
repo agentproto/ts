@@ -99,7 +99,7 @@ function baseCard(
     version: rest.version,
     capabilities: {
       streaming: true,
-      pushNotifications: false,
+      pushNotifications: true,
     },
     securitySchemes: {
       bearer: { httpAuthSecurityScheme: { scheme: "Bearer" } },
