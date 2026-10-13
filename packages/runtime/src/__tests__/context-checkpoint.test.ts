@@ -106,6 +106,24 @@ describe("buildContextCheckpoint", () => {
     expect(checkpoint.sections.nextStep).toBeUndefined()
     expect(checkpoint.sections.tests).toBe("no test run recorded")
   })
+
+  it("passes untilSeq to the export and records it as cutoffSeq", async () => {
+    vi.mocked(exportDaemonEventsSession).mockClear()
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 75, untilSeq: 42 })
+    expect(checkpoint.cutoffSeq).toBe(42)
+    expect(vi.mocked(exportDaemonEventsSession)).toHaveBeenCalledWith("sess_test", undefined, undefined, {
+      untilSeq: 42,
+    })
+    // The digest and the sections only see the head of the transcript.
+    expect(checkpoint.recentDigest).toContain("hello")
+  })
+
+  it("reads the whole transcript (no cutoffSeq) when untilSeq is omitted", async () => {
+    vi.mocked(exportDaemonEventsSession).mockClear()
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 75 })
+    expect(checkpoint.cutoffSeq).toBeUndefined()
+    expect(vi.mocked(exportDaemonEventsSession)).toHaveBeenCalledWith("sess_test", undefined, undefined, {})
+  })
 })
 
 describe("persistCheckpoint", () => {
