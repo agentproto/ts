@@ -313,6 +313,8 @@ verdict:
   lanes: [{ id, kind, status: "pass"|"fail"|"skipped"|"timeout", blocking,
             findings: [{ severity, title, detail, file?, line? }], durationMs,
             error?, sessionId?, preset?, fallbacks?: [{ preset, error }],
+            recovery?: { outcome, reason?, sessionId?, preset?, model? },       // verdict recovered after a missing/invalid file
+            sharedExecution?: { executionId, role: "owner"|"joiner", ownerLane }, // lanes sharing one reviewer run
             summary?, model?, exitCode?,
             composedFrom?: { rangeSha, headSha, attestationSha256 } }],  // delta-composed agent lane
   verdict: "pass" | "block" | "incomplete",
@@ -380,6 +382,16 @@ never composed; `nocache` implies `compose: false`.
   lane's `preset`/`model`/`sessionId` name the reviewer that ran, and
   `fallbacks` records each unavailable one with its error. An exhausted chain
   settles the lane `skipped`, listing every error.
+- Lanes of one run whose chains resolve to the same actual reviewer, rubric
+  bytes, effective frozen range and options share ONE reviewer execution
+  (`sharedExecution` on each lane; one `executionId` = one verdict, not
+  independent agreement). The claims rubric never shares with correctness.
+- If the reviewer's turn ends without a valid verdict file, a bounded recovery
+  step (`review.recoveryPresets` / the `review.recovery` model role) may
+  recover the verdict from the reviewer's own latest output, or classify why
+  the review failed; `recovery` records it apart from the reviewer. It never
+  fabricates an approval from partial or errored analysis. See
+  `docs/cli/verbs/review.md`.
 - The reviewer spawns with role `executor`, under the calling session.
 - It gets a pointer-style prompt: the range plus the rubric path. There's no
   serialized diff, so there's no diff cap.
