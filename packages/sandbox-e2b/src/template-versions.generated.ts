@@ -25,7 +25,10 @@ export const TEMPLATES = {
         "@agentproto/adapter-mastra-agent": "0.7.33",
         "@agentproto/adapter-opencode": "1.8.2"
       },
-      "builtAt": "2026-10-13T17:29:38.211Z"
+      "tools": {
+        "gh": "2.102.0"
+      },
+      "builtAt": "2026-10-13T17:51:52.964Z"
     },
   },
   dev: {
@@ -38,10 +41,125 @@ export const TEMPLATES = {
         "@agentproto/adapter-mastra-agent": "0.7.33",
         "@agentproto/adapter-opencode": "1.8.2"
       },
-      "builtAt": "2026-10-13T17:32:21.689Z"
+      "tools": {
+        "gh": "2.102.0"
+      },
+      "builtAt": "2026-10-13T17:54:36.000Z"
     },
   },
 } as const
+/** Size preset the bare stable alias is built at and the provider boots by default. */
+export const DEFAULT_SIZE = "large"
+/**
+ * Named size presets, each published as its own e2b template
+ * (`config.size` in a sandbox spec). An unavailable preset was refused by
+ * e2b at create time; `unavailableReason` is the exact e2b error.
+ */
+export const SIZES = {
+  "nano": {
+    cpuCount: 1,
+    memoryMb: 1024,
+    available: true,
+    id: "7yx8uii7vrtsp6tt0103",
+    alias: "agentproto-workstation-nano",
+    baked: {
+      "cli": "1.20.0",
+      "adapters": {
+        "@agentproto/adapter-hermes": "0.4.38",
+        "@agentproto/adapter-mastra-agent": "0.7.33",
+        "@agentproto/adapter-opencode": "1.8.2"
+      },
+      "tools": {
+        "gh": "2.102.0"
+      },
+      "builtAt": "2026-10-13T17:52:28.558Z"
+    },
+  },
+  "small": {
+    cpuCount: 2,
+    memoryMb: 2048,
+    available: true,
+    id: "9j0rfk5m784o1w6ctv1z",
+    alias: "agentproto-workstation-small",
+    baked: {
+      "cli": "1.20.0",
+      "adapters": {
+        "@agentproto/adapter-hermes": "0.4.38",
+        "@agentproto/adapter-mastra-agent": "0.7.33",
+        "@agentproto/adapter-opencode": "1.8.2"
+      },
+      "tools": {
+        "gh": "2.102.0"
+      },
+      "builtAt": "2026-10-13T17:52:58.137Z"
+    },
+  },
+  "medium": {
+    cpuCount: 2,
+    memoryMb: 4096,
+    available: true,
+    id: "9lj8jvwetb8stm4d2cuh",
+    alias: "agentproto-workstation-medium",
+    baked: {
+      "cli": "1.20.0",
+      "adapters": {
+        "@agentproto/adapter-hermes": "0.4.38",
+        "@agentproto/adapter-mastra-agent": "0.7.33",
+        "@agentproto/adapter-opencode": "1.8.2"
+      },
+      "tools": {
+        "gh": "2.102.0"
+      },
+      "builtAt": "2026-10-13T17:53:31.135Z"
+    },
+  },
+  "large": {
+    cpuCount: 4,
+    memoryMb: 8192,
+    available: true,
+    id: "8f432exc83sk00i0imyc",
+    alias: "agentproto-workstation-large",
+    baked: {
+      "cli": "1.20.0",
+      "adapters": {
+        "@agentproto/adapter-hermes": "0.4.38",
+        "@agentproto/adapter-mastra-agent": "0.7.33",
+        "@agentproto/adapter-opencode": "1.8.2"
+      },
+      "tools": {
+        "gh": "2.102.0"
+      },
+      "builtAt": "2026-10-13T17:54:03.405Z"
+    },
+  },
+  "x-large": {
+    cpuCount: 8,
+    memoryMb: 16384,
+    available: false,
+    unavailableReason: "400: Memory can't be higher than 8192 MiB (if you need to increase this limit, please contact support)",
+    id: null,
+    alias: "agentproto-workstation-x-large",
+    baked: {
+      "cli": null,
+      "adapters": null,
+      "builtAt": null
+    },
+  },
+  "xx-large": {
+    cpuCount: 16,
+    memoryMb: 32768,
+    available: false,
+    unavailableReason: "400: CPU count can't be higher than 8 (if you need to increase this limit, please contact support)",
+    id: null,
+    alias: "agentproto-workstation-xx-large",
+    baked: {
+      "cli": null,
+      "adapters": null,
+      "builtAt": null
+    },
+  },
+} as const
+export type WorkstationSize = keyof typeof SIZES
 export const BAKED_CLI_VERSION = "1.20.0"
 export const BAKED_ADAPTERS = {
   "@agentproto/adapter-hermes": "0.4.38",
@@ -50,5 +168,9 @@ export const BAKED_ADAPTERS = {
 } as const
 export const BAKED_RUNTIME = {
   "opencode-ai": "1.19.0",
+} as const
+/** Standalone binaries baked from pinned release tarballs (the GitHub CLI). */
+export const BAKED_TOOLS = {
+  gh: "2.102.0",
 } as const
 export const BAKED_BASE_IMAGE = "e2bdev/code-interpreter:latest"

@@ -22,17 +22,20 @@ let pinned = false
 let dryRun = false
 let check = false
 let suppliedTemplateId = null
+let size = null
 const args = process.argv.slice(2)
 
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr
   out.write(
     "Usage: pnpm templates:refresh --channel dev (--latest | --check) [--dry-run] [--template-id <id>]\n" +
-      "       pnpm templates:refresh --channel stable --pin [--dry-run] [--template-id <id>]\n\n" +
+      "       pnpm templates:refresh --channel stable --pin [--size <preset|all>] [--dry-run] [--template-id <id>]\n\n" +
       "Builds and proves a new E2B template before updating versions.json.\n" +
       "dev: --latest is required for a publish and resolves npm's latest dist-tag.\n" +
       "stable: --pin is required and bakes exactly the versions pinned in versions.json\n" +
       "  (stable never resolves npm latest).\n" +
+      "--size (stable only): refresh one size-preset template, or 'all' for the bare alias\n" +
+      "  plus every available preset. Without it, the bare alias (built at defaultSize).\n" +
       "--check is credential-free and verifies generated files plus the recorded proofs.\n",
   )
   process.exit(exitCode)
@@ -47,6 +50,7 @@ for (let i = 0; i < args.length; i++) {
   else if (arg === "--dry-run") dryRun = true
   else if (arg === "--check") check = true
   else if (arg === "--template-id") suppliedTemplateId = args[++i]
+  else if (arg === "--size") size = args[++i]
   else if (arg === "--help" || arg === "-h") usage()
   else {
     process.stderr.write(`templates:refresh: unknown argument ${arg}\n`)
@@ -75,8 +79,14 @@ if (channel === "stable" && latest) {
 if (channel === "stable" && !pinned && !check) {
   fail("--channel stable requires --pin to bake the declared versions.json pins")
 }
-if (check && (latest || pinned || dryRun || suppliedTemplateId)) {
-  fail("--check cannot be combined with --latest, --pin, --dry-run, or --template-id")
+if (check && (latest || pinned || dryRun || suppliedTemplateId || size)) {
+  fail("--check cannot be combined with --latest, --pin, --dry-run, --template-id, or --size")
+}
+if (size !== null && channel !== "stable") {
+  fail("--size is a stable-only option; the dev channel is always built at defaultSize")
+}
+if (size === "all" && suppliedTemplateId !== null) {
+  fail("--template-id names one template; it cannot be combined with --size all")
 }
 if (!check && !latest && !pinned) fail("refusing an implicit registry update; pass --latest (dev) or --pin (stable) explicitly")
 if (suppliedTemplateId !== null && !ID_EXACT_RE.test(suppliedTemplateId)) {
@@ -110,6 +120,8 @@ function isExactProof(entry, versions) {
   if (!entry?.id || !entry?.baked || entry.baked.cli !== versions.cli || !entry.baked.builtAt) return false
   const actual = entry.baked.adapters
   if (!actual || typeof actual !== "object") return false
+  // A bake that predates (or lacks) the pinned GitHub CLI is not a proof.
+  if (entry.baked.tools?.gh !== versions.tools.gh.version) return false
   const expected = versions.adapters
   return Object.keys(actual).length === Object.keys(expected).length && Object.entries(expected).every(([pkg, version]) => actual[pkg] === version)
 }
@@ -125,7 +137,59 @@ function checkOnly(versions) {
       fail(`${ch} does not have a complete recorded proof for the declared pins; run pnpm templates:refresh --channel ${ch} ${ch === "stable" ? "--pin" : "--latest"}`)
     }
   }
-  process.stdout.write("templates:refresh: generated files are in sync and both channels have complete recorded proofs.\n")
+  for (const [name, preset] of Object.entries(versions.sizes)) {
+    if (preset.available === false) continue
+    if (!isExactProof(versions.templates.sizes[name], versions)) {
+      fail(`size ${name} does not have a complete recorded proof for the declared pins; run pnpm templates:refresh --channel stable --pin --size ${name}`)
+    }
+  }
+  process.stdout.write("templates:refresh: generated files are in sync and both channels plus every available size have complete recorded proofs.\n")
+}
+
+/**
+ * The templates a run publishes. Each target names where its entry lives in
+ * versions.json and the size preset it is built at: dev and the bare stable
+ * alias are built at defaultSize, a size target at its own preset.
+ */
+function resolveTargets(versions) {
+  const defaultTarget = key => ({
+    label: key,
+    path: [key],
+    sizeName: versions.defaultSize,
+    preset: versions.sizes[versions.defaultSize],
+  })
+  const sizeTarget = name => ({
+    label: `size ${name}`,
+    path: ["sizes", name],
+    sizeName: name,
+    preset: versions.sizes[name],
+  })
+  if (channel === "dev") return [defaultTarget("dev")]
+  if (size === null) return [defaultTarget("stable")]
+  if (size === "all") {
+    const skipped = Object.entries(versions.sizes).filter(([, preset]) => preset.available === false)
+    for (const [name, preset] of skipped) {
+      process.stderr.write(`templates:refresh: skipping unavailable size ${name}: ${preset.unavailableReason}\n`)
+    }
+    return [
+      defaultTarget("stable"),
+      ...Object.keys(versions.sizes)
+        .filter(name => versions.sizes[name].available !== false)
+        .map(sizeTarget),
+    ]
+  }
+  const preset = versions.sizes[size]
+  if (!preset) fail(`unknown --size ${JSON.stringify(size)}; valid sizes: ${Object.keys(versions.sizes).join(", ")}, all`)
+  if (preset.available === false) {
+    fail(`size ${size} is marked unavailable in versions.json (e2b refused it: ${preset.unavailableReason}); publish it by hand once the e2b plan allows it, then drop available/unavailableReason`)
+  }
+  return [sizeTarget(size)]
+}
+
+const getEntry = (templates, target) => target.path.reduce((node, key) => node[key], templates)
+function setEntry(templates, target, entry) {
+  const parent = target.path.slice(0, -1).reduce((node, key) => node[key], templates)
+  parent[target.path.at(-1)] = entry
 }
 
 function requireCleanTree() {
@@ -148,17 +212,22 @@ function resolvePins(versions) {
     cli: resolveLatest("@agentproto/cli"),
     adapters: Object.fromEntries(Object.keys(versions.adapters).sort().map(pkg => [pkg, resolveLatest(pkg)])),
     runtime: Object.fromEntries(Object.keys(versions.runtime).sort().map(pkg => [pkg, resolveLatest(pkg)])),
+    // Release-tarball tools stay at their checksum-pinned version: npm latest
+    // says nothing about them.
+    tools: { gh: versions.tools.gh.version },
   }
 }
 
-function withChannelPins(versions, channel, pins) {
+function withTargetPins(versions, targets, pins) {
   const next = structuredClone(versions)
   next.cli = pins.cli
   next.adapters = pins.adapters
   next.runtime = pins.runtime
   // The temporary Dockerfile is generated from these pins; an old proof must
   // never be carried over to a new image.
-  next.templates[channel].baked = { cli: null, adapters: null, builtAt: null }
+  for (const target of targets) {
+    setEntry(next.templates, target, { ...getEntry(next.templates, target), baked: { cli: null, adapters: null, builtAt: null } })
+  }
   return next
 }
 
@@ -167,6 +236,7 @@ function resolveStablePins(versions) {
     cli: versions.cli,
     adapters: Object.fromEntries(Object.keys(versions.adapters).sort().map(pkg => [pkg, versions.adapters[pkg]])),
     runtime: Object.fromEntries(Object.keys(versions.runtime).sort().map(pkg => [pkg, versions.runtime[pkg]])),
+    tools: { gh: versions.tools.gh.version },
   }
 }
 
@@ -218,7 +288,22 @@ function assertCredentials() {
   }
 }
 
-function proveTemplate(templateId, expected) {
+// Firecracker reports a little less than the configured RAM as MemTotal (the
+// kernel reserves some; ~97% observed live), never more.
+const MIN_MEMORY_RATIO = 0.9
+
+function proveResources(command, preset) {
+  const cpus = Number.parseInt(command("nproc").trim(), 10)
+  if (cpus !== preset.cpuCount) throw new Error(`proof failed: nproc reported ${cpus}, expected ${preset.cpuCount}`)
+  const memLine = command("free", "-m").split("\n").find(line => line.startsWith("Mem:"))
+  const totalMb = Number.parseInt(memLine?.trim().split(/\s+/)[1] ?? "", 10)
+  if (!(totalMb <= preset.memoryMb && totalMb >= preset.memoryMb * MIN_MEMORY_RATIO)) {
+    throw new Error(`proof failed: free -m reported ${totalMb} MB total, expected ~${preset.memoryMb} MB`)
+  }
+  return { cpus, totalMb }
+}
+
+function proveTemplate(templateId, expected, preset) {
   let sandboxId = null
   try {
     sandboxId = extractId(run("e2b", ["sandbox", "create", "--detach", templateId]), "sandbox", [templateId])
@@ -227,8 +312,13 @@ function proveTemplate(templateId, expected) {
     if (!new RegExp(`\\b${expected.cli.replaceAll(".", "\\.")}\\b`).test(cliOutput)) {
       throw new Error(`proof failed: agentproto --version did not contain ${expected.cli}`)
     }
+    const resources = proveResources(command, preset)
     command("node", "--version")
     command("git", "--version")
+    const ghOutput = command("gh", "--version")
+    if (!ghOutput.includes(`gh version ${expected.tools.gh} `)) {
+      throw new Error(`proof failed: gh --version did not report ${expected.tools.gh}`)
+    }
     const packageTree = JSON.parse(command("npm", "ls", "-g", "--depth=0", "--json"))
     const installed = packageTree.dependencies ?? {}
     for (const [pkg, version] of Object.entries({ "@agentproto/cli": expected.cli, ...expected.adapters, ...expected.runtime })) {
@@ -236,7 +326,7 @@ function proveTemplate(templateId, expected) {
     }
     // Starts the already baked CLI directly; no runtime install can make this pass.
     command("sh", "-lc", "set -eu; agentproto serve --port 18790 --bind 127.0.0.1 --workspace /home/user >/tmp/agentproto-refresh-health.log 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null || true' EXIT; for i in $(seq 1 30); do node -e 'fetch(\"http://127.0.0.1:18790/health\").then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))' && exit 0; sleep 1; done; cat /tmp/agentproto-refresh-health.log >&2; exit 1")
-    return { sandboxId, cliOutput: cliOutput.trim() }
+    return { sandboxId, cliOutput: cliOutput.trim(), resources }
   } finally {
     if (sandboxId) {
       try { run("e2b", ["sandbox", "kill", sandboxId]) } catch {
@@ -249,6 +339,7 @@ function proveTemplate(templateId, expected) {
 function snapshotGeneratedFiles() {
   const relPaths = [
     "templates/workstation/versions.json", "templates/workstation/Dockerfile", "templates/workstation/e2b.template.toml",
+    "templates/workstation/README.md",
     "packages/sandbox-e2b/src/template-versions.generated.ts", "packages/sandbox-e2b/README.md",
     "docs/cli/guides/sandbox-rendezvous.md", "packages/runtime/src/sandbox-providers/registry.ts",
     "packages/runtime/src/sandbox-adapters.ts", "packages/sandbox-e2b/package.json",
@@ -266,39 +357,54 @@ if (check) {
 }
 
 requireCleanTree()
+const targets = resolveTargets(versions)
+if (suppliedTemplateId !== null && targets.length !== 1) fail("--template-id names one template; refresh a single target")
 let pins
 if (pinned) {
   pins = resolveStablePins(versions)
 } else {
   try { pins = resolvePins(versions) } catch (error) { fail(error.message) }
 }
-const nextVersions = withChannelPins(versions, channel, pins)
+const nextVersions = withTargetPins(versions, targets, pins)
 const pinLines = [
   `@agentproto/cli@${pins.cli}`,
   ...Object.entries(pins.adapters).map(([pkg, version]) => `${pkg}@${version}`),
   ...Object.entries(pins.runtime).map(([pkg, version]) => `${pkg}@${version}`),
+  `gh@${pins.tools.gh}`,
 ]
+const describe = target => `${getEntry(versions.templates, target).alias} (${target.sizeName}: ${target.preset.cpuCount} vCPU / ${target.preset.memoryMb} MB)`
 
 if (dryRun) {
   process.stdout.write(`templates:refresh (dry-run): would publish and prove ${channel} with explicit pins:\n`)
   for (const pin of pinLines) process.stdout.write(`  ${pin}\n`)
-  process.stdout.write(`  alias: ${versions.templates[channel].alias}\n`)
+  for (const target of targets) process.stdout.write(`  alias: ${describe(target)}\n`)
   process.exit(0)
 }
 
 assertCredentials()
 let tempRoot
-let templateId = suppliedTemplateId
 try {
   tempRoot = makeBuildDirectory(nextVersions)
-  if (!templateId) {
-    const buildOutput = run("e2b", ["template", "create", versions.templates[channel].alias, "--cpu-count", String(versions.resources.cpuCount), "--memory-mb", String(versions.resources.memoryMb), "-d", "Dockerfile"], { cwd: path.join(tempRoot, "templates/workstation") })
-    templateId = extractId(buildOutput, "template")
+  const proved = []
+  for (const target of targets) {
+    const entry = getEntry(versions.templates, target)
+    let templateId = suppliedTemplateId
+    if (!templateId) {
+      const buildOutput = run("e2b", ["template", "create", entry.alias, "--cpu-count", String(target.preset.cpuCount), "--memory-mb", String(target.preset.memoryMb), "-d", "Dockerfile"], { cwd: path.join(tempRoot, "templates/workstation") })
+      templateId = extractId(buildOutput, "template")
+    }
+    const proof = proveTemplate(templateId, pins, target.preset)
+    setEntry(nextVersions.templates, target, { ...getEntry(nextVersions.templates, target), id: templateId, baked: { cli: pins.cli, adapters: pins.adapters, tools: pins.tools, builtAt: new Date().toISOString() } })
+    proved.push(`${target.label} template ${templateId} (proof sandbox ${proof.sandboxId}, ${proof.resources.cpus} vCPU / ${proof.resources.totalMb} MB)`)
   }
-  const proof = proveTemplate(templateId, pins)
-  nextVersions.templates[channel] = { ...nextVersions.templates[channel], id: templateId, baked: { cli: pins.cli, adapters: pins.adapters, builtAt: new Date().toISOString() } }
-  const otherChannel = channel === "dev" ? "stable" : "dev"
-  if (JSON.stringify(nextVersions.templates[otherChannel]) !== JSON.stringify(versions.templates[otherChannel])) throw new Error(`internal safety check failed: refresh attempted to alter ${otherChannel}`)
+  // Every template entry this run did not target must be byte-identical.
+  const untouched = structuredClone(nextVersions.templates)
+  const original = structuredClone(versions.templates)
+  for (const target of targets) {
+    setEntry(untouched, target, null)
+    setEntry(original, target, null)
+  }
+  if (JSON.stringify(untouched) !== JSON.stringify(original)) throw new Error("internal safety check failed: refresh attempted to alter a template it did not target")
   const snapshot = snapshotGeneratedFiles()
   try {
     writeFileSync(VERSIONS_PATH, JSON.stringify(nextVersions, null, 2) + "\n")
@@ -311,7 +417,7 @@ try {
     }
     throw new Error(`local metadata transaction rolled back after failure: ${error.message}`)
   }
-  process.stdout.write(`templates:refresh: published and proved ${channel} template ${templateId} (proof sandbox ${proof.sandboxId}).\nRecorded ${pinLines.join(", ")}; ${channel === "dev" ? "stable" : "dev"} was not changed. Review and commit the generated diff.\n`)
+  process.stdout.write(`templates:refresh: published and proved ${proved.join("; ")}.\nRecorded ${pinLines.join(", ")}; ${channel === "dev" ? "stable" : "dev"} was not changed. Review and commit the generated diff.\n`)
 } catch (error) {
   fail(error.message)
 } finally {

@@ -18,6 +18,8 @@ ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.38
 ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.33
 ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.8.2
 ARG OPENCODE_RUNTIME_VERSION=1.19.0
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 
 # FROM is NOT parameterized — E2B does not interpolate build args into FROM
 # (verified live: invalid image reference '${BASE_IMAGE}'). Regenerated to
@@ -33,6 +35,8 @@ RUN [ -n "${AGENTPROTO_CLI_VERSION}" ] \
   && [ -n "${AGENTPROTO_ADAPTER_MASTRA_AGENT}" ] \
   && [ -n "${AGENTPROTO_ADAPTER_OPENCODE}" ] \
   && [ -n "${OPENCODE_RUNTIME_VERSION}" ] \
+  && [ -n "${GH_VERSION}" ] \
+  && [ -n "${GH_SHA256}" ] \
   || (echo "smoke: pin ARGs are empty — check ARG propagation" && exit 1)
 
 # Node + git are the workstation baseline.
@@ -57,6 +61,16 @@ RUN npm i -g \
       ${AGENTPROTO_ADAPTER_OPENCODE} \
       opencode-ai@${OPENCODE_RUNTIME_VERSION}
 
+# GitHub CLI from the official cli/cli release tarball, checked against the
+# sha256 pinned in versions.json (tools.gh) — sandbox agents open PRs with
+# `gh pr create` using the daemon-injected GH_TOKEN. After the npm layer so a
+# gh bump does not re-run the npm install.
+RUN curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+  && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
+  && tar -xzf /tmp/gh.tar.gz -C /tmp \
+  && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+  && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"
+
 # --- Build-time smoke checks: fail the build, not a live agent turn. These
 #     are NECESSARY-NOT-SUFFICIENT — E2B can report a step CACHED against a
 #     stale layer, so the trusted proof is booting the published image and
@@ -77,7 +91,11 @@ RUN npm ls -g --depth=0 @agentproto/adapter-mastra-agent >/dev/null \
 RUN npm ls -g --depth=0 @agentproto/adapter-opencode >/dev/null \
   || (echo "smoke: baked adapter missing: @agentproto/adapter-opencode" && exit 1)
 
-# 3. The daemon boots and answers /health on the provider's default port.
+# 3. The pinned GitHub CLI is on PATH.
+RUN gh --version | grep -q "gh version ${GH_VERSION} " \
+  || (echo "smoke: gh --version does not report ${GH_VERSION}" && gh --version && exit 1)
+
+# 4. The daemon boots and answers /health on the provider's default port.
 RUN agentproto serve --port 18790 --bind 127.0.0.1 --workspace /home/user >/tmp/serve.log 2>&1 & \
     SERVE_PID=$!; \
     for i in $(seq 1 30); do \
