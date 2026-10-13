@@ -9,6 +9,7 @@ import { join, resolve } from "node:path"
 import {
   findAgentsMdPath,
   resolveAgentsMd,
+  agentsMdForSandbox,
   loadAgentsMdInlineMaxKb,
   DEFAULT_AGENTS_MD_INLINE_MAX_KB,
   type AgentsMdFs,
@@ -225,5 +226,36 @@ describe("findAgentsMdPath — stopAt (app boundary root)", () => {
   it("ignores stopAt when the cwd is outside it", async () => {
     const fsIo = fakeFs({ files: { [join(host, "AGENTS.md")]: bytes(10) }, toplevel: host })
     expect(await findAgentsMdPath(join(host, "other"), fsIo, app)).toBe(join(host, "AGENTS.md"))
+  })
+})
+
+describe("agentsMdForSandbox — a box never gets a host path", () => {
+  const root = resolve("/repo")
+
+  it("drops a pointer (the box has no such file) but keeps the cd contract", async () => {
+    const path = join(root, "AGENTS.md")
+    const res = await resolveAgentsMd(root, 1, fakeFs({ files: { [path]: bytes(4096) }, toplevel: root }))
+    expect(res.mode).toBe("pointer")
+    const boxed = agentsMdForSandbox(res)
+    expect(boxed.mode).toBe("absent")
+    expect(boxed.path).toBeUndefined()
+    expect(boxed.block).toBeUndefined()
+    expect(boxed.contractLine).toBe(res.contractLine)
+  })
+
+  it("keeps inline content but strips the host path from the fence header", async () => {
+    const path = join(root, "AGENTS.md")
+    const res = await resolveAgentsMd(root, 8, fakeFs({ files: { [path]: Buffer.from("RULES") }, toplevel: root }))
+    expect(res.block).toContain(path)
+    const boxed = agentsMdForSandbox(res)
+    expect(boxed.mode).toBe("inline")
+    expect(boxed.content).toBe("RULES")
+    expect(boxed.block).toBe("--- AGENTS.md ---\nRULES\n--- end AGENTS.md ---")
+    expect(boxed.block).not.toContain(root)
+  })
+
+  it("leaves an absent resolution untouched", async () => {
+    const res = await resolveAgentsMd(root, 8, fakeFs({ toplevel: root }))
+    expect(agentsMdForSandbox(res)).toEqual(res)
   })
 })

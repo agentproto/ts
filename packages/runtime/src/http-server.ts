@@ -246,6 +246,7 @@ import type {
 import { handleApprovals } from "./approvals/http.js"
 import type {
   DeclaredAdapterOption,
+  DefaultsAdapterAuthConfig,
   AdapterAuthDescriptor,
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
@@ -5847,17 +5848,30 @@ function parseOptionsField(
  *  smuggle anything unexpected into the resolved spawn config. */
 function parseAuthField(
   raw: unknown,
-): { mode?: "subscription" | "api-key"; token?: string; apiKey?: string } | undefined {
+): DefaultsAdapterAuthConfig | undefined {
   const value = typeof raw === "string" ? tryParseJson(raw) : raw
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
   const obj = value as Record<string, unknown>
   const mode = obj.mode === "subscription" || obj.mode === "api-key" ? obj.mode : undefined
   const token = typeof obj.token === "string" ? obj.token : undefined
   const apiKey = typeof obj.apiKey === "string" ? obj.apiKey : undefined
+  const credentialEnv = typeof obj.credentialEnv === "string" ? obj.credentialEnv : undefined
+  const rawExtra = obj.extraEnv
+  const extraEnv =
+    rawExtra && typeof rawExtra === "object" && !Array.isArray(rawExtra)
+      ? Object.fromEntries(
+          Object.entries(rawExtra as Record<string, unknown>).filter(
+            (e): e is [string, string] => typeof e[1] === "string",
+          ),
+        )
+      : undefined
   return {
     ...(mode ? { mode } : {}),
     ...(token !== undefined ? { token } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(credentialEnv !== undefined ? { credentialEnv } : {}),
+    ...(extraEnv !== undefined ? { extraEnv } : {}),
+    ...(obj.isolateDataHome === false ? { isolateDataHome: false } : {}),
   }
 }
 

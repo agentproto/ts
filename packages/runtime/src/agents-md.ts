@@ -163,6 +163,27 @@ export const cdContractLine =
   `end up.`
 
 /**
+ * Make a host-resolved AGENTS.md safe to compose into a prompt that runs in a
+ * sandbox box. The box has its own filesystem, so a host path is never valid
+ * there: `pointer` mode is dropped (the box agent would try to read a file that
+ * does not exist) and `inline` keeps its content but loses the host path from
+ * the fence header. The descriptor keeps the host path for `inline` (it is
+ * provenance only, never sent to the box).
+ */
+export function agentsMdForSandbox(resolution: AgentsMdResolution): AgentsMdResolution {
+  if (resolution.mode === "pointer") {
+    return { mode: "absent", contractLine: resolution.contractLine }
+  }
+  if (resolution.mode === "inline" && resolution.content !== undefined) {
+    return {
+      ...resolution,
+      block: `--- AGENTS.md ---\n${resolution.content}\n--- end AGENTS.md ---`,
+    }
+  }
+  return resolution
+}
+
+/**
  * Resolve + shape the AGENTS.md for a spawn at `cwd`. Decides inline vs
  * pointer against `inlineMaxKb` KB: byte size `<` the threshold ⇒ inline the
  * full content; `>=` ⇒ pointer-mode; none found ⇒ absent. Always carries the

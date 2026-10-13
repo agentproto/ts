@@ -85,6 +85,17 @@ export interface DefaultsAdapterAuthConfig {
    *  model-derived provider (the sharp edge for by-model routers whose config
    *  routes a catalog-"anthropic" model elsewhere). A `CatalogProvider` id. */
   provider?: CatalogProvider
+  /** Sub-account scoping a host resolved for a pinned profile and forwards
+   *  to a sandbox box (which has neither the profile nor its provider): the
+   *  env var the `apiKey` is set into instead of the provider's conventional
+   *  one. Per-spawn only; never read from config defaults. */
+  credentialEnv?: string
+  /** Extra env set beside the credential (the provider's scoping config).
+   *  Layered over — not clobbering — a JSON config the adapter's own mode
+   *  already carries under the same key. Per-spawn only. */
+  extraEnv?: Record<string, string>
+  /** `false` opts out of the adapter's login-less credential data home. */
+  isolateDataHome?: boolean
 }
 
 export interface DefaultsAdapterConfig {
@@ -238,6 +249,42 @@ export interface ResolvedSpawnAuthMaterial {
   apiKeyCredential?: string
   /** Per-spawn provider pin, if given. */
   provider?: CatalogProvider
+  /** Forwarded sub-account scoping — see {@link DefaultsAdapterAuthConfig.credentialEnv}. */
+  credentialEnvOverride?: string
+  extraEnv?: Record<string, string>
+  isolateDataHome?: boolean
+}
+
+const AUTH_ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/
+/** Env a forwarded sub-account scope may never set: process-control vars that
+ *  would turn a billing-scope field into code execution. */
+const RESERVED_AUTH_ENV_RE = /^(PATH|HOME|SHELL|USER|ENV|BASH_ENV|NODE_OPTIONS|NODE_PATH|LD_[A-Z0-9_]*|DYLD_[A-Z0-9_]*)$/
+
+/** Keep only well-formed, non-reserved entries of a forwarded `extraEnv`. */
+export function sanitizeAuthExtraEnv(
+  env: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!env || typeof env !== "object") return undefined
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue
+    if (!AUTH_ENV_NAME_RE.test(name) || RESERVED_AUTH_ENV_RE.test(name)) continue
+    out[name] = value
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** Spread into `resolveAuthSpec`'s input: the forwarded sub-account scoping. */
+export function forwardedSubaccountAuthInputs(auth: ResolvedSpawnAuthMaterial): {
+  credentialEnvOverride?: string
+  extraEnv?: Record<string, string>
+  isolateDataHome?: boolean
+} {
+  return {
+    ...(auth.credentialEnvOverride !== undefined ? { credentialEnvOverride: auth.credentialEnvOverride } : {}),
+    ...(auth.extraEnv !== undefined ? { extraEnv: auth.extraEnv } : {}),
+    ...(auth.isolateDataHome === false ? { isolateDataHome: false } : {}),
+  }
 }
 
 export function resolveSpawnDefaults(
@@ -266,6 +313,13 @@ export function resolveSpawnDefaults(
   const subscriptionSource = input.auth?.source ?? adapterDefaults?.auth?.source
   const apiKeyCredential = input.auth?.apiKey ?? adapterDefaults?.auth?.apiKey
   const authProvider = input.auth?.provider ?? adapterDefaults?.auth?.provider
+  const credentialEnvOverride =
+    typeof input.auth?.credentialEnv === "string" &&
+    AUTH_ENV_NAME_RE.test(input.auth.credentialEnv) &&
+    !RESERVED_AUTH_ENV_RE.test(input.auth.credentialEnv)
+      ? input.auth.credentialEnv
+      : undefined
+  const forwardedExtraEnv = sanitizeAuthExtraEnv(input.auth?.extraEnv)
 
   const contextContinuity =
     input.contextContinuity ?? adapterDefaults?.contextContinuity ?? defaults?.contextContinuity
@@ -281,6 +335,9 @@ export function resolveSpawnDefaults(
       ...(subscriptionSource !== undefined ? { subscriptionSource } : {}),
       ...(apiKeyCredential !== undefined ? { apiKeyCredential } : {}),
       ...(authProvider ? { provider: authProvider } : {}),
+      ...(credentialEnvOverride !== undefined ? { credentialEnvOverride } : {}),
+      ...(forwardedExtraEnv !== undefined ? { extraEnv: forwardedExtraEnv } : {}),
+      ...(input.auth?.isolateDataHome === false ? { isolateDataHome: false } : {}),
     },
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
   }
