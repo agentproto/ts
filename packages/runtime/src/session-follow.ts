@@ -12,7 +12,7 @@
  *
  * Delivery mirrors `supervisor-notify.ts`: matched events are coalesced per
  * follower within `batchMs` into ONE daemon-attested system message
- * (`relation:"system"`, `kind:"notice"`, `urgency:"next-turn"`) through
+ * (`relation:"system"`, `kind:"notice"`, `urgency:"next-turn"`, or `"fyi"` per follow) through
  * `registry.sendMessage` — an idle follower runs it as its own turn now, a
  * busy one parks it in its prompt queue as a separate turn. It never
  * interrupts. The follower's own events are never delivered to itself, and
@@ -39,7 +39,7 @@ import type { ActivityRecord } from "./activity-projection.js"
 import { readTranscriptTail } from "./session-index.js"
 import { createSessionMessage, type SessionMessage } from "./session-message.js"
 import type { SessionEvent, SessionEventBus } from "./session-event-bus.js"
-import type { FollowEvent, SessionFollow, SessionFollowStore } from "./session-follow-store.js"
+import type { FollowEvent, FollowUrgency, SessionFollow, SessionFollowStore } from "./session-follow-store.js"
 import { SessionNotAliveError, type SessionDescriptor } from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
@@ -309,6 +309,9 @@ function isAlive(desc: SessionDescriptor): boolean {
 interface Batch {
   entries: BatchEntry[]
   followIds: Set<string>
+  /** "next-turn" as soon as any contributing follow asks for it; "fyi" only
+   *  when every follow feeding this batch is passive. */
+  urgency: FollowUrgency
   timer: unknown
 }
 
@@ -360,9 +363,9 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     return d ? readLastOutput(d) : undefined
   }
 
-  async function sendOnce(to: string, text: string, followerId: string): Promise<void> {
+  async function sendOnce(to: string, text: string, followerId: string, urgency: FollowUrgency): Promise<void> {
     await registry.sendMessage(
-      createSessionMessage({ to, from: { relation: "system" }, text, kind: "notice", urgency: "next-turn" }),
+      createSessionMessage({ to, from: { relation: "system" }, text, kind: "notice", urgency }),
       { source: "session-follow", origin: `follow:${followerId}` },
     )
   }
@@ -400,11 +403,16 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     return started
   }
 
-  async function reviveAndSend(followerId: string, text: string, followIds: ReadonlySet<string>): Promise<void> {
+  async function reviveAndSend(
+    followerId: string,
+    text: string,
+    followIds: ReadonlySet<string>,
+    urgency: FollowUrgency,
+  ): Promise<void> {
     const replacement = findLiveReplacement(followerId, followIds)
     if (replacement) {
       try {
-        await sendOnce(replacement, text, replacement)
+        await sendOnce(replacement, text, replacement, urgency)
       } catch (err) {
         park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`)
       }
@@ -420,7 +428,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       try {
         const resumed = await reviveOnce(headId)
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
-        await sendOnce(resumed, text, resumed)
+        await sendOnce(resumed, text, resumed, urgency)
       } catch (err) {
         park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`)
       }
@@ -448,27 +456,32 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       if (resumed !== followerId) {
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
       }
-      await sendOnce(resumed, text, resumed)
+      await sendOnce(resumed, text, resumed, urgency)
     } catch (err) {
       park(followerId, text, `could not resume follower: ${describeError(err)}`)
     }
   }
 
-  async function deliver(followerId: string, text: string, followIds: ReadonlySet<string>): Promise<void> {
+  async function deliver(
+    followerId: string,
+    text: string,
+    followIds: ReadonlySet<string>,
+    urgency: FollowUrgency,
+  ): Promise<void> {
     const desc = registry.get(followerId)
     if (!desc) {
       log(`[session-follow] follower ${followerId} no longer exists — digest dropped (follow kept)`)
       return
     }
     if (!isAlive(desc)) {
-      await reviveAndSend(followerId, text, followIds)
+      await reviveAndSend(followerId, text, followIds, urgency)
       return
     }
     try {
-      await sendOnce(followerId, text, followerId)
+      await sendOnce(followerId, text, followerId, urgency)
     } catch (err) {
       if (err instanceof SessionNotAliveError) {
-        await reviveAndSend(followerId, text, followIds)
+        await reviveAndSend(followerId, text, followIds, urgency)
         return
       }
       log(`[session-follow] delivery to ${followerId} failed: ${describeError(err)}`)
@@ -482,7 +495,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     clearTimer(batch.timer)
     if (batch.entries.length === 0) return Promise.resolve()
     const text = formatFollowDigest(batch.entries, textFor, id => registry.get(id))
-    const p = deliver(followerId, text, batch.followIds)
+    const p = deliver(followerId, text, batch.followIds, batch.urgency)
       .catch(err => log(`[session-follow] flush for ${followerId} failed: ${describeError(err)}`))
       .finally(() => inFlight.delete(p))
     inFlight.add(p)
@@ -492,7 +505,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   function enqueue(followerId: string, follow: SessionFollow, entry: BatchEntry): void {
     let batch = batches.get(followerId)
     if (!batch) {
-      batch = { entries: [], followIds: new Set(), timer: undefined }
+      batch = { entries: [], followIds: new Set(), urgency: "fyi", timer: undefined }
       batches.set(followerId, batch)
     }
     // Same-session duplicates collapse, keeping the latest (moved to the end).
@@ -504,6 +517,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     }
     batch.entries.push(entry)
     batch.followIds.add(follow.id)
+    if (follow.urgency !== "fyi") batch.urgency = "next-turn"
     if (batch.timer === undefined) {
       const target = batch
       target.timer = setTimer(() => {
@@ -523,10 +537,18 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       const desc = registry.get(signal.sessionId)
       const claimed = new Set<string>()
       for (const follow of follows) {
-        if (claimed.has(follow.follower)) continue
+        const alreadyClaimed = claimed.has(follow.follower)
+        // A second matching follow adds no entry, but a next-turn one still
+        // makes the shared batch wake the follower.
+        if (alreadyClaimed && follow.urgency === "fyi") continue
         const event = followWants(follow, signal)
         if (!event) continue
         if (!followCoversSession(follow, signal.sessionId, desc, registry, signal.label)) continue
+        if (alreadyClaimed) {
+          const batch = batches.get(follow.follower)
+          if (batch) batch.urgency = "next-turn"
+          continue
+        }
         claimed.add(follow.follower)
         enqueue(follow.follower, follow, {
           sessionId: signal.sessionId,

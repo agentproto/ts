@@ -15,6 +15,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 import {
   FOLLOW_EVENTS,
+  FOLLOW_URGENCIES,
   MAX_FOLLOW_BATCH_MS,
   type SessionFollow,
   type SessionFollowInput,
@@ -52,6 +53,7 @@ export const followInputSchema = z.object({
   batchMs: z.number().int().min(0).max(MAX_FOLLOW_BATCH_MS).optional(),
   skipEmptyTurns: z.boolean().optional(),
   excludeFollowerChildren: z.boolean().optional(),
+  urgency: z.enum(FOLLOW_URGENCIES).optional(),
 })
 
 export type FollowInputBody = z.infer<typeof followInputSchema>
@@ -115,6 +117,7 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
     ...(body.excludeFollowerChildren !== undefined
       ? { excludeFollowerChildren: body.excludeFollowerChildren }
       : {}),
+    ...(body.urgency ? { urgency: body.urgency } : {}),
   }
   const { follow, created } = deps.store.upsert(input)
   return { ok: true, follow, created }
@@ -166,7 +169,10 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       "time, so sessions spawned later are covered; root sessions only unless " +
       "`rootOnly: false`), or `cwdPrefix`. `exclude` removes ids/labels. Events " +
       "are coalesced within `batchMs` into one automatic digest message that " +
-      "never interrupts a busy follower. Your own events are never delivered to " +
+      "never interrupts a busy follower. `urgency` (default \"next-turn\") sets how a " +
+      "digest lands: \"next-turn\" wakes you for a turn; \"fyi\" parks it in your inbox " +
+      "(unread count prefixed on your next message) and never starts a turn — use it " +
+      "for high-volume follows you only need to skim. Your own events are never delivered to " +
       "you; your descendants' only with `excludeFollowerChildren: false`. Upserts by `key` when given. Survives daemon " +
       "restarts.",
     {
@@ -180,6 +186,12 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
         .describe("Event kinds to deliver. Default: all of turn-end, awaiting-input, exited, crashed, pr-opened, pr-merged."),
       batchMs: z.number().int().optional().describe("Coalescing window in ms. Default 15000."),
       skipEmptyTurns: z.boolean().optional().describe("Drop silent no-op turns. Default true."),
+      urgency: z
+        .enum(FOLLOW_URGENCIES)
+        .optional()
+        .describe(
+          'Digest delivery. Default "next-turn" (wakes the follower). "fyi" parks digests in the inbox without starting a turn.',
+        ),
       excludeFollowerChildren: z.boolean().optional().describe(
           "Ignore the follower's own descendants. Default true. `false` delivers them " +
             "(any depth, even under `rootOnly`) — what a supervisor wants for its own children.",

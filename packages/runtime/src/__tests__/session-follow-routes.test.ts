@@ -115,6 +115,23 @@ describe("session-follow HTTP routes + MCP tools", () => {
     expect(second.json.batchMs).toBe(500)
   })
 
+  it("POST accepts urgency (default next-turn), rejects unknown values, re-POST changes it", async () => {
+    const created = await call("POST", "/follows", { follower: followerId, key: "u", selector: { all: true } })
+    expect(created.status).toBe(201)
+    expect(created.json.urgency).toBe("next-turn")
+    const updated = await call("POST", "/follows", {
+      follower: followerId,
+      key: "u",
+      selector: { all: true },
+      urgency: "fyi",
+    })
+    expect(updated.status).toBe(200)
+    expect(updated.json.id).toBe(created.json.id)
+    expect(updated.json.urgency).toBe("fyi")
+    const bad = await call("POST", "/follows", { follower: followerId, selector: { all: true }, urgency: "now" })
+    expect(bad.status).toBe(400)
+  })
+
   it("GET lists, optionally filtered by follower", async () => {
     const all = await call("GET", "/follows")
     expect(all.status).toBe(200)
