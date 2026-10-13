@@ -292,6 +292,10 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
     expect(captured[0]?.sessionSkills).toEqual([
       { alias: "dataviz", path: join(homedir(), ".agentproto", "skills", "dataviz") },
     ])
+    // ...and recorded on the descriptor so restart/lazy-resume re-deliver it.
+    expect(result.ok && result.descriptor.sessionSkills).toEqual([
+      { alias: "dataviz", path: join(homedir(), ".agentproto", "skills", "dataviz") },
+    ])
     expect(result.ok && result.warnings?.some(w => w.includes("ghost-skill"))).toBe(true)
     // `normalizeSkillsOption` is untouched: BOTH ids still reach the
     // adapter-facing option, imported or not.

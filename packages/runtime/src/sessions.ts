@@ -52,6 +52,7 @@ import type {
   RouteSpec,
 } from "./session-config.js"
 import type { CostBudget } from "@agentproto/auth"
+import type { ResolvedSessionSkill } from "./skill-imports.js"
 import type { AdapterCapabilitiesLister, AgentAdapterResolver } from "./http-server.js"
 import type { QuotaReadableProfile, RemainingQuotaReader } from "./remaining-quota.js"
 import {
@@ -2104,6 +2105,14 @@ export interface SessionDescriptor {
    *  adapter (claude-code) that auto-discovers skills on its own and never
    *  reads this list back. */
   skills?: string[]
+  /** Resolved imported skills DELIVERED into this session's isolated config
+   *  dir at spawn time — the `{alias, path}` pairs `session-spawn.ts` derived
+   *  from the skill-imports registry (`resolveSessionSkills`). Persisted so
+   *  restart/lazy-resume re-deliver the SAME set instead of reviving an
+   *  adapter whose imported skills silently vanished. Distinct from `skills`
+   *  (the adapter-facing id list): these name concrete copied folders under
+   *  `~/.agentproto/skills/<id>/`. */
+  sessionSkills?: ResolvedSessionSkill[]
   /** Capability bundle ids (`bundle_list`) resolved for this spawn (PLAN D
    *  phase 1) — ids only, never the expanded imported-MCP snapshots (those
    *  live only in `mcpServers` above, as reference-only proxy URLs). Absent
@@ -4775,6 +4784,10 @@ export interface SpawnAgentInput {
    *  explicit ∪ preset ∪ config-defaults result) — recorded verbatim onto
    *  {@link SessionDescriptor.skills}. See that field's doc. */
   skills?: string[]
+  /** Resolved imported skills to deliver into the session's isolated config
+   *  dir — recorded verbatim onto {@link SessionDescriptor.sessionSkills}. See
+   *  that field's doc. */
+  sessionSkills?: ResolvedSessionSkill[]
   /** Capability bundle ids resolved for this spawn — recorded verbatim onto
    *  {@link SessionDescriptor.bundles}; see that field's doc. */
   bundles?: string[]
@@ -9884,6 +9897,11 @@ export function createSessionsRegistry(opts?: {
         // Persist the resolved skills list, whether or not this adapter
         // consumes it (see `SessionDescriptor.skills`'s doc).
         ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
+        // Persist the delivered imported-skill folders so restart/lazy-resume
+        // re-deliver the same set (see `SessionDescriptor.sessionSkills`).
+        ...(input.sessionSkills && input.sessionSkills.length > 0
+          ? { sessionSkills: input.sessionSkills }
+          : {}),
         ...(input.bundles && input.bundles.length > 0 ? { bundles: input.bundles } : {}),
         // Persist the isolated-config location so restart/lazy-resume can
         // hand the respawned adapter the SAME dir (native-resume store).
@@ -10061,6 +10079,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.label ? { renamedByUser: false } : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
         ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
+        ...(input.sessionSkills && input.sessionSkills.length > 0
+          ? { sessionSkills: input.sessionSkills }
+          : {}),
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }

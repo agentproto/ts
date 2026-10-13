@@ -250,6 +250,7 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
+import type { ResolvedSessionSkill } from "./skill-imports.js"
 import {
   HANDOFF_DRY_RUN_NOTE,
   buildContextCheckpoint,
@@ -579,6 +580,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  (claude-code: `claudeMdExcludes`). Only passed to adapters whose
      *  resolver entry sets `supportsHostContextIsolation`. */
     isolateHostContext?: boolean
+    /** Resolved imported skills to deliver into this session's isolated
+     *  config dir — forwarded verbatim to the driver's
+     *  `start({ sessionSkills })` (see `AgentCliStartOptions.sessionSkills`).
+     *  Populated by `session-spawn.ts` from the skill-imports registry and
+     *  replayed on restart/lazy-resume so a revived session keeps its skills.
+     *  Adapters that declare no `metadata.sessionSkills` ignore it. */
+    sessionSkills?: ResolvedSessionSkill[]
   }): Promise<AgentSessionLike>
   /** True when `startSession` honours `fsZones` (native tools confined by the
    *  OS sandbox). Omitted/false ⇒ an app-boundary spawn on this adapter gets

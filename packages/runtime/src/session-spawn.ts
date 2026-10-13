@@ -3618,6 +3618,7 @@ export async function spawnAgentSession(
         ...(initialTitle ? { title: initialTitle } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
+        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
@@ -4130,6 +4131,7 @@ export async function spawnAgentSession(
       ...(initialTitle ? { title: initialTitle } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
+      ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
       ...(bundleIds.length > 0 ? { bundles: bundleIds } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback

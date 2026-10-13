@@ -42,12 +42,12 @@ function fakeAgentSession(): AgentSessionLike {
  *  the identity stamp without spying on internals. */
 function makeResolver(): {
   resolver: AgentAdapterResolver
-  calls: Array<{ mcpServers?: unknown }>
+  calls: Array<{ mcpServers?: unknown; sessionSkills?: unknown }>
 } {
-  const calls: Array<{ mcpServers?: unknown }> = []
+  const calls: Array<{ mcpServers?: unknown; sessionSkills?: unknown }> = []
   const resolver: AgentAdapterResolver = async () => ({
-    async startSession(o: { mcpServers?: unknown }) {
-      calls.push({ mcpServers: o.mcpServers })
+    async startSession(o: { mcpServers?: unknown; sessionSkills?: unknown }) {
+      calls.push({ mcpServers: o.mcpServers, sessionSkills: o.sessionSkills })
       return fakeAgentSession()
     },
     commandPreview: "mock-adapter",
@@ -221,6 +221,29 @@ describe("restartAgentSession — mcpServers callerSessionId identity stamp", ()
     expect(restarted.desc.mcpServers?.[0]?.ref).toBe(
       "https://example.com/mcp?callerSessionId=some-foreign-pin",
     )
+  })
+})
+
+describe("restartAgentSession — delivered imported skills survive a restart", () => {
+  it("carries prev.sessionSkills onto the fresh descriptor and into startSession", async () => {
+    const { resolver, calls } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    const sessionSkills = [{ alias: "dataviz", path: "/home/u/.agentproto/skills/dataviz" }]
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "opencode",
+      sessionSkills,
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: NOOP_DEFAULTS,
+    })
+
+    expect(restarted.desc.sessionSkills).toEqual(sessionSkills)
+    expect(calls[0]?.sessionSkills).toEqual(sessionSkills)
   })
 })
 
