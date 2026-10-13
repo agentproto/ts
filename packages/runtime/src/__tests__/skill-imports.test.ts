@@ -157,6 +157,19 @@ describe("importSkill", () => {
     expect(existsSync(skillImportDir("ap-seed", paths.root))).toBe(true)
   })
 
+  it("serializes concurrent imports so neither entry is lost", async () => {
+    const a = await makeSkill("ap-conc-a")
+    const b = await makeSkill("ap-conc-b")
+    await Promise.all([
+      importSkill({ sourcePath: a }, paths),
+      importSkill({ sourcePath: b }, paths),
+    ])
+    const config = await loadImportedSkills(paths.registryPath)
+    expect(config.imports.map(e => e.id).sort()).toEqual(["ap-conc-a", "ap-conc-b"])
+    expect(existsSync(join(paths.root!, "ap-conc-a"))).toBe(true)
+    expect(existsSync(join(paths.root!, "ap-conc-b"))).toBe(true)
+  })
+
   it("leaves no temp copy behind after an import (atomic rename)", async () => {
     const src = await makeSkill("ap-atomic")
     await importSkill({ sourcePath: src }, paths)

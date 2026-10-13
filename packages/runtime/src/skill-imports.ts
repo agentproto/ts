@@ -136,12 +136,37 @@ export async function saveImportedSkills(
   path: string = IMPORTED_SKILLS_PATH()
 ): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true })
-  const tmp = `${path}.tmp.${process.pid}`
+  // Unique per writer: two concurrent saves in one daemon must not share a
+  // temp path (they'd clobber each other's rename source).
+  const tmp = `${path}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`
   await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", {
     encoding: "utf8",
     mode: 0o600,
   })
   await fs.rename(tmp, path)
+}
+
+/**
+ * In-process mutex serializing a registry load-modify-save. `saveImportedSkills`
+ * writes the WHOLE file, so two concurrent callers (import/remove/resync, or a
+ * resync racing an import) that both load, mutate, then save would lose one
+ * another's changes — last writer wins. Chaining on a shared promise makes the
+ * read-modify-write atomic within this process. (Cross-process safety still
+ * rests on the atomic rename in `saveImportedSkills`.)
+ */
+let registryLock: Promise<void> = Promise.resolve()
+async function withRegistryLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = registryLock
+  let release!: () => void
+  registryLock = new Promise<void>(resolve => {
+    release = resolve
+  })
+  await prev
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
 }
 
 /** The current imports (convenience over `loadImportedSkills`). */
@@ -391,45 +416,47 @@ export async function importSkill(
   input: ImportSkillInput,
   paths: SkillImportPaths = {}
 ): Promise<ImportSkillResult> {
-  const root = paths.root ?? IMPORTED_SKILLS_ROOT()
-  const registryPath = paths.registryPath ?? IMPORTED_SKILLS_PATH()
-  const sourcePath = await assertSkillSource(input.sourcePath)
-  const overlap = registryOverlapMessage(sourcePath, await realRegistryRoot(root))
-  if (overlap) throw new Error(overlap)
-  const raw = await fs.readFile(join(sourcePath, SKILL_FILE), "utf8")
-  const { name } = parseSkillFrontmatter(raw)
-  const alias = (input.alias ?? name).trim()
-  assertValidAlias(alias)
+  return withRegistryLock(async () => {
+    const root = paths.root ?? IMPORTED_SKILLS_ROOT()
+    const registryPath = paths.registryPath ?? IMPORTED_SKILLS_PATH()
+    const sourcePath = await assertSkillSource(input.sourcePath)
+    const overlap = registryOverlapMessage(sourcePath, await realRegistryRoot(root))
+    if (overlap) throw new Error(overlap)
+    const raw = await fs.readFile(join(sourcePath, SKILL_FILE), "utf8")
+    const { name } = parseSkillFrontmatter(raw)
+    const alias = (input.alias ?? name).trim()
+    assertValidAlias(alias)
 
-  const config = await loadImportedSkills(registryPath)
-  // Resolution matches by id OR alias, so an alias that collides with a
-  // DIFFERENT entry's id or alias would make the resolution ambiguous (and
-  // two imports could target the same delivery dir). Refuse it up front.
-  const clash = config.imports.find(
-    e => e.id !== name && (e.id === alias || e.alias === alias),
-  )
-  if (clash) {
-    throw new Error(
-      `alias "${alias}" is already used by import "${clash.id}" — pick a different alias.`,
+    const config = await loadImportedSkills(registryPath)
+    // Resolution matches by id OR alias, so an alias that collides with a
+    // DIFFERENT entry's id or alias would make the resolution ambiguous (and
+    // two imports could target the same delivery dir). Refuse it up front.
+    const clash = config.imports.find(
+      e => e.id !== name && (e.id === alias || e.alias === alias),
     )
-  }
+    if (clash) {
+      throw new Error(
+        `alias "${alias}" is already used by import "${clash.id}" — pick a different alias.`,
+      )
+    }
 
-  const dest = skillImportDir(name, root)
-  await copySkillDir(sourcePath, dest)
-  const sha = await computeSkillDirSha(dest)
-  const entry: ImportedSkillEntry = {
-    id: name,
-    alias,
-    sourcePath,
-    sha,
-    addedAt: new Date().toISOString(),
-  }
-  const next: ImportedSkillsConfig = {
-    ...config,
-    imports: [...config.imports.filter(e => e.id !== entry.id), entry],
-  }
-  await saveImportedSkills(next, registryPath)
-  return { config: next, entry }
+    const dest = skillImportDir(name, root)
+    await copySkillDir(sourcePath, dest)
+    const sha = await computeSkillDirSha(dest)
+    const entry: ImportedSkillEntry = {
+      id: name,
+      alias,
+      sourcePath,
+      sha,
+      addedAt: new Date().toISOString(),
+    }
+    const next: ImportedSkillsConfig = {
+      ...config,
+      imports: [...config.imports.filter(e => e.id !== entry.id), entry],
+    }
+    await saveImportedSkills(next, registryPath)
+    return { config: next, entry }
+  })
 }
 
 export interface RemoveSkillResult {
@@ -442,19 +469,21 @@ export async function removeImportedSkill(
   id: string,
   paths: SkillImportPaths = {}
 ): Promise<RemoveSkillResult> {
-  const root = paths.root ?? IMPORTED_SKILLS_ROOT()
-  const registryPath = paths.registryPath ?? IMPORTED_SKILLS_PATH()
-  const config = await loadImportedSkills(registryPath)
-  if (!config.imports.some(e => e.id === id)) {
-    return { config, removed: false }
-  }
-  const next: ImportedSkillsConfig = {
-    ...config,
-    imports: config.imports.filter(e => e.id !== id),
-  }
-  await saveImportedSkills(next, registryPath)
-  await fs.rm(skillImportDir(id, root), { recursive: true, force: true }).catch(() => {})
-  return { config: next, removed: true }
+  return withRegistryLock(async () => {
+    const root = paths.root ?? IMPORTED_SKILLS_ROOT()
+    const registryPath = paths.registryPath ?? IMPORTED_SKILLS_PATH()
+    const config = await loadImportedSkills(registryPath)
+    if (!config.imports.some(e => e.id === id)) {
+      return { config, removed: false }
+    }
+    const next: ImportedSkillsConfig = {
+      ...config,
+      imports: config.imports.filter(e => e.id !== id),
+    }
+    await saveImportedSkills(next, registryPath)
+    await fs.rm(skillImportDir(id, root), { recursive: true, force: true }).catch(() => {})
+    return { config: next, removed: true }
+  })
 }
 
 export interface ResyncSkillResult {
@@ -475,53 +504,55 @@ export async function resyncImportedSkill(
   id: string,
   paths: SkillImportPaths = {}
 ): Promise<ResyncSkillResult> {
-  const root = paths.root ?? IMPORTED_SKILLS_ROOT()
-  const registryPath = paths.registryPath ?? IMPORTED_SKILLS_PATH()
-  const config = await loadImportedSkills(registryPath)
-  const entry = config.imports.find(e => e.id === id)
-  if (!entry) return { config, changed: false, warnings: [`import "${id}" not found`] }
+  return withRegistryLock(async () => {
+    const root = paths.root ?? IMPORTED_SKILLS_ROOT()
+    const registryPath = paths.registryPath ?? IMPORTED_SKILLS_PATH()
+    const config = await loadImportedSkills(registryPath)
+    const entry = config.imports.find(e => e.id === id)
+    if (!entry) return { config, changed: false, warnings: [`import "${id}" not found`] }
 
-  let sourceSha: string
-  try {
-    await assertSkillSource(entry.sourcePath)
-    sourceSha = await computeSkillDirSha(entry.sourcePath)
-  } catch (err) {
-    return {
-      config,
-      entry,
-      changed: false,
-      warnings: [
-        `could not resync "${id}" from ${entry.sourcePath}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      ],
+    let sourceSha: string
+    try {
+      await assertSkillSource(entry.sourcePath)
+      sourceSha = await computeSkillDirSha(entry.sourcePath)
+    } catch (err) {
+      return {
+        config,
+        entry,
+        changed: false,
+        warnings: [
+          `could not resync "${id}" from ${entry.sourcePath}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ],
+      }
     }
-  }
 
-  const dest = skillImportDir(entry.id, root)
-  let destSha: string | undefined
-  try {
-    destSha = await computeSkillDirSha(dest)
-  } catch {
-    destSha = undefined
-  }
-  if (destSha === sourceSha) {
-    return { config, entry, changed: false, warnings: [] }
-  }
+    const dest = skillImportDir(entry.id, root)
+    let destSha: string | undefined
+    try {
+      destSha = await computeSkillDirSha(dest)
+    } catch {
+      destSha = undefined
+    }
+    if (destSha === sourceSha) {
+      return { config, entry, changed: false, warnings: [] }
+    }
 
-  // A legacy/hand-edited entry could carry a `sourcePath` that overlaps the
-  // root; re-copying it would delete the source. Warn and leave it intact.
-  const overlap = registryOverlapMessage(entry.sourcePath, await realRegistryRoot(root))
-  if (overlap) return { config, entry, changed: false, warnings: [overlap] }
+    // A legacy/hand-edited entry could carry a `sourcePath` that overlaps the
+    // root; re-copying it would delete the source. Warn and leave it intact.
+    const overlap = registryOverlapMessage(entry.sourcePath, await realRegistryRoot(root))
+    if (overlap) return { config, entry, changed: false, warnings: [overlap] }
 
-  await copySkillDir(entry.sourcePath, dest)
-  const updated: ImportedSkillEntry = { ...entry, sha: await computeSkillDirSha(dest) }
-  const next: ImportedSkillsConfig = {
-    ...config,
-    imports: config.imports.map(e => (e.id === id ? updated : e)),
-  }
-  await saveImportedSkills(next, registryPath)
-  return { config: next, entry: updated, changed: true, warnings: [] }
+    await copySkillDir(entry.sourcePath, dest)
+    const updated: ImportedSkillEntry = { ...entry, sha: await computeSkillDirSha(dest) }
+    const next: ImportedSkillsConfig = {
+      ...config,
+      imports: config.imports.map(e => (e.id === id ? updated : e)),
+    }
+    await saveImportedSkills(next, registryPath)
+    return { config: next, entry: updated, changed: true, warnings: [] }
+  })
 }
 
 function normalize(parsed: unknown): ImportedSkillsConfig {
