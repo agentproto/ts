@@ -79,7 +79,9 @@ import {
   type SandboxSecretResolver,
 } from "./sandbox-secret-resolver.js"
 import {
+  GH_TOKEN_ENV,
   GIT_TOKEN_ENV,
+  withGhTokenAlias,
   withoutReservedSandboxEnv,
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
@@ -4943,11 +4945,17 @@ export async function bootSandboxAgentSession(opts: {
   if (workspacePlan && gitCredentialRef !== undefined && !isDeviceBox) {
     credentialRefs.set(GIT_TOKEN_ENV, gitCredentialRef)
   }
-  const resolveSecret = buildSandboxSecretResolver({
-    base: resolveSandboxSecret,
-    refs: credentialRefs,
-    keychainFirst: new Set([GIT_TOKEN_ENV]),
-  })
+  // GH_TOKEN mirrors the workspace git token (so `gh pr create` works in the
+  // box) and is otherwise unresolvable — never the daemon's own GH_TOKEN.
+  const hasGitToken = credentialRefs.has(GIT_TOKEN_ENV)
+  const resolveSecret = withGhTokenAlias(
+    buildSandboxSecretResolver({
+      base: resolveSandboxSecret,
+      refs: credentialRefs,
+      keychainFirst: new Set([GIT_TOKEN_ENV]),
+    }),
+    hasGitToken,
+  )
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(
       withSandboxAdapterPackages(
@@ -5029,7 +5037,12 @@ export async function bootSandboxAgentSession(opts: {
   // yet, so this is the full slug set).
   const passthrough = spec.env?.passthrough ?? []
   const authEnv = spec.env?.auth?.state?.env ?? []
-  const declaredSlugs = new Set([...passthrough, ...authEnv, ...credentialRefs.keys()])
+  const declaredSlugs = new Set([
+    ...passthrough,
+    ...authEnv,
+    ...credentialRefs.keys(),
+    ...(hasGitToken ? [GH_TOKEN_ENV] : []),
+  ])
   // `join.tokenEnv` — sugar over `env.passthrough` for the auto-join case:
   // forward a single host env var (a join-token URL) into the box under the
   // same name. Unlike an explicit `env.passthrough` entry, a missing value

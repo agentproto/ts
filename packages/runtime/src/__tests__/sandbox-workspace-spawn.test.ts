@@ -207,6 +207,8 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     if (!result.ok) return
 
     expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBe(FAKE_TOKEN)
+    // the same daemon-derived token, for `gh pr create` in the box
+    expect(bootEnvs[0]?.GH_TOKEN).toBe(FAKE_TOKEN)
     expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
     expect(result.descriptor.cwd).toBe("/home/user/agentproto")
 
@@ -443,7 +445,32 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       })
       expect(result.ok).toBe(true)
       expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBe(FAKE_TOKEN)
-      expect(keychain.reads).toEqual([WORKSPACE_SLOT])
+      // GH_TOKEN re-resolves the same workspace ref (no value is cached)
+      expect(bootEnvs[0]?.GH_TOKEN).toBe(FAKE_TOKEN)
+      expect(new Set(keychain.reads)).toEqual(new Set([WORKSPACE_SLOT]))
+    })
+
+    it("a caller cannot override GH_TOKEN: passthrough, credentialRefs and join.tokenEnv all yield the workspace token", async () => {
+      keychain.values[ATTACKER_SLOT] = "attacker-chosen-value"
+      keychain.values[WORKSPACE_SLOT] = FAKE_TOKEN
+      setMcpCredentialDeps({ resolveSandboxSecret: async slug => (slug === "GH_TOKEN" ? "operator-gh-token" : null) })
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: {
+          provider: "fake",
+          config: {},
+          env: { passthrough: ["GH_TOKEN"] },
+          join: { tokenEnv: "GH_TOKEN" },
+          credentialRefs: [{ name: "GH_TOKEN", credentialRef: ATTACKER_SLOT }],
+        } as unknown as SandboxSpecInput,
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+      })
+      expect(result.ok).toBe(true)
+      expect(bootEnvs[0]?.GH_TOKEN).toBe(FAKE_TOKEN)
+      expect(JSON.stringify(bootEnvs)).not.toContain("operator-gh-token")
+      expect(keychain.reads).not.toContain(ATTACKER_SLOT)
+      expect(JSON.stringify(execCalls)).not.toContain(FAKE_TOKEN)
     })
 
     it("the workspace's credentialRef beats a daemon-level AGENTPROTO_GIT_TOKEN", async () => {
@@ -470,6 +497,18 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       expect(result.ok).toBe(true)
       expect(bootEnvs[0] ?? {}).not.toHaveProperty("AGENTPROTO_GIT_TOKEN")
       expect(keychain.reads).toEqual([])
+    })
+
+    it("env.passthrough naming GH_TOKEN cannot pull the daemon's own GH_TOKEN into a box with no workspace remote", async () => {
+      setMcpCredentialDeps({ resolveSandboxSecret: async slug => (slug === "GH_TOKEN" ? "operator-gh-token" : null) })
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {}, env: { passthrough: ["GH_TOKEN"] } },
+        cwd: "/home/user",
+      })
+      expect(result.ok).toBe(true)
+      expect(bootEnvs[0] ?? {}).not.toHaveProperty("GH_TOKEN")
+      expect(JSON.stringify(bootEnvs)).not.toContain("operator-gh-token")
     })
   })
 })

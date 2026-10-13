@@ -10,9 +10,42 @@
   "runtime": {
     "opencode-ai": "1.19.0"
   },
-  "resources": {
-    "cpuCount": 4,
-    "memoryMb": 8192
+  "tools": {
+    "gh": {
+      "version": "2.102.0",
+      "sha256": "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386"
+    }
+  },
+  "defaultSize": "large",
+  "sizes": {
+    "nano": {
+      "cpuCount": 1,
+      "memoryMb": 1024
+    },
+    "small": {
+      "cpuCount": 2,
+      "memoryMb": 2048
+    },
+    "medium": {
+      "cpuCount": 2,
+      "memoryMb": 4096
+    },
+    "large": {
+      "cpuCount": 4,
+      "memoryMb": 8192
+    },
+    "x-large": {
+      "cpuCount": 8,
+      "memoryMb": 16384,
+      "available": false,
+      "unavailableReason": "400: Memory can't be higher than 8192 MiB (if you need to increase this limit, please contact support)"
+    },
+    "xx-large": {
+      "cpuCount": 16,
+      "memoryMb": 32768,
+      "available": false,
+      "unavailableReason": "400: CPU count can't be higher than 8 (if you need to increase this limit, please contact support)"
+    }
   },
   "templates": {
     "stable": {
@@ -25,7 +58,10 @@
           "@agentproto/adapter-mastra-agent": "0.7.33",
           "@agentproto/adapter-opencode": "1.8.2"
         },
-        "builtAt": "2026-10-13T17:29:38.211Z"
+        "tools": {
+          "gh": "2.102.0"
+        },
+        "builtAt": "2026-10-13T17:51:52.964Z"
       }
     },
     "dev": {
@@ -38,7 +74,94 @@
           "@agentproto/adapter-mastra-agent": "0.7.33",
           "@agentproto/adapter-opencode": "1.8.2"
         },
-        "builtAt": "2026-10-13T17:32:21.689Z"
+        "tools": {
+          "gh": "2.102.0"
+        },
+        "builtAt": "2026-10-13T17:54:36.000Z"
+      }
+    },
+    "sizes": {
+      "nano": {
+        "id": "7yx8uii7vrtsp6tt0103",
+        "alias": "agentproto-workstation-nano",
+        "baked": {
+          "cli": "1.20.0",
+          "adapters": {
+            "@agentproto/adapter-hermes": "0.4.38",
+            "@agentproto/adapter-mastra-agent": "0.7.33",
+            "@agentproto/adapter-opencode": "1.8.2"
+          },
+          "tools": {
+            "gh": "2.102.0"
+          },
+          "builtAt": "2026-10-13T17:52:28.558Z"
+        }
+      },
+      "small": {
+        "id": "9j0rfk5m784o1w6ctv1z",
+        "alias": "agentproto-workstation-small",
+        "baked": {
+          "cli": "1.20.0",
+          "adapters": {
+            "@agentproto/adapter-hermes": "0.4.38",
+            "@agentproto/adapter-mastra-agent": "0.7.33",
+            "@agentproto/adapter-opencode": "1.8.2"
+          },
+          "tools": {
+            "gh": "2.102.0"
+          },
+          "builtAt": "2026-10-13T17:52:58.137Z"
+        }
+      },
+      "medium": {
+        "id": "9lj8jvwetb8stm4d2cuh",
+        "alias": "agentproto-workstation-medium",
+        "baked": {
+          "cli": "1.20.0",
+          "adapters": {
+            "@agentproto/adapter-hermes": "0.4.38",
+            "@agentproto/adapter-mastra-agent": "0.7.33",
+            "@agentproto/adapter-opencode": "1.8.2"
+          },
+          "tools": {
+            "gh": "2.102.0"
+          },
+          "builtAt": "2026-10-13T17:53:31.135Z"
+        }
+      },
+      "large": {
+        "id": "8f432exc83sk00i0imyc",
+        "alias": "agentproto-workstation-large",
+        "baked": {
+          "cli": "1.20.0",
+          "adapters": {
+            "@agentproto/adapter-hermes": "0.4.38",
+            "@agentproto/adapter-mastra-agent": "0.7.33",
+            "@agentproto/adapter-opencode": "1.8.2"
+          },
+          "tools": {
+            "gh": "2.102.0"
+          },
+          "builtAt": "2026-10-13T17:54:03.405Z"
+        }
+      },
+      "x-large": {
+        "id": null,
+        "alias": "agentproto-workstation-x-large",
+        "baked": {
+          "cli": null,
+          "adapters": null,
+          "builtAt": null
+        }
+      },
+      "xx-large": {
+        "id": null,
+        "alias": "agentproto-workstation-xx-large",
+        "baked": {
+          "cli": null,
+          "adapters": null,
+          "builtAt": null
+        }
       }
     }
   }

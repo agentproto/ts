@@ -52,6 +52,9 @@ A workspace "remote" is the off-machine clone source a sandbox spawn
 (agent_start sandbox + workspaceSlug) checks out into the box. The git token
 is never a flag: pipe it on stdin with --token-stdin (stored in the OS keychain
 as agentproto.git.<slug>) or name an existing keychain slot with --credential-ref.
+The box gets that token as AGENTPROTO_GIT_TOKEN (git credential helper) and
+GH_TOKEN, so the agent can "git push" and "gh pr create" when the token has
+Contents + Pull requests write on the repository.
 
 Config file: ${DEFAULT_CONFIG_PATH()}
 `

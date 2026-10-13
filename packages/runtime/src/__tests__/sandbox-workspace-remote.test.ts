@@ -9,7 +9,9 @@ import { describe, it, expect } from "vitest"
 import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 
 import {
+  GH_TOKEN_ENV,
   GIT_TOKEN_ENV,
+  withGhTokenAlias,
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
   shellQuote,
@@ -182,8 +184,41 @@ describe("withoutReservedSandboxEnv", () => {
     expect(spec.join?.tokenEnv).toBeUndefined()
   })
 
+  it("drops GH_TOKEN from every caller-declared env slot too", () => {
+    const spec = withoutReservedSandboxEnv({
+      provider: "e2b",
+      config: {},
+      env: {
+        passthrough: [GH_TOKEN_ENV, "KEEP_ME"],
+        auth: { state: { env: ["ALSO_KEPT", GH_TOKEN_ENV] } },
+      },
+      join: { tokenEnv: GH_TOKEN_ENV },
+    } as Parameters<typeof withoutReservedSandboxEnv>[0])
+    expect(spec.env?.passthrough).toEqual(["KEEP_ME"])
+    expect(spec.env?.auth?.state?.env).toEqual(["ALSO_KEPT"])
+    expect(spec.join?.tokenEnv).toBeUndefined()
+  })
+
   it("returns a spec without env untouched", () => {
     const spec = { provider: "e2b", config: {} }
     expect(withoutReservedSandboxEnv(spec)).toBe(spec)
+  })
+})
+
+describe("withGhTokenAlias", () => {
+  const resolve = async (slug: string) =>
+    ({ [GIT_TOKEN_ENV]: "workspace-token", [GH_TOKEN_ENV]: "operator-gh-token", OTHER: "other" })[slug] ?? null
+
+  it("answers GH_TOKEN with the workspace git token, never a same-named daemon env var", async () => {
+    const aliased = withGhTokenAlias(resolve, true)
+    expect(await aliased(GH_TOKEN_ENV)).toBe("workspace-token")
+    expect(await aliased(GIT_TOKEN_ENV)).toBe("workspace-token")
+    expect(await aliased("OTHER")).toBe("other")
+  })
+
+  it("resolves GH_TOKEN to null when the box has no workspace git token", async () => {
+    const aliased = withGhTokenAlias(resolve, false)
+    expect(await aliased(GH_TOKEN_ENV)).toBeNull()
+    expect(await aliased("OTHER")).toBe("other")
   })
 })

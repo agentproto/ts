@@ -5,9 +5,20 @@
   "description": "Single source of truth for the versions baked into the agentproto-workstation e2b template and surfaced via scripts/sync-templates.mjs. Hand-edit this file, then run `node scripts/sync-templates.mjs` to regenerate the derived files.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["baseImage", "cli", "adapters", "runtime", "resources", "templates"],
+  "required": [
+    "baseImage",
+    "cli",
+    "adapters",
+    "runtime",
+    "tools",
+    "defaultSize",
+    "sizes",
+    "templates"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "baseImage": {
       "type": "string",
       "description": "Base image the workstation Dockerfile builds FROM (ARG BASE_IMAGE)."
@@ -33,65 +44,173 @@
         "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
       }
     },
-    "resources": {
+    "tools": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cpuCount", "memoryMb"],
-      "description": "Sandbox runtime resources the template is created with. The e2b CLI IGNORES e2b.template.toml for `template create -d Dockerfile`, so these are passed as `--cpu-count` / `--memory-mb` build flags (see README); versions.json stays the single source of truth.",
+      "required": [
+        "gh"
+      ],
+      "description": "Standalone binaries baked into the template from pinned release tarballs (not npm).",
       "properties": {
-        "cpuCount": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "vCPUs for sandboxes created from this template (e2b `--cpu-count`)."
-        },
-        "memoryMb": {
-          "type": "integer",
-          "minimum": 512,
-          "multipleOf": 2,
-          "description": "Memory in MB for sandboxes created from this template (e2b `--memory-mb`, must be even)."
+        "gh": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "sha256"
+          ],
+          "description": "The GitHub CLI, installed from the official cli/cli release tarball (linux_amd64) and verified against the pinned checksum. Lets sandbox agents run `gh pr create` with the daemon-injected GH_TOKEN.",
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+              "description": "cli/cli release version, without the leading v."
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "sha256 of gh_<version>_linux_amd64.tar.gz, from the release's checksums.txt."
+            }
+          }
         }
+      }
+    },
+    "defaultSize": {
+      "type": "string",
+      "description": "The size preset the bare stable alias (templates.stable) and the dev alias (templates.dev) are built at, and the size @agentproto/sandbox-e2b boots when a spec names neither config.size nor config.template. Must be a key of `sizes` whose preset is available."
+    },
+    "sizes": {
+      "type": "object",
+      "description": "Named size presets. Each is published as its own e2b template (templates.sizes.<preset>, alias `agentproto-workstation-<preset>`) and selected per spawn with the sandbox spec's `config.size`. The e2b CLI IGNORES e2b.template.toml for `template create -d Dockerfile`, so these are passed as `--cpu-count` / `--memory-mb` build flags; versions.json stays the single source of truth.",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/sizePreset"
       }
     },
     "templates": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["stable", "dev"],
+      "required": [
+        "stable",
+        "dev",
+        "sizes"
+      ],
       "properties": {
-        "stable": { "$ref": "#/$defs/templateEntry" },
-        "dev": { "$ref": "#/$defs/templateEntry" }
+        "stable": {
+          "$ref": "#/$defs/templateEntry",
+          "description": "The bare `agentproto-workstation` alias — built at `defaultSize` so callers that never name a size keep booting the same box."
+        },
+        "dev": {
+          "$ref": "#/$defs/templateEntry",
+          "description": "The dev channel (`agentproto-workstation-dev`), built at `defaultSize` from npm latest by `pnpm templates:refresh --channel dev --latest`."
+        },
+        "sizes": {
+          "type": "object",
+          "description": "One published template per `sizes` preset (same keys). An unavailable preset keeps id null.",
+          "additionalProperties": {
+            "$ref": "#/$defs/templateEntry"
+          }
+        }
       }
     }
   },
   "$defs": {
+    "sizePreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cpuCount",
+        "memoryMb"
+      ],
+      "properties": {
+        "cpuCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "vCPUs for sandboxes created from this preset's template (e2b `--cpu-count`)."
+        },
+        "memoryMb": {
+          "type": "integer",
+          "minimum": 512,
+          "multipleOf": 2,
+          "description": "Memory in MB for sandboxes created from this preset's template (e2b `--memory-mb`, must be even)."
+        },
+        "available": {
+          "type": "boolean",
+          "default": true,
+          "description": "false when e2b refused to create the template (e.g. a plan limit). The preset stays declared so the refusal is visible; `config.size` on it fails with `unavailableReason`."
+        },
+        "unavailableReason": {
+          "type": "string",
+          "description": "The exact error e2b returned when the template could not be created. Required when available is false."
+        }
+      }
+    },
     "templateEntry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "alias", "baked"],
+      "required": [
+        "id",
+        "alias",
+        "baked"
+      ],
       "properties": {
         "id": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "The published e2b template id (opaque). null when not yet published."
         },
-        "alias": { "type": "string" },
+        "alias": {
+          "type": "string"
+        },
         "baked": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["cli", "adapters", "builtAt"],
+          "required": [
+            "cli",
+            "adapters",
+            "builtAt"
+          ],
           "description": "What the published image was PROVEN to contain at its last real e2b build. null = unknown / out-of-band bake — consumers must assume the image does NOT match the declared pins.",
           "properties": {
             "cli": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "description": "The @agentproto/cli version actually verified inside the published image."
             },
             "adapters": {
-              "type": ["object", "null"],
+              "type": [
+                "object",
+                "null"
+              ],
               "description": "Adapter package -> version actually verified inside the published image.",
-              "additionalProperties": { "type": "string" }
+              "additionalProperties": {
+                "type": "string"
+              }
             },
             "builtAt": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "format": "date-time",
               "description": "When the published image was built (ISO 8601)."
+            },
+            "tools": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "Standalone tool -> version actually verified inside the published image (e.g. gh). Absent/null = not proven.",
+              "additionalProperties": {
+                "type": "string"
+              }
             }
           }
         }
