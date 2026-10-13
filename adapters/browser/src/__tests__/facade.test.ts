@@ -33,12 +33,13 @@ const json = (body: unknown): Parameters<typeof createServer>[1] => (_req, res) 
 }
 
 describe("adapter-browser facade", () => {
-  it("keeps the public registry shape for camofox, bureau and chromium", () => {
-    expect(Object.keys(browserAdapters).sort()).toEqual(["bureau", "camofox", "chromium"])
+  it("keeps the public registry shape for camofox, bureau, chromium and chrome-live", () => {
+    expect(Object.keys(browserAdapters).sort()).toEqual(["bureau", "camofox", "chrome-live", "chromium"])
     const expected = {
       camofox: { defaultPort: 9377, healthPath: "/health" },
       bureau: { defaultPort: 8830, healthPath: "/health" },
       chromium: { defaultPort: 3200, healthPath: "/healthz" },
+      "chrome-live": { defaultPort: 9222, healthPath: "/json/version" },
     }
     for (const [id, want] of Object.entries(expected)) {
       const handle = getBrowserAdapter(id)
@@ -58,6 +59,7 @@ describe("adapter-browser facade", () => {
     expect(getBrowserAdapter("camofox")?.config?.[0]?.persist?.env).toBe("CAMOFOX_SERVE_CMD")
     expect(getBrowserAdapter("bureau")?.config?.map((c) => c.persist?.env)).toEqual(["BUREAU_SERVE_CMD", "BUREAU_PORT"])
     expect(getBrowserAdapter("chromium")?.config?.map((c) => c.persist?.env)).toEqual(["CHROMIUM_EXECUTABLE_PATH"])
+    expect(getBrowserAdapter("chrome-live")?.config?.map((c) => c.persist?.env)).toEqual(["CHROME_LIVE_PORT", "CHROME_LIVE_WS_URL"])
   })
 
   it("camofox.ensure reuses a healthy server: wasAlreadyRunning, no pid, healthy", async () => {

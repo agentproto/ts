@@ -56,7 +56,7 @@ interface RuntimeEvaluateResult {
 
 /** Page control over raw CDP on one target of a system Chrome, in its own flat session. */
 export class ChromeCdpDriver implements BrowserDriver {
-  readonly kind = CHROME_PROVIDER_ID
+  readonly kind: string = CHROME_PROVIDER_ID
   readonly capabilities: BrowserDriverCapabilities = chromeDriverCapabilities
   readonly target: BrowserTarget
 
@@ -69,7 +69,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   private _closed = false
 
   constructor(
-    private readonly conn: CdpConnection,
+    protected readonly conn: CdpConnection,
     targetId: string,
     private readonly sessionId: string,
   ) {
