@@ -58,6 +58,7 @@ import {
   type LaneOutcome,
   type LaneRecovery,
   type LaneResult,
+  type LaneSharedExecution,
   type PackDigest,
   type ReviewLaneExecutor,
   type ReviewOutcome,
@@ -70,6 +71,7 @@ import {
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import { repoSlug, withPr, type LedgerEntry, type ReviewLedger } from "./review-ledger.js"
 import { composedFromRangeSha, findComposeCandidate } from "./review-compose.js"
+import { createReviewExecutionShare, shareKeyOf, type ReviewerShareInput } from "./review-execution-share.js"
 import { createReviewPackLoader } from "./review-pack-loader.js"
 import { resolvePrincipal, signAttestation } from "./review-signing.js"
 
@@ -220,6 +222,9 @@ export type ReviewerRunResult = (
    *  host ran its bounded recovery step — what that step concluded. Absent
    *  when the artifact was valid as written (no recovery ran). */
   recovery?: LaneRecovery
+  /** Set when this result came from a reviewer execution shared with other
+   *  lanes of the run (same resolved model/config, rubric and range). */
+  sharedExecution?: LaneSharedExecution
 }
 
 /**
@@ -245,6 +250,10 @@ export interface ReviewerSessionHost {
      *  and, if it is missing/invalid, runs its one bounded recovery step —
      *  the runner still re-reads and re-validates it afterwards. */
     artifact?: { path: string; laneId: string; blockOn: Severity }
+    /** Run-scoped sharing: a chain step whose resolved reviewer is equivalent
+     *  to another lane's (same key) runs once and the lanes share the result.
+     *  Hosts that do not share ignore it. */
+    share?: ReviewerShareInput
   }): Promise<ReviewerRunResult>
 }
 
@@ -278,6 +287,9 @@ export interface ReviewLaneExecutorContext {
 /** The daemon's {@link ReviewLaneExecutor}: subprocess command lanes, child
  *  reviewer sessions for agent lanes. */
 export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): ReviewLaneExecutor {
+  /** One coordinator per run: lanes whose reviewer resolves to the same
+   *  model/config + rubric + range share one execution. */
+  const share = createReviewExecutionShare()
   const runAgent = async (check: AgentCheck, target: ReviewTarget, signal?: AbortSignal): Promise<LaneOutcome> => {
     if (!ctx.reviewers) {
       return {
@@ -286,8 +298,9 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
       }
     }
     const rubricPath = resolve(check.rubricBase ?? dirname(ctx.manifestPath), check.rubric)
+    let rubricBytes: Buffer
     try {
-      await readFile(rubricPath)
+      rubricBytes = await readFile(rubricPath)
     } catch {
       return { outcome: "skipped", error: `rubric not found: ${rubricPath}` }
     }
@@ -348,6 +361,27 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
       label: `review:${ctx.reviewId}:${check.id}`,
       timeoutMs: check.timeoutMs,
       artifact: { path: verdictPath, laneId: check.id, blockOn: check.blockOn },
+      share: {
+        coordinator: share,
+        laneId: check.id,
+        // Everything that shapes what the reviewer is asked, except the lane
+        // id, label and verdict path: the review, the rubric BYTES (a
+        // separate claims rubric differs here and so never shares), the
+        // effective range (a composed delta base included) and the options
+        // the prompt states. The host adds the resolved adapter/model/profile.
+        key: shareKeyOf([
+          "review-share/v1",
+          ctx.reviewId,
+          ctx.repoRoot,
+          sha256Hex(rubricBytes),
+          promptTarget.baseSha,
+          promptTarget.headSha,
+          composedFrom?.headSha ?? null,
+          composedFrom?.attestationSha256 ?? null,
+          check.blockOn,
+          check.timeoutMs,
+        ]),
+      },
       ...(ctx.parentSessionId ? { parentSessionId: ctx.parentSessionId } : {}),
       ...(signal ? { signal } : {}),
     })
@@ -355,6 +389,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
       ...(result.model ? { model: result.model } : {}),
       ...(result.fallbacks?.length ? { fallbacks: result.fallbacks } : {}),
       ...(result.recovery ? { recovery: result.recovery } : {}),
+      ...(result.sharedExecution ? { sharedExecution: result.sharedExecution } : {}),
     }
     if (result.status === "failed") {
       return {

@@ -27,6 +27,7 @@ import {
   WALLET_EXHAUSTED_COOLDOWN_MS,
   WALLET_RATE_LIMIT_COOLDOWN_MS,
 } from "../review-reviewer-host.js"
+import { createReviewExecutionShare, type ReviewExecutionShare } from "../review-execution-share.js"
 import type { HarnessPreset } from "../harness-preset-store.js"
 import type { UserPreset } from "../user-presets.js"
 
@@ -68,7 +69,16 @@ interface Scripted {
   hang?: boolean
   writeOnFollowUp?: object
 }
-type Behaviour = "review" | "block" | "hang" | "empty" | `error:${string}` | `slowerror:${number}:${string}` | Scripted
+type Behaviour =
+  | "review"
+  | "block"
+  | "hang"
+  | "empty"
+  | `error:${string}`
+  | `slowerror:${number}:${string}`
+  | `slow:${number}`
+  | `slowblock:${number}`
+  | Scripted
 
 /** Fake adapter session. `review`: write the verdict file the prompt names,
  *  say something, end the turn. `block`: the same, but the verdict is a real
@@ -123,9 +133,13 @@ function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSession
         yield { kind: "turn-end", reason: "error" }
         return
       }
+      const verdictKind: "review" | "block" = behaviour === "block" || behaviour.startsWith("slowblock:") ? "block" : "review"
+      if (behaviour.startsWith("slow:") || behaviour.startsWith("slowblock:")) {
+        await new Promise((r) => setTimeout(r, Number(behaviour.split(":")[1])))
+      }
       const path = text.match(/write EXACTLY ONE file — (\S+) —/)?.[1]
       const report =
-        behaviour === "block"
+        verdictKind === "block"
           ? {
               decision: "request_changes",
               summary: "one high-severity finding",
@@ -133,7 +147,7 @@ function fakeReviewerSession(behaviour: Behaviour, seen: string[]): AgentSession
             }
           : { findings: [] }
       if (path) await writeFile(path, JSON.stringify(report))
-      yield { kind: "text-delta", text: behaviour === "block" ? "blocked\n" : "reviewed\n" }
+      yield { kind: "text-delta", text: verdictKind === "block" ? "blocked\n" : "reviewed\n" }
       yield { kind: "turn-end", reason: "completed" }
     },
     async cancel() {
@@ -225,7 +239,9 @@ function setup(
         ? { id, label: id, adapter: "broken" }
         : ["rev", "rev2", "rev3", "rev-openrouter"].includes(id)
           ? { id, label: id, adapter: "fake", model: `model-${id}` }
-          : undefined,
+          : id === "rev3-alias" || id === "rev3-openrouter-alias"
+            ? { id, label: id, adapter: "fake", model: "model-rev3" }
+            : undefined,
     getAuthProfile: async (id) => ({ id, endpoint: "opencode-go", method: { kind: "api-key" } }) as never,
     ...(laneRetries !== undefined ? { laneRetries } : {}),
     ...(opts.now ? { now: opts.now } : {}),
@@ -1217,6 +1233,224 @@ describe("createDaemonReviewerHost — verdict recovery (missing/invalid verdict
     const res = await run(host, { fallbackPresets: ["rev3"] }).done
     expect(res).toMatchObject({ status: "ended", preset: "rev", recovery: { outcome: "recovered" } })
     expect(res.fallbacks).toBeUndefined()
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+})
+
+describe("createDaemonReviewerHost — run-scoped sharing of equivalent fallback executions", () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+  /** A lane whose primary reviewer cannot be spawned (`broken-rev`, an adapter
+   *  the daemon cannot resolve) and so falls back to `fallback`. */
+  const lane = (
+    host: ReturnType<typeof setup>["host"],
+    coordinator: ReviewExecutionShare,
+    name: string,
+    over: {
+      fallback?: string
+      key?: string
+      timeoutMs?: number
+      signal?: AbortSignal
+      withArtifact?: boolean
+    } = {},
+  ) => {
+    const verdictPath = join(home, `${name}.verdict.json`)
+    return {
+      verdictPath,
+      done: host.run({
+        preset: "broken-rev",
+        fallbackPresets: [over.fallback ?? "rev3"],
+        cwd: home,
+        prompt: `Review it. When done, write EXACTLY ONE file — ${verdictPath} — containing ONLY this JSON`,
+        label: `review:demo:${name}`,
+        timeoutMs: over.timeoutMs ?? 10_000,
+        ...(over.withArtifact === false ? {} : { artifact: { path: verdictPath, laneId: name, blockOn: "high" as const } }),
+        share: { coordinator, key: over.key ?? "same-rubric-same-range", laneId: name },
+        ...(over.signal ? { signal: over.signal } : {}),
+      }),
+    }
+  }
+
+  it("three lanes converging on one fallback run ONE reviewer; each gets the verdict at its own path, marked as shared", async () => {
+    const { host, registry, spawnedWith } = setup("slow:150")
+    const coordinator = createReviewExecutionShare()
+    const a = lane(host, coordinator, "correctness-a")
+    const b = lane(host, coordinator, "correctness-b", { fallback: "rev3-alias" })
+    const c = lane(host, coordinator, "correctness-c")
+    const [ra, rb, rc] = await Promise.all([a.done, b.done, c.done])
+
+    expect(spawnedWith).toHaveLength(1)
+    for (const r of [ra, rb, rc]) expect(r).toMatchObject({ status: "ended" })
+    expect(new Set([ra, rb, rc].map((r) => (r.status === "ended" ? r.sessionId : ""))).size).toBe(1)
+    for (const lanePath of [a.verdictPath, b.verdictPath, c.verdictPath]) {
+      expect(JSON.parse(await readFile(lanePath, "utf8"))).toEqual({ findings: [] })
+    }
+    const marks = [ra, rb, rc].map((r) => r.sharedExecution)
+    expect(marks[0]).toMatchObject({ role: "owner", ownerLane: "correctness-a" })
+    expect(marks[1]).toMatchObject({ role: "joiner", ownerLane: "correctness-a" })
+    expect(marks[2]).toMatchObject({ role: "joiner", ownerLane: "correctness-a" })
+    expect(new Set(marks.map((m) => m?.executionId)).size).toBe(1)
+    // Each lane still records its OWN unavailable primary.
+    for (const r of [ra, rb, rc]) expect(r.fallbacks).toHaveLength(1)
+    expect(coordinator.stats().inFlight).toBe(0)
+    registry.shutdown()
+  })
+
+  it("a settled BLOCKING verdict is retained for the run: a later lane reuses it without a new reviewer", async () => {
+    const { host, registry, spawnedWith } = setup("block")
+    const coordinator = createReviewExecutionShare()
+    const first = lane(host, coordinator, "correctness-a")
+    const r1 = await first.done
+    expect(r1).toMatchObject({ status: "ended" })
+    const late = lane(host, coordinator, "correctness-b")
+    const r2 = await late.done
+    expect(spawnedWith).toHaveLength(1)
+    expect(r2).toMatchObject({ status: "ended", sharedExecution: { role: "joiner", ownerLane: "correctness-a" } })
+    expect(JSON.parse(await readFile(late.verdictPath, "utf8"))).toMatchObject({
+      decision: "request_changes",
+      findings: [{ severity: "high", title: "breaks it" }],
+    })
+    registry.shutdown()
+  })
+
+  it("a different resolved model, rubric/range key, or no share input never shares", async () => {
+    const { host, registry, spawnedWith } = setup("review")
+    const coordinator = createReviewExecutionShare()
+    await Promise.all([
+      lane(host, coordinator, "a", { fallback: "rev3" }).done,
+      lane(host, coordinator, "b", { fallback: "rev2" }).done,
+      lane(host, coordinator, "c", { fallback: "rev3", key: "claims-rubric" }).done,
+    ])
+    expect(spawnedWith.map((o) => o.model).sort()).toEqual(["model-rev2", "model-rev3", "model-rev3"])
+    registry.shutdown()
+  })
+
+  it("keeps the OpenRouter guard for a joiner whose preset NAME trips it, even though the resolved reviewer is identical", async () => {
+    const { host, registry, spawnedWith } = setup("slow:150")
+    const coordinator = createReviewExecutionShare()
+    const owner = lane(host, coordinator, "a", { fallback: "rev3" })
+    const named = lane(host, coordinator, "b", { fallback: "rev3-openrouter-alias" })
+    const [ra, rb] = await Promise.all([owner.done, named.done])
+    expect(ra).toMatchObject({ status: "ended" })
+    expect(rb).toMatchObject({ status: "failed" })
+    expect(rb.status === "failed" && rb.error).toMatch(/would bill OpenRouter/)
+    expect(rb.sharedExecution).toBeUndefined()
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("exactly ONE recovery step per shared execution; joiners reuse the recovered verdict and its provenance", async () => {
+    const reviewerText =
+      "I read src/x.ts and the callers. The null check in src/x.ts is inverted, so every request crashes.\n" +
+      "Verdict: request changes, one high-severity finding in src/x.ts."
+    const envelope = JSON.stringify({
+      status: "recovered",
+      reason: "reviewer stated its verdict",
+      conclusionQuote: "Verdict: request changes, one high-severity finding in src/x.ts.",
+      report: {
+        decision: "request_changes",
+        summary: "inverted null check",
+        findings: [{ severity: "high", title: "Inverted null check", detail: "crashes", file: "src/x.ts", line: 4 }],
+      },
+    })
+    const { host, registry, spawnedWith } = setup([{ say: reviewerText }, { say: envelope }], undefined, {
+      recovery: { presets: ["rev2"] },
+    })
+    const coordinator = createReviewExecutionShare()
+    const lanes = ["a", "b", "c"].map((n) => lane(host, coordinator, `correctness-${n}`, { timeoutMs: 20_000 }))
+    const results = await Promise.all(lanes.map((l) => l.done))
+    // One reviewer + one recovery model, not three of each.
+    expect(spawnedWith).toHaveLength(2)
+    for (const r of results) expect(r).toMatchObject({ status: "ended", recovery: { outcome: "recovered", preset: "rev2" } })
+    expect(new Set(results.map((r) => r.recovery?.sessionId)).size).toBe(1)
+    for (const l of lanes) {
+      expect(JSON.parse(await readFile(l.verdictPath, "utf8"))).toMatchObject({ decision: "request_changes" })
+    }
+    registry.shutdown()
+  })
+
+  it("a shared execution that FAILED is shared only in flight: a later lane starts its own reviewer", async () => {
+    const { host, registry, spawnedWith } = setup(["error:unauthorized: bad key", "review"])
+    const coordinator = createReviewExecutionShare()
+    const first = await lane(host, coordinator, "a").done
+    // The chain was only [broken-rev, rev3]; rev3 failed on a permanent error.
+    expect(first.status).toBe("failed")
+    const second = await lane(host, coordinator, "b").done
+    expect(second).toMatchObject({ status: "ended" })
+    expect(spawnedWith).toHaveLength(2)
+    registry.shutdown()
+  })
+
+  it("cancelling every participant kills the single shared reviewer — nothing stranded", async () => {
+    const { host, registry, spawnedWith } = setup("hang")
+    const coordinator = createReviewExecutionShare()
+    const ac = new AbortController()
+    const runs = ["a", "b", "c"].map((n) => lane(host, coordinator, n, { signal: ac.signal }).done)
+    setTimeout(() => ac.abort(), 250)
+    const results = await Promise.all(runs)
+    expect(spawnedWith).toHaveLength(1)
+    for (const r of results) expect(r.status).toBe("failed")
+    for (const d of registry.list({ includeArchived: true })) {
+      expect(d.status).toBe("killed")
+      expect(d.archived).toBe(true)
+    }
+    expect(coordinator.stats()).toEqual({ inFlight: 0, retained: 0 })
+    registry.shutdown()
+  })
+
+  it("cancelling the owner alone leaves the joiner's shared reviewer running", async () => {
+    const { host, registry, spawnedWith } = setup("slow:400")
+    const coordinator = createReviewExecutionShare()
+    const ownerCtl = new AbortController()
+    const owner = lane(host, coordinator, "a", { signal: ownerCtl.signal })
+    const joiner = lane(host, coordinator, "b")
+    setTimeout(() => ownerCtl.abort(), 150)
+    const [ro, rj] = await Promise.all([owner.done, joiner.done])
+    expect(ro.status).toBe("failed")
+    expect(ro.status === "failed" && ro.error).toMatch(/cancelled/)
+    expect(rj).toMatchObject({ status: "ended", sharedExecution: { role: "joiner", ownerLane: "a" } })
+    expect(spawnedWith).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("a joiner never extends the deadline: it leaves on its own, while the owner's reviewer finishes", async () => {
+    const { host, registry } = setup("slow:600")
+    const coordinator = createReviewExecutionShare()
+    const owner = lane(host, coordinator, "a", { timeoutMs: 10_000 })
+    const joiner = lane(host, coordinator, "b", { timeoutMs: 200 })
+    const [ro, rj] = await Promise.all([owner.done, joiner.done])
+    expect(ro).toMatchObject({ status: "ended" })
+    expect(rj).toMatchObject({ status: "failed", sharedExecution: { role: "joiner" } })
+    expect(rj.status === "failed" && rj.error).toMatch(/no time left/)
+    registry.shutdown()
+  })
+
+  it("the owner's timeout is what its joiners see, and the hung reviewer is killed", async () => {
+    const { host, registry, spawnedWith } = setup("hang")
+    const coordinator = createReviewExecutionShare()
+    const owner = lane(host, coordinator, "a", { timeoutMs: 300 })
+    await sleep(20)
+    const joiner = lane(host, coordinator, "b", { timeoutMs: 5_000 })
+    const [ro, rj] = await Promise.all([owner.done, joiner.done])
+    expect(ro).toMatchObject({ status: "timeout" })
+    expect(rj).toMatchObject({ status: "timeout", sharedExecution: { role: "joiner", ownerLane: "a" } })
+    expect(spawnedWith).toHaveLength(1)
+    for (const d of registry.list({ includeArchived: true })) expect(d.status).toBe("killed")
+    registry.shutdown()
+  })
+
+  it("without a share input nothing changes: every lane runs its own reviewer", async () => {
+    const { host, registry, spawnedWith } = setup("review")
+    const run = (name: string) =>
+      host.run({
+        preset: "rev3",
+        cwd: home,
+        prompt: `x ${join(home, name)}`,
+        label: `review:demo:${name}`,
+        timeoutMs: 10_000,
+      })
+    await Promise.all([run("a"), run("b")])
     expect(spawnedWith).toHaveLength(2)
     registry.shutdown()
   })

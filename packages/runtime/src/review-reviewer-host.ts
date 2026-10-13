@@ -30,7 +30,7 @@ import { monitorSessionWait } from "./orchestration-tools.js"
 import { getHarnessPreset, type HarnessPreset } from "./harness-preset-store.js"
 import { getUserPreset, type UserPreset } from "./user-presets.js"
 import type { ReviewerRunResult, ReviewerSessionHost } from "./review-runner.js"
-import { parseAgentLaneReport, type LaneFallback, type LaneRecovery } from "@agentproto/review"
+import { parseAgentLaneReport, type LaneFallback, type LaneRecovery, type LaneSharedExecution } from "@agentproto/review"
 import {
   RECOVERY_FOLLOWUP_MIN_MS,
   RECOVERY_MAX_CANDIDATES,
@@ -45,6 +45,7 @@ import {
   type ReviewerLifecycle,
 } from "./review-verdict-recovery.js"
 import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
+import { shareKeyOf } from "./review-execution-share.js"
 
 export interface DaemonReviewerHostDeps {
   registry: SessionsRegistry
@@ -192,6 +193,32 @@ export async function resolveReviewerPreset(
   const adapter = user?.adapter ?? user?.harness
   if (user && adapter) return { adapter, preset: user }
   return undefined
+}
+
+const stableStringify = (value: unknown): string =>
+  JSON.stringify(value, (_k, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)))
+      : v,
+  )
+
+/** What a resolved preset would actually run — adapter, model, auth profile and
+ *  (for a user preset) its remaining spawn config — independent of the preset's
+ *  id/label/bookkeeping, so two differently named presets that resolve to the
+ *  same reviewer are the same reviewer. */
+export function reviewerFingerprint(fields: Pick<SpawnAgentSessionInput, "adapter" | "model" | "access" | "preset">): string {
+  const user = fields.preset as (UserPreset & Record<string, unknown>) | undefined
+  const config = user
+    ? Object.fromEntries(
+        Object.entries(user).filter(([k]) => !["id", "label", "lastUsedAt", "createdAt", "updatedAt", "cwd"].includes(k)),
+      )
+    : undefined
+  return stableStringify({
+    adapter: fields.adapter ?? user?.adapter ?? user?.harness,
+    model: reviewerModel(fields),
+    profile: reviewerProfileRef(fields),
+    config,
+  })
 }
 
 export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): ReviewerSessionHost {
@@ -723,6 +750,69 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     return final
   }
 
+  /** The captured verdict file of a shared execution, so a joiner can be
+   *  handed an identical copy at its own verdict path. */
+  interface SharedStepValue {
+    outcome: AttemptOutcome
+    raw?: string
+  }
+
+  /** One chain step. With `input.share`, a step whose resolved reviewer is
+   *  equivalent to another lane's runs ONCE (owner) and the others wait for it
+   *  (joiners) — see `review-execution-share.ts`. The OpenRouter guard runs for
+   *  every participant, joiners included, because a preset NAME can trip it
+   *  even when the resolved reviewer is identical. */
+  async function runStep(
+    input: Parameters<ReviewerSessionHost["run"]>[0],
+    deadline: number,
+  ): Promise<{ outcome: AttemptOutcome; shared?: LaneSharedExecution }> {
+    const share = input.share
+    const fields = share ? await resolveReviewerPreset(input.preset, deps) : undefined
+    if (!share || !fields) return { outcome: await runPreset(input, deadline) }
+    const blocked = await reviewerOpenRouterViolation(input.preset, fields, deps.getAuthProfile)
+    if (blocked) return { outcome: { result: { status: "failed", preset: input.preset, error: blocked }, retryable: false, fallbackable: false } }
+
+    const artifact = input.artifact
+    const res = await share.coordinator.run<SharedStepValue>({
+      key: shareKeyOf([share.key, reviewerFingerprint(fields)]),
+      laneId: share.laneId,
+      ...(input.signal ? { signal: input.signal } : {}),
+      deadline,
+      execute: async (signal) => {
+        const outcome = await runPreset({ ...input, signal }, deadline)
+        const raw =
+          outcome.result.status === "ended" && artifact && !(await artifactProblem(artifact.path))
+            ? await readFile(artifact.path, "utf8")
+            : undefined
+        return { outcome, ...(raw !== undefined ? { raw } : {}) }
+      },
+      retain: (v) => v.outcome.result.status === "ended" && (!artifact || v.raw !== undefined),
+    })
+    const shared: LaneSharedExecution | undefined = res.mark
+    if (res.kind === "left") {
+      const waiting = shared?.role === "joiner" ? ` while waiting for the shared reviewer execution of lane '${shared.ownerLane}'` : ""
+      return {
+        outcome: {
+          retryable: false,
+          fallbackable: false,
+          result: {
+            status: "failed",
+            preset: input.preset,
+            error:
+              res.why === "cancelled"
+                ? `review cancelled${waiting || " while the reviewer was running"}`
+                : `no time left${waiting}`,
+          },
+        },
+        ...(shared ? { shared } : {}),
+      }
+    }
+    if (shared?.role === "joiner" && artifact && res.value.raw !== undefined) {
+      await writeFile(artifact.path, res.value.raw, "utf8")
+    }
+    return { outcome: res.value.outcome, ...(shared ? { shared } : {}) }
+  }
+
   return {
     async run(input): Promise<ReviewerRunResult> {
       // ONE deadline for the whole chain: a fallback gets whatever time the
@@ -734,8 +824,9 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       for (let i = 0; i < chain.length; i++) {
         const preset = chain[i]!
         const label = i === 0 ? input.label : `${input.label}:fallback${i}`
-        const outcome = await runPreset({ ...input, preset, label }, deadline)
-        const { result } = outcome
+        const { outcome, shared } = await runStep({ ...input, preset, label }, deadline)
+        const { result: stepResult } = outcome
+        const result = shared ? { ...stepResult, sharedExecution: shared } : stepResult
         const withEarlier = <T extends ReviewerRunResult>(r: T): T => (earlier.length > 0 ? { ...r, fallbacks: [...earlier] } : r)
         if (result.status !== "failed" || !outcome.fallbackable || chain.length === 1) return withEarlier(result)
         const tried = [...earlier, { preset, error: result.error }]

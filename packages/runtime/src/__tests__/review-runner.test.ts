@@ -1057,3 +1057,153 @@ describe("review MCP tools", () => {
     expect(parseToolJson(badRange).error).toMatch(/refs in `range` need `cwd`/)
   })
 })
+
+describe("review runner — run-scoped sharing of equivalent reviewer executions", () => {
+  type Seen = { lane: string; share?: { coordinator: unknown; key: string; laneId: string } }
+
+  /** A host that records the share input each lane passes and plays the reviewer. */
+  const recordingHost = (report: unknown = { findings: [] }) => {
+    const seen: Seen[] = []
+    const host: ReviewerSessionHost = {
+      async run(input) {
+        seen.push({ lane: input.artifact!.laneId, ...(input.share ? { share: input.share } : {}) })
+        await writeFile(input.artifact!.path, JSON.stringify(report))
+        return { status: "ended", sessionId: `sess-${seen.length}`, preset: input.preset }
+      },
+    }
+    return { host, seen }
+  }
+
+  it("lanes asking the same question (same rubric bytes, range, options) pass the SAME run-scoped key; a different rubric, option or run does not", async () => {
+    const repo = await makeRepo(
+      manifest([
+        "{id: correctness, kind: agent, preset: kimi, fallbackPresets: [glm], rubric: ./rubrics/correctness.md}",
+        // Same rubric bytes under another path: the same question.
+        "{id: correctness-2, kind: agent, preset: kimi, fallbackPresets: [glm], rubric: ./rubrics/correctness-copy.md}",
+        // The separate claims rubric must stay separate.
+        "{id: claims, kind: agent, preset: kimi, fallbackPresets: [glm], rubric: ./rubrics/claims.md}",
+        // Same rubric, different option the prompt states.
+        "{id: strict, kind: agent, preset: kimi, fallbackPresets: [glm], blockOn: medium, rubric: ./rubrics/correctness.md}",
+      ]),
+    )
+    cleanup.push(repo.dir)
+    await writeFile(join(repo.dir, "rubrics", "correctness-copy.md"), RUBRIC)
+    await writeFile(join(repo.dir, "rubrics", "claims.md"), "# claims\nVerify every claim.\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "rubrics")
+    const { host, seen } = recordingHost()
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const first = await runToEnd(runner, { cwd: repo.dir })
+    expect(first.attestation!.verdict).toBe("pass")
+
+    const key = (lane: string) => seen.find((s) => s.lane === lane)!.share!
+    expect(key("correctness").key).toBe(key("correctness-2").key)
+    expect(key("correctness").coordinator).toBe(key("correctness-2").coordinator)
+    expect(key("correctness").laneId).toBe("correctness")
+    expect(key("correctness-2").laneId).toBe("correctness-2")
+    expect(key("claims").key).not.toBe(key("correctness").key)
+    expect(key("strict").key).not.toBe(key("correctness").key)
+
+    // A second run never shares with the first: new coordinator, new key.
+    const firstCoordinator = key("correctness").coordinator
+    const firstKey = key("correctness").key
+    await writeFile(join(repo.dir, "c.txt"), "c\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "more")
+    seen.length = 0
+    await runToEnd(runner, { cwd: repo.dir, nocache: true })
+    const again = seen.find((s) => s.lane === "correctness")!.share!
+    expect(again.coordinator).not.toBe(firstCoordinator)
+    expect(again.key).not.toBe(firstKey)
+  })
+
+  it("a composed delta lane never shares a key with a lane reviewing the full range", async () => {
+    const repo = await growingRepoForShare(
+      manifest([
+        "{id: correctness, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}",
+        "{id: twin, kind: agent, blocking: false, preset: kimi, rubric: ./rubrics/correctness.md}",
+      ]),
+    )
+    cleanup.push(repo.dir)
+    const seenByRun: Seen[][] = []
+    let current: Seen[] = []
+    const host: ReviewerSessionHost = {
+      async run(input) {
+        current.push({ lane: input.artifact!.laneId, share: input.share! })
+        // `twin` is advisory and fails in run 1 so it can never be composed in run 2.
+        const report = input.artifact!.laneId === "twin" ? { findings: [{ severity: "high", title: "x", detail: "" }] } : { findings: [] }
+        await writeFile(input.artifact!.path, JSON.stringify(report))
+        return { status: "ended", sessionId: "s", preset: input.preset }
+      },
+    }
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const mid = await repo.grow()
+    const first = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head: mid })
+    expect(first.attestation!.verdict).toBe("pass")
+    seenByRun.push(current)
+    current = []
+    const head = await repo.grow()
+    const second = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head })
+    expect(second.attestation!.lanes.find((l) => l.id === "correctness")!.composedFrom).toBeDefined()
+    expect(second.attestation!.lanes.find((l) => l.id === "twin")!.composedFrom).toBeUndefined()
+    const [a, b] = ["correctness", "twin"].map((id) => current.find((s) => s.lane === id)!.share!.key)
+    expect(a).not.toBe(b)
+  })
+
+  it("records the host's sharedExecution mark on the lane, and shared lanes verify as ONE reviewer's verdict", async () => {
+    const repo = await makeRepo(
+      manifest([
+        "{id: correctness, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}",
+        "{id: correctness-2, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}",
+      ]),
+    )
+    cleanup.push(repo.dir)
+    const host: ReviewerSessionHost = {
+      async run(input) {
+        // What the real host does: the owner's file is copied to the joiner's path.
+        await writeFile(input.artifact!.path, JSON.stringify({ findings: [{ severity: "high", title: "shared bug", detail: "d" }] }))
+        const owner = input.artifact!.laneId === "correctness"
+        return {
+          status: "ended",
+          sessionId: "rev-shared",
+          preset: "kimi",
+          sharedExecution: { executionId: "exec-1", role: owner ? "owner" : "joiner", ownerLane: "correctness" },
+        }
+      },
+    }
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const run = await runToEnd(runner, { cwd: repo.dir })
+    const att = run.attestation!
+    expect(att.verdict).toBe("block")
+    const lanes = ["correctness", "correctness-2"].map((id) => att.lanes.find((l) => l.id === id)!)
+    expect(lanes[0]).toMatchObject({ status: "fail", sessionId: "rev-shared", sharedExecution: { executionId: "exec-1", role: "owner", ownerLane: "correctness" } })
+    expect(lanes[1]).toMatchObject({ status: "fail", sessionId: "rev-shared", sharedExecution: { executionId: "exec-1", role: "joiner", ownerLane: "correctness" } })
+    expect(verifyAttestation(att)).toMatchObject({ ok: true })
+  })
+})
+
+async function growingRepoForShare(review: string) {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "agp-review-share-")))
+  sh(dir, "init", "-q", "-b", "main")
+  sh(dir, "config", "user.email", "t@example.com")
+  sh(dir, "config", "user.name", "t")
+  sh(dir, "config", "commit.gpgsign", "false")
+  await writeFile(join(dir, "REVIEW.md"), review)
+  await mkdir(join(dir, "rubrics"))
+  await writeFile(join(dir, "rubrics", "correctness.md"), RUBRIC)
+  await writeFile(join(dir, "a.txt"), "a\n")
+  sh(dir, "add", "-A")
+  sh(dir, "commit", "-qm", "base")
+  const baseSha = sh(dir, "rev-parse", "HEAD")
+  sh(dir, "checkout", "-qb", "feature")
+  sh(dir, "remote", "add", "origin", "git@github.com:acme/demo.git")
+  let n = 0
+  const grow = async (): Promise<string> => {
+    n += 1
+    await writeFile(join(dir, `f${n}.txt`), `${n}\n`)
+    sh(dir, "add", "-A")
+    sh(dir, "commit", "-qm", `change ${n}`)
+    return sh(dir, "rev-parse", "HEAD")
+  }
+  return { dir, baseSha, grow }
+}
