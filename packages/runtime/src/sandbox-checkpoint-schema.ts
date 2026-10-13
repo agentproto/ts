@@ -21,3 +21,15 @@ export const sandboxCheckpointConfigShape = {
   minIntervalMs: z.number().int().min(0).optional(),
   timeoutMs: z.number().int().positive().optional(),
 }
+
+const sandboxCheckpointConfigObject = z.object(sandboxCheckpointConfigShape).strict()
+
+/** `false | {…}`, validated at runtime but advertised as an opaque value so
+ *  the always-on tools/list stays inside its byte budget. */
+export const sandboxCheckpointOverrideSchema = z
+  .any()
+  .refine(
+    (value): value is z.infer<typeof sandboxCheckpointConfigObject> | false =>
+      value === false || sandboxCheckpointConfigObject.safeParse(value).success,
+    "expected false or { enabled?, on?, refPrefix?, minIntervalMs?, timeoutMs? }"
+  )
