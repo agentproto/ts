@@ -70,6 +70,12 @@ export const contextCheckpointSchema = z
     ),
     handoffTurn: checkpointHandoffTurnSchema.optional(),
     recentDigest: z.string(),
+    cutoffSeq: z
+      .number()
+      .optional()
+      .describe(
+        "Seq the transcript was cut at when the checkpoint was built: records with a higher seq were excluded from the digest and sections, so splitMessagesAtSeq(messages, cutoffSeq) separates the covered head from the untouched tail. Absent when the whole transcript was read.",
+      ),
     originalTranscriptPath: z.string(),
     checkpointPath: z.string(),
     nextAction: z.enum(["continue", "compact_then_continue", "ask"]),
