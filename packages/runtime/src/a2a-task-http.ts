@@ -2,7 +2,15 @@
  * `POST /a2a/apps/:appId` — A2A 1.0 JSON-RPC 2.0 task ingress for one
  * installed app. `SendMessage` starts an `app_run` for an exposed agent
  * skill or a background workflow run for an exposed workflow skill,
- * `GetTask` reports it, `CancelTask` stops it. Everything runs through the
+ * `GetTask` reports it, `ListTasks` pages the ledger for the app, and
+ * `CancelTask` stops it. `SendStreamingMessage` starts
+ * a run the same way and answers `Content-Type: text/event-stream`;
+ * `SubscribeToTask` attaches to a task that is still running the same way.
+ * Both streams are a poll of `readTask` (no event bus): every SSE event is
+ * `data: <JSON-RPC response>` whose `result` is exactly one of `{task}`,
+ * `{message}`, `{statusUpdate}` or `{artifactUpdate}` — A2A 1.0's oneof — and
+ * the stream ends on a terminal state, a client disconnect, or the
+ * `streamMaxMs` cap. Everything runs through the
  * daemon's own `app_run` / `app_status` / `app_stop` / `app_artifact_get`
  * and `workflow_run_file` / `workflow_status` / `workflow_cancel` tools via
  * `dispatchTool` (the same in-process dispatcher the REST `tool-call` twin
@@ -18,6 +26,7 @@ import { join } from "node:path"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { loadAppHandle } from "@agentproto/app-kit"
 import type { AppRegistry } from "./app-registry.js"
+import { writeSseHead } from "./sse-headers.js"
 import {
   A2A_SUPPORTED_VERSIONS,
   A2A_TASK_STATE_VALUES,
@@ -56,6 +65,12 @@ export interface A2aTaskHttpConfig {
   /** Reads `accepts` / `exposes` for an installed app dir. Defaults to
    *  app-kit's `loadAppHandle`. */
   loadHandle?: (dir: string) => Promise<A2aAppHandleLike>
+  /** Poll cadence of the SSE task streams (`SendStreamingMessage`,
+   *  `SubscribeToTask`). Defaults to 1000 ms. */
+  streamPollMs?: number
+  /** Hard cap on one SSE stream: it ends with a `statusUpdate` of the state
+   *  the task is actually in. Defaults to 30 minutes. */
+  streamMaxMs?: number
 }
 
 export interface A2aTaskHttpDeps extends A2aTaskHttpConfig {
@@ -70,6 +85,15 @@ const A2A_TASK_STATES: ReadonlySet<string> = new Set<string>(A2A_TASK_STATE_VALU
  *  newest this many ledger entries and keeps the matches. */
 const LIST_TASKS_FILTER_CAP = 500
 const LIST_TASKS_DEFAULT_PAGE_SIZE = 50
+
+/** Poll cadence of the SSE task streams when `streamPollMs` is unset. */
+const DEFAULT_STREAM_POLL_MS = 1000
+/** Hard cap on one SSE stream when `streamMaxMs` is unset (30 minutes). */
+const DEFAULT_STREAM_MAX_MS = 30 * 60 * 1000
+/** `: keepalive` comment cadence, written only while the stream was silent. */
+const STREAM_KEEPALIVE_MS = 15_000
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 class RpcFailure extends Error {
   constructor(
@@ -267,93 +291,229 @@ export async function handleA2aTaskRequest(
     })
   }
 
+  /**
+   * Start the run behind a `SendMessage`-shaped request — same validation,
+   * same ledger write — and return its task id (the `app_run` id, or the
+   * workflow run id). Shared by `SendMessage`, which answers `{task}` right
+   * away, and `SendStreamingMessage`, which streams the same run.
+   */
+  const startMessageTask = async (params: Record<string, unknown>, method: string): Promise<string> => {
+    let handle: A2aAppHandleLike
+    try {
+      handle = await loadHandle(installed.dir)
+    } catch (err) {
+      throw new RpcFailure(JSON_RPC_ERROR.internal, `could not read app manifest: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    if (handle.accepts?.tasks !== true) {
+      throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "${method}" is not allowed for app "${appId}": its manifest does not declare accepts.tasks: true`)
+    }
+    const rawMessage = params.message
+    if (!isRecord(rawMessage) || rawMessage.role !== "ROLE_USER") {
+      throw new RpcFailure(JSON_RPC_ERROR.invalidParams, 'params.message must be an object with role "ROLE_USER"')
+    }
+    const parts = parseParts(rawMessage.parts)
+    const { skill, prompt } = extractSkillRequest(
+      { parts, ...(isRecord(rawMessage.metadata) ? { metadata: rawMessage.metadata } : {}) },
+      appId,
+      isRecord(params.metadata) ? params.metadata : undefined,
+    )
+    if (!skill) {
+      throw new RpcFailure(JSON_RPC_ERROR.invalidParams, 'no skill requested: set message.metadata.skill or start the first text part with "skill:<id>"')
+    }
+    const target = resolveExposedSkill(handle, skill)
+    if (!target) {
+      throw new RpcFailure(JSON_RPC_ERROR.invalidParams, `unknown skill "${skill}": app "${appId}" does not expose it`)
+    }
+    if (target.kind === "workflow") {
+      const ref = handle.workflows?.find(w => w.id === target.id)
+      // The registry's refs carry the absolute path too — the manifest
+      // handle may not, so fall back to it before declaring the bundle
+      // missing.
+      const path =
+        (typeof ref?.path === "string" && ref.path !== "" ? ref.path : undefined) ??
+        installed.workflows?.find(w => w.id === target.id)?.path
+      if (typeof path !== "string" || path === "") {
+        throw new RpcFailure(
+          JSON_RPC_ERROR.unsupportedOperation,
+          `app "${appId}" exposes workflow "${target.id}" but does not bundle it`,
+        )
+      }
+      let dataInput: Record<string, unknown> | undefined
+      for (const part of parts) {
+        const d = (part as { data?: unknown }).data
+        if (isRecord(d)) {
+          dataInput = d
+          break
+        }
+      }
+      const input = dataInput ?? (prompt ? { prompt } : {})
+      const started = await call("workflow_run_file", { path, input, appId })
+      const reply = (started.data ?? {}) as { runId?: unknown; error?: unknown }
+      const runId = typeof reply.runId === "string" && reply.runId !== "" ? reply.runId : undefined
+      const errText = typeof reply.error === "string" && reply.error !== "" ? reply.error : undefined
+      if (runId === undefined || errText !== undefined) {
+        throw new RpcFailure(JSON_RPC_ERROR.internal, errText ?? (started.text || "workflow_run_file failed"))
+      }
+      await ledger.append({
+        taskId: runId,
+        appId,
+        contextId: typeof rawMessage.contextId === "string" && rawMessage.contextId ? rawMessage.contextId : randomUUID(),
+        skill,
+        createdAt: new Date().toISOString(),
+        kind: "workflow",
+      })
+      return runId
+    }
+    const run = await call("app_run", { appId, agents: [target.id], ...(prompt ? { prompt } : {}) })
+    const started = run.data as { appRunId?: unknown; sessions?: unknown; errors?: unknown } | undefined
+    if (!run.ok || typeof started?.appRunId !== "string") {
+      throw new RpcFailure(JSON_RPC_ERROR.internal, run.text || "app_run failed")
+    }
+    if (!Array.isArray(started.sessions) || started.sessions.length === 0) {
+      const detail = Array.isArray(started.errors) ? JSON.stringify(started.errors) : "no session was started"
+      throw new RpcFailure(JSON_RPC_ERROR.internal, `agent "${target.id}" did not start: ${detail}`)
+    }
+    await ledger.append({
+      taskId: started.appRunId,
+      appId,
+      contextId: typeof rawMessage.contextId === "string" && rawMessage.contextId ? rawMessage.contextId : randomUUID(),
+      skill,
+      createdAt: new Date().toISOString(),
+    })
+    return started.appRunId
+  }
+
+  /**
+   * Stream one task as `text/event-stream`: a first `{task}` event (when
+   * `initial` asks for one), then a poll of `readTask` every `streamPollMs`
+   * that emits `{artifactUpdate}` (`lastChunk: true`) for every artifact not
+   * sent yet and a `{statusUpdate}` whenever the state or its timestamp
+   * moved — artifacts first, so the final `{statusUpdate: {final: true}}` of
+   * a terminal state is always the stream's last event. A silent stream gets
+   * a `: keepalive` comment every 15 s; a `readTask` failure mid-stream
+   * answers with one JSON-RPC `error` event; a client disconnect or the
+   * `streamMaxMs` cap stop the poll (the cap ends on a `statusUpdate` of the
+   * state the task is actually in, claiming `final` only when the state is
+   * terminal).
+   *
+   * Anything that can fail before the head is written — the first `readTask`
+   * above all — must be thrown, not written: `handleA2aTaskRequest`'s catch
+   * turns it into a plain JSON-RPC error response.
+   */
+  const streamTask = async (
+    taskId: string,
+    res: ServerResponse,
+    id: JsonRpcId,
+    opts: { initial: "task" },
+  ): Promise<void> => {
+    const first = await readTask(taskId)
+    const pollMs = Math.max(1, deps.streamPollMs ?? DEFAULT_STREAM_POLL_MS)
+    const deadline = Date.now() + (deps.streamMaxMs ?? DEFAULT_STREAM_MAX_MS)
+    writeSseHead(res)
+
+    let lastWrite = Date.now()
+    let closed = false
+    const write = (body: { result?: unknown; error?: { code: number; message: string } }): void => {
+      if (closed || res.writableEnded) return
+      try {
+        res.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id, ...body })}\n\n`)
+      } catch {
+        closed = true
+        return
+      }
+      lastWrite = Date.now()
+    }
+    // The disconnect signal. `req`'s own `close` is documented as "the
+    // request has been completed" — on this POST route that is the moment
+    // the body has been read, long before the client goes away — so `res`'s
+    // `close` (the response's lifetime) is what says the connection dropped
+    // mid-stream.
+    const onClose = (): void => {
+      closed = true
+    }
+    res.on("close", onClose)
+    const keepalive = setInterval(() => {
+      if (closed || Date.now() - lastWrite < STREAM_KEEPALIVE_MS) return
+      try {
+        res.write(`: keepalive\n\n`)
+        lastWrite = Date.now()
+      } catch {
+        closed = true
+      }
+    }, STREAM_KEEPALIVE_MS)
+    const finish = (): void => {
+      clearInterval(keepalive)
+      res.off("close", onClose)
+      if (!res.writableEnded) res.end()
+    }
+
+    if (opts.initial === "task") write({ result: { task: first } })
+    const sent = new Set((first.artifacts ?? []).map(a => a.artifactId))
+    let task = first
+
+    while (!closed) {
+      await sleep(pollMs)
+      if (closed || res.writableEnded) break
+      let next: A2aTask
+      try {
+        next = await readTask(taskId)
+      } catch (err) {
+        write({
+          error: {
+            code: err instanceof RpcFailure ? err.code : JSON_RPC_ERROR.internal,
+            message: err instanceof RpcFailure ? err.message : err instanceof Error ? err.message : String(err),
+          },
+        })
+        break
+      }
+      for (const artifact of next.artifacts ?? []) {
+        if (sent.has(artifact.artifactId)) continue
+        sent.add(artifact.artifactId)
+        write({ result: { artifactUpdate: { taskId, contextId: next.contextId, artifact, lastChunk: true } } })
+      }
+      const terminal = TERMINAL_TASK_STATES.has(next.status.state)
+      const changed = next.status.state !== task.status.state || next.status.timestamp !== task.status.timestamp
+      const expired = Date.now() >= deadline
+      task = next
+      if (terminal || changed || expired) {
+        write({
+          result: {
+            statusUpdate: {
+              taskId,
+              contextId: next.contextId,
+              status: next.status,
+              ...(terminal ? { final: true } : {}),
+            },
+          },
+        })
+      }
+      if (terminal || expired) break
+    }
+    finish()
+  }
+
   try {
     switch (method) {
       case "SendMessage": {
-        let handle: A2aAppHandleLike
-        try {
-          handle = await loadHandle(installed.dir)
-        } catch (err) {
-          throw new RpcFailure(JSON_RPC_ERROR.internal, `could not read app manifest: ${err instanceof Error ? err.message : String(err)}`)
+        const taskId = await startMessageTask(params, "SendMessage")
+        send(res, 200, { jsonrpc: "2.0", id, result: { task: await readTask(taskId) } })
+        return true
+      }
+      case "SendStreamingMessage": {
+        const taskId = await startMessageTask(params, method)
+        await streamTask(taskId, res, id, { initial: "task" })
+        return true
+      }
+      case "SubscribeToTask": {
+        if (typeof params.id !== "string" || !params.id) throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "params.id (task id) is required")
+        const taskId = params.id
+        const before = await readTask(taskId)
+        // A2A 1.0: attaching to a task that is already final is an error,
+        // not a stream that immediately ends — the answer is `GetTask`.
+        if (TERMINAL_TASK_STATES.has(before.status.state)) {
+          throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `task is already ${before.status.state}`)
         }
-        if (handle.accepts?.tasks !== true) {
-          throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "SendMessage" is not allowed for app "${appId}": its manifest does not declare accepts.tasks: true`)
-        }
-        const rawMessage = params.message
-        if (!isRecord(rawMessage) || rawMessage.role !== "ROLE_USER") {
-          throw new RpcFailure(JSON_RPC_ERROR.invalidParams, 'params.message must be an object with role "ROLE_USER"')
-        }
-        const parts = parseParts(rawMessage.parts)
-        const { skill, prompt } = extractSkillRequest(
-          { parts, ...(isRecord(rawMessage.metadata) ? { metadata: rawMessage.metadata } : {}) },
-          appId,
-          isRecord(params.metadata) ? params.metadata : undefined,
-        )
-        if (!skill) {
-          throw new RpcFailure(JSON_RPC_ERROR.invalidParams, 'no skill requested: set message.metadata.skill or start the first text part with "skill:<id>"')
-        }
-        const target = resolveExposedSkill(handle, skill)
-        if (!target) {
-          throw new RpcFailure(JSON_RPC_ERROR.invalidParams, `unknown skill "${skill}": app "${appId}" does not expose it`)
-        }
-        if (target.kind === "workflow") {
-          const ref = handle.workflows?.find(w => w.id === target.id)
-          // The registry's refs carry the absolute path too — the manifest
-          // handle may not, so fall back to it before declaring the bundle
-          // missing.
-          const path =
-            (typeof ref?.path === "string" && ref.path !== "" ? ref.path : undefined) ??
-            installed.workflows?.find(w => w.id === target.id)?.path
-          if (typeof path !== "string" || path === "") {
-            throw new RpcFailure(
-              JSON_RPC_ERROR.unsupportedOperation,
-              `app "${appId}" exposes workflow "${target.id}" but does not bundle it`,
-            )
-          }
-          let dataInput: Record<string, unknown> | undefined
-          for (const part of parts) {
-            const d = (part as { data?: unknown }).data
-            if (isRecord(d)) {
-              dataInput = d
-              break
-            }
-          }
-          const input = dataInput ?? (prompt ? { prompt } : {})
-          const started = await call("workflow_run_file", { path, input, appId })
-          const reply = (started.data ?? {}) as { runId?: unknown; error?: unknown }
-          const runId = typeof reply.runId === "string" && reply.runId !== "" ? reply.runId : undefined
-          const errText = typeof reply.error === "string" && reply.error !== "" ? reply.error : undefined
-          if (runId === undefined || errText !== undefined) {
-            throw new RpcFailure(JSON_RPC_ERROR.internal, errText ?? (started.text || "workflow_run_file failed"))
-          }
-          await ledger.append({
-            taskId: runId,
-            appId,
-            contextId: typeof rawMessage.contextId === "string" && rawMessage.contextId ? rawMessage.contextId : randomUUID(),
-            skill,
-            createdAt: new Date().toISOString(),
-            kind: "workflow",
-          })
-          send(res, 200, { jsonrpc: "2.0", id, result: { task: await readTask(runId) } })
-          return true
-        }
-        const run = await call("app_run", { appId, agents: [target.id], ...(prompt ? { prompt } : {}) })
-        const started = run.data as { appRunId?: unknown; sessions?: unknown; errors?: unknown } | undefined
-        if (!run.ok || typeof started?.appRunId !== "string") {
-          throw new RpcFailure(JSON_RPC_ERROR.internal, run.text || "app_run failed")
-        }
-        if (!Array.isArray(started.sessions) || started.sessions.length === 0) {
-          const detail = Array.isArray(started.errors) ? JSON.stringify(started.errors) : "no session was started"
-          throw new RpcFailure(JSON_RPC_ERROR.internal, `agent "${target.id}" did not start: ${detail}`)
-        }
-        await ledger.append({
-          taskId: started.appRunId,
-          appId,
-          contextId: typeof rawMessage.contextId === "string" && rawMessage.contextId ? rawMessage.contextId : randomUUID(),
-          skill,
-          createdAt: new Date().toISOString(),
-        })
-        send(res, 200, { jsonrpc: "2.0", id, result: { task: await readTask(started.appRunId) } })
+        await streamTask(taskId, res, id, { initial: "task" })
         return true
       }
       case "GetTask": {
@@ -481,9 +641,6 @@ export async function handleA2aTaskRequest(
         })
         return true
       }
-      case "SendStreamingMessage":
-      case "SubscribeToTask":
-        throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "${method}" is not supported by this endpoint`)
       case "GetExtendedAgentCard":
         throw new RpcFailure(JSON_RPC_ERROR.extendedAgentCardNotConfigured, "this agent has no extended agent card")
       default:
@@ -493,10 +650,16 @@ export async function handleA2aTaskRequest(
         throw new RpcFailure(JSON_RPC_ERROR.methodNotFound, `method not found: ${method}`)
     }
   } catch (err) {
-    if (err instanceof RpcFailure) {
-      send(res, 200, { jsonrpc: "2.0", id, error: { code: err.code, message: err.message } })
+    const failure: JsonRpcResponse =
+      err instanceof RpcFailure
+        ? { jsonrpc: "2.0", id, error: { code: err.code, message: err.message } }
+        : { jsonrpc: "2.0", id, error: { code: JSON_RPC_ERROR.internal, message: err instanceof Error ? err.message : String(err) } }
+    // A failure after the SSE head is out can no longer be a JSON body — the
+    // stream has already claimed the response, so just close it.
+    if (res.headersSent) {
+      if (!res.writableEnded) res.end()
     } else {
-      send(res, 200, { jsonrpc: "2.0", id, error: { code: JSON_RPC_ERROR.internal, message: err instanceof Error ? err.message : String(err) } })
+      send(res, 200, failure)
     }
     return true
   }

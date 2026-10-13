@@ -5,6 +5,9 @@
  * `app_stop` / `app_artifact_get` and `workflow_run_file` / `workflow_status` /
  * `workflow_cancel` are faked behind `dispatchTool`, and the
  * manifest's `accepts` / `exposes` / bundled workflows come from an injected `loadHandle`.
+ * `SendStreamingMessage` / `SubscribeToTask` stream the same run over SSE
+ * (`text/event-stream`, one JSON-RPC response per event), polled at
+ * `streamPollMs` so the fakes can move a run between two events.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -154,7 +157,17 @@ describe("A2A task ingress", () => {
     throw new Error(`unexpected tool ${name}`)
   }
 
-  async function withServer(fn: (rpc: (appId: string, body: unknown, raw?: boolean, opts?: { version?: string | null; query?: string }) => Promise<{ status: number; json: any }>) => Promise<void>): Promise<void> {
+  async function withServer(
+    fn: (
+      rpc: (appId: string, body: unknown, raw?: boolean, opts?: { version?: string | null; query?: string }) => Promise<{
+        status: number
+        json: any
+        headers: Headers
+      }>,
+      ctx: { port: number },
+    ) => Promise<void>,
+    streamConfig: { streamMaxMs?: number } = {},
+  ): Promise<void> {
     const port = await freePort()
     const http = await startHttpServer({
       port,
@@ -166,7 +179,12 @@ describe("A2A task ingress", () => {
       meta: { workspace: process.cwd(), registered: [] },
       appRegistry,
       appToolCallDeps: { dispatchTool },
-      a2aTasks: { stateDir, loadHandle: async d => handles[d.endsWith("/a") ? APP_ID : OTHER_APP_ID]! },
+      a2aTasks: {
+        stateDir,
+        streamPollMs: 5,
+        ...streamConfig,
+        loadHandle: async d => handles[d.endsWith("/a") ? APP_ID : OTHER_APP_ID]!,
+      },
     })
     const rpc = async (appId: string, body: unknown, raw = false, opts: { version?: string | null; query?: string } = {}) => {
       const version = opts.version === undefined ? "1.0" : opts.version
@@ -175,10 +193,10 @@ describe("A2A task ingress", () => {
         headers: { "content-type": "application/json", ...(version ? { "a2a-version": version } : {}) },
         body: raw ? (body as string) : JSON.stringify(body),
       })
-      return { status: res.status, json: await res.json() }
+      return { status: res.status, json: await res.json(), headers: res.headers }
     }
     try {
-      await fn(rpc)
+      await fn(rpc, { port })
     } finally {
       await http.stop()
     }
@@ -188,6 +206,13 @@ describe("A2A task ingress", () => {
     jsonrpc: "2.0",
     id,
     method: "SendMessage",
+    params: { message: { messageId: "m1", role: "ROLE_USER", parts: [{ text }], metadata: { skill } } },
+  })
+
+  const streamReq = (skill: string, text = "hello", id: number | string = 1) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "SendStreamingMessage",
     params: { message: { messageId: "m1", role: "ROLE_USER", parts: [{ text }], metadata: { skill } } },
   })
 
@@ -722,7 +747,7 @@ describe("A2A task ingress", () => {
     })
   })
 
-  it("answers protocol errors: parse, invalid request, unknown/0.3 methods, streaming, push, unknown app", async () => {
+  it("answers protocol errors: parse, invalid request, unknown/0.3 methods, bare streaming params, push, unknown app", async () => {
     await withServer(async rpc => {
       expect((await rpc(APP_ID, "{not json", true)).json.error.code).toBe(-32700)
       expect((await rpc(APP_ID, [sendReq("solo")])).json.error.code).toBe(-32600)
@@ -731,8 +756,10 @@ describe("A2A task ingress", () => {
       for (const legacy of ["message/send", "tasks/get", "tasks/cancel"]) {
         expect((await rpc(APP_ID, { ...sendReq("solo"), method: legacy })).json.error.code).toBe(-32601)
       }
-      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SendStreamingMessage" })).json.error.code).toBe(-32004)
-      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SubscribeToTask" })).json.error.code).toBe(-32004)
+      // The streaming methods and ListTasks are live — a bare streaming call
+      // (no message, no id) is invalid params, not "unsupported".
+      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SendStreamingMessage" })).json.error.code).toBe(-32602)
+      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SubscribeToTask" })).json.error.code).toBe(-32602)
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "CreateTaskPushNotificationConfig" })).json.error.code).toBe(-32003)
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "GetExtendedAgentCard" })).json.error.code).toBe(-32007)
       expect(dispatched).toHaveLength(0)
@@ -760,6 +787,196 @@ describe("A2A task ingress", () => {
       }
       expect(dispatched).toHaveLength(0)
     })
+  })
+
+  it("SendStreamingMessage streams an agent skill: {task} first, artifactUpdates, then a final statusUpdate", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const res = await openStream(port, APP_ID, streamReq("solo", "summarise this"))
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+      expect(res.headers.get("cache-control")).toContain("no-cache")
+      expect(res.headers.get("connection")).toBe("keep-alive")
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.done).toBe(false)
+      expect(first.value!.result.task).toMatchObject({ id: "run-1", status: { state: "TASK_STATE_WORKING" } })
+      expect(first.value!.result.task.contextId).toBeTruthy()
+      expect(dispatched.find(d => d.name === "app_run")!.args).toEqual({ appId: APP_ID, agents: ["solo"], prompt: "summarise this" })
+
+      // The run finishes between two polls.
+      runs.get("run-1")!.status = "succeeded"
+      conversations.set("s-run-1", [
+        { role: "user", text: "summarise this" },
+        { role: "assistant", text: "All done." },
+      ])
+      const rest: SseEvent[] = []
+      for await (const ev of events) rest.push(ev)
+
+      const finalIdx = rest.findIndex(ev => ev.result?.statusUpdate?.final === true)
+      expect(finalIdx).toBeGreaterThanOrEqual(0)
+      // The final statusUpdate is the stream's last event.
+      expect(rest).toHaveLength(finalIdx + 1)
+      expect(rest.slice(0, finalIdx).every(ev => ev.result?.artifactUpdate)).toBe(true)
+      expect(rest.slice(0, finalIdx).map(ev => ev.result.artifactUpdate.artifact.artifactId)).toEqual([
+        "agent-output-solo",
+        "app-artifact",
+      ])
+      for (const ev of rest.slice(0, finalIdx)) expect(ev.result.artifactUpdate.lastChunk).toBe(true)
+      expect(rest[finalIdx]!.result.statusUpdate).toMatchObject({
+        taskId: "run-1",
+        status: { state: "TASK_STATE_COMPLETED" },
+        final: true,
+      })
+      expect(rest[finalIdx]!.result.statusUpdate.status.message).toMatchObject({
+        role: "ROLE_AGENT",
+        parts: [{ text: "All done." }],
+      })
+      for (const ev of [first.value!, ...rest]) {
+        expect(ev.jsonrpc).toBe("2.0")
+        expect(ev.id).toBe(1)
+      }
+    })
+  })
+
+  it("SendStreamingMessage streams a workflow skill to its output artifact", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const res = await openStream(port, APP_ID, streamReq("do-it", "compile the report"))
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.value!.result.task).toMatchObject({ id: "wf-1", status: { state: "TASK_STATE_WORKING" } })
+      expect(dispatched.some(d => d.name === "workflow_run_file")).toBe(true)
+      expect(dispatched.some(d => d.name === "app_run")).toBe(false)
+
+      workflowRuns.set("wf-1", { status: "done", output: { total: 42 }, endedAt: "2026-10-13T12:00:00.000Z" })
+      const rest: SseEvent[] = []
+      for await (const ev of events) rest.push(ev)
+
+      expect(rest).toHaveLength(2)
+      expect(rest[0]!.result.artifactUpdate).toMatchObject({
+        taskId: "wf-1",
+        lastChunk: true,
+        artifact: { artifactId: "output", name: "output", parts: [{ data: { total: 42 } }] },
+      })
+      expect(rest[0]!.result.artifactUpdate.artifact.parts[0]).not.toHaveProperty("kind")
+      expect(rest[1]!.result.statusUpdate).toMatchObject({
+        taskId: "wf-1",
+        status: { state: "TASK_STATE_COMPLETED", timestamp: "2026-10-13T12:00:00.000Z" },
+        final: true,
+      })
+    })
+  })
+
+  it("SubscribeToTask streams a running task until it reaches a terminal state", async () => {
+    await withServer(async (rpc, { port }) => {
+      const sent = await rpc(APP_ID, sendReq("solo", "keep going"))
+      const taskId = sent.json.result.task.id as string
+      const res = await openStream(port, APP_ID, { jsonrpc: "2.0", id: 7, method: "SubscribeToTask", params: { id: taskId } })
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.value!.result.task).toMatchObject({ id: taskId, status: { state: "TASK_STATE_WORKING" } })
+
+      runs.get(taskId)!.status = "failed"
+      runs.get(taskId)!.error = "agent crashed"
+      const rest: SseEvent[] = []
+      for await (const ev of events) rest.push(ev)
+
+      expect(rest).toHaveLength(1)
+      expect(rest[0]!.id).toBe(7)
+      expect(rest[0]!.result.statusUpdate).toMatchObject({
+        taskId,
+        status: { state: "TASK_STATE_FAILED" },
+        final: true,
+      })
+      expect(rest[0]!.result.statusUpdate.status.message).toMatchObject({ parts: [{ text: "agent crashed" }] })
+      // One run only: the subscribe never started a second one.
+      expect(dispatched.filter(d => d.name === "app_run")).toHaveLength(1)
+    })
+  })
+
+  it("SubscribeToTask on a finished task answers a JSON-RPC error, not a stream", async () => {
+    await withServer(async (rpc, { port }) => {
+      await rpc(APP_ID, sendReq("solo"))
+      runs.get("run-1")!.status = "succeeded"
+      conversations.set("s-run-1", [{ role: "assistant", text: "already done" }])
+      const res = await openStream(port, APP_ID, { jsonrpc: "2.0", id: 2, method: "SubscribeToTask", params: { id: "run-1" } })
+      expect(res.headers.get("content-type")).toContain("application/json")
+      const json = (await res.json()) as { error: { code: number; message: string } }
+      expect(json.error).toEqual({ code: -32004, message: "task is already TASK_STATE_COMPLETED" })
+    })
+  })
+
+  it("SubscribeToTask on an unknown id is TaskNotFound, as JSON", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const res = await openStream(port, APP_ID, { jsonrpc: "2.0", id: 3, method: "SubscribeToTask", params: { id: "nope" } })
+      expect(res.headers.get("content-type")).toContain("application/json")
+      const json = (await res.json()) as { error: { code: number; message: string } }
+      expect(json.error.code).toBe(-32001)
+      expect(json.error.message).toContain("nope")
+      expect(dispatched).toHaveLength(0)
+    })
+  })
+
+  it("stops polling the task once the client disconnects", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const controller = new AbortController()
+      const res = await openStream(port, APP_ID, streamReq("solo", "long job"), { signal: controller.signal })
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.value!.result.task.status.state).toBe("TASK_STATE_WORKING")
+      const polls = () => dispatched.filter(d => d.name === "app_status").length
+      await sleep(40) // several polls at streamPollMs: 5
+      expect(polls()).toBeGreaterThan(1)
+      controller.abort()
+      await events.return(undefined)
+      await sleep(80)
+      const stopped = polls()
+      await sleep(60)
+      expect(polls()).toBe(stopped)
+      expect(runs.get("run-1")!.status).toBe("running")
+    })
+  })
+
+  it("SendStreamingMessage validation failures answer JSON, not a stream", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const noSkill = await openStream(port, APP_ID, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "SendStreamingMessage",
+        params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+      })
+      expect(noSkill.headers.get("content-type")).toContain("application/json")
+      expect((await noSkill.json() as { error: { code: number } }).error.code).toBe(-32602)
+
+      const noAccepts = await openStream(port, OTHER_APP_ID, streamReq("solo"))
+      expect(noAccepts.headers.get("content-type")).toContain("application/json")
+      const json = (await noAccepts.json()) as { error: { code: number; message: string } }
+      expect(json.error.code).toBe(-32004)
+      expect(json.error.message).toContain("accepts.tasks")
+      expect(dispatched).toHaveLength(0)
+    })
+  })
+
+  it("ends the stream at streamMaxMs with the state the task is actually in", async () => {
+    await withServer(
+      async (_rpc, { port }) => {
+        const res = await openStream(port, APP_ID, streamReq("solo", "slow job"))
+        const events = sseEvents(res)
+        const first = await events.next()
+        expect(first.value!.result.task.status.state).toBe("TASK_STATE_WORKING")
+        const rest: SseEvent[] = []
+        for await (const ev of events) rest.push(ev)
+        expect(rest).toHaveLength(1)
+        expect(rest[0]!.result.statusUpdate).toMatchObject({
+          taskId: "run-1",
+          status: { state: "TASK_STATE_WORKING" },
+        })
+        // The cap is not a terminal state: no `final` claim.
+        expect(rest[0]!.result.statusUpdate).not.toHaveProperty("final")
+      },
+      { streamMaxMs: 30 },
+    )
   })
 
 })
@@ -953,6 +1170,57 @@ describe("a2a-tasks mapping", () => {
     expect(extractSkillRequest({ parts: [{ text: "plain" }] }, "@x/y")).toEqual({ prompt: "plain" })
   })
 })
+
+/** One parsed SSE frame: a whole JSON-RPC response, `result` or `error`. */
+interface SseEvent {
+  jsonrpc: string
+  id: unknown
+  result?: any
+  error?: { code: number; message: string }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+/** POST a body to the A2A route and hand back the raw response — JSON or
+ *  SSE — without reading it. */
+function openStream(
+  port: number,
+  appId: string,
+  body: unknown,
+  opts: { signal?: AbortSignal } = {},
+): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/a2a/apps/${appId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "a2a-version": "1.0" },
+    body: JSON.stringify(body),
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  })
+}
+
+/** Split an SSE body into its `data:` payloads; `:` comments (keepalive) are
+ *  frames too, just not events. Drains until the server ends the stream. */
+async function* sseEvents(res: Response): AsyncGenerator<SseEvent> {
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buf = ""
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      for (let idx = buf.indexOf("\n\n"); idx !== -1; idx = buf.indexOf("\n\n")) {
+        const frame = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        if (frame.startsWith(":")) continue
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("data: ")) yield JSON.parse(line.slice(6)) as SseEvent
+        }
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+}
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
