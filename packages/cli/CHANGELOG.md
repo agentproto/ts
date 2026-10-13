@@ -1,5 +1,36 @@
 # @agentproto/cli
 
+## 1.20.0
+
+### Minor Changes
+
+- 877bc60: `sandbox_exec` can take secrets without the caller holding them: `envProfiles: { ENV_NAME: authProfileId }` has the daemon read the profile's credential (keychain, or its sub-account provider) into the command's env. Exec errors are now cut to ~200 chars of the command (`…(N chars)`) and resolved secrets are redacted from errors, stdout and stderr; commands over 16 KB / env over 32 KB are rejected with an actionable error, and an optional `files` input uploads scripts via the new optional `BootedSandbox.writeFile` (implemented for e2b). New `agentproto sandbox exec` CLI and daemon route `POST /sandboxes/exec`, whose exit code is the box command's exit code.
+- d7e24ba: Sandbox spawns can now work from a workspace's git remote. `agentproto workspace remote` (with `--token-stdin`) registers an https clone URL and a keychain credential for a workspace; `agent_start({ workspaceSlug, sandbox, worktree })` then clones it into the box, cuts `wt/<slug>` from `worktree.base`, and starts the session there with the token injected only as the `AGENTPROTO_GIT_TOKEN` env var behind a credential helper. When the box is torn down, the work branch is pushed to `origin` if it is ahead of its base, with a `git bundle` fallback saved to `~/.agentproto/sessions/<id>/delivery.bundle`, and the outcome is recorded on the session descriptor (`sandboxDelivery`). `BootedSandbox` gains an optional `readFile`, implemented for E2B.
+
+  Behaviour changes to be aware of:
+
+  - With `env.autoPassthrough` on a sandbox spawn that uses a Claude subscription profile (claude-code), the profile's long-lived `CLAUDE_CODE_OAUTH_TOKEN` is now resolved from the OS keychain and sent into the box. Previously it was only forwarded when it was already present in the daemon's environment, so the credential now reaches a third-party box where it did not before. Sub-account pins are unaffected.
+  - `AGENTPROTO_GIT_TOKEN` is an ordinary environment variable inside the box, so the agent running there can read it (and `sandbox_exec` can print it). Register a token scoped to the one repository and revoke it when the work is done. A box booted with a workspace's token can only be reused by that same workspace.
+
+- 54a63fb: Store listings: optional `publisherUrl` (https) next to `publisher`, carried to app-catalog/v1 entries and checked by `catalog verify`.
+
+### Patch Changes
+
+- 245ece0: Forward `sessionSkills` to the driver and report `deliversSessionSkills` for adapters declaring `metadata.sessionSkills`.
+- 245ece0: Skill imports: a per-session skill registry + delivery, mirroring the MCP-import model.
+
+  - `@agentproto/runtime` gains `skill-imports.ts` (`~/.agentproto/imported-skills.json`; import COPIES a `SKILL.md` folder into `~/.agentproto/skills/<id>/` with a content sha, snapshot-not-symlink), the `skill_import` / `skill_imported_list` / `skill_imported_remove` / `skill_resync` MCP tools, and spawn-time resolution (`resolveSessionSkills`) that turns the resolved `skills` list into concrete `sessionSkills` entries — non-imported ids warn (never throw) and stay in the adapter-facing list unchanged.
+  - `@agentproto/driver-agent-cli` gains `AgentCliStartOptions.sessionSkills` and the adapter-manifest `metadata.sessionSkills` field (`{ dir, env? }`); before the child starts it copies each resolved skill into `<session configDir>/<dir>/<alias>/`, wiping stale entries first.
+  - `@agentproto/adapter-claude-code` delivers into `$CLAUDE_CONFIG_DIR/skills/` (no env needed). `@agentproto/adapter-opencode` delivers into `<configDir>/skills/` and points `OPENCODE_CONFIG_DIR` at it — the only route that survives `lean` mode's `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`, which gates opencode's auto-discovery but not its config-dir skill scan.
+  - `@agentproto/cli` (`serve`) forwards `sessionSkills` to the driver and reports `deliversSessionSkills` from the adapter manifest's `metadata.sessionSkills`, so the daemon's adapter resolver no longer drops per-session skill delivery.
+
+- Updated dependencies [877bc60]
+- Updated dependencies [d7e24ba]
+- Updated dependencies [245ece0]
+  - @agentproto/sandbox-e2b@0.7.0
+  - @agentproto/driver-agent-cli@2.12.0
+  - @agentproto/sandbox-box@0.2.29
+
 ## 1.19.0
 
 ### Minor Changes
