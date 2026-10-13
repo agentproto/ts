@@ -211,12 +211,35 @@ function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): s
 }
 
 /**
- * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
- * installed app — every agent id the app bundles resolves to a spawn adapter
- * chosen in order (F26): the agent's OWN AGENT.md `metadata.adapter`/
+ * The F26 per-agent adapter order, in one place, shared by
+ * {@link resolveAgentRefsForWorkflow} (workflow agent refs) and `app_run`
+ * (one spawn per agent): the agent's OWN AGENT.md `metadata.adapter`/
  * `metadata.harness` override > a model-based default (see
  * {@link defaultAdapterForModel}) > the blanket {@link DEFAULT_AGENT_ADAPTER}
- * fallback (WP-B4's original behaviour). A step's own `adapter:` still wins
+ * fallback (WP-B4's original behaviour).
+ *
+ * Takes the already-loaded AGENT.md facts instead of a path so neither caller
+ * reads the file twice: `model` is the agent's declared model AFTER
+ * {@link resolveAgentModelRef} role resolution, `metadata` its raw
+ * frontmatter `metadata`, and `modelOverride` a caller-pinned model (app_run's
+ * `input.model`) which — when set — decides the model-based default INSTEAD of
+ * the agent's own.
+ */
+function resolveAgentSpawnAdapter(
+  model: string | undefined,
+  metadata: { [k: string]: unknown } | undefined,
+  modelOverride?: string,
+): string {
+  return agentMetadataAdapter(metadata) ?? defaultAdapterForModel(modelOverride ?? model)
+}
+
+/**
+ * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
+ * installed app — every agent id the app bundles resolves to a spawn adapter
+ * chosen in order (F26, see {@link resolveAgentSpawnAdapter}): the agent's OWN
+ * AGENT.md `metadata.adapter`/`metadata.harness` override > a model-based
+ * default (see {@link defaultAdapterForModel}) > the blanket
+ * {@link DEFAULT_AGENT_ADAPTER} fallback (WP-B4's original behaviour). A step's own `adapter:` still wins
  * over all of this — `compileAgentStep` only applies `resolved.adapter` when
  * the step itself sets none. AGENT.md's declared `model` is forwarded too
  * (`AgentRefResolution.model`), so a step that sets no `model` of its own
@@ -242,12 +265,12 @@ export async function resolveAgentRefsForWorkflow(
   const refs: Record<string, AgentRefResolution> = {}
   for (const agent of app.agents) {
     let model: string | undefined
-    let metadataAdapter: string | undefined
+    let metadata: { [k: string]: unknown } | undefined
     let tools: string[] | undefined
     try {
       const { handle } = await loadAgent(agent.path)
       model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
-      metadataAdapter = agentMetadataAdapter(handle.metadata)
+      metadata = handle.metadata
       // String tool ids only — they scope the daemon gateway an agent step's
       // session gets (sessions-registry-agent-host.ts). A structured ref has
       // no gateway tool name to match.
@@ -259,7 +282,7 @@ export async function resolveAgentRefsForWorkflow(
       // agent rather than failing agent-ref resolution for the whole
       // workflow.
     }
-    const adapter = metadataAdapter ?? defaultAdapterForModel(model)
+    const adapter = resolveAgentSpawnAdapter(model, metadata)
     refs[agent.id] = {
       adapter,
       ...(adapter === DEFAULT_AGENT_ADAPTER ? { options: { agent: agent.path } } : {}),
@@ -362,15 +385,21 @@ export function buildAgentRunSpawnConfig(
 }
 
 /** Load an AGENT.md's declared model (string form only — a structured
- *  `ModelRef` has no single id to pass as `agent_start.model`) and body,
- *  for `buildAgentRunSpawnConfig`. */
+ *  `ModelRef` has no single id to pass as `agent_start.model`), its body and
+ *  its raw frontmatter `metadata`, for `buildAgentRunSpawnConfig` and
+ *  `app_run`'s per-agent adapter resolution
+ *  ({@link resolveAgentSpawnAdapter}) — one read, both consumers. */
 export async function loadAgentPromptDefaults(
   agentPath: string,
   resolveRole?: ModelRoleResolver,
-): Promise<{ model?: string; body: string }> {
+): Promise<{ model?: string; body: string; metadata?: { [k: string]: unknown } }> {
   const { handle, body } = await loadAgent(agentPath)
   const model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
-  return { ...(model !== undefined ? { model } : {}), body }
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(handle.metadata !== undefined ? { metadata: handle.metadata } : {}),
+    body,
+  }
 }
 
 function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
@@ -1937,11 +1966,20 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       adapter: z
         .string()
         .optional()
-        .describe("Agent adapter slug (default `mastra-agent`). Used for the spawn; sets `harness` when `harness` is absent."),
+        .describe(
+          "Agent adapter slug. Omitted → EACH agent resolves its own (AGENT.md " +
+            "`metadata.adapter`/`metadata.harness` > `claude-*` model → `claude-code` > " +
+            "`mastra-agent`). Given → this slug is used for EVERY agent; sets `harness` " +
+            "when `harness` is absent.",
+        ),
       harness: z
         .string()
         .optional()
-        .describe("Canonical harness slug (defaults to `adapter`). Recorded on the run + each session; sets `adapter` when `adapter` is absent."),
+        .describe(
+          "Canonical harness slug (defaults to `adapter`, or to each agent's resolved " +
+            "adapter when neither is given). Recorded on the run + each session; sets " +
+            "`adapter` when `adapter` is absent.",
+        ),
       model: z
         .string()
         .optional()
@@ -2003,16 +2041,34 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
       // Resolve the runner (A). `harness` is canonical: it wins the harness
       // slot and (when `adapter` absent) the adapter slot too. A bare `adapter`
-      // fills both. Neither → the long-standing default.
-      const adapter = input.adapter ?? input.harness ?? DEFAULT_AGENT_ADAPTER
-      const harness = input.harness ?? input.adapter ?? DEFAULT_AGENT_ADAPTER
+      // fills both. NEITHER given → there is no run-wide runner at all: each
+      // agent resolves its own inside `spawnOne` (F26, the same order
+      // `resolveAgentRefsForWorkflow` applies to workflow agent refs), so the
+      // A2A task route — which calls `app_run` with only `{appId, agents,
+      // prompt}` — no longer forces every agent onto the blanket default.
+      // A caller-given adapter/harness still wins for EVERY agent.
+      const callerAdapter = input.adapter ?? input.harness
+      const callerHarness = callerAdapter === undefined ? undefined : (input.harness ?? input.adapter)!
       const model = input.model
 
-      // B — multi-adapter support (P7 deliverable 2): every adapter inherits
-      // the AGENT.md model unless the caller supplied one. Only an adapter
-      // whose manifest declares an `agent` option (mastra-agent today) can be
-      // pointed straight at the AGENT.md path; every other adapter needs its
-      // spawn built FROM the AGENT.md instead (buildAgentRunSpawnConfig).
+      // Run-level `adapter`/`harness` (recorded on the run, echoed by the
+      // result): a caller-given pair keeps today's semantics; resolved per
+      // agent, the run reports the FIRST agent's resolved runner — `spawnOne`
+      // fills this in before the run record is created, at most once.
+      let runAdapter = callerAdapter
+      let runHarness = callerHarness
+      const reportedRunner = () => ({
+        adapter: runAdapter ?? DEFAULT_AGENT_ADAPTER,
+        harness: runHarness ?? runAdapter ?? DEFAULT_AGENT_ADAPTER,
+      })
+
+      // B — multi-adapter support (P7 deliverable 2), now per RESOLVED adapter
+      // (adapters may differ per agent in one run), so the probe is cached by
+      // slug: N agents on the same adapter resolve its manifest once. Only an
+      // adapter whose manifest declares an `agent` option (mastra-agent today)
+      // can be pointed straight at the AGENT.md path; every other adapter
+      // needs its spawn built FROM the AGENT.md instead
+      // (buildAgentRunSpawnConfig).
       // `declaredOptions === undefined` means the resolver reported no
       // option info at all (same convention as `launch-config.ts`'s
       // `declaredOptionsKnown`) — treat that as "might declare it" so a
@@ -2020,10 +2076,18 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // adapter) keeps today's mastra-agent behaviour instead of silently
       // falling back; only a resolver that POSITIVELY lists options without
       // `agent` (claude-code, hermes, codex, ...) takes the fallback path.
-      const resolvedAdapter = await resolveAgentAdapter(adapter)
-      const declaredOptionsKnown = resolvedAdapter?.declaredOptions !== undefined
-      const declaresAgentOption =
-        !declaredOptionsKnown || (resolvedAdapter!.declaredOptions!.some(o => o.id === "agent"))
+      const agentOptionSupport = new Map<string, Promise<boolean>>()
+      const declaresAgentOptionFor = (slug: string): Promise<boolean> => {
+        const cached = agentOptionSupport.get(slug)
+        if (cached !== undefined) return cached
+        const probe = (async () => {
+          const resolvedAdapter = await resolveAgentAdapter(slug)
+          const declaredOptionsKnown = resolvedAdapter?.declaredOptions !== undefined
+          return !declaredOptionsKnown || (resolvedAdapter!.declaredOptions!.some(o => o.id === "agent"))
+        })()
+        agentOptionSupport.set(slug, probe)
+        return probe
+      }
 
       const ordered = input.sequence ?? input.agents ?? app.agents.map(a => a.id)
       const unknown = ordered.filter(id => !app.agents.some(a => a.id === id))
@@ -2042,25 +2106,17 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         let spawnModel = model
         let spawnPrompt = input.prompt
         let spawnOptions: Record<string, boolean | number | string> | undefined
-        if (declaresAgentOption) {
-          spawnOptions = { agent: agentPath }
-          if (spawnModel === undefined) {
-            try {
-              spawnModel = (await loadAgentPromptDefaults(agentPath, resolveModelRole)).model
-            } catch (err) {
-              errors.push({
-                agentId,
-                error: `could not read AGENT.md "${agentPath}": ${err instanceof Error ? err.message : String(err)}`,
-              })
-              return null
-            }
-          }
-        } else {
+
+        // AGENT.md is read at most once per agent: adapter selection needs its
+        // `metadata`, the spawn needs its model/body. An unreadable file fails
+        // this one agent only, with the same error the spawn paths reported
+        // before adapter resolution moved in here.
+        let defaults: { model?: string; body: string; metadata?: { [k: string]: unknown } } | undefined
+        const loadDefaults = async () => {
+          if (defaults !== undefined) return defaults
           try {
-            const defaults = await loadAgentPromptDefaults(agentPath, resolveModelRole)
-            const built = buildAgentRunSpawnConfig(defaults, { model, prompt: input.prompt })
-            spawnModel = built.model
-            spawnPrompt = built.prompt
+            defaults = await loadAgentPromptDefaults(agentPath, resolveModelRole)
+            return defaults
           } catch (err) {
             errors.push({
               agentId,
@@ -2069,11 +2125,43 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             return null
           }
         }
+
+        let adapterSlug: string
+        let harnessSlug: string
+        if (callerAdapter === undefined) {
+          const loaded = await loadDefaults()
+          if (loaded === null) return null
+          adapterSlug = resolveAgentSpawnAdapter(loaded.model, loaded.metadata, model)
+          harnessSlug = adapterSlug
+        } else {
+          adapterSlug = callerAdapter
+          harnessSlug = callerHarness ?? callerAdapter
+        }
+        if (runAdapter === undefined) {
+          runAdapter = adapterSlug
+          runHarness = harnessSlug
+        }
+
+        const declaresAgentOption = await declaresAgentOptionFor(adapterSlug)
+        if (declaresAgentOption) {
+          spawnOptions = { agent: agentPath }
+          if (spawnModel === undefined) {
+            const loaded = await loadDefaults()
+            if (loaded === null) return null
+            spawnModel = loaded.model
+          }
+        } else {
+          const loaded = await loadDefaults()
+          if (loaded === null) return null
+          const built = buildAgentRunSpawnConfig(loaded, { model, prompt: input.prompt })
+          spawnModel = built.model
+          spawnPrompt = built.prompt
+        }
         const result = await spawnAgentSession(
           { registry, resolveAgentAdapter },
           {
-            adapter,
-            ...(harness !== adapter ? { harness } : {}),
+            adapter: adapterSlug,
+            ...(harnessSlug !== adapterSlug ? { harness: harnessSlug } : {}),
             ...(spawnModel !== undefined ? { model: spawnModel } : {}),
             cwd: input.cwd ?? app.dir,
             ...(appWorkspaceSlug !== undefined ? { workspaceSlug: appWorkspaceSlug } : {}),
@@ -2128,8 +2216,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           const run = appRegistry.createRun({
             appId: app.appId,
             sessions,
-            adapter,
-            harness,
+            ...reportedRunner(),
             ...(model !== undefined ? { model } : {}),
           })
 
@@ -2179,8 +2266,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         const run = appRegistry.createRun({
           appId: app.appId,
           sessions,
-          adapter,
-          harness,
+          ...reportedRunner(),
           ...(model !== undefined ? { model } : {}),
         })
         appRegistry.endRun(run.appRunId, {
@@ -2204,14 +2290,12 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       const run = appRegistry.createRun({
         appId: app.appId,
         sessions,
-        adapter,
-        harness,
+        ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
       })
       return textResult({
         appRunId: run.appRunId,
-        adapter,
-        harness,
+        ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
         sessions,
         ...(errors.length > 0 ? { errors } : {}),
