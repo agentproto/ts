@@ -127,6 +127,9 @@ importers:
       '@agentproto/adapter-browser-camofox':
         specifier: workspace:*
         version: link:../browser-camofox
+      '@agentproto/adapter-browser-chrome':
+        specifier: workspace:*
+        version: link:../browser-chrome
       '@agentproto/adapter-browser-chromium':
         specifier: workspace:*
         version: link:../browser-chromium
@@ -183,6 +186,9 @@ importers:
       '@agentproto/driver-browser':
         specifier: workspace:*
         version: link:../../packages/driver/browser
+      '@agentproto/tool':
+        specifier: workspace:*
+        version: link:../../packages/tool
       ws:
         specifier: '>=8.21.0'
         version: 8.21.3(bufferutil@4.1.0)

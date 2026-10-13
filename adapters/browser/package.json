@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@agentproto/adapter-browser-camofox": "workspace:*",
+    "@agentproto/adapter-browser-chrome": "workspace:*",
     "@agentproto/adapter-browser-chromium": "workspace:*",
     "@agentproto/browser-process": "workspace:*",
     "@agentproto/driver-browser": "workspace:*"

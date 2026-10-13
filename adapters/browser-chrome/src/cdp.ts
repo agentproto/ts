@@ -38,6 +38,7 @@ export class CdpConnection {
   private seq = 0
   private readonly pending = new Map<number, Pending>()
   private readonly listeners = new Set<CdpEnvelopeListener>()
+  private readonly closeListeners = new Set<(reason: string) => void>()
   private _closed = false
 
   private constructor(
@@ -69,7 +70,8 @@ export class CdpConnection {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url, { perMessageDeflate: false, handshakeTimeout: opts.timeoutMs ?? 10_000 })
       ws.once("open", () => resolve(new CdpConnection(ws, opts.commandTimeoutMs ?? 30_000)))
-      ws.once("error", (err) => reject(new Error(`[chrome] cannot open the DevTools websocket: ${err.message}`)))
+      // Keep the socket error as `cause`: callers tell a closed port (ECONNREFUSED) from a refused handshake.
+      ws.once("error", (err) => reject(new Error(`[chrome] cannot open the DevTools websocket: ${err.message}`, { cause: err })))
     })
   }
 
@@ -78,12 +80,16 @@ export class CdpConnection {
   }
 
   private markClosed(reason: string): void {
+    const first = !this._closed
     this._closed = true
     for (const [id, waiting] of this.pending) {
       clearTimeout(waiting.timer)
       waiting.reject(new Error(`CDP ${waiting.method} aborted: ${reason}`))
       this.pending.delete(id)
     }
+    if (!first) return
+    for (const listener of this.closeListeners) listener(reason)
+    this.closeListeners.clear()
   }
 
   send<T = unknown>(method: string, params?: unknown, sessionId?: string): Promise<T> {
@@ -108,6 +114,18 @@ export class CdpConnection {
     this.listeners.add(listener)
     return () => {
       this.listeners.delete(listener)
+    }
+  }
+
+  /** Called once when the socket closes, errors, or `close()` is called; immediately if it already has. */
+  onClose(listener: (reason: string) => void): () => void {
+    if (this._closed) {
+      listener("connection closed")
+      return () => {}
+    }
+    this.closeListeners.add(listener)
+    return () => {
+      this.closeListeners.delete(listener)
     }
   }
 
