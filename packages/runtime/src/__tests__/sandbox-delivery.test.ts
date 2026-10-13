@@ -16,10 +16,12 @@ import {
   buildBundleCommand,
   buildProbeCommand,
   buildCheckpointPushCommand,
+  buildCheckpointDeleteCommand,
   buildPushCommand,
   checkpointBranchOf,
   CHECKPOINT_BUNDLE_FILE,
   CHECKPOINT_RECORD_FILE,
+  CHECKPOINT_REF_ABSENT_MARKER,
   createSandboxCheckpointer,
   decideBundle,
   isFullyDelivered,
@@ -133,8 +135,9 @@ describe("runSandboxDelivery", () => {
     }
     await runSandboxDelivery({ exec, target, outDir, deadlineMs: 5_000 })
 
-    expect(timeouts).toHaveLength(1)
-    expect(timeouts[0]).toBeLessThanOrEqual(5_000)
+    // probe + the stale-checkpoint delete of a clean, safe teardown.
+    expect(timeouts).toHaveLength(2)
+    for (const timeoutMs of timeouts) expect(timeoutMs).toBeLessThanOrEqual(5_000)
   })
 
   it("keeps a slice of the deadline for the bundle when the push hangs", async () => {
@@ -174,12 +177,15 @@ describe("runSandboxDelivery", () => {
     expect(persisted.push.status).toBe("pushed")
   })
 
-  it("does nothing when no commits are ahead of base", async () => {
+  it("skips the push and bundle when no commits are ahead of base, but still cleans up a stale checkpoint", async () => {
     const box = fakeBox({ ahead: 0 })
     const record = await runSandboxDelivery({ exec: box.exec, readFile: async () => new Uint8Array(), target, outDir })
     expect(record.push.status).toBe("skipped")
     expect(record.bundle.status).toBe("skipped")
-    expect(box.commands).toHaveLength(1)
+    // Teardown of a clean, safe worktree always tries the checkpoint delete.
+    expect(record.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
+    expect(box.commands).toHaveLength(2)
+    expect(box.commands[1]?.command).toContain("push origin --delete")
   })
 
   it("falls back to a bundle saved on the host when the push fails", async () => {
@@ -436,10 +442,11 @@ describe("uncommitted-work snapshot", () => {
     const record = await runSandboxDelivery({ exec, target, outDir, snapshotUncommitted: false })
     expect(record.uncommittedFiles).toBe(3)
     expect(record.checkpoint).toBeUndefined()
-    expect(commands).toHaveLength(1)
     const probe = commands[0]!.command
     expect(probe).not.toContain("git commit-tree")
     expect(probe).not.toContain("GIT_INDEX_FILE")
+    // Clean, nothing ahead, teardown: the stale-checkpoint delete still runs.
+    expect(record.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
   })
 
   it("buildProbeCommand with snapshotUncommitted:false drops the snapshot subshell but keeps the counts", () => {
@@ -459,12 +466,137 @@ describe("uncommitted-work snapshot", () => {
     )
   })
 
+  it("buildCheckpointDeleteCommand deletes the checkpoint ref, quoting both, and treats a missing ref as success", () => {
+    expect(buildCheckpointDeleteCommand(target)).toBe(
+      "git -C '/home/user/agentproto' push origin --delete 'agentproto-checkpoint/wt/x' 2>&1 || " +
+        "{ git ls-remote --exit-code origin 'refs/heads/agentproto-checkpoint/wt/x' >/dev/null; " +
+        "test $? -eq 2 && echo checkpoint-ref-absent; }",
+    )
+    expect(buildCheckpointDeleteCommand(target, "custom/")).toBe(
+      "git -C '/home/user/agentproto' push origin --delete 'custom/wt/x' 2>&1 || " +
+        "{ git ls-remote --exit-code origin 'refs/heads/custom/wt/x' >/dev/null; " +
+        "test $? -eq 2 && echo checkpoint-ref-absent; }",
+    )
+  })
+
   it("pushes the checkpoint snapshot to a custom refPrefix end to end", async () => {
     const box = snapshotBox({ ahead: 0 })
     const record = await runSandboxDelivery({ exec: box.exec, target, outDir, refPrefix: "custom/" })
     expect(record.checkpoint).toMatchObject({ status: "pushed", ref: "custom/wt/x" })
     const push = box.commands.find(c => c.command.includes("refs/agentproto/checkpoint:"))?.command ?? ""
     expect(push).toContain("refs/heads/custom/wt/x")
+  })
+})
+
+describe("checkpoint cleanup", () => {
+  let outDir: string
+  beforeEach(async () => {
+    outDir = await mkdtemp(join(tmpdir(), "agentproto-checkpoint-cleanup-"))
+  })
+  afterEach(async () => {
+    await rm(outDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  })
+
+  /** Clean checkout (no snapshot), optional push outcome and delete outcome. */
+  function cleanBox(opts: { ahead: number; pushExit?: number; deleteExit?: number; deleteStdout?: string }) {
+    const commands: SandboxExecOpts[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o)
+      if (o.command.includes("rev-list")) return result(0, `ahead=${opts.ahead}\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes("--delete")) {
+        return result(opts.deleteExit ?? 0, opts.deleteStdout ?? "", opts.deleteExit ? "rejected" : "")
+      }
+      if (o.command.includes(" push ")) return opts.pushExit ? result(opts.pushExit, "", "denied") : result(0)
+      return result(1, "", "unexpected command")
+    }
+    return { exec, commands }
+  }
+
+  it("teardown, clean tree, branch pushed: deletes the checkpoint branch", async () => {
+    const box = cleanBox({ ahead: 2 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir })
+    expect(record.push.status).toBe("pushed")
+    expect(record.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
+    const deleteCmd = box.commands.find(c => c.command.includes("--delete"))?.command ?? ""
+    expect(deleteCmd).toContain("push origin --delete 'agentproto-checkpoint/wt/x'")
+    expect(formatDeliveryNotice(record)).toContain("checkpoint cleanup: deleted")
+  })
+
+  it("teardown, the ref is already gone: absent, not a failure", async () => {
+    const box = cleanBox({ ahead: 2, deleteStdout: `${CHECKPOINT_REF_ABSENT_MARKER}\n` })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir })
+    expect(record.checkpointCleanup).toEqual({ status: "absent", ref: "agentproto-checkpoint/wt/x" })
+  })
+
+  it("a failing delete is recorded, never thrown", async () => {
+    const box = cleanBox({ ahead: 2, deleteExit: 128 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir })
+    expect(record.checkpointCleanup).toMatchObject({ status: "failed", ref: "agentproto-checkpoint/wt/x" })
+    expect(record.checkpointCleanup?.detail).toContain("exit 128")
+    expect(record.push.status).toBe("pushed")
+  })
+
+  it("a snapshot this run means the checkpoint is still needed: no delete", async () => {
+    const commands: SandboxExecOpts[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o)
+      if (o.command.includes("rev-list")) {
+        return result(0, `ahead=2\nuncommitted=1\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${TREE}\n`)
+      }
+      if (o.command.includes(" push ")) return result(0)
+      return result(1, "", "unexpected command")
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir })
+    expect(record.checkpoint?.status).toBe("pushed")
+    expect(record.checkpointCleanup).toBeUndefined()
+    expect(commands.some(c => c.command.includes("--delete"))).toBe(false)
+  })
+
+  it("a failed branch push means the checkpoint may be the only copy: no delete", async () => {
+    const box = cleanBox({ ahead: 2, pushExit: 128 })
+    const record = await runSandboxDelivery({ exec: box.exec, readFile: async () => new Uint8Array(4), target, outDir })
+    expect(record.push.status).toBe("failed")
+    expect(record.checkpointCleanup).toBeUndefined()
+    expect(box.commands.some(c => c.command.includes("--delete"))).toBe(false)
+  })
+
+  it("checkpoint mode only deletes when a checkpoint was pushed earlier in the session", async () => {
+    const idle = cleanBox({ ahead: 1 })
+    const without = await runSandboxDelivery({ exec: idle.exec, target, outDir, mode: "checkpoint", checkpointPushed: false })
+    expect(without.checkpointCleanup).toBeUndefined()
+    expect(idle.commands.some(c => c.command.includes("--delete"))).toBe(false)
+
+    const active = cleanBox({ ahead: 1 })
+    const withPrior = await runSandboxDelivery({ exec: active.exec, target, outDir, mode: "checkpoint", checkpointPushed: true })
+    expect(withPrior.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
+  })
+
+  it("clean tree, nothing ahead, a prior checkpoint push: the delete still happens on the early-return path", async () => {
+    const box = cleanBox({ ahead: 0 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir, mode: "checkpoint", checkpointPushed: true })
+    expect(record.push.status).toBe("skipped")
+    expect(record.bundle.status).toBe("skipped")
+    expect(record.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
+  })
+
+  it("a checkpointer tracks checkpointPushed across records and passes it to later runs", async () => {
+    let dirty = true
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) {
+        return dirty
+          ? result(0, `ahead=0\nuncommitted=1\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${TREE}\n`)
+          : result(0, "ahead=0\nuncommitted=0\n")
+      }
+      return result(0)
+    }
+    const checkpointer = createSandboxCheckpointer({ exec, target, outDir })
+    await checkpointer.run() // pushes a checkpoint
+    dirty = false
+    const record = await checkpointer.run() // clean now: the prior checkpoint is stale
+    expect(record.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
+    expect(commands.some(c => c.includes("--delete"))).toBe(true)
   })
 })
 

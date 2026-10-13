@@ -85,7 +85,8 @@ import {
 import { buildSessionCapabilities } from "./session-capabilities.js"
 import type { McpObservationStore } from "./mcp-session-observer.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
-import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
 import type { TaskLedger } from "./task-ledger.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -2257,6 +2258,76 @@ export function registerSessionTools(
           ],
           isError: true,
         }
+      }
+    },
+  )
+
+  // ── session_migrate ──────────────────────────────────────────────
+  server.tool(
+    "session_migrate",
+    "Resume a SANDBOX session on a NEW box from its checkpoint. Boots a fresh " +
+      "box from the session's workspace git remote, fetches the work branch " +
+      "and the uncommitted-work snapshot the session pushed (commits come " +
+      "back as commits, the snapshot's changes as uncommitted changes), " +
+      "carries the transcript over as the new session's first prompt, then " +
+      "stops the old session and its box if still alive. Same adapter, " +
+      "model, access profile and sandbox provider unless overridden. Fails " +
+      "with a clear `code` when the session is not a sandbox session, has no " +
+      "work branch / workspace git remote, or has no checkpoint that reached " +
+      "the remote; the old session is untouched on any failure.",
+    {
+      sessionId: z.string().min(1).describe("Session id or name — from `session_list`."),
+      sandbox: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Sandbox provider slug for the NEW box (from `list_sandbox_providers`). Default: the old session's."),
+      model: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Override the model for the new session. Default: the old session's."),
+      profile: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Auth profile (billing wallet) for the new session. Default: the old session's."),
+    },
+    async input => {
+      const fail = (error: string, code?: string) => ({
+        content: [{ type: "text" as const, text: JSON.stringify({ error, ...(code ? { code } : {}) }) }],
+        isError: true,
+      })
+      if (!resolveAgentAdapter) return fail("session_migrate requires an adapter resolver; none is configured.")
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) return fail(`no session "${input.sessionId}" found`, "no_such_session")
+      const spawnDeps: SpawnAgentSessionDeps = {
+        registry,
+        resolveAgentAdapter,
+        ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+        ...(opts.buildOrchestratorMcp ? { buildOrchestratorMcp: opts.buildOrchestratorMcp } : {}),
+        ...(opts.webhookNotifier ? { webhookNotifier: opts.webhookNotifier } : {}),
+        ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+        ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+        ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
+        ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(opts.ensureLlmEndpointRunning ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning } : {}),
+      }
+      try {
+        const result = await migrateSandboxSession(spawnDeps, desc, {
+          ...(input.sandbox !== undefined ? { sandbox: input.sandbox } : {}),
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.profile !== undefined ? { access: { profileRef: input.profile } } : {}),
+          sources: checkpointSources,
+        })
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(summarizeMigration(result), null, 2) }],
+        }
+      } catch (err) {
+        if (err instanceof SessionMigrateError) return fail(err.message, err.code)
+        if (err instanceof ContinueFreshSpawnError) return fail(err.message, err.code)
+        return fail(`migrate failed: ${err instanceof Error ? err.message : String(err)}`)
       }
     },
   )

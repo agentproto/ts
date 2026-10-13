@@ -323,6 +323,9 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Download one file from the box — forwarded from `BootedSandbox.readFile`.
    *  Absent when the provider can't. */
   readFile?: BootedSandbox["readFile"]
+  /** Upload one file into the box — forwarded from `BootedSandbox.writeFile`.
+   *  Absent when the provider can't. */
+  writeFile?: BootedSandbox["writeFile"]
   /** Re-arm the box's remaining lifetime — forwarded from
    *  `BootedSandbox.extendTimeout`. Absent when the provider has no fixed
    *  lifetime cap to re-arm. */
@@ -388,6 +391,7 @@ export async function createSandboxAgentSessionHost(
     ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
     ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
     ...(booted.readFile ? { readFile: booted.readFile.bind(booted) } : {}),
+    ...(booted.writeFile ? { writeFile: booted.writeFile.bind(booted) } : {}),
     ...(booted.extendTimeout ? { extendTimeout: booted.extendTimeout.bind(booted) } : {}),
     ...(booted.lifetimeMs !== undefined ? { lifetimeMs: booted.lifetimeMs } : {}),
     async stop(): Promise<void> {

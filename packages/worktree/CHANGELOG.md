@@ -1,5 +1,17 @@
 # @agentproto/worktree
 
+## 0.15.0
+
+### Minor Changes
+
+- cedd329: Sandbox deliveries now delete the `agentproto-checkpoint/<branch>` remote branch once the work it rescued is safe (clean checkout, work branch pushed or nothing ahead): a session no longer leaves a stale checkpoint branch on the remote forever, and branch GC reclaims leftovers whose work branch is merged (`checkpoint-superseded`).
+
+### Patch Changes
+
+- Updated dependencies [fe3c879]
+- Updated dependencies [ff572e6]
+  - @agentproto/workflow-runtime@0.18.0
+
 ## 0.14.6
 
 ### Patch Changes

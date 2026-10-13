@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-browser-chrome",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "System Chrome providers for agentproto: `chrome` launches the installed Chrome on a fresh dedicated profile dir, attaches over CDP and injects granted cookies (never the default profile); `chrome-live` attaches to the user's running Chrome through its remote debugging toggle and drives only its own window.",
   "keywords": [
     "agentproto",

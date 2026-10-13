@@ -13,6 +13,7 @@ import {
   GIT_TOKEN_ENV,
   withGhTokenAlias,
   planSandboxWorkspace,
+  restoreCheckpointSteps,
   runSandboxWorkspaceSetup,
   buildLearnBranchCommand,
   parseLearnedWorkBranch,
@@ -133,6 +134,57 @@ describe("planSandboxWorkspace", () => {
     expect(() => planSandboxWorkspace({ ...request, worktree: { slug: "a/b" } })).toThrow()
     expect(() => planSandboxWorkspace({ ...request, worktree: { slug: "x", base: "main$(id)" } })).toThrow()
     expect(() => planSandboxWorkspace({ ...request, workspaceSlug: "../escape" })).toThrow()
+  })
+})
+
+describe("restoreCheckpointSteps", () => {
+  const base = { checkoutDir: "/home/user/agentproto", branch: "wt/x" }
+  const CK = "'refs/remotes/origin/agentproto-checkpoint/wt/x'"
+
+  it("plans one non-fatal restore-checkpoint step reading the default checkpoint namespace", () => {
+    const steps = restoreCheckpointSteps(base)
+    expect(steps).toHaveLength(1)
+    const [step] = steps
+    expect(step?.label).toBe("restore-checkpoint")
+    expect(step?.command.startsWith("cd '/home/user/agentproto' && ")).toBe(true)
+    expect(step?.command).toContain(`git show-ref --verify --quiet ${CK}`)
+    expect(step?.command).toContain(`git read-tree -u --reset ${CK} && git reset -q`)
+    expect(step?.command).toContain('|| echo "checkpoint not restored"')
+    expect(step?.command).not.toContain(`[ "$(git rev-parse ${CK})" = '`)
+  })
+
+  it("restores onto a clean tree only, and fast-forwards a branch tip the old box never pushed", () => {
+    const cmd = restoreCheckpointSteps(base)[0]?.command ?? ""
+    expect(cmd).toContain('[ -z "$(git status --porcelain)" ]')
+    expect(cmd).toContain(`git merge-base --is-ancestor HEAD ${CK}^ && git merge --ff-only -q ${CK}^`)
+  })
+
+  it("pins the exact snapshot commit when one is given", () => {
+    const sha = "b".repeat(40)
+    const cmd = restoreCheckpointSteps({ ...base, snapshot: { sha } })[0]?.command ?? ""
+    expect(cmd).toContain(`[ "$(git rev-parse ${CK})" = '${sha}' ]`)
+    expect(restoreCheckpointSteps(base)[0]?.command).not.toContain(sha)
+  })
+
+  it('plans nothing for snapshot "none" (a clean last checkpoint must not resurrect a stale snapshot)', () => {
+    expect(restoreCheckpointSteps({ ...base, snapshot: "none" })).toEqual([])
+  })
+
+  it("honours a custom refPrefix and rejects a snapshot that is not a commit id", () => {
+    const cmd = restoreCheckpointSteps({ ...base, refPrefix: "safety/" })[0]?.command ?? ""
+    expect(cmd).toContain("'refs/remotes/origin/safety/wt/x'")
+    expect(() => restoreCheckpointSteps({ ...base, snapshot: { sha: "x; rm -rf /" } })).toThrow(/not a commit id/)
+  })
+
+  it("is what planSandboxWorkspace embeds, and snapshot none drops it from the plan", () => {
+    const withWt = { ...request, worktree: { slug: "x" } }
+    const embedded = planSandboxWorkspace(withWt).steps.find(s => s.label === "restore-checkpoint")
+    expect(embedded?.command).toBe(
+      restoreCheckpointSteps({ checkoutDir: "/home/user/agentproto", branch: "wt/x" })[0]?.command,
+    )
+    expect(
+      planSandboxWorkspace({ ...withWt, checkpointSnapshot: "none" }).steps.some(s => s.label === "restore-checkpoint"),
+    ).toBe(false)
   })
 })
 

@@ -21,7 +21,11 @@ import {
   trackedSandboxDeliveryOpts,
   type SandboxDeliveryTarget,
 } from "../sandbox-delivery.js"
-import { planSandboxWorkspace, runSandboxWorkspaceSetup } from "../sandbox-workspace-remote.js"
+import {
+  planSandboxWorkspace,
+  runSandboxWorkspaceSetup,
+  type CheckpointRestoreSnapshot,
+} from "../sandbox-workspace-remote.js"
 
 const run = promisify(execFile)
 
@@ -91,7 +95,7 @@ describe("checkpoint round trip (real git)", () => {
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
   })
 
-  async function checkout(home: string, slug: string) {
+  async function checkout(home: string, slug: string, checkpointSnapshot?: CheckpointRestoreSnapshot) {
     await mkdir(home, { recursive: true })
     const plan = planSandboxWorkspace({
       workspaceSlug: "repo",
@@ -99,6 +103,7 @@ describe("checkpoint round trip (real git)", () => {
       homeDir: home,
       worktree: { slug },
       mintSlug: () => "unused",
+      ...(checkpointSnapshot ? { checkpointSnapshot } : {}),
     })
     const result = await runSandboxWorkspaceSetup(shExec, plan)
     if (!result.ok) throw new Error(`${result.step}: ${result.message}`)
@@ -183,6 +188,69 @@ describe("checkpoint round trip (real git)", () => {
     const { plan, baseSha } = await checkout(join(root, "box"), "fresh")
     expect(await git(plan.checkoutDir, "rev-parse", "HEAD")).toBe(baseSha)
     expect(await git(plan.checkoutDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("wt/fresh")
+  })
+
+  describe("migrate restore modes", () => {
+    async function dirtyBox(slug: string, opts: { commit?: boolean } = {}) {
+      const { plan, baseSha } = await checkout(join(root, `${slug}-box1`), slug)
+      const dir = plan.checkoutDir
+      if (opts.commit) {
+        await writeFile(join(dir, "committed.txt"), "committed\n")
+        await git(dir, "add", "-A")
+        await git(dir, "commit", "-m", "work")
+      }
+      await writeFile(join(dir, "wip.txt"), "wip\n")
+      const target: SandboxDeliveryTarget = { checkoutDir: dir, branch: `wt/${slug}`, baseSha }
+      const record = await runSandboxDelivery({ exec: shExec, target, outDir: join(root, "out"), mode: "checkpoint" })
+      return { dir, target, record }
+    }
+
+    it("restores exactly the snapshot a final checkpoint pushed: commits stay commits, the rest is uncommitted", async () => {
+      const { dir, record } = await dirtyBox("exact", { commit: true })
+      const sha = record.checkpoint?.sha
+      expect(sha).toMatch(/^[0-9a-f]{40}/)
+      const resumed = await checkout(join(root, "exact-box2"), "exact", { sha: sha as string })
+      const dir2 = resumed.plan.checkoutDir
+      expect(await git(dir2, "rev-parse", "HEAD")).toBe(await git(dir, "rev-parse", "HEAD"))
+      expect(await readFile(join(dir2, "wip.txt"), "utf8")).toBe("wip\n")
+      expect(await git(dir2, "status", "--porcelain")).toContain("wip.txt")
+      expect(await git(dir2, "status", "--porcelain")).not.toContain("committed.txt")
+    })
+
+    it("skips a snapshot whose sha is not the one asked for", async () => {
+      const { record } = await dirtyBox("wrongsha", { commit: true })
+      expect(record.checkpoint?.sha).toBeDefined()
+      const resumed = await checkout(join(root, "wrongsha-box2"), "wrongsha", { sha: "c".repeat(40) })
+      expect(await git(resumed.plan.checkoutDir, "status", "--porcelain")).toBe("")
+      expect(await exists(join(resumed.plan.checkoutDir, "wip.txt"))).toBe(false)
+    })
+
+    it('does not restore a stale snapshot in "none" mode', async () => {
+      await dirtyBox("none", { commit: true })
+      const resumed = await checkout(join(root, "none-box2"), "none", "none")
+      expect(await git(resumed.plan.checkoutDir, "status", "--porcelain")).toBe("")
+      expect(await exists(join(resumed.plan.checkoutDir, "wip.txt"))).toBe(false)
+    })
+
+    it("fast-forwards a work-branch tip the old box never pushed to the snapshot's parent", async () => {
+      // Only the snapshot ref reached the remote: the branch itself stays at the base.
+      const { dir, record } = await dirtyBox("ff", { commit: true })
+      await git(dir, "push", "-q", "origin", "--delete", "wt/ff")
+      const resumed = await checkout(join(root, "ff-box2"), "ff", { sha: record.checkpoint?.sha as string })
+      const dir2 = resumed.plan.checkoutDir
+      expect(await git(dir2, "rev-parse", "HEAD")).toBe(await git(dir, "rev-parse", "HEAD"))
+      expect(await readFile(join(dir2, "wip.txt"), "utf8")).toBe("wip\n")
+    })
+
+    it("never clobbers a dirty tree", async () => {
+      const { record } = await dirtyBox("dirty")
+      const home = join(root, "dirty-box2")
+      const first = await checkout(home, "dirty")
+      await writeFile(join(first.plan.checkoutDir, "mine.txt"), "mine\n")
+      // A second setup in the same (reused) box finds local edits and leaves them be.
+      const again = await checkout(home, "dirty", { sha: record.checkpoint?.sha as string })
+      expect(await readFile(join(again.plan.checkoutDir, "mine.txt"), "utf8")).toBe("mine\n")
+    })
   })
 
   describe("turn-end work-branch safety net", () => {

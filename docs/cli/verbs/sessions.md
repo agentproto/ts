@@ -66,6 +66,8 @@ agentproto sessions checkpoint <id-or-name> [--note "<text>"] [--json]
 agentproto sessions handoff  <id-or-name> --to <harness> [--model <id>]
                                            [--profile <ref>] [--note "<text>"]
                                            [--dry-run] [--json]
+agentproto sessions migrate  <id-or-name> [--sandbox <provider>] [--model <id>]
+                                           [--profile <ref>] [--json]
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -1054,6 +1056,44 @@ HTTP twin: `POST /sessions/:id/handoff` with body
 `{ continuedFrom, continuedTo, checkpointId, path, handoff, session }`, or
 `200 { dryRun: true, checkpoint, prompt }` for a dry run. `400 to_required`
 when `to` is missing, `404` for an unknown session or unresolvable harness.
+
+### `migrate <id-or-name>`
+
+```bash
+agentproto sessions migrate ses_abc12
+agentproto sessions migrate ses_abc12 --sandbox e2b --model anthropic/claude-sonnet-5
+```
+
+Resumes a **sandbox** session on a NEW box, for when the old one is dying,
+dead, or just the wrong place. Needs a workspace with a git remote and a
+checkpoint (the daemon's `sandbox.checkpoint` config, on by default for sandbox
+sessions). In order:
+
+1. If the old box is still running, take a final checkpoint of it (commits
+   pushed, uncommitted files snapshotted to `agentproto-checkpoint/<branch>`).
+   If it is gone, use the last recorded checkpoint.
+2. Boot a new box from the same workspace remote and check out the same
+   `wt/…` work branch. Commits stay commits; the snapshot's uncommitted part
+   is restored as uncommitted changes.
+3. Start the new session on the same harness, model and profile, with the
+   transcript carried over as a context checkpoint.
+4. Only then stop the old box. If any earlier step fails, the old session is
+   left untouched.
+
+| Flag | Meaning |
+|------|---------|
+| `--sandbox <provider>` | Provider for the new box. Default: the old session's. |
+| `--model <id>` | Model for the new session. Default: carried over. |
+| `--profile <ref>` | Auth profile (billing wallet) for the new session. |
+| `--json` | Print the daemon's full response. |
+
+Refused with a clear error when the session isn't a sandbox session, when the
+workspace has no git remote, when no checkpoint exists, or when the last state
+never reached the remote (`checkpoint_not_delivered`).
+
+HTTP twin: `POST /sessions/:id/migrate` with body
+`{ sandbox?, model?, profile?, notes? }` → `201 { migratedFrom, migratedTo,
+sandboxId, branch, restore, oldSessionKilled, session }`. MCP: `session_migrate`.
 
 ## Messages between sessions
 

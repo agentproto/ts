@@ -16,7 +16,10 @@
  *   2. push the branch to `origin` when it is ahead, and force-push the
  *      snapshot to `agentproto-checkpoint/<branch>` when there is one;
  *   3. when a push did not land (or could not be tried), `git bundle` the
- *      `base..tip` range and pull it to the host as a safety net.
+ *      `base..tip` range and pull it to the host as a safety net;
+ *   4. when the checkout is clean (no snapshot this run) and the work branch
+ *      is safe on the remote, delete the now-stale `agentproto-checkpoint/
+ *      <branch>` so it does not pile up on the remote forever.
  *
  * A fresh box checking the same branch out again (`sandbox-workspace-remote`)
  * picks the pushed branch up and re-applies the checkpoint snapshot as
@@ -105,6 +108,10 @@ export interface SandboxDeliveryRecord {
   /** Snapshot of the uncommitted work, force-pushed to
    *  `agentproto-checkpoint/<branch>`. Absent when the checkout was clean. */
   checkpoint?: { status: DeliveryPushStatus; ref: string; sha?: string; detail?: string }
+  /** Best-effort deletion of the checkpoint branch, once the checkout was
+   *  clean and the work branch was safe on the remote — see
+   *  {@link buildCheckpointDeleteCommand}. Never blocks teardown. */
+  checkpointCleanup?: { status: "deleted" | "absent" | "failed"; ref: string; detail?: string }
   /** Identity of the delivered state (HEAD, snapshot tree, ahead count): a
    *  checkpoint whose key matches the previous fully-delivered one skips the
    *  pushes. Absent when the probe failed. */
@@ -212,6 +219,25 @@ export function buildCheckpointPushCommand(target: SandboxDeliveryTarget, refPre
   return `git -C ${shellQuote(target.checkoutDir)} push origin ${refspec}`
 }
 
+/** Marker {@link buildCheckpointDeleteCommand} prints when the remote no
+ *  longer has the checkpoint ref — the delete then still exits 0, but the
+ *  runner can tell "was absent" apart from "was deleted". */
+export const CHECKPOINT_REF_ABSENT_MARKER = "checkpoint-ref-absent"
+
+/** Delete the checkpoint branch once the work it rescued is safe elsewhere.
+ *  A missing remote ref is success, not failure: the exit code is 0 both when
+ *  the push deleted it and when `ls-remote` confirms it is already gone;
+ *  only a ref that still exists (or cannot be checked) fails. `refPrefix` —
+ *  see {@link checkpointBranchOf}. */
+export function buildCheckpointDeleteCommand(target: SandboxDeliveryTarget, refPrefix?: string): string {
+  const ref = checkpointBranchOf(target.branch, refPrefix)
+  return (
+    `git -C ${shellQuote(target.checkoutDir)} push origin --delete ${shellQuote(ref)} 2>&1 || ` +
+    `{ git ls-remote --exit-code origin ${shellQuote(`refs/heads/${ref}`)} >/dev/null; ` +
+    `test $? -eq 2 && echo ${CHECKPOINT_REF_ABSENT_MARKER}; }`
+  )
+}
+
 /** Creates the bundle and prints its size in bytes. `tip` defaults to the
  *  branch; a snapshot delivery bundles up to {@link SNAPSHOT_REF} instead. */
 export function buildBundleCommand(
@@ -283,6 +309,11 @@ export interface RunSandboxDeliveryInput {
   refPrefix?: string
   /** Turn count to stamp on the record/commit message — see {@link SandboxDeliveryRecord.turn}. */
   turn?: number
+  /** True when a checkpoint was pushed to the remote earlier in this session.
+   *  In `"checkpoint"` mode the stale-checkpoint delete below only runs when
+   *  this is true (an idle turn must not pay a delete round trip per tick);
+   *  teardown mode deletes regardless. */
+  checkpointPushed?: boolean
 }
 
 function errorText(err: unknown): string {
@@ -327,6 +358,49 @@ async function pushBranch(
     return result.exitCode === 0 ? { status: "pushed" } : { status: "failed", detail: describeExecFailure(result) }
   } catch (err) {
     return { status: "failed", detail: errorText(err) }
+  }
+}
+
+/**
+ * The checkpoint branch is stale exactly when the checkout is clean for THIS
+ * run (`probe.snapshot === undefined` — a snapshot means uncommitted work was
+ * just rescued onto the checkpoint, so it is still needed) AND the work
+ * branch is safe on the remote (its push landed, or there was nothing to
+ * push). A `"checkpoint"`-mode run only pays the delete's network round trip
+ * when a checkpoint was actually pushed earlier in the session.
+ */
+function shouldCleanupCheckpoint(
+  probe: DeliveryProbe,
+  record: SandboxDeliveryRecord,
+  checkpointMode: boolean,
+  checkpointPushed: boolean | undefined,
+): boolean {
+  if (probe.snapshot !== undefined) return false
+  if (!(record.push.status === "pushed" || probe.ahead === 0)) return false
+  return !checkpointMode || checkpointPushed === true
+}
+
+/** Best-effort delete of the checkpoint branch — never throws, never blocks
+ *  teardown; a failure is recorded and the delivery carries on. */
+async function cleanupCheckpoint(
+  exec: SandboxExec,
+  target: SandboxDeliveryTarget,
+  refPrefix: string | undefined,
+  deadlineAt: number,
+): Promise<NonNullable<SandboxDeliveryRecord["checkpointCleanup"]>> {
+  const ref = checkpointBranchOf(target.branch, refPrefix)
+  try {
+    const result = await withinDeadline(deadlineAt, PUSH_TIMEOUT_MS, (timeoutMs) =>
+      exec({
+        command: buildCheckpointDeleteCommand(target, refPrefix),
+        env: { GIT_TERMINAL_PROMPT: "0" },
+        timeoutMs,
+      }),
+    )
+    if (result.exitCode !== 0) return { status: "failed", ref, detail: describeExecFailure(result) }
+    return result.stdout.includes(CHECKPOINT_REF_ABSENT_MARKER) ? { status: "absent", ref } : { status: "deleted", ref }
+  } catch (err) {
+    return { status: "failed", ref, detail: errorText(err) }
   }
 }
 
@@ -388,6 +462,11 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   if (!shouldPush(probe) && probe.snapshot === undefined) {
     record.push = { status: "skipped", detail: "no commits ahead of base" }
     record.bundle = { status: "skipped", detail: "no commits ahead of base" }
+    // A session that committed nothing this turn but pushed a checkpoint
+    // earlier still has a stale checkpoint branch to clean up.
+    if (shouldCleanupCheckpoint(probe, record, checkpointMode, input.checkpointPushed)) {
+      record.checkpointCleanup = await cleanupCheckpoint(exec, target, input.refPrefix, deadlineAt)
+    }
     return await persist(record)
   }
 
@@ -415,6 +494,10 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
     } catch (err) {
       record.checkpoint = { status: "failed", ref, sha: probe.snapshot, detail: errorText(err) }
     }
+  } else if (shouldCleanupCheckpoint(probe, record, checkpointMode, input.checkpointPushed)) {
+    // Clean checkout with the work branch safe on the remote: a checkpoint
+    // pushed earlier in the session is now stale — delete it.
+    record.checkpointCleanup = await cleanupCheckpoint(exec, target, input.refPrefix, deadlineAt)
   }
   const snapshotPending = record.checkpoint !== undefined && record.checkpoint.status !== "pushed"
 
@@ -494,8 +577,10 @@ export interface SandboxCheckpointer {
 
 /**
  * Periodic checkpoints for one box: remembers the last fully-delivered key so
- * an idle session costs one probe per tick, and serializes runs so a turn-end
- * checkpoint never races the timer's.
+ * an idle session costs one probe per tick, serializes runs so a turn-end
+ * checkpoint never races the timer's, and tracks whether a checkpoint was
+ * ever pushed this session (so a later clean probe knows there is a stale
+ * checkpoint branch to delete — see {@link RunSandboxDeliveryInput.checkpointPushed}).
  */
 export function createSandboxCheckpointer(
   input: Omit<RunSandboxDeliveryInput, "mode" | "previousKey"> & {
@@ -504,6 +589,7 @@ export function createSandboxCheckpointer(
 ): SandboxCheckpointer {
   const { onCheckpoint, ...run } = input
   let lastKey: string | undefined
+  let checkpointPushed = input.checkpointPushed === true
   let inFlight: Promise<SandboxDeliveryRecord> | undefined
   return {
     run(turn) {
@@ -512,10 +598,12 @@ export function createSandboxCheckpointer(
         const record = await runSandboxDelivery({
           ...run,
           mode: "checkpoint",
+          checkpointPushed,
           ...(lastKey !== undefined ? { previousKey: lastKey } : {}),
           ...(turn !== undefined ? { turn } : {}),
         })
         if (isFullyDelivered(record)) lastKey = record.key
+        if (record.checkpoint?.status === "pushed") checkpointPushed = true
         try {
           onCheckpoint?.(record)
         } catch {
@@ -755,6 +843,13 @@ export function formatDeliveryNotice(record: SandboxDeliveryRecord): string {
       `uncommitted snapshot: ${record.checkpoint.status}${
         record.checkpoint.status === "pushed" ? ` to ${record.checkpoint.ref}` : ""
       }${record.checkpoint.detail ? ` (${record.checkpoint.detail})` : ""}`,
+    )
+  }
+  if (record.checkpointCleanup) {
+    parts.push(
+      `checkpoint cleanup: ${record.checkpointCleanup.status}${
+        record.checkpointCleanup.detail ? ` (${record.checkpointCleanup.detail})` : ""
+      }`,
     )
   }
   const uncommittedDelivered =

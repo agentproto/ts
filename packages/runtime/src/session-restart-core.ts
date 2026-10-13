@@ -127,6 +127,13 @@ import {
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
+import { resolveSandboxWorkspaceSource } from "./sandbox-workspace-derive-remote.js"
+import {
+  adoptTarCheckpoint,
+  readTarTarget,
+  savedTarArchive,
+  tarCheckpointProxyOpts,
+} from "./sandbox-tar-checkpoint.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { AcpMcpServer } from "@agentproto/acp"
@@ -1241,6 +1248,37 @@ export async function restartAgentSession(
           `${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    // The box is alive, so the PRIOR session's adapter may still be running
+    // in it — a row that ended on a host-side error (lost event stream, box
+    // daemon briefly unreachable) never got its box session killed, and that
+    // process keeps editing the same checkout next to the new one. Stop it
+    // through the box's own daemon BEFORE starting the replacement. Detach
+    // prev's proxy first so its timers can't read the kill as a crash, and
+    // so closing prev below never tears down the box.
+    // The persisted ids cover a prev whose proxy is already gone (closed on
+    // a failed teardown, or a daemon restart since); rows from before
+    // `sandboxRemoteSessionId` existed fall back to the reattach record.
+    const releasedRemoteSessionId = registry.releaseSandboxSession(prev.id)
+    priorProxyReleased = releasedRemoteSessionId !== undefined
+    const priorRemoteSessionId =
+      releasedRemoteSessionId ??
+      prev.sandboxRemoteSessionId ??
+      prev.sandboxReattach?.remoteSessionId ??
+      prev.hostSessionId
+    if (priorRemoteSessionId !== undefined) {
+      try {
+        // `agent_kill` on an id the box daemon no longer knows is a no-op
+        // (`ok: false`), not an error — only a transport failure throws.
+        await host.kill(priorRemoteSessionId)
+      } catch (err) {
+        await host.close().catch(() => undefined)
+        throw new Error(
+          `restartAgentSession: could not stop the prior session "${priorRemoteSessionId}" ` +
+            `inside sandbox "${host.sandboxId}" — refusing to start a second adapter next to ` +
+            `it. ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
     let remoteSessionId: string
     try {
       const remoteDesc = await host.start({
@@ -1271,12 +1309,27 @@ export async function restartAgentSession(
     // The prior session's work branch is still in the box: carry its delivery
     // target over so this session's teardown pushes (or bundles) it too.
     const deliveryTarget = prev.sandboxDeliveryTarget
+    // A tar-mode session (workspace with no git remote) keeps checkpointing
+    // its working dir; the live box still holds it, so nothing is restored.
+    const tarTarget = deliveryTarget
+      ? undefined
+      : await adoptTarCheckpoint(sessionTranscriptDir(prev.id), sessionTranscriptDir(restartedSessionId))
     const agentSession = createSandboxAgentSessionProxy({
       host,
       remoteSessionId,
       lifecyclePolicy,
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
       ...(providerSlug.startsWith("device:") ? {} : { detachable: true }),
+      ...(tarTarget
+        ? tarCheckpointProxyOpts({
+            exec: host.exec,
+            ...(host.readFile ? { readFile: host.readFile } : {}),
+            target: tarTarget,
+            outDir: sessionTranscriptDir(restartedSessionId),
+            config: checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            notify: text => registry.recordNotice(restartedSessionId, text),
+          })
+        : {}),
       ...(deliveryTarget && host.exec
         ? trackedSandboxDeliveryOpts({
             exec: host.exec,
@@ -1310,36 +1363,70 @@ export async function restartAgentSession(
 
   // Set once the restart left the old (dead) box behind for a new one.
   let movedToFreshBox = false
-  // Box gone: boot a fresh one from the workspace remote. With a recorded
-  // `wt/` work branch it is checked out again (pushed commits + checkpoint
-  // snapshot); without one the fresh box starts from the workspace's base
-  // branch on a new default work branch. `blocker` says why the restart
-  // cannot proceed — only when the workspace has no remote to clone.
+  // Set once prev's proxy was detached from the re-attached box — closing
+  // prev is then safe again (its `close()` no longer touches the box).
+  let priorProxyReleased = false
+  // Box gone: boot a fresh one. A tar-mode session (workspace with no git
+  // source) gets its last tarball checkpoint restored; otherwise the box is
+  // cloned from the workspace remote (configured, or derived from the checkout's
+  // git `origin`). With a recorded `wt/` work branch it is checked out again
+  // (pushed commits + checkpoint snapshot); without one the fresh box starts
+  // from the workspace's base branch on a new default work branch. `blocker`
+  // says why the restart cannot proceed.
   const spawnOnFreshBox = async (
     providerSlug: string,
     restartedSessionId: string,
     sandboxMcpServers: SessionDescriptor["mcpServers"],
   ): Promise<{ ok: true; desc: SessionDescriptor } | { ok: false; blocker: string }> => {
     const target = prev.sandboxDeliveryTarget
+    const prevDir = sessionTranscriptDir(prev.id)
     const resumeBranch = target?.branch.startsWith(SANDBOX_BRANCH_PREFIX) ? target.branch : undefined
     const noBranchNote = resumeBranch ? "" : " and the session recorded no work branch to resume from"
-    if (!prev.workspaceSlug) {
-      return {
-        ok: false,
-        blocker:
-          `the session is not tied to a registered workspace${noBranchNote}, so there is no remote to clone ` +
-          "into a new box. Spawn a fresh session on a workspace that has a remote " +
-          "(`agentproto workspace remote set <slug> --url … --token-stdin`).",
+    const tarTarget = target ? undefined : await readTarTarget(prevDir)
+    const notices: string[] = []
+    let workspaceArgs: Pick<Parameters<typeof bootSandboxAgentSession>[0], "workspace" | "worktree" | "tarWorkspace">
+    let slug: string
+    if (tarTarget) {
+      slug = prev.workspaceSlug ?? tarTarget.dir.split("/").filter(Boolean).pop() ?? "workspace"
+      const archive = savedTarArchive(prevDir)
+      if (!archive) {
+        return {
+          ok: false,
+          blocker:
+            `workspace "${slug}" has no git remote and no tarball checkpoint was saved before the box died ` +
+            "(checkpoints are taken at turn end and at teardown; the 50 MiB cap may also have skipped it), so there " +
+            `is nothing to restore. Give it a remote (\`agentproto workspace remote set ${slug} --url … --token-stdin\`) ` +
+            "so future sessions are recoverable.",
+        }
       }
-    }
-    const workspace = findWorkspace(await loadWorkspacesConfig(), prev.workspaceSlug)
-    if (!workspace?.remote) {
-      return {
-        ok: false,
-        blocker:
-          `workspace "${prev.workspaceSlug}" ${workspace ? "has no remote configured" : "is no longer registered"}` +
-          `${noBranchNote}, so a new box has nothing to clone. Configure one with ` +
-          `\`agentproto workspace remote set ${prev.workspaceSlug} --url … --token-stdin\` and restart the session.`,
+      workspaceArgs = { tarWorkspace: { slug, restoreFrom: archive } }
+    } else {
+      if (!prev.workspaceSlug) {
+        return {
+          ok: false,
+          blocker:
+            `the session is not tied to a registered workspace${noBranchNote}, so there is no remote to clone ` +
+            "into a new box. Spawn a fresh session on a workspace that has a remote " +
+            "(`agentproto workspace remote set <slug> --url … --token-stdin`).",
+        }
+      }
+      slug = prev.workspaceSlug
+      const workspace = findWorkspace(await loadWorkspacesConfig(), slug)
+      const source = workspace ? await resolveSandboxWorkspaceSource(workspace) : undefined
+      if (!workspace || source?.kind !== "remote") {
+        return {
+          ok: false,
+          blocker:
+            `workspace "${slug}" ${workspace ? "has no remote configured" : "is no longer registered"}` +
+            `${noBranchNote}, so a new box has nothing to clone. Configure one with ` +
+            `\`agentproto workspace remote set ${slug} --url … --token-stdin\` and restart the session.` +
+            (source && source.notices.length > 0 ? ` (${source.notices.join(" ")})` : ""),
+        }
+      }
+      notices.push(...source.notices)
+      workspaceArgs = {
+        workspace: { slug: workspace.slug, remote: source.remote },
+        ...(resumeBranch ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } } : {}),
       }
     }
     const booted = await bootSandboxAgentSession({
@@ -1356,8 +1443,7 @@ export async function restartAgentSession(
       ...(effEffort ? { effort: effEffort } : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
-      workspace: { slug: workspace.slug, remote: workspace.remote },
-      ...(resumeBranch ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } } : {}),
+      ...workspaceArgs,
       sessionId: restartedSessionId,
       onDelivery: record => {
         registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
@@ -1368,26 +1454,27 @@ export async function restartAgentSession(
       onDeliveryTargetChanged: target => {
         registry.setSandboxDeliveryTarget(restartedSessionId, target)
       },
+      onNotice: text => registry.recordNotice(restartedSessionId, text),
     })
     if (booted.ok) movedToFreshBox = true
     if (!booted.ok) {
       throw new Error(
         `restartAgentSession: sandbox "${prev.sandboxId}" is gone and a fresh box for ` +
-          `workspace "${workspace.slug}" could not be started — ${booted.message}`,
+          `workspace "${slug}" could not be started — ${booted.message}`,
       )
     }
-    return {
-      ok: true,
-      desc: registerBoxSession(restartedSessionId, sandboxMcpServers, {
-        agentSession: booted.agentSession,
-        sandboxId: booted.sandboxId,
-        provider: booted.provider,
-        sandboxTeardown: booted.sandboxTeardown,
-        cwd: booted.cwd,
-        ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
-        ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
-      }),
-    }
+    notices.push(...(booted.notices ?? []))
+    const restarted = registerBoxSession(restartedSessionId, sandboxMcpServers, {
+      agentSession: booted.agentSession,
+      sandboxId: booted.sandboxId,
+      provider: booted.provider,
+      sandboxTeardown: booted.sandboxTeardown,
+      cwd: booted.cwd,
+      ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
+      ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
+    })
+    for (const notice of notices) registry.recordNotice(restartedSessionId, notice)
+    return { ok: true, desc: restarted }
   }
 
   const registerBoxSession = (
@@ -1553,7 +1640,9 @@ export async function restartAgentSession(
   // A restart that moved to a FRESH box shares nothing with `prev`'s dead
   // one, so closing `prev` is safe again — and stops its checkpoint/watchdog
   // timers.
-  if (sandboxId === undefined || movedToFreshBox) {
+  // Same once `spawnInSandbox` released prev's proxy: its `close()` is a
+  // no-op from then on, so the row closes without the box going with it.
+  if (sandboxId === undefined || movedToFreshBox || priorProxyReleased) {
     registry.kill(prev.id, "SIGTERM", "restarted")
   }
 
@@ -1604,7 +1693,7 @@ export async function restartAgentSession(
 const SANDBOX_PREVIEW_RE = /^sandbox:(\S+) → /
 
 /** The sandbox provider slug a prior sandbox session was spawned with. */
-function parseSandboxProviderSlug(command: string | undefined): string | undefined {
+export function parseSandboxProviderSlug(command: string | undefined): string | undefined {
   return command?.match(SANDBOX_PREVIEW_RE)?.[1]
 }
 

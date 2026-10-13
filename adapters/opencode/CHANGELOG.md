@@ -1,5 +1,11 @@
 # @agentproto/adapter-opencode
 
+## 1.8.3
+
+### Patch Changes
+
+- f422e23: Docs: sync OPENCODE.md and the CLI README with the latest release.
+
 ## 1.8.2
 
 ### Patch Changes
