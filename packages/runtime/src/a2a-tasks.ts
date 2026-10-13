@@ -1,11 +1,12 @@
 /**
  * A2A task ingress — the store + mapping half (the HTTP half is
- * a2a-task-http.ts). One A2A task is one `app_run`: the task id IS the app run
- * id, and everything about a task's state is derived from that run, never
- * held separately. The only thing persisted here is a small append-only
- * ledger of which runs were created through A2A (and for which skill), so
- * `GetTask` can tell an A2A task from an ordinary `app_run` and survives a
- * daemon restart.
+ * a2a-task-http.ts). One A2A task is one `app_run` (an agent skill) or one
+ * background workflow run (a workflow skill): the task id IS the run id, and
+ * everything about a task's state is derived from that run, never held
+ * separately. The only thing persisted here is a small append-only ledger of
+ * which runs were created through A2A (and for which skill + kind), so
+ * `GetTask` can tell an A2A task from an ordinary run and survives a daemon
+ * restart.
  *
  * The JSON-RPC / Task shapes below are the subset of the A2A protocol
  * (`A2A_PROTOCOL_VERSION`) this ingress speaks, defined locally on purpose so
@@ -137,6 +138,9 @@ export const TERMINAL_TASK_STATES: ReadonlySet<A2aTaskState> = new Set([
 export interface A2aAppHandleLike {
   accepts?: { tasks?: boolean }
   exposes?: { agents?: readonly string[]; workflows?: readonly string[] }
+  /** The app's bundled workflows (id + file path), used to start an exposed
+   *  workflow skill. Absent when the manifest bundles none. */
+  workflows?: readonly { id: string; path: string }[]
 }
 
 export type A2aSkillTarget = { kind: "agent"; id: string } | { kind: "workflow"; id: string }
@@ -412,6 +416,81 @@ function latestActivityIso(sessions: readonly A2aRunSession[] | undefined): stri
   return latest
 }
 
+// ── workflow run → task mapping ────────────────────────────────────────
+
+/** The subset of a `workflow_status` reply the task view is built from. */
+export interface A2aWorkflowRunView {
+  status?: string
+  endedAt?: string
+  updatedAt?: string
+  output?: unknown
+  error?: string
+}
+
+/** A `workflow_status` status → A2A task state: `running`/`idle` is working,
+ *  either awaiting-input form is input-required (1.0 has no approval state),
+ *  `done` is completed, `failed` is failed, `cancelled` is canceled, and any
+ *  unrecognised status keeps the task working (1.0 has no `unknown` state). */
+export function mapWorkflowState(status: string): A2aTaskState {
+  switch (status) {
+    case "awaiting-input":
+    case "awaiting-approval":
+      return "TASK_STATE_INPUT_REQUIRED"
+    case "done":
+      return "TASK_STATE_COMPLETED"
+    case "failed":
+      return "TASK_STATE_FAILED"
+    case "cancelled":
+      return "TASK_STATE_CANCELED"
+    case "running":
+    case "idle":
+    default:
+      return "TASK_STATE_WORKING"
+  }
+}
+
+/**
+ * Build the A2A task for a workflow-backed ledger entry from its
+ * `workflow_status` — the workflow twin of `buildTask`. A `done` run carries
+ * one artifact named `output` (a `data` part when the output is an object,
+ * else a `text` part of `String(output)`); a `failed` run carries the run's
+ * error as a `ROLE_AGENT` status message (no artifacts). The timestamp is
+ * the run's end, else its last update, else the ledger entry's creation.
+ */
+export function buildWorkflowTask(input: {
+  entry: A2aLedgerEntry
+  run: A2aWorkflowRunView
+  newId: () => string
+}): A2aTask {
+  const { entry, run } = input
+  const state = mapWorkflowState(run.status ?? "")
+  const task: A2aTask = {
+    id: entry.taskId,
+    contextId: entry.contextId,
+    status: {
+      state,
+      timestamp: run.endedAt ?? run.updatedAt ?? entry.createdAt,
+    },
+    metadata: { appId: entry.appId, skill: entry.skill },
+  }
+  if (state === "TASK_STATE_COMPLETED" && run.output !== undefined) {
+    const output = run.output
+    const part: A2aPart =
+      typeof output === "object" && output !== null ? { data: output } : { text: String(output) }
+    task.artifacts = [{ artifactId: "output", name: "output", parts: [part] }]
+  }
+  if (state === "TASK_STATE_FAILED") {
+    task.status.message = {
+      messageId: input.newId(),
+      role: "ROLE_AGENT",
+      parts: [{ text: run.error || "workflow failed" }],
+      taskId: entry.taskId,
+      contextId: entry.contextId,
+    }
+  }
+  return task
+}
+
 /** Map an `app_artifact_get` reply (the app's HTML dashboard artifact) to
  *  A2A artifacts. */
 export function mapAppArtifact(reply: {
@@ -445,6 +524,10 @@ export interface A2aLedgerEntry {
   contextId: string
   skill: string
   createdAt: string
+  /** What backs the task: an `app_run` (agent skill) or a background
+   *  workflow run (workflow skill). Absent on entries written before the
+   *  field existed — they read as `"agent"`. */
+  kind?: "agent" | "workflow"
 }
 
 export interface A2aTaskLedger {
