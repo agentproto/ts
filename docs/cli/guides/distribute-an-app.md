@@ -124,10 +124,12 @@ POST /a2a/apps/:appId                                A2A 1.0 JSON-RPC task ingre
 ```
 
 The card is built by `@agentproto/a2a` from the app handle: name,
-description, and one skill per exposed agent/workflow. `message/send`
-against the ingress is mapped to an app run of the matching workflow, and
-`tasks/get` reads the run's status and artifacts back. Nothing else opens —
-an app that does not set `accepts.tasks` has no ingress at all.
+description, and one skill per exposed agent/workflow. `SendMessage` against
+the ingress starts an app run of the requested agent skill, and `GetTask`
+reads back its state and the agent's answer. Nothing else opens: an app that
+does not set `accepts.tasks` has no ingress at all. The full round trip,
+including calling it from another machine, is in
+[Call an app's agents over A2A](a2a.md).
 
 ## 5. Publish a remote catalog
 

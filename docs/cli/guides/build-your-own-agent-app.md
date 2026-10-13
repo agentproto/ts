@@ -345,12 +345,12 @@ There is no runtime "call another app's agent and get a typed result" verb
 yet, and no version pinning on `requires` (it's a flat list of app ids).
 
 The adjacent `exposes: { agents, workflows }` / `accepts: { tasks }` fields
-declare what an app would offer over A2A — but per `@agentproto/app-kit`'s
-own docs, these are **semantics only**: nothing schedules or serves on them
-today. Versioned, callable app→app composition is being designed on top of
-this (`requires` gaining version ranges, `exposes` becoming a real dispatch
-surface) — don't build against it yet; build against `requires` as a
-same-scope activation order gate, which is what's actually enforced.
+declare what an app offers over A2A. With `accepts.tasks: true`, every agent
+listed in `exposes.agents` can be called as an A2A task: see
+[Call an app's agents over A2A](a2a.md). Versioned app→app composition
+(`requires` gaining version ranges) is still being designed; for now build
+against `requires` as a same-scope activation order gate, which is what's
+actually enforced.
 
 ## 10. Pricing (AIP-55)
 
