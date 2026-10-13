@@ -293,6 +293,69 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(stopSpy).not.toHaveBeenCalled()
   })
 
+  describe("reusing a box that holds a workspace's git token", () => {
+    const secondWorkspace = {
+      slug: "other",
+      path: "/Users/op/projects/other",
+      addedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      remote: { url: "https://github.com/acme/other.git", credentialRef: "agentproto.git.other" },
+    }
+
+    async function bootForAgentproto(): Promise<void> {
+      wsConfigState.value.workspaces.push(secondWorkspace)
+      keychain.values["agentproto.git.agentproto"] = FAKE_TOKEN
+      const first = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+      })
+      expect(first.ok).toBe(true)
+      vi.mocked(provider.connect!).mockClear()
+    }
+
+    it("refuses a reuse from another workspace", async () => {
+      await bootForAgentproto()
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {}, reuse: "sbx_fake_ws" },
+        workspaceSlug: "other",
+        worktree: { slug: "y" },
+      })
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.code).toBe("sandbox_reuse_workspace_mismatch")
+      expect(result.message).toContain('"agentproto"')
+      expect(provider.connect).not.toHaveBeenCalled()
+    })
+
+    it("refuses a reuse with no workspace at all", async () => {
+      await bootForAgentproto()
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {}, reuse: "sbx_fake_ws" },
+        cwd: "/home/user",
+      })
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.code).toBe("sandbox_reuse_workspace_mismatch")
+      expect(provider.connect).not.toHaveBeenCalled()
+    })
+
+    it("allows the reuse from the same workspace", async () => {
+      await bootForAgentproto()
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {}, reuse: "sbx_fake_ws" },
+        workspaceSlug: "agentproto",
+        worktree: { slug: "z" },
+      })
+      expect(result.ok).toBe(true)
+      expect(provider.connect).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it("a provider that cannot exec fails the spawn instead of starting in an empty box", async () => {
     withExec = false
     const result = await spawnAgentSession(makeDeps(), {

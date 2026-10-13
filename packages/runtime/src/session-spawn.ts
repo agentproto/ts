@@ -1581,6 +1581,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_proxy_failed"
         | "device_spawn_unreachable"
         | "sandbox_reuse_ambiguous"
+        | "sandbox_reuse_workspace_mismatch"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
         | "sandbox_workspace_setup_failed"
@@ -4460,6 +4461,7 @@ type SandboxBootResult =
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
         | "sandbox_reuse_ambiguous"
+        | "sandbox_reuse_workspace_mismatch"
         | "sandbox_proxy_failed"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
@@ -4953,6 +4955,20 @@ async function bootSandboxAgentSession(opts: {
       }
     }
     if (reuseResolution.kind === "resolved") reuseSandboxId = reuseResolution.sandboxId
+    // A box booted with one workspace's git token keeps it in its env for
+    // life: another workspace (or a spawn with none) must not reattach it.
+    const tokenOwner = readSandboxLedger().find(e => e.sandboxId === reuseSandboxId)?.gitTokenWorkspace
+    if (tokenOwner !== undefined && tokenOwner !== opts.workspace?.slug) {
+      return {
+        ok: false,
+        code: "sandbox_reuse_workspace_mismatch",
+        message:
+          `agent_start: sandbox "${reuseSandboxId}" was booted with the git token of workspace ` +
+          `"${tokenOwner}" and cannot be reused ` +
+          (opts.workspace ? `by workspace "${opts.workspace.slug}"` : "outside that workspace") +
+          ". Omit sandbox.reuse to boot a fresh box.",
+      }
+    }
   }
   const lifecyclePolicy = resolveLifecyclePolicy(spec, reuseSandboxId !== undefined)
 
@@ -5050,6 +5066,9 @@ async function bootSandboxAgentSession(opts: {
     state: reuseSandboxId !== undefined ? "connected" : "booted",
     ...(opts.label ? { label: opts.label } : {}),
     ...(boxCwd ? { cwd: boxCwd } : {}),
+    ...(credentialRefs.has(GIT_TOKEN_ENV) && opts.workspace
+      ? { gitTokenWorkspace: opts.workspace.slug }
+      : {}),
     ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
       ? { expiresAt: new Date(Date.now() + lifecyclePolicy.pauseAfterIdleMs).toISOString() }
       : {}),

@@ -51,6 +51,10 @@ export interface SandboxLedgerEntry {
   updatedAt: string
   label?: string
   cwd?: string
+  /** The workspace whose git token this box was booted with
+   *  (`AGENTPROTO_GIT_TOKEN` sits in the box env for the box's whole life). A
+   *  `reuse` from any other workspace is refused so it cannot inherit it. */
+  gitTokenWorkspace?: string
   /** The HOST session id that first booted / last reconnected to the box. */
   originSessionId?: string
   /** ISO instant the box is expected to idle-expire — stamped only when the
@@ -188,6 +192,7 @@ export function recordSandboxBoot(opts: {
   cwd?: string
   originSessionId?: string
   expiresAt?: string
+  gitTokenWorkspace?: string
   path?: string
 }): void {
   try {
@@ -209,6 +214,11 @@ export function recordSandboxBoot(opts: {
           ? { originSessionId: prior.originSessionId }
           : {}),
       ...(opts.expiresAt ? { expiresAt: opts.expiresAt } : {}),
+      ...(opts.gitTokenWorkspace
+        ? { gitTokenWorkspace: opts.gitTokenWorkspace }
+        : prior?.gitTokenWorkspace
+          ? { gitTokenWorkspace: prior.gitTokenWorkspace }
+          : {}),
     }
     upsertSandboxLedger(entry, target)
   } catch {
