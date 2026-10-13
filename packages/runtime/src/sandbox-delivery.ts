@@ -34,6 +34,7 @@ import { join } from "node:path"
 import {
   CHECKPOINT_BRANCH_PREFIX,
   describeExecFailure,
+  learnWorkBranch,
   shellQuote,
   type SandboxExec,
 } from "./sandbox-workspace-remote.js"
@@ -652,6 +653,77 @@ export function sandboxCheckpointOpts(
     refPrefix: config.refPrefix,
   })
   return { checkpoint: { run: (turn) => checkpointer.run(turn), intervalMs: config.minIntervalMs } }
+}
+
+/**
+ * The proxy's `onBeforeTeardown` + `checkpoint` options for a box with a work
+ * branch, with the turn-end safety net: before each checkpoint, read the
+ * checkout's CURRENT branch and — when it is a `wt/` branch other than the
+ * recorded target (the agent cut or switched branches by hand) — adopt it as
+ * the delivery target. The checkpoint that follows, and the teardown
+ * delivery, then push the branch the work actually lives on, and
+ * `onTargetChanged` lets the caller persist it on the session record so a
+ * restart resumes it. Shared by the spawn and restart paths.
+ */
+export function trackedSandboxDeliveryOpts(input: {
+  exec: SandboxExec
+  readFile?: (path: string) => Promise<Uint8Array>
+  target: SandboxDeliveryTarget
+  outDir: string
+  config: ResolvedSandboxCheckpointConfig
+  /** Ref the learned branch's fork point is computed against. */
+  baseRef: string
+  onDelivery?: (record: SandboxDeliveryRecord) => void
+  onCheckpoint?: (record: SandboxDeliveryRecord) => void
+  onTargetChanged?: (target: SandboxDeliveryTarget) => void
+}): {
+  onBeforeTeardown: () => Promise<void>
+  checkpoint?: { run: (turn?: number) => Promise<unknown>; intervalMs: number }
+} {
+  let target = input.target
+  const base = {
+    exec: input.exec,
+    ...(input.readFile ? { readFile: input.readFile } : {}),
+    outDir: input.outDir,
+  }
+  const buildCheckpoint = () =>
+    sandboxCheckpointOpts(
+      { ...base, target, ...(input.onCheckpoint ? { onCheckpoint: input.onCheckpoint } : {}) },
+      input.config,
+    ).checkpoint
+  let checkpoint = buildCheckpoint()
+  const onBeforeTeardown = () =>
+    createDeliveryHook({
+      ...base,
+      target,
+      snapshotUncommitted: input.config.onTeardown,
+      ...(input.onDelivery ? { onDelivery: input.onDelivery } : {}),
+    })()
+  if (!checkpoint) return { onBeforeTeardown }
+
+  const learn = async () => {
+    const found = await learnWorkBranch(input.exec, target.checkoutDir, input.baseRef)
+    if (!found || found.branch === target.branch) return
+    target = { checkoutDir: target.checkoutDir, branch: found.branch, baseSha: found.baseSha ?? target.baseSha }
+    // A fresh checkpointer: its unchanged-since-last-checkpoint key does not
+    // include the branch name, so the old one would skip pushing the new branch.
+    checkpoint = buildCheckpoint()
+    try {
+      input.onTargetChanged?.(target)
+    } catch {
+      // recording is best-effort
+    }
+  }
+  return {
+    onBeforeTeardown,
+    checkpoint: {
+      intervalMs: input.config.minIntervalMs,
+      run: async (turn) => {
+        await learn()
+        return checkpoint!.run(turn)
+      },
+    },
+  }
 }
 
 async function persistRecord(

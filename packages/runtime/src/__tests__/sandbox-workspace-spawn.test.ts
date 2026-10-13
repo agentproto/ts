@@ -70,6 +70,7 @@ function makeFakeCliResolver(receivedStarts: Array<Record<string, unknown>>): Ag
         return {
           sessionId: "remote_sess_1",
           async *send(): AsyncIterable<AgentStreamEvent> {
+            yield { kind: "text-delta", text: "ok" }
             yield { kind: "turn-end", reason: "completed" }
           },
           async cancel() {},
@@ -243,7 +244,7 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(JSON.stringify(execCalls)).not.toContain(FAKE_TOKEN)
   })
 
-  it("without a worktree the session works on the default branch and nothing is delivered", async () => {
+  it("without a worktree a default wt/<slug> work branch is cut and recorded as the delivery target", async () => {
     const result = await spawnAgentSession(makeDeps(), {
       adapter: "fake-cli",
       sandbox: "fake",
@@ -251,11 +252,85 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     })
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    const id = result.descriptor.id
+    const target = registry.get(id)?.sandboxDeliveryTarget
+    expect(target).toMatchObject({ checkoutDir: "/home/user/agentproto", baseSha: BASE_SHA })
+    expect(target?.branch).toMatch(/^wt\/[0-9a-f]{8}$/)
+    expect(
+      execCalls.map(c => c.command).some(c => c.includes(`git checkout -b '${target?.branch}' 'origin/main'`)),
+    ).toBe(true)
+
+    registry.kill(id)
+    await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
+    expect(execCalls.some(c => c.command.includes(`push -u origin '${target?.branch}'`))).toBe(true)
+    expect(registry.get(id)?.sandboxDelivery).toMatchObject({ branch: target?.branch, push: { status: "pushed" } })
+  })
+
+  it("worktree: false opts out: the session works on the default branch and nothing is delivered", async () => {
+    const result = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      sandbox: "fake",
+      workspaceSlug: "agentproto",
+      worktree: false,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
     expect(execCalls.map(c => c.command).some(c => c.includes("git -C '/home/user/agentproto' checkout 'main'"))).toBe(true)
+    expect(registry.get(result.descriptor.id)?.sandboxDeliveryTarget).toBeUndefined()
     registry.kill(result.descriptor.id)
     await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
     expect(execCalls.some(c => c.command.includes("push"))).toBe(false)
     expect(registry.get(result.descriptor.id)?.sandboxDelivery).toBeUndefined()
+  })
+
+  describe("turn-end safety net", () => {
+    const HAND_SHA = "d".repeat(40)
+
+    async function spawnAndRunTurn(learned: string) {
+      execImpl = async opts => {
+        if (opts.command.includes("--abbrev-ref")) return ok(`branch=${learned}\nbase=${HAND_SHA}\n`)
+        if (opts.command.includes("rev-list")) return ok("ahead=2\nuncommitted=0\n")
+        if (opts.command.includes("rev-parse")) return ok(`${BASE_SHA}\n`)
+        return ok()
+      }
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("spawn failed")
+      await registry.sendPrompt(result.descriptor.id, "go")
+      return result.descriptor.id
+    }
+
+    it("adopts a different wt/ branch the agent moved to as the delivery target, and delivers that branch", async () => {
+      const id = await spawnAndRunTurn("wt/by-hand")
+      await vi.waitFor(() =>
+        expect(registry.get(id)?.sandboxDeliveryTarget).toEqual({
+          checkoutDir: "/home/user/agentproto",
+          branch: "wt/by-hand",
+          baseSha: HAND_SHA,
+        }),
+      )
+      registry.kill(id)
+      await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
+      expect(execCalls.some(c => c.command.includes("push -u origin 'wt/by-hand'"))).toBe(true)
+      expect(execCalls.some(c => c.command.includes("push -u origin 'wt/x'"))).toBe(false)
+    })
+
+    it("leaves the recorded target alone when the box is on a non-wt/ branch", async () => {
+      const id = await spawnAndRunTurn("main")
+      await vi.waitFor(() => expect(execCalls.some(c => c.command.includes("--abbrev-ref"))).toBe(true))
+      expect(registry.get(id)?.sandboxDeliveryTarget?.branch).toBe("wt/x")
+    })
+
+    it("leaves the recorded target alone when the box is still on it", async () => {
+      const id = await spawnAndRunTurn("wt/x")
+      await vi.waitFor(() => expect(execCalls.some(c => c.command.includes("--abbrev-ref"))).toBe(true))
+      expect(registry.get(id)?.sandboxDeliveryTarget).toMatchObject({ branch: "wt/x", baseSha: BASE_SHA })
+    })
   })
 
   it("a failing setup step stops the box and returns sandbox_workspace_setup_failed", async () => {

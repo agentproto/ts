@@ -94,11 +94,13 @@ export interface SandboxWorkspaceRequest {
   /** The box's home (`SandboxProviderHandle.defaultCwd`); the clone lands in
    *  `<homeDir>/<workspaceSlug>`. */
   homeDir: string
-  /** The caller's `agent_start.worktree`, when present. Absent ⇒ the session
-   *  works on the remote's default branch with no work branch and therefore
-   *  no teardown delivery. */
-  worktree?: { slug?: string; base?: string }
-  /** Mints a slug when `worktree` is requested without one. */
+  /** The caller's `agent_start.worktree`. Absent ⇒ a DEFAULT `wt/<slug>`
+   *  work branch is minted (via {@link mintSlug}) so every box session has a
+   *  delivery target and can be resumed on a fresh box. An object pins
+   *  `slug`/`base`. `false` opts out: the session works on the remote's
+   *  default branch with no work branch and therefore no teardown delivery. */
+  worktree?: { slug?: string; base?: string } | false
+  /** Mints a slug when a work branch is needed without an explicit one. */
   mintSlug: () => string
   /** Remote branch namespace the checkpoint snapshot is read back from — must
    *  match the `refPrefix` the checkpoint was pushed with. Default
@@ -118,7 +120,7 @@ export interface SandboxWorkspacePlan {
   /** The box's home the steps run from. */
   homeDir: string
   checkoutDir: string
-  /** `wt/<slug>`; undefined when no worktree was requested. */
+  /** `wt/<slug>`; undefined only when the caller opted out (`worktree: false`). */
   branch?: string
   /** The ref the work branch is cut from (`origin/<defaultBranch>` by default). */
   baseRef: string
@@ -153,13 +155,14 @@ const CREDENTIAL_HELPER = `!f() { echo username=x-access-token; echo "password=$
 export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorkspacePlan {
   const workspaceDir = validateSegment("workspace slug", req.workspaceSlug, /^[A-Za-z0-9][A-Za-z0-9._-]*$/)
   const defaultBranch = validateRemoteBranch(req.remote.defaultBranch ?? DEFAULT_REMOTE_BRANCH)
-  const baseRef = validateRemoteBranch(req.worktree?.base ?? `origin/${defaultBranch}`)
+  const pinned = req.worktree === false ? undefined : req.worktree
+  const baseRef = validateRemoteBranch(pinned?.base ?? `origin/${defaultBranch}`)
   const branch =
-    req.worktree === undefined
+    req.worktree === false
       ? undefined
       : `${SANDBOX_BRANCH_PREFIX}${validateSegment(
           "worktree slug",
-          req.worktree.slug ?? req.mintSlug(),
+          pinned?.slug ?? req.mintSlug(),
           /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
         )}`
   const home = req.homeDir.replace(/\/+$/, "")
@@ -284,4 +287,57 @@ export async function runSandboxWorkspaceSetup(
     return { ok: false, step: "resolve-base", message: "the plan never resolved a base commit" }
   }
   return { ok: true, baseSha }
+}
+
+/**
+ * A work branch discovered on a box AFTER spawn: the branch the agent is
+ * actually sitting on, plus (when computable) the commit it forked from.
+ */
+export interface LearnedWorkBranch {
+  /** `wt/<slug>` — only ever returned for a `wt/`-prefixed HEAD. */
+  branch: string
+  /** Fork point from `baseRef`; absent when git could not compute one. */
+  baseSha?: string
+}
+
+/** One round trip reading the checkout's CURRENT branch and its merge-base
+ *  with `baseRef`, echoed as `branch=`/`base=` lines for
+ *  {@link parseLearnedWorkBranch}. */
+export function buildLearnBranchCommand(checkoutDir: string, baseRef: string): string {
+  const dir = shellQuote(checkoutDir)
+  const ref = shellQuote(`${baseRef}^{commit}`)
+  return (
+    `cd ${dir} && echo "branch=$(git rev-parse --abbrev-ref HEAD)" && ` +
+    `echo "base=$(git merge-base HEAD ${ref} 2>/dev/null)"`
+  )
+}
+
+/** Strict on purpose: only a `wt/`-prefixed branch counts, so a box sitting on
+ *  the default branch or a detached HEAD records nothing. */
+export function parseLearnedWorkBranch(stdout: string): LearnedWorkBranch | undefined {
+  const branch = /^branch=(.+)$/m.exec(stdout)?.[1]?.trim()
+  if (branch === undefined || !branch.startsWith(SANDBOX_BRANCH_PREFIX)) return undefined
+  const baseSha = /^base=([0-9a-f]{40,64})$/m.exec(stdout)?.[1]
+  return { branch, ...(baseSha !== undefined ? { baseSha } : {}) }
+}
+
+/** Run {@link buildLearnBranchCommand} through the box exec. Every failure mode
+ *  resolves to `undefined` — learning is opportunistic, never a turn error. */
+export async function learnWorkBranch(
+  exec: SandboxExec,
+  checkoutDir: string,
+  baseRef: string,
+): Promise<LearnedWorkBranch | undefined> {
+  try {
+    const result = await exec({
+      command: buildLearnBranchCommand(checkoutDir, baseRef),
+      cwd: checkoutDir,
+      env: { GIT_TERMINAL_PROMPT: "0" },
+      timeoutMs: STEP_TIMEOUT_MS,
+    })
+    if (result.exitCode !== 0) return undefined
+    return parseLearnedWorkBranch(result.stdout)
+  } catch {
+    return undefined
+  }
 }
