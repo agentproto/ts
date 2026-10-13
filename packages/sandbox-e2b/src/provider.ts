@@ -329,6 +329,9 @@ function toBootedSandbox(
         throw err
       }
     },
+    async readFile(path: string): Promise<Uint8Array> {
+      return sandbox.files.read(path, { format: "bytes" })
+    },
   }
 }
 

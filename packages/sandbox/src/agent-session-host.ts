@@ -108,6 +108,13 @@ export interface BootedSandbox {
    */
   exec?(opts: SandboxExecOpts): Promise<SandboxExecResult>
   /**
+   * Read ONE file out of the box as raw bytes — how the runtime pulls a
+   * `git bundle` back to the host at teardown. `path` is absolute INSIDE the
+   * box. Optional: providers that cannot download files omit it. Rejects when
+   * the file is missing or the transport fails.
+   */
+  readFile?(path: string): Promise<Uint8Array>
+  /**
    * The paired host's identity, present ONLY for the `device` sandbox
    * provider (`device:<fingerprint-or-name>` targets — the provider can
    * never guarantee it for a generic vendor sandbox). `fingerprint` is the
@@ -290,6 +297,12 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Expose an app port and return its public URL — forwarded from
    *  `BootedSandbox.expose`. Absent when the provider doesn't support it. */
   expose?: BootedSandbox["expose"]
+  /** Run one command inside the box — forwarded from `BootedSandbox.exec`.
+   *  Absent when the provider can't shell into the box. */
+  exec?: BootedSandbox["exec"]
+  /** Download one file from the box — forwarded from `BootedSandbox.readFile`.
+   *  Absent when the provider can't. */
+  readFile?: BootedSandbox["readFile"]
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
   /** Close the daemon connection and PAUSE the sandbox instead of killing
@@ -347,6 +360,8 @@ export async function createSandboxAgentSessionHost(
     sandboxId: booted.sandboxId,
     ...(booted.ports ? { ports: booted.ports } : {}),
     ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
+    ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
+    ...(booted.readFile ? { readFile: booted.readFile.bind(booted) } : {}),
     async stop(): Promise<void> {
       await host.close()
       await booted.stop()
