@@ -78,6 +78,15 @@ swap file on boot (`swapMb`, `@agentproto/sandbox-e2b`), which turns a slightly
 oversized build into a slow one rather than a dead box. Use `small`/`medium` for single-package work and
 `nano` for light tasks with no build.
 
+The provider also sizes Node builds to the preset: pnpm runs one package build
+per vCPU and each tsup DTS worker takes Node's default heap, so on boot it
+derives `NODE_OPTIONS=--max-old-space-size=…` plus
+`npm_config_workspace_concurrency` / `TURBO_CONCURRENCY` from the box
+(`buildEnv` in `@agentproto/sandbox-e2b` to override, `false` to disable) and
+ships them through the daemon's start env and `/etc/profile.d/agentproto-build.sh`
+— a parallel build throttles itself instead of OOM-ing, and a caller-provided
+`NODE_OPTIONS` still wins.
+
 `x-large` / `xx-large` stay declared with `available: false` and the exact
 e2b refusal: the current e2b plan caps a sandbox at 8 vCPU / 8192 MB. Asking for
 an unavailable size fails at boot with that error instead of silently booting a

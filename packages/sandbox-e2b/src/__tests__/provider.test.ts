@@ -81,9 +81,21 @@ describe("e2bSandboxProvider.boot", () => {
     // and DISABLES e2b's 60s default command timeout (timeoutMs: 0) — that
     // default applies to background commands too and was SIGKILLing the
     // daemon one minute after boot, killing every >60s agent turn.
+    // Its env is the caller's passthrough PLUS the box's build env, sized
+    // from the default preset (4 vCPU / 8192 MB → concurrency 2, heap 2457):
+    // the adapters the daemon spawns inherit it.
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("agentproto serve --port 18790 --bind 0.0.0.0"),
-      expect.objectContaining({ background: true, envs: { OPENROUTER_API_KEY: "k" }, timeoutMs: 0 }),
+      expect.objectContaining({
+        background: true,
+        envs: {
+          OPENROUTER_API_KEY: "k",
+          NODE_OPTIONS: "--max-old-space-size=2457",
+          npm_config_workspace_concurrency: "2",
+          TURBO_CONCURRENCY: "2",
+        },
+        timeoutMs: 0,
+      }),
     )
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("--allow-origin https://sbx-abc-18790.e2b.dev"),
@@ -280,15 +292,16 @@ describe("e2bSandboxProvider.boot", () => {
     }
     await e2bSandboxProvider.boot(bootSpec, { env: { OPENROUTER_API_KEY: "k" } })
 
-    // each setup command is host-executed with the resolved env
-    expect(sandbox.commands.run).toHaveBeenCalledWith(
-      "install-hook-a",
-      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
-    )
-    expect(sandbox.commands.run).toHaveBeenCalledWith(
-      "install-hook-b",
-      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
-    )
+    // each setup command is host-executed with the resolved env (passthrough
+    // + the box's build env)
+    const expectedEnv = {
+      OPENROUTER_API_KEY: "k",
+      NODE_OPTIONS: "--max-old-space-size=2457",
+      npm_config_workspace_concurrency: "2",
+      TURBO_CONCURRENCY: "2",
+    }
+    expect(sandbox.commands.run).toHaveBeenCalledWith("install-hook-a", expect.objectContaining({ envs: expectedEnv }))
+    expect(sandbox.commands.run).toHaveBeenCalledWith("install-hook-b", expect.objectContaining({ envs: expectedEnv }))
     // ordering: npm install → setup commands (in order) → serve
     const npmIdx = calls.findIndex(c => c.startsWith("sudo npm i -g"))
     const aIdx = calls.indexOf("install-hook-a")
@@ -310,9 +323,10 @@ describe("e2bSandboxProvider.boot", () => {
     const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0, swapMb: 0 } }
     await e2bSandboxProvider.boot(bootSpec, { env: {} })
 
-    // proven stable bake + no cliVersion → install skipped; only the daemon
-    // serve command runs (no stray provision commands)
-    expect(sandbox.commands.run).toHaveBeenCalledTimes(1)
+    // proven stable bake + no cliVersion → install skipped; the box gets its
+    // profile.d build-env file and the daemon serve command runs (no stray
+    // provision commands)
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(2)
   })
 
   it("enables swap on a fresh boot, before the daemon starts, unless swapMb is 0", async () => {
@@ -412,7 +426,17 @@ describe("e2bSandboxProvider.boot", () => {
     const { e2bSandboxProvider } = await import("../provider.js")
     await e2bSandboxProvider.boot({ ...spec, config: { ...spec.config, swapMb: 0 } }, { env: {} })
 
-    expect(sandbox.commands.run).not.toHaveBeenCalled()
+    // no serve command — but the profile.d build-env file IS still written,
+    // so the autostarted daemon's box picks the vars up on every login-shell
+    // command from here on
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("agentproto serve"),
+      expect.anything(),
+    )
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("/etc/profile.d/agentproto-build.sh"),
+      expect.anything(),
+    )
   })
 
   it("still runs config.setupCommands when the daemon was already autostarted — the hook install must not be skipped", async () => {
@@ -428,14 +452,21 @@ describe("e2bSandboxProvider.boot", () => {
     await e2bSandboxProvider.boot(bootSpec, { env: { OPENROUTER_API_KEY: "k" } })
 
     // the setup command still lands even though this provider never had to
-    // start the daemon itself
+    // start the daemon itself, with the same merged env (passthrough + build env)
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       "install-hook-a",
-      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
+      expect.objectContaining({
+        envs: {
+          OPENROUTER_API_KEY: "k",
+          NODE_OPTIONS: "--max-old-space-size=2457",
+          npm_config_workspace_concurrency: "2",
+          TURBO_CONCURRENCY: "2",
+        },
+      }),
     )
     // but the CLI update and `agentproto serve` are still skipped — only the
-    // setup command ran
-    expect(sandbox.commands.run).toHaveBeenCalledTimes(1)
+    // profile.d build-env write and the setup command ran
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(2)
   })
 
   it("uses config.template/port/workspace overrides from the spec", async () => {
