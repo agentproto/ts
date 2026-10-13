@@ -1,7 +1,7 @@
 // ─── Core handle ──────────────────────────────────────────────────────────────
 
 export interface BrowserAdapterHandle {
-  /** Stable identifier — "camofox" | "bureau" | "chromium" */
+  /** Stable identifier — "camofox" | "bureau" | "chromium" | "chrome-live" */
   id: string
   name: string
   description: string

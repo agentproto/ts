@@ -321,11 +321,11 @@ function noopHeartbeat(): HeartbeatRunner {
 }
 
 describe("default browser adapter resolution (facade)", () => {
-  it("lists the camofox, bureau and chromium ids with unchanged row fields", () => {
+  it("lists the camofox, bureau, chromium and chrome-live ids with unchanged row fields", () => {
     const { listBrowserAdapters, resolveBrowserAdapter } = defaultBrowserAdapterResolution()
-    expect(defaultBrowserAdapterIds()).toEqual(["camofox", "bureau", "chromium"])
+    expect(defaultBrowserAdapterIds()).toEqual(["camofox", "bureau", "chromium", "chrome-live"])
     const rows = listBrowserAdapters()
-    expect(rows.map((r) => r.id)).toEqual(["camofox", "bureau", "chromium"])
+    expect(rows.map((r) => r.id)).toEqual(["camofox", "bureau", "chromium", "chrome-live"])
     expect(Object.keys(rows[0]!).sort()).toEqual(
       ["config", "defaultPort", "description", "id", "install", "location", "name"].sort(),
     )
@@ -358,7 +358,7 @@ describe("start_browser {adapter:'camofox'} and POST /sessions/browser: response
 
     const unknown = await client.callTool({ name: "start_browser", arguments: { adapter: "nope" } })
     expect(unknown.isError).toBe(true)
-    expect((unknown.content as { text: string }[])[0]!.text).toContain("Available adapters: camofox, bureau, chromium")
+    expect((unknown.content as { text: string }[])[0]!.text).toContain("Available adapters: camofox, bureau, chromium, chrome-live")
     registry.shutdown()
     await client.close()
   })
@@ -408,7 +408,7 @@ describe("start_browser {adapter:'camofox'} and POST /sessions/browser: response
       expect(await missing.json()).toEqual({
         error: "adapter_not_found",
         adapter: "nope",
-        message: 'Browser adapter "nope" not found. Available: camofox, bureau, chromium.',
+        message: 'Browser adapter "nope" not found. Available: camofox, bureau, chromium, chrome-live.',
       })
     } finally {
       await http.stop()

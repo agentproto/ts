@@ -1,8 +1,12 @@
 # @agentproto/adapter-browser-chrome
 
-The `chrome` browser provider for `@agentproto/driver-browser`: the Chrome
-already installed on the machine, launched on a fresh dedicated profile
-directory and driven over raw CDP.
+Two browser providers for `@agentproto/driver-browser`, both driven over raw
+CDP:
+
+- `chrome`: the Chrome installed on the machine, **launched** on a fresh
+  dedicated profile directory (never your profile).
+- `chrome-live`: **your own running Chrome**, attached through Chrome's remote
+  debugging toggle. It launches nothing; see [chrome-live](#chrome-live-your-running-chrome).
 
 ```ts
 import { chrome } from "@agentproto/adapter-browser-chrome"
@@ -53,6 +57,114 @@ attaches. They come from `attach({ sessionPayload })` and from the provider's
 `cookieSource` parameter (`BrowserCookieSource`); the grant model supplies the
 real source in a later lane. Only the cookie count is logged, never a value.
 
+## chrome-live: your running Chrome
+
+`chrome-live` attaches to the Chrome you already use, with your logged-in
+profile, so an agent can work on sites where you are signed in. It never
+launches, kills or closes Chrome, and it never touches your tabs.
+
+```ts
+import { chromeLive } from "@agentproto/adapter-browser-chrome"
+
+const instance = await chromeLive.launch({}, { log: console.log }) // Chrome shows "Allow"
+const driver = await instance.attach({ initialUrl: "https://mail.example.com" })
+await driver.evaluate({ expression: "document.title", awaitPromise: false, returnByValue: true, maxResultBytes: 10_000 })
+await instance.stop() // closes the agent's tabs and its socket, nothing else
+```
+
+In the daemon it is the `chrome-live` browser adapter: `start_browser
+{ adapter: "chrome-live" }`.
+
+### Turn it on
+
+1. Use Chrome 144 or later and open `chrome://inspect/#remote-debugging`.
+2. Turn on the remote debugging toggle. Chrome then listens on
+   `127.0.0.1:9222`.
+3. Start the agent. Chrome shows a dialog asking whether to allow the
+   debugging connection: click **Allow**. The provider waits up to
+   `consentTimeoutMs` (default 60s).
+
+Turn the toggle off again to cut every connection.
+
+### Configuration
+
+| Setting | Default | |
+| --- | --- | --- |
+| `createChromeLiveProvider({ port })` / `CHROME_LIVE_PORT` | `9222` | Port on 127.0.0.1 |
+| `createChromeLiveProvider({ wsUrl })` / `CHROME_LIVE_WS_URL` | `ws://127.0.0.1:<port>/devtools/browser` | Full browser websocket URL; beats the port |
+| `consentTimeoutMs` | `60000` | How long to wait for the Allow click |
+| `discover` | `true` | Try `GET /json/version` first |
+
+`launch({ wsUrl, port })` wins over the provider config, which wins over the
+env. In toggle mode Chrome answers only the browser websocket without an id:
+`/json/version` and `/json/list` come back empty, so discovery is optional and
+the fixed URL is the fallback. `DevToolsActivePort` in the Chrome profile is not
+read (macOS does not let other apps read it); the port comes from config.
+
+### One connection, one consent
+
+Every new websocket makes Chrome ask for consent again, so the provider keeps
+**one** connection per websocket URL. `launch()` is memoized on that URL,
+including the connect in flight: concurrent launches share one socket, and
+calling `launch()` again (Bureau does this on every control-tool attach) returns
+the live instance with `wasAlreadyRunning: true`. `health()` runs
+`Browser.getVersion` over the existing socket and never opens a new one;
+`check()` is a bare TCP probe of the port and never opens a websocket either.
+A new connection is only opened after the previous one dropped or was stopped,
+and the log then says that Chrome will ask for consent again.
+
+### The agent's own window
+
+The first `attach()` opens a dedicated window with
+`Target.createTarget { url, newWindow: true }`. Later attaches open tabs in that
+same window, never a second window. The protocol has no window parameter on
+`Target.createTarget` (checked against the `devtools-protocol` definitions in
+the repo: only `newWindow`, `background`, `left`/`top`/`width`/`height` and the
+like), and a new tab opens in the last active window. So the provider first runs
+`Target.activateTarget` on one of its own tabs, creates the tab, and checks it
+with `Browser.getWindowForTarget`. If another window took focus in between and
+the tab landed elsewhere, that tab is closed at once and the attach is retried,
+then fails with a clear error. It never stays among your tabs. Once you close the
+agent window, the next attach opens a new one. CDP has no tab-group API, so the
+agent's tabs are not grouped.
+
+### Safety guarantees
+
+- **Never launches, kills or closes Chrome.** `stop()` sends
+  `Target.closeTarget` for the targets this provider created, then closes its
+  own websocket. It never sends `Browser.close`. A handle returned by a reused
+  `launch()` closes only the tabs it opened and leaves the connection to the
+  first launch.
+- **Never touches your tabs.** The provider only knows the target ids it
+  created. It never calls `Target.getTargets` and never attaches to a target it
+  did not create. Through `driver.send` (the agent's `cdp_send`), the whole
+  `Target.*` and `Browser.*` domains are refused, as are cookie and storage
+  writes.
+- **Cookies are read-only.** Nothing is written into your profile: no
+  `Network.setCookies`, granted-cookie payloads are ignored, and the driver
+  reports `canCookies: false`. Reading (`Network.getCookies`) works.
+- **Declared capabilities:** `cdp`, `isUserVisible`, `canMultiTarget` (tabs of
+  the agent window), `headed`. Not `headless`, not `persistentProfile`.
+
+**This is not a bypass of F11.** The F11 guard above stays as it is: the
+`chrome` provider still refuses to **launch** Chrome on the default profile.
+`chrome-live` is a separate provider that launches nothing and writes nothing to
+the profile. It only uses a connection that you turned on and then allowed in
+Chrome's own UI, and you can turn it off there at any time.
+
+### Errors
+
+Each error is a `ToolError` with a stable `code`, exported as a constant:
+
+| Code | Constant | When |
+| --- | --- | --- |
+| `browser:remote-debugging-off` | `BROWSER_REMOTE_DEBUGGING_OFF_CODE` | Nothing listens on the port (ECONNREFUSED). Message: "Enable remote debugging at chrome://inspect/#remote-debugging" |
+| `browser:consent-timeout` | `BROWSER_CONSENT_TIMEOUT_CODE` | No Allow click within `consentTimeoutMs`, or Chrome rejected the connection |
+| `browser:disconnected` | `BROWSER_DISCONNECTED_CODE` | Chrome closed or the websocket dropped mid-task |
+
+After a drop, the next `launch()` reconnects (with a new consent dialog) and
+still knows the tabs it opened before, so `stop()` can close them.
+
 ## Deferred
 
 Not in this package yet: extension handling, a multi-profile UI, headed
@@ -61,5 +173,7 @@ takeover polish, the grant-backed cookie source, and full-profile access.
 ## Tests
 
 The suite drives a stub Chrome (a node script that speaks minimal CDP) so no
-real browser is needed. An optional real-binary smoke runs `runConformance`
+real browser is needed. `chrome-live` runs against an in-process fake of a
+toggle-mode Chrome that already has user tabs and flags any command addressing
+a target the provider did not create. An optional real-binary smoke runs `runConformance`
 when `CHROME_SMOKE_BIN` names a Chrome or Chromium executable.

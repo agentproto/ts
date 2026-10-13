@@ -258,10 +258,13 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   const seen = new Set<string>()
 
   function endpoint(opts: ChromeLiveLaunchOptions): { wsUrl?: string; port: number } {
+    // Launch options, then the provider config, then the env; at each level a ws URL beats a port.
     const env = readChromeLiveEnv({ ...(config.env ?? process.env), ...opts.env })
-    const wsUrl = opts.wsUrl ?? config.wsUrl ?? env.wsUrl
-    const port = (opts.port || undefined) ?? config.port ?? env.port ?? CHROME_LIVE_DEFAULT_PORT
-    return { ...(wsUrl !== undefined ? { wsUrl } : {}), port }
+    for (const level of [{ wsUrl: opts.wsUrl, port: opts.port || undefined }, config, env]) {
+      if (level.wsUrl) return { wsUrl: level.wsUrl, port: CHROME_LIVE_DEFAULT_PORT }
+      if (level.port) return { port: level.port }
+    }
+    return { port: CHROME_LIVE_DEFAULT_PORT }
   }
 
   async function discover(port: number): Promise<string> {

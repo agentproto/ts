@@ -13,16 +13,19 @@ export type { FacadeLaunchOptions } from "./providers/facade-options.js"
 export { camofoxAdapter } from "./adapters/camofox.js"
 export { bureauAdapter, bureauProvider } from "./adapters/bureau.js"
 export { chromiumAdapter, chromiumProvider } from "./adapters/chromium.js"
+export { chromeLiveAdapter, chromeLiveProvider } from "./adapters/chrome-live.js"
 
 import { camofoxAdapter } from "./adapters/camofox.js"
 import { bureauAdapter } from "./adapters/bureau.js"
 import { chromiumAdapter } from "./adapters/chromium.js"
+import { chromeLiveAdapter } from "./adapters/chrome-live.js"
 import type { BrowserAdapterHandle } from "./types.js"
 
 export const browserAdapters: Record<string, BrowserAdapterHandle> = {
   camofox: camofoxAdapter,
   bureau: bureauAdapter,
   chromium: chromiumAdapter,
+  "chrome-live": chromeLiveAdapter,
 }
 
 export function getBrowserAdapter(id: string): BrowserAdapterHandle | undefined {

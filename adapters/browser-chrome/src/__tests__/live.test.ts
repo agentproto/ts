@@ -288,6 +288,10 @@ describe("chrome-live: config", () => {
     const byUrl = await createChromeLiveProvider({ env: { CHROME_LIVE_PORT: "1", CHROME_LIVE_WS_URL: f.wsUrl } }).launch({}, {})
     expect(byUrl.endpoints.cdp).toBe(f.wsUrl)
     await byUrl.stop()
+    // An explicit launch port beats anything from the env.
+    const byLaunch = await createChromeLiveProvider({ env: { CHROME_LIVE_WS_URL: "ws://127.0.0.1:1/devtools/browser" } }).launch({ port: f.port }, {})
+    expect(byLaunch.endpoints.cdp).toBe(f.wsUrl)
+    await byLaunch.stop()
   })
 
   it("check() probes the port without opening a websocket", async () => {
