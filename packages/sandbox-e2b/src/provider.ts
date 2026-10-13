@@ -62,6 +62,10 @@ const DEFAULT_PORT = 18790
  * plausible session; `config.timeoutMs` still overrides in either direction.
  */
 const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
+/** e2b's per-account cap on a single sandbox's timeout ("Timeout cannot be
+ *  greater than 1 hours") — every re-arm request is clamped to it, since a
+ *  larger value is rejected outright by the control plane. */
+export const MAX_SANDBOX_TIMEOUT_MS = 60 * 60_000
 const DEFAULT_WORKSPACE = "/home/user"
 const HEALTH_PROBE_TIMEOUT_MS = 3_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
@@ -167,6 +171,10 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
         ? Math.floor(config.swapMb)
         : undefined,
   }
+}
+
+function resolveLifetimeMs(config: E2bSandboxConfig): number {
+  return Math.min(config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS, MAX_SANDBOX_TIMEOUT_MS)
 }
 
 const SIZE_NAMES = Object.keys(SIZES) as WorkstationSize[]
@@ -365,6 +373,7 @@ async function ensureDaemonHealthy(
 function toBootedSandbox(
   sandbox: Awaited<ReturnType<typeof Sandbox.create>>,
   host: string,
+  lifetimeMs: number,
   token?: string,
   extraPorts?: number[],
 ): BootedSandbox {
@@ -392,6 +401,26 @@ function toBootedSandbox(
      *  detach without a full reconnect. */
     async extendTimeout(ms: number): Promise<void> {
       await sandbox.setTimeout(ms)
+    },
+    /**
+     * Re-arm the box's lifetime deadline to the configured value (clamped to
+     * the account's 1-hour cap) — what a session host calls as a long turn
+     * approaches the deadline `boot`/`connect` set once. Best-effort except
+     * for a vanished box: every failure is logged and swallowed (the box keeps
+     * whatever lifetime it had), but a provider 404 surfaces as
+     * `SandboxBoxGoneError` so callers can tell "re-arm failed" from "the box
+     * died mid-turn".
+     */
+    async extendLifetime(): Promise<void> {
+      try {
+        await sandbox.setTimeout(lifetimeMs)
+      } catch (err) {
+        if (err instanceof SandboxNotFoundError) throw new SandboxBoxGoneError(sandbox.sandboxId, err)
+        console.warn(
+          `@agentproto/sandbox-e2b: extendLifetime failed for sandbox ${sandbox.sandboxId} ` +
+            `(the box keeps its current deadline): ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
     },
     /**
      * Run ONE command inside the box (e2b `sandbox.commands.run`, foreground)
@@ -472,7 +501,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     const sandbox = await Sandbox.create(template, {
       apiKey: process.env.E2B_API_KEY,
       envs: opts.env,
-      timeoutMs: config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS,
+      timeoutMs: resolveLifetimeMs(config),
     })
 
     // Once the VM exists, EVERY failure after this point must reclaim it —
@@ -485,7 +514,7 @@ export const e2bSandboxProvider: SandboxProvider = {
       const host = sandbox.getHost(port)
       await enableSwap(sandbox, config.swapMb ?? DEFAULT_SWAP_MB)
       await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
-      return toBootedSandbox(sandbox, host, undefined, spec.extraPorts)
+      return toBootedSandbox(sandbox, host, resolveLifetimeMs(config), undefined, spec.extraPorts)
     } catch (err) {
       await sandbox.kill().catch(() => undefined)
       throw err

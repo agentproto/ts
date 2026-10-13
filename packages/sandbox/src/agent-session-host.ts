@@ -146,6 +146,15 @@ export interface BootedSandbox {
    * from under it. Optional: providers with no fixed lifetime cap omit it.
    */
   extendTimeout?(ms: number): Promise<void>
+  /**
+   * Re-arm the provider's lifetime deadline to its configured value (e.g.
+   * e2b's `sandbox.setTimeout(config.timeoutMs ?? default)`) — the same
+   * deadline `boot`/`connect()` set once, re-armed WITHOUT a reconnect so a
+   * turn running past the original deadline keeps its box. Optional:
+   * providers with no fixed lifetime cap omit it; callers re-arm on activity
+   * (prompt dispatch, streamed events), never while idle.
+   */
+  extendLifetime?(): Promise<void>
 }
 
 /** One-shot command-execution request, as passed to `BootedSandbox.exec` by
@@ -323,6 +332,10 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
    *  `BootedSandbox.extendTimeout`. Absent when the provider has no fixed
    *  lifetime cap to re-arm. */
   extendTimeout?: BootedSandbox["extendTimeout"]
+  /** Re-arm the provider's lifetime deadline — forwarded from
+   *  `BootedSandbox.extendLifetime`. Absent when the provider has no fixed
+   *  lifetime cap to re-arm. */
+  extendLifetime?: BootedSandbox["extendLifetime"]
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
   /** Close the daemon connection and PAUSE the sandbox instead of killing
@@ -383,6 +396,7 @@ export async function createSandboxAgentSessionHost(
     ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
     ...(booted.readFile ? { readFile: booted.readFile.bind(booted) } : {}),
     ...(booted.extendTimeout ? { extendTimeout: booted.extendTimeout.bind(booted) } : {}),
+    ...(booted.extendLifetime ? { extendLifetime: booted.extendLifetime.bind(booted) } : {}),
     async stop(): Promise<void> {
       await host.close()
       await booted.stop()
