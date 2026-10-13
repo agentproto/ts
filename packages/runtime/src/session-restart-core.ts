@@ -53,6 +53,7 @@ import {
   isResumable,
   canResume,
   SessionRetiredError,
+  type AgentSessionLike,
   type SessionDescriptor,
   type SessionsRegistry,
   type SessionAuthEcho,
@@ -80,7 +81,9 @@ import {
   type AuthEcho,
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
-import { stampDaemonCallerSessionId } from "./session-spawn.js"
+import { bootSandboxAgentSession, stampDaemonCallerSessionId } from "./session-spawn.js"
+import { findWorkspace, loadWorkspacesConfig } from "./workspaces-config.js"
+import { SANDBOX_BRANCH_PREFIX } from "./sandbox-workspace-remote.js"
 import { stripOwnCallerStamp } from "./session-continue-fresh.js"
 import {
   buildRouteAwareLaunchConfig,
@@ -110,12 +113,19 @@ import {
 } from "@agentproto/auth"
 import {
   createSandboxAgentSessionHost,
+  isSandboxBoxGoneError,
   resolveLifecyclePolicy,
+  SandboxHostBootFailedError,
   type SandboxAgentSessionHost,
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
-import { createDeliveryHook, formatDeliveryNotice } from "./sandbox-delivery.js"
+import {
+  createDeliveryHook,
+  formatDeliveryNotice,
+  sandboxCheckpointOpts,
+  type SandboxDeliveryTarget,
+} from "./sandbox-delivery.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
@@ -1201,6 +1211,17 @@ export async function restartAgentSession(
         secrets: { slugs: [], resolver: resolveSandboxSecretFromBroker },
       })
     } catch (err) {
+      // The box is GONE (provider not-found), or it came back without a
+      // healthy daemon and the provider reclaimed it: either way there is no
+      // box left to re-attach. A session whose work lives on a workspace
+      // remote can still go on — boot a NEW box, re-clone, and check the
+      // work branch out again (pushed commits + the last checkpoint snapshot,
+      // see `sandbox-delivery.ts`).
+      const boxGone = isSandboxBoxGoneError(err) || err instanceof SandboxHostBootFailedError
+      if (boxGone) {
+        const fresh = await spawnOnFreshBox(providerSlug, restartedSessionId, sandboxMcpServers)
+        if (fresh) return fresh
+      }
       throw new Error(
         `restartAgentSession: sandbox "${boxSandboxId}" expired or is unreachable ` +
           `(provider "${providerSlug}") — spawn a fresh session. ` +
@@ -1252,9 +1273,100 @@ export async function restartAgentSession(
                 registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
               },
             }),
+            ...sandboxCheckpointOpts({
+              exec: host.exec,
+              ...(host.readFile ? { readFile: host.readFile } : {}),
+              target: deliveryTarget,
+              outDir: sessionTranscriptDir(restartedSessionId),
+              onCheckpoint: record => {
+                registry.recordSandboxCheckpoint(restartedSessionId, record, formatDeliveryNotice(record))
+              },
+            }),
           }
         : {}),
+      watchdog: {},
     })
+    return registerBoxSession(restartedSessionId, sandboxMcpServers, {
+      agentSession,
+      sandboxId: host.sandboxId,
+      provider: providerSlug,
+      sandboxTeardown: lifecyclePolicy.teardown,
+      ...(deliveryTarget ? { deliveryTarget } : {}),
+      ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
+    })
+  }
+
+  // Set once the restart left the old (dead) box behind for a new one.
+  let movedToFreshBox = false
+  // Box gone: boot a fresh one from the workspace remote and check the work
+  // branch out again. `undefined` when the session has nothing to resume
+  // from (no work branch, or its workspace no longer carries a remote) — the
+  // caller then reports the dead box as before.
+  const spawnOnFreshBox = async (
+    providerSlug: string,
+    restartedSessionId: string,
+    sandboxMcpServers: SessionDescriptor["mcpServers"],
+  ): Promise<SessionDescriptor | undefined> => {
+    const target = prev.sandboxDeliveryTarget
+    if (!target || !prev.workspaceSlug || !target.branch.startsWith(SANDBOX_BRANCH_PREFIX)) return undefined
+    const workspace = findWorkspace(await loadWorkspacesConfig(), prev.workspaceSlug)
+    if (!workspace?.remote) return undefined
+    const booted = await bootSandboxAgentSession({
+      sandbox: providerSlug,
+      resolveSandboxProvider: opts.resolveSandboxProvider,
+      adapter: adapterSlug,
+      // Replaced by the fresh checkout's path (`explicitCwd: false`).
+      cwd: prev.cwd ?? "",
+      explicitCwd: false,
+      ...(sandboxMcpServers ? { mcpServers: sandboxMcpServers } : {}),
+      ...(effModel ? { model: effModel } : {}),
+      ...(effRoute?.gateway ? { route: effRoute } : {}),
+      ...(effEffort ? { effort: effEffort } : {}),
+      ...(prev.label ? { label: prev.label } : {}),
+      ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
+      workspace: { slug: workspace.slug, remote: workspace.remote },
+      worktree: { slug: target.branch.slice(SANDBOX_BRANCH_PREFIX.length) },
+      sessionId: restartedSessionId,
+      onDelivery: record => {
+        registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
+      },
+      onCheckpoint: record => {
+        registry.recordSandboxCheckpoint(restartedSessionId, record, formatDeliveryNotice(record))
+      },
+    })
+    if (booted.ok) movedToFreshBox = true
+    if (!booted.ok) {
+      throw new Error(
+        `restartAgentSession: sandbox "${prev.sandboxId}" is gone and a fresh box for ` +
+          `workspace "${workspace.slug}" could not be started — ${booted.message}`,
+      )
+    }
+    return registerBoxSession(restartedSessionId, sandboxMcpServers, {
+      agentSession: booted.agentSession,
+      sandboxId: booted.sandboxId,
+      provider: booted.provider,
+      sandboxTeardown: booted.sandboxTeardown,
+      cwd: booted.cwd,
+      ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
+      ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
+    })
+  }
+
+  const registerBoxSession = (
+    restartedSessionId: string,
+    sandboxMcpServers: SessionDescriptor["mcpServers"],
+    box: {
+      agentSession: AgentSessionLike
+      sandboxId: string
+      provider: string
+      sandboxTeardown: "kill" | "pause"
+      /** The box-side cwd when it moved (a fresh box's checkout). */
+      cwd?: string
+      deliveryTarget?: SandboxDeliveryTarget
+      sandboxPorts?: Record<number, string>
+    },
+  ): SessionDescriptor => {
+    const { agentSession, deliveryTarget } = box
     // A fresh box-spawned adapter has no conversation continuity (the box
     // daemon's `agent_start` has no resume surface) — `resumeVia: ""` plus
     // the strategy's `resumeFallback` flag keeps that honest, and the host
@@ -1262,7 +1374,7 @@ export async function restartAgentSession(
     const desc = registry.spawnAgent({
       id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
-      cwd,
+      cwd: box.cwd ?? cwd,
       agentSession,
       adapterSlug,
       adapterConfigDir: adapterConfigDirFor(restartedSessionId),
@@ -1309,12 +1421,12 @@ export async function restartAgentSession(
           }
         : {}),
       remote: true,
-      sandboxId: host.sandboxId,
-      sandboxProvider: providerSlug,
-      sandboxTeardown: lifecyclePolicy.teardown,
+      sandboxId: box.sandboxId,
+      sandboxProvider: box.provider,
+      sandboxTeardown: box.sandboxTeardown,
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
-      ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
-      commandPreview: `sandbox:${providerSlug} → ${adapterSlug}`,
+      ...(box.sandboxPorts ? { sandboxPorts: box.sandboxPorts } : {}),
+      commandPreview: `sandbox:${box.provider} → ${adapterSlug}`,
       resumedFrom: prev.id,
       resumeVia: "",
     })
@@ -1397,7 +1509,10 @@ export async function restartAgentSession(
   // alive rather than risk destroying the box out from under its own
   // replacement — a narrower version of the pre-fix gap, scoped to sandbox
   // sessions only.
-  if (sandboxId === undefined) {
+  // A restart that moved to a FRESH box shares nothing with `prev`'s dead
+  // one, so closing `prev` is safe again — and stops its checkpoint/watchdog
+  // timers.
+  if (sandboxId === undefined || movedToFreshBox) {
     registry.kill(prev.id, "SIGTERM", "restarted")
   }
 
