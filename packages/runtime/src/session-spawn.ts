@@ -4893,6 +4893,7 @@ async function bootSandboxAgentSession(opts: {
   const resolveSecret = buildSandboxSecretResolver({
     base: resolveSandboxSecret,
     refs: credentialRefs,
+    keychainFirst: new Set([GIT_TOKEN_ENV]),
   })
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(

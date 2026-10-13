@@ -54,6 +54,27 @@ describe("buildSandboxSecretResolver", () => {
     expect(reads).toEqual([])
   })
 
+  it("prefers the keychain over the broker for a keychainFirst name, and falls back to the broker", async () => {
+    const { store, reads } = mockStore({ "agentproto.git.x": KEYCHAIN_VALUE })
+    const resolve = buildSandboxSecretResolver({
+      base: async () => ENV_VALUE,
+      refs: new Map([["GH", "agentproto.git.x"], ["OTHER", "agentproto.git.x"]]),
+      keychainFirst: new Set(["GH"]),
+      store,
+    })
+    expect(await resolve("GH")).toBe(KEYCHAIN_VALUE)
+    expect(await resolve("OTHER")).toBe(ENV_VALUE)
+    expect(reads).toEqual(["agentproto.git.x"])
+
+    const empty = buildSandboxSecretResolver({
+      base: async () => ENV_VALUE,
+      refs: new Map([["GH", "agentproto.git.missing"]]),
+      keychainFirst: new Set(["GH"]),
+      store: mockStore({}).store,
+    })
+    expect(await empty("GH")).toBe(ENV_VALUE)
+  })
+
   it("falls back to the keychain slot named by the credentialRef", async () => {
     const { store, reads } = mockStore({ "agentproto.git.x": KEYCHAIN_VALUE })
     const resolve = buildSandboxSecretResolver({

@@ -11,7 +11,9 @@
  * caller supplies, since a free-form ref would read any keychain slot:
  *
  *   1. the broker (daemon env) wins when it has a value, so existing
- *      deployments resolve exactly as before;
+ *      deployments resolve exactly as before — except for names listed in
+ *      `keychainFirst`, where the explicit `credentialRef` wins and the broker
+ *      is only the fallback;
  *   2. otherwise, a name that has a `credentialRef` is read from the keychain.
  *
  * Values are returned to the caller and nowhere else — never logged, never
@@ -29,6 +31,10 @@ export interface BuildSandboxSecretResolverOptions {
   /** `name → credentialRef`, consulted only when `base` returned null. A live
    *  Map: entries added after construction (the auto-passthrough ref) are seen. */
   refs: ReadonlyMap<string, string>
+  /** Names whose `credentialRef` outranks the broker: a daemon-level env var of
+   *  the same name must not silently replace the credential the user
+   *  registered for this very purpose (the workspace's git token). */
+  keychainFirst?: ReadonlySet<string>
   /** Keychain backend; defaults to the OS keychain. Injectable for tests. */
   store?: Pick<CredentialStore, "read">
 }
@@ -37,9 +43,7 @@ export interface BuildSandboxSecretResolverOptions {
 export function buildSandboxSecretResolver(
   opts: BuildSandboxSecretResolverOptions,
 ): SandboxSecretResolver {
-  return async slug => {
-    const fromBroker = await opts.base(slug)
-    if (fromBroker !== null) return fromBroker
+  const readKeychain = async (slug: string): Promise<string | null> => {
     const ref = opts.refs.get(slug)
     if (ref === undefined) return null
     try {
@@ -52,6 +56,16 @@ export function buildSandboxSecretResolver(
       )
       return null
     }
+  }
+  return async slug => {
+    if (opts.keychainFirst?.has(slug)) {
+      const fromKeychain = await readKeychain(slug)
+      if (fromKeychain !== null) return fromKeychain
+      return opts.base(slug)
+    }
+    const fromBroker = await opts.base(slug)
+    if (fromBroker !== null) return fromBroker
+    return readKeychain(slug)
   }
 }
 

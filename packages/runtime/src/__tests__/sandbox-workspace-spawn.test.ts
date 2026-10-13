@@ -382,6 +382,21 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       expect(keychain.reads).toEqual([WORKSPACE_SLOT])
     })
 
+    it("the workspace's credentialRef beats a daemon-level AGENTPROTO_GIT_TOKEN", async () => {
+      keychain.values[WORKSPACE_SLOT] = FAKE_TOKEN
+      setMcpCredentialDeps({
+        resolveSandboxSecret: async slug => (slug === "AGENTPROTO_GIT_TOKEN" ? "daemon-wide-token" : null),
+      })
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {} },
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+      })
+      expect(result.ok).toBe(true)
+      expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBe(FAKE_TOKEN)
+    })
+
     it("env.passthrough naming AGENTPROTO_GIT_TOKEN cannot pull the token into a box with no workspace remote", async () => {
       const result = await spawnAgentSession(makeDeps(), {
         adapter: "fake-cli",
