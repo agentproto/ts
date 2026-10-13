@@ -47,7 +47,7 @@ import {
   type ReviewManifest,
 } from "./manifest.js"
 import { listPlaceholders, substitutePlaceholders } from "./placeholders.js"
-import type { Finding, LaneFallback, LaneResult, ReviewTarget, Verdict } from "./types.js"
+import type { Finding, LaneFallback, LaneRecovery, LaneResult, LaneSharedExecution, ReviewTarget, Verdict } from "./types.js"
 import { agentLaneStatus, foldVerdict } from "./verdict.js"
 
 /** One lane handed to the host's executor. Command lanes carry their `run`
@@ -58,6 +58,15 @@ export type LaneInvocation =
 
 /** What the host's executor reports for one lane. The lane's STATUS is
  *  derived from this by {@link toLaneResult} — never chosen by the host. */
+export interface LaneProvenance {
+  sessionId?: string
+  preset?: string
+  model?: string
+  fallbacks?: LaneFallback[]
+  recovery?: LaneRecovery
+  sharedExecution?: LaneSharedExecution
+}
+
 export type LaneOutcome =
   /** A command lane's process exited. `output` is a (tail of) combined
    *  stdout/stderr, surfaced as the finding detail on a non-zero exit. */
@@ -68,25 +77,17 @@ export type LaneOutcome =
   | {
       outcome: "reported"
       report: AgentLaneReport
-      sessionId?: string
-      preset?: string
-      model?: string
-      fallbacks?: LaneFallback[]
       composedFrom?: LaneResult["composedFrom"]
-    }
+    } & LaneProvenance
   /** The lane exceeded its `timeoutMs` and was stopped. */
   | {
       outcome: "timeout"
       error: string
-      sessionId?: string
-      preset?: string
-      model?: string
-      fallbacks?: LaneFallback[]
       output?: string
-    }
+    } & LaneProvenance
   /** The lane could not produce a result (spawn failed, no verdict file,
    *  cancelled, …). */
-  | { outcome: "skipped"; error: string; sessionId?: string; preset?: string; model?: string; fallbacks?: LaneFallback[] }
+  | ({ outcome: "skipped"; error: string } & LaneProvenance)
 
 /** The host seam that actually runs a lane. The daemon wires a real one
  *  (subprocess for command lanes, a child reviewer session for agent lanes);
@@ -148,11 +149,13 @@ const tail = (s: string | undefined): string =>
  *  status is decided. */
 export function toLaneResult(check: ReviewCheck, outcome: LaneOutcome, durationMs: number): LaneResult {
   const base = { id: check.id, kind: check.kind, blocking: check.blocking, durationMs }
-  const sessionFields = (o: { sessionId?: string; preset?: string; model?: string; fallbacks?: LaneFallback[] }) => ({
+  const sessionFields = (o: LaneProvenance) => ({
     ...(o.sessionId !== undefined ? { sessionId: o.sessionId } : {}),
     ...(o.preset !== undefined ? { preset: o.preset } : {}),
     ...(o.model !== undefined ? { model: o.model } : {}),
     ...(o.fallbacks !== undefined && o.fallbacks.length > 0 ? { fallbacks: o.fallbacks } : {}),
+    ...(o.recovery !== undefined ? { recovery: o.recovery } : {}),
+    ...(o.sharedExecution !== undefined ? { sharedExecution: o.sharedExecution } : {}),
   })
   switch (outcome.outcome) {
     case "exited": {

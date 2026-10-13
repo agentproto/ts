@@ -30,6 +30,16 @@
       "file": "aip-62/draft/ATTESTATION.schema.json",
       "field": "$defs.lane.properties.fallbacks",
       "reason": "review lane fallback: records the reviewers that were unavailable before the one that produced the verdict; pending upstream spec PR"
+    },
+    {
+      "file": "aip-62/draft/ATTESTATION.schema.json",
+      "field": "$defs.lane.properties.recovery",
+      "reason": "review verdict recovery: provenance of the bounded output-recovery step (recovery model session/preset/model kept apart from the reviewer's); pending upstream spec PR"
+    },
+    {
+      "file": "aip-62/draft/ATTESTATION.schema.json",
+      "field": "$defs.lane.properties.sharedExecution",
+      "reason": "review fallback dedup: marks lanes that share one reviewer execution so they are not read as independent agreement; pending upstream spec PR"
     }
   ]
 }
