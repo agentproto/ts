@@ -26,9 +26,12 @@ export const DELIVERY_RECORD_FILE = "delivery.json"
 export const DEFAULT_BUNDLE_MAX_BYTES = 50 * 1024 * 1024
 
 const BOX_BUNDLE_PATH = "/tmp/agentproto-delivery.bundle"
-const PROBE_TIMEOUT_MS = 60_000
-const PUSH_TIMEOUT_MS = 5 * 60_000
-const BUNDLE_TIMEOUT_MS = 5 * 60_000
+const PROBE_TIMEOUT_MS = 30_000
+const PUSH_TIMEOUT_MS = 90_000
+const BUNDLE_TIMEOUT_MS = 60_000
+/** Wall-clock cap on the WHOLE delivery: the box keeps billing until teardown
+ *  finishes, so every step's timeout is also capped by what is left of this. */
+export const DEFAULT_DELIVERY_DEADLINE_MS = 150_000
 
 export interface SandboxDeliveryTarget {
   checkoutDir: string
@@ -123,6 +126,8 @@ export interface RunSandboxDeliveryInput {
   /** Host directory receiving `delivery.bundle` and `delivery.json`. */
   outDir: string
   maxBytes?: number
+  /** Overall budget for probe + push + bundle + download. */
+  deadlineMs?: number
   now?: () => Date
 }
 
@@ -130,9 +135,30 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/** Runs `step` with a timeout of at most `capMs`, never past the deadline. The
+ *  race also covers a provider that ignores the exec timeout and hangs. */
+async function withinDeadline<T>(
+  deadlineAt: number,
+  capMs: number,
+  step: (timeoutMs: number) => Promise<T>,
+): Promise<T> {
+  const timeoutMs = Math.min(capMs, deadlineAt - Date.now())
+  if (timeoutMs <= 0) throw new Error("delivery deadline reached")
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("delivery deadline reached")), timeoutMs)
+  })
+  try {
+    return await Promise.race([step(timeoutMs), expired])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promise<SandboxDeliveryRecord> {
   const { exec, target } = input
   const maxBytes = input.maxBytes ?? DEFAULT_BUNDLE_MAX_BYTES
+  const deadlineAt = Date.now() + (input.deadlineMs ?? DEFAULT_DELIVERY_DEADLINE_MS)
   const record: SandboxDeliveryRecord = {
     at: (input.now?.() ?? new Date()).toISOString(),
     branch: target.branch,
@@ -143,7 +169,9 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
 
   let probe: DeliveryProbe | undefined
   try {
-    const result = await exec({ command: buildProbeCommand(target), timeoutMs: PROBE_TIMEOUT_MS })
+    const result = await withinDeadline(deadlineAt, PROBE_TIMEOUT_MS, (timeoutMs) =>
+      exec({ command: buildProbeCommand(target), timeoutMs }),
+    )
     probe = result.exitCode === 0 ? parseProbe(result.stdout) : undefined
     if (!probe) {
       const detail = `probe failed: ${result.exitCode === 0 ? "unparseable output" : describeExecFailure(result)}`
@@ -166,11 +194,9 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   }
 
   try {
-    const result = await exec({
-      command: buildPushCommand(target),
-      env: { GIT_TERMINAL_PROMPT: "0" },
-      timeoutMs: PUSH_TIMEOUT_MS,
-    })
+    const result = await withinDeadline(deadlineAt, PUSH_TIMEOUT_MS, (timeoutMs) =>
+      exec({ command: buildPushCommand(target), env: { GIT_TERMINAL_PROMPT: "0" }, timeoutMs }),
+    )
     record.push =
       result.exitCode === 0
         ? { status: "pushed" }
@@ -190,7 +216,9 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   }
 
   try {
-    const made = await exec({ command: buildBundleCommand(target), timeoutMs: BUNDLE_TIMEOUT_MS })
+    const made = await withinDeadline(deadlineAt, BUNDLE_TIMEOUT_MS, (timeoutMs) =>
+      exec({ command: buildBundleCommand(target), timeoutMs }),
+    )
     if (made.exitCode !== 0) {
       record.bundle = { status: "failed", detail: `git bundle failed: ${describeExecFailure(made)}` }
       return await persist(record, input.outDir)
@@ -205,7 +233,7 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
       }
       return await persist(record, input.outDir)
     }
-    const data = await input.readFile!(BOX_BUNDLE_PATH)
+    const data = await withinDeadline(deadlineAt, Infinity, () => input.readFile!(BOX_BUNDLE_PATH))
     await mkdir(input.outDir, { recursive: true })
     const path = join(input.outDir, DELIVERY_BUNDLE_FILE)
     await writeFile(path, data)

@@ -99,6 +99,30 @@ describe("runSandboxDelivery", () => {
     return { exec, commands }
   }
 
+  it("gives up on a hung box at the overall deadline and still records it", async () => {
+    const exec = () => new Promise<SandboxExecResult>(() => undefined)
+    const started = Date.now()
+    const record = await runSandboxDelivery({ exec, target, outDir, deadlineMs: 50 })
+
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(record.push.status).toBe("failed")
+    expect(record.push.detail).toMatch(/deadline/)
+    const persisted = JSON.parse(await readFile(join(outDir, DELIVERY_RECORD_FILE), "utf8"))
+    expect(persisted.push.status).toBe("failed")
+  })
+
+  it("caps each step's exec timeout by what is left of the deadline", async () => {
+    const timeouts: Array<number | undefined> = []
+    const exec = async (opts: SandboxExecOpts): Promise<SandboxExecResult> => {
+      timeouts.push(opts.timeoutMs)
+      return result(0, "ahead=0\nuncommitted=0\n")
+    }
+    await runSandboxDelivery({ exec, target, outDir, deadlineMs: 5_000 })
+
+    expect(timeouts).toHaveLength(1)
+    expect(timeouts[0]).toBeLessThanOrEqual(5_000)
+  })
+
   it("pushes an ahead branch and skips the bundle", async () => {
     const box = fakeBox({ ahead: 2 })
     const record = await runSandboxDelivery({ exec: box.exec, readFile: async () => new Uint8Array(), target, outDir })

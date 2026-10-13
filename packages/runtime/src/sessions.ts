@@ -313,7 +313,10 @@ export interface AgentSessionLike {
    *  (no host turn in flight — deliver as a normal prompt), `"unsupported"`.
    *  Never throws. Absent for sessions that can't steer. */
   steer?(content: unknown): Promise<"steered" | "promptRequired" | "unsupported">
-  close(): Promise<void>
+  /** `daemonShutdown` ⇒ the daemon process is exiting: skip any slow
+   *  pre-teardown work (a sandbox's work-branch delivery) and release the
+   *  underlying resource immediately. */
+  close(opts?: { daemonShutdown?: boolean }): Promise<void>
 }
 
 /** Result of `SessionsRegistry.setModel` — see that method's doc comment. */
@@ -12455,7 +12458,7 @@ export function createSessionsRegistry(opts?: {
         clearInFlightFlags(rt.desc)
         if (rt.agentSession) {
           recordExitUsageSnapshot(rt)
-          void rt.agentSession.close().catch(() => undefined)
+          void rt.agentSession.close({ daemonShutdown: true }).catch(() => undefined)
         }
         if (rt.pty) {
           try {

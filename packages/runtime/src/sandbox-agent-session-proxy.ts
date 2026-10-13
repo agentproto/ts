@@ -158,7 +158,9 @@ export interface SandboxAgentSessionProxyOpts {
   /** Runs once in `close()`, after the box's agent session is killed and
    *  before the box is stopped or paused — the last moment its filesystem is
    *  still reachable. A rejection is swallowed: delivery trouble never blocks
-   *  the teardown it precedes. */
+   *  the teardown it precedes. Skipped when the daemon itself is shutting
+   *  down (`close({ daemonShutdown: true })`): the process is about to exit,
+   *  so the box is released at once instead. */
   onBeforeTeardown?: () => Promise<void>
 }
 
@@ -546,7 +548,7 @@ export function createSandboxAgentSessionProxy(
       await host.prompt(remoteSessionId, lastPrompt, { interrupt: true })
     },
 
-    async close(): Promise<void> {
+    async close(closeOpts?: { daemonShutdown?: boolean }): Promise<void> {
       if (closed) return
       closed = true
       // PAUSE (not kill) when the lifecycle policy says this box is
@@ -560,7 +562,7 @@ export function createSandboxAgentSessionProxy(
         await host.kill(remoteSessionId)
       } finally {
         try {
-          await opts.onBeforeTeardown?.()
+          if (closeOpts?.daemonShutdown !== true) await opts.onBeforeTeardown?.()
         } catch {
           // best-effort — see `onBeforeTeardown`
         }

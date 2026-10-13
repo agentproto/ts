@@ -398,4 +398,20 @@ describe("sandbox proxy — onBeforeTeardown", () => {
     await expect(proxy.close()).resolves.toBeUndefined()
     expect(host.stop).toHaveBeenCalledTimes(1)
   })
+
+  it("skips the hook on a daemon-shutdown close and still stops the box", async () => {
+    const host = makeHost()
+    const hook = vi.fn(async () => undefined)
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      onBeforeTeardown: hook,
+    })
+
+    await proxy.close({ daemonShutdown: true })
+
+    expect(hook).not.toHaveBeenCalled()
+    expect(host.kill).toHaveBeenCalledTimes(1)
+    expect(host.stop).toHaveBeenCalledTimes(1)
+  })
 })
