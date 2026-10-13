@@ -14,7 +14,7 @@ import { createSentinelStore } from "../sentinel-store.js"
 import { createFakeSentinelProvider } from "../sentinel-providers/fake.js"
 import { LOCAL_GH_SLUG } from "../sentinel-providers/local-gh.js"
 import type { SentinelProviderHandle } from "../sentinel-providers/types.js"
-import type { RecordOpenedPrInput } from "../sessions.js"
+import { OUTPUT_SCAN_ADAPTER, type RecordOpenedPrInput } from "../sessions.js"
 
 const OPENED: RecordOpenedPrInput = {
   adapter: "claude-code",
@@ -50,6 +50,39 @@ describe("sentinel auto-link", () => {
     expect(s.spec.target).toEqual({ kind: "session", sessionId: "sess_1", urgency: "next-turn" })
     expect(s.spec.label).toBe("auto:pr#42")
     expect(s.spec.group).toBe("sess_1")
+  })
+
+  it("a PR url merely mentioned in a session's output (output-scan) creates no sentinel", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
+    const linker = createSentinelAutoLinker({
+      store,
+      resolveProvider: resolverFor(provider),
+      autoWatchPrs: async () => true,
+    })
+
+    await linker.linkNow("sess_supervisor", { ...OPENED, adapter: OUTPUT_SCAN_ADAPTER }, {})
+    expect(store.list()).toEqual([])
+
+    // The same PR reported by an adapter that proves creation is still watched.
+    await linker.linkNow("sess_child", OPENED, {})
+    expect(store.list()).toHaveLength(1)
+    expect(store.list()[0]!.spec.target).toMatchObject({ sessionId: "sess_child" })
+  })
+
+  it("config.sentinel.autoWatchUrgency sets the sentinel's delivery urgency", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
+    const linker = createSentinelAutoLinker({
+      store,
+      resolveProvider: resolverFor(provider),
+      autoWatchPrs: async () => true,
+      autoWatchUrgency: async () => "fyi",
+    })
+
+    await linker.linkNow("sess_1", OPENED, {})
+
+    expect(store.list()[0]!.spec.target).toEqual({ kind: "session", sessionId: "sess_1", urgency: "fyi" })
   })
 
   it("a re-run (the reconciler observing the same PR again) does not duplicate the sentinel", async () => {

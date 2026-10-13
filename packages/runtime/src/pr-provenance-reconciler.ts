@@ -46,6 +46,7 @@ import { readToolCallRecords } from "./tool-call-log.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
 import { readRecentTurnsSync } from "./session-evidence.js"
 import { parsePrUrl } from "./review-pr.js"
+import { OUTPUT_SCAN_ADAPTER } from "./sessions.js"
 
 /**
  * Resolve the OPEN pull request for a session's working directory — i.e. the
@@ -198,7 +199,9 @@ export function createPrProvenanceReconciler(opts: {
     // created. A mention is not proof of creation, so this lane never
     // stamps a footer — it only records the PR on `openedPrs` (adapter
     // "output-scan") so the session ↔ PR link at least exists for the
-    // supervisor/polling lanes to consume. In-process, zero network: the
+    // supervisor/polling lanes to consume. Sentinel auto-link skips this
+    // adapter: a supervisor that reports a child's PR url must not become
+    // its watcher. In-process, zero network: the
     // read is the same file the transcript writer already owns; dedupe is
     // the url set below + the descriptor's `openedPrs` (over restarts).
     if (desc.eventsPath) {
@@ -215,7 +218,7 @@ export function createPrProvenanceReconciler(opts: {
           scannedPrUrls.add(url)
           try {
             opts.registry.recordOpenedPr(sessionId, {
-              adapter: "output-scan",
+              adapter: OUTPUT_SCAN_ADAPTER,
               number: parsed.number,
               url,
             })

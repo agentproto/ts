@@ -120,7 +120,10 @@ The daemon can create a sentinel automatically when an agent session opens
 a PR (`gh pr create` run via `command_execute`, or discovered by the PR
 provenance reconciler) - no `sentinel watch` call needed. This is
 `config.sentinel.autoWatchPrs` (defaults to `true` only when `local-gh` is
-usable), with a per-spawn opt-out (`agent_start`'s `sentinel: false`). See
+usable), with a per-spawn opt-out (`agent_start`'s `sentinel: false`) and a
+configurable delivery urgency (`config.sentinel.autoWatchUrgency`, default
+`next-turn`). PR urls merely mentioned in a session's output are not
+auto-watched. See
 the [sentinels guide](../guides/sentinels.md) for the full flow.
 
 ## Sentinel model, MCP surface and webhook target
