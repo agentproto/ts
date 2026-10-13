@@ -271,6 +271,13 @@ Usage:
                                continuedTo. --dry-run prints the checkpoint
                                that WOULD be handed over: nothing is written,
                                nothing is spawned.)
+  agentproto sessions migrate <id-or-name> [--sandbox <provider>] [--model <id>]
+                              [--profile <ref>] [--json]
+                              (resume a SANDBOX session on a NEW box from its
+                               last checkpoint: same work branch, commits stay
+                               commits, uncommitted work stays uncommitted, and
+                               the transcript carries over. The old box is
+                               stopped once the new one is up.)
   agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
                               [--prefer-native-terminal]
                               (respawn from history — clones the old
@@ -440,7 +447,7 @@ While attached:
 
 export async function runSessions(args: readonly string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
-    process.stdout.write(args[0] === "checkpoint" ? CHECKPOINT_USAGE : args[0] === "handoff" ? HANDOFF_USAGE : USAGE)
+    process.stdout.write(args[0] === "checkpoint" ? CHECKPOINT_USAGE : args[0] === "handoff" ? HANDOFF_USAGE : args[0] === "migrate" ? MIGRATE_USAGE : USAGE)
     return 0
   }
 
@@ -469,6 +476,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "message") return runMessage(args.slice(1))
   if (sub === "checkpoint") return runCheckpoint(args.slice(1))
   if (sub === "handoff") return runHandoff(args.slice(1))
+  if (sub === "migrate") return runMigrate(args.slice(1))
   if (sub === "board") {
     const { runBoard } = await import("./sessions-board.js")
     return runBoard(args.slice(1))
@@ -2181,6 +2189,24 @@ Options:
   --json            print the full daemon response
 `
 
+const MIGRATE_USAGE = `Usage:
+  agentproto sessions migrate <id-or-name> [--sandbox <provider>] [--model <id>]
+                              [--profile <ref>] [--json]
+
+Resume a sandbox session on a NEW box. The daemon takes a final checkpoint of
+the old box when it is still alive (else uses the last recorded one), boots a
+fresh box from the same workspace remote, restores the work branch plus the
+uncommitted snapshot, carries the transcript over via a context checkpoint,
+and finally stops the old box. Adapter, model and profile are kept unless
+overridden.
+
+Options:
+  --sandbox <provider>   provider for the new box (default: same as the old one)
+  --model <id>           model for the new session (default: carried over)
+  --profile <ref>        auth profile (billing wallet) for the new session
+  --json                 print the full daemon response
+`
+
 /** Shown when an older daemon's dry-run response carries no `approximateNote`. */
 const HANDOFF_DRY_RUN_FALLBACK_NOTE =
   "approximate content: a dry run does not prompt the source session; the real handoff asks it to summarise itself first."
@@ -2202,6 +2228,20 @@ function parseCheckpointArgs(args: readonly string[]) {
     allowPositionals: true,
     strict: true,
     options: { note: { type: "string" }, json: { type: "boolean" } },
+  })
+}
+
+function parseMigrateArgs(args: readonly string[]) {
+  return parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      sandbox: { type: "string" },
+      model: { type: "string" },
+      profile: { type: "string" },
+      json: { type: "boolean" },
+    },
   })
 }
 
@@ -2335,6 +2375,60 @@ async function runHandoff(args: readonly string[]): Promise<number> {
     return 0
   } catch (err) {
     return reportHandoffError("handoff", id, err)
+  }
+}
+
+/**
+ * `agentproto sessions migrate <id-or-name> [...]` — `POST /sessions/:id/migrate`.
+ */
+async function runMigrate(args: readonly string[]): Promise<number> {
+  let parsed: ReturnType<typeof parseMigrateArgs>
+  try {
+    parsed = parseMigrateArgs(args)
+  } catch (err) {
+    process.stderr.write(`agentproto sessions migrate: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 2
+  }
+  const { values, positionals } = parsed
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write(
+      "agentproto sessions migrate: expected exactly one session id.\n" +
+        "  Try: agentproto sessions migrate <id-or-name> [--sandbox e2b]\n",
+    )
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions migrate")
+    return 2
+  }
+  const endpoint = report.found
+  const body = {
+    ...(values.sandbox ? { sandbox: values.sandbox } : {}),
+    ...(values.model ? { model: values.model } : {}),
+    ...(values.profile ? { profile: values.profile } : {}),
+  }
+  try {
+    const r = await httpPostJson<Record<string, unknown>>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/migrate`,
+      body,
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(r, null, 2) + "\n")
+      return 0
+    }
+    const restore = r.restore as { source?: string; snapshot?: string } | undefined
+    process.stdout.write(
+      `agentproto sessions migrate: ${String(r.migratedFrom)} → ${String(r.migratedTo)}\n` +
+        `  new box: ${String(r.sandboxProvider ?? "?")} ${String(r.sandboxId ?? "")}\n` +
+        `  branch: ${String(r.branch)}  (restored from ${restore?.source ?? "?"} checkpoint, snapshot ${restore?.snapshot ?? "?"})\n` +
+        `  old box ${r.oldSessionKilled === true ? "stopped" : "left as-is"}\n`,
+    )
+    return 0
+  } catch (err) {
+    return reportHandoffError("migrate", id, err)
   }
 }
 

@@ -205,6 +205,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "session_judge_jev",
   "session_list",
   "session_mark_completed",
+  "session_migrate",
   "session_monitor",
   "session_queue_deliver",
   "session_queue_drop",

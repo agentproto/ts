@@ -90,6 +90,14 @@ export interface ContinueAgentSessionFreshOptions {
   handoffAsker?: HandoffAsker
   /** Last policy gate / open tasks lookups — `createCheckpointSources(...)`. */
   sources?: CheckpointSources
+  /** Fields laid over the carried-forward `spawnAgentSession` input, last —
+   *  how `session_migrate` moves the continuation onto a new sandbox box
+   *  (`sandbox`, `workspaceSlug`, `worktree`, …) without a second copy of this
+   *  carry-forward logic. */
+  spawn?: Partial<SpawnAgentSessionInput>
+  /** Record a `handoff` {from,to harness} pair on the fresh descriptor.
+   *  Default true; a same-harness migration passes false. */
+  stampHandoff?: boolean
 }
 
 function formatAccessForSpawn(desc: SessionDescriptor): { profileRef?: string } | undefined {
@@ -217,6 +225,7 @@ export async function continueAgentSessionFresh(
     permissionHold: prev.permissionHold,
     // The fresh session stays inside the same app boundary as `prev`.
     ...(boundaryFromMeta(prev.meta) ? { appBoundary: boundaryFromMeta(prev.meta)! } : {}),
+    ...opts.spawn,
   }
 
   const result: SpawnAgentSessionResult = await spawnAgentSession(deps, spawnInput)
@@ -231,10 +240,12 @@ export async function continueAgentSessionFresh(
   const fresh = result.descriptor
   fresh.continuedFrom = prev.id
   fresh.checkpointId = checkpoint.checkpointId
-  fresh.handoff = {
-    fromHarness: prev.harness ?? prev.adapterSlug ?? "claude-code",
-    toHarness: fresh.harness ?? fresh.adapterSlug ?? adapter,
-    at: new Date().toISOString(),
+  if (opts.stampHandoff !== false) {
+    fresh.handoff = {
+      fromHarness: prev.harness ?? prev.adapterSlug ?? "claude-code",
+      toHarness: fresh.harness ?? fresh.adapterSlug ?? adapter,
+      at: new Date().toISOString(),
+    }
   }
 
   // Link provenance on the original descriptor too.
