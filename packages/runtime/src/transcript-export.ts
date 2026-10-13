@@ -58,6 +58,14 @@ export interface ExportedMessage {
    *  daemon-composed system slice (role, AGENTS.md contract, lineage) of a
    *  spawned session's initial prompt. Checkpoints leave these out. */
   internal?: "handoff" | "preamble"
+  /** `seq` of the events.jsonl record this message was built from — set by
+   *  the daemon-events exporter only (native stores have no event seq). A
+   *  batched assistant turn carries the seq of the record that STARTED the
+   *  batch (its first text/thought/tool-call record), so a transcript can be
+   *  cut at a message boundary by seq: everything `<= X` is the head, the
+   *  rest is the verbatim tail. A record with no seq (a command session's
+   *  kind-less CommandLogEntry line) yields a message with no seq. */
+  seq?: number
 }
 
 export interface ExportedSessionMeta {
@@ -89,6 +97,28 @@ export interface ExportedSessionMeta {
 export interface ExportedSession {
   meta: ExportedSessionMeta
   messages: ExportedMessage[]
+}
+
+// ── seq cutoff split ──────────────────────────────────────────────────
+
+/** Cut an exported message list at an events.jsonl seq cutoff, preserving
+ *  order on both sides. `atOrBefore` is every message with
+ *  `seq <= cutoffSeq` — plus messages without a seq (native-store exports,
+ *  a command session's kind-less line), which can't be placed after the
+ *  cut; `after` is every message with `seq > cutoffSeq`. This is the
+ *  head/tail cut a prepared checkpoint replays at swap time: the head
+ *  feeds the summary, the tail is re-added verbatim after it. */
+export function splitMessagesAtSeq(
+  messages: ExportedMessage[],
+  cutoffSeq: number,
+): { atOrBefore: ExportedMessage[]; after: ExportedMessage[] } {
+  const atOrBefore: ExportedMessage[] = []
+  const after: ExportedMessage[] = []
+  for (const m of messages) {
+    if (m.seq !== undefined && m.seq > cutoffSeq) after.push(m)
+    else atOrBefore.push(m)
+  }
+  return { atOrBefore, after }
 }
 
 // ── Render ────────────────────────────────────────────────────────────
@@ -822,7 +852,9 @@ export async function crossValidateHermesExport(
  *  erroring, so a future field this reader doesn't know about is just
  *  ignored instead of breaking the export. */
 interface TranscriptRecord {
-  seq: number
+  /** Monotonic per-session event sequence number. Absent on a command
+   *  session's kind-less CommandLogEntry line (no seq/turn machinery). */
+  seq?: number
   ts: string
   kind: string
   text?: string
@@ -862,10 +894,19 @@ interface TranscriptRecord {
   timedOut?: boolean
 }
 
+export interface DaemonEventsExportOptions {
+  /** Read only records with `seq <= untilSeq`: the transcript cut at a
+   *  message "X" identified by its events.jsonl seq (the prepared
+   *  checkpoint's `cutoffSeq`). Records past the cutoff are skipped, so the
+   *  result is exactly the messages whose originating record is `<= X`. */
+  untilSeq?: number
+}
+
 export async function exportDaemonEventsSession(
   sessionId: string,
   desc?: SessionDescriptor,
   baseDir?: string,
+  opts?: DaemonEventsExportOptions,
 ): Promise<ExportedSession> {
   const filePath = sessionEventsPath(sessionId, baseDir)
 
@@ -900,6 +941,9 @@ export async function exportDaemonEventsSession(
   let asmReasoning = ""
   let asmToolCalls: { name: string; args: string }[] = []
   let asmTs: number | undefined
+  /** `seq` of the record that STARTED this batch — the batch's identity once
+   *  it is flushed as one message, so a seq cut lands on message boundaries. */
+  let asmSeq: number | undefined
 
   const flushAssistant = (): void => {
     if (!asmText.trim() && !asmReasoning.trim() && asmToolCalls.length === 0) return
@@ -908,11 +952,13 @@ export async function exportDaemonEventsSession(
     if (asmReasoning.trim()) m.reasoning = asmReasoning.trim()
     if (asmToolCalls.length) m.toolCalls = asmToolCalls
     if (asmTs !== undefined) m.ts = asmTs
+    if (asmSeq !== undefined) m.seq = asmSeq
     messages.push(m)
     asmText = ""
     asmReasoning = ""
     asmToolCalls = []
     asmTs = undefined
+    asmSeq = undefined
   }
 
   // A handoff turn spans the handoff question up to the next prompt: its
@@ -937,8 +983,18 @@ export async function exportDaemonEventsSession(
     } catch {
       continue
     }
+    // `untilSeq` cut: skip every record past the cutoff, so the export is
+    // exactly the messages whose originating record is `<= untilSeq`. A
+    // record with no seq (a command session's kind-less line) can't be
+    // placed past a seq cut and is always kept. Skipped (not broken on):
+    // seq is NOT guaranteed ascending across a daemon restart.
+    if (opts?.untilSeq !== undefined && rec.seq !== undefined && rec.seq > opts.untilSeq) continue
     const ts = Date.parse(rec.ts)
     const tsOrUndefined = Number.isNaN(ts) ? undefined : ts
+    // Every message is stamped with the seq of the record that started it
+    // (an assistant batch: the record that opened the batch), so a reader
+    // can cut a transcript at a message boundary by seq.
+    const seqStamp = rec.seq !== undefined ? { seq: rec.seq } : {}
 
     // A command session (`command_execute` → recordCommand) writes a
     // kind-less CommandLogEntry line as its FIRST line: no `kind` field,
@@ -957,6 +1013,7 @@ export async function exportDaemonEventsSession(
       messages.push({
         role: "assistant",
         toolCalls: [{ name: toolName, args: argsJson }],
+        ...seqStamp,
         ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
       })
       const header =
@@ -973,6 +1030,7 @@ export async function exportDaemonEventsSession(
         role: "tool",
         text: rec.exitCode !== 0 ? `[error] ${text}` : text,
         toolName,
+        ...seqStamp,
         ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
       })
       toolCallCount += 1
@@ -986,7 +1044,12 @@ export async function exportDaemonEventsSession(
         if (rec.source === HANDOFF_PROMPT_SOURCE || rec.text?.startsWith(HANDOFF_PROMPT_OPENER)) {
           handoffStart = messages.length
         }
-        messages.push({ role: "user", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
+        messages.push({
+          role: "user",
+          text: rec.text ?? "",
+          ...seqStamp,
+          ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+        })
         break
       case "session-message": {
         // A typed message from another session — a user-role turn (that's
@@ -1007,6 +1070,7 @@ export async function exportDaemonEventsSession(
             kind: m.kind ?? "report",
             messageId: m.id,
           },
+          ...seqStamp,
           ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
         })
         break
@@ -1022,6 +1086,7 @@ export async function exportDaemonEventsSession(
           role: "system",
           text: rec.text ?? "",
           internal: "preamble",
+          ...seqStamp,
           ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
         })
         break
@@ -1031,14 +1096,17 @@ export async function exportDaemonEventsSession(
         // (still `partial`, or flushed bare at a turn boundary) lacks one,
         // and that's exactly the byte-for-byte original content.
         if (asmTs === undefined) asmTs = tsOrUndefined
+        if (asmSeq === undefined && rec.seq !== undefined) asmSeq = rec.seq
         asmText += rec.text ?? ""
         break
       case "thought":
         if (asmTs === undefined) asmTs = tsOrUndefined
+        if (asmSeq === undefined && rec.seq !== undefined) asmSeq = rec.seq
         asmReasoning += rec.text ?? ""
         break
       case "tool-call": {
         if (asmTs === undefined) asmTs = tsOrUndefined
+        if (asmSeq === undefined && rec.seq !== undefined) asmSeq = rec.seq
         const name = rec.toolName ?? "tool"
         if (rec.toolCallId) toolNameById.set(rec.toolCallId, name)
         const args =
@@ -1054,6 +1122,7 @@ export async function exportDaemonEventsSession(
         messages.push({
           role: "tool",
           text: rec.isError ? `[error] ${text}` : text,
+          ...seqStamp,
           ...(name ? { toolName: name } : {}),
           ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
         })
@@ -1061,14 +1130,14 @@ export async function exportDaemonEventsSession(
       }
       case "agent-prompt":
         flushAssistant()
-        messages.push({ role: "system", text: "[awaiting input] agent requested a decision" })
+        messages.push({ role: "system", text: "[awaiting input] agent requested a decision", ...seqStamp })
         break
       case "plan": {
         flushAssistant()
         const entries = rec.entries ?? []
         const done = entries.filter(e => e.status === "completed").length
         const list = entries.map(e => e.content).join("; ")
-        messages.push({ role: "system", text: `[plan] ${done}/${entries.length} ${list}`.trim() })
+        messages.push({ role: "system", text: `[plan] ${done}/${entries.length} ${list}`.trim(), ...seqStamp })
         break
       }
       case "usage_update":
@@ -1076,7 +1145,7 @@ export async function exportDaemonEventsSession(
         break
       case "error":
         flushAssistant()
-        messages.push({ role: "system", text: `[error] ${rec.error?.message ?? "unknown"}` })
+        messages.push({ role: "system", text: `[error] ${rec.error?.message ?? "unknown"}`, ...seqStamp })
         break
       case "turn-end":
         flushAssistant()
@@ -1085,7 +1154,7 @@ export async function exportDaemonEventsSession(
         // Daemon-side system notice (e.g. the interrupted-turn resume banner)
         // — surfaced as a system message, same as plan/error notices above.
         flushAssistant()
-        messages.push({ role: "system", text: rec.text ?? "" })
+        messages.push({ role: "system", text: rec.text ?? "", ...seqStamp })
         break
       default:
         // Deliberately NOT handling `kind: "tool-call-record"` here: an

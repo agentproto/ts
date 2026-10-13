@@ -672,11 +672,12 @@ describe("daemon-events exporter", () => {
     const parsed = JSON.parse(json.content) as ExportedSession
     const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
     expect(parsed.messages.slice(0, 2)).toEqual([
-      { role: "user", text: "Delegate it.", ts: FIXTURE_TS },
+      { role: "user", text: "Delegate it.", seq: 1, ts: FIXTURE_TS },
       {
         role: "user",
         text: "done: PR #124",
         from: { sessionId: "sess_child01", label: "executor-2", relation: "child", kind: "done", messageId: "msg_1" },
+        seq: 3,
         ts: FIXTURE_TS,
       },
     ])
@@ -718,15 +719,16 @@ describe("daemon-events exporter", () => {
     expect(parsed.meta.source).toBe("daemon-events")
     const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
     expect(parsed.messages).toEqual([
-      { role: "user", text: "List files.", ts: FIXTURE_TS },
+      { role: "user", text: "List files.", seq: 1, ts: FIXTURE_TS },
       {
         role: "assistant",
         text: "Let me check.",
         toolCalls: [{ name: "bash", args: JSON.stringify({ command: "ls" }) }],
+        seq: 2,
         ts: FIXTURE_TS,
       },
-      { role: "tool", text: "file1.txt\nfile2.txt", toolName: "bash", ts: FIXTURE_TS },
-      { role: "assistant", text: "2 files found.", ts: FIXTURE_TS },
+      { role: "tool", text: "file1.txt\nfile2.txt", toolName: "bash", seq: 4, ts: FIXTURE_TS },
+      { role: "assistant", text: "2 files found.", seq: 5, ts: FIXTURE_TS },
     ])
   })
 
@@ -751,8 +753,14 @@ describe("daemon-events exporter", () => {
     const parsed = JSON.parse(result.content) as ExportedSession
     const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
     expect(parsed.messages).toEqual([
-      { role: "system", text: "You are the executor. Do the task yourself.", internal: "preamble", ts: FIXTURE_TS },
-      { role: "user", text: "fix the bug", ts: FIXTURE_TS },
+      {
+        role: "system",
+        text: "You are the executor. Do the task yourself.",
+        internal: "preamble",
+        seq: 1,
+        ts: FIXTURE_TS,
+      },
+      { role: "user", text: "fix the bug", seq: 2, ts: FIXTURE_TS },
     ])
   })
 
@@ -784,8 +792,8 @@ describe("daemon-events exporter", () => {
     })
 
     const parsed = JSON.parse(result.content) as ExportedSession
-    expect(parsed.messages).toContainEqual({ role: "system", text: "[plan] 1/2 step 1; step 2" })
-    expect(parsed.messages).toContainEqual({ role: "system", text: "[error] boom" })
+    expect(parsed.messages).toContainEqual({ role: "system", text: "[plan] 1/2 step 1; step 2", seq: 1 })
+    expect(parsed.messages).toContainEqual({ role: "system", text: "[error] boom", seq: 3 })
     expect(parsed.meta.costUsd).toBe(0.42)
   })
 
@@ -862,12 +870,14 @@ describe("daemon-events exporter", () => {
             args: JSON.stringify({ command: "gh", args: ["pr", "list"], cwd: "/repo" }),
           },
         ],
+        seq: 1,
         ts: FIXTURE_TS,
       },
       {
         role: "tool",
         text: "exit code 0, 812ms\nstdout:\npr #1\npr #2",
         toolName: "command_execute",
+        seq: 1,
         ts: FIXTURE_TS,
       },
     ])

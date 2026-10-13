@@ -720,7 +720,10 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     throw new WorkflowCompileError(`agent step '${id}' needs a non-empty 'prompt'`)
   }
 
-  let adapter: string | undefined = typeof step.adapter === "string" ? step.adapter : undefined
+  // `adapter`: a literal slug, or (entry handles only, like `model`/`cwd`) a
+  // run-time selector — e.g. the adapter a per-item model requires.
+  let adapter: Selector<string> | string | undefined =
+    typeof step.adapter === "string" || typeof step.adapter === "function" ? step.adapter : undefined
   let options: Record<string, boolean | number | string> | undefined =
     step.options !== undefined ? step.options : undefined
   let model: unknown = step.model
@@ -748,6 +751,13 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     // An explicit step-level declaration is the author's override; the
     // agent-ref resolution only supplies the DEFAULT.
     if (adapter === undefined) adapter = resolved.adapter
+    else if (typeof adapter === "function" && resolved.adapter !== undefined) {
+      // A selector that has no opinion for this item (undefined) keeps the
+      // agent ref's own adapter instead of spawning with none.
+      const select = adapter
+      const fallback = resolved.adapter
+      adapter = (b: Bindings) => select(b) ?? fallback
+    }
     if (model === undefined) model = resolved.model
     // `resolved.options` is shaped for `resolved.adapter` specifically (e.g.
     // mastra-agent's `agent` option) — only apply it when the step ends up
@@ -755,6 +765,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     // DIFFERENT adapter must not inherit an option id the new adapter's own
     // manifest never declared (the spawn rejects it loudly — see F26's
     // `resolveAgentRefsForWorkflow` doc).
+    // A selector adapter isn't known until run time, so it never inherits them.
     if (options === undefined && adapter === resolved.adapter) options = resolved.options
     // The agent's declared tools travel with it whatever adapter runs it —
     // they scope the host's tool gateway, not an adapter option.

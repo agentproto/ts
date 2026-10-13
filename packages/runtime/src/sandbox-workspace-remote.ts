@@ -12,7 +12,9 @@
  * The git token never appears in a command, URL or argv. The box receives it
  * as the env var {@link GIT_TOKEN_ENV} (resolved from the keychain by
  * `sandbox-secret-resolver`), and a credential helper configured here reads it
- * from the environment when git asks.
+ * from the environment when git asks. The same token is also exposed as
+ * {@link GH_TOKEN_ENV} so the `gh` CLI baked into the workstation template can
+ * open pull requests with it.
  */
 
 import type { SandboxExecOpts, SandboxExecResult, SandboxSpec } from "@agentproto/sandbox"
@@ -21,15 +23,22 @@ import { DEFAULT_REMOTE_BRANCH, validateRemoteBranch, type WorkspaceRemote } fro
 /** Env var the box sees the git token under. */
 export const GIT_TOKEN_ENV = "AGENTPROTO_GIT_TOKEN"
 
+/** Env var `gh` reads its token from. In the box it carries the same
+ *  workspace git token as {@link GIT_TOKEN_ENV}, so `gh pr create` works. */
+export const GH_TOKEN_ENV = "GH_TOKEN"
+
+const RESERVED_SANDBOX_ENV: ReadonlySet<string> = new Set([GIT_TOKEN_ENV, GH_TOKEN_ENV])
+
 /**
- * {@link GIT_TOKEN_ENV} is reserved for the daemon's own workspace-remote
- * injection. Drop it from any caller-declared env slot (`env.passthrough`,
- * `env.auth.state.env`, `join.tokenEnv`) so a caller can neither shadow the
- * workspace token nor pull a same-named daemon env var into the box by hand.
+ * {@link GIT_TOKEN_ENV} and {@link GH_TOKEN_ENV} are reserved for the daemon's
+ * own workspace-remote injection. Drop them from any caller-declared env slot
+ * (`env.passthrough`, `env.auth.state.env`, `join.tokenEnv`) so a caller can
+ * neither shadow the workspace token nor pull a same-named daemon env var
+ * (e.g. the operator's own `GH_TOKEN`) into the box by hand.
  */
 export function withoutReservedSandboxEnv<T extends SandboxSpec>(spec: T): T {
   const keep = (names: string[] | undefined): string[] | undefined =>
-    names?.filter(name => name !== GIT_TOKEN_ENV)
+    names?.filter(name => !RESERVED_SANDBOX_ENV.has(name))
   const env = spec.env
   const stripped =
     env === undefined
@@ -44,16 +53,35 @@ export function withoutReservedSandboxEnv<T extends SandboxSpec>(spec: T): T {
               : {}),
           },
         }
-  if (stripped.join?.tokenEnv === GIT_TOKEN_ENV) {
+  if (stripped.join?.tokenEnv !== undefined && RESERVED_SANDBOX_ENV.has(stripped.join.tokenEnv)) {
     const { tokenEnv: _dropped, ...join } = stripped.join
     return { ...stripped, join }
   }
   return stripped
 }
 
+/**
+ * Answer {@link GH_TOKEN_ENV} with the workspace git token, and only that:
+ * with `gitToken` false (no workspace remote token for this box) it resolves
+ * to null, and it never falls through to a daemon-env `GH_TOKEN`. Every other
+ * name goes to `resolve` unchanged.
+ */
+export function withGhTokenAlias(
+  resolve: (slug: string) => Promise<string | null>,
+  gitToken: boolean,
+): (slug: string) => Promise<string | null> {
+  return async slug => {
+    if (slug !== GH_TOKEN_ENV) return resolve(slug)
+    return gitToken ? resolve(GIT_TOKEN_ENV) : null
+  }
+}
+
 /** Prefix of the work branch cut inside the box (`wt/<slug>`), matching the
  *  local worktree convention. */
 export const SANDBOX_BRANCH_PREFIX = "wt/"
+/** Remote branch namespace holding the uncommitted-work snapshot of a work
+ *  branch (`agentproto-checkpoint/wt/<slug>`, pushed by `sandbox-delivery`). */
+export const CHECKPOINT_BRANCH_PREFIX = "agentproto-checkpoint/"
 
 const CLONE_TIMEOUT_MS = 15 * 60_000
 const STEP_TIMEOUT_MS = 2 * 60_000
@@ -168,11 +196,33 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
   )
   if (branch !== undefined) {
     const ref = shellQuote(branch)
+    const remoteRef = `refs/remotes/origin/${branch}`
     steps.push({
       label: "git-checkout",
+      // Local branch (a reused box) first, then the branch a previous box
+      // pushed (a restart on a fresh box resumes its work), else cut it.
       command:
         `cd ${dir} && if git show-ref --verify --quiet ${shellQuote(`refs/heads/${branch}`)}; ` +
-        `then git checkout ${ref}; else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
+        `then git checkout ${ref}; ` +
+        `elif git show-ref --verify --quiet ${shellQuote(remoteRef)}; ` +
+        `then git checkout -b ${ref} --track ${shellQuote(`origin/${branch}`)}; ` +
+        `else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
+      timeoutMs: STEP_TIMEOUT_MS,
+    })
+    const checkpoint = shellQuote(`refs/remotes/origin/${CHECKPOINT_BRANCH_PREFIX}${branch}`)
+    steps.push({
+      label: "restore-checkpoint",
+      // A dead box's uncommitted work, snapshotted by `sandbox-delivery`: put
+      // its tree back as uncommitted changes, but only onto the exact commit
+      // it was taken from and a clean checkout — anything else means the
+      // snapshot is stale or would clobber work, so it is left on the remote.
+      // Never fatal: the session can start without it.
+      command:
+        `cd ${dir} && if git show-ref --verify --quiet ${checkpoint} && ` +
+        `[ "$(git rev-parse ${checkpoint}^)" = "$(git rev-parse HEAD)" ] && ` +
+        `[ -z "$(git status --porcelain)" ]; ` +
+        `then { git read-tree -u --reset ${checkpoint} && git reset -q && echo "restored checkpoint"; } ` +
+        `|| echo "checkpoint not restored"; fi`,
       timeoutMs: STEP_TIMEOUT_MS,
     })
   } else {

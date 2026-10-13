@@ -67,6 +67,12 @@ export interface ContextCheckpoint {
   handoffTurn?: CheckpointHandoffTurn
   /** Bounded digest of the most recent turns. */
   recentDigest: string
+  /** `seq` the transcript was cut at when this checkpoint was built:
+   *  records with a higher seq were excluded from the digest and the
+   *  sections, so `splitMessagesAtSeq(messages, cutoffSeq)` separates the
+   *  covered head from the untouched tail. Absent when the checkpoint read
+   *  the whole transcript (no `untilSeq` given). */
+  cutoffSeq?: number
   /** Absolute path to the original events.jsonl transcript. */
   originalTranscriptPath: string
   /** Absolute path where this checkpoint JSON was persisted. */
@@ -125,6 +131,11 @@ export interface BuildContextCheckpointOptions {
   handoffAsker?: HandoffAsker
   /** Supervisor gate results / task ledger lookups (see `createCheckpointSources`). */
   sources?: CheckpointSources
+  /** Read only the transcript records with `seq <= untilSeq` — the
+   *  checkpoint's view of the session stops at that message boundary; the
+   *  value is recorded as `cutoffSeq` on the checkpoint. Omit to read the
+   *  whole transcript (no `cutoffSeq`). */
+  untilSeq?: number
 }
 
 /** Shown with every handoff dry run: the preview skips the question put to the source session. */
@@ -159,13 +170,22 @@ interface TranscriptView {
   digest: string
 }
 
-async function readTranscript(sessionId: string, baseDir?: string): Promise<TranscriptView> {
+async function readTranscript(
+  sessionId: string,
+  baseDir?: string,
+  untilSeq?: number,
+): Promise<TranscriptView> {
   let messages: ExportedMessage[]
   try {
     // The handoff exchange and the daemon-composed preamble are plumbing,
     // not work: leave them out of the digest, the extraction and the
-    // resume prompt.
-    messages = (await exportDaemonEventsSession(sessionId, undefined, baseDir)).messages.filter(m => !m.internal)
+    // resume prompt. `untilSeq` (when given) cuts the read at that seq so
+    // the checkpoint only describes the transcript up to its cutoffSeq.
+    messages = (
+      await exportDaemonEventsSession(sessionId, undefined, baseDir, {
+        ...(untilSeq !== undefined ? { untilSeq } : {}),
+      })
+    ).messages.filter(m => !m.internal)
   } catch {
     return { messages: [], digest: "(no daemon transcript available)" }
   }
@@ -362,7 +382,7 @@ export async function buildContextCheckpoint(
   const gitStatus = sectionsReq.gitStatus ? await captureGitStatus(desc.cwd) : undefined
   // Read BEFORE the handoff turn so the digest and extraction describe the
   // work itself, not the handoff exchange.
-  const { messages, digest: recentDigest } = await readTranscript(desc.id, opts.baseDir)
+  const { messages, digest: recentDigest } = await readTranscript(desc.id, opts.baseDir, opts.untilSeq)
   const { reply, turn: handoffTurn } = await runHandoffTurn(desc, opts)
 
   const sections: ContextCheckpointSections = {}
@@ -401,6 +421,7 @@ export async function buildContextCheckpoint(
     sections,
     handoffTurn,
     recentDigest,
+    ...(opts.untilSeq !== undefined ? { cutoffSeq: opts.untilSeq } : {}),
     originalTranscriptPath: sessionEventsPath(desc.id, opts.baseDir),
     checkpointPath,
     nextAction: suggestNextAction(opts.contextPct, policy),

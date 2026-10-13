@@ -6,4 +6,4 @@
  * e2b/modal/daytona/blaxel as day-1 provider ids.
  */
 
-export { e2bSandboxProvider, DEFAULT_TEMPLATE } from "./provider.js"
+export { e2bSandboxProvider, DEFAULT_SIZE, DEFAULT_TEMPLATE, SIZES, type WorkstationSize } from "./provider.js"

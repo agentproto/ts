@@ -137,6 +137,15 @@ export interface BootedSandbox {
    *  that can't pause (or don't support reconnect at all) omit it; callers
    *  that want to pause fall back to `stop()` when it's absent. */
   pause?(): Promise<void>
+  /**
+   * Re-arm the box's remaining lifetime to `ms` from now — the same
+   * mechanism a provider's own `connect()` already uses to re-arm a resumed
+   * box's deadline (e.g. e2b's `sandbox.setTimeout`), exposed here so a host
+   * can extend it again on detach WITHOUT a full reconnect, so a long-lived
+   * session survives a host daemon restart without the box expiring out
+   * from under it. Optional: providers with no fixed lifetime cap omit it.
+   */
+  extendTimeout?(ms: number): Promise<void>
 }
 
 /** One-shot command-execution request, as passed to `BootedSandbox.exec` by
@@ -310,6 +319,10 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Download one file from the box — forwarded from `BootedSandbox.readFile`.
    *  Absent when the provider can't. */
   readFile?: BootedSandbox["readFile"]
+  /** Re-arm the box's remaining lifetime — forwarded from
+   *  `BootedSandbox.extendTimeout`. Absent when the provider has no fixed
+   *  lifetime cap to re-arm. */
+  extendTimeout?: BootedSandbox["extendTimeout"]
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
   /** Close the daemon connection and PAUSE the sandbox instead of killing
@@ -369,6 +382,7 @@ export async function createSandboxAgentSessionHost(
     ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
     ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
     ...(booted.readFile ? { readFile: booted.readFile.bind(booted) } : {}),
+    ...(booted.extendTimeout ? { extendTimeout: booted.extendTimeout.bind(booted) } : {}),
     async stop(): Promise<void> {
       await host.close()
       await booted.stop()

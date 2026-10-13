@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-browser-chrome",
   "version": "0.2.2",
-  "description": "System Chrome provider for agentproto: a defineBrowser provider that launches the installed Chrome on a fresh dedicated profile dir, attaches over CDP and injects granted cookies. Never touches the default profile.",
+  "description": "System Chrome providers for agentproto: `chrome` launches the installed Chrome on a fresh dedicated profile dir, attaches over CDP and injects granted cookies (never the default profile); `chrome-live` attaches to the user's running Chrome through its remote debugging toggle and drives only its own window.",
   "keywords": [
     "agentproto",
     "browser",
@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@agentproto/driver-browser": "workspace:*",
+    "@agentproto/tool": "workspace:*",
     "ws": "^8.21.3",
     "zod": "^4.6.5"
   },

@@ -125,6 +125,29 @@ killing the port. Crash-only `KeepAlive` means launchd only respawns the
 daemon when it exits non-zero; `daemon stop` sends a single SIGTERM and
 exits.
 
+**Sandbox sessions survive a restart.** A session running in a provider box
+(`agent_start.sandbox` / `sessions start --sandbox`, e2b/Box/…) is *detached*,
+not killed, when the daemon stops or restarts: the host drops its connection
+and leaves the box and its agent session running. `restart` prints how many
+sessions are being detached before it kickstarts, and after boot waits for the
+new daemon's reattach pass and prints the tally:
+
+```
+agentproto daemon: 2 sandbox sessions will be detached (box + agent keep running — not killed) and re-attached after boot
+agentproto daemon: restarted …
+  sandbox:   re-attached 2/2 sandbox sessions
+```
+
+`daemon stop` reports the detached count too. The same counts are on
+`GET /health` and the `daemon_health` MCP tool as
+`sandboxSessions: { attached, reattach: { detachedAtBoot, reattached, gone, failed, pending } }`
+(`attached` = what a restart *now* would detach; `reattach` = how the booted
+daemon's pass went). Details, lifetime bound and failure modes:
+[sandbox sessions across a daemon restart](./sessions.md#sandbox-sessions-across-a-daemon-restart).
+Device-paired sandboxes and local (non-sandbox) sessions keep the old
+behaviour: they end as `killed` / `daemon-restart` and are revived by
+`resumeSessionsOnBoot`.
+
 `start`/`restart` also **self-heal the plist's `EnvironmentVariables.PATH`**:
 each kickstart probes a login shell for the current PATH and rewrites the
 plist if it changed. This removes the need to re-run `daemon install` after

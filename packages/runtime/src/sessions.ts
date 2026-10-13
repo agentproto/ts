@@ -318,6 +318,50 @@ export interface AgentSessionLike {
    *  pre-teardown work (a sandbox's work-branch delivery) and release the
    *  underlying resource immediately. */
   close(opts?: { daemonShutdown?: boolean }): Promise<void>
+  /**
+   * Sandbox proxies only: peek at the data needed to re-attach to this
+   * session's box after a host-daemon restart, WITHOUT detaching. Stamped
+   * onto the descriptor at snapshot time (`SessionDescriptor.sandboxReattach`)
+   * so even a crash leaves a usable record. Absent/undefined ⇒ the session is
+   * not re-attachable (a plain local session, a device sandbox).
+   */
+  detachRecord?(): SandboxDetachRecord | undefined
+  /**
+   * Sandbox proxies only: the daemon is shutting down — close the connection
+   * to the box's session WITHOUT killing it or stopping/pausing the box. Sync
+   * and idempotent (it also runs from `shutdownImpl`'s sync path). After this
+   * the in-flight `send()` parks forever instead of erroring, so the turn loop
+   * never mis-reads the severed stream as a dead session. Returns the record
+   * to persist, or undefined when the session isn't detachable.
+   */
+  detach?(): SandboxDetachRecord | undefined
+  /** Best-effort async half of `detach()`: re-arm the box's lifetime so it
+   *  outlives the restart gap. Never throws. */
+  extendDetachedLifetime?(): Promise<void>
+  /** Re-attach only: classify the box's session so the boot pass knows
+   *  whether a turn is in flight / unseen events are waiting. Never throws. */
+  probeReattach?(): Promise<SandboxReattachProbe>
+  /** Re-attach only: consume the box's already-running (or just-finished)
+   *  turn from the saved transcript cursor — no prompt is sent. */
+  resumeTurn?(): AsyncIterable<AgentStreamEvent>
+}
+
+/** What a detached sandbox session persists to find its box session again. */
+export interface SandboxDetachRecord {
+  /** Session id on the BOX's own daemon. */
+  remoteSessionId: string
+  /** Last box-transcript `seq` this host consumed — replay resumes after it. */
+  transcriptSeq: number
+}
+
+/** The box session's state as seen by a re-attaching host. */
+export interface SandboxReattachProbe {
+  /** `gone`: the box daemon has no such session; `ended`: it exists but its
+   *  adapter session already finished; `busy`: a turn is in flight;
+   *  `backlog`: idle but unseen stream events are waiting; `idle`: nothing to
+   *  replay; `unreachable`: the box couldn't be asked (transient). */
+  state: "gone" | "ended" | "busy" | "backlog" | "idle" | "unreachable"
+  detail?: string
 }
 
 /** Result of `SessionsRegistry.setModel` — see that method's doc comment. */
@@ -2415,6 +2459,22 @@ export interface SessionDescriptor {
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`), when `remote` is true. */
   sandboxId?: string
   /**
+   * True from the moment a graceful daemon shutdown DETACHED this sandbox
+   * session (connection closed, box session + box left running) until the
+   * next boot's reattach pass resolves it. Also stamped at load on a row that
+   * was alive when the daemon crashed and carries a {@link sandboxReattach}
+   * record. A row with this flag is NOT dead: boot defers its
+   * `session:exited` and `daemon-restart` resume paths to the reattach pass.
+   */
+  hostDetached?: boolean
+  /**
+   * Everything needed to re-attach this session's box session after a host
+   * restart. Refreshed on every snapshot while the proxy is attached, so a
+   * crash (no graceful detach) still leaves a usable — if slightly stale —
+   * cursor. The box itself is found via `sandboxId`/`sandboxProvider`.
+   */
+  sandboxReattach?: SandboxReattachRecord
+  /**
    * BOOTSTRAP P7a — for a `device:<fp|name>` sandbox spawn: the id of the
    * session the HOST's own daemon created (`BootedSandbox`'s inner
    * `agent_start` descriptor.id, i.e. the sandbox proxy's `sessionId`). The
@@ -2448,6 +2508,11 @@ export interface SessionDescriptor {
    *  (`wt/<slug>` push + bundle fallback). Only set for a sandbox session that
    *  was spawned from a workspace `remote` with a `worktree`, once it closes. */
   sandboxDelivery?: SandboxDeliveryRecord
+  /** The latest periodic checkpoint of that branch while the session runs
+   *  (`mode: "checkpoint"` — branch push, uncommitted-work snapshot pushed to
+   *  `agentproto-checkpoint/<branch>`, bundle fallback). What survives a box
+   *  that dies outside `close()`. */
+  sandboxCheckpoint?: SandboxDeliveryRecord
   /** Where the session's work branch lives inside its box (checkout dir, branch,
    *  base commit). Persisted so a restart that re-attaches the box can still
    *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
@@ -2471,6 +2536,12 @@ export interface SessionDescriptor {
   sandboxAlive?: boolean
   /** ISO instant `sandboxAlive` was computed (see its doc). */
   sandboxCheckedAt?: string
+}
+
+/** Persisted re-attach coordinates — see `SessionDescriptor.sandboxReattach`. */
+export interface SandboxReattachRecord extends SandboxDetachRecord {
+  /** ISO instant of the graceful detach; absent on a crash-stamped record. */
+  detachedAt?: string
 }
 
 /**
@@ -3131,6 +3202,9 @@ function markHeldId(map: Map<string, Set<string>>, slug: string, id: string): vo
  *  readability bound rather than a budget to contest. */
 const HISTORY_CAP = 200
 
+/** How long the daemon's stop waits for boxes to confirm a lifetime extension. */
+const DETACH_LIFETIME_TIMEOUT_MS = 5_000
+
 /** Bound on how long `enqueuePrompt({interrupt: true})` waits for a
  *  cancelled turn to actually settle (busy → false) before giving up.
  *
@@ -3335,7 +3409,10 @@ export function isResumable(desc: SessionDescriptor): boolean {
     !!desc.adapterSlug &&
     !!desc.adapterSessionId &&
     !!desc.cwd &&
-    !desc.archived
+    !desc.archived &&
+    // Held for the boot reattach pass — reviving it in place now would race
+    // the live box session it is about to re-attach to.
+    desc.hostDetached !== true
   )
 }
 
@@ -4632,6 +4709,13 @@ export interface SessionsRegistry {
    *  non-`agent-cli` session. */
   recordSandboxDelivery(id: string, record: SandboxDeliveryRecord, notice: string): boolean
   /**
+   * Stamp a periodic checkpoint of a sandbox session's work branch
+   * (`sandbox-delivery.ts`'s checkpoint mode) onto the descriptor. Unlike
+   * {@link recordSandboxDelivery} the session is still live: the transcript
+   * writer stays open, and a checkpoint that changed nothing writes no notice.
+   */
+  recordSandboxCheckpoint(id: string, record: SandboxDeliveryRecord, notice: string): boolean
+  /**
    * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
    * `device-mirror.ts`) into an agent-cli session's durable transcript.
    * Each record already carries its own `kind` + `origin: "device"` +
@@ -4689,9 +4773,64 @@ export interface SessionsRegistry {
    *  is sync (it runs from `process.on("exit")`) so it can't await these —
    *  this is the async escape hatch for callers that can. */
   settlePendingWrites(): Promise<void>
+  /**
+   * Graceful-shutdown step for sandbox sessions: detach every attached
+   * provider-box session (close the connection only — the box and its agent
+   * session keep running), persist the re-attach record, and ask each box to
+   * extend its lifetime past the restart gap. Await it BEFORE `shutdown()`;
+   * `shutdown()` alone detaches too, but synchronously and without the
+   * lifetime extension. Idempotent.
+   */
+  detachSandboxSessions(): Promise<{ detached: number }>
+  /** Rows a previous daemon process detached (or crashed holding) that the
+   *  boot reattach pass has not resolved yet. */
+  sandboxReattachCandidates(): SessionDescriptor[]
+  /** Resolve one re-attach candidate — see {@link SandboxReattachResult}. */
+  finishSandboxReattach(id: string, result: SandboxReattachResult): SandboxReattachOutcome
+  /** Live + restart bookkeeping for `/health` and `daemon_health`. */
+  sandboxSessionStats(): SandboxSessionStats
   /** Stop persisting + close all sessions. Killed children are not
    *  awaited — the daemon shutdown loop handles process tree teardown. */
   shutdown(): void
+}
+
+/** How the boot reattach pass resolved one detached sandbox row. */
+export type SandboxReattachResult =
+  | {
+      kind: "attach"
+      agentSession: AgentSessionLike
+      probe: SandboxReattachProbe
+      readUsage?: () => Promise<UsageReadResult | null>
+    }
+  /** The box (or its session) no longer exists. */
+  | { kind: "gone"; detail?: string }
+  /** The box answered but its agent session had already finished. */
+  | { kind: "ended"; detail?: string }
+  /** Transient: the box couldn't be reached — row falls back to the plain
+   *  `daemon-restart` ghost (eager resume / continue-interrupted apply). */
+  | { kind: "failed"; detail?: string }
+
+export interface SandboxReattachOutcome {
+  status: "reattached" | "gone" | "ended" | "failed" | "skipped"
+  /** True when a turn was already running (or had unseen events) and is now
+   *  being replayed into the host transcript. */
+  resumedTurn?: boolean
+}
+
+/** Restart bookkeeping for sandbox sessions, as surfaced on `/health`. */
+export interface SandboxSessionStats {
+  /** Provider-box sessions currently attached and live in this daemon — the
+   *  number a restart right now would DETACH rather than kill. */
+  attached: number
+  reattach: {
+    /** Rows this boot found detached by the previous process. */
+    detachedAtBoot: number
+    reattached: number
+    gone: number
+    failed: number
+    /** `detachedAtBoot` minus everything resolved so far. */
+    pending: number
+  }
 }
 
 export interface RegisterBrowserInput {
@@ -5546,6 +5685,10 @@ export function createSessionsRegistry(opts?: {
   // absent from `rows` now — must NOT be resurrected). See
   // `mergeBucketRows`'s docblock in `workspace-buckets.ts`.
   const heldIdsByBucket = new Map<string, Set<string>>()
+  // Boot-time bookkeeping for sandbox sessions the previous daemon process
+  // detached (or died holding) — see `loadHistorySnapshot` and the
+  // `finishSandboxReattach` registry method.
+  const reattachBoot = { detachedAtBoot: 0, reattached: 0, gone: 0, failed: 0 }
   if (persist) {
     if (partitioned) {
       // Read-only on the legacy artifact, once, guarded by its own
@@ -5566,6 +5709,7 @@ export function createSessionsRegistry(opts?: {
           sourceBucketOf,
           heldIdsByBucket,
           bootId,
+          reattachBoot,
         )
       }
     } else {
@@ -5578,6 +5722,7 @@ export function createSessionsRegistry(opts?: {
         undefined,
         undefined,
         bootId,
+        reattachBoot,
       )
     }
   }
@@ -6289,6 +6434,20 @@ export function createSessionsRegistry(opts?: {
         availableModes: _availableModes,
         ...rest
       } = s.desc
+      // A live provider-box session keeps its re-attach record on disk, so a
+      // daemon that dies without a graceful shutdown (crash, SIGKILL) still
+      // leaves the next boot something to reattach with. The cursor can be
+      // stale — a reattach then replays a little duplicated tail rather than
+      // losing events.
+      if ((s.desc.status === "running" || s.desc.status === "starting") && s.agentSession?.detachRecord) {
+        const rec = s.agentSession.detachRecord()
+        if (rec) {
+          return {
+            ...rest,
+            sandboxReattach: { ...rec, ...(rest.sandboxReattach?.detachedAt ? { detachedAt: rest.sandboxReattach.detachedAt } : {}) },
+          }
+        }
+      }
       return rest
     })
 
@@ -8594,11 +8753,21 @@ export function createSessionsRegistry(opts?: {
     // a human operator. Recording-only: never alters turn behavior.
     // `messages` marks a typed-message turn (`runMessageTurn`): `message`
     // is then the rendered envelope tags.
-    turnOpts?: { promptSource?: string; system?: string; messages?: readonly SessionMessage[] }
+    // `reattach` marks the turn a re-attached sandbox session picks up from
+    // its box after a host restart: the prompt already ran on the box, so
+    // nothing is sent and no `user-prompt` is recorded — the box's own events
+    // are replayed into the host transcript via `resumeTurn()`.
+    turnOpts?: {
+      promptSource?: string
+      system?: string
+      messages?: readonly SessionMessage[]
+      reattach?: boolean
+    }
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
     }
+    const reattachTurn = turnOpts?.reattach === true
     // A compaction prompt discards context: refuse it where the policy
     // reserves compaction to the operator, and otherwise checkpoint BEFORE
     // it reaches the harness. This is the single choke point every prompt
@@ -8667,7 +8836,7 @@ export function createSessionsRegistry(opts?: {
     // role disposition ahead of the caller's ask); the spawn path forecloses
     // that by stamping `SpawnAgentInput.title` from `input.prompt` up-front, so
     // `rt.desc.title` is already set and this line is skipped for that turn.
-    if (!rt.desc.title && !messageTurn) rt.desc.title = deriveSessionTitle(message)
+    if (!rt.desc.title && !messageTurn && !reattachTurn) rt.desc.title = deriveSessionTitle(message)
     // Flush a queued best-effort resume-context digest (Fix D — see
     // `SessionDescriptor.pendingResumeContext`'s doc) onto THIS turn's
     // outgoing message, exactly once. String messages only — a non-string
@@ -8768,26 +8937,28 @@ export function createSessionsRegistry(opts?: {
       pendingToolCallIds.clear()
     }
     try {
-      appendLine(
-        rt,
-        `\x1b[2m── ▶ ${typeof message === "string" ? message : JSON.stringify(message)} ──\x1b[0m`,
-        "stdout"
-      )
-      transcriptWriter.recordPrompt(
-        rt.desc.id,
-        message,
-        turnOpts?.promptSource || turnOpts?.system || messageTurn
-          ? {
-              ...(turnOpts?.promptSource ? { source: turnOpts.promptSource } : {}),
-              ...(turnOpts?.system ? { system: turnOpts.system } : {}),
-              ...(messageTurn ? { messages: turnOpts!.messages } : {}),
-            }
-          : undefined
-      )
-      // Capture the caller's own ask (system preamble stripped, mirroring the
-      // transcript writer) so the index sidecar carries it without a
-      // transcript read on the write path.
-      rt.lastUserPrompt = { ts: new Date().toISOString(), text: promptTextForIndex(message, turnOpts?.system) }
+      if (!reattachTurn) {
+        appendLine(
+          rt,
+          `\x1b[2m── ▶ ${typeof message === "string" ? message : JSON.stringify(message)} ──\x1b[0m`,
+          "stdout"
+        )
+        transcriptWriter.recordPrompt(
+          rt.desc.id,
+          message,
+          turnOpts?.promptSource || turnOpts?.system || messageTurn
+            ? {
+                ...(turnOpts?.promptSource ? { source: turnOpts.promptSource } : {}),
+                ...(turnOpts?.system ? { system: turnOpts.system } : {}),
+                ...(messageTurn ? { messages: turnOpts!.messages } : {}),
+              }
+            : undefined
+        )
+        // Capture the caller's own ask (system preamble stripped, mirroring the
+        // transcript writer) so the index sidecar carries it without a
+        // transcript read on the write path.
+        rt.lastUserPrompt = { ts: new Date().toISOString(), text: promptTextForIndex(message, turnOpts?.system) }
+      }
       // ACP's `prompt` field expects ContentBlock[] (or a single
       // block). Hosts that send a raw string get auto-wrapped into
       // `{type: "text", text: "..."}` so callers can hand us
@@ -8803,7 +8974,11 @@ export function createSessionsRegistry(opts?: {
       const switchCandidate =
         typeof message === "string" ? parseModelSwitchCommand(message) : undefined
       let switchLearned = false
-      for await (let evt of rt.agentSession.send(wrapped)) {
+      const turnStream =
+        reattachTurn && rt.agentSession.resumeTurn
+          ? rt.agentSession.resumeTurn()
+          : rt.agentSession.send(wrapped)
+      for await (let evt of turnStream) {
         // Hermes may end a turn with nested/parallel tool calls still lacking
         // their terminal `tool_call_update`. Persist synthetic settlements
         // first so durable replay observes result → turn-end, never the
@@ -12057,6 +12232,21 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       return true
     },
+    recordSandboxCheckpoint(id, record, notice) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.kind !== "agent-cli") return false
+      rt.desc.sandboxCheckpoint = record
+      const touchedRemote =
+        record.push.status !== "skipped" ||
+        record.checkpoint !== undefined ||
+        record.bundle.status !== "skipped"
+      if (!record.unchanged && touchedRemote) {
+        appendLine(rt, notice, "stdout")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: notice })
+      }
+      schedulePersist()
+      return true
+    },
     appendDeviceMirrorRecords(id, records) {
       const rt = sessions.get(id)
       if (!rt || rt.desc.kind !== "agent-cli" || !rt.desc.hostSessionId) return 0
@@ -12427,12 +12617,183 @@ export function createSessionsRegistry(opts?: {
         await Promise.all([...pendingWrites])
       }
     },
+    async detachSandboxSessions() {
+      const lifetimeRequests: Promise<void>[] = []
+      let detached = 0
+      for (const rt of sessions.values()) {
+        if (!detachRow(rt)) continue
+        detached++
+        const extend = rt.agentSession?.extendDetachedLifetime
+        if (extend) lifetimeRequests.push(extend.call(rt.agentSession).catch(() => undefined))
+      }
+      // Bounded: a slow provider API must not hold the daemon's stop hostage;
+      // the box then simply keeps the lifetime it already had.
+      if (lifetimeRequests.length > 0) {
+        await Promise.race([
+          Promise.all(lifetimeRequests),
+          new Promise<void>(resolve => {
+            const t = setTimeout(resolve, DETACH_LIFETIME_TIMEOUT_MS)
+            t.unref?.()
+          }),
+        ])
+      }
+      if (detached > 0) schedulePersist()
+      return { detached }
+    },
+    sandboxReattachCandidates() {
+      return Array.from(sessions.values())
+        .filter(
+          rt =>
+            rt.desc.hostDetached === true &&
+            rt.desc.sandboxReattach !== undefined &&
+            rt.agentSession === undefined,
+        )
+        .map(rt => rt.desc)
+    },
+    finishSandboxReattach(id, result) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.hostDetached !== true) {
+        if (result.kind === "attach") void result.agentSession.close().catch(() => undefined)
+        return { status: "skipped" }
+      }
+      const detachedAtIso = rt.desc.sandboxReattach?.detachedAt
+      const clearMarkers = (): void => {
+        delete rt.desc.hostDetached
+        delete rt.desc.sandboxReattach
+      }
+      const announce = (text: string): void => {
+        appendLine(rt, text, "stdout")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+      }
+      if (result.kind === "attach") {
+        clearMarkers()
+        bindAgentSession(rt, result.agentSession)
+        bindOutOfTurnEvents(rt)
+        stampCapabilities(rt)
+        rt.readUsage = result.readUsage
+        rt.desc.pid = result.agentSession.pid ?? null
+        rt.desc.status = "running"
+        delete rt.desc.endedAt
+        delete rt.desc.endedReason
+        delete rt.desc.exitCode
+        delete rt.desc.killedMidTurn
+        delete rt.desc.interruptedAtBoot
+        delete rt.desc.outcome
+        rt.exitedEmitted = false
+        rt.emitter.emit("status", rt.desc.status)
+        armUsageRefresh(rt)
+        reattachBoot.reattached++
+        const replay = result.probe.state === "busy" || result.probe.state === "backlog"
+        announce(
+          "── re-attached to sandbox session after daemon restart" +
+            (detachedAtIso ? ` (detached ${detachedAtIso})` : "") +
+            (replay ? "; replaying events the box produced meanwhile" : "") +
+            " ──",
+        )
+        schedulePersist()
+        recordConversationLink(rt)
+        sessionEvents?.emit({
+          type: "session:resumed",
+          sessionId: rt.desc.id,
+          interrupted: false,
+          resumedFrom: "daemon-restart",
+          ...(rt.desc.label ? { label: rt.desc.label } : {}),
+          ts: new Date().toISOString(),
+        })
+        if (replay) {
+          void runAgentTurn(rt, null, { reattach: true }).catch(err => {
+            appendLine(
+              rt,
+              `[turn error] ${err instanceof Error ? err.message : String(err)}`,
+              "stderr",
+            )
+          })
+        }
+        return { status: "reattached", ...(replay ? { resumedTurn: true } : {}) }
+      }
+      clearMarkers()
+      if (result.kind === "gone" || result.kind === "ended") {
+        const gone = result.kind === "gone"
+        rt.desc.status = gone ? "killed" : "error"
+        rt.desc.endedReason = gone ? "sandbox_gone" : "crashed"
+        rt.desc.endedAt = new Date().toISOString()
+        delete rt.desc.killedMidTurn
+        delete rt.desc.interruptedAtBoot
+        if (gone) reattachBoot.gone++
+        else reattachBoot.failed++
+        announce(
+          gone
+            ? "── sandbox is gone — the box (or its session) no longer exists; nothing to re-attach to" +
+                (result.detail ? ` (${result.detail})` : "") +
+                " ──"
+            : "── sandbox session had already ended while the daemon was down" +
+                (result.detail ? ` (${result.detail})` : "") +
+                " ──",
+        )
+      } else {
+        // Transient: keep the plain `daemon-restart` ghost so eager resume /
+        // continue-interrupted can still pick the row up.
+        reattachBoot.failed++
+        announce(
+          "── could not re-attach to the sandbox after daemon restart" +
+            (result.detail ? ` (${result.detail})` : "") +
+            " ──",
+        )
+      }
+      rt.exitedEmitted = false
+      rt.emitter.emit("status", rt.desc.status)
+      schedulePersist()
+      emitExited(rt)
+      return { status: result.kind }
+    },
+    sandboxSessionStats() {
+      let attached = 0
+      for (const rt of sessions.values()) {
+        if (
+          rt.desc.status === "running" &&
+          rt.agentSession?.detach !== undefined &&
+          rt.desc.hostDetached !== true
+        ) {
+          attached++
+        }
+      }
+      const resolved = reattachBoot.reattached + reattachBoot.gone + reattachBoot.failed
+      return {
+        attached,
+        reattach: {
+          detachedAtBoot: reattachBoot.detachedAtBoot,
+          reattached: reattachBoot.reattached,
+          gone: reattachBoot.gone,
+          failed: reattachBoot.failed,
+          pending: Math.max(0, reattachBoot.detachedAtBoot - resolved),
+        },
+      }
+    },
     shutdown() {
       shutdownImpl()
     },
   }
 
   return registry
+
+  /**
+   * Detach a live provider-box session from this daemon: close its connection
+   * only (the box and its remote agent session keep running), and stamp the
+   * re-attach record on the row. Returns whether THIS call detached it —
+   * false for rows that are not detachable (local, device-paired, ended) or
+   * already detached. Sync so the `process.on("exit")` path can use it too.
+   */
+  function detachRow(rt: SessionRuntime): boolean {
+    if (rt.desc.hostDetached === true) return false
+    if (rt.desc.status !== "running") return false
+    const session = rt.agentSession
+    if (!session?.detach) return false
+    const record = session.detach()
+    if (!record) return false
+    rt.desc.hostDetached = true
+    rt.desc.sandboxReattach = { ...record, detachedAt: new Date().toISOString() }
+    return true
+  }
 
   /**
    * The actual shutdown logic, hoisted so both the explicit
@@ -12477,6 +12838,13 @@ export function createSessionsRegistry(opts?: {
       rt.emitter.removeAllListeners()
       // Any live-usage poller dies with the registry — no strays.
       stopUsageRefresh(rt)
+      // A provider-box session is DETACHED, not killed: only this daemon's
+      // connection closes; the box and its agent session keep running, and
+      // the row persists as `running` + `hostDetached` for the next boot's
+      // reattach pass. (The async `detachSandboxSessions` already did this
+      // and asked the box to extend its lifetime; this covers a shutdown that
+      // reached us without it — the process-exit net.)
+      if (rt.desc.hostDetached === true || detachRow(rt)) continue
       if (
         rt.desc.status === "running" ||
         rt.desc.status === "starting"
@@ -12618,6 +12986,10 @@ function loadHistorySnapshot(
   /** This daemon's `SessionsRegistry.bootId` — stamped onto rows found
    *  interrupted (`interruptedAtBoot`). */
   bootId?: string,
+  /** Counts the provider-box sessions found detached (see `hostDetached`) —
+   *  these are held for the boot reattach pass instead of being announced
+   *  as dead. */
+  reattachBoot?: { detachedAtBoot: number },
 ): void {
   let raw: string
   try {
@@ -12675,6 +13047,25 @@ function loadHistorySnapshot(
     // An external row has no process to have died with the daemon: it simply
     // expires (lazily) like any other, and a later sighting revives it.
     const externalAlive = wasAlive && desc.kind === "external"
+    // A provider-box session the previous process detached from (graceful
+    // shutdown) or died holding (crash: `snapshotRows` keeps the re-attach
+    // record fresh) — the box and its agent are presumably still running, so
+    // hold the row for the boot reattach pass instead of announcing a death.
+    // Until that pass resolves it the row reads as the plain `daemon-restart`
+    // ghost, flagged `hostDetached`; every outcome of the pass clears it.
+    // A row still pending from the previous boot (pass never finished — a
+    // second restart landed first) stays a candidate.
+    const detachCandidate =
+      (wasAlive ||
+        (desc.hostDetached === true &&
+          desc.status === "killed" &&
+          desc.endedReason === "daemon-restart")) &&
+      !externalAlive &&
+      desc.kind === "agent-cli" &&
+      desc.sandboxId !== undefined &&
+      desc.sandboxProvider !== undefined &&
+      desc.sandboxReattach !== undefined &&
+      typeof desc.sandboxReattach.remoteSessionId === "string"
     const reclassified: SessionDescriptor = externalAlive
       ? { ...desc, status: "exited", endedAt: desc.endedAt ?? desc.lastSeenAt ?? now }
       : wasAlive
@@ -12689,8 +13080,16 @@ function loadHistorySnapshot(
           // recorded. Same rule as kill()/shutdownImpl — see killedMidTurn's
           // docblock.
           killedMidTurn: desc.busy === true,
+          ...(detachCandidate ? { hostDetached: true } : {}),
         }
       : desc
+    if (!detachCandidate) {
+      // A stale flag on a row that is not (or no longer) a candidate.
+      delete reclassified.hostDetached
+      if (reclassified.status !== "running") delete reclassified.sandboxReattach
+    } else {
+      reattachBoot && reattachBoot.detachedAtBoot++
+    }
     // A row loaded from disk has no live provisioning, whatever it recorded.
     delete reclassified.provisioning
     // Unconditional, not `if (wasAlive)`: a ghost carries no child/
@@ -12735,7 +13134,7 @@ function loadHistorySnapshot(
     // A row that died with the daemon never went through `emitExited`, so
     // derive its outcome here — the live text buffer died with the old
     // process, so the summary comes from its transcript's tail instead.
-    if (wasAlive && reclassified.kind === "agent-cli" && !reclassified.outcome) {
+    if (wasAlive && !detachCandidate && reclassified.kind === "agent-cli" && !reclassified.outcome) {
       reclassified.outcome = deriveSessionOutcome(reclassified, {
         lastAssistantText: readLastAssistantTextSync(sessionEventsPath(reclassified.id, transcriptBaseDir)),
       })
@@ -12749,7 +13148,7 @@ function loadHistorySnapshot(
       busy: false,
       textBuf: "",
       thoughtBuf: "",
-      exitedEmitted: wasAlive,
+      exitedEmitted: wasAlive || detachCandidate,
     }
     rt.emitter.setMaxListeners(50)
     sessions.set(desc.id, rt)
@@ -12757,7 +13156,7 @@ function loadHistorySnapshot(
       sourceBucketOf?.set(desc.id, bucketSlug)
       if (heldIdsByBucket) markHeldId(heldIdsByBucket, bucketSlug, desc.id)
     }
-    if (wasAlive && !externalAlive) {
+    if (wasAlive && !externalAlive && !detachCandidate) {
       sessionEvents?.emit({
         type: "session:exited",
         sessionId: reclassified.id,

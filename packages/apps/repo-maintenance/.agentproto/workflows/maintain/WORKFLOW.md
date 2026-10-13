@@ -30,6 +30,14 @@ inputs:
       Model for a review candidate with residualFileCount <= 3. Default: the
       `review.small` model role (repo agentproto.json `models` > daemon config
       `models` > built-in).
+  reviewPreset:
+    type: string
+    description: >-
+      Model role preset for this run (opus, sonnet, haiku, go-free,
+      free-sonnet — see `model_roles`). Default: the daemon's
+      `modelRolePreset`, else the built-in roles. `reviewModelSmall` /
+      `reviewModelLarge` still win. Each reviewer spawns on the adapter its
+      model requires (an `opencode-go/…` model runs on opencode).
   reviewModelLarge:
     type: string
     description: >-

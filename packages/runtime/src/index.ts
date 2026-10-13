@@ -52,12 +52,16 @@ import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
 import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 export {
   DEFAULT_MODEL_ROLES,
+  MODEL_ROLE_PRESETS,
+  MODEL_ROLE_PRESET_NAMES,
   MODEL_ROLE_REF_PREFIX,
+  adapterForModelId,
   listModelRoles,
   parseModelRoleRef,
   resolveModelRole,
   type ModelRoleContext,
   type ModelRoleEntry,
+  type ModelRolePreset,
   type ModelRoleSource,
   type ModelRoleValue,
   type ModelRolesConfig,
@@ -107,6 +111,7 @@ import {
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { wireRetirementCleanup } from "./retirement-cleanup.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+import { runSandboxReattachPass, type SandboxReattachSummary } from "./sandbox-reattach.js"
 import {
   runContinueOnBootPass,
   type ContinueOnBootSummary,
@@ -660,6 +665,7 @@ export type {
   EagerResumeFailReason,
 } from "./sessions.js"
 export { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+export { runSandboxReattachPass, type SandboxReattachSummary } from "./sandbox-reattach.js"
 // Per-session process-tree resource stats (`session_stats`, `GET /sessions/stats`).
 export {
   createProcessStatsService,
@@ -1797,6 +1803,15 @@ export interface GatewayHandle {
    *  boot (not awaited) so `agentproto sessions find`/`recap` answer
    *  instantly even for sessions that predate the sidecar. */
   backfillSessionIndexes(): Promise<{ scanned: number; created: number; skipped: number }>
+  /** Run the sandbox reattach pass: reconnect to provider boxes whose
+   *  sessions the previous daemon process detached from, re-binding each to
+   *  its original session id. serve.ts calls this BEFORE
+   *  `resumeSessionsOnBoot()` so the eager/continue passes never touch a row
+   *  that is about to be re-attached. Always on — it only acts on rows that
+   *  were detached. `isServed` is the same cross-process gate. */
+  reattachSandboxSessionsOnBoot(opts?: {
+    isServed?: (desc: SessionDescriptor) => boolean
+  }): Promise<SandboxReattachSummary>
   stop(): Promise<void>
 }
 
@@ -3116,6 +3131,7 @@ export async function createGateway(
       turnStallAfterMs,
       appRegistryIssues: () => appRegistry.listIssues(),
       modelCooldowns: () => modelCooldowns.list(),
+      sandboxSessions: () => sessions.sandboxSessionStats(),
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
     })
@@ -3903,6 +3919,7 @@ export async function createGateway(
       turnStallAfterMs,
       appRegistryIssues: () => appRegistry.listIssues(),
       modelCooldowns: () => modelCooldowns.list(),
+      sandboxSessions: () => sessions.sandboxSessionStats(),
     },
     cronScheduler,
     routineRegistrar,
@@ -4215,6 +4232,13 @@ export async function createGateway(
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },
+    async reattachSandboxSessionsOnBoot(passOpts) {
+      return runSandboxReattachPass({
+        registry: sessions,
+        resolveSandboxProvider: resolveSandboxProviderResolved,
+        ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
+      })
+    },
     async continueInterruptedOnBoot(passOpts) {
       if (!opts.continueInterruptedOnBoot) {
         return { enabled: false, eligible: 0, sent: 0, skipped: 0, failed: 0 }
@@ -4242,6 +4266,11 @@ export async function createGateway(
     },
     async stop() {
       heartbeat.stop()
+      // Provider-box sessions are DETACHED, not killed, by a daemon stop: close
+      // the host's connection, keep the box + its agent running, persist the
+      // re-attach record, and ask each box to outlive the restart gap. Must
+      // run before anything below tears down state a detach reads.
+      await sessions.detachSandboxSessions().catch(() => undefined)
       // Stop the idle-reaper sweep before sessions shut down (PR-6).
       if (idleReapTimer) clearInterval(idleReapTimer)
       if (retentionBootTimer) clearTimeout(retentionBootTimer)

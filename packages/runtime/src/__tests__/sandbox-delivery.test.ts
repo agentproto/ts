@@ -15,8 +15,14 @@ import {
   DELIVERY_RECORD_FILE,
   buildBundleCommand,
   buildProbeCommand,
+  buildCheckpointPushCommand,
   buildPushCommand,
+  CHECKPOINT_BUNDLE_FILE,
+  CHECKPOINT_RECORD_FILE,
+  createSandboxCheckpointer,
   decideBundle,
+  isFullyDelivered,
+  resolveCheckpointIntervalMs,
   formatDeliveryNotice,
   parseProbe,
   runSandboxDelivery,
@@ -235,5 +241,165 @@ describe("runSandboxDelivery", () => {
     expect(notice).toContain("push: failed")
     expect(notice).toContain("bundle: saved")
     expect(notice).toContain("1 uncommitted file(s) NOT delivered")
+  })
+})
+
+const HEAD = "a".repeat(40)
+const SNAP = "d".repeat(40)
+const TREE = "e".repeat(40)
+
+describe("uncommitted-work snapshot", () => {
+  let outDir: string
+  beforeEach(async () => {
+    outDir = await mkdtemp(join(tmpdir(), "agentproto-checkpoint-test-"))
+  })
+  afterEach(async () => {
+    await rm(outDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  })
+
+  function snapshotBox(opts: { ahead: number; tree?: string; pushExit?: number; checkpointPushExit?: number }) {
+    const commands: SandboxExecOpts[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o)
+      if (o.command.includes("rev-list")) {
+        return result(
+          0,
+          `ahead=${opts.ahead}\nuncommitted=2\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${opts.tree ?? TREE}\n`,
+        )
+      }
+      if (o.command.includes("refs/agentproto/checkpoint:")) {
+        return opts.checkpointPushExit ? result(opts.checkpointPushExit, "", "rejected") : result(0)
+      }
+      if (o.command.includes(" push ")) return opts.pushExit ? result(opts.pushExit, "", "denied") : result(0)
+      if (o.command.includes("bundle create")) return result(0, "4\n")
+      return result(1, "", "unexpected command")
+    }
+    return { exec, commands }
+  }
+
+  it("parses the snapshot and keys it on content, not on the commit sha", () => {
+    expect(parseProbe(`ahead=1\nuncommitted=2\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${TREE}\n`)).toEqual({
+      ahead: 1,
+      uncommitted: 2,
+      head: HEAD,
+      snapshot: SNAP,
+      snapshotTree: TREE,
+    })
+    // A failed snapshot is reported, never mistaken for one.
+    expect(parseProbe(`ahead=1\nuncommitted=2\nhead=${HEAD}\nsnapshot=failed\n`)?.snapshot).toBeUndefined()
+  })
+
+  it("snapshots through a throwaway index and never touches the agent's own", () => {
+    const probe = buildProbeCommand(target)
+    expect(probe).toContain('GIT_INDEX_FILE="$idx" git add -A')
+    expect(probe).toContain("git update-ref refs/agentproto/checkpoint")
+    expect(probe).not.toMatch(/git (stash|reset|checkout|commit )/)
+    expect(probe.match(/git add/g)).toHaveLength(1)
+    expect(buildCheckpointPushCommand(target)).toBe(
+      "git -C '/home/user/agentproto' push origin '+refs/agentproto/checkpoint:refs/heads/agentproto-checkpoint/wt/x'",
+    )
+  })
+
+  it("pushes uncommitted work even with no commits ahead, and stops reporting it as lost", async () => {
+    const box = snapshotBox({ ahead: 0 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir })
+    expect(record.push.status).toBe("skipped")
+    expect(record.checkpoint).toEqual({
+      status: "pushed",
+      ref: "agentproto-checkpoint/wt/x",
+      sha: SNAP,
+    })
+    expect(record.bundle.status).toBe("skipped")
+    expect(formatDeliveryNotice(record)).not.toContain("NOT delivered")
+    expect(box.commands.find(c => c.command.includes("rev-list"))?.env).toMatchObject({ GIT_OPTIONAL_LOCKS: "0" })
+  })
+
+  it("bundles up to the snapshot when its push fails", async () => {
+    const box = snapshotBox({ ahead: 1, checkpointPushExit: 1 })
+    const record = await runSandboxDelivery({
+      exec: box.exec,
+      readFile: async () => new Uint8Array([9, 9, 9, 9]),
+      target,
+      outDir,
+      mode: "checkpoint",
+    })
+    expect(record.push.status).toBe("pushed")
+    expect(record.checkpoint?.status).toBe("failed")
+    expect(record.bundle).toMatchObject({ status: "saved", path: join(outDir, CHECKPOINT_BUNDLE_FILE) })
+    const bundle = box.commands.find(c => c.command.includes("bundle create"))?.command ?? ""
+    expect(bundle).toContain(`'${target.baseSha}..refs/agentproto/checkpoint'`)
+    expect(bundle).toContain("/tmp/agentproto-checkpoint.bundle")
+    const persisted = JSON.parse(await readFile(join(outDir, CHECKPOINT_RECORD_FILE), "utf8"))
+    expect(persisted.mode).toBe("checkpoint")
+    expect(formatDeliveryNotice(record)).toMatch(/^\[sandbox checkpoint\]/)
+  })
+
+  it("a checkpointer skips the pushes while nothing changed, and retries after a failure", async () => {
+    let tree = TREE
+    let checkpointPushExit = 1
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) {
+        return result(0, `ahead=0\nuncommitted=1\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${tree}\n`)
+      }
+      if (o.command.includes(" push ")) return result(checkpointPushExit)
+      return result(1)
+    }
+    const seen: string[] = []
+    const checkpointer = createSandboxCheckpointer({
+      exec,
+      target,
+      outDir,
+      onCheckpoint: r => seen.push(r.checkpoint?.status ?? (r.unchanged ? "unchanged" : "none")),
+    })
+    await checkpointer.run()
+    checkpointPushExit = 0
+    await checkpointer.run() // the failed push is retried, not skipped
+    await checkpointer.run() // now unchanged
+    tree = "f".repeat(40)
+    await checkpointer.run() // new content
+    expect(seen).toEqual(["failed", "pushed", "unchanged", "pushed"])
+    expect(commands.filter(c => c.includes(" push ")).length).toBe(3)
+  })
+
+  it("concurrent checkpoint runs share one in-flight run", async () => {
+    let probes = 0
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      if (o.command.includes("rev-list")) {
+        probes++
+        await new Promise(resolve => setTimeout(resolve, 20))
+        return result(0, "ahead=0\nuncommitted=0\n")
+      }
+      return result(1)
+    }
+    const checkpointer = createSandboxCheckpointer({ exec, target, outDir })
+    await Promise.all([checkpointer.run(), checkpointer.run(), checkpointer.run()])
+    expect(probes).toBe(1)
+  })
+
+  it("isFullyDelivered: pushed, bundled, or nothing to deliver", () => {
+    const base = { at: "t", branch: "wt/x", baseSha: target.baseSha, key: "k" }
+    expect(isFullyDelivered({ ...base, ahead: 0, push: { status: "skipped" }, bundle: { status: "skipped" } })).toBe(true)
+    expect(isFullyDelivered({ ...base, ahead: 2, push: { status: "failed" }, bundle: { status: "skipped" } })).toBe(false)
+    expect(isFullyDelivered({ ...base, ahead: 2, push: { status: "failed" }, bundle: { status: "saved" } })).toBe(true)
+    expect(
+      isFullyDelivered({
+        ...base,
+        ahead: 0,
+        push: { status: "skipped" },
+        checkpoint: { status: "failed", ref: "r" },
+        bundle: { status: "skipped" },
+      }),
+    ).toBe(false)
+    const { key: _key, ...noKey } = base
+    expect(isFullyDelivered({ ...noKey, push: { status: "failed" }, bundle: { status: "skipped" } })).toBe(false)
+  })
+
+  it("resolves the checkpoint interval from the env, 0 turning it off", () => {
+    expect(resolveCheckpointIntervalMs({})).toBe(5 * 60_000)
+    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "60000" })).toBe(60_000)
+    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "0" })).toBe(0)
+    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "soon" })).toBe(5 * 60_000)
   })
 })

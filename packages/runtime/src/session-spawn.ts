@@ -79,7 +79,9 @@ import {
   type SandboxSecretResolver,
 } from "./sandbox-secret-resolver.js"
 import {
+  GH_TOKEN_ENV,
   GIT_TOKEN_ENV,
+  withGhTokenAlias,
   withoutReservedSandboxEnv,
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
@@ -88,6 +90,7 @@ import {
 import {
   formatDeliveryNotice,
   createDeliveryHook,
+  sandboxCheckpointOpts,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
@@ -3995,6 +3998,9 @@ export async function spawnAgentSession(
               onDelivery: (record: SandboxDeliveryRecord) => {
                 registry.recordSandboxDelivery(mintedSessionId, record, formatDeliveryNotice(record))
               },
+              onCheckpoint: (record: SandboxDeliveryRecord) => {
+                registry.recordSandboxCheckpoint(mintedSessionId, record, formatDeliveryNotice(record))
+              },
             }
           : {}),
         // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
@@ -4477,7 +4483,7 @@ async function resolveMcpCredentialHeaders(
   )
 }
 
-type SandboxBootResult =
+export type SandboxBootResult =
   | {
       ok: true
       agentSession: AgentSessionLike
@@ -4792,7 +4798,7 @@ async function startDeviceSessionWithRetry(
  * distinguish "no such provider" from "the box never came up" from "the
  * box's own agent_start rejected the adapter".
  */
-async function bootSandboxAgentSession(opts: {
+export async function bootSandboxAgentSession(opts: {
   sandbox: string | SandboxSpecInput
   resolveSandboxProvider?: SandboxProviderResolver
   adapter: string
@@ -4847,6 +4853,8 @@ async function bootSandboxAgentSession(opts: {
   sessionId?: string
   /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
   onDelivery?: (record: SandboxDeliveryRecord) => void
+  /** Receives each periodic checkpoint outcome of the work branch. */
+  onCheckpoint?: (record: SandboxDeliveryRecord) => void
   /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
    *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
    *  `forwardHttpStream` dial delivers both the spawn and the first turn.
@@ -4944,11 +4952,17 @@ async function bootSandboxAgentSession(opts: {
   if (workspacePlan && gitCredentialRef !== undefined && !isDeviceBox) {
     credentialRefs.set(GIT_TOKEN_ENV, gitCredentialRef)
   }
-  const resolveSecret = buildSandboxSecretResolver({
-    base: resolveSandboxSecret,
-    refs: credentialRefs,
-    keychainFirst: new Set([GIT_TOKEN_ENV]),
-  })
+  // GH_TOKEN mirrors the workspace git token (so `gh pr create` works in the
+  // box) and is otherwise unresolvable — never the daemon's own GH_TOKEN.
+  const hasGitToken = credentialRefs.has(GIT_TOKEN_ENV)
+  const resolveSecret = withGhTokenAlias(
+    buildSandboxSecretResolver({
+      base: resolveSandboxSecret,
+      refs: credentialRefs,
+      keychainFirst: new Set([GIT_TOKEN_ENV]),
+    }),
+    hasGitToken,
+  )
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(
       withSandboxAdapterPackages(
@@ -5030,7 +5044,12 @@ async function bootSandboxAgentSession(opts: {
   // yet, so this is the full slug set).
   const passthrough = spec.env?.passthrough ?? []
   const authEnv = spec.env?.auth?.state?.env ?? []
-  const declaredSlugs = new Set([...passthrough, ...authEnv, ...credentialRefs.keys()])
+  const declaredSlugs = new Set([
+    ...passthrough,
+    ...authEnv,
+    ...credentialRefs.keys(),
+    ...(hasGitToken ? [GH_TOKEN_ENV] : []),
+  ])
   // `join.tokenEnv` — sugar over `env.passthrough` for the auto-join case:
   // forward a single host env var (a join-token URL) into the box under the
   // same name. Unlike an explicit `env.passthrough` entry, a missing value
@@ -5277,6 +5296,10 @@ async function bootSandboxAgentSession(opts: {
       remoteSessionId,
       lifecyclePolicy,
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+      // A provider box outlives a host-daemon restart (shutdown detaches
+      // instead of killing it, boot re-attaches). Device sandboxes keep the
+      // old behavior: their box daemon is reached through a paired host.
+      ...(deviceTarget === undefined ? { detachable: true } : {}),
       // Device spawns only: surface a first-turn failure's raw host line
       // (see `surfaceHostTurnErrors`).
       ...(deviceTarget !== undefined ? { surfaceHostTurnErrors: true } : {}),
@@ -5292,8 +5315,18 @@ async function bootSandboxAgentSession(opts: {
               outDir: sessionTranscriptDir(deliverySessionId),
               ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
             }),
+            ...sandboxCheckpointOpts({
+              exec: boxExec,
+              ...(boxReadFile ? { readFile: boxReadFile } : {}),
+              target: deliveryTarget,
+              outDir: sessionTranscriptDir(deliverySessionId),
+              ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
+            }),
           }
         : {}),
+      // A device target is another daemon reached over the E2E bridge, not
+      // a box whose `/health` this host can probe directly.
+      ...(deviceTarget === undefined ? { watchdog: {} } : {}),
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,

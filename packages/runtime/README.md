@@ -223,7 +223,7 @@ Only `permission-resolved` (the final decision) transits the chat stream today. 
 
 ## Browser adapters and page tools
 
-The daemon, `POST /sessions/browser` and the CLI resolve browser adapters (`camofox`, `bureau`, `chromium`) through one table, `defaultBrowserAdapterResolution()`, backed by the `@agentproto/adapter-browser` facade.
+The daemon, `POST /sessions/browser` and the CLI resolve browser adapters (`camofox`, `bureau`, `chromium`, `chrome-live`) through one table, `defaultBrowserAdapterResolution()`, backed by the `@agentproto/adapter-browser` facade.
 
 `projectBrowserTools(instance, { provider })` projects a `@agentproto/driver-browser` `BrowserInstance` onto page-level MCP tools (MCP only; the SDK stays the typed client):
 

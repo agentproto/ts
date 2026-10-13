@@ -15,6 +15,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { ModelCooldownEntry } from "./model-cooldowns.js"
+import type { SandboxSessionStats } from "./sessions.js"
 
 export interface RegisterDaemonHealthToolsOptions {
   workspace: string
@@ -66,6 +67,10 @@ export interface RegisterDaemonHealthToolsOptions {
    *  Mirrors `/health`'s field of the same name; version alone can't
    *  distinguish a workspace dist from the published tarball. */
   build?: { sha?: string; builtAt?: string; source?: string }
+  /** Sandbox-session restart bookkeeping — `attached` is what a restart now
+   *  would DETACH (box keeps running), `reattach` is how the last boot's
+   *  reattach pass went. Mirrors `/health`'s `sandboxSessions`. */
+  sandboxSessions?: () => SandboxSessionStats
   /** Installed-app registry records that loaded partial or unusable (see
    *  `AppRegistry.listIssues`). Surfaced as `appRegistryIssues` — empty when
    *  the registry is clean — so a bad record is reported, not thrown on. */
@@ -121,6 +126,7 @@ export function registerDaemonHealthTools(
         build: opts.build ?? null,
         appRegistryIssues: opts.appRegistryIssues?.() ?? [],
         modelCooldowns: opts.modelCooldowns?.() ?? [],
+        ...(opts.sandboxSessions ? { sandboxSessions: opts.sandboxSessions() } : {}),
       })
     },
   )

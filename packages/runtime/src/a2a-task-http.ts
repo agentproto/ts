@@ -1,10 +1,12 @@
 /**
  * `POST /a2a/apps/:appId` — A2A 1.0 JSON-RPC 2.0 task ingress for one
- * installed app. `SendMessage` starts an `app_run` for an exposed agent skill,
+ * installed app. `SendMessage` starts an `app_run` for an exposed agent
+ * skill or a background workflow run for an exposed workflow skill,
  * `GetTask` reports it, `CancelTask` stops it. Everything runs through the
  * daemon's own `app_run` / `app_status` / `app_stop` / `app_artifact_get`
- * tools via `dispatchTool` (the same in-process dispatcher the REST
- * `tool-call` twin uses), so there is one implementation of a run.
+ * and `workflow_run_file` / `workflow_status` / `workflow_cancel` tools via
+ * `dispatchTool` (the same in-process dispatcher the REST `tool-call` twin
+ * uses), so there is one implementation of a run.
  *
  * Mapping and the task ledger live in a2a-tasks.ts. Auth (bearer + browser
  * origin guard) is applied by the dispatch block in http-server.ts.
@@ -20,6 +22,7 @@ import {
   A2A_SUPPORTED_VERSIONS,
   JSON_RPC_ERROR,
   buildTask,
+  buildWorkflowTask,
   createA2aTaskLedger,
   extractLastAssistantText,
   extractSkillRequest,
@@ -36,6 +39,7 @@ import {
   type A2aRunView,
   type A2aTask,
   type A2aTaskLedger,
+  type A2aWorkflowRunView,
   type JsonRpcId,
   type JsonRpcResponse,
 } from "./a2a-tasks.js"
@@ -102,10 +106,13 @@ function parseParts(raw: unknown): A2aPart[] {
     if ("text" in p) {
       if (typeof p.text !== "string") throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "part.text must be a string")
       parts.push({ text: p.text })
-    } else if (!("raw" in p || "url" in p || "data" in p)) {
+    } else if ("data" in p) {
+      // Kept so a workflow skill can take its input straight off the message.
+      parts.push({ data: p.data })
+    } else if (!("raw" in p || "url" in p)) {
       throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "each message part needs one of text, raw, url or data")
     }
-    // raw/url/data parts are accepted but carry no prompt text in this wave.
+    // raw/url parts are accepted but carry no prompt text in this wave.
   }
   return parts
 }
@@ -214,6 +221,19 @@ export async function handleA2aTaskRequest(
   const readTask = async (taskId: string): Promise<A2aTask> => {
     const entry = await ledger.find(appId, taskId)
     if (!entry) throw new RpcFailure(JSON_RPC_ERROR.taskNotFound, `task "${taskId}" not found for app "${appId}"`)
+    if (entry.kind === "workflow") {
+      const status = await call("workflow_status", { runId: taskId, full: true })
+      const data = status.data as { error?: unknown; status?: unknown } | undefined
+      // A missing run answers `{error: "run not found"}` — a FAILED run also
+      // carries `error`, but with its own `status`, so status is the gate.
+      if (!status.ok || !data || data.error === "run not found" || typeof data.status !== "string") {
+        throw new RpcFailure(
+          JSON_RPC_ERROR.taskNotFound,
+          `task "${taskId}" has no backing workflow run: ${status.text}`,
+        )
+      }
+      return buildWorkflowTask({ entry, run: data as A2aWorkflowRunView, newId: randomUUID })
+    }
     const status = await call("app_status", { appRunId: taskId, full: true })
     if (!status.ok || !status.data) {
       throw new RpcFailure(JSON_RPC_ERROR.taskNotFound, `task "${taskId}" has no backing app run: ${status.text}`)
@@ -268,7 +288,45 @@ export async function handleA2aTaskRequest(
           throw new RpcFailure(JSON_RPC_ERROR.invalidParams, `unknown skill "${skill}": app "${appId}" does not expose it`)
         }
         if (target.kind === "workflow") {
-          throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `skill "${skill}" is a workflow; only agent skills can be run as A2A tasks in this version`)
+          const ref = handle.workflows?.find(w => w.id === target.id)
+          // The registry's refs carry the absolute path too — the manifest
+          // handle may not, so fall back to it before declaring the bundle
+          // missing.
+          const path =
+            (typeof ref?.path === "string" && ref.path !== "" ? ref.path : undefined) ??
+            installed.workflows?.find(w => w.id === target.id)?.path
+          if (typeof path !== "string" || path === "") {
+            throw new RpcFailure(
+              JSON_RPC_ERROR.unsupportedOperation,
+              `app "${appId}" exposes workflow "${target.id}" but does not bundle it`,
+            )
+          }
+          let dataInput: Record<string, unknown> | undefined
+          for (const part of parts) {
+            const d = (part as { data?: unknown }).data
+            if (isRecord(d)) {
+              dataInput = d
+              break
+            }
+          }
+          const input = dataInput ?? (prompt ? { prompt } : {})
+          const started = await call("workflow_run_file", { path, input, appId })
+          const reply = (started.data ?? {}) as { runId?: unknown; error?: unknown }
+          const runId = typeof reply.runId === "string" && reply.runId !== "" ? reply.runId : undefined
+          const errText = typeof reply.error === "string" && reply.error !== "" ? reply.error : undefined
+          if (runId === undefined || errText !== undefined) {
+            throw new RpcFailure(JSON_RPC_ERROR.internal, errText ?? (started.text || "workflow_run_file failed"))
+          }
+          await ledger.append({
+            taskId: runId,
+            appId,
+            contextId: typeof rawMessage.contextId === "string" && rawMessage.contextId ? rawMessage.contextId : randomUUID(),
+            skill,
+            createdAt: new Date().toISOString(),
+            kind: "workflow",
+          })
+          send(res, 200, { jsonrpc: "2.0", id, result: { task: await readTask(runId) } })
+          return true
         }
         const run = await call("app_run", { appId, agents: [target.id], ...(prompt ? { prompt } : {}) })
         const started = run.data as { appRunId?: unknown; sessions?: unknown; errors?: unknown } | undefined
@@ -300,8 +358,14 @@ export async function handleA2aTaskRequest(
         if (TERMINAL_TASK_STATES.has(before.status.state)) {
           throw new RpcFailure(JSON_RPC_ERROR.taskNotCancelable, `task "${params.id}" is already ${before.status.state}`)
         }
-        const stop = await call("app_stop", { appRunId: params.id })
-        if (!stop.ok) throw new RpcFailure(JSON_RPC_ERROR.internal, stop.text || "app_stop failed")
+        const entry = await ledger.find(appId, params.id)
+        const isWorkflow = entry?.kind === "workflow"
+        const stop = isWorkflow
+          ? await call("workflow_cancel", { runId: params.id })
+          : await call("app_stop", { appRunId: params.id })
+        if (!stop.ok) {
+          throw new RpcFailure(JSON_RPC_ERROR.internal, stop.text || `${isWorkflow ? "workflow_cancel" : "app_stop"} failed`)
+        }
         send(res, 200, { jsonrpc: "2.0", id, result: await readTask(params.id) })
         return true
       }

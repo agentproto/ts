@@ -38,11 +38,17 @@ import type {
   SandboxProvider,
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError, scrubCommandFromMessage } from "@agentproto/sandbox"
-import { DEFAULT_TEMPLATE, TEMPLATES } from "./template-versions.generated.js"
+import {
+  DEFAULT_SIZE,
+  DEFAULT_TEMPLATE,
+  SIZES,
+  TEMPLATES,
+  type WorkstationSize,
+} from "./template-versions.generated.js"
 
 /** Re-exported from the generated module (single source:
  *  `templates/workstation/versions.json` via scripts/sync-templates.mjs). */
-export { DEFAULT_TEMPLATE, TEMPLATES }
+export { DEFAULT_SIZE, DEFAULT_TEMPLATE, SIZES, TEMPLATES, type WorkstationSize }
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 const DEFAULT_PORT = 18790
@@ -61,10 +67,23 @@ const HEALTH_PROBE_TIMEOUT_MS = 3_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 500
 const UPDATE_CLI_TIMEOUT_MS = 120_000
+/** Swap a fresh box gets unless `config.swapMb` says otherwise. The template
+ *  ships with none, and a box without swap does not fail cleanly when a
+ *  parallel build outgrows its RAM: it either has its agentproto daemon
+ *  OOM-killed (the host sees 502, the session's work is stranded) or wedges
+ *  for good — reproduced live: a monorepo `pnpm build` at ~3.5 GB usable left
+ *  the VM "running" with envd and `/health` unanswering for 10+ minutes. Swap
+ *  turns that into a slow build. */
+export const DEFAULT_SWAP_MB = 4096
+const SWAP_SETUP_TIMEOUT_MS = 60_000
 
 interface E2bSandboxConfig {
-  /** Template name or id. Defaults to the `agentproto-workstation` template. */
+  /** Template name or id. Wins over `size` when both are given. Defaults to
+   *  the `agentproto-workstation` template (built at `DEFAULT_SIZE`). */
   template?: string
+  /** Size preset (`nano` … `xx-large`, see `SIZES`): boots that preset's
+   *  `agentproto-workstation-<size>` template. Ignored when `template` is set. */
+  size?: WorkstationSize
   /** Port the agentproto daemon listens on inside the sandbox. Default 18790. */
   port?: number
   /** `--workspace` passed to `agentproto serve`. Default `/home/user`. */
@@ -113,12 +132,18 @@ interface E2bSandboxConfig {
    *  `sandbox.commands.run`. Runs on EVERY boot/connect, even when the health
    *  probe finds the daemon already autostarted — entries must be idempotent. */
   setupCommands?: string[]
+  /** Swap file (MiB) enabled on a FRESH boot, before the daemon starts.
+   *  Default {@link DEFAULT_SWAP_MB}; `0` disables. Best-effort: a box that
+   *  cannot enable swap still boots. Not re-run on `connect()` (a resumed box
+   *  keeps its swap). */
+  swapMb?: number
 }
 
 function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
   const config = (spec.config ?? {}) as Record<string, unknown>
   return {
     template: typeof config.template === "string" ? config.template : undefined,
+    size: readSize(config.size),
     port: typeof config.port === "number" ? config.port : undefined,
     workspace: typeof config.workspace === "string" ? config.workspace : undefined,
     timeoutMs: typeof config.timeoutMs === "number" ? config.timeoutMs : undefined,
@@ -137,8 +162,60 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
     setupCommands: Array.isArray(config.setupCommands)
       ? config.setupCommands.filter((c): c is string => typeof c === "string" && c.length > 0)
       : undefined,
+    swapMb:
+      typeof config.swapMb === "number" && Number.isFinite(config.swapMb) && config.swapMb >= 0
+        ? Math.floor(config.swapMb)
+        : undefined,
   }
 }
+
+const SIZE_NAMES = Object.keys(SIZES) as WorkstationSize[]
+
+/** One `SIZES` entry, widened from the generated literal types. */
+interface SizePreset {
+  cpuCount: number
+  memoryMb: number
+  available: boolean
+  unavailableReason?: string
+  id: string | null
+  alias: string
+}
+
+function isWorkstationSize(value: string): value is WorkstationSize {
+  return Object.hasOwn(SIZES, value)
+}
+
+/** Validate `config.size`: absent is fine, anything else must name a preset. */
+function readSize(value: unknown): WorkstationSize | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || !isWorkstationSize(value)) {
+    throw new Error(
+      `e2b sandbox: unknown config.size ${JSON.stringify(value)}; valid sizes: ${SIZE_NAMES.join(", ")}`,
+    )
+  }
+  return value
+}
+
+/**
+ * The template a spec boots: an explicit `template` wins; else the `size`
+ * preset's published template (by id, so the recorded bake applies); else
+ * the bare default template. A preset e2b refused to create fails with the
+ * error e2b returned rather than silently booting a smaller box.
+ */
+export function resolveTemplate(config: Pick<E2bSandboxConfig, "template" | "size">): string {
+  if (config.template !== undefined) return config.template
+  if (config.size === undefined) return DEFAULT_TEMPLATE
+  const preset: SizePreset = SIZES[config.size]
+  if (!preset.available) {
+    throw new Error(
+      `e2b sandbox: size "${config.size}" (${preset.cpuCount} vCPU / ${preset.memoryMb} MB) is unavailable — e2b refused to create its template: ${preset.unavailableReason ?? "not published"}`,
+    )
+  }
+  return preset.id ?? preset.alias
+}
+
+/** Every published template whose bake is recorded: the channels plus each size. */
+const KNOWN_TEMPLATES = { ...TEMPLATES, ...SIZES }
 
 /**
  * Default the on-boot CLI update OFF only for a template whose recorded
@@ -153,7 +230,7 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
 export function resolveUpdateCli(
   config: Pick<E2bSandboxConfig, "updateCliOnBoot" | "cliVersion" | "installPackages">,
   template: string,
-  templates: { [key: string]: { id: string | null; baked: { cli: string | null } } } = TEMPLATES,
+  templates: { [key: string]: { id: string | null; baked: { cli: string | null } } } = KNOWN_TEMPLATES,
 ): boolean {
   if (config.updateCliOnBoot !== undefined) return config.updateCliOnBoot
   // Runtime escape hatch: a caller declaring installPackages wants an
@@ -174,6 +251,26 @@ export function resolveUpdateCli(
  * reconnect"). Throws (after killing the sandbox) if the daemon never comes
  * up.
  */
+/** The command {@link enableSwap} runs: idempotent (no-op when any swap is
+ *  already active) and never failing. */
+export function buildSwapCommand(swapMb: number): string {
+  return (
+    `if [ -z "$(swapon --show --noheadings 2>/dev/null)" ]; then ` +
+    `{ sudo fallocate -l ${swapMb}M /swapfile && sudo chmod 600 /swapfile && ` +
+    `sudo mkswap /swapfile >/dev/null && sudo swapon /swapfile; } >/dev/null 2>&1 || ` +
+    `echo "swap not enabled"; fi`
+  )
+}
+
+async function enableSwap(sandbox: Sandbox, swapMb: number): Promise<void> {
+  if (swapMb <= 0) return
+  try {
+    await sandbox.commands.run(buildSwapCommand(swapMb), { timeoutMs: SWAP_SETUP_TIMEOUT_MS })
+  } catch {
+    // best-effort: a box without swap is still a working box
+  }
+}
+
 async function ensureDaemonHealthy(
   sandbox: Sandbox,
   host: string,
@@ -289,6 +386,13 @@ function toBootedSandbox(
     async pause(): Promise<void> {
       await sandbox.pause({ keepMemory: true })
     },
+    /** Re-arm the box's remaining lifetime to `ms` from now — the same SDK
+     *  call `connect()` already uses to re-arm a resumed box's deadline
+     *  (see module docs above), exposed so a host can extend it again on
+     *  detach without a full reconnect. */
+    async extendTimeout(ms: number): Promise<void> {
+      await sandbox.setTimeout(ms)
+    },
     /**
      * Run ONE command inside the box (e2b `sandbox.commands.run`, foreground)
      * and return its exit code + captured streams. A NON-ZERO exit is a
@@ -361,7 +465,7 @@ const READ_FILE_TIMEOUT_MS = 5 * 60_000
 export const e2bSandboxProvider: SandboxProvider = {
   async boot(spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
     const config = readE2bConfig(spec)
-    const template = config.template ?? DEFAULT_TEMPLATE
+    const template = resolveTemplate(config)
     const port = config.port ?? DEFAULT_PORT
     const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
@@ -379,6 +483,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     // only owner of that cleanup — `ensureDaemonHealthy` never kills.
     try {
       const host = sandbox.getHost(port)
+      await enableSwap(sandbox, config.swapMb ?? DEFAULT_SWAP_MB)
       await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
       return toBootedSandbox(sandbox, host, undefined, spec.extraPorts)
     } catch (err) {
@@ -389,6 +494,9 @@ export const e2bSandboxProvider: SandboxProvider = {
 
   async connect(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
     const config = readE2bConfig(spec)
+    // A resumed box keeps its original template — resolve against the
+    // configured template the same way `boot` does, before touching the box.
+    const template = resolveTemplate(config)
     const port = config.port ?? DEFAULT_PORT
     const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
@@ -412,9 +520,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     // back healthy must reclaim the box rather than leave it running orphaned.
     try {
       const host = sandbox.getHost(port)
-      // A resumed box keeps its original template — resolve against the
-      // configured template the same way `boot` does.
-      await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, config.template ?? DEFAULT_TEMPLATE))
+      await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
       return finishConnect(sandbox, host, opts, spec)
     } catch (err) {
       await sandbox.kill().catch(() => undefined)

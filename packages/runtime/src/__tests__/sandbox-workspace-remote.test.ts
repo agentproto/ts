@@ -9,7 +9,9 @@ import { describe, it, expect } from "vitest"
 import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 
 import {
+  GH_TOKEN_ENV,
   GIT_TOKEN_ENV,
+  withGhTokenAlias,
   planSandboxWorkspace,
   runSandboxWorkspaceSetup,
   shellQuote,
@@ -49,6 +51,28 @@ describe("planSandboxWorkspace", () => {
     expect(checkout).toContain("git show-ref --verify --quiet 'refs/heads/wt/x'")
     expect(checkout).toContain("git checkout 'wt/x'")
     expect(checkout).toContain("git checkout -b 'wt/x' 'origin/develop'")
+  })
+
+  it("resumes a branch a previous box pushed, then restores its checkpoint snapshot onto the exact commit", () => {
+    const plan = planSandboxWorkspace({ ...request, worktree: { slug: "x" } })
+    const checkout = plan.steps.find(s => s.label === "git-checkout")?.command ?? ""
+    expect(checkout).toContain("git show-ref --verify --quiet 'refs/remotes/origin/wt/x'")
+    expect(checkout).toContain("git checkout -b 'wt/x' --track 'origin/wt/x'")
+    // local branch first, then the pushed one, then a fresh cut
+    expect(checkout.indexOf("refs/heads/wt/x")).toBeLessThan(checkout.indexOf("refs/remotes/origin/wt/x"))
+    expect(checkout.indexOf("refs/remotes/origin/wt/x")).toBeLessThan(checkout.indexOf("git checkout -b 'wt/x' 'origin/"))
+    const labels = plan.steps.map(s => s.label)
+    expect(labels.indexOf("restore-checkpoint")).toBe(labels.indexOf("git-checkout") + 1)
+    const restore = plan.steps.find(s => s.label === "restore-checkpoint")?.command ?? ""
+    expect(restore).toContain("'refs/remotes/origin/agentproto-checkpoint/wt/x'^")
+    expect(restore).toContain('= "$(git rev-parse HEAD)"')
+    expect(restore).toContain("git read-tree -u --reset")
+    expect(restore).toContain('|| echo "checkpoint not restored"')
+  })
+
+  it("plans no checkpoint restore without a work branch", () => {
+    const plan = planSandboxWorkspace({ ...request })
+    expect(plan.steps.some(s => s.label === "restore-checkpoint")).toBe(false)
   })
 
   it("defaults the base to origin/<defaultBranch> and mints a slug when none is given", () => {
@@ -160,8 +184,41 @@ describe("withoutReservedSandboxEnv", () => {
     expect(spec.join?.tokenEnv).toBeUndefined()
   })
 
+  it("drops GH_TOKEN from every caller-declared env slot too", () => {
+    const spec = withoutReservedSandboxEnv({
+      provider: "e2b",
+      config: {},
+      env: {
+        passthrough: [GH_TOKEN_ENV, "KEEP_ME"],
+        auth: { state: { env: ["ALSO_KEPT", GH_TOKEN_ENV] } },
+      },
+      join: { tokenEnv: GH_TOKEN_ENV },
+    } as Parameters<typeof withoutReservedSandboxEnv>[0])
+    expect(spec.env?.passthrough).toEqual(["KEEP_ME"])
+    expect(spec.env?.auth?.state?.env).toEqual(["ALSO_KEPT"])
+    expect(spec.join?.tokenEnv).toBeUndefined()
+  })
+
   it("returns a spec without env untouched", () => {
     const spec = { provider: "e2b", config: {} }
     expect(withoutReservedSandboxEnv(spec)).toBe(spec)
+  })
+})
+
+describe("withGhTokenAlias", () => {
+  const resolve = async (slug: string) =>
+    ({ [GIT_TOKEN_ENV]: "workspace-token", [GH_TOKEN_ENV]: "operator-gh-token", OTHER: "other" })[slug] ?? null
+
+  it("answers GH_TOKEN with the workspace git token, never a same-named daemon env var", async () => {
+    const aliased = withGhTokenAlias(resolve, true)
+    expect(await aliased(GH_TOKEN_ENV)).toBe("workspace-token")
+    expect(await aliased(GIT_TOKEN_ENV)).toBe("workspace-token")
+    expect(await aliased("OTHER")).toBe("other")
+  })
+
+  it("resolves GH_TOKEN to null when the box has no workspace git token", async () => {
+    const aliased = withGhTokenAlias(resolve, false)
+    expect(await aliased(GH_TOKEN_ENV)).toBeNull()
+    expect(await aliased("OTHER")).toBe("other")
   })
 })

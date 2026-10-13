@@ -27,7 +27,13 @@
  */
 
 import type { SandboxAgentSessionHost, SandboxLifecyclePolicy } from "@agentproto/sandbox"
-import type { AgentSessionLike, AgentStreamEvent } from "./sessions.js"
+import type {
+  AgentSessionLike,
+  AgentStreamEvent,
+  SandboxDetachRecord,
+  SandboxReattachProbe,
+} from "./sessions.js"
+import { DEFAULT_CHECKPOINT_INTERVAL_MS } from "./sandbox-delivery.js"
 import { recordSandboxState } from "./sandbox-ledger.js"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
@@ -43,6 +49,40 @@ const MAX_OUTPUT_LINES = 500
 const MAX_CONSECUTIVE_POLL_FAILURES = 6
 /** Pause between failed polls — no tight error loop against a sick box. */
 const POLL_RETRY_DELAY_MS = 5_000
+/** Box-daemon watchdog defaults: probe `/health` every 30s; declare the daemon
+ *  dead after 3 definitive failures in a row (~90s), or after 10 probes in a
+ *  row that got no answer at all (~5 min — a box thrashing out of memory). */
+export const DEFAULT_WATCHDOG_INTERVAL_MS = 30_000
+export const DEFAULT_WATCHDOG_FAILURE_THRESHOLD = 3
+export const DEFAULT_WATCHDOG_UNRESPONSIVE_THRESHOLD = 10
+const WATCHDOG_PROBE_TIMEOUT_MS = 10_000
+
+/** Outcome of one liveness probe:
+ *  - `"dead"`: the provider's edge answered non-2xx (daemon not listening,
+ *    box gone);
+ *  - `"unresponsive"`: no answer within the probe timeout. A busy daemon still
+ *    answers `/health` in well under that, but a box swapping itself to death
+ *    with no swap (observed: OOM during a parallel build) never does — so a
+ *    long enough streak of these is death too;
+ *  - `"inconclusive"`: the request failed on the HOST side (DNS, offline) —
+ *    says nothing about the box, so it neither counts nor resets a streak. */
+export type BoxLiveness = "alive" | "dead" | "unresponsive" | "inconclusive"
+
+/** Probe the box daemon's `/health` over the same origin as `mcpUrl`. Any
+ *  HTTP answer that is not 2xx is definitive: the provider's edge answering
+ *  502/404 is exactly "VM up (or gone), daemon not listening". */
+export async function probeBoxDaemonHealth(mcpUrl: string): Promise<BoxLiveness> {
+  const url = new URL(mcpUrl)
+  url.pathname = "/health"
+  url.search = ""
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(WATCHDOG_PROBE_TIMEOUT_MS) })
+    await res.body?.cancel().catch(() => undefined)
+    return res.ok ? "alive" : "dead"
+  } catch (err) {
+    return err instanceof Error && err.name === "TimeoutError" ? "unresponsive" : "inconclusive"
+  }
+}
 
 /** A host ring-buffer line that looks like the adapter's own failure report —
  *  used to surface a device spawn's first-turn failure (a bad model id ends
@@ -124,7 +164,8 @@ export interface SandboxAgentSessionProxyOpts {
     | "stop"
     | "pause"
     | "mcpUrl"
-  >
+  > &
+    Partial<Pick<SandboxAgentSessionHost, "close" | "extendTimeout">>
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
    *  proxy's local session id (the registry mints its own on `spawnAgent`). */
   remoteSessionId: string
@@ -162,7 +203,45 @@ export interface SandboxAgentSessionProxyOpts {
    *  down (`close({ daemonShutdown: true })`): the process is about to exit,
    *  so the box is released at once instead. */
   onBeforeTeardown?: () => Promise<void>
+  /** Opt in to surviving a host-daemon restart: `detach()` then closes only
+   *  the connection (box session and box left running) and the session can
+   *  be re-attached at the next boot. Off for device sandboxes (their box
+   *  daemon is reached through a paired host, not a provider box). */
+  detachable?: boolean
+  /** Re-attach only: the box-transcript `seq` already consumed on the host
+   *  before the restart — the event stream resumes after it. */
+  initialTranscriptCursor?: number
+  /** Periodic checkpoint of the box's work (`createSandboxCheckpointer`): run
+   *  every `intervalMs`, after each turn, and once more when the watchdog
+   *  declares the box daemon dead (the VM often outlives its daemon, and its
+   *  filesystem is still reachable through the provider). Stops at `close()`,
+   *  which awaits an in-flight run before its own teardown delivery. A
+   *  rejection is swallowed. */
+  checkpoint?: { run: () => Promise<unknown>; intervalMs?: number }
+  /** Box-daemon liveness watchdog. Without it a daemon that dies BETWEEN
+   *  turns (OOM-killed in a small box) leaves the host row `running` forever:
+   *  nothing reads the box until the next prompt. When `failureThreshold`
+   *  definitive probe failures land in a row, the proxy takes a last
+   *  checkpoint and fires `onDisconnect`, which the registry turns into a
+   *  `crashed` row — restartable, and eligible for `restartPolicy`. */
+  watchdog?: {
+    probe?: () => Promise<BoxLiveness>
+    intervalMs?: number
+    /** Consecutive `"dead"` probes before declaring death. */
+    failureThreshold?: number
+    /** Consecutive `"dead"`/`"unresponsive"` probes before declaring death. */
+    unresponsiveThreshold?: number
+  }
 }
+
+/** A re-attach replay of an idle box (unseen backlog, no turn in flight) ends
+ *  after this much silence — the backlog is finite, so quiet means done. */
+const REPLAY_QUIET_END_MS = 10_000
+
+/** How long a detached box is asked to stay alive — requested from the
+ *  moment of detach. Providers cap this on their own (e2b hobby: 1h); a
+ *  rejected request leaves the box's original deadline in place. */
+export const DETACHED_BOX_LIFETIME_MS = 60 * 60_000
 
 /**
  * Best-effort extraction of the prompt text from whatever `sessions.ts`'s
@@ -192,6 +271,55 @@ function buildEventsStreamUrl(mcpUrl: string, remoteSessionId: string, since: nu
   return url.toString()
 }
 
+function boxSessionUrl(mcpUrl: string, remoteSessionId: string, suffix: string, search = ""): string {
+  const url = new URL(mcpUrl)
+  url.pathname = `/sessions/${encodeURIComponent(remoteSessionId)}${suffix}`
+  url.search = search
+  return url.toString()
+}
+
+/** Page size for the finite backlog read in `probeReattach`. */
+const PROBE_BACKLOG_LIMIT = 500
+const PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * Classify the box's session for a re-attaching host. Uses only the box
+ * daemon's own read routes (`GET /sessions/:id` for liveness + busy, the
+ * finite `GET /sessions/:id/events?since=` for the unseen backlog) — never a
+ * prompt. Never throws: any transport failure is `unreachable`.
+ */
+async function probeBoxSession(
+  mcpUrl: string,
+  remoteSessionId: string,
+  since: number,
+): Promise<SandboxReattachProbe> {
+  const get = async (url: string): Promise<Response> =>
+    fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+  try {
+    const res = await get(boxSessionUrl(mcpUrl, remoteSessionId, ""))
+    if (res.status === 404) return { state: "gone" }
+    if (!res.ok) return { state: "unreachable", detail: `GET session returned ${res.status}` }
+    const desc = (await res.json()) as { busy?: boolean; status?: string }
+    const status = desc.status
+    const finished = status === "killed" || status === "exited" || status === "error"
+    if (desc.busy === true && !finished) return { state: "busy" }
+    const evRes = await get(
+      boxSessionUrl(mcpUrl, remoteSessionId, "/events", `since=${since}&limit=${PROBE_BACKLOG_LIMIT}`),
+    )
+    let backlog = false
+    if (evRes.ok) {
+      const body = (await evRes.json()) as { events?: Array<Record<string, unknown>> }
+      backlog = (body.events ?? []).some(
+        r => typeof r.kind === "string" && STREAM_EVENT_RECORD_KINDS.has(r.kind),
+      )
+    }
+    if (finished) return { state: "ended", detail: `box session status "${status}"` }
+    return { state: backlog ? "backlog" : "idle" }
+  } catch (err) {
+    return { state: "unreachable", detail: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 /**
  * Open the box daemon's structured SSE stream. Throws (caller falls back to
  * `pollAgentOutputFallback`) when the box is unreachable or its daemon
@@ -219,6 +347,34 @@ async function openBoxEventStream(
  * `:`-prefixed comment lines (the route's `: connected`/`: keep-alive`
  * pings) are not `data:` lines and fall out of the filter naturally.
  */
+/** Re-yield `records`, but end quietly (`state.quiet = true`) once `ms` pass
+ *  with nothing arriving. Used for a re-attach replay of events the box
+ *  produced while the host was down, when the box is NOT mid-turn: the
+ *  backlog is finite, so silence means it was fully replayed. */
+async function* endAfterQuiet(
+  records: AsyncGenerator<Record<string, unknown>>,
+  ms: number,
+  state: { quiet: boolean },
+): AsyncGenerator<Record<string, unknown>> {
+  for (;;) {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const next = await Promise.race([
+      records.next(),
+      new Promise<"quiet">(resolve => {
+        timer = setTimeout(() => resolve("quiet"), ms)
+      }),
+    ])
+    clearTimeout(timer)
+    if (next === "quiet") {
+      state.quiet = true
+      void records.return(undefined).catch(() => undefined)
+      return
+    }
+    if (next.done) return
+    yield next.value
+  }
+}
+
 async function* readSseRecords(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Record<string, unknown>> {
@@ -403,48 +559,248 @@ export function createSandboxAgentSessionProxy(
   const { host, remoteSessionId, lifecyclePolicy } = opts
   let lastPrompt: string | undefined
   let closed = false
+  // Set by `detach()` at host-daemon shutdown. Once true the proxy never
+  // touches the box session again: the open stream is aborted and every
+  // in-flight `send()` parks (see `parkIfDetached`).
+  let detached = false
+  let activeController: AbortController | undefined
   // This session's own transcript-seq cursor — a DIFFERENT space than
   // `currentEventsCursor()`'s daemon-wide event-bus cursor (that one feeds
   // `session_monitor`; this one feeds `GET /sessions/:id/events/stream`).
   // Starts at 0: `host.start()` never sends a prompt of its own
   // (`session-spawn.ts` calls it with no `prompt`), so the very first
   // `send()` call is this session's first turn and there is no prior
-  // transcript to skip. Advanced to the last consumed record's `seq` after
-  // every turn (in the closure, so it persists across turns) so a later
-  // turn's stream only replays what's new — no extra round-trip needed to
-  // discover "current tip" the way `currentEventsCursor()` does for the
-  // bus, since nothing else writes to THIS session's transcript
-  // concurrently.
-  let transcriptCursor = 0
+  // transcript to skip — unless this proxy re-attaches after a host restart,
+  // where it starts at the last seq the previous host process consumed.
+  // Advanced to the last consumed record's `seq` after every record (in the
+  // closure, so it persists across turns) so a later turn's stream only
+  // replays what's new — no extra round-trip needed to discover "current
+  // tip" the way `currentEventsCursor()` does for the bus, since nothing
+  // else writes to THIS session's transcript concurrently.
+  let transcriptCursor = opts.initialTranscriptCursor ?? 0
   // How many turns this proxy has driven — gates the first-turn-only host
   // error surfacing (see `surfaceHostTurnErrors`).
   let turnsSent = 0
+  let lastProbeState: SandboxReattachProbe["state"] | undefined
 
-  return {
-    sessionId: remoteSessionId,
+  /** After a detach every path out of an in-flight turn lands here and never
+   *  returns: a throw or a normal return would make the registry's turn loop
+   *  record a synthetic turn-end / error status for a session that is in
+   *  fact alive on its box. The process is exiting; the pending promise dies
+   *  with it. */
+  const parkIfDetached = async (): Promise<void> => {
+    if (detached) await new Promise<never>(() => undefined)
+  }
 
-    async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
-      const prompt = extractPromptText(message)
-      lastPrompt = prompt
-      const isFirstTurn = turnsSent === 0
-      turnsSent++
+  /** Consume the box's structured stream for ONE turn (prompt already sent,
+   *  or already running on the box). Shared by `send()` and `resumeTurn()`. */
+  async function* consumeTurn(
+    isFirstTurn: boolean,
+    since: number,
+    quietEndMs?: number,
+  ): AsyncGenerator<AgentStreamEvent> {
+    const controller = new AbortController()
+    activeController = controller
+    let sseBody: ReadableStream<Uint8Array> | undefined
+    try {
+      sseBody = await openBoxEventStream(
+        host.mcpUrl,
+        remoteSessionId,
+        transcriptCursor,
+        controller.signal,
+      )
+    } catch {
+      // Unreachable box, or a daemon old enough to 404 the route —
+      // degrade to the flattened poll rather than failing the turn.
+      sseBody = undefined
+    }
+    await parkIfDetached()
 
-      // Capture a race-free cursor BEFORE sending: an extremely fast turn
-      // (a synchronous/near-instant adapter echo is plausible for a
-      // trivial prompt) can settle and fire its `session:turn-end` before
-      // `waitForAny`'s own long-poll request even reaches the box daemon
-      // over the network — client-side call ORDERING alone can't close
-      // this (two outbound HTTP requests racing to the same daemon have no
-      // guaranteed arrival order). The awaited cursor fetch completes
-      // strictly before `prompt` is sent, so the box daemon's ring-replay
-      // branch (`orchestration-tools.ts`'s `monitorSessionWait`) always
-      // finds the matching turn-end regardless of how late the long-poll's
-      // bus subscription lands — see `HarnessClient.currentEventsCursor`'s
-      // doc. Only consumed by `pollAgentOutputFallback` below, but always
-      // captured up front (mirrors `@agentproto/worktree`'s
-      // `sendPromptAndWait`, which uses the same cursor-first pattern)
-      // so a mid-turn fallback never starts from a stale cursor.
-      const since = await host.currentEventsCursor()
+    if (!sseBody) {
+      try {
+        yield* pollAgentOutputFallback(host, remoteSessionId, since)
+      } catch (err) {
+        await parkIfDetached()
+        throw err
+      }
+      return
+    }
+
+    try {
+      let sawTurnEnd = false
+      let sawAssistantText = false
+      let sawToolCall = false
+      const quietState = { quiet: false }
+      const source =
+        quietEndMs === undefined
+          ? readSseRecords(sseBody)
+          : endAfterQuiet(readSseRecords(sseBody), quietEndMs, quietState)
+      for await (const record of source) {
+        if (typeof record.seq === "number") transcriptCursor = record.seq
+        const evt = recordToStreamEvent(record)
+        if (!evt) continue
+        if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
+        else if (evt.kind === "tool-call") sawToolCall = true
+        if (evt.kind === "turn-end") {
+          sawTurnEnd = true
+          // Device first-turn failure surfacing: the box's structured
+          // transcript carries no cause for an EMPTY turn (a bad model id),
+          // and an `error` reason may have its message only in the box's
+          // ring buffer. Pull that raw line into the controller's view
+          // BEFORE the terminal turn-end so it reads as part of this turn.
+          if (
+            opts.surfaceHostTurnErrors &&
+            isFirstTurn &&
+            (evt.reason === "error" || (!sawAssistantText && !sawToolCall))
+          ) {
+            yield* harvestHostErrorNotice(host, remoteSessionId)
+          }
+          yield evt
+          break
+        }
+        yield evt
+      }
+      await parkIfDetached()
+      if (!sawTurnEnd && !quietState.quiet) {
+        // The connection closed (box HTTP server gone, not just the
+        // adapter subprocess) without a terminal turn-end record ever
+        // landing. The box's OWN `runAgentTurn` guarantees a turn-end
+        // (real or synthesized) for any outcome it can observe — a
+        // stream that ends without one means the box daemon itself
+        // stopped observing, i.e. it's gone. Throwing here mirrors the
+        // fallback path's "exited" handling: the registry's
+        // `runAgentTurn` catch flips this session's status to "error"
+        // and emits `session:exited`.
+        throw new Error(
+          `sandbox proxy: structured event stream for remote session "${remoteSessionId}" ` +
+            "ended without a turn-end — the box's own agentproto daemon connection was " +
+            "lost (crash, OOM, or an out-of-band kill).",
+        )
+      }
+    } catch (err) {
+      await parkIfDetached()
+      // Best-effort final harvest, same rationale as the legacy fallback's
+      // catch: pull whatever the box printed that this turn hasn't
+      // yielded as a structured event, so the HOST transcript isn't left
+      // blind. May overlap with content already yielded above — an
+      // acceptable duplicate on an already-abnormal turn, not a silent
+      // gap.
+      try {
+        const tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
+        if (tail) yield { kind: "text-delta", text: tail }
+      } catch {
+        // box gone — nothing more to salvage
+      }
+      throw err
+    } finally {
+      controller.abort()
+      if (activeController === controller) activeController = undefined
+    }
+  }
+
+  // ── checkpoint + watchdog (both optional, both stop at close/death) ──
+  let checkpointInFlight: Promise<unknown> | undefined
+  const runCheckpoint = (): Promise<unknown> => {
+    if (!opts.checkpoint) return Promise.resolve()
+    if (checkpointInFlight) return checkpointInFlight
+    checkpointInFlight = opts.checkpoint
+      .run()
+      .catch(() => undefined)
+      .finally(() => {
+        checkpointInFlight = undefined
+      })
+    return checkpointInFlight
+  }
+  const timers: ReturnType<typeof setInterval>[] = []
+  const stopTimers = () => {
+    for (const timer of timers.splice(0)) clearInterval(timer)
+  }
+  if (opts.checkpoint) {
+    const timer = setInterval(() => {
+      if (!closed && !detached) void runCheckpoint()
+    }, opts.checkpoint.intervalMs ?? DEFAULT_CHECKPOINT_INTERVAL_MS)
+    timer.unref?.()
+    timers.push(timer)
+  }
+  let deadError: Error | undefined
+  const disconnectListeners: Array<(err: Error) => void> = []
+  if (opts.watchdog) {
+    const probe = opts.watchdog.probe ?? (() => probeBoxDaemonHealth(host.mcpUrl))
+    const threshold = opts.watchdog.failureThreshold ?? DEFAULT_WATCHDOG_FAILURE_THRESHOLD
+    const unresponsiveThreshold =
+      opts.watchdog.unresponsiveThreshold ?? DEFAULT_WATCHDOG_UNRESPONSIVE_THRESHOLD
+    let failures = 0
+    let silent = 0
+    let probing = false
+    const timer = setInterval(() => {
+      if (closed || probing || deadError) return
+      probing = true
+      void (async () => {
+        try {
+          const liveness = await probe().catch((): BoxLiveness => "inconclusive")
+          if (closed || deadError) return
+          if (liveness === "alive") {
+            failures = 0
+            silent = 0
+          } else if (liveness === "dead") {
+            failures++
+            silent++
+          } else if (liveness === "unresponsive") {
+            failures = 0
+            silent++
+          }
+          if (failures < threshold && silent < unresponsiveThreshold) return
+          stopTimers()
+          deadError = new Error(
+            `sandbox proxy: the box daemon for remote session "${remoteSessionId}" ` +
+              (failures >= threshold
+                ? `failed its health check ${failures} times in a row`
+                : `did not answer its health check ${silent} times in a row`) +
+              " (crash, OOM, or the box is gone).",
+          )
+          // Last-chance rescue while the VM may still be up.
+          await runCheckpoint()
+          if (closed) return
+          for (const listener of disconnectListeners.splice(0)) {
+            try {
+              listener(deadError)
+            } catch {
+              // a listener's failure is its own
+            }
+          }
+        } finally {
+          probing = false
+        }
+      })()
+    }, opts.watchdog.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS)
+    timer.unref?.()
+    timers.push(timer)
+  }
+
+  async function* sendTurn(message: unknown): AsyncGenerator<AgentStreamEvent> {
+    const prompt = extractPromptText(message)
+    lastPrompt = prompt
+    const isFirstTurn = turnsSent === 0
+    turnsSent++
+
+    // Capture a race-free cursor BEFORE sending: an extremely fast turn
+    // (a synchronous/near-instant adapter echo is plausible for a
+    // trivial prompt) can settle and fire its `session:turn-end` before
+    // `waitForAny`'s own long-poll request even reaches the box daemon
+    // over the network — client-side call ORDERING alone can't close
+    // this (two outbound HTTP requests racing to the same daemon have no
+    // guaranteed arrival order). The awaited cursor fetch completes
+    // strictly before `prompt` is sent, so the box daemon's ring-replay
+    // branch (`orchestration-tools.ts`'s `monitorSessionWait`) always
+    // finds the matching turn-end regardless of how late the long-poll's
+    // bus subscription lands — see `HarnessClient.currentEventsCursor`'s
+    // doc. Only consumed by `pollAgentOutputFallback` below, but always
+    // captured up front (mirrors `@agentproto/worktree`'s
+    // `sendPromptAndWait`, which uses the same cursor-first pattern)
+    // so a mid-turn fallback never starts from a stale cursor.
+    let since: number
+    try {
+      since = await host.currentEventsCursor()
       // F2 single-dial spawn: the first prompt rode inside `host.start()`'s
       // `agent_start`, so re-sending it here would be the second concurrent
       // `forwardHttpStream` dial this fix removes (and would double-deliver
@@ -452,88 +808,34 @@ export function createSandboxAgentSessionProxy(
       if (!(opts.promptCarriedInStart && isFirstTurn)) {
         await host.prompt(remoteSessionId, prompt)
       }
+    } catch (err) {
+      await parkIfDetached()
+      throw err
+    }
+    await parkIfDetached()
+    yield* consumeTurn(isFirstTurn, since)
+  }
 
-      const controller = new AbortController()
-      let sseBody: ReadableStream<Uint8Array> | undefined
+  const proxy: AgentSessionLike = {
+    sessionId: remoteSessionId,
+
+    ...(opts.watchdog
+      ? {
+          isConnected: () => deadError === undefined,
+          onDisconnect(listener: (err: Error) => void): void {
+            if (deadError) listener(deadError)
+            else disconnectListeners.push(listener)
+          },
+        }
+      : {}),
+
+    async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
       try {
-        sseBody = await openBoxEventStream(
-          host.mcpUrl,
-          remoteSessionId,
-          transcriptCursor,
-          controller.signal,
-        )
-      } catch {
-        // Unreachable box, or a daemon old enough to 404 the route —
-        // degrade to the flattened poll rather than failing the turn.
-        sseBody = undefined
-      }
-
-      if (!sseBody) {
-        yield* pollAgentOutputFallback(host, remoteSessionId, since)
-        return
-      }
-
-      try {
-        let sawTurnEnd = false
-        let sawAssistantText = false
-        let sawToolCall = false
-        for await (const record of readSseRecords(sseBody)) {
-          if (typeof record.seq === "number") transcriptCursor = record.seq
-          const evt = recordToStreamEvent(record)
-          if (!evt) continue
-          if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
-          else if (evt.kind === "tool-call") sawToolCall = true
-          if (evt.kind === "turn-end") {
-            sawTurnEnd = true
-            // Device first-turn failure surfacing: the box's structured
-            // transcript carries no cause for an EMPTY turn (a bad model id),
-            // and an `error` reason may have its message only in the box's
-            // ring buffer. Pull that raw line into the controller's view
-            // BEFORE the terminal turn-end so it reads as part of this turn.
-            if (
-              opts.surfaceHostTurnErrors &&
-              isFirstTurn &&
-              (evt.reason === "error" || (!sawAssistantText && !sawToolCall))
-            ) {
-              yield* harvestHostErrorNotice(host, remoteSessionId)
-            }
-            yield evt
-            break
-          }
-          yield evt
-        }
-        if (!sawTurnEnd) {
-          // The connection closed (box HTTP server gone, not just the
-          // adapter subprocess) without a terminal turn-end record ever
-          // landing. The box's OWN `runAgentTurn` guarantees a turn-end
-          // (real or synthesized) for any outcome it can observe — a
-          // stream that ends without one means the box daemon itself
-          // stopped observing, i.e. it's gone. Throwing here mirrors the
-          // fallback path's "exited" handling: the registry's
-          // `runAgentTurn` catch flips this session's status to "error"
-          // and emits `session:exited`.
-          throw new Error(
-            `sandbox proxy: structured event stream for remote session "${remoteSessionId}" ` +
-              "ended without a turn-end — the box's own agentproto daemon connection was " +
-              "lost (crash, OOM, or an out-of-band kill).",
-          )
-        }
-      } catch (err) {
-        // Best-effort final harvest, same rationale as the legacy fallback's
-        // catch: pull whatever the box printed that this turn hasn't
-        // yielded as a structured event, so the HOST transcript isn't left
-        // blind. May overlap with content already yielded above — an
-        // acceptable duplicate on an already-abnormal turn, not a silent
-        // gap.
-        try {
-          const tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
-          if (tail) yield { kind: "text-delta", text: tail }
-        } catch {
-          // box gone — nothing more to salvage
-        }
-        throw err
+        yield* sendTurn(message)
       } finally {
-        controller.abort()
+        // Each turn's end — clean or not — is a natural checkpoint: the
+        // agent just stopped writing. Never awaited: the turn is over.
+        if (!closed && !detached) void runCheckpoint()
       }
     },
 
@@ -551,6 +853,13 @@ export function createSandboxAgentSessionProxy(
     async close(closeOpts?: { daemonShutdown?: boolean }): Promise<void> {
       if (closed) return
       closed = true
+      stopTimers()
+      // Let a running checkpoint finish before the teardown delivery reuses
+      // the same snapshot ref and pushes.
+      await checkpointInFlight?.catch(() => undefined)
+      // A detached proxy must never kill the box session it deliberately
+      // left running (a late safety-net close on the way out of the process).
+      if (detached) return
       // PAUSE (not kill) when the lifecycle policy says this box is
       // meant to be reused later — falls back to `stop()` when the
       // provider never exposed a `pause()` (e.g. `local`, or a policy
@@ -584,6 +893,46 @@ export function createSandboxAgentSessionProxy(
           }
         }
       }
+    },
+  }
+
+  if (!opts.detachable) return proxy
+
+  const record = (): SandboxDetachRecord => ({ remoteSessionId, transcriptSeq: transcriptCursor })
+  return {
+    ...proxy,
+    detachRecord: () => (closed && !detached ? undefined : record()),
+    detach(): SandboxDetachRecord | undefined {
+      if (closed && !detached) return undefined
+      if (!detached) {
+        detached = true
+        stopTimers()
+        activeController?.abort()
+        // Drop the MCP connection only — the box session and the box stay up.
+        void host.close?.().catch(() => undefined)
+      }
+      return record()
+    },
+    async extendDetachedLifetime(): Promise<void> {
+      try {
+        await host.extendTimeout?.(DETACHED_BOX_LIFETIME_MS)
+      } catch {
+        // best-effort: the box keeps whatever lifetime it already had
+      }
+    },
+    async probeReattach(): Promise<SandboxReattachProbe> {
+      const probe = await probeBoxSession(host.mcpUrl, remoteSessionId, transcriptCursor)
+      lastProbeState = probe.state
+      return probe
+    },
+    async *resumeTurn(): AsyncIterable<AgentStreamEvent> {
+      const isFirstTurn = turnsSent === 0
+      turnsSent++
+      yield* consumeTurn(
+        isFirstTurn,
+        await host.currentEventsCursor(),
+        lastProbeState === "busy" ? undefined : REPLAY_QUIET_END_MS,
+      )
     },
   }
 }
