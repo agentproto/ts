@@ -263,6 +263,31 @@ describe("app-catalog/v1 listing fields", () => {
     expect(AppCatalogEntrySchema.safeParse(base).success).toBe(true)
   })
 
+  it.each(["javascript:alert(1)", "http://acme.dev", "data:text/html,x", "https://", "not a url", ""])(
+    "rejects a non-https publisherUrl (%s)",
+    (publisherUrl) => {
+      expect(AppCatalogEntrySchema.safeParse({ ...base, publisherUrl }).success).toBe(false)
+    },
+  )
+
+  it("drops a remote catalog entry carrying a javascript: publisherUrl with a warning", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          schema: "app-catalog/v1",
+          entries: [
+            { ...base, publisherUrl: "javascript:alert(1)" },
+            { ...base, appId: "@acme/ok", publisherUrl: "https://acme.dev" },
+          ],
+        }),
+        { status: 200 },
+      )) as typeof fetch
+    const client = createRemoteCatalogClient({ fetchImpl })
+    const res = await client.fetchSources([{ url: "https://cat.example/apps.json" }])
+    expect(res.entries.map((e) => e.appId)).toEqual(["@acme/ok"])
+    expect(res.warnings.join("\n")).toContain("publisherUrl must be an https URL")
+  })
+
   it("rejects a screenshot without alt text", () => {
     expect(AppCatalogEntrySchema.safeParse({ ...base, screenshots: [{ url: "https://m/a.png" }] }).success).toBe(false)
   })

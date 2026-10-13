@@ -264,18 +264,19 @@ describe("catalog verify: store listing", () => {
     expect(checks.find((c) => c.name === "media")?.ok).toBe(false)
   })
 
-  it("rejects an http publisherUrl in a published entry", async () => {
+  it("rejects an http publisherUrl in a published entry at schema load", async () => {
     const root = await mktmp()
     const { entryFile, bundle, appId } = await packed(root)
     const entry = JSON.parse(await readFile(entryFile, "utf8"))
     entry.publisherUrl = "http://agentik.net"
     await writeFile(entryFile, JSON.stringify(entry))
     const res = await capture(() =>
-      runCatalog(["verify", entryFile, "--json", "--offline-file", `${appId}=${bundle}`]),
+      runCatalog(["verify", entryFile, "--json", "--offline-file", `${appId}=${bundle}`]).catch((e: Error) => {
+        process.stderr.write(e.message)
+        return 1
+      }),
     )
     expect(res.code).toBe(1)
-    const checks = (JSON.parse(res.out) as { entries: Array<{ checks: Array<{ name: string; ok: boolean; detail?: string }> }> }).entries[0]!.checks
-    expect(checks.find((c) => c.name === "listing")).toMatchObject({ ok: false })
-    expect(checks.find((c) => c.name === "listing")?.detail).toContain("publisherUrl must be an https URL")
+    expect(res.out + res.err).toContain("publisherUrl must be an https URL")
   })
 })
