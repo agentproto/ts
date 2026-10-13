@@ -1,5 +1,13 @@
 # @agentproto/adapter-opencode
 
+## 1.8.1
+
+### Patch Changes
+
+- 86f96a9: Document the `small_model` pin in OPENCODE.md.
+- Updated dependencies [7609bc1]
+  - @agentproto/model-catalog@0.12.5
+
 ## 1.8.0
 
 ### Minor Changes

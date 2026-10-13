@@ -1,5 +1,25 @@
 # @agentproto/cli
 
+## 1.19.0
+
+### Minor Changes
+
+- 3f31dfb: Run adapter, capability and model discovery in an isolated short-lived worker process with caching. Add the `daemon.bootResumePolicy` option (`all` | `keepalive`), bound the session replay buffer by character count, and report `memory` in health output.
+
+  Correct macOS process-footprint reporting without double-counting compressed
+  memory. Support discovery from both bundled and source-run CLIs, with an explicit
+  build/reinstall error for a missing worker.
+
+### Patch Changes
+
+- Updated dependencies [7609bc1]
+- Updated dependencies [dee54cb]
+  - @agentproto/model-catalog@0.12.5
+  - @agentproto/workflow-loader@0.2.8
+  - @agentproto/app-kit@1.7.4
+  - @agentproto/llm-endpoint@0.11.10
+  - @agentproto/apps@0.22.1
+
 ## 1.18.0
 
 ### Minor Changes

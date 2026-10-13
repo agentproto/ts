@@ -1,5 +1,29 @@
 # @agentproto/runtime
 
+## 5.18.0
+
+### Minor Changes
+
+- 94f29e6: Context floor (`hardStopAtPct`) now auto-compacts instead of hard-stopping: the runtime checkpoints, runs `/compact` (`/compress` on hermes), holds incoming prompts with a retryable "mid-turn" error while it works, and only falls back to continue-fresh and then a stop when compaction cannot bring the window down. Autonomous turns now evaluate the policy at turn end, stale hard-stop flags on live sessions are cleared, and every outcome is announced in the transcript and as a `session:context-rescue` event.
+- 3f31dfb: Run adapter, capability and model discovery in an isolated short-lived worker process with caching. Add the `daemon.bootResumePolicy` option (`all` | `keepalive`), bound the session replay buffer by character count, and report `memory` in health output.
+
+  Correct macOS process-footprint reporting without double-counting compressed
+  memory. Support discovery from both bundled and source-run CLIs, with an explicit
+  build/reinstall error for a missing worker.
+
+### Patch Changes
+
+- dee54cb: Stop repeated failed provider imports across the sentinel, tunnel and sandbox families. Discovery can list packages from pnpm's hoisted virtual store that are not resolvable from the runtime's own module base, so every MCP request re-ran dynamic imports that failed with `ERR_MODULE_NOT_FOUND` — each one entering Node 22's async ESM loader, whose error path leaks a MessagePort per failed import. A bounded, coalescing, 60s-TTL probe cache now answers "missing" once per specifier per window, guarded by a synchronous `import.meta.resolve` preflight (import conditions, same resolution base) so provably missing packages never reach the loader; only the credential-independent module namespace is cached, and provider handles are rebuilt per request with that request's own credentials. The discovered-package list is cached the same way.
+- 6a9bb92: Clarify provider probe cache retry and explicit invalidation behavior, correct the documented Node error name, and strengthen the LRU eviction regression test.
+- Updated dependencies [7609bc1]
+- Updated dependencies [dee54cb]
+  - @agentproto/model-catalog@0.12.5
+  - @agentproto/workflow-loader@0.2.8
+  - @agentproto/providers-store@0.3.28
+  - @agentproto/app-kit@1.7.4
+  - @agentproto/llm-endpoint@0.11.10
+  - @agentproto/apps@0.22.1
+
 ## 5.17.0
 
 ### Minor Changes

@@ -167,9 +167,13 @@ describe("createProviderProbeCache", () => {
   })
 
   it("bounds the cache by LRU recency", async () => {
+    const imports: string[] = []
     const cache = createProviderProbeCache({
       maxEntries: 2,
-      importModule: async (specifier) => ({ specifier }),
+      importModule: async (specifier) => {
+        imports.push(specifier)
+        return { specifier }
+      },
     })
 
     await cache.probe("pkg-a")
@@ -179,6 +183,13 @@ describe("createProviderProbeCache", () => {
     await cache.probe("pkg-c")
 
     expect(cache.size).toBe(2)
+    // pkg-a survived the bound and is still served from the cache.
+    await cache.probe("pkg-a")
+    expect(imports).toEqual(["pkg-a", "pkg-b", "pkg-c"])
+    // pkg-b was evicted (least-recently used), so a second probe re-imports
+    // it — that second import is the proof of eviction, not just the size.
+    expect(await cache.probe("pkg-b")).toEqual({ specifier: "pkg-b" })
+    expect(imports).toEqual(["pkg-a", "pkg-b", "pkg-c", "pkg-b"])
   })
 
   it("drops every entry on invalidate()", async () => {

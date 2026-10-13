@@ -56,6 +56,7 @@ import { createRunEventLog, readRunEvents, DEFAULT_RUNS_ROOT, type RunEventLog, 
 import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
 import { ensureRunWorkspace, runWorkspacePaths, type RunWorkspacePaths } from "./run-workspace.js"
 import { buildAppBoundary, isPathWithin, type AppBoundary } from "./app-boundary.js"
+import { ownedAppWorkspaceSlug } from "./app-workspace.js"
 import { copyFile, mkdir, readFile } from "node:fs/promises"
 import {
   DEFAULT_OUTPUT_LIMITS,
@@ -2909,6 +2910,15 @@ export function createWorkflowRunner(opts: {
       // F25: resolved BEFORE the run record so `cwd` is recorded even when
       // defaulted (never a silent "/" — see resolveRunCwd).
       const cwd = await resolveRunCwd(opts.appRegistry, handle.id, args.cwd)
+      // App-attributed run with no caller cwd/workspace: its agent-step
+      // sessions belong to the app's own workspace (`app-<slug>`), never
+      // "default". Only an already-registered workspace is used.
+      const runAppId = resolveAppProvenance(opts.appRegistry, handle.id, {
+        ...(args.appId !== undefined ? { appId: args.appId } : {}),
+      }).appId
+      const workspaceSlug =
+        args.workspaceSlug ??
+        (args.cwd === undefined && runAppId !== undefined ? await ownedAppWorkspaceSlug(runAppId) : undefined)
       // AIP-58 §4 — same eager allocation as `start()`.
       const workspaceRoot = workspaceRunsRoot()
       if (workspaceRoot !== undefined) ensureRunWorkspace(workspaceRoot, runId)
@@ -2938,7 +2948,7 @@ export function createWorkflowRunner(opts: {
         // own doc comment).
         path: args.path,
         ...(args.input !== undefined ? { input: args.input } : {}),
-        ...(args.workspaceSlug !== undefined ? { workspaceSlug: args.workspaceSlug } : {}),
+        ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
         ...(args.callerSessionId !== undefined ? { callerSessionId: args.callerSessionId } : {}),
         ...resolveAppProvenance(opts.appRegistry, handle.id, {
           ...(args.appId !== undefined ? { appId: args.appId } : {}),
@@ -2956,7 +2966,7 @@ export function createWorkflowRunner(opts: {
         ...(eventLog !== undefined ? { eventLog } : {}),
         // ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
         cwd,
-        ...(args.workspaceSlug !== undefined ? { workspaceSlug: args.workspaceSlug } : {}),
+        ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
       }
       runs.set(runId, state)
       attachBounds(state)
@@ -2971,7 +2981,7 @@ export function createWorkflowRunner(opts: {
         sessionEvents,
         resolveAgentAdapter,
         {
-          workspaceSlug: args.workspaceSlug,
+          workspaceSlug,
           cwd,
           run: { runId, workflowId: handle.id },
           onEscalate: createOnEscalate(state, persist),

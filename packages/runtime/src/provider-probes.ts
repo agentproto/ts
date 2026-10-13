@@ -35,9 +35,12 @@
  * identical to what Node's own ESM cache would hand back). Every provider
  * handle is rebuilt from the cached module on each request with that request's
  * own creds, so no credential-dependent instance and no MCP server is shared
- * across requests. Failures are cached too, but only until the TTL lapses or
- * {@link invalidateProviderProbes} runs, so installing a missing provider
- * recovers.
+ * across requests. Failures are cached too: negative probe results expire
+ * after 60s and the next request retries. This bounds this cache's staleness,
+ * not other resolver caches. There is no automatic install-triggered flush.
+ * {@link invalidateProviderProbes} exists as an explicit invalidation seam
+ * for callers that want an immediate refresh; it has no production caller
+ * today, and this patch does not add one.
  *
  * No family metadata exists to filter on before import (discovery yields only
  * slug + packageName, and first-party `@agentproto/adapter-<slug>` names are
@@ -128,7 +131,7 @@ type ImportMetaWithResolve = ImportMeta & {
  * Every other condition must still reach the loader:
  *   - no `import.meta.resolve` at all (module runners that rewrite
  *     `import.meta`) → answer `false` and let the normal dynamic import decide;
- *   - `ERR_PACKAGE_PATH_NOT_EXPORTED`, `ERR_INVALID_PACKAGE_SPECIFIER`, … →
+ *   - `ERR_PACKAGE_PATH_NOT_EXPORTED`, `ERR_INVALID_MODULE_SPECIFIER`, … →
  *     `false`: not decidable as missing, so `import()` runs and its own error
  *     becomes the cached negative.
  */
@@ -340,10 +343,13 @@ export const sharedAdapterDiscovery: AdapterDiscoveryCache =
   createAdapterDiscoveryCache()
 
 /**
- * Drop cached discovery lists and import probes — call when a package install
- * may have changed what resolves, so a previously-missing provider is probed
- * again immediately instead of waiting out the TTL. With no argument every
- * probe for that specifier is dropped.
+ * Explicit invalidation seam: drop cached discovery lists and import probes
+ * so a previously-missing provider can be probed again immediately instead
+ * of waiting out the TTL. Meant for callers that know an install changed
+ * what resolves — it has no production caller today, and this patch does not
+ * add one: without a call here, these caches retry after their TTLs expire
+ * (`PROBE_TTL_MS` / `DISCOVERY_TTL_MS`, 60s each). With no argument every
+ * probe is dropped.
  */
 export function invalidateProviderProbes(specifier?: string): void {
   sharedProviderProbe.invalidate(specifier)

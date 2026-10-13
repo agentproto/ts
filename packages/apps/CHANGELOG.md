@@ -1,5 +1,11 @@
 # @agentproto/apps
 
+## 0.22.1
+
+### Patch Changes
+
+- @agentproto/app-kit@1.7.4
+
 ## 0.22.0
 
 ### Minor Changes

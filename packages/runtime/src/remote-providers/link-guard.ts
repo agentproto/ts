@@ -205,6 +205,9 @@ export function createLinkGuard(opts: LinkGuardOptions): LinkGuard {
       if (value !== undefined) headers[key] = value
     }
     delete headers.cookie // never forward the guard's own cookie upstream
+    if (req.headers.host && headers["x-forwarded-host"] === undefined) {
+      headers["x-forwarded-host"] = req.headers.host
+    }
     headers.host = `${opts.target.host}:${opts.target.port}`
 
     const proxyReq = request(
