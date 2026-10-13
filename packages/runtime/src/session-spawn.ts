@@ -97,6 +97,12 @@ import {
   type SandboxCheckpointConfig,
   type ResolvedSandboxCheckpointConfig,
 } from "./sandbox-delivery.js"
+import { resolveSandboxWorkspaceSource } from "./sandbox-workspace-derive-remote.js"
+import {
+  setupTarWorkspace,
+  tarCheckpointProxyOpts,
+  type TarCheckpointTarget,
+} from "./sandbox-tar-checkpoint.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -2010,6 +2016,10 @@ export async function spawnAgentSession(
   // that is the one shape where the host path is meaningless in the box and
   // the box should hold a fresh checkout of the repo instead.
   let sandboxWorkspace: { slug: string; remote: WorkspaceRemote } | undefined
+  // No configured/derivable remote: the box works in a tar-checkpointed dir.
+  let sandboxTarWorkspace: { slug: string } | undefined
+  // Why a remote was derived or skipped — written to the session's transcript.
+  let sandboxSourceNotices: string[] = []
   if (!cwd || !resolvedSlug) {
     try {
       const config = await loadWorkspacesConfig()
@@ -2019,8 +2029,11 @@ export async function spawnAgentSession(
           if (ws) {
             cwd = ws.path
             resolvedSlug = ws.slug
-            if (input.sandbox !== undefined && !isDeviceSpawn && ws.remote) {
-              sandboxWorkspace = { slug: ws.slug, remote: ws.remote }
+            if (input.sandbox !== undefined && !isDeviceSpawn) {
+              const source = await resolveSandboxWorkspaceSource(ws)
+              sandboxSourceNotices = source.notices
+              if (source.kind === "remote") sandboxWorkspace = { slug: ws.slug, remote: source.remote }
+              else sandboxTarWorkspace = { slug: ws.slug }
             }
           } else if (deviceBridgeArrival) {
             // DEVICE-BRIDGE ONLY (issue #1647): a spawn that crossed the
@@ -4049,6 +4062,13 @@ export async function spawnAgentSession(
         ...(accessProfileEcho ? { authProfileRef: accessProfileEcho.profileRef } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
+        ...(sandboxTarWorkspace
+          ? {
+              tarWorkspace: sandboxTarWorkspace,
+              sessionId: mintedSessionId,
+              onNotice: (text: string) => registry.recordNotice(mintedSessionId, text),
+            }
+          : {}),
         ...(sandboxWorkspace
           ? {
               workspace: sandboxWorkspace,
@@ -4089,6 +4109,7 @@ export async function spawnAgentSession(
       sandboxDeliveryTarget = booted.deliveryTarget
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
+      sandboxSourceNotices = [...sandboxSourceNotices, ...(booted.notices ?? [])]
       if (isDeviceSandboxTarget(input.sandbox)) {
         // BOOTSTRAP P7a — persist the controller→host id mapping. The proxy's
         // `sessionId` is the HOST's own session id (the inner `agent_start`'s
@@ -4358,6 +4379,7 @@ export async function spawnAgentSession(
     if (initialTitle) desc.title = initialTitle
     if (boundaryWarnings.length > 0) registry.emitHarnessWarning(desc.id, boundaryWarnings, input.label)
     if (input.harnessWarnings?.length) registry.emitHarnessWarning(desc.id, input.harnessWarnings, input.label)
+    for (const notice of sandboxSourceNotices) registry.recordNotice(desc.id, notice)
     // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
     // `sessions --json` / the summaries view can report the resolved path +
     // mode. `agentsMdMode` is non-optional once resolution ran — always set
@@ -4583,6 +4605,9 @@ export type SandboxBootResult =
        *  device provider resolves a name target to its fingerprint at boot).
        *  Stamped onto the descriptor's `hostFingerprint` by the caller. */
       deviceFingerprint?: string
+      /** Spawn-time explanations (derived remote, tar mode, …) the caller
+       *  records on the new session. */
+      notices?: string[]
     }
   | {
       ok: false
@@ -4918,6 +4943,10 @@ export async function bootSandboxAgentSession(opts: {
    *  disjoint filesystem (`handle.defaultCwd`) — a same-machine provider keeps
    *  using the host path. */
   workspace?: { slug: string; remote: WorkspaceRemote }
+  /** Workspace with no usable git remote: the box works in `<home>/<slug>`,
+   *  checkpointed to the host as a tarball (`sandbox-tar-checkpoint.ts`).
+   *  Needs `sessionId`. `restoreFrom` is a saved archive to extract first. */
+  tarWorkspace?: { slug: string; restoreFrom?: string }
   /** The caller's normalized `agent_start.worktree`: pins the `wt/<slug>` cut
    *  in the box's checkout. Absent mints a default one; `false` opts out
    *  (plain default-branch checkout, no delivery). Meaningful only together
@@ -4932,6 +4961,8 @@ export async function bootSandboxAgentSession(opts: {
   /** Called when the turn-end safety net adopts a different `wt/` branch the
    *  agent moved to in the box — the caller persists it on the session record. */
   onDeliveryTargetChanged?: (target: SandboxDeliveryTarget) => void
+  /** Receives a human-readable notice for each periodic tar checkpoint. */
+  onNotice?: (text: string) => void
   /** Resolved `defaults.sandbox.checkpoint` → `agent_start.sandboxCheckpoint`
    *  (`resolveSandboxCheckpointConfig`) — drives whether/how the checkpoint
    *  timer + per-turn hook are wired, whether the teardown delivery
@@ -5237,6 +5268,38 @@ export async function bootSandboxAgentSession(opts: {
   const deliverySessionId = opts.sessionId
   const boxExec = host.exec
   const boxReadFile = host.readFile
+  let tarTarget: TarCheckpointTarget | undefined
+  const bootNotices: string[] = []
+  if (opts.tarWorkspace && !workspacePlan && handle.defaultCwd && deliverySessionId) {
+    const tar = await setupTarWorkspace({
+      ...(boxExec ? { exec: boxExec } : {}),
+      ...(boxReadFile ? { readFile: boxReadFile } : {}),
+      ...(host.writeFile ? { writeFile: host.writeFile } : {}),
+      homeDir: handle.defaultCwd,
+      slug: opts.tarWorkspace.slug,
+      sessionDir: sessionTranscriptDir(deliverySessionId),
+      ...(opts.tarWorkspace.restoreFrom ? { restoreFrom: opts.tarWorkspace.restoreFrom } : {}),
+    })
+    if (!tar.ok) {
+      if (reuseSandboxId !== undefined && host.pause) {
+        await host.pause().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "paused")
+      } else {
+        await host.stop().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "stopped")
+      }
+      return {
+        ok: false,
+        code: "sandbox_workspace_setup_failed",
+        message: `agent_start: restoring workspace "${opts.tarWorkspace.slug}" in the sandbox failed — ${tar.message}`,
+      }
+    }
+    bootNotices.push(...tar.notices)
+    if (tar.target) {
+      tarTarget = tar.target
+      boxCwd = tar.target.dir
+    }
+  }
   if (workspacePlan && opts.workspace) {
     const slug = opts.workspace.slug
     const failSetup = async (message: string, step?: string): Promise<SandboxBootResult> => {
@@ -5407,6 +5470,16 @@ export async function bootSandboxAgentSession(opts: {
             ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),
           })
         : {}),
+      ...(tarTarget && deliverySessionId
+        ? tarCheckpointProxyOpts({
+            exec: boxExec,
+            ...(boxReadFile ? { readFile: boxReadFile } : {}),
+            target: tarTarget,
+            outDir: sessionTranscriptDir(deliverySessionId),
+            config: opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            ...(opts.onNotice ? { notify: opts.onNotice } : {}),
+          })
+        : {}),
       // A device target is another daemon reached over the E2E bridge, not
       // a box whose `/health` this host can probe directly.
       ...(deviceTarget === undefined ? { watchdog: {} } : {}),
@@ -5417,6 +5490,7 @@ export async function bootSandboxAgentSession(opts: {
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(deliveryTarget ? { deliveryTarget } : {}),
+    ...(bootNotices.length > 0 ? { notices: bootNotices } : {}),
     // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.

@@ -13,7 +13,8 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { mkdtemp, rm } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
@@ -26,7 +27,9 @@ import { restartAgentSession } from "../session-restart-core.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 import type { SandboxDeliveryTarget } from "../sandbox-delivery.js"
-import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
+import { sessionTranscriptDir, setDefaultSessionsBaseDir } from "../transcript-writer.js"
+import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
+import { readTarTarget, tarArchivePath, writePendingTarRecord } from "../sandbox-tar-checkpoint.js"
 
 const wsConfigState = vi.hoisted(() => ({
   value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
@@ -34,6 +37,20 @@ const wsConfigState = vi.hoisted(() => ({
 vi.mock("../workspaces-config.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../workspaces-config.js")>()
   return { ...actual, loadWorkspacesConfig: vi.fn(async () => wsConfigState.value) }
+})
+
+const deriveState = vi.hoisted(() => ({ hasCredential: false }))
+vi.mock("../sandbox-workspace-derive-remote.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../sandbox-workspace-derive-remote.js")>()
+  return {
+    ...actual,
+    // No keychain and no network in unit tests.
+    resolveSandboxWorkspaceSource: (ws: Parameters<typeof actual.resolveSandboxWorkspaceSource>[0]) =>
+      actual.resolveSandboxWorkspaceSource(ws, {
+        hasCredential: async () => deriveState.hasCredential,
+        isPubliclyCloneable: async () => false,
+      }),
+  }
 })
 
 let acpCounter = 0
@@ -473,6 +490,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>,
       execCalls: SandboxExecOpts[],
       boots: { count: number },
+      files?: { writes: Array<{ path: string; bytes: number }> },
     ): (slug: string) => Promise<SandboxProviderHandle | null> {
       return async slug => {
         const handle = await providerResolver(slug)
@@ -490,6 +508,16 @@ describe("restartAgentSession on a sandboxed session", () => {
                 mcpUrl: `${box.gateway.url}/mcp`,
                 sandboxId: "sbx_fresh_2",
                 async stop() {},
+                ...(files
+                  ? {
+                      async readFile() {
+                        return new Uint8Array()
+                      },
+                      async writeFile(path: string, data: Uint8Array) {
+                        files.writes.push({ path, bytes: data.byteLength })
+                      },
+                    }
+                  : {}),
                 async exec(o: SandboxExecOpts) {
                   execCalls.push(o)
                   const stdout = o.command.includes("rev-list")
@@ -622,6 +650,129 @@ describe("restartAgentSession on a sandboxed session", () => {
           resolveSandboxProvider: goneBoxResolver(providerResolver, [], { count: 0 }),
         }),
       ).rejects.toThrow(/workspace "default" is no longer registered.*workspace remote set default --url … --token-stdin/s)
+    })
+
+    function noRemoteWorkspace(path: string): void {
+      wsConfigState.value = {
+        version: 1,
+        workspaces: [
+          {
+            slug: "scratch",
+            path,
+            addedAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }
+    }
+
+    describe("workspace with no configured remote", () => {
+      let repoDir: string
+      afterEach(async () => {
+        deriveState.hasCredential = false
+        setMcpCredentialDeps({})
+        if (repoDir) await rm(repoDir, { recursive: true, force: true })
+      })
+
+      async function gitRepoWithOrigin(origin: string): Promise<string> {
+        repoDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-repo-"))
+        execFileSync("git", ["init", "-q"], { cwd: repoDir })
+        execFileSync("git", ["remote", "add", "origin", origin], { cwd: repoDir })
+        return repoDir
+      }
+
+      it("restores the last tarball checkpoint into a fresh box for a non-git workspace dir", async () => {
+        noRemoteWorkspace("/Users/op/scratch")
+        const { resolver, providerResolver } = await setup({ workspaceSlug: "scratch" })
+        const prevDir = sessionTranscriptDir(prev.id)
+        await writePendingTarRecord(prevDir, { dir: "/home/user/scratch" })
+        await mkdir(prevDir, { recursive: true })
+        await writeFile(tarArchivePath(prevDir), Buffer.from("fake-archive-bytes"))
+        const execCalls: SandboxExecOpts[] = []
+        const boots = { count: 0 }
+        const files = { writes: [] as Array<{ path: string; bytes: number }> }
+
+        const result = await restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, execCalls, boots, files),
+        })
+
+        expect(boots.count).toBe(1)
+        expect(result.desc.sandboxId).toBe("sbx_fresh_2")
+        expect(result.desc.cwd).toBe("/home/user/scratch")
+        expect(receivedStarts[0]?.cwd).toBe("/home/user/scratch")
+        expect(files.writes).toEqual([{ path: "/tmp/agentproto-workspace-restore.tar.gz", bytes: 18 }])
+        const commands = execCalls.map(c => c.command)
+        expect(commands.some(c => c.includes("tar --no-same-owner -xzf"))).toBe(true)
+        expect(commands.some(c => c.includes("git clone"))).toBe(false)
+        // The restarted session continues the tar chain (a second restart still works).
+        const nextDir = sessionTranscriptDir(result.desc.id)
+        expect(await readTarTarget(nextDir)).toEqual({ dir: "/home/user/scratch" })
+        expect((await readFile(tarArchivePath(nextDir))).toString()).toBe("fake-archive-bytes")
+      })
+
+      it("fails loud, naming the missing checkpoint, when a tar-mode session never saved one", async () => {
+        noRemoteWorkspace("/Users/op/scratch")
+        const { resolver, providerResolver } = await setup({ workspaceSlug: "scratch" })
+        await writePendingTarRecord(sessionTranscriptDir(prev.id), { dir: "/home/user/scratch" })
+        const boots = { count: 0 }
+        await expect(
+          restartAgentSession(registry, resolver, prev, {
+            resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots, { writes: [] }),
+          }),
+        ).rejects.toThrow(/expired.*spawn a fresh session.*no tarball checkpoint was saved.*workspace remote set scratch/is)
+        expect(boots.count).toBe(0)
+      })
+
+      it("fails loud with a hint when the session has neither a work branch nor a tar checkpoint", async () => {
+        noRemoteWorkspace("/Users/op/scratch")
+        const { resolver, providerResolver } = await setup({ workspaceSlug: "scratch" })
+        const boots = { count: 0 }
+        await expect(
+          restartAgentSession(registry, resolver, prev, {
+            resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+          }),
+        ).rejects.toThrow(/spawn a fresh session.*no work branch and no tarball checkpoint/is)
+        expect(boots.count).toBe(0)
+      })
+
+      it("re-clones the git origin (derived, https) and resumes the work branch when the workspace has no remote", async () => {
+        deriveState.hasCredential = true
+        setMcpCredentialDeps({ resolveSandboxSecret: async () => "test-token-not-real" })
+        noRemoteWorkspace(await gitRepoWithOrigin("git@github.com:acme/derived.git"))
+        const { resolver, providerResolver } = await setup({
+          deliveryTarget: target,
+          workspaceSlug: "scratch",
+        })
+        const execCalls: SandboxExecOpts[] = []
+        const boots = { count: 0 }
+
+        const result = await restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, execCalls, boots),
+        })
+
+        expect(boots.count).toBe(1)
+        const commands = execCalls.map(c => c.command)
+        expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/derived.git'"))).toBe(true)
+        expect(commands.some(c => c.includes("--track 'origin/wt/resume-me'"))).toBe(true)
+        expect(result.desc.sandboxDeliveryTarget).toMatchObject({ branch: "wt/resume-me" })
+        expect(commands.some(c => c.includes("tar --no-same-owner"))).toBe(false)
+      })
+
+      it("fails loud, explaining the missing credential, when the origin is private and none is registered", async () => {
+        deriveState.hasCredential = false
+        noRemoteWorkspace(await gitRepoWithOrigin("git@github.com:acme/private.git"))
+        const { resolver, providerResolver } = await setup({
+          deliveryTarget: target,
+          workspaceSlug: "scratch",
+        })
+        const boots = { count: 0 }
+        await expect(
+          restartAgentSession(registry, resolver, prev, {
+            resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+          }),
+        ).rejects.toThrow(/spawn a fresh session.*not publicly cloneable and no credential is registered/is)
+        expect(boots.count).toBe(0)
+      })
     })
   })
 })
