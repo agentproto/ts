@@ -530,6 +530,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // process) wraps its spawn through the OS sandbox, where zones apply.
         supportsFsZones: adapter.handle.protocol !== "proprietary",
         supportsHostContextIsolation: agentCliSupportsHostContextIsolation(slug),
+        // Only adapters whose manifest declares `metadata.sessionSkills`
+        // (a delivery dir the driver writes the imported skills into) take
+        // part in per-session skill delivery. Gating on this keeps hermes'
+        // opaque comma-joined `skills` option free of "unknown skill id"
+        // warnings.
+        deliversSessionSkills: adapter.handle.metadata?.sessionSkills !== undefined,
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),

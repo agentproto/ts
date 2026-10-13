@@ -595,6 +595,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   supportsFsZones?: boolean
   /** True when `startSession` honours `isolateHostContext`. */
   supportsHostContextIsolation?: boolean
+  /** True when this adapter takes part in per-session imported-skill delivery
+   *  — i.e. its manifest declares `metadata.sessionSkills` telling the driver
+   *  where to materialize `start({ sessionSkills })`. Adapters without it
+   *  (hermes, whose `skills` is an opaque comma-joined option) are skipped
+   *  entirely by `session-spawn.ts`: their option ids are forwarded
+   *  untouched and no "unknown skill id" warning is raised. */
+  deliversSessionSkills?: boolean
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes

@@ -2787,19 +2787,11 @@ export async function spawnAgentSession(
   // Resolve the imported subset of the resolved `skills` list into concrete
   // `{alias, path}` entries the driver copies into the child's session config
   // dir (see the adapter manifests' `metadata.sessionSkills`). Runs only when
-  // there ARE skills — a plain spawn does no registry read. Non-imported ids
-  // are warnings, never throws (mirrors `mountImports`), and stay in the
-  // adapter-facing `spawnDefaults.skills` above unchanged (hermes' comma-joined
-  // `options.skills` behaviour is untouched).
-  let sessionSkills: ResolvedSessionSkill[] = []
-  if (spawnDefaults.skills.length > 0) {
-    const importedSkills = deps.loadImportedSkillsConfig
-      ? await deps.loadImportedSkillsConfig()
-      : await loadImportedSkills()
-    const resolvedSkills = resolveSessionSkills(spawnDefaults.skills, importedSkills)
-    sessionSkills = resolvedSkills.resolved
-    spawnWarnings.push(...resolvedSkills.warnings)
-  }
+  // there ARE skills — a plain spawn does no registry read — AND the resolved
+  // adapter takes part in delivery (`deliversSessionSkills`, projected by the
+  // resolver from the manifest). Adapters that DON'T (hermes, whose `skills`
+  // is an opaque comma-joined option) keep their ids untouched and raise no
+  // "unknown skill id" warning.
   const resolvedContextContinuity: ResolvedContextContinuityPolicy =
     resolveContextContinuityPolicy(
       undefined,
@@ -2822,6 +2814,18 @@ export async function spawnAgentSession(
       (spawnDefaults.auth.explicitConfig && input.auth === undefined))
   const resolved =
     input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
+  // Non-imported ids are warnings, never throws (mirrors `mountImports`), and
+  // the adapter-facing `spawnDefaults.skills` stays unchanged either way.
+  // Sandboxed spawns resolve no host adapter (null) and so skip delivery.
+  let sessionSkills: ResolvedSessionSkill[] = []
+  if (resolved?.deliversSessionSkills && spawnDefaults.skills.length > 0) {
+    const importedSkills = deps.loadImportedSkillsConfig
+      ? await deps.loadImportedSkillsConfig()
+      : await loadImportedSkills()
+    const resolvedSkills = resolveSessionSkills(spawnDefaults.skills, importedSkills)
+    sessionSkills = resolvedSkills.resolved
+    spawnWarnings.push(...resolvedSkills.warnings)
+  }
   if (input.sandbox === undefined && !resolved) {
     // `resolveAgentAdapter` collapses every failure reason to `null` by
     // contract (it's injected across a dozen call sites that all assume it
