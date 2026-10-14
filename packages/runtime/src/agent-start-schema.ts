@@ -408,9 +408,12 @@ export const agentStartInputShape = {
   restartPolicy: jsonTolerant(
     z.object({
       on: z
-        .array(z.enum(["crashed", "error"]))
+        .array(z.enum(["crashed", "error", "sandbox-gone"]))
         .min(1)
-        .describe("Which automatic death reasons trigger a restart. Never a clean exit, kill, idle-reap, or cost-budget kill."),
+        .describe(
+          "Which automatic death reasons trigger a restart (`sandbox-gone`: box lost, " +
+            "move to a fresh box). Never a clean exit, kill, idle-reap, or cost-budget kill.",
+        ),
       maxRetries: z
         .number()
         .int()

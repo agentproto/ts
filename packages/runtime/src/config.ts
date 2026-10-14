@@ -125,6 +125,21 @@ export interface DaemonConfig {
    *  `agentproto config set daemon.restartSweepIntervalMs <ms>`. Surfaced in
    *  `daemon_health` / `GET /health`. */
   restartSweepIntervalMs?: number
+  /** Default `restartPolicy` for BOX sessions (`agent_start.sandbox`) that
+   *  were spawned with NO explicit `restartPolicy`. OFF unless set — an unset
+   *  / false value changes nothing for anyone. When true, such a session is
+   *  stamped with `on: ["sandbox-gone"]` (see
+   *  `SANDBOX_GONE_DEFAULT_RESTART_POLICY` in `sessions.ts`), so a box session
+   *  whose BOX dies — provider lifetime cap, reclaim, unrecoverable
+   *  unreachability — is moved to a FRESH box by the restart scheduler
+   *  instead of staying dead. An explicit per-session
+   *  `agent_start.restartPolicy` always wins, and nothing else about
+   *  restarts changes (classic `crashed`/`error` in-place revival still
+   *  needs its own opt-in). Because the scheduler only SCHEDULES, turning
+   *  this on with `daemon.restartSweepIntervalMs` unset also arms the sweep
+   *  at 30s so the scheduled move actually executes. Set via `agentproto
+   *  config set daemon.sandboxGoneRestartDefault true`. */
+  sandboxGoneRestartDefault?: boolean
   /** Turn-liveness watchdog threshold in ms (turn-liveness-watchdog
    *  chantier). Same shape as `crashDetectIntervalMs`: DEFAULT ON
    *  (non-destructive observability). The daemon periodically sweeps every

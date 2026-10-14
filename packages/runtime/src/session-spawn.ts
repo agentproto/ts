@@ -1430,8 +1430,11 @@ export interface SpawnAgentSessionInput {
   costBudget?: CostBudget
   /** Opt-in auto-restart policy (restart-scheduler, PR-2). When set, an
    *  unexpected death (`crashed` and/or `error`, per `restartPolicy.on`) is
-   *  proactively revived in place — see `RestartPolicy`'s doc in
-   *  `sessions.ts`. Omitted ⇒ today's lazy-resume-only behaviour. */
+   *  proactively revived in place — EXCEPT a box session whose box is gone
+   *  (`"sandbox-gone"` in `on`), which moves to a fresh box instead; see
+   *  `RestartPolicy`'s doc in `sessions.ts`. Omitted ⇒ today's
+   *  lazy-resume-only behaviour (or the `daemon.sandboxGoneRestartDefault`
+   *  box-session default, when that's on). */
   restartPolicy?: RestartPolicy
   /** Opt-in turn-retry policy (`turn-retry.ts`): re-prompt the live session
    *  when a turn fails on a transient provider error. Defaults are filled
