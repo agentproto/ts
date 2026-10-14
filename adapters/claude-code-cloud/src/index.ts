@@ -167,6 +167,7 @@ export {
 } from "./meta-file.js"
 export {
   cloudChildEnv,
+  createRefreshLogin,
   defaultCloudCliRunner,
   parseAuthStatus,
   parseCloudStartOutput,
@@ -176,13 +177,16 @@ export {
   CLAUDE_CODE_GATEWAY_ENV_UNSET,
   type AuthStatus,
   type CloudCliRunner,
+  type RefreshLoginOpts,
   type RunOpts,
   type RunResult,
   type StartedCloudSession,
 } from "./cli.js"
 export {
   SessionsApi,
+  EXPIRY_SKEW_MS,
   envCredentialSource,
+  isCredentialExpiring,
   keychainCredentialSource,
   normalizeSessionId,
   toCliSessionId,

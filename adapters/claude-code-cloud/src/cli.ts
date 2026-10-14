@@ -16,6 +16,7 @@
  */
 
 import { spawn } from "node:child_process"
+import { tmpdir } from "node:os"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
 import { toCliSessionId } from "./sessions-api.js"
 
@@ -197,6 +198,73 @@ export function defaultCloudCliRunner(): CloudCliRunner {
         result,
       }
     },
+  }
+}
+
+// ── login refresh ───────────────────────────────────────────────────────────
+
+export interface RefreshLoginOpts {
+  runner?: CloudCliRunner
+  env?: Record<string, string | undefined>
+  /** Default os.tmpdir(): the refresh must not depend on any repo checkout. */
+  cwd?: string
+  /** Default 60s. */
+  timeoutMs?: number
+}
+
+/**
+ * Build the injectable login-refresh trigger. Running a trivial headless
+ * prompt (`claude -p "Reply OK" --model haiku`) is what makes the claude CLI
+ * re-mint and re-write the OAuth access token to the keychain (verified
+ * live: `claude auth status` does NOT refresh it). stdin is detached, the
+ * child runs from {@link os.tmpdir} with the same scrubbed env every other
+ * claude child gets, and its stdout/stderr are never read or logged — they
+ * can carry token-adjacent material and must not leak.
+ *
+ * Concurrent callers share one in-flight refresh (a single promise), so a
+ * burst of requests around expiry runs the CLI at most once.
+ */
+export function createRefreshLogin(
+  opts: RefreshLoginOpts = {},
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null
+  return () => {
+    if (inFlight) return inFlight
+    const run = (async () => {
+      const runner = opts.runner ?? defaultCloudCliRunner()
+      const env = cloudChildEnv(opts.env ?? process.env)
+      let result: RunResult
+      try {
+        result = await runner.run(
+          "claude",
+          ["-p", "Reply OK", "--model", "haiku"],
+          {
+            cwd: opts.cwd ?? tmpdir(),
+            env,
+            stdin: "ignore",
+            timeoutMs: opts.timeoutMs ?? 60_000,
+          },
+        )
+      } catch (err) {
+        throw new Error(
+          "claude code cloud: could not refresh the claude.ai login — is " +
+            `the claude CLI installed and on PATH? (${err instanceof Error ? err.message : String(err)})`,
+        )
+      }
+      if (result.code !== 0) {
+        // Never surface stdout/stderr: the refresh child may print
+        // token-adjacent output that must not enter a log.
+        throw new Error(
+          "claude code cloud: could not refresh the claude.ai login " +
+            `(exit ${result.code}) — run \`claude auth login\``,
+        )
+      }
+    })()
+    const wrapped = run.finally(() => {
+      if (inFlight === wrapped) inFlight = null
+    })
+    inFlight = wrapped
+    return wrapped
   }
 }
 

@@ -53,6 +53,7 @@ import {
 } from "@agentclientprotocol/sdk"
 import { promptText, sdkMessageToUpdates } from "@agentproto/adapter-claude-sdk"
 import {
+  createRefreshLogin,
   defaultCloudCliRunner,
   sendPrompt as defaultSendPrompt,
   startCloudSession as defaultStartCloudSession,
@@ -191,8 +192,12 @@ function defaultDeps(): Required<
 > {
   const runner = defaultCloudCliRunner()
   const credentials: CredentialSource = keychainCredentialSource()
+  // One login-refresh trigger per relay process: shared in-flight, so a
+  // burst of requests around token expiry runs the CLI at most once. Both
+  // the fresh-spawn and session/load paths reach the API through this client.
+  const refreshLogin = createRefreshLogin({ runner, env: process.env })
   return {
-    api: new SessionsApi({ credentials }),
+    api: new SessionsApi({ credentials, refreshLogin }),
     cli: {
       startCloudSession: (prompt, opts) =>
         defaultStartCloudSession(prompt, {
