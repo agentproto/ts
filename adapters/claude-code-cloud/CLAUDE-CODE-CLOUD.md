@@ -41,6 +41,34 @@ a timer or on poll silence. Stop reason: `end_turn` for a success result,
 failures (HTTP 5xx, network) are retried with the poll backoff — a read
 failure never ends a turn — until 5 consecutive ones fail the prompt.
 
+## Event paging & ordering (Appendix)
+
+`GET /v1/code/sessions/{id}/events` does NOT page forward. Observed
+2026-10-14 against the live API:
+
+- **No `cursor` → the NEWEST page**, up to 50 events, newest first.
+- **`resume_cursor`** (alias `next_cursor`, present on the first/no-cursor
+  page only) is the `sequence_num` of the OLDEST event on that page. Passing
+  it back as `?cursor=<n>` returns the next **OLDER** page — the cursor
+  pages **BACKWARD in time**, not forward. (Real example: the newest page
+  held seq 60..11 with `next_cursor` `"11"`; `?cursor=11` returned seq
+  10..1 with `resume_cursor` `"1"`.)
+- **`sequence_num`** is a STRING of an integer, strictly increasing within a
+  session, and is the ordering key. Parse with `Number()`; skip an event
+  whose `sequence_num` is not finite. Every event also carries `event_id`,
+  `event_type`, `payload` (the stream-json message), `source`
+  (`"worker"`/`"client"`) and `created_at`.
+
+The relay therefore tracks progress by `sequence_num`, not by cursor: it
+keeps a per-session `lastSeq` (the highest seq projected or seeded), polls
+the newest page each tick, walks `cursor` backward only as far as needed to
+reach `lastSeq` (capped at 20 pages/tick), then projects the new events in
+ASCENDING seq order. `session/load` seeds `lastSeq` from ONE newest-page GET
+(its max seq is the history high-water — no backward paging needed). Before
+each prompt the relay records the current high-water seq; only a `result`
+with a seq ABOVE that baseline can end the turn, so a prior turn's result
+never ends a new one.
+
 ## Usage telemetry
 
 When the `result` event carries `total_cost_usd` and/or `usage`, it is
