@@ -18,12 +18,13 @@
  * `WORK_BOARD_HTML` is a real single-file Vite build, not a hand-authored
  * template string: the source lives in ./ui/** (index.html/main.ts/
  * types.ts/render.ts/style.css, bundled by ./ui/vite.config.ts with
- * vite-plugin-singlefile) and is committed, pre-built, into
- * ./panel.generated.ts by `pnpm --filter @agentproto/apps run build:ui`
- * (scripts/build-work-board-ui.mjs) — so this package still builds with
- * plain `pnpm build` on a fresh clone, no Vite step in the critical path.
- * `build:ui:check` (wired into CI) fails if that generated file drifts from
- * what the Vite sources actually produce. See ./ui/vite.config.ts for how
+ * vite-plugin-singlefile) and lands in ./panel.generated.ts — a gitignored
+ * build artifact, never committed: `generate:ui`
+ * (scripts/build-work-board-ui.mjs plus the review-panel and store twins,
+ * run from the package's prebuild/precheck-types/pretest hooks) rebuilds it
+ * from whatever is on disk before anything reads it, so what ships is never
+ * stale. Vite + vite-plugin-singlefile are devDependencies of this package,
+ * so the step is local to its own build. See ./ui/vite.config.ts for how
  * the shared `panelBridgeScript` (../panel-bridge.ts) gets inlined as a
  * classic `<script>` ahead of the bundled module script.
  *
