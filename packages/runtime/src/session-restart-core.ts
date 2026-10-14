@@ -362,6 +362,36 @@ export function sessionRestartErrorPayload(
 }
 
 /**
+ * The body a transport sends when a restart failed: the typed payload for a
+ * coded failure, today's `{error:"restart_failed", message}` for anything
+ * else (an uncoded driver error must keep its current shape — no code, no
+ * invented reason). Pass the caught `err` straight in; no branching needed.
+ */
+export function sessionRestartErrorBody(
+  err: unknown,
+): SessionRestartErrorPayload | { error: "restart_failed"; message: string } {
+  return (
+    sessionRestartErrorPayload(err) ?? {
+      error: "restart_failed",
+      message: err instanceof Error ? err.message : String(err),
+    }
+  )
+}
+
+/**
+ * HTTP status for a restart failure: the error's own (400 for a rejected
+ * override, 500 for the rest), 409 for a retired/superseded row — the status
+ * `retiredErrorWire` already uses for a refused prompt — else 500. Note
+ * `SessionRetiredError.status` is the SESSION's status string, never an HTTP
+ * code, so it is deliberately not read here.
+ */
+export function sessionRestartErrorStatus(err: unknown): number {
+  if (err instanceof SessionRestartError) return err.status
+  if (err instanceof SessionRetiredError) return 409
+  return 500
+}
+
+/**
  * Default {@link AccessProfileResolver}: profile metadata from
  * `@agentproto/auth`'s profile store, secret from the keychain at the profile's
  * `credentialRef` slot. Only invoked when an `access` override is actually
@@ -977,10 +1007,13 @@ export async function restartAgentSession(
         : decideRestartStrategy(augmented)
 
   if (strategy.kind !== "agent") {
+    // A request this path can't serve, not a server fault: a command session
+    // (or a PTY going through the agent-adapter route) is a 400.
     throw new SessionRestartError(
       "unsupported_strategy",
       `restartAgentSession: session '${prev.id}' resolved to a '${strategy.kind}' ` +
         "restart strategy — only agent-adapter sessions are resumable this way.",
+      { status: 400 },
     )
   }
 

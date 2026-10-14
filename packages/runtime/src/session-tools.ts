@@ -46,6 +46,9 @@ import {
   tryRestartInPlace,
   resolveResumeAuth,
   RestartOverrideError,
+  SessionRestartError,
+  sessionRestartErrorPayload,
+  sessionRestartErrorStatus,
   type RestartOverrides,
 } from "./session-restart-core.js"
 import {
@@ -4496,6 +4499,40 @@ export function registerSessionTools(
     isError: true,
   })
 
+  // A restart that failed: a coded failure goes out as the typed payload
+  // (`error.code` + human `error.reason` + optional `error.action`, plus the
+  // HTTP status it would have used); an uncoded one keeps today's plain
+  // `session_restart: <message>` text, so nothing that only reads the message
+  // changes its behaviour.
+  const restartFailureResult = (
+    err: unknown,
+    sessionId: string,
+  ): { content: Array<{ type: "text"; text: string }>; isError: true } => {
+    const typed = sessionRestartErrorPayload(err)
+    if (!typed) {
+      return {
+        content: [
+          { type: "text", text: `session_restart: ${err instanceof Error ? err.message : String(err)}` },
+        ],
+        isError: true,
+      }
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ...typed,
+            status: sessionRestartErrorStatus(err),
+            ok: false,
+            sessionId,
+          }),
+        },
+      ],
+      isError: true,
+    }
+  }
+
   // ── session_restart ──────────────────────────────────────────────
   // In-process equivalent of `agentproto sessions restart <id>` — the
   // CLI has to shape an HTTP body and POST it back to this same daemon
@@ -4673,23 +4710,13 @@ export function registerSessionTools(
       }
       if (Object.keys(overrides).length > 0) {
         if (!prev.adapterSlug || !resolveAgentAdapter) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  error: "restart_override_invalid",
-                  status: 400,
-                  message:
-                    "session_restart: restart-with-override only applies to agent-cli " +
-                    "sessions (a PTY/command session has no config axes to override).",
-                  ok: false,
-                  sessionId: prev.id,
-                }),
-              },
-            ],
-            isError: true,
-          }
+          return restartFailureResult(
+            new RestartOverrideError(
+              "session_restart: restart-with-override only applies to agent-cli " +
+                "sessions (a PTY/command session has no config axes to override).",
+            ),
+            prev.id,
+          )
         }
         try {
           const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
@@ -4718,32 +4745,7 @@ export function registerSessionTools(
             ],
           }
         } catch (err) {
-          if (err instanceof RestartOverrideError) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    error: err.code,
-                    status: err.status,
-                    message: err.message,
-                    ok: false,
-                    sessionId: prev.id,
-                  }),
-                },
-              ],
-              isError: true,
-            }
-          }
-          return {
-            content: [
-              {
-                type: "text",
-                text: `session_restart: ${err instanceof Error ? err.message : String(err)}`,
-              },
-            ],
-            isError: true,
-          }
+          return restartFailureResult(err, prev.id)
         }
       }
 
@@ -4806,15 +4808,15 @@ export function registerSessionTools(
       )
 
       if (strategy.kind === "unsupported") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ error: strategy.reason, sessionId: prev.id }),
-            },
-          ],
-          isError: true,
-        }
+        // A refusal, not a crash: hand the client the strategy's own sentence
+        // as BOTH the human reason and the detail, under a stable code.
+        return restartFailureResult(
+          new SessionRestartError("unsupported_strategy", strategy.reason, {
+            status: 400,
+            reason: strategy.reason,
+          }),
+          prev.id,
+        )
       }
 
       // cwd resolution mirrors /sessions/agent + /sessions/terminal:
@@ -5054,15 +5056,7 @@ export function registerSessionTools(
           ],
         }
       } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `session_restart: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
+        return restartFailureResult(err, prev.id)
       }
     }
   )

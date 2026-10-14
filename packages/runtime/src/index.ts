@@ -691,7 +691,10 @@ export { ResumeDisabledError, SessionRetiredError } from "./sessions.js"
 export {
   SessionRestartError,
   RestartOverrideError,
+  restartBlockerCode,
   sessionRestartErrorPayload,
+  sessionRestartErrorBody,
+  sessionRestartErrorStatus,
   SESSION_RESTART_REASONS,
   type SessionRestartErrorCode,
   type SessionRestartAction,

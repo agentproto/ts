@@ -266,6 +266,8 @@ import { stripAnsi } from "./agent-tools.js"
 import {
   restartAgentSession,
   RestartOverrideError,
+  sessionRestartErrorBody,
+  sessionRestartErrorStatus,
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
@@ -7725,12 +7727,11 @@ async function handleSessions(
       return true
     }
     if (!prev.adapterSlug) {
-      json(400, {
-        error: "restart_override_invalid",
-        message:
-          "restart-with-override only applies to agent-cli sessions " +
+      const invalid = new RestartOverrideError(
+        "restart-with-override only applies to agent-cli sessions " +
           "(a PTY/command session has no config axes to override).",
-      })
+      )
+      json(invalid.status, { ...sessionRestartErrorBody(invalid), sessionId: prev.id })
       return true
     }
     const body = (await readJsonBody(req)) as Record<string, unknown> | undefined
@@ -7773,13 +7774,12 @@ async function handleSessions(
         ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
       })
     } catch (err) {
-      if (err instanceof RestartOverrideError) {
-        json(err.status, { error: err.code, message: err.message, sessionId: prev.id })
-        return true
-      }
-      json(500, {
-        error: "restart_failed",
-        message: err instanceof Error ? err.message : String(err),
+      // A coded failure goes out as `{error:{code,reason,action,message},
+      // message}` (400 for a rejected override); anything uncoded keeps
+      // today's `{error:"restart_failed", message}` at 500.
+      json(sessionRestartErrorStatus(err), {
+        ...sessionRestartErrorBody(err),
+        sessionId: prev.id,
       })
     }
     return true
