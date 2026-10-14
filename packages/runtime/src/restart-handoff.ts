@@ -403,3 +403,50 @@ export async function buildBoxRestartHandoff(
     digestRecovered: true,
   }
 }
+
+/**
+ * Build the structured handoff for a LOCAL blank-fallback restart — the
+ * transcript is written into the NEW session's own host transcript dir and
+ * the same frame/checkpoint/recent-turns prompt points at it. Returns
+ * undefined when there's no transcript to export, so the caller falls back
+ * to `buildResumeContextDigest`. A failed host write throws — the caller's
+ * catch turns that into the same digest fallback, never a failed restart.
+ */
+export async function buildLocalRestartHandoff(
+  prev: SessionDescriptor,
+  desc: SessionDescriptor,
+): Promise<BuiltRestartHandoff | undefined> {
+  let messages: ExportedMessage[]
+  try {
+    messages = (await exportDaemonEventsSession(prev.id)).messages
+  } catch {
+    return undefined
+  }
+  if (messages.length === 0) return undefined
+
+  const dir = sessionTranscriptDir(desc.id)
+  const path = join(dir, "prior-session.md")
+  await mkdir(dir, { recursive: true })
+  await fsWriteFile(path, renderTranscriptMarkdown(messages, BOX_TRANSCRIPT_TOOL_CHAR_CAP), "utf8")
+
+  const frame: RestartHandoffFrame = {
+    happened:
+      `the prior session ${prev.id} could not be natively resumed (blank-fallback ` +
+      "restart) — this session is a fresh adapter continuing its work",
+    restored: `the full prior daemon transcript was exported to ${path}`,
+    lost: "the adapter's own in-adapter conversation context",
+  }
+  const checkpoint = await buildCheckpointSection(prev).catch(() => undefined)
+  const recentTurns = renderRecentTurns(messages)
+  const text = composeHandoffText(frame, checkpoint, recentTurns, [path], prev.id)
+  return {
+    text,
+    handoff: {
+      transcriptPath: path,
+      checkpointId: checkpoint?.checkpointId ?? "",
+      recentChars: recentTurns.length,
+      totalMessages: messages.length,
+    },
+    digestRecovered: true,
+  }
+}

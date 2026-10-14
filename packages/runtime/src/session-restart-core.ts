@@ -92,6 +92,7 @@ import {
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import {
   buildBoxRestartHandoff,
+  buildLocalRestartHandoff,
   writeBoxPriorTranscripts,
   type RestartHandoff,
 } from "./restart-handoff.js"
@@ -1641,10 +1642,11 @@ export async function restartAgentSession(
   // daemon's `agent_start` has no resume surface) prefers the structured
   // handoff: a frame, a deterministic-extractor checkpoint, the most recent
   // turns, and the path(s) of the full transcript file(s) already written
-  // into the box (`boxPriorTranscriptPaths`). The old 7k digest
-  // (`buildResumeContextDigest`) stays as the fallback when the handoff
-  // can't be built (no transcript, or the in-box write failed). Never
-  // fails the restart.
+  // into the box (`boxPriorTranscriptPaths`). A LOCAL blank-fallback gets
+  // the same frame with the transcript written into the new session's own
+  // host dir. The old 7k digest (`buildResumeContextDigest`) stays as the
+  // fallback when the handoff can't be built (no transcript, or the write
+  // failed). Never fails the restart.
   let digestRecovered = false
   let restartHandoff: RestartHandoff | undefined
   if (resumeFallback) {
@@ -1662,7 +1664,10 @@ export async function restartAgentSession(
               ? { deliveryBaseSha: prev.sandboxDeliveryTarget.baseSha }
               : {}),
           }).catch(() => undefined)
-        : undefined
+        : // Local blank-fallback: same frame, but the full transcript is
+          // written into the NEW session's own host transcript dir and the
+          // prompt points at that path.
+          await buildLocalRestartHandoff(prev, desc).catch(() => undefined)
     if (handoff) {
       desc.pendingResumeContext = handoff.text
       digestRecovered = handoff.digestRecovered
