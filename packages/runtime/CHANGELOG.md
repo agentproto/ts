@@ -1,5 +1,83 @@
 # @agentproto/runtime
 
+## 5.22.0
+
+### Minor Changes
+
+- 38a1c34: feat(app-kit,runtime): AIP-53 `ui.toolScope` link-token scoping, Telegram-identity-bound — closes the argument-scoping gap in `app_tool_call`/`POST /apps/:appId/tool-call` (an allowlisted UI tool like `conversation_read` could be called with ANY `sessionId`, not just the one it was shown for). `defineApp`'s `ui` gains an optional `toolScope` map (`{ toolName: { argName: "$link.<claim>" } }`), validated against `ui.tools` and carried through emit/load/install onto `InstalledApp.ui.toolScope`. A new privileged `app_link_mint` daemon tool (never placeable in `ui.tools`, refused unconditionally by `dispatchAllowlistedAppTool`) mints a short-lived, HMAC-signed link token bound to one `(appId, sessionId, telegramUserId)` — useless on its own until the opener's Telegram Mini App `initData` is verified against the daemon's stored bot token via the new `POST /apps/:appId/link-auth` (`app-link-auth.ts`), which exchanges it for a short-lived session token. `dispatchAllowlistedAppTool` runs in a fail-closed scoped mode under that session token: only tools in `ui.toolScope` are reachable, with their scoped arguments checked against the token's claims (absent → injected, mismatched → refused) — no union with `ui.tools`/`APP_UI_DISCOVERY_TOOLS`. `tunnelBearerAllowed` and the tool-call route's browser/bearer gates (http-server.ts) accept a valid session token ONLY for that one app's tool-call route and that one session's three read routes (`GET /sessions/:id`, `/events`, `/events/stream`); every other route, and the whole feature when no token is presented, is unaffected. New modules: `app-link-token.ts` (HMAC mint/verify, persisted `~/.agentproto/keys/app_link_hmac` key), `telegram-init-data.ts` (Telegram WebApp signature verification), `app-link-auth.ts` (the identity-bound exchange, single-use link tokens, audit logging), `app-link-gate.ts` (the HTTP-level predicates).
+- 5982c03: AIP-66 managed cloud agents: `agent_start.cloud` names a vendor (e.g. `cloud: "anthropic"`) that owns the machine and harness; the runtime resolves it to the vendor's cloud adapter (`claude-code-cloud`), refuses the spawn fields a cloud target can never apply (worktree, commandSandbox, mcpServers, daemonMount, bundles, browser, appServe, inference) with a typed `cloud_spawn_refused` error, skips host auth/profile resolution, and persists the learned vendor session id onto `meta.cloud` so restarts and re-attaches resume the vendor's own session.
+- 884868e: `session_mark_completed` now accepts an ALREADY-terminal session (`exited` /
+  `killed` / `error`) and records an operator resolution on it, instead of
+  refusing with `not_live`. A sandbox session that died — an e2b box hitting its
+  time cap, a crashed child whose PR had already merged — after its work was
+  fully pushed and merged used to keep reading FAILED in every list / recap / UI
+  forever; the only tool that would touch such a row was `session_archive`,
+  which hides it entirely and throws away the "this was fine" signal.
+
+  A terminal row is resolved by the new `registry.resolveOutcome`, the terminal
+  twin of `closeWithOutcome`: it stamps the SAME Level-2 `SessionOutcome`
+  fields a live close writes (`source` / `verdict` / `judgedBy` / `summary` /
+  `note` plus the structured `OutcomeDetail`) and nothing else. Nothing is
+  revived, no process is signalled, and `status` / `endedReason` / `endedAt` /
+  `exitCode` keep showing exactly how the row really died. `verdict: "done"`
+  additionally relabels the outcome's `termination.reason` to
+  `"operator-completed"` — the true death mechanism preserved in
+  `previousReason` — and retires the row, matching the UI's existing "Mark as
+  completed" affordance (`kill(id, …, "operator-completed")`) exactly. Every
+  other closing verdict (`partial` / `failed` / `abandoned`) only labels the
+  outcome; `blocked` / `needs-input` stay refused on a terminal row, since
+  there is no live session left to wait on. Unknown ids and the live path are
+  unchanged.
+
+  New shared `isOutcomeCompleted(outcome)` (exported from the package root)
+  answers "has an operator/judge declared this session's work complete?" from
+  either the full outcome or the compact list projection, and the badge
+  derivations that used to paint such a row as failed now consult it: the
+  shared dashboard classifier `presenceFor` folds a resolved terminal row into
+  `quiet` instead of `attention`, and the VS Code sessions tree / webview row
+  status / outcome card read it as done (a `tool_help` doc for
+  `session_mark_completed` documents the new contract).
+
+- 884868e: `session_mark_completed` accepts already-terminal sessions via the new `registry.resolveOutcome`, and the new exported `isOutcomeCompleted` makes presence and VS Code session badges treat resolved rows as completed instead of failed.
+
+### Patch Changes
+
+- c7a240b: AIP-66 cloud review follow-ups. Runtime: `watchCloudSessionMeta` now only learns a meta file whose `vendor` matches the watch (a file written for another vendor is ignored and the watch keeps polling). Adapter: `session/load` validates the session id before the repo source, so a malformed id reports its own error first; `#seedSeenEvents` pages through the whole vendor history via `resume_cursor` (bounded at 50 pages) so every pre-existing event — including an older `result` — is pre-marked, leaving `pollCursor` at the newest position the normal poll loop resumes from.
+- 1576bbb: AIP-66 cloud observe fixes. Adapter: the events cursor pages BACKWARD in time (no cursor = newest page; `resume_cursor` = the oldest `sequence_num` on the page, passed back returns the next OLDER page), so `#observeTurn` no longer uses a forward `cursor`/seen-id set — it tracks a per-session `lastSeq`, polls the newest page each tick, walks `cursor` backward only as far as needed (capped at 20 pages/tick), projects new events in ascending `sequence_num` order, and ends a turn only on a vendor `result` whose seq is above the high-water recorded before the prompt. `session/load` seeds `lastSeq` from one newest-page GET (the forward-paging loop and `SEED_EVENT_PAGES_LIMIT` are gone), and the `CloudSessionEvent`/page types now carry `sequence_num`, `source` and `next_cursor`. Runtime: the cloud-spawn refusal message is no longer double-prefixed with `agent_start:`, and `resolveCloudSpawn` records the vendor's harness (`claude-code`) on the descriptor instead of the local relay adapter slug (`claude-code-cloud`) — the adapter stays `claude-code-cloud` (AIP-66 §2).
+- 19f5b2b: Interrupt sandbox turns via remote endpoint instead of replaying prompt
+- 8b4135e: Docs: describe system-prompt channels per adapter, the sandbox-gone restart default, and the box-login bridge.
+- e296593: Route Chrome Live screenshots and health checks through its provider.
+- 49661e7: fix(sandbox,cli): bound the boot re-attach pass with a per-row deadline
+
+  Every individual re-attach step was already bounded (the e2b SDK caps a request at 60s × 3
+  retries, the MCP client caps a request at 60s, the box probe at 10s), but they stacked to
+  4–6+ minutes **per row** with no overall deadline — so a single wedged box left
+  `pending > 0` in `/health` and made `agentproto daemon restart` hang silently for minutes
+  before printing a bare "still pending".
+
+  Runtime (`runSandboxReattachPass`): a per-row `timeoutMs` (default 30s, overridable via
+  `AGENTPROTO_REATTACH_TIMEOUT_MS`) races each row's attempt. On timeout the provider's
+  `probe` is consulted (bounded at 5s) — `{ alive: false }` ends the row `sandbox_gone` and
+  stamps the ledger `gone`, anything else ends it `failed` with the detail
+  `reattach timed out after Ns`. Cleanup only detaches (MCP + timers); it never stops,
+  pauses or kills a box that may still be running. A late settle from a timed-out row just
+  releases the half-open handle, so the pass always drains `pending` to 0.
+
+  CLI (`daemon restart`): prints a `re-attaching N sandbox session(s)…` progress line up
+  front and caps the wait at 60s (runtime deadline + margin) instead of 120×500ms polls.
+  If the pass hasn't settled by then it notes that the pass continues in the daemon and
+  points at `agentproto daemon status`, which now also renders the re-attach tally next to
+  the `/health` sandbox line.
+
+- Updated dependencies [38a1c34]
+- Updated dependencies [56efb5a]
+- Updated dependencies [a727b5f]
+- Updated dependencies [8b4135e]
+- Updated dependencies [e296593]
+  - @agentproto/app-kit@1.8.0
+  - @agentproto/apps@0.23.2
+  - @agentproto/adapter-browser@0.5.0
+
 ## 5.21.0
 
 ### Minor Changes

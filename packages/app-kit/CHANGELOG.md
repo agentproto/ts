@@ -1,5 +1,15 @@
 # @agentproto/app-kit
 
+## 1.8.0
+
+### Minor Changes
+
+- 38a1c34: feat(app-kit,runtime): AIP-53 `ui.toolScope` link-token scoping, Telegram-identity-bound — closes the argument-scoping gap in `app_tool_call`/`POST /apps/:appId/tool-call` (an allowlisted UI tool like `conversation_read` could be called with ANY `sessionId`, not just the one it was shown for). `defineApp`'s `ui` gains an optional `toolScope` map (`{ toolName: { argName: "$link.<claim>" } }`), validated against `ui.tools` and carried through emit/load/install onto `InstalledApp.ui.toolScope`. A new privileged `app_link_mint` daemon tool (never placeable in `ui.tools`, refused unconditionally by `dispatchAllowlistedAppTool`) mints a short-lived, HMAC-signed link token bound to one `(appId, sessionId, telegramUserId)` — useless on its own until the opener's Telegram Mini App `initData` is verified against the daemon's stored bot token via the new `POST /apps/:appId/link-auth` (`app-link-auth.ts`), which exchanges it for a short-lived session token. `dispatchAllowlistedAppTool` runs in a fail-closed scoped mode under that session token: only tools in `ui.toolScope` are reachable, with their scoped arguments checked against the token's claims (absent → injected, mismatched → refused) — no union with `ui.tools`/`APP_UI_DISCOVERY_TOOLS`. `tunnelBearerAllowed` and the tool-call route's browser/bearer gates (http-server.ts) accept a valid session token ONLY for that one app's tool-call route and that one session's three read routes (`GET /sessions/:id`, `/events`, `/events/stream`); every other route, and the whole feature when no token is presented, is unaffected. New modules: `app-link-token.ts` (HMAC mint/verify, persisted `~/.agentproto/keys/app_link_hmac` key), `telegram-init-data.ts` (Telegram WebApp signature verification), `app-link-auth.ts` (the identity-bound exchange, single-use link tokens, audit logging), `app-link-gate.ts` (the HTTP-level predicates).
+
+### Patch Changes
+
+- 8b4135e: Docs: describe system-prompt channels per adapter, the sandbox-gone restart default, and the box-login bridge.
+
 ## 1.7.5
 
 ### Patch Changes

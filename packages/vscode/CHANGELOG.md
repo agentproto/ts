@@ -1,5 +1,25 @@
 # agentproto-vscode
 
+## 0.22.12
+
+### Patch Changes
+
+- 884868e: `session_mark_completed` accepts already-terminal sessions via the new `registry.resolveOutcome`, and the new exported `isOutcomeCompleted` makes presence and VS Code session badges treat resolved rows as completed instead of failed.
+- Updated dependencies [38a1c34]
+- Updated dependencies [c7a240b]
+- Updated dependencies [5982c03]
+- Updated dependencies [56efb5a]
+- Updated dependencies [a727b5f]
+- Updated dependencies [1576bbb]
+- Updated dependencies [19f5b2b]
+- Updated dependencies [884868e]
+- Updated dependencies [8b4135e]
+- Updated dependencies [884868e]
+- Updated dependencies [e296593]
+- Updated dependencies [49661e7]
+  - @agentproto/runtime@5.22.0
+  - @agentproto/apps@0.23.2
+
 ## 0.22.11
 
 ### Patch Changes

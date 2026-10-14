@@ -1,5 +1,16 @@
 # @agentproto/adapter-browser
 
+## 0.5.0
+
+### Minor Changes
+
+- e296593: Route Chrome Live screenshots and health checks through its provider.
+
+### Patch Changes
+
+- Updated dependencies [e296593]
+  - @agentproto/adapter-browser-chrome@0.4.0
+
 ## 0.4.0
 
 ### Minor Changes

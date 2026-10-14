@@ -1,5 +1,44 @@
 # @agentproto/cli
 
+## 1.23.0
+
+### Minor Changes
+
+- 5982c03: AIP-66 re-attach + adapter discoverability: the claude-code-cloud relay now advertises ACP `session/load` and implements it — the host hands back the vendor session id persisted on `meta.cloud.sessionId`, `session/load` ADOPTS it (repo-source validated first, an id that isn't `session_`/`cse_` fails closed), pre-marks the vendor's existing events so only the next turn's own `result` can end it, and the subsequent prompt goes through `sendPrompt` (`claude -p --cloud <id>`), never `startCloudSession` — a resumed relay can no longer start a replacement vendor session (AIP-66 §5). The learned identity is reported to the host through the `AGENTPROTO_CLOUD_SESSION_META_FILE` side file as exactly `{ vendor, sessionId, url }` (atomic temp+rename, best-effort), preserving an existing URL across a re-attach; the vendor's OAuth credential never enters it, logs or events (AIP-66 §8). The CLI lists `claude-code-cloud` in the bundled adapter catalog (`agentproto install` picker) and carries `@agentproto/adapter-claude-code-cloud` as a devDependency so the slug resolves like every other first-party adapter.
+
+### Patch Changes
+
+- 49661e7: fix(sandbox,cli): bound the boot re-attach pass with a per-row deadline
+
+  Every individual re-attach step was already bounded (the e2b SDK caps a request at 60s × 3
+  retries, the MCP client caps a request at 60s, the box probe at 10s), but they stacked to
+  4–6+ minutes **per row** with no overall deadline — so a single wedged box left
+  `pending > 0` in `/health` and made `agentproto daemon restart` hang silently for minutes
+  before printing a bare "still pending".
+
+  Runtime (`runSandboxReattachPass`): a per-row `timeoutMs` (default 30s, overridable via
+  `AGENTPROTO_REATTACH_TIMEOUT_MS`) races each row's attempt. On timeout the provider's
+  `probe` is consulted (bounded at 5s) — `{ alive: false }` ends the row `sandbox_gone` and
+  stamps the ledger `gone`, anything else ends it `failed` with the detail
+  `reattach timed out after Ns`. Cleanup only detaches (MCP + timers); it never stops,
+  pauses or kills a box that may still be running. A late settle from a timed-out row just
+  releases the half-open handle, so the pass always drains `pending` to 0.
+
+  CLI (`daemon restart`): prints a `re-attaching N sandbox session(s)…` progress line up
+  front and caps the wait at 60s (runtime deadline + margin) instead of 120×500ms polls.
+  If the pass hasn't settled by then it notes that the pass continues in the daemon and
+  points at `agentproto daemon status`, which now also renders the re-attach tally next to
+  the `/health` sandbox line.
+
+- Updated dependencies [38a1c34]
+- Updated dependencies [56efb5a]
+- Updated dependencies [a727b5f]
+- Updated dependencies [8b4135e]
+- Updated dependencies [e296593]
+  - @agentproto/app-kit@1.8.0
+  - @agentproto/apps@0.23.2
+  - @agentproto/adapter-browser@0.5.0
+
 ## 1.22.0
 
 ### Minor Changes
