@@ -12,6 +12,17 @@ dist
 packages/corpus-presets/src/marketing/files.ts
 packages/corpus-presets/src/research/files.ts
 
+# Generated panel HTML — single-file Vite builds of packages/apps' three
+# panel UIs (work-board, review-panel, store), written by
+# scripts/build-{work-board,review-panel,store}-ui.mjs and run through
+# `generate:ui`, which the package's predev/prebuild/precheck-types/pretest
+# hooks call. Built at build time, never committed: touching panel-bridge.ts
+# or a panel UI used to mean regenerating and committing these (conflicts,
+# and a stale bundle reaching main once — #1302).
+packages/apps/src/work-board/panel.generated.ts
+packages/apps/src/review-panel/panel.generated.ts
+packages/apps/src/store/panel.generated.ts
+
 # Generated Claude Code hook — regenerated from the canonical parser source by prebuild hooks
 packages/runtime-profile-standard/files/.claude/hooks/user-prompt-submit.mjs
 

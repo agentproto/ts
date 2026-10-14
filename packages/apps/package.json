@@ -172,11 +172,17 @@
     "access": "public"
   },
   "scripts": {
+    "generate:ui": "pnpm run build:ui && pnpm run build:ui:reviews && pnpm run build:ui:store",
+    "predev": "pnpm run generate:ui",
     "dev": "tsup --watch",
+    "prebuild": "pnpm run generate:ui",
     "build": "tsup && tsc -p tsconfig.build.json",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist src/work-board/panel.generated.ts src/review-panel/panel.generated.ts src/store/panel.generated.ts",
+    "precheck-types": "pnpm run generate:ui",
     "check-types": "tsc --noEmit",
+    "pretest": "pnpm run generate:ui",
     "test": "vitest run",
+    "pretest:watch": "pnpm run generate:ui",
     "test:watch": "vitest",
     "build:ui": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs",
     "build:ui:check": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs --check",
