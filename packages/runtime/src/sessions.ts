@@ -177,7 +177,7 @@ import {
   writeSessionIndex,
   type TranscriptPrompt,
 } from "./session-index.js"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, resolve, sep } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
@@ -788,6 +788,28 @@ export function mintSessionId(): string {
  */
 export function adapterConfigDirFor(sessionId: string): string {
   return resolve(homedir(), ".agentproto", "adapter-config", sessionId)
+}
+
+/**
+ * {@link adapterConfigDirFor} for a CALLER-SUPPLIED key.
+ *
+ * `agent_start`'s `resumeSessionId` is an external input — the box re-attach
+ * path hands over the prior in-box id, but the field is in the schema and any
+ * caller can send anything — and `session-spawn.ts`'s `resolveResumeTarget`
+ * turns it into a directory that `existsSync` + conversation discovery READ
+ * and that the adapter is then given as its `configDir`. A key that is not a
+ * plain path segment would walk out of the adapter-config root
+ * (`../../.claude` → `$HOME/.claude`, an arbitrary read + an arbitrary
+ * adapter config dir), so such keys resolve to NOTHING: the resume degrades
+ * to the raw-id path (registry lookups are map/eq checks, no filesystem)
+ * instead of probing outside the root. Belt and braces: the resolved dir must
+ * still sit directly under it.
+ */
+export function safeAdapterConfigDirFor(id: string): string | undefined {
+  if (!/^[\w.-]+$/.test(id) || id.includes("..")) return undefined
+  const root = adapterConfigDirFor("")
+  const dir = adapterConfigDirFor(id)
+  return dir.startsWith(`${root}${sep}`) ? dir : undefined
 }
 
 /**

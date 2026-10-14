@@ -9,12 +9,19 @@
 
 import { describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { homedir, tmpdir } from "node:os"
+import { join, sep } from "node:path"
 
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent, type SessionsRegistry } from "../sessions.js"
+import {
+  adapterConfigDirFor,
+  createSessionsRegistry,
+  safeAdapterConfigDirFor,
+  type AgentSessionLike,
+  type AgentStreamEvent,
+  type SessionsRegistry,
+} from "../sessions.js"
 import { restartAgentSession } from "../session-restart-core.js"
 import { spawnAgentSession } from "../session-spawn.js"
 import { createSentinelStore } from "../sentinel-store.js"
@@ -269,5 +276,57 @@ describe("agent_start resume target resolution", () => {
     expect(result.descriptor.resumeVia).toBeUndefined()
     expect(result.descriptor.resumedFrom).toBeUndefined()
     registry.shutdown()
+  })
+
+  it("a path-shaped resume id never hands the adapter a config dir outside the adapter-config root", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { resolveAgentAdapter, starts } = resolverWith(async () => fakeAgentSession())
+    // `agent_start.resumeSessionId` is caller-supplied: a traversal id must
+    // not reach `existsSync`/conversation discovery (or the adapter's
+    // `configDir`) as a directory — it degrades to the raw-id path, whose
+    // config dir is the new session's own.
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter },
+      { adapter: "mock-adapter", cwd: process.cwd(), resumeSessionId: "../../.claude" } as never,
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(starts).toHaveLength(1)
+    const configDir = String(starts[0]?.configDir)
+    expect(configDir.startsWith(join(homedir(), ".agentproto", "adapter-config") + sep)).toBe(true)
+    expect(configDir).not.toContain("..")
+    expect(configDir).not.toContain(".claude")
+    registry.shutdown()
+  })
+})
+
+/** The restored-store branch of the resume lookup builds a directory from a
+ *  caller-supplied id — only a plain path-safe key may ever produce one. */
+describe("safeAdapterConfigDirFor", () => {
+  const root = join(homedir(), ".agentproto", "adapter-config") + sep
+
+  it("resolves a plain key to its dir under the adapter-config root", () => {
+    expect(safeAdapterConfigDirFor("sbx_dead_1")).toBe(adapterConfigDirFor("sbx_dead_1"))
+    expect(safeAdapterConfigDirFor("sess.a-b_c9")).toBe(join(root, "sess.a-b_c9"))
+    expect(String(safeAdapterConfigDirFor("sbx_1"))).toContain(root)
+  })
+
+  it("refuses every traversal-shaped key", () => {
+    const hostile = [
+      "",
+      ".",
+      "..",
+      "../.claude",
+      "../../.claude",
+      ".agentproto/../../.claude",
+      "a/b",
+      "/etc/passwd",
+      "a\\b",
+      "a b",
+      "a\u0000b",
+    ]
+    for (const key of hostile) {
+      expect(safeAdapterConfigDirFor(key), `key: ${JSON.stringify(key)}`).toBeUndefined()
+    }
   })
 })

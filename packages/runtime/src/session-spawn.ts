@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
-import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { adapterConfigDirFor, safeAdapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
 import {
   discoverRestoredAdapterConversation,
@@ -2599,8 +2599,14 @@ export async function spawnAgentSession(
         sourceSessionId: row.id,
       }
     }
-    const restoredDir = adapterConfigDirFor(id)
-    if (existsSync(restoredDir)) {
+    // The restored-store dir is built from a CALLER-SUPPLIED id, so only a
+    // path-safe key may take this branch: `../../.claude` etc. must never
+    // turn into `existsSync`/discovery reads (and an adapter `configDir`)
+    // outside `~/.agentproto/adapter-config/` — see
+    // `safeAdapterConfigDirFor`. An unsafe key falls through to the raw-id
+    // semantics below, exactly like an id no dir holds.
+    const restoredDir = safeAdapterConfigDirFor(id)
+    if (restoredDir && existsSync(restoredDir)) {
       const conversationId = await discoverRestoredAdapterConversation({
         adapter: input.adapter,
         configDir: restoredDir,

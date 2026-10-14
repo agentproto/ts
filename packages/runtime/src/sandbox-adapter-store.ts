@@ -43,7 +43,13 @@ export const ADAPTER_STORE_FILE = "adapter-store.tar.gz"
 export const DEFAULT_ADAPTER_STORE_MAX_BYTES = 20 * 1024 * 1024
 /** Box-local path the archive is packed into (checkpoint) … */
 export const BOX_ADAPTER_STORE_ARCHIVE_PATH = "/tmp/agentproto-adapter-store.tar.gz"
-/** … and the path a restore upload lands at before extraction. */
+/** The UNCOMPRESSED tar the pack step writes before gzip'ing it — tar's own
+ *  exit status is checked on that file (a `tar | gzip` pipe would only ever
+ *  report gzip's code, so a truncated archive could ship as long as it was
+ *  non-empty). Derived as `*.tar` from the archive path. */
+export const BOX_ADAPTER_STORE_TAR_PATH = "/tmp/agentproto-adapter-store.tar"
+/** … and the path a restore upload lands at before extraction (its member
+ *  list is `<path>.list`). */
 export const BOX_ADAPTER_STORE_RESTORE_PATH = "/tmp/agentproto-adapter-store-restore.tar.gz"
 /** Pack + download budget for the store archive inside a checkpoint. */
 export const ADAPTER_STORE_TIMEOUT_MS = 30_000
@@ -90,9 +96,13 @@ export interface AdapterStoreRecord {
  * The in-box pack command: tar the session's isolated adapter-config dir
  * (home-relative) and print `bytes=`; `store=missing` when the dir does not
  * exist (adapter without config-dir isolation, or nothing written yet).
- * Deterministic-ish (`--sort=name`, `gzip -n`) like the workspace tar; tar
- * exit 1 ("file changed as we read it") is tolerated — the adapter keeps
- * writing during a periodic checkpoint.
+ * Deterministic-ish (`--sort=name`, `gzip -n`) like the workspace tar.
+ *
+ * tar runs to a FILE that gzip then compresses — never `tar | gzip`: a pipe's
+ * exit status is the LAST command's, so tar's failure would be invisible and
+ * a truncated archive (`[ -s ]` alone can't tell) would pass. Each step's own
+ * status is checked instead. tar exit 1 ("file changed as we read it") is
+ * tolerated — the adapter keeps writing during a periodic checkpoint.
  */
 export function buildAdapterStoreArchiveCommand(
   adapterSessionId: string,
@@ -100,12 +110,16 @@ export function buildAdapterStoreArchiveCommand(
 ): string {
   const rel = shellQuote(adapterStoreRelativeDir(adapterSessionId))
   const out = shellQuote(boxPath)
+  const raw = shellQuote(boxPath.endsWith(".gz") ? boxPath.slice(0, -".gz".length) : `${boxPath}.tar`)
   return (
     `cfg="$HOME"/${rel}; ` +
     `[ -d "$cfg" ] || { echo "store=missing"; exit 0; }; ` +
-    `rm -f ${out}; ` +
-    `tar --sort=name -C "$HOME" -cf - ${rel} 2>/dev/null | gzip -n > ${out}; rc=$?; ` +
-    `[ $rc -le 1 ] && [ -s ${out} ] || { rm -f ${out}; echo "tar failed (exit $rc)" >&2; exit 2; }; ` +
+    `rm -f ${raw} ${out}; ` +
+    `tar --sort=name -C "$HOME" -cf ${raw} ${rel} 2>/dev/null; rc=$?; ` +
+    `[ $rc -le 1 ] && [ -s ${raw} ] || { rm -f ${raw}; echo "tar failed (exit $rc)" >&2; exit 2; }; ` +
+    `gzip -n -c ${raw} > ${out} || { rm -f ${raw} ${out}; echo "gzip failed" >&2; exit 2; }; ` +
+    `rm -f ${raw}; ` +
+    `[ -s ${out} ] || { rm -f ${out}; echo "gzip produced an empty archive" >&2; exit 2; }; ` +
     `echo "bytes=$(wc -c < ${out} | tr -d ' ')"`
   )
 }
@@ -204,6 +218,9 @@ export interface RestoreAdapterStoreInput {
   exec?: SandboxExec
   /** Host-side archive (from {@link savedAdapterStoreArchive}). */
   archivePath: string
+  /** Box-local path the upload lands at — defaults to the shared one; the
+   *  member list is `<path>.list`. Only tests point it elsewhere. */
+  boxPath?: string
   maxBytes?: number
   timeoutMs?: number
 }
@@ -218,6 +235,7 @@ export interface RestoreAdapterStoreInput {
 export async function restoreAdapterStore(input: RestoreAdapterStoreInput): Promise<AdapterStoreRestoreResult> {
   const maxBytes = input.maxBytes ?? DEFAULT_ADAPTER_STORE_MAX_BYTES
   const timeoutMs = input.timeoutMs ?? ADAPTER_STORE_RESTORE_TIMEOUT_MS
+  const boxArchivePath = input.boxPath ?? BOX_ADAPTER_STORE_RESTORE_PATH
   if (!input.writeFile) return { ok: false, message: "the sandbox provider cannot upload files into the box" }
   if (!input.exec) return { ok: false, message: "the sandbox provider cannot run commands in the box" }
   let data: Uint8Array
@@ -233,19 +251,33 @@ export async function restoreAdapterStore(input: RestoreAdapterStoreInput): Prom
     }
   }
   try {
-    await input.writeFile(BOX_ADAPTER_STORE_RESTORE_PATH, data)
+    await input.writeFile(boxArchivePath, data)
   } catch (err) {
     return { ok: false, message: `uploading the adapter store failed: ${errorText(err)}` }
   }
   try {
-    // `--no-same-owner` + extract under `$HOME`: the archive stores the
+    // List the members FIRST and refuse anything that would land outside the
+    // session's store dir: absolute paths or a `..` segment (the archive comes
+    // from our own checkpoint, but nothing on the box side should ever extract
+    // a path that walks out of `~/.agentproto/adapter-config/<id>`). Then
+    // extract under `$HOME` with `--no-same-owner`: the archive stores the
     // config dir home-relative (see {@link buildAdapterStoreArchiveCommand}),
     // so the store lands at the same path the box daemon keys it by, on any
-    // box, without needing root to restore ownership.
+    // box, without needing root to restore ownership. One exec for both steps
+    // so the checked exit status is the whole sequence's.
+    const list = shellQuote(`${boxArchivePath}.list`)
+    const arch = shellQuote(boxArchivePath)
+    const unsafeMember =
+      `if tar -tzf ${arch} > ${list} 2>/dev/null; then ` +
+      `if grep -qvE '^(/|\\./)?\\.agentproto/adapter-config/[^/]+' ${list} || ` +
+      `grep -qE '(^|/)\\.\\.(/|$)' ${list}; then ` +
+      `rm -f ${list}; echo "refusing an adapter store with an unsafe member path" >&2; exit 4; fi; ` +
+      `rm -f ${list}; ` +
+      `else rm -f ${list}; echo "listing the adapter store failed" >&2; exit 2; fi; `
     const result = await input.exec({
       command:
-        `tar --no-same-owner -xzf ${shellQuote(BOX_ADAPTER_STORE_RESTORE_PATH)} -C "$HOME" && ` +
-        `rm -f ${shellQuote(BOX_ADAPTER_STORE_RESTORE_PATH)} && echo restored`,
+        unsafeMember +
+        `tar --no-same-owner -xzf ${arch} -C "$HOME" && rm -f ${arch} && echo restored`,
       timeoutMs,
     })
     if (result.exitCode !== 0 || !result.stdout.includes("restored")) {
