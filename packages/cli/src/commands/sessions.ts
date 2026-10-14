@@ -713,9 +713,9 @@ export function parseTurnRetryFlag(raw: string): Record<string, unknown> | strin
   const maxMigrations = obj.maxMigrations
   if (
     maxMigrations !== undefined &&
-    (typeof maxMigrations !== "number" || !Number.isInteger(maxMigrations) || maxMigrations < 1)
+    (typeof maxMigrations !== "number" || !Number.isInteger(maxMigrations) || maxMigrations < 0)
   ) {
-    return `"maxMigrations" must be a positive integer (at least 1)`
+    return `"maxMigrations" must be a non-negative integer`
   }
   const factor = obj.factor
   if (factor !== undefined && (typeof factor !== "number" || !Number.isFinite(factor) || factor < 1)) {

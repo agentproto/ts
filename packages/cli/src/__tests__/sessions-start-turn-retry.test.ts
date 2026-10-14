@@ -41,6 +41,13 @@ describe("parseTurnRetryFlag", () => {
       maxMigrations: 2,
     })
     expect(parseTurnRetryFlag('{"on":["rate-limit"],"action":"retry"}')).toEqual({ on: ["rate-limit"], action: "retry" })
+    // `maxMigrations: 0` is a valid "never migrate" cap, like the delay knobs
+    // it is non-negative rather than positive.
+    expect(parseTurnRetryFlag('{"on":["rate-limit"],"action":"migrate","maxMigrations":0}')).toEqual({
+      on: ["rate-limit"],
+      action: "migrate",
+      maxMigrations: 0,
+    })
   })
   it.each([
     ['{"on":["rate-limit"],"rotate":"big-pickle"}', '"rotate" must be an array'],
@@ -63,9 +70,8 @@ describe("parseTurnRetryFlag", () => {
     ['{"on":["rate-limit"],"retryAfterToolCalls":"yes"}', "retryAfterToolCalls"],
     ['{"on":["rate-limit"],"action":"rotate"}', '"action" must be one of retry, migrate'],
     ['{"on":["rate-limit"],"action":1}', '"action" must be one of retry, migrate'],
-    ['{"on":["rate-limit"],"maxMigrations":0}', '"maxMigrations" must be a positive integer'],
-    ['{"on":["rate-limit"],"maxMigrations":-1}', '"maxMigrations" must be a positive integer'],
-    ['{"on":["rate-limit"],"maxMigrations":1.5}', '"maxMigrations" must be a positive integer'],
+    ['{"on":["rate-limit"],"maxMigrations":-1}', '"maxMigrations" must be a non-negative integer'],
+    ['{"on":["rate-limit"],"maxMigrations":1.5}', '"maxMigrations" must be a non-negative integer'],
   ])("rejects %s", (raw, fragment) => {
     const out = parseTurnRetryFlag(raw)
     expect(typeof out).toBe("string")
