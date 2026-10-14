@@ -17,9 +17,10 @@
  * types.ts/render.ts/style.css, bundled by ./ui/vite.config.ts with
  * vite-plugin-singlefile) and lands in ./panel.generated.ts — a gitignored
  * build artifact, never committed, same contract as work-board:
- * `generate:ui` (scripts/build-store-ui.mjs, run from the package's
- * prebuild/precheck-types/pretest hooks) rebuilds it from whatever is on
- * disk before anything reads it. See ./ui/vite.config.ts for how the shared
+ * `generate:ui` (scripts/build-store-ui.mjs) rebuilds it from whatever is on
+ * disk before anything reads it — turbo's cached `generate:ui` task under
+ * turbo, scripts/ensure-ui-generated.mjs's existence fallback from the pre*
+ * hooks otherwise. See ./ui/vite.config.ts for how the shared
  * `panelBridgeScript` (../panel-bridge.ts) gets inlined as a classic
  * `<script>` ahead of the bundled module script.
  *

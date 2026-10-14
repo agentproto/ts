@@ -1,0 +1,33 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "generate:ui": {
+      "description": "Bundle the work-board / review-panel / store Vite apps into the gitignored src/**/panel.generated.ts modules",
+      "dependsOn": ["^build"],
+      "inputs": [
+        "scripts/build-work-board-ui.mjs",
+        "scripts/build-review-panel-ui.mjs",
+        "scripts/build-store-ui.mjs",
+        "src/panel-bridge.ts",
+        "src/work-board/ui/**",
+        "src/review-panel/ui/**",
+        "src/store/ui/**"
+      ],
+      "outputs": [
+        "src/work-board/panel.generated.ts",
+        "src/review-panel/panel.generated.ts",
+        "src/store/panel.generated.ts"
+      ]
+    },
+    "build": {
+      "dependsOn": ["$TURBO_EXTENDS$", "generate:ui"]
+    },
+    "check-types": {
+      "dependsOn": ["$TURBO_EXTENDS$", "generate:ui"]
+    },
+    "test": {
+      "dependsOn": ["$TURBO_EXTENDS$", "generate:ui"]
+    }
+  }
+}

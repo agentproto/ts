@@ -15,8 +15,10 @@
  * types.ts/render.ts/style.css, bundled by ./ui/vite.config.ts with
  * vite-plugin-singlefile) and lands in ./panel.generated.ts — a gitignored
  * build artifact, never committed, rebuilt from whatever is on disk before
- * anything reads it by `generate:ui` (scripts/build-review-panel-ui.mjs, run
- * from the package's prebuild/precheck-types/pretest hooks).
+ * anything reads it by `generate:ui` (scripts/build-review-panel-ui.mjs —
+ * turbo's cached `generate:ui` task under turbo,
+ * scripts/ensure-ui-generated.mjs's existence fallback from the pre* hooks
+ * otherwise).
  *
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage (../panel-bridge.ts)
