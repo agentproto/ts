@@ -37,15 +37,21 @@ import {
   RECOVERY_MIN_EVIDENCE_CHARS,
   RECOVERY_STEP_MAX_MS,
   RECOVERY_STEP_MIN_MS,
+  analyzeReviewerTranscript,
   boundEvidence,
+  boundText,
   buildFollowUpPrompt,
   buildRecoveryPrompt,
   evaluateRecoveryReply,
+  extractExplicitReport,
   substantiveChars,
+  type RecoveryDecision,
   type ReviewerLifecycle,
+  type ReviewerTranscript,
 } from "./review-verdict-recovery.js"
 import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
 import { shareKeyOf } from "./review-execution-share.js"
+import { openEventRecords } from "./events-jsonl-reader.js"
 
 export interface DaemonReviewerHostDeps {
   registry: SessionsRegistry
@@ -98,6 +104,10 @@ const PERMANENT_ERROR_RE =
 export function isRetryableTurnError(message: string | undefined): boolean {
   return !message || !PERMANENT_ERROR_RE.test(message)
 }
+
+/** How long to wait for the transcript writer's async flush to land a `turn-end` record. */
+const TRANSCRIPT_FLUSH_WAIT_MS = 3_000
+const TRANSCRIPT_POLL_MS = 50
 
 const clip = (text: string, max = 300): string => {
   const one = text.replace(/\s+/g, " ").trim()
@@ -433,11 +443,41 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     | { state: "recovered"; recovery: LaneRecovery }
     | { state: "unrecovered"; recovery: LaneRecovery }
 
+  /** The reviewer's typed transcript (`events.jsonl`) for its latest turn,
+   *  or `undefined` when provenance cannot be established — no transcript
+   *  file, or no `turn-end` record yet (the writer flushes asynchronously, so
+   *  it is polled briefly, never past the deadline or a cancel). */
+  const readTranscript = async (
+    sessionId: string,
+    deadline: number,
+    signal: AbortSignal | undefined,
+  ): Promise<ReviewerTranscript | undefined> => {
+    const path = registry.get(sessionId)?.eventsPath
+    if (!path) return undefined
+    const until = Math.min(deadline, Date.now() + TRANSCRIPT_FLUSH_WAIT_MS)
+    for (;;) {
+      try {
+        const records: Record<string, unknown>[] = []
+        for await (const rec of await openEventRecords(path, 0)) records.push(rec)
+        const transcript = analyzeReviewerTranscript(records)
+        if (transcript.turnEnded) return transcript
+      } catch {
+        // not on disk yet
+      }
+      if (signal?.aborted || Date.now() >= until) return undefined
+      await new Promise((resolve) => setTimeout(resolve, TRANSCRIPT_POLL_MS))
+    }
+  }
+
   /** The verdict file is checked here — at turn end, while the reviewer
-   *  session is still alive. Valid ⇒ nothing to do. Otherwise ONE recovery
-   *  step (plus at most one follow-up to the original reviewer), all inside
-   *  the original deadline. Only the daemon ever writes the recovered file,
-   *  and only from a reply that passed {@link evaluateRecoveryReply}. */
+   *  session is still alive. Valid ⇒ nothing to do. Otherwise, all inside the
+   *  original deadline and cancellation:
+   *   1. a complete verdict the reviewer itself stated in chat is extracted
+   *      deterministically from its typed transcript (no model call);
+   *   2. else ONE recovery-model step that may only lift grounded BLOCKING
+   *      findings, or ask for a follow-up (never an approval);
+   *   3. a follow-up goes to the ORIGINAL reviewer, at most once.
+   *  Only the daemon ever writes a recovered file. */
   async function ensureArtifact(args: {
     input: Parameters<ReviewerSessionHost["run"]>[0]
     artifact: NonNullable<Parameters<ReviewerSessionHost["run"]>[0]["artifact"]>
@@ -455,13 +495,44 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     })
     if (input.signal?.aborted) return fail("cancelled", "review cancelled before recovery")
 
-    const evidence = boundEvidence(readLines(sessionId))
+    // A recovered report on a failed turn keeps the provider's own error
+    // text in its reason — the lane result would otherwise read as ended.
+    const lifecyclePrefix = lifecycle === "errored" ? `reviewer turn failed (${args.lifecycleDetail ?? "error"}); ` : ""
+    const recoveredOk = (reason: string, extra: Partial<LaneRecovery> = {}): ArtifactState => ({
+      state: "recovered",
+      recovery: { outcome: "recovered", reason: clip(`${lifecyclePrefix}${reason}`, 600), ...extra },
+    })
+    const writeReport = async (report: unknown): Promise<string | undefined> => {
+      await writeFile(artifact.path, JSON.stringify(report), "utf8")
+      return artifactProblem(artifact.path)
+    }
+
+    const config = deps.getRecovery?.()
+    const configured = !!config && config.presets.length > 0
+
+    // 1. Deterministic extraction from the reviewer's own assistant messages.
+    let transcript: ReviewerTranscript | undefined
+    let conflict: string | undefined
+    if (configured) {
+      transcript = await readTranscript(sessionId, deadline, input.signal)
+      if (input.signal?.aborted) return fail("cancelled", "review cancelled before recovery")
+      if (transcript) {
+        const extracted = extractExplicitReport(transcript.assistantText, { blockOn: artifact.blockOn, lifecycle })
+        if (extracted.kind === "report") {
+          const after = await writeReport(extracted.report)
+          if (after) return fail("invalid_output", `reviewer's stated verdict did not validate once written — ${after}`)
+          return recoveredOk("verdict extracted verbatim from the reviewer's own final message; no recovery model used")
+        }
+        if (extracted.kind === "conflict") conflict = extracted.reason
+      }
+    }
+
+    const evidence = transcript ? boundText(transcript.assistantText) : boundEvidence(readLines(sessionId))
     if (substantiveChars(evidence) < RECOVERY_MIN_EVIDENCE_CHARS) {
       return fail("reviewer_failed", `no analysis to recover from (${problem})`)
     }
     if (deadline - Date.now() < RECOVERY_STEP_MIN_MS) return fail("timeout", "no deadline left for recovery")
-    const config = deps.getRecovery?.()
-    if (!config || config.presets.length === 0) {
+    if (!configured) {
       return fail("unavailable", `${problem}; no recovery model configured (config.review.recoveryPresets)`)
     }
 
@@ -470,51 +541,56 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
       !input.signal?.aborted &&
       deadline - Date.now() >= RECOVERY_FOLLOWUP_MIN_MS &&
       registry.get(sessionId)?.status === "running"
-    const reply = await runRecoveryModel({
-      config,
-      prompt: buildRecoveryPrompt({
-        laneId: artifact.laneId,
-        blockOn: artifact.blockOn,
+
+    // 2. One recovery-model step — skipped when the reviewer's own messages
+    //    held conflicting verdicts (only the reviewer can settle those).
+    let decision: RecoveryDecision
+    let provenance: Partial<LaneRecovery> = {}
+    if (conflict) {
+      decision = canFollowUp()
+        ? { kind: "followup", reason: conflict }
+        : { kind: "classified", outcome: "insufficient_evidence", reason: `${conflict}; no follow-up possible` }
+    } else {
+      const reply = await runRecoveryModel({
+        config: config!,
+        prompt: buildRecoveryPrompt({
+          laneId: artifact.laneId,
+          blockOn: artifact.blockOn,
+          evidence,
+          lifecycle,
+          ...(args.lifecycleDetail ? { lifecycleDetail: args.lifecycleDetail } : {}),
+          followUpPossible: canFollowUp() && deadline - Date.now() >= RECOVERY_STEP_MIN_MS + RECOVERY_FOLLOWUP_MIN_MS,
+        }),
+        label: `${input.label}:recover`,
+        ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        deadline,
+      })
+      if (reply.kind === "cancelled") return fail("cancelled", "review cancelled during recovery")
+      if (reply.kind === "timeout") return fail("timeout", "recovery ran out of deadline")
+      if (reply.kind === "unavailable") return fail("unavailable", reply.reason)
+      provenance = { sessionId: reply.sessionId, preset: reply.preset, ...(reply.model ? { model: reply.model } : {}) }
+      decision = evaluateRecoveryReply(reply.text, {
         evidence,
         lifecycle,
-        ...(args.lifecycleDetail ? { lifecycleDetail: args.lifecycleDetail } : {}),
-        followUpPossible: canFollowUp() && deadline - Date.now() >= RECOVERY_STEP_MIN_MS + RECOVERY_FOLLOWUP_MIN_MS,
-      }),
-      label: `${input.label}:recover`,
-      ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
-      ...(input.signal ? { signal: input.signal } : {}),
-      deadline,
-    })
-    if (reply.kind === "cancelled") return fail("cancelled", "review cancelled during recovery")
-    if (reply.kind === "timeout") return fail("timeout", "recovery ran out of deadline")
-    if (reply.kind === "unavailable") return fail("unavailable", reply.reason)
-    const provenance = { sessionId: reply.sessionId, preset: reply.preset, ...(reply.model ? { model: reply.model } : {}) }
-
-    const decision = evaluateRecoveryReply(reply.text, {
-      evidence,
-      lifecycle,
-      blockOn: artifact.blockOn,
-      followUpPossible: canFollowUp(),
-    })
-    if (decision.kind === "classified") return fail(decision.outcome, decision.reason, provenance)
-    if (decision.kind === "invalid") return fail("invalid_output", decision.reason, provenance)
+        blockOn: artifact.blockOn,
+        followUpPossible: canFollowUp(),
+      })
+    }
+    if (decision.kind === "classified") return fail(decision.outcome, `${lifecyclePrefix}${decision.reason}`, provenance)
+    if (decision.kind === "invalid") return fail("invalid_output", `${lifecyclePrefix}${decision.reason}`, provenance)
     if (decision.kind === "recovered") {
-      await writeFile(artifact.path, JSON.stringify(decision.report), "utf8")
-      const after = await artifactProblem(artifact.path)
+      const after = await writeReport(decision.report)
       if (after) return fail("invalid_output", `recovered report did not validate once written — ${after}`, provenance)
-      return {
-        state: "recovered",
-        recovery: { outcome: "recovered", ...(decision.reason ? { reason: clip(decision.reason) } : {}), ...provenance },
-      }
+      return recoveredOk(decision.reason ?? "blocking findings lifted from the reviewer's chat", provenance)
     }
 
-    // The recovery model asked for a follow-up: the ORIGINAL reviewer gets one
-    // normal prompt to state its conclusion — only with the lifecycle intact
-    // and time left, and never a second one.
+    // 3. The ORIGINAL reviewer gets one normal prompt to state its verdict —
+    //    only with the lifecycle intact and time left, and never a second one.
     if (!canFollowUp()) return fail("insufficient_evidence", `${decision.reason}; no follow-up possible`, provenance)
     const since = eventRing.since(Number.MAX_SAFE_INTEGER, { limit: 0 }).nextCursor
     try {
-      await registry.enqueuePrompt(sessionId, buildFollowUpPrompt(artifact.path))
+      await registry.enqueuePrompt(sessionId, buildFollowUpPrompt(artifact.path, conflict ? "conflict" : "no-conclusion"))
     } catch (err) {
       return fail("insufficient_evidence", `follow-up could not be delivered: ${err instanceof Error ? err.message : String(err)}`, provenance)
     }
@@ -529,9 +605,43 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
     })
     if (res.timedOut) return fail("timeout", "follow-up ran out of deadline", provenance)
     if (input.signal?.aborted) return fail("cancelled", "review cancelled during follow-up", provenance)
-    const finalProblem = await artifactProblem(artifact.path)
-    if (finalProblem) return fail("insufficient_evidence", `${decision.reason}; follow-up wrote no valid verdict (${finalProblem})`, provenance)
-    return { state: "recovered", recovery: { outcome: "followup", reason: clip(decision.reason), ...provenance } }
+    if (res.event === "exited") {
+      return fail("reviewer_failed", `reviewer session exited during the follow-up (${decision.reason})`, provenance)
+    }
+    const followErrored = res.event === "turn-end" && res.reason === "error"
+    const followError = followErrored ? ` — follow-up turn failed: ${clip(res.error ?? "no error text", 160)}` : ""
+    let finalProblem = await artifactProblem(artifact.path)
+    if (finalProblem) {
+      // The follow-up may state its verdict in chat instead of writing it.
+      const followTranscript = await readTranscript(sessionId, deadline, input.signal)
+      if (followTranscript) {
+        const extracted = extractExplicitReport(followTranscript.assistantText, {
+          blockOn: artifact.blockOn,
+          lifecycle: followErrored ? "errored" : "clean",
+        })
+        if (extracted.kind === "report") finalProblem = await writeReport(extracted.report)
+      }
+    }
+    if (finalProblem) {
+      return fail("insufficient_evidence", `${decision.reason}; follow-up wrote no valid verdict (${finalProblem})${followError}`, provenance)
+    }
+    if (followErrored) {
+      // An errored turn never earns an approval, even one it managed to write.
+      let approved = false
+      try {
+        approved = parseAgentLaneReport(await readFile(artifact.path, "utf8")).decision === "approve"
+      } catch {
+        approved = true
+      }
+      if (approved) {
+        await rm(artifact.path, { force: true }).catch(() => undefined)
+        return fail("reviewer_failed", `an approval is not accepted from a failed turn${followError}`, provenance)
+      }
+    }
+    return {
+      state: "recovered",
+      recovery: { outcome: "followup", reason: clip(`${decision.reason}${followError}`), ...provenance },
+    }
   }
 
   async function runAttempt(
