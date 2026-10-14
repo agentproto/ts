@@ -760,6 +760,7 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     migrateSession?: (prev: SessionDescriptor) => Promise<MigrateSandboxSessionResult>
     row?: Partial<SessionDescriptor>
     turnRetry?: Parameters<typeof resolveTurnRetryPolicy>[0]
+    setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   }) {
     const sessionEvents = createSessionEventBus()
     const events: SessionTurnRetryEvent[] = []
@@ -774,27 +775,47 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
       turnRetry: resolveTurnRetryPolicy(opts.turnRetry ?? { on: ["rate-limit"], action: "migrate", maxMigrations: 2, ...FAST }),
       ...opts.row,
     } as SessionDescriptor
+    // Every row the controller can see — `s1` plus whatever a migration
+    // patches into existence (the fake `migrateSession` "spawns" it, the
+    // first `patchTurnRetry` lands it here, exactly like the real registry
+    // holding the descriptor `migrateSandboxSession` created).
+    const rows = new Map<string, SessionDescriptor>([[row.id, row]])
+    const rowFor = (id: string): SessionDescriptor | undefined => {
+      const existing = rows.get(id)
+      if (existing) return existing
+      if (id === row.id || !/^s\d+$/.test(id)) return undefined
+      const created = {
+        id,
+        kind: "agent-cli",
+        status: "running",
+        remote: true,
+        turnRetry: row.turnRetry,
+      } as SessionDescriptor
+      rows.set(id, created)
+      return created
+    }
     const registry = {
-      get: (id: string) => (id === row.id ? row : undefined),
-      list: () => [row],
+      get: (id: string) => rows.get(id),
+      list: () => [...rows.values()],
       enqueuePrompt: async (id: string, message: unknown) => {
-        if (id !== row.id && id !== "s2") throw new Error(`no session "${id}"`)
+        if (!rowFor(id)) throw new Error(`no session "${id}"`)
         enqueued.push({ sessionId: id, message })
         return { queued: false, delivery: "delivered" }
       },
       recordNotice: (id: string, text: string) => {
-        if (id !== row.id && id !== "s2") return false
+        if (!rowFor(id)) return false
         notices.push(text)
         return true
       },
       patchTurnRetry: (id: string, patch: Record<string, unknown>) => {
-        if (id !== row.id && id !== "s2") return false
-        const r = (id === row.id ? row : { id: "s2", kind: "agent-cli", remote: true, status: "running", turnRetry: row.turnRetry }) as unknown as Record<string, unknown>
+        const r = rowFor(id)
+        if (!r) return false
+        const target = r as unknown as Record<string, unknown>
         for (const key of ["turnRetryAttempts", "turnMigrations", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
           if (!(key in patch)) continue
           const value = patch[key]
-          if (value === null || value === undefined) delete r[key]
-          else r[key] = value
+          if (value === null || value === undefined) delete target[key]
+          else target[key] = value
         }
         return true
       },
@@ -804,18 +825,27 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
       sessionEvents,
       migrateSession: opts.migrateSession,
       log: () => {},
-      setTimer: (fn) => setTimeout(fn, 0),
+      setTimer: opts.setTimer ?? (fn => setTimeout(fn, 0)),
     })
-    const turnEnd = (error: string) =>
+    const turnEnd = (error: string, sessionId = row.id) =>
       sessionEvents.emit({
         type: "session:turn-end",
-        sessionId: row.id,
+        sessionId,
         awaitingInput: false,
         reason: "error",
         error,
         ts: new Date().toISOString(),
       })
-    return { row, events, notices, enqueued, controller, turnEnd, phases: () => events.map(e => e.phase) }
+    return {
+      row,
+      rows,
+      events,
+      notices,
+      enqueued,
+      controller,
+      turnEnd,
+      phases: () => events.map(e => e.phase),
+    }
   }
 
   it("migrates sandbox session to fresh box and re-prompts there", async () => {
@@ -899,6 +929,67 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     // give-up emits exhausted directly, no scheduled phase
     expect(h.phases()).toEqual(["exhausted"])
     expect(h.events[0]?.phase).toBe("exhausted")
+    h.controller.dispose()
+  })
+
+  it("carries the migration budget onto the migrated session and spends it across sessions", async () => {
+    const h = migrateHarness({
+      migrateSession: async prev => makeMigrationResult(prev.id === "s1" ? "s2" : "s3"),
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 2, maxRetries: 3, ...FAST },
+    })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().filter(p => p === "migrated").length === 1, "first migration")
+    expect(h.rows.get("s2")?.turnMigrations).toBe(1)
+
+    // The NEW session fails again: `fireMigration` carried the counter over,
+    // so its own attempt is the carried `p.attempt` + 1 — booked on the row
+    // it leaves behind AND on the one the next migration lands on.
+    h.turnEnd("429 status code", "s2")
+    await until(() => h.phases().filter(p => p === "migrated").length === 2, "second migration")
+    expect(h.events.filter(e => e.phase === "migrated").map(e => e.attempt)).toEqual([1, 2])
+    expect(h.rows.get("s2")?.turnMigrations).toBe(2)
+    expect(h.rows.get("s3")?.turnMigrations).toBe(2)
+
+    // maxMigrations (2) is now spent ACROSS sessions: the next failure on the
+    // current box falls back to a normal retry instead of migrating again.
+    h.turnEnd("429 status code", "s3")
+    await until(() => h.phases().includes("sent"), "cap-spent fallback")
+
+    expect(h.phases()).toEqual(["scheduled", "migrated", "scheduled", "migrated", "scheduled", "sent"])
+    expect(h.notices).toContain(
+      "[turn-retry] no migration: migration cap reached (2/2) — retrying on the current box",
+    )
+    expect(h.rows.get("s3")?.turnRetryAttempts).toBe(1)
+    expect(h.rows.get("s3")?.turnMigrations).toBe(2)
+    expect(h.enqueued.map(e => e.sessionId)).toEqual(["s2", "s3", "s3"])
+    h.controller.dispose()
+  })
+
+  it("once both caps are spent across sessions, the migrated session gives up", async () => {
+    const h = migrateHarness({
+      migrateSession: async prev => makeMigrationResult(prev.id === "s1" ? "s2" : "s3"),
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 1, maxRetries: 1, ...FAST },
+    })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("migrated"), "first migration")
+
+    // The migrated session carries the migration cap but no spent retry
+    // budget: its next failure falls back to a retry on its own box…
+    h.turnEnd("429 status code", "s2")
+    await until(() => h.phases().includes("sent"), "cap-spent fallback on the new box")
+    expect(h.notices).toContain(
+      "[turn-retry] no migration: migration cap reached (1/1) — retrying on the current box",
+    )
+
+    // …and that retry burning the last attempt leaves the following failure
+    // nothing to migrate and nothing to retry: a plain give-up.
+    h.turnEnd("429 status code", "s2")
+    await until(() => h.phases().includes("exhausted"), "give up across sessions")
+
+    expect(h.phases()).toEqual(["scheduled", "migrated", "scheduled", "sent", "exhausted"])
+    expect(h.notices).toContain("[turn-retry] gave up after 1 consecutive retries (rate-limit) — leaving the session idle")
+    expect(h.enqueued.map(e => e.sessionId)).toEqual(["s2", "s2"])
+    expect(h.rows.get("s2")?.turnMigrations).toBe(1)
     h.controller.dispose()
   })
 })

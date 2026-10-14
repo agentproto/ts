@@ -14,6 +14,7 @@ import {
 } from "../session-migrate.js"
 import type { SandboxDeliveryRecord } from "../sandbox-delivery.js"
 import type { SessionDescriptor } from "../sessions.js"
+import { resolveTurnRetryPolicy } from "../turn-retry-policy.js"
 import type { WorkspacesConfig } from "../workspaces-config.js"
 
 vi.mock("../session-spawn.js", async importOriginal => {
@@ -217,6 +218,7 @@ describe("migrateSandboxSession", () => {
     expect(input.prompt).toContain("[continued session")
     expect(input.prompt).toContain("Sandbox migrated")
     expect(input.prompt).toContain("agentproto-checkpoint/wt/feat")
+    expect(input.turnRetry).toBeUndefined()
 
     expect(kill).toHaveBeenCalledWith("sess_old", "SIGTERM", "restarted")
     expect(result).toMatchObject({ ok: true, migratedFrom: "sess_old", oldSessionKilled: true })
@@ -231,6 +233,17 @@ describe("migrateSandboxSession", () => {
       restore: { source: "live", snapshot: SHA },
       oldSessionKilled: true,
     })
+  })
+
+  it("carries the turnRetry policy onto the migrated session (as a restart does)", async () => {
+    prevRow = makePrev({
+      turnRetry: resolveTurnRetryPolicy({ on: ["rate-limit", "upstream-5xx"], action: "migrate", maxMigrations: 3 }),
+    })
+    await migrateSandboxSession(deps(), prevRow, { baseDir })
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.turnRetry).toEqual(prevRow.turnRetry)
+    expect(input.turnRetry).toMatchObject({ on: ["rate-limit", "upstream-5xx"], action: "migrate", maxMigrations: 3 })
   })
 
   it("falls back to the recorded checkpoint when the old box is dead", async () => {
