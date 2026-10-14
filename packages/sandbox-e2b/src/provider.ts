@@ -58,8 +58,17 @@ const DEFAULT_PORT = 18790
  * `npm i -g` (~90s) + a multi-minute agent turn crosses 5:00 mid-turn, e2b
  * reaps the VM, and the next request cold-boots it WITHOUT the daemon —
  * surfacing as the baffling `"The sandbox is running but port is not open"`
- * 502 (observed live killing a PR-review turn). 45 minutes covers any
- * plausible session; `config.timeoutMs` still overrides in either direction.
+ * 502 (observed live killing a PR-review turn). `config.timeoutMs` still
+ * overrides in either direction.
+ *
+ * This is the box's lifetime from its last re-arm, not a cap on the session:
+ * the runtime's sandbox session proxy re-arms it (`extendTimeout`, same
+ * duration) on prompt dispatch, on streamed events, and every 10 minutes
+ * while a turn is in flight even if it streams nothing (one long tool call).
+ * An idle box is left to expire. Ahead of the deadline the proxy either
+ * renews once more (turn in flight) or runs a final checkpoint while the box
+ * is still reachable — see `BOX_ACTIVE_RENEW_INTERVAL_MS` /
+ * `BOX_DEADLINE_GUARD_LEAD_MS` in `@agentproto/runtime`.
  */
 const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
 /** Account-level ceiling: `sandbox.setTimeout` rejects anything above 1 hour
@@ -79,6 +88,15 @@ const UPDATE_CLI_TIMEOUT_MS = 120_000
  *  turns that into a slow build. */
 export const DEFAULT_SWAP_MB = 4096
 const SWAP_SETUP_TIMEOUT_MS = 60_000
+/** Login-shell snippet that carries the box's build env (see
+ *  {@link buildProfileCommand}). e2b runs every in-box command as
+ *  `/bin/bash -l -c <command>`, and `/etc/profile` sources
+ *  `/etc/profile.d/*.sh`, so one file reaches every login-shell process. */
+const PROFILE_ENV_PATH = "/etc/profile.d/agentproto-build.sh"
+const PROFILE_SOURCE_LINE = `. ${PROFILE_ENV_PATH}`
+const BUILD_ENV_SETUP_TIMEOUT_MS = 30_000
+/** One-shot `nproc` / `free -m` probe for a custom template's box size. */
+const BOX_SIZE_PROBE_TIMEOUT_MS = 15_000
 
 interface E2bSandboxConfig {
   /** Template name or id. Wins over `size` when both are given. Defaults to
@@ -140,6 +158,18 @@ interface E2bSandboxConfig {
    *  cannot enable swap still boots. Not re-run on `connect()` (a resumed box
    *  keeps its swap). */
   swapMb?: number
+  /** Build-environment defaults sized to the box (see {@link buildEnvForBox}):
+   *  `NODE_OPTIONS` heap plus workspace/turbo concurrency, derived from the
+   *  resolved size preset — probed from the box (`nproc`, `free -m`) once at
+   *  boot for an explicit custom `template` — and shipped to every in-box
+   *  process (the daemon's start env, plus
+   *  `/etc/profile.d/agentproto-build.sh` for login-shell commands such as
+   *  the box agent's bash tool). `false` disables it entirely (no env merged,
+   *  no profile file written); `{ concurrency, heapMb }` override the computed
+   *  numbers (each field independently). Like `swapMb`, a non-finite or
+   *  non-positive number is dropped, leaving the computed value for that
+   *  field. A caller-provided env var of the same name always wins. */
+  buildEnv?: false | { concurrency?: number; heapMb?: number }
 }
 
 function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
@@ -169,6 +199,26 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
       typeof config.swapMb === "number" && Number.isFinite(config.swapMb) && config.swapMb >= 0
         ? Math.floor(config.swapMb)
         : undefined,
+    buildEnv: readBuildEnv(config.buildEnv),
+  }
+}
+
+/** Validate `config.buildEnv`: `false` disables, an object keeps its valid
+ *  `concurrency` / `heapMb` numbers (each dropped when it isn't a finite
+ *  number >= 1, exactly how `swapMb` drops an invalid value), anything else
+ *  falls back to the computed default. */
+function readBuildEnv(value: unknown): E2bSandboxConfig["buildEnv"] {
+  if (value === false) return false
+  if (typeof value !== "object" || value === null) return undefined
+  const source = value as Record<string, unknown>
+  const read = (field: unknown): number | undefined =>
+    typeof field === "number" && Number.isFinite(field) && field >= 1 ? Math.floor(field) : undefined
+  const concurrency = read(source.concurrency)
+  const heapMb = read(source.heapMb)
+  if (concurrency === undefined && heapMb === undefined) return undefined
+  return {
+    ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(heapMb !== undefined ? { heapMb } : {}),
   }
 }
 
@@ -274,6 +324,173 @@ async function enableSwap(sandbox: Sandbox, swapMb: number): Promise<void> {
   }
 }
 
+/**
+ * Build-environment defaults sized to a box. A plain `pnpm build` in a fresh
+ * e2b box dies with "JavaScript heap out of memory" long before the RAM is
+ * gone: pnpm runs several package builds at once (its own workspace
+ * concurrency, one per vCPU by default) and each tsup DTS worker uses Node's
+ * DEFAULT heap, while the adapter itself holds hundreds of MB — so the budget
+ * has to be split across fewer, smaller workers than Node's 4 GB default
+ * assumes:
+ *
+ * - `concurrency = max(1, min(cpuCount, floor(memoryMb / 3072)))` — at most
+ *   one build per ~3 GB of box (8 GB → 2, 4 GB → 1, 2 GB → 1), never more
+ *   than the box has CPUs;
+ * - `heapMb = clamp(floor(memoryMb * 0.6 / concurrency), 768, 4096)` — each
+ *   worker may hold 60% of RAM divided over the workers, floored at Node's
+ *   practical minimum and capped well past what the box has (8 GB → 2457,
+ *   4 GB → 2457, 2 GB → 1228).
+ *
+ * Pure: the caller resolves `cpuCount` / `memoryMb` from the boot's size
+ * preset (default template = `DEFAULT_SIZE`) or from a one-shot in-box probe
+ * for a custom template.
+ */
+export function buildEnvForBox(box: { cpuCount: number; memoryMb: number }): Record<string, string> {
+  const cpuCount = Math.max(1, Math.floor(box.cpuCount))
+  const memoryMb = Math.max(1, Math.floor(box.memoryMb))
+  const concurrency = Math.max(1, Math.min(cpuCount, Math.floor(memoryMb / 3072)))
+  const heapMb = Math.min(4096, Math.max(768, Math.floor((memoryMb * 0.6) / concurrency)))
+  return {
+    NODE_OPTIONS: `--max-old-space-size=${heapMb}`,
+    npm_config_workspace_concurrency: String(concurrency),
+    TURBO_CONCURRENCY: String(concurrency),
+  }
+}
+
+/**
+ * Layer the box's build env under the caller's passthrough env — a
+ * caller-provided value for the same var ALWAYS wins, because it is an
+ * explicit instruction about this specific run:
+ *
+ * - `NODE_OPTIONS` carrying a `--max-old-space-size` is kept untouched (the
+ *   caller sized the heap themselves);
+ * - a caller `NODE_OPTIONS` without one gets ours appended (their flags stay,
+ *   the box still gets its heap budget);
+ * - the two concurrency vars are per-var: caller value wins, ours only fills
+ *   the gap.
+ */
+export function mergeBuildEnv(
+  base: Record<string, string> | undefined,
+  buildEnv: Record<string, string>,
+): Record<string, string> {
+  const merged: Record<string, string> = { ...base }
+  for (const [key, value] of Object.entries(buildEnv)) {
+    if (key === "NODE_OPTIONS") {
+      const caller = merged.NODE_OPTIONS
+      if (caller === undefined || caller.trim() === "") merged.NODE_OPTIONS = value
+      else if (!caller.includes("--max-old-space-size")) merged.NODE_OPTIONS = `${caller} ${value}`
+      continue
+    }
+    if (merged[key] === undefined) merged[key] = value
+  }
+  return merged
+}
+
+/** Lines of the `/etc/profile.d/agentproto-build.sh` snippet: the same
+ *  caller-wins rules as {@link mergeBuildEnv}, in shell, because the file is
+ *  sourced by processes whose env we never saw (the agent's bash tool, any
+ *  command a caller execs with its own env). Values are baked in at write
+ *  time, so the script has no dependency on this host process. */
+function profileScriptLines(env: Record<string, string>): string[] {
+  const heapFlag = env.NODE_OPTIONS ?? ""
+  const concurrency = env.npm_config_workspace_concurrency ?? "1"
+  const turbo = env.TURBO_CONCURRENCY ?? concurrency
+  return [
+    "# Written by @agentproto/sandbox-e2b at boot: sizes Node builds to this box.",
+    "# A caller-provided value always wins; this only fills the gaps.",
+    `if [ -z "\${NODE_OPTIONS:-}" ]; then`,
+    `  export NODE_OPTIONS="${heapFlag}"`,
+    `else`,
+    `  case "$NODE_OPTIONS" in`,
+    `    *--max-old-space-size*) ;;`,
+    `    *) export NODE_OPTIONS="$NODE_OPTIONS ${heapFlag}" ;;`,
+    `  esac`,
+    `fi`,
+    `: "\${npm_config_workspace_concurrency:=${concurrency}}"`,
+    `export npm_config_workspace_concurrency`,
+    `: "\${TURBO_CONCURRENCY:=${turbo}}"`,
+    `export TURBO_CONCURRENCY`,
+  ]
+}
+
+/** The command {@link writeBuildEnvProfile} runs: writes the profile snippet
+ *  (idempotent — `tee` overwrites) and, so a template whose login shell does
+ *  NOT reach `/etc/profile.d` (or an interactive shell) still gets it, appends
+ *  an idempotent `source` line to `~/.bashrc`. Never fails: like swap, a box
+ *  that cannot write `/etc/profile.d` still boots — the daemon start env
+ *  below carries the vars for this boot either way. */
+export function buildProfileCommand(env: Record<string, string>): string {
+  const script = profileScriptLines(env)
+    .map(line => `'${line.replace(/'/g, `'\\''`)}'`)
+    .join(" ")
+  return (
+    `{ printf '%s\\n' ${script} | sudo tee ${PROFILE_ENV_PATH} >/dev/null && ` +
+    `{ grep -qF '${PROFILE_SOURCE_LINE}' "$HOME/.bashrc" 2>/dev/null || ` +
+    `printf '%s\\n' '${PROFILE_SOURCE_LINE}' >> "$HOME/.bashrc"; }; ` +
+    `} || echo "agentproto: build env not written"`
+  )
+}
+
+async function writeBuildEnvProfile(sandbox: Sandbox, env: Record<string, string>): Promise<void> {
+  try {
+    await sandbox.commands.run(buildProfileCommand(env), { timeoutMs: BUILD_ENV_SETUP_TIMEOUT_MS })
+  } catch {
+    // best-effort: a box without a writable /etc/profile.d still boots
+  }
+}
+
+/** `cpuCount` / `memoryMb` of the box about to run. A resolved size preset
+ *  knows them statically; an explicit custom `template` doesn't, so they are
+ *  read once from the box itself. A failed/garbled probe falls back to the
+ *  default preset rather than skipping the build env — sizing to a known
+ *  default is never worse than Node's own 4 GB default heap. */
+async function probeBoxSize(sandbox: Sandbox): Promise<{ cpuCount: number; memoryMb: number }> {
+  try {
+    const result = await sandbox.commands.run("nproc; free -m | awk '/^Mem:/{print $2}'", {
+      timeoutMs: BOX_SIZE_PROBE_TIMEOUT_MS,
+    })
+    const numbers = (result.stdout ?? "")
+      .split("\n")
+      .map(line => line.trim())
+      .filter(line => /^\d+$/.test(line))
+    const cpuCount = Number(numbers[0])
+    const memoryMb = Number(numbers[1])
+    if (cpuCount >= 1 && memoryMb >= 1) return { cpuCount, memoryMb }
+  } catch {
+    // best-effort — fall back to the default preset below
+  }
+  const fallback: SizePreset = SIZES[DEFAULT_SIZE]
+  return { cpuCount: fallback.cpuCount, memoryMb: fallback.memoryMb }
+}
+
+/** Resolve this boot's build env: `null` when `config.buildEnv` is `false`,
+ *  otherwise {@link buildEnvForBox} for the resolved size preset (default
+ *  template = `DEFAULT_SIZE` preset) or a probed box size, with any
+ *  `config.buildEnv` overrides applied on top. */
+async function resolveBuildEnv(
+  sandbox: Sandbox,
+  config: E2bSandboxConfig,
+): Promise<Record<string, string> | null> {
+  if (config.buildEnv === false) return null
+  // An explicit `template` wins over `size` (see resolveTemplate), and its
+  // box size isn't recorded anywhere here — probe it instead.
+  const preset: SizePreset | undefined =
+    config.template !== undefined ? undefined : SIZES[config.size ?? DEFAULT_SIZE]
+  const box =
+    preset !== undefined
+      ? { cpuCount: preset.cpuCount, memoryMb: preset.memoryMb }
+      : await probeBoxSize(sandbox)
+  const env = buildEnvForBox(box)
+  const overrides = typeof config.buildEnv === "object" ? config.buildEnv : undefined
+  if (overrides?.concurrency !== undefined) {
+    const concurrency = String(overrides.concurrency)
+    env.npm_config_workspace_concurrency = concurrency
+    env.TURBO_CONCURRENCY = concurrency
+  }
+  if (overrides?.heapMb !== undefined) env.NODE_OPTIONS = `--max-old-space-size=${overrides.heapMb}`
+  return env
+}
+
 async function ensureDaemonHealthy(
   sandbox: Sandbox,
   host: string,
@@ -317,6 +534,17 @@ async function ensureDaemonHealthy(
     await sandbox.commands.run(command, { envs: env })
   }
 
+  // The workstation template MAY autostart the daemon (module doc above).
+  // When the probe finds it already up, this provider never issues the start
+  // command, so the merged build env in `env` does NOT reach that daemon — it
+  // inherited the template's own environment at ITS start, and adapters it
+  // already spawned inherited that too. What still covers this path is the
+  // `/etc/profile.d/agentproto-build.sh` file written at boot: every command
+  // run in the box afterwards (this provider's, a caller's `exec`, and the
+  // box agent's bash tool — e2b starts them all as `/bin/bash -l -c`, a login
+  // shell that sources `/etc/profile.d/*.sh`) picks the vars up, with the
+  // caller's own value winning. Only the already-running daemon process and
+  // its direct children keep the template's env until they are restarted.
   if (alreadyUp) return
 
   // Start the daemon in the background and KEEP THE HANDLE. Its stdout/stderr
@@ -490,7 +718,16 @@ export const e2bSandboxProvider: SandboxProvider = {
     try {
       const host = sandbox.getHost(port)
       await enableSwap(sandbox, config.swapMb ?? DEFAULT_SWAP_MB)
-      await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
+      // Size Node builds to this box and ship it BOTH ways: a profile.d file
+      // (covers every login-shell command run from here on, bash tool
+      // included) and the env handed to `ensureDaemonHealthy` below, which
+      // lands on the npm install, the setup hooks and — load-bearing for the
+      // agent — the daemon start, so the daemon and every adapter it spawns
+      // inherit it.
+      const buildEnv = await resolveBuildEnv(sandbox, config)
+      if (buildEnv !== null) await writeBuildEnvProfile(sandbox, buildEnv)
+      const env = buildEnv !== null ? mergeBuildEnv(opts.env, buildEnv) : opts.env
+      await ensureDaemonHealthy(sandbox, host, port, workspace, config, env, resolveUpdateCli(config, template))
       return toBootedSandbox(
         sandbox,
         host,
@@ -532,7 +769,14 @@ export const e2bSandboxProvider: SandboxProvider = {
     // back healthy must reclaim the box rather than leave it running orphaned.
     try {
       const host = sandbox.getHost(port)
-      await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
+      // Not re-run on connect: the profile.d file (and the swap file) written
+      // at boot survive on the resumed box — same contract as `enableSwap`.
+      // The build env is still resolved and merged, so a daemon this
+      // reconnect has to (re)start, and any setup hook it runs, get the same
+      // env a fresh boot would give them.
+      const buildEnv = await resolveBuildEnv(sandbox, config)
+      const env = buildEnv !== null ? mergeBuildEnv(opts.env, buildEnv) : opts.env
+      await ensureDaemonHealthy(sandbox, host, port, workspace, config, env, resolveUpdateCli(config, template))
       return finishConnect(sandbox, host, opts, spec)
     } catch (err) {
       await sandbox.kill().catch(() => undefined)

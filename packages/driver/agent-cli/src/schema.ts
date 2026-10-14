@@ -79,6 +79,21 @@ const versionCheckSchema = z.object({
   timeout_ms: z.number().int().min(100).default(5000),
 }).strict()
 
+// Harness upgrade declaration — see AgentCliUpgrade (types.ts). `latest` is a
+// two-arm union (registry query vs GitHub release); `cmd`/`rollback` are
+// ARGV arrays (never a shell string), because `harness upgrade` spawns them
+// directly. Consumed by the CLI only — the driver never reads this.
+const upgradeSchema = z
+  .object({
+    latest: z.union([
+      z.object({ npm: z.string().min(1) }).strict(),
+      z.object({ githubRelease: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/) }).strict(),
+    ]),
+    cmd: z.array(z.string()).min(1),
+    rollback: z.array(z.string()).min(1).optional(),
+  })
+  .strict()
+
 const SETUP_STEP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 const SECRET_SLUG_PATTERN = /^([a-z][a-z0-9-]*[a-z0-9]\/)?[a-z][a-z0-9-]*[a-z0-9]$/
 
@@ -462,6 +477,10 @@ export const agentCliFrontmatterSchema = z
     env: z.record(z.string(), z.string()).optional(),
     install: z.array(installMethodSchema).min(1),
     version_check: versionCheckSchema,
+    // In-place harness upgrade recipe — see AgentCliUpgrade. Optional: a
+    // pinned-npx adapter (or a curl-only install) declares nothing here and
+    // `harness upgrade` refuses it rather than improvising an installer.
+    upgrade: upgradeSchema.optional(),
     setup: z.array(setupStepSchema).optional(),
     auth: authSchema.optional(),
     // Billing-auth resolver inputs (DECISION 3). `provider` is a CatalogProvider
@@ -513,6 +532,18 @@ export const agentCliFrontmatterSchema = z
         projectDisableEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/).optional(),
       }).strict().optional(),
     }).strict().optional(),
+    // How this CLI takes extra system-prompt text for a session (see
+    // AgentCliSystemPrompt in types.ts). Absent ⇒ no channel.
+    systemPrompt: z.union([
+      z.object({ via: z.literal("acp-meta") }).strict(),
+      z.object({
+        via: z.literal("inline-config"),
+        env: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+        key: z.string().min(1),
+        shape: z.enum(["file-list", "text"]),
+      }).strict(),
+      z.object({ via: z.literal("argv"), flag: z.string().min(1) }).strict(),
+    ]).optional(),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),
     acp: z.string().optional(),

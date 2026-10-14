@@ -1420,6 +1420,37 @@ describe("app_run: the AGENT.md reaches every harness (AIP-42 projection)", () =
     expect(warningsOf(events)).toMatch(/native tools stay available/)
   })
 
+  it("an adapter with a system-prompt channel gets the text via appendSystemPrompt — no prefix, no warning", async () => {
+    await emitScoutApp("claude-code")
+    const prompts: unknown[] = []
+    const startSession = recordingStartSession(prompts)
+    const resolveAgentAdapter: AgentAdapterResolver = withInstallCheck(async slug =>
+      slug === "claude-code"
+        ? {
+            startSession,
+            commandPreview: "mock-claude-code",
+            declaredOptions: [{ id: "skills", type: "string" }],
+            supportsSystemPrompt: true,
+          }
+        : null)
+    const { client, events } = await setup({ resolveAgentAdapter, startSession, daemonMcpUrl: DAEMON_MCP })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/scout-app", prompt: "Zone: Luberon." } }),
+    )
+    expect(ran.errors).toBeUndefined()
+    const spawnArgs = startSession.mock.calls[0]![0] as { appendSystemPrompt?: string }
+    // Body + boundaries ride the channel, not the prompt.
+    expect(spawnArgs.appendSystemPrompt).toContain("You are a trip scout.")
+    expect(spawnArgs.appendSystemPrompt).toContain("Never invent a sourceUrl")
+    await waitFor(() => prompts.length > 0)
+    const first = JSON.stringify(prompts[0])
+    expect(first).toContain("Zone: Luberon.")
+    expect(first).not.toContain("You are a trip scout.")
+    expect(warningsOf(events)).not.toMatch(/first prompt's prefix/)
+  })
+
   it("a harness that can take no skills runs without them, with a warning", async () => {
     await emitScoutApp("codex")
     const startSession = fakeStartSession()

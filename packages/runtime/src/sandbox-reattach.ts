@@ -39,6 +39,7 @@ import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import { recordSandboxState } from "./sandbox-ledger.js"
 import { resolveSandboxSecretFromBroker } from "./session-restart-core.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
+import { readTarTarget, tarCheckpointProxyOpts } from "./sandbox-tar-checkpoint.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 
@@ -78,7 +79,8 @@ export async function runSandboxReattachPass(opts: {
   registry: Pick<
     SessionsRegistry,
     "sandboxReattachCandidates" | "finishSandboxReattach" | "recordSandboxDelivery" | "recordSandboxCheckpoint"
-  >
+  > &
+    Partial<Pick<SessionsRegistry, "recordNotice">>
   resolveSandboxProvider: SandboxProviderResolver
   /** Max boxes reconnected concurrently. */
   concurrency?: number
@@ -148,6 +150,7 @@ export async function runSandboxReattachPass(opts: {
         ?.checkpoint,
       desc.sandboxCheckpointOverride,
     )
+    const tarTarget = deliveryTarget ? undefined : await readTarTarget(sessionTranscriptDir(desc.id))
     const agentSession = createSandboxAgentSessionProxy({
       host,
       remoteSessionId: record.remoteSessionId,
@@ -155,6 +158,16 @@ export async function runSandboxReattachPass(opts: {
       ledger: { sandboxId, provider: providerSlug },
       detachable: true,
       initialTranscriptCursor: record.transcriptSeq,
+      ...(tarTarget
+        ? tarCheckpointProxyOpts({
+            exec: host.exec,
+            ...(host.readFile ? { readFile: host.readFile } : {}),
+            target: tarTarget,
+            outDir: sessionTranscriptDir(desc.id),
+            config: checkpointConfig,
+            notify: text => registry.recordNotice?.(desc.id, text),
+          })
+        : {}),
       ...(deliveryTarget && host.exec
         ? {
             onBeforeTeardown: createDeliveryHook({

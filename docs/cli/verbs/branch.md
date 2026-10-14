@@ -24,13 +24,41 @@ daemon. The daemon exposes the same engine as the `branch_gc` /
 
 Refs of *other* configured remotes are never classified or touched.
 
+## Sandbox checkpoint branches
+
+A sandbox session snapshots uncommitted work onto a force-pushed remote
+branch `agentproto-checkpoint/<work-branch>` (see
+`packages/runtime/src/sandbox-delivery.ts`). That snapshot commit never
+merges, so the ladder on its own tip proves nothing: a remote ref under
+`agentproto-checkpoint/` is classified against its **work branch**, pinned
+to the snapshot's parent commit (`<checkpoint>^`, the work-branch HEAD the
+box snapshotted on — branch names get reused, so "the branch is merged"
+alone may prove a different generation landed):
+
+- the parent landed (it equals or is an ancestor of a merged work-branch
+  tip, or it equals a merged PR's head that landed the same branch name
+  while the branch itself is gone) ⇒ `reclaim` (`checkpoint-superseded`);
+- the work branch is the head of an open PR ⇒ `hold` (`open-pr`);
+- anything else — including a parentless snapshot or a failed parent
+  lookup — ⇒ `review`, never auto-reclaimed: a dead box's checkpoint may be
+  the only copy of its work.
+
+`young` and `protected` holds apply first.
+
+The runtime deletes the checkpoint branch itself once it is no longer
+needed — a delivery whose checkout is clean and whose work branch is safe
+on the remote (pushed, or nothing ahead) runs
+`git push origin --delete agentproto-checkpoint/<branch>` (a missing ref
+counts as success). Branch GC only ever reclaims **leftovers** a delivery
+missed, and only when the work branch is merged.
+
 ## Subverbs
 
 ### `gc`
 
 | Class | Definition | `--apply` does |
 |-------|-----------|----------------|
-| `reclaim` | The work is provably in base: **merged** (the tip is an ancestor), **squash-merged** (`git merge-tree` result == base tree), **patch-merged** (`git cherry` all `-`, only tried when merge-tree conflicts), or **content-merged** (every file the branch changed is in base's tree by blob at any path, or gitignored, with no evolved/unique/deleted files). With `--include-reviewed`, also an unmerged ref whose stored verdict has `gate.agree` for the same tip sha. | Deletes it: `git branch -D` for local refs, `git push <remote> --delete` in batches of 50 plus `fetch --prune` for remote refs, `git update-ref -d` for orphans. |
+| `reclaim` | The work is provably in base: **merged** (the tip is an ancestor), **squash-merged** (`git merge-tree` result == base tree), **patch-merged** (`git cherry` all `-`, only tried when merge-tree conflicts), or **content-merged** (every file the branch changed is in base's tree by blob at any path, or gitignored, with no evolved/unique/deleted files). With `--include-reviewed`, also an unmerged ref whose stored verdict has `gate.agree` for the same tip sha. A sandbox checkpoint branch whose work branch is merged reclaims as **checkpoint-superseded** (see [Sandbox checkpoint branches](#sandbox-checkpoint-branches)). | Deletes it: `git branch -D` for local refs, `git push <remote> --delete` in batches of 50 plus `fetch --prune` for remote refs, `git update-ref -d` for orphans. |
 | `review` | Unmerged, older than `--min-age-days`, not protected. Carries coverage, the files not provably in base, and the push state. | **Never touched.** |
 | `hold` | Base or a protected name; a branch checked out in a worktree and its remote twin; an open PR head; every local/remote ref when open-PR detection is unavailable; unmerged and younger than `--min-age-days`. | **Never touched.** |
 

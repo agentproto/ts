@@ -52,6 +52,22 @@ describe("projectAgentToSpawn", () => {
     expect(joined(p.warnings)).toMatch(/no system-prompt channel.*boundaries, persona.*first prompt's prefix/)
   })
 
+  it("an adapter with a system-prompt channel takes the text as `systemPrompt` — no instructions, no prefix warning", () => {
+    const p = projectAgentToSpawn(input(scout()), {
+      supportsSystemPrompt: true,
+      deliversSessionSkills: true,
+    })
+    expect(p.systemPrompt).toContain("You are a trip scout.")
+    expect(p.systemPrompt).toContain("Name: Scout")
+    expect(p.systemPrompt).toContain("Never invent a sourceUrl")
+    expect(p.instructions).toBeUndefined()
+    expect(joined(p.warnings)).not.toMatch(/no system-prompt channel/)
+    // Everything the plain-harness path still delivers (tools scope, skills)
+    // rides along unchanged.
+    expect(p.tools).toEqual(["file_write", "file_read"])
+    expect(p.skills).toEqual(["trip-research"])
+  })
+
   it("declared string tools scope the gateway; native tools and structured refs are warned about", () => {
     const p = projectAgentToSpawn(input(scout()), {})
     expect(p.tools).toEqual(["file_write", "file_read"])

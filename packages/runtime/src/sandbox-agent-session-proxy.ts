@@ -248,6 +248,16 @@ export const DETACHED_BOX_LIFETIME_MS = 60 * 60_000
 export const BOX_RENEW_THROTTLE_MS = 60_000
 /** Renewal lifetime when the host reports none (`host.lifetimeMs` unset). */
 export const DEFAULT_BOX_RENEW_LIFETIME_MS = 45 * 60_000
+/** While a turn is in flight the box is re-armed at least this often, events
+ *  or not. Event-driven renewal alone misses a turn that streams nothing for
+ *  a long time (one long tool call — a monorepo build): the box hit its
+ *  45-min deadline mid-turn that way (sess_07610979, 2026-10-13). */
+export const BOX_ACTIVE_RENEW_INTERVAL_MS = 10 * 60_000
+/** How long before the box's known deadline the deadline guard acts: one
+ *  last renewal attempt if a turn is in flight, else (or if it fails) a final
+ *  checkpoint while the box's filesystem is still reachable. Capped at a third
+ *  of the lifetime for short-lived boxes. */
+export const BOX_DEADLINE_GUARD_LEAD_MS = 5 * 60_000
 
 /**
  * Best-effort extraction of the prompt text from whatever `sessions.ts`'s
@@ -589,6 +599,16 @@ export function createSandboxAgentSessionProxy(
   let turnsSent = 0
   let lastProbeState: SandboxReattachProbe["state"] | undefined
   let lastRenewAt = 0
+  // Turns currently in flight on the box (a live `send()`, or a re-attach to
+  // a busy box). A prompt the registry queues behind a running turn is
+  // delivered by the next `send()` as soon as this one ends, so "a turn is in
+  // flight" also covers "a prompt is waiting".
+  let activeTurns = 0
+  const boxLifetimeMs = host.lifetimeMs ?? DEFAULT_BOX_RENEW_LIFETIME_MS
+  // The box's deadline as far as this proxy knows: its lifetime from creation
+  // (the box was booted or re-armed by `connect` just before), pushed out by
+  // every renewal the provider accepts.
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
 
   /** Re-arm the box's lifetime because the session is actively working.
    *  Throttled, fire-and-forget; a failed renewal is logged, never thrown.
@@ -599,12 +619,51 @@ export function createSandboxAgentSessionProxy(
     if (now - lastRenewAt < BOX_RENEW_THROTTLE_MS) return
     lastRenewAt = now
     try {
-      host.extendTimeout(host.lifetimeMs ?? DEFAULT_BOX_RENEW_LIFETIME_MS).catch(err => {
-        console.warn("[sandbox-proxy] failed to renew box lifetime:", err)
-      })
+      host.extendTimeout(boxLifetimeMs).then(
+        () => armDeadlineGuard(now + boxLifetimeMs),
+        err => {
+          console.warn("[sandbox-proxy] failed to renew box lifetime:", err)
+        },
+      )
     } catch (err) {
       console.warn("[sandbox-proxy] failed to renew box lifetime:", err)
     }
+  }
+
+  /** Schedule the deadline guard ahead of `deadlineAt`, replacing any earlier
+   *  one. When it fires and a turn is still in flight it makes one last
+   *  renewal attempt; when the session is idle, or that renewal fails too, it
+   *  runs a final checkpoint — the box is about to be reaped, and a
+   *  checkpoint taken after the deadline only finds "Sandbox is probably not
+   *  running anymore". Inert for providers without `extendTimeout`. */
+  function armDeadlineGuard(deadlineAt: number): void {
+    if (!host.extendTimeout || closed || detached) return
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+    const lead = Math.min(BOX_DEADLINE_GUARD_LEAD_MS, Math.floor(boxLifetimeMs / 3))
+    deadlineTimer = setTimeout(() => void onDeadlineNear(), Math.max(0, deadlineAt - lead - Date.now()))
+    deadlineTimer.unref?.()
+  }
+
+  async function onDeadlineNear(): Promise<void> {
+    deadlineTimer = undefined
+    if (closed || detached) return
+    if (activeTurns > 0 && host.extendTimeout) {
+      const now = Date.now()
+      try {
+        await host.extendTimeout(boxLifetimeMs)
+        lastRenewAt = now
+        armDeadlineGuard(now + boxLifetimeMs)
+        return
+      } catch (err) {
+        console.warn("[sandbox-proxy] failed to renew box lifetime before its deadline:", err)
+      }
+    }
+    if (closed || detached || !opts.checkpoint) return
+    console.warn(
+      `[sandbox-proxy] box for remote session "${remoteSessionId}" reaches its lifetime deadline ` +
+        "without a renewal — running a final checkpoint while it is still reachable",
+    )
+    await runCheckpoint(turnsSent)
   }
 
   /** After a detach every path out of an in-flight turn lands here and never
@@ -746,6 +805,18 @@ export function createSandboxAgentSessionProxy(
   const timers: ReturnType<typeof setInterval>[] = []
   const stopTimers = () => {
     for (const timer of timers.splice(0)) clearInterval(timer)
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+    deadlineTimer = undefined
+  }
+  if (host.extendTimeout) {
+    // Heartbeat: re-arm the box on a fixed cadence while a turn is in flight,
+    // whether or not it streams anything (see BOX_ACTIVE_RENEW_INTERVAL_MS).
+    const timer = setInterval(() => {
+      if (activeTurns > 0) renewBoxLifetime()
+    }, BOX_ACTIVE_RENEW_INTERVAL_MS)
+    timer.unref?.()
+    timers.push(timer)
+    armDeadlineGuard(Date.now() + boxLifetimeMs)
   }
   if (opts.checkpoint) {
     const timer = setInterval(() => {
@@ -863,9 +934,11 @@ export function createSandboxAgentSessionProxy(
       : {}),
 
     async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
+      activeTurns++
       try {
         yield* sendTurn(message)
       } finally {
+        activeTurns--
         // Each turn's end — clean or not — is a natural checkpoint: the
         // agent just stopped writing. Never awaited: the turn is over.
         if (!closed && !detached) void runCheckpoint(turnsSent)
@@ -961,11 +1034,18 @@ export function createSandboxAgentSessionProxy(
     async *resumeTurn(): AsyncIterable<AgentStreamEvent> {
       const isFirstTurn = turnsSent === 0
       turnsSent++
-      yield* consumeTurn(
-        isFirstTurn,
-        await host.currentEventsCursor(),
-        lastProbeState === "busy" ? undefined : REPLAY_QUIET_END_MS,
-      )
+      // Only a re-attach to a BUSY box is live work; an idle replay is backlog.
+      const live = lastProbeState === "busy"
+      if (live) activeTurns++
+      try {
+        yield* consumeTurn(
+          isFirstTurn,
+          await host.currentEventsCursor(),
+          live ? undefined : REPLAY_QUIET_END_MS,
+        )
+      } finally {
+        if (live) activeTurns--
+      }
     },
   }
 }

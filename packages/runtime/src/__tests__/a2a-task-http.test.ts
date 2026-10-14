@@ -5,6 +5,9 @@
  * `app_stop` / `app_artifact_get` and `workflow_run_file` / `workflow_status` /
  * `workflow_cancel` are faked behind `dispatchTool`, and the
  * manifest's `accepts` / `exposes` / bundled workflows come from an injected `loadHandle`.
+ * `SendStreamingMessage` / `SubscribeToTask` stream the same run over SSE
+ * (`text/event-stream`, one JSON-RPC response per event), polled at
+ * `streamPollMs` so the fakes can move a run between two events.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -20,6 +23,7 @@ import { createRuntimeEvents } from "../events.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+import type { A2aPushDeps } from "../a2a-push.js"
 import {
   createA2aTaskLedger,
   decodePageToken,
@@ -32,6 +36,7 @@ import {
   sessionTurnFailed,
   type A2aAppHandleLike,
   type A2aTask,
+  type A2aTaskPushNotificationConfig,
 } from "../a2a-tasks.js"
 
 const APP_ID = "@test/a2a-app"
@@ -154,7 +159,17 @@ describe("A2A task ingress", () => {
     throw new Error(`unexpected tool ${name}`)
   }
 
-  async function withServer(fn: (rpc: (appId: string, body: unknown, raw?: boolean, opts?: { version?: string | null; query?: string }) => Promise<{ status: number; json: any }>) => Promise<void>): Promise<void> {
+  async function withServer(
+    fn: (
+      rpc: (appId: string, body: unknown, raw?: boolean, opts?: { version?: string | null; query?: string }) => Promise<{
+        status: number
+        json: any
+        headers: Headers
+      }>,
+      ctx: { port: number },
+    ) => Promise<void>,
+    streamConfig: { streamMaxMs?: number; push?: A2aPushDeps } = {},
+  ): Promise<void> {
     const port = await freePort()
     const http = await startHttpServer({
       port,
@@ -166,7 +181,12 @@ describe("A2A task ingress", () => {
       meta: { workspace: process.cwd(), registered: [] },
       appRegistry,
       appToolCallDeps: { dispatchTool },
-      a2aTasks: { stateDir, loadHandle: async d => handles[d.endsWith("/a") ? APP_ID : OTHER_APP_ID]! },
+      a2aTasks: {
+        stateDir,
+        streamPollMs: 5,
+        ...streamConfig,
+        loadHandle: async d => handles[d.endsWith("/a") ? APP_ID : OTHER_APP_ID]!,
+      },
     })
     const rpc = async (appId: string, body: unknown, raw = false, opts: { version?: string | null; query?: string } = {}) => {
       const version = opts.version === undefined ? "1.0" : opts.version
@@ -175,10 +195,10 @@ describe("A2A task ingress", () => {
         headers: { "content-type": "application/json", ...(version ? { "a2a-version": version } : {}) },
         body: raw ? (body as string) : JSON.stringify(body),
       })
-      return { status: res.status, json: await res.json() }
+      return { status: res.status, json: await res.json(), headers: res.headers }
     }
     try {
-      await fn(rpc)
+      await fn(rpc, { port })
     } finally {
       await http.stop()
     }
@@ -188,6 +208,13 @@ describe("A2A task ingress", () => {
     jsonrpc: "2.0",
     id,
     method: "SendMessage",
+    params: { message: { messageId: "m1", role: "ROLE_USER", parts: [{ text }], metadata: { skill } } },
+  })
+
+  const streamReq = (skill: string, text = "hello", id: number | string = 1) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "SendStreamingMessage",
     params: { message: { messageId: "m1", role: "ROLE_USER", parts: [{ text }], metadata: { skill } } },
   })
 
@@ -722,7 +749,7 @@ describe("A2A task ingress", () => {
     })
   })
 
-  it("answers protocol errors: parse, invalid request, unknown/0.3 methods, streaming, push, unknown app", async () => {
+  it("answers protocol errors: parse, invalid request, unknown/0.3 methods, bare streaming params, push, unknown app", async () => {
     await withServer(async rpc => {
       expect((await rpc(APP_ID, "{not json", true)).json.error.code).toBe(-32700)
       expect((await rpc(APP_ID, [sendReq("solo")])).json.error.code).toBe(-32600)
@@ -731,9 +758,13 @@ describe("A2A task ingress", () => {
       for (const legacy of ["message/send", "tasks/get", "tasks/cancel"]) {
         expect((await rpc(APP_ID, { ...sendReq("solo"), method: legacy })).json.error.code).toBe(-32601)
       }
-      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SendStreamingMessage" })).json.error.code).toBe(-32004)
-      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SubscribeToTask" })).json.error.code).toBe(-32004)
-      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "CreateTaskPushNotificationConfig" })).json.error.code).toBe(-32003)
+      // The streaming methods and ListTasks are live — a bare streaming call
+      // (no message, no id) is invalid params, not "unsupported".
+      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SendStreamingMessage" })).json.error.code).toBe(-32602)
+      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "SubscribeToTask" })).json.error.code).toBe(-32602)
+      // The push-config methods are live: a bare call is invalid params
+      // (no taskId), not "unsupported".
+      expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "CreateTaskPushNotificationConfig" })).json.error.code).toBe(-32602)
       expect((await rpc(APP_ID, { jsonrpc: "2.0", id: 1, method: "GetExtendedAgentCard" })).json.error.code).toBe(-32007)
       expect(dispatched).toHaveLength(0)
       const ghost = await rpc("@test/ghost", sendReq("solo"))
@@ -760,6 +791,409 @@ describe("A2A task ingress", () => {
       }
       expect(dispatched).toHaveLength(0)
     })
+  })
+
+  it("SendStreamingMessage streams an agent skill: {task} first, artifactUpdates, then a final statusUpdate", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const res = await openStream(port, APP_ID, streamReq("solo", "summarise this"))
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+      expect(res.headers.get("cache-control")).toContain("no-cache")
+      expect(res.headers.get("connection")).toBe("keep-alive")
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.done).toBe(false)
+      expect(first.value!.result.task).toMatchObject({ id: "run-1", status: { state: "TASK_STATE_WORKING" } })
+      expect(first.value!.result.task.contextId).toBeTruthy()
+      expect(dispatched.find(d => d.name === "app_run")!.args).toEqual({ appId: APP_ID, agents: ["solo"], prompt: "summarise this" })
+
+      // The run finishes between two polls.
+      runs.get("run-1")!.status = "succeeded"
+      conversations.set("s-run-1", [
+        { role: "user", text: "summarise this" },
+        { role: "assistant", text: "All done." },
+      ])
+      const rest: SseEvent[] = []
+      for await (const ev of events) rest.push(ev)
+
+      const finalIdx = rest.findIndex(ev => ev.result?.statusUpdate?.final === true)
+      expect(finalIdx).toBeGreaterThanOrEqual(0)
+      // The final statusUpdate is the stream's last event.
+      expect(rest).toHaveLength(finalIdx + 1)
+      expect(rest.slice(0, finalIdx).every(ev => ev.result?.artifactUpdate)).toBe(true)
+      expect(rest.slice(0, finalIdx).map(ev => ev.result.artifactUpdate.artifact.artifactId)).toEqual([
+        "agent-output-solo",
+        "app-artifact",
+      ])
+      for (const ev of rest.slice(0, finalIdx)) expect(ev.result.artifactUpdate.lastChunk).toBe(true)
+      expect(rest[finalIdx]!.result.statusUpdate).toMatchObject({
+        taskId: "run-1",
+        status: { state: "TASK_STATE_COMPLETED" },
+        final: true,
+      })
+      expect(rest[finalIdx]!.result.statusUpdate.status.message).toMatchObject({
+        role: "ROLE_AGENT",
+        parts: [{ text: "All done." }],
+      })
+      for (const ev of [first.value!, ...rest]) {
+        expect(ev.jsonrpc).toBe("2.0")
+        expect(ev.id).toBe(1)
+      }
+    })
+  })
+
+  it("SendStreamingMessage streams a workflow skill to its output artifact", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const res = await openStream(port, APP_ID, streamReq("do-it", "compile the report"))
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.value!.result.task).toMatchObject({ id: "wf-1", status: { state: "TASK_STATE_WORKING" } })
+      expect(dispatched.some(d => d.name === "workflow_run_file")).toBe(true)
+      expect(dispatched.some(d => d.name === "app_run")).toBe(false)
+
+      workflowRuns.set("wf-1", { status: "done", output: { total: 42 }, endedAt: "2026-10-13T12:00:00.000Z" })
+      const rest: SseEvent[] = []
+      for await (const ev of events) rest.push(ev)
+
+      expect(rest).toHaveLength(2)
+      expect(rest[0]!.result.artifactUpdate).toMatchObject({
+        taskId: "wf-1",
+        lastChunk: true,
+        artifact: { artifactId: "output", name: "output", parts: [{ data: { total: 42 } }] },
+      })
+      expect(rest[0]!.result.artifactUpdate.artifact.parts[0]).not.toHaveProperty("kind")
+      expect(rest[1]!.result.statusUpdate).toMatchObject({
+        taskId: "wf-1",
+        status: { state: "TASK_STATE_COMPLETED", timestamp: "2026-10-13T12:00:00.000Z" },
+        final: true,
+      })
+    })
+  })
+
+  it("SubscribeToTask streams a running task until it reaches a terminal state", async () => {
+    await withServer(async (rpc, { port }) => {
+      const sent = await rpc(APP_ID, sendReq("solo", "keep going"))
+      const taskId = sent.json.result.task.id as string
+      const res = await openStream(port, APP_ID, { jsonrpc: "2.0", id: 7, method: "SubscribeToTask", params: { id: taskId } })
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.value!.result.task).toMatchObject({ id: taskId, status: { state: "TASK_STATE_WORKING" } })
+
+      runs.get(taskId)!.status = "failed"
+      runs.get(taskId)!.error = "agent crashed"
+      const rest: SseEvent[] = []
+      for await (const ev of events) rest.push(ev)
+
+      expect(rest).toHaveLength(1)
+      expect(rest[0]!.id).toBe(7)
+      expect(rest[0]!.result.statusUpdate).toMatchObject({
+        taskId,
+        status: { state: "TASK_STATE_FAILED" },
+        final: true,
+      })
+      expect(rest[0]!.result.statusUpdate.status.message).toMatchObject({ parts: [{ text: "agent crashed" }] })
+      // One run only: the subscribe never started a second one.
+      expect(dispatched.filter(d => d.name === "app_run")).toHaveLength(1)
+    })
+  })
+
+  it("SubscribeToTask on a finished task answers a JSON-RPC error, not a stream", async () => {
+    await withServer(async (rpc, { port }) => {
+      await rpc(APP_ID, sendReq("solo"))
+      runs.get("run-1")!.status = "succeeded"
+      conversations.set("s-run-1", [{ role: "assistant", text: "already done" }])
+      const res = await openStream(port, APP_ID, { jsonrpc: "2.0", id: 2, method: "SubscribeToTask", params: { id: "run-1" } })
+      expect(res.headers.get("content-type")).toContain("application/json")
+      const json = (await res.json()) as { error: { code: number; message: string } }
+      expect(json.error).toEqual({ code: -32004, message: "task is already TASK_STATE_COMPLETED" })
+    })
+  })
+
+  it("SubscribeToTask on an unknown id is TaskNotFound, as JSON", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const res = await openStream(port, APP_ID, { jsonrpc: "2.0", id: 3, method: "SubscribeToTask", params: { id: "nope" } })
+      expect(res.headers.get("content-type")).toContain("application/json")
+      const json = (await res.json()) as { error: { code: number; message: string } }
+      expect(json.error.code).toBe(-32001)
+      expect(json.error.message).toContain("nope")
+      expect(dispatched).toHaveLength(0)
+    })
+  })
+
+  it("stops polling the task once the client disconnects", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const controller = new AbortController()
+      const res = await openStream(port, APP_ID, streamReq("solo", "long job"), { signal: controller.signal })
+      const events = sseEvents(res)
+      const first = await events.next()
+      expect(first.value!.result.task.status.state).toBe("TASK_STATE_WORKING")
+      const polls = () => dispatched.filter(d => d.name === "app_status").length
+      await sleep(40) // several polls at streamPollMs: 5
+      expect(polls()).toBeGreaterThan(1)
+      controller.abort()
+      await events.return(undefined)
+      await sleep(80)
+      const stopped = polls()
+      await sleep(60)
+      expect(polls()).toBe(stopped)
+      expect(runs.get("run-1")!.status).toBe("running")
+    })
+  })
+
+  it("SendStreamingMessage validation failures answer JSON, not a stream", async () => {
+    await withServer(async (_rpc, { port }) => {
+      const noSkill = await openStream(port, APP_ID, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "SendStreamingMessage",
+        params: { message: { role: "ROLE_USER", parts: [{ text: "hi" }] } },
+      })
+      expect(noSkill.headers.get("content-type")).toContain("application/json")
+      expect((await noSkill.json() as { error: { code: number } }).error.code).toBe(-32602)
+
+      const noAccepts = await openStream(port, OTHER_APP_ID, streamReq("solo"))
+      expect(noAccepts.headers.get("content-type")).toContain("application/json")
+      const json = (await noAccepts.json()) as { error: { code: number; message: string } }
+      expect(json.error.code).toBe(-32004)
+      expect(json.error.message).toContain("accepts.tasks")
+      expect(dispatched).toHaveLength(0)
+    })
+  })
+
+  it("ends the stream at streamMaxMs with the state the task is actually in", async () => {
+    await withServer(
+      async (_rpc, { port }) => {
+        const res = await openStream(port, APP_ID, streamReq("solo", "slow job"))
+        const events = sseEvents(res)
+        const first = await events.next()
+        expect(first.value!.result.task.status.state).toBe("TASK_STATE_WORKING")
+        const rest: SseEvent[] = []
+        for await (const ev of events) rest.push(ev)
+        expect(rest).toHaveLength(1)
+        expect(rest[0]!.result.statusUpdate).toMatchObject({
+          taskId: "run-1",
+          status: { state: "TASK_STATE_WORKING" },
+        })
+        // The cap is not a terminal state: no `final` claim.
+        expect(rest[0]!.result.statusUpdate).not.toHaveProperty("final")
+      },
+      { streamMaxMs: 30 },
+    )
+  })
+
+  const pushCreateReq = (taskId: string, url: string, id: number | string = 1, extra: Record<string, unknown> = {}) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "CreateTaskPushNotificationConfig",
+    params: { taskId, url, ...extra },
+  })
+
+  it("push config methods round trip: create → get → list → delete, and get after delete is TaskNotFound", async () => {
+    const seen: string[] = []
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+      const created = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook", 1, { token: "tok-1" }))
+      expect(created.json.error).toBeUndefined()
+      const config = created.json.result as A2aTaskPushNotificationConfig
+      expect(config).toMatchObject({ taskId: "run-1", url: "https://example.com/hook", token: "tok-1" })
+      expect(typeof config.id).toBe("string")
+      expect(config.id).not.toBe("")
+
+      const got = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTaskPushNotificationConfig", params: { taskId: "run-1", id: config.id } })
+      expect(got.json.result).toEqual(config)
+
+      const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 3, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+      expect(listed.json.result.configs).toEqual([config])
+      expect(listed.json.result.nextPageToken).toBe("")
+
+      const deleted = await rpc(APP_ID, { jsonrpc: "2.0", id: 4, method: "DeleteTaskPushNotificationConfig", params: { taskId: "run-1", id: config.id } })
+      expect(deleted.json.result).toEqual({})
+      const gone = await rpc(APP_ID, { jsonrpc: "2.0", id: 5, method: "GetTaskPushNotificationConfig", params: { taskId: "run-1", id: config.id } })
+      expect(gone.json.error.code).toBe(-32001)
+
+      // The store is on disk beside the ledger, one JSON file per app.
+      const onDisk = JSON.parse(await readFile(join(stateDir, "a2a-tasks", `${encodeURIComponent(APP_ID)}.push.json`), "utf8"))
+      expect(onDisk).toEqual({})
+      // Let the watcher this test armed (the create was on a live task) end.
+      runs.get("run-1")!.status = "succeeded"
+      conversations.set("s-run-1", [{ role: "assistant", text: "done" }])
+      await sleep(40)
+      },
+      { push: { fetchImpl: (async (input: Parameters<typeof fetch>[0]) => { seen.push(String(input)); return new Response(null, { status: 200 }) }) as typeof fetch, pollMs: 2, retryDelaysMs: [0, 0] } },
+    )
+  })
+
+  it("push config methods reject unknown tasks, bad urls, and an 11th config", async () => {
+    const seen: string[] = []
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+        const unknown = await rpc(APP_ID, pushCreateReq("nope", "https://example.com/hook"))
+        expect(unknown.json.error.code).toBe(-32001)
+        const unknownGet = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "GetTaskPushNotificationConfig", params: { taskId: "nope", id: "x" } })
+        expect(unknownGet.json.error.code).toBe(-32001)
+        for (const [i, url] of ["ftp://example.com/hook", "http://example.com/hook", "https://user:pass@example.com/hook", "not-a-url"].entries()) {
+          const res = await rpc(APP_ID, pushCreateReq("run-1", url, 10 + i))
+          expect(res.json.error.code).toBe(-32602)
+          expect(res.json.error.message).toContain("url")
+        }
+        for (let i = 0; i < 10; i++) {
+          const res = await rpc(APP_ID, pushCreateReq("run-1", `https://example.com/hook/${i}`, 100 + i))
+          expect(res.json.error).toBeUndefined()
+        }
+        const eleventh = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook/11", 200))
+        expect(eleventh.json.error.code).toBe(-32602)
+        expect(eleventh.json.error.message).toContain("10")
+        const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 3, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+        expect(listed.json.result.configs).toHaveLength(10)
+        // The failed creates stored nothing beyond the ten.
+        expect(listed.json.result.configs.map((c: A2aTaskPushNotificationConfig) => c.url)).toEqual(
+          Array.from({ length: 10 }, (_, i) => `https://example.com/hook/${i}`),
+        )
+        expect(seen).toEqual([])
+        // End the watcher the ten creates armed.
+        runs.get("run-1")!.status = "failed"
+        runs.get("run-1")!.error = "stop"
+        await sleep(40)
+      },
+      { push: { fetchImpl: (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => { seen.push(String(input)); return new Response(null, { status: 200 }) }) as typeof fetch } },
+    )
+  })
+
+  it("SendMessage with configuration.pushNotificationConfig stores the config and delivers updates in order", async () => {
+    const posts: Array<{ url: string; headers: Record<string, string>; body: any }> = []
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      posts.push({
+        url: String(input),
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        body: JSON.parse(String(init?.body ?? "{}")),
+      })
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    await withServer(
+      async rpc => {
+        const sent = await rpc(APP_ID, {
+          ...sendReq("solo", "long job"),
+          params: {
+            message: { messageId: "m1", role: "ROLE_USER", parts: [{ text: "long job" }], metadata: { skill: "solo" } },
+            configuration: {
+              pushNotificationConfig: {
+                url: "https://example.com/hook",
+                token: "tok-1",
+                authentication: { scheme: "Bearer", credentials: "cred-1" },
+              },
+            },
+          },
+        })
+        expect(sent.json.result.task.id).toBe("run-1")
+        const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+        expect(listed.json.result.configs).toHaveLength(1)
+        expect(listed.json.result.configs[0]).toMatchObject({ taskId: "run-1", url: "https://example.com/hook", token: "tok-1" })
+
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "All done." }])
+        await waitFor(() => posts.some(p => p.body?.statusUpdate?.final === true), "final push delivery")
+        const kinds = posts.map(p => (p.body.artifactUpdate ? "artifactUpdate" : p.body.statusUpdate?.final === true ? "final" : "other"))
+        expect(kinds).toEqual(["artifactUpdate", "artifactUpdate", "final"])
+        expect(posts[0]!.body.artifactUpdate.artifact.artifactId).toBe("agent-output-solo")
+        expect(posts[1]!.body.artifactUpdate.artifact.artifactId).toBe("app-artifact")
+        expect(posts[2]!.body.statusUpdate).toMatchObject({
+          taskId: "run-1",
+          status: { state: "TASK_STATE_COMPLETED" },
+          final: true,
+        })
+        for (const post of posts) {
+          expect(post.url).toBe("https://example.com/hook")
+          expect(post.headers["content-type"]).toBe("application/json")
+          expect(post.headers["x-a2a-notification-token"]).toBe("tok-1")
+          expect(post.headers.authorization).toBe("Bearer cred-1")
+        }
+      },
+      { push: { fetchImpl, pollMs: 2, retryDelaysMs: [0, 0] } },
+    )
+  })
+
+  it("SendMessage with the spec's configuration.taskPushNotificationConfig spelling works too", async () => {
+    await withServer(
+      async rpc => {
+        const sent = await rpc(APP_ID, {
+          ...sendReq("solo"),
+          params: {
+            message: { messageId: "m1", role: "ROLE_USER", parts: [{ text: "hi" }], metadata: { skill: "solo" } },
+            configuration: { taskPushNotificationConfig: { url: "https://example.com/spec-hook" } },
+          },
+        })
+        expect(sent.json.result.task.id).toBe("run-1")
+        const listed = await rpc(APP_ID, { jsonrpc: "2.0", id: 2, method: "ListTaskPushNotificationConfigs", params: { taskId: "run-1" } })
+        expect(listed.json.result.configs[0]).toMatchObject({ url: "https://example.com/spec-hook" })
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "done" }])
+        await sleep(40)
+      },
+      { push: { fetchImpl: (async () => new Response(null, { status: 200 })) as typeof fetch, pollMs: 2 } },
+    )
+  })
+
+  it("SendMessage with a bad push config url is invalid params and starts no run", async () => {
+    await withServer(async rpc => {
+      const res = await rpc(APP_ID, {
+        ...sendReq("solo"),
+        params: {
+          message: { messageId: "m1", role: "ROLE_USER", parts: [{ text: "hi" }], metadata: { skill: "solo" } },
+          configuration: { pushNotificationConfig: { url: "http://example.com/hook" } },
+        },
+      })
+      expect(res.json.error.code).toBe(-32602)
+      expect(res.json.error.message).toContain("must be https")
+      expect(dispatched.some(d => d.name === "app_run")).toBe(false)
+    })
+  })
+
+  it("a config created on a completed task gets one final statusUpdate and no watcher", async () => {
+    const posts: Array<{ body: any }> = []
+    const fetchImpl = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      posts.push({ body: JSON.parse(String(init?.body ?? "{}")) })
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "already done" }])
+        const created = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook", 1, { token: "tok" }))
+        expect(created.json.error).toBeUndefined()
+        await waitFor(() => posts.length === 1, "the final push")
+        expect(posts[0]!.body).toMatchObject({
+          statusUpdate: { taskId: "run-1", status: { state: "TASK_STATE_COMPLETED" }, final: true },
+        })
+        // No watcher: nothing else is ever delivered.
+        await sleep(40)
+        expect(posts).toHaveLength(1)
+      },
+      { push: { fetchImpl, pollMs: 2 } },
+    )
+  })
+
+  it("CreateTaskPushNotificationConfig on a completed task answers right away even when the webhook never responds", async () => {
+    // A fetch that never settles: the fire-and-forget final delivery hangs
+    // in the background, but the JSON-RPC answer must not wait on it.
+    const fetchImpl = (() => new Promise<Response>(() => {})) as unknown as typeof fetch
+    await withServer(
+      async rpc => {
+        await rpc(APP_ID, sendReq("solo"))
+        runs.get("run-1")!.status = "succeeded"
+        conversations.set("s-run-1", [{ role: "assistant", text: "already done" }])
+        const started = Date.now()
+        const created = await rpc(APP_ID, pushCreateReq("run-1", "https://example.com/hook"))
+        expect(created.json.error).toBeUndefined()
+        expect(typeof created.json.result.id).toBe("string")
+        expect(Date.now() - started).toBeLessThan(1000)
+      },
+      { push: { fetchImpl, requestTimeoutMs: 50 } },
+    )
   })
 
 })
@@ -953,6 +1387,66 @@ describe("a2a-tasks mapping", () => {
     expect(extractSkillRequest({ parts: [{ text: "plain" }] }, "@x/y")).toEqual({ prompt: "plain" })
   })
 })
+
+/** One parsed SSE frame: a whole JSON-RPC response, `result` or `error`. */
+interface SseEvent {
+  jsonrpc: string
+  id: unknown
+  result?: any
+  error?: { code: number; message: string }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+/** Poll `cond` until it holds (or fail the test after `timeoutMs`). */
+async function waitFor(cond: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error(`waitFor: ${what} not reached`)
+    await sleep(5)
+  }
+}
+
+/** POST a body to the A2A route and hand back the raw response — JSON or
+ *  SSE — without reading it. */
+function openStream(
+  port: number,
+  appId: string,
+  body: unknown,
+  opts: { signal?: AbortSignal } = {},
+): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/a2a/apps/${appId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "a2a-version": "1.0" },
+    body: JSON.stringify(body),
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  })
+}
+
+/** Split an SSE body into its `data:` payloads; `:` comments (keepalive) are
+ *  frames too, just not events. Drains until the server ends the stream. */
+async function* sseEvents(res: Response): AsyncGenerator<SseEvent> {
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buf = ""
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      for (let idx = buf.indexOf("\n\n"); idx !== -1; idx = buf.indexOf("\n\n")) {
+        const frame = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        if (frame.startsWith(":")) continue
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("data: ")) yield JSON.parse(line.slice(6)) as SseEvent
+        }
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+}
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {

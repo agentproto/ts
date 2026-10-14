@@ -289,6 +289,13 @@ export interface AcpClient {
      * agent's own default mode.
      */
     mode?: string
+    /**
+     * Extra `_meta` for the `session/new` request (vendor-extension bag —
+     * e.g. claude-agent-acp's `_meta.systemPrompt = { append: text }`).
+     * Forwarded verbatim as the request's `_meta`, only when set. Omit to
+     * send no `_meta` at all (unchanged).
+     */
+    meta?: Record<string, unknown>
   }): Promise<AcpClientSession>
   /**
    * Reattach to an existing session by id. Available only when the
@@ -306,6 +313,13 @@ export interface AcpClient {
     sessionId: string
     cwd: string
     mcpServers?: unknown[]
+    /**
+     * Extra `_meta` for the `session/load` request — same contract as
+     * {@link newSession}'s `meta` (claude-agent-acp re-reads e.g.
+     * `_meta.systemPrompt` on load too, so a channel-backed text must be
+     * re-sent every cold resume or it is lost after turn 1).
+     */
+    meta?: Record<string, unknown>
   }): Promise<AcpClientSession>
   /**
    * Resolve a permission request parked by permission-hold mode. `requestId`
@@ -575,6 +589,7 @@ export async function createAcpClient(
       const response = await connection.newSession({
         cwd: params.cwd,
         mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
+        ...(params.meta ? { _meta: params.meta } : {}),
       } as never)
       options.onActivity?.()
       const sessionId = (response as { sessionId: string }).sessionId
@@ -693,6 +708,7 @@ export async function createAcpClient(
         sessionId: params.sessionId,
         cwd: params.cwd,
         mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
+        ...(params.meta ? { _meta: params.meta } : {}),
       } as never)
       options.onActivity?.()
       const state: SessionState = {

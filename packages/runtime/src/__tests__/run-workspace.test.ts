@@ -128,6 +128,10 @@ describe("AIP-58 §4 — disjoint per-run workspaces (host layer)", () => {
       expect(existsSync(runA.workspace!)).toBe(true)
       expect(existsSync(runB.workspace!)).toBe(true)
       expect(runA.runId).not.toBe(runB.runId)
+      // `start()` resolves while both runs are still executing and writing
+      // under tmpDir; tearing it down mid-write raced into ENOTEMPTY in CI.
+      await waitDone(runner, runA.runId)
+      await waitDone(runner, runB.runId)
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }

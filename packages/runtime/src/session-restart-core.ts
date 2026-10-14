@@ -90,6 +90,12 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
+import {
+  buildBoxRestartHandoff,
+  buildLocalRestartHandoff,
+  writeBoxPriorTranscripts,
+  type RestartHandoff,
+} from "./restart-handoff.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
@@ -127,6 +133,13 @@ import {
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
+import { resolveSandboxWorkspaceSource } from "./sandbox-workspace-derive-remote.js"
+import {
+  adoptTarCheckpoint,
+  readTarTarget,
+  savedTarArchive,
+  tarCheckpointProxyOpts,
+} from "./sandbox-tar-checkpoint.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { AcpMcpServer } from "@agentproto/acp"
@@ -512,6 +525,12 @@ export interface RestartAgentSessionResult {
    *  lets callers distinguish "fresh with zero context" from "fresh
    *  with partial digest injected" for the restart banner. */
   digestRecovered?: boolean
+  /** Structured handoff the restart injected instead of the old digest:
+   *  the full transcript file's path, the checkpoint id, and how much
+   *  conversation was recovered — so CLI/VS Code/session-chat can say
+   *  "conversation restored from transcript (N messages)". Absent when
+   *  no handoff could be built (the digest fallback ran, or nothing). */
+  handoff?: RestartHandoff
 }
 
 export interface RestartAgentSessionOptions {
@@ -627,6 +646,10 @@ export interface RestartPreferInPlaceResult {
   resumeVia: string
   resumeFallback?: boolean
   digestRecovered?: boolean
+  /** Present when the new-id fallback built a structured handoff (see
+   *  `RestartAgentSessionResult.handoff`); absent for an in-place revival
+   *  or a fallback with no recoverable transcript. */
+  handoff?: RestartHandoff
 }
 
 /** The shared in-place eligibility decision: the row must be ENDED (not
@@ -717,6 +740,7 @@ export async function restartPreferInPlace(
     resumeVia: restarted.resumeVia,
     ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
     ...(restarted.digestRecovered ? { digestRecovered: true } : {}),
+    ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
   }
 }
 
@@ -1053,6 +1077,12 @@ export async function restartAgentSession(
       ...(effMode ? { mode: effMode } : {}),
       ...(restartMcpServers ? { mcpServers: restartMcpServers } : {}),
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
+      // Re-apply the AGENT.md system-prompt text on the SAME declared channel
+      // (the original spawn already warned + prefixed when the adapter had
+      // none — a channel-less lineage has nothing left to re-apply here).
+      ...(prev.appendSystemPrompt && resolved.supportsSystemPrompt === true
+        ? { appendSystemPrompt: prev.appendSystemPrompt }
+        : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
       // Spawn-time guarantees survive a restart: the adapter runs under the
@@ -1119,6 +1149,11 @@ export async function restartAgentSession(
       // `prev.sessionSkills` names stable copies under the registry root, so
       // they carry forward verbatim like `mcpServers` (see the field's doc).
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
+      // Echoed forward like `sessionSkills`, so the NEXT restart still knows
+      // the lineage's AGENT.md text (the channel pass above re-applies it).
+      ...(prev.appendSystemPrompt
+        ? { appendSystemPrompt: prev.appendSystemPrompt }
+        : {}),
       ...(prevBoundary ? { meta: boundaryMeta(prevBoundary) } : {}),
       ...(effModel ? { model: effModel } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
@@ -1186,6 +1221,13 @@ export async function restartAgentSession(
   // `resolveSandboxSecret`) are module-private in session-spawn.ts, so
   // byte-equivalent copies live at the bottom of this file — keep in sync
   // by inspection, same as the auth-resolution block above.
+  //
+  // In-box paths of the prior session's full transcript file(s) written
+  // during this restart (restart-handoff.ts) — both the re-attach and the
+  // fresh-box paths fill it in; the handoff assembly below consumes it once
+  // `desc` exists. Declared above the closures that assign it so the
+  // dependency is visible at a glance.
+  let boxPriorTranscriptPaths: string[] = []
   const spawnInSandbox = async (
     boxSandboxId: string,
     restartedSessionId: string,
@@ -1241,6 +1283,58 @@ export async function restartAgentSession(
           `${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    // The box is alive, so the PRIOR session's adapter may still be running
+    // in it — a row that ended on a host-side error (lost event stream, box
+    // daemon briefly unreachable) never got its box session killed, and that
+    // process keeps editing the same checkout next to the new one. Stop it
+    // through the box's own daemon BEFORE starting the replacement. Detach
+    // prev's proxy first so its timers can't read the kill as a crash, and
+    // so closing prev below never tears down the box.
+    // The persisted ids cover a prev whose proxy is already gone (closed on
+    // a failed teardown, or a daemon restart since); rows from before
+    // `sandboxRemoteSessionId` existed fall back to the reattach record.
+    const releasedRemoteSessionId = registry.releaseSandboxSession(prev.id)
+    priorProxyReleased = releasedRemoteSessionId !== undefined
+    const priorRemoteSessionId =
+      releasedRemoteSessionId ??
+      prev.sandboxRemoteSessionId ??
+      prev.sandboxReattach?.remoteSessionId ??
+      prev.hostSessionId
+    if (priorRemoteSessionId !== undefined) {
+      try {
+        // `agent_kill` on an id the box daemon no longer knows is a no-op
+        // (`ok: false`), not an error — only a transport failure throws.
+        await host.kill(priorRemoteSessionId)
+      } catch (err) {
+        await host.close().catch(() => undefined)
+        throw new Error(
+          `restartAgentSession: could not stop the prior session "${priorRemoteSessionId}" ` +
+            `inside sandbox "${host.sandboxId}" — refusing to start a second adapter next to ` +
+            `it. ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+    // Best-effort: write the prior session's full transcript into the
+    // re-attached box (outside the repo checkout, so the delivery hook never
+    // commits it) — the handoff below points the fresh adapter at it. A
+    // failure is not fatal; the handoff falls back to the old digest.
+    const priorTranscripts = await writeBoxPriorTranscripts(host, prev, registry).catch(
+      err => {
+        console.warn(
+          `restartAgentSession: writing the prior transcript of ${prev.id} into box ` +
+            `${host.sandboxId} failed — ${err instanceof Error ? err.message : String(err)} ` +
+            "(the handoff will fall back to the digest)",
+        )
+        return undefined
+      },
+    )
+    boxPriorTranscriptPaths = priorTranscripts?.paths ?? []
+    if (priorTranscripts && !priorTranscripts.ok) {
+      console.warn(
+        `restartAgentSession: prior transcript of ${prev.id} could not be written into ` +
+          `box ${host.sandboxId} — the handoff will fall back to the digest`,
+      )
+    }
     let remoteSessionId: string
     try {
       const remoteDesc = await host.start({
@@ -1271,12 +1365,27 @@ export async function restartAgentSession(
     // The prior session's work branch is still in the box: carry its delivery
     // target over so this session's teardown pushes (or bundles) it too.
     const deliveryTarget = prev.sandboxDeliveryTarget
+    // A tar-mode session (workspace with no git remote) keeps checkpointing
+    // its working dir; the live box still holds it, so nothing is restored.
+    const tarTarget = deliveryTarget
+      ? undefined
+      : await adoptTarCheckpoint(sessionTranscriptDir(prev.id), sessionTranscriptDir(restartedSessionId))
     const agentSession = createSandboxAgentSessionProxy({
       host,
       remoteSessionId,
       lifecyclePolicy,
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
       ...(providerSlug.startsWith("device:") ? {} : { detachable: true }),
+      ...(tarTarget
+        ? tarCheckpointProxyOpts({
+            exec: host.exec,
+            ...(host.readFile ? { readFile: host.readFile } : {}),
+            target: tarTarget,
+            outDir: sessionTranscriptDir(restartedSessionId),
+            config: checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            notify: text => registry.recordNotice(restartedSessionId, text),
+          })
+        : {}),
       ...(deliveryTarget && host.exec
         ? trackedSandboxDeliveryOpts({
             exec: host.exec,
@@ -1310,36 +1419,70 @@ export async function restartAgentSession(
 
   // Set once the restart left the old (dead) box behind for a new one.
   let movedToFreshBox = false
-  // Box gone: boot a fresh one from the workspace remote. With a recorded
-  // `wt/` work branch it is checked out again (pushed commits + checkpoint
-  // snapshot); without one the fresh box starts from the workspace's base
-  // branch on a new default work branch. `blocker` says why the restart
-  // cannot proceed — only when the workspace has no remote to clone.
+  // Set once prev's proxy was detached from the re-attached box — closing
+  // prev is then safe again (its `close()` no longer touches the box).
+  let priorProxyReleased = false
+  // Box gone: boot a fresh one. A tar-mode session (workspace with no git
+  // source) gets its last tarball checkpoint restored; otherwise the box is
+  // cloned from the workspace remote (configured, or derived from the checkout's
+  // git `origin`). With a recorded `wt/` work branch it is checked out again
+  // (pushed commits + checkpoint snapshot); without one the fresh box starts
+  // from the workspace's base branch on a new default work branch. `blocker`
+  // says why the restart cannot proceed.
   const spawnOnFreshBox = async (
     providerSlug: string,
     restartedSessionId: string,
     sandboxMcpServers: SessionDescriptor["mcpServers"],
   ): Promise<{ ok: true; desc: SessionDescriptor } | { ok: false; blocker: string }> => {
     const target = prev.sandboxDeliveryTarget
+    const prevDir = sessionTranscriptDir(prev.id)
     const resumeBranch = target?.branch.startsWith(SANDBOX_BRANCH_PREFIX) ? target.branch : undefined
     const noBranchNote = resumeBranch ? "" : " and the session recorded no work branch to resume from"
-    if (!prev.workspaceSlug) {
-      return {
-        ok: false,
-        blocker:
-          `the session is not tied to a registered workspace${noBranchNote}, so there is no remote to clone ` +
-          "into a new box. Spawn a fresh session on a workspace that has a remote " +
-          "(`agentproto workspace remote set <slug> --url … --token-stdin`).",
+    const tarTarget = target ? undefined : await readTarTarget(prevDir)
+    const notices: string[] = []
+    let workspaceArgs: Pick<Parameters<typeof bootSandboxAgentSession>[0], "workspace" | "worktree" | "tarWorkspace">
+    let slug: string
+    if (tarTarget) {
+      slug = prev.workspaceSlug ?? tarTarget.dir.split("/").filter(Boolean).pop() ?? "workspace"
+      const archive = savedTarArchive(prevDir)
+      if (!archive) {
+        return {
+          ok: false,
+          blocker:
+            `workspace "${slug}" has no git remote and no tarball checkpoint was saved before the box died ` +
+            "(checkpoints are taken at turn end and at teardown; the 50 MiB cap may also have skipped it), so there " +
+            `is nothing to restore. Give it a remote (\`agentproto workspace remote set ${slug} --url … --token-stdin\`) ` +
+            "so future sessions are recoverable.",
+        }
       }
-    }
-    const workspace = findWorkspace(await loadWorkspacesConfig(), prev.workspaceSlug)
-    if (!workspace?.remote) {
-      return {
-        ok: false,
-        blocker:
-          `workspace "${prev.workspaceSlug}" ${workspace ? "has no remote configured" : "is no longer registered"}` +
-          `${noBranchNote}, so a new box has nothing to clone. Configure one with ` +
-          `\`agentproto workspace remote set ${prev.workspaceSlug} --url … --token-stdin\` and restart the session.`,
+      workspaceArgs = { tarWorkspace: { slug, restoreFrom: archive } }
+    } else {
+      if (!prev.workspaceSlug) {
+        return {
+          ok: false,
+          blocker:
+            `the session is not tied to a registered workspace${noBranchNote}, so there is no remote to clone ` +
+            "into a new box. Spawn a fresh session on a workspace that has a remote " +
+            "(`agentproto workspace remote set <slug> --url … --token-stdin`).",
+        }
+      }
+      slug = prev.workspaceSlug
+      const workspace = findWorkspace(await loadWorkspacesConfig(), slug)
+      const source = workspace ? await resolveSandboxWorkspaceSource(workspace) : undefined
+      if (!workspace || source?.kind !== "remote") {
+        return {
+          ok: false,
+          blocker:
+            `workspace "${slug}" ${workspace ? "has no remote configured" : "is no longer registered"}` +
+            `${noBranchNote}, so a new box has nothing to clone. Configure one with ` +
+            `\`agentproto workspace remote set ${slug} --url … --token-stdin\` and restart the session.` +
+            (source && source.notices.length > 0 ? ` (${source.notices.join(" ")})` : ""),
+        }
+      }
+      notices.push(...source.notices)
+      workspaceArgs = {
+        workspace: { slug: workspace.slug, remote: source.remote },
+        ...(resumeBranch ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } } : {}),
       }
     }
     const booted = await bootSandboxAgentSession({
@@ -1356,8 +1499,7 @@ export async function restartAgentSession(
       ...(effEffort ? { effort: effEffort } : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
-      workspace: { slug: workspace.slug, remote: workspace.remote },
-      ...(resumeBranch ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } } : {}),
+      ...workspaceArgs,
       sessionId: restartedSessionId,
       onDelivery: record => {
         registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
@@ -1368,26 +1510,69 @@ export async function restartAgentSession(
       onDeliveryTargetChanged: target => {
         registry.setSandboxDeliveryTarget(restartedSessionId, target)
       },
+      onNotice: text => registry.recordNotice(restartedSessionId, text),
     })
     if (booted.ok) movedToFreshBox = true
     if (!booted.ok) {
       throw new Error(
         `restartAgentSession: sandbox "${prev.sandboxId}" is gone and a fresh box for ` +
-          `workspace "${workspace.slug}" could not be started — ${booted.message}`,
+          `workspace "${slug}" could not be started — ${booted.message}`,
       )
     }
-    return {
-      ok: true,
-      desc: registerBoxSession(restartedSessionId, sandboxMcpServers, {
-        agentSession: booted.agentSession,
-        sandboxId: booted.sandboxId,
-        provider: booted.provider,
-        sandboxTeardown: booted.sandboxTeardown,
-        cwd: booted.cwd,
-        ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
-        ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
-      }),
+    // Best-effort: write the prior session's full transcript into the FRESH
+    // box too. `bootSandboxAgentSession` doesn't expose the booted box's
+    // file seam, so reconnect to the just-booted box for the write — and
+    // never stop/pause that handle (it would tear the fresh box down). A
+    // failure is not fatal; the handoff falls back to the old digest.
+    try {
+      const freshHandle = opts.resolveSandboxProvider
+        ? await opts.resolveSandboxProvider(providerSlug)
+        : null
+      const freshBox = await freshHandle?.provider.connect?.(
+        booted.sandboxId,
+        { provider: providerSlug, config: {} },
+        { env: {} },
+      )
+      if (freshBox) {
+        const priorTranscripts = await writeBoxPriorTranscripts(freshBox, prev, registry).catch(
+          err => {
+            console.warn(
+              `restartAgentSession: writing the prior transcript of ${prev.id} into the ` +
+                `fresh box ${booted.sandboxId} failed — ` +
+                `${err instanceof Error ? err.message : String(err)} ` +
+                "(the handoff will fall back to the digest)",
+            )
+            return undefined
+          },
+        )
+        boxPriorTranscriptPaths = priorTranscripts?.paths ?? []
+        if (priorTranscripts && !priorTranscripts.ok) {
+          console.warn(
+            `restartAgentSession: prior transcript of ${prev.id} could not be written into ` +
+              `the fresh box ${booted.sandboxId} — the handoff will fall back to the digest`,
+          )
+        }
+      }
+    } catch (err) {
+      // Handoff is best-effort — the digest fallback covers a failed write.
+      console.warn(
+        `restartAgentSession: fresh-box transcript write for ${prev.id} skipped — ` +
+          `${err instanceof Error ? err.message : String(err)} ` +
+          "(the handoff will fall back to the digest)",
+      )
     }
+    notices.push(...(booted.notices ?? []))
+    const restarted = registerBoxSession(restartedSessionId, sandboxMcpServers, {
+      agentSession: booted.agentSession,
+      sandboxId: booted.sandboxId,
+      provider: booted.provider,
+      sandboxTeardown: booted.sandboxTeardown,
+      cwd: booted.cwd,
+      ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
+      ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
+    })
+    for (const notice of notices) registry.recordNotice(restartedSessionId, notice)
+    return { ok: true, desc: restarted }
   }
 
   const registerBoxSession = (
@@ -1506,17 +1691,68 @@ export async function restartAgentSession(
   // and this catch block's rejected-resume-id retry (the adapter's own
   // conversation store is gone) — so `desc` just came back as a genuinely
   // fresh spawn wearing the old session's continuity fields. Best-effort
-  // patch: reconstruct a bounded digest from the PRIOR session's own
-  // daemon transcript (survives both cases) and stash it for
+  // patch: reconstruct the prior session's context and stash it for
   // `runAgentTurn` to inject once. Gated strictly on `resumeFallback` — a
   // successful resume (pty-native or a clean ACP resume) never reaches
   // here, so it's never double-fed its own context.
+  //
+  // A BOX restart (every sandbox restart is a `resumeFallback` — the box
+  // daemon's `agent_start` has no resume surface) prefers the structured
+  // handoff: a frame, a deterministic-extractor checkpoint, the most recent
+  // turns, and the path(s) of the full transcript file(s) already written
+  // into the box (`boxPriorTranscriptPaths`). A LOCAL blank-fallback gets
+  // the same frame with the transcript written into the new session's own
+  // host dir. The old 7k digest (`buildResumeContextDigest`) stays as the
+  // fallback when the handoff can't be built (no transcript, or the write
+  // failed). Never fails the restart.
   let digestRecovered = false
+  let restartHandoff: RestartHandoff | undefined
   if (resumeFallback) {
-    const result = await buildResumeContextDigest(prev.id)
-    if (result.digest) {
-      desc.pendingResumeContext = result.digest
-      digestRecovered = result.hasContent
+    const handoff =
+      sandboxId !== undefined
+        ? await buildBoxRestartHandoff({
+            prev,
+            transcriptPaths: boxPriorTranscriptPaths,
+            movedToFreshBox,
+            ...(prev.workspaceSlug ? { workspaceSlug: prev.workspaceSlug } : {}),
+            ...(prev.sandboxDeliveryTarget?.branch
+              ? { deliveryBranch: prev.sandboxDeliveryTarget.branch }
+              : {}),
+            ...(prev.sandboxDeliveryTarget?.baseSha
+              ? { deliveryBaseSha: prev.sandboxDeliveryTarget.baseSha }
+              : {}),
+          }).catch(err => {
+            console.warn(
+              `restartAgentSession: structured handoff for ${prev.id} could not be built — ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            )
+            return undefined
+          })
+        : // Local blank-fallback: same frame, but the full transcript is
+          // written into the NEW session's own host transcript dir and the
+          // prompt points at that path.
+          await buildLocalRestartHandoff(prev, desc).catch(err => {
+            console.warn(
+              `restartAgentSession: structured handoff for ${prev.id} could not be built — ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            )
+            return undefined
+          })
+    if (handoff) {
+      desc.pendingResumeContext = handoff.text
+      digestRecovered = handoff.digestRecovered
+      restartHandoff = handoff.handoff
+    } else {
+      console.warn(
+        `restartAgentSession: no structured handoff for ${prev.id} ` +
+          `(in-box transcript paths: ${boxPriorTranscriptPaths.length}) — ` +
+          "falling back to the 7k resume-context digest",
+      )
+      const result = await buildResumeContextDigest(prev.id)
+      if (result.digest) {
+        desc.pendingResumeContext = result.digest
+        digestRecovered = result.hasContent
+      }
     }
   }
 
@@ -1553,7 +1789,9 @@ export async function restartAgentSession(
   // A restart that moved to a FRESH box shares nothing with `prev`'s dead
   // one, so closing `prev` is safe again — and stops its checkpoint/watchdog
   // timers.
-  if (sandboxId === undefined || movedToFreshBox) {
+  // Same once `spawnInSandbox` released prev's proxy: its `close()` is a
+  // no-op from then on, so the row closes without the box going with it.
+  if (sandboxId === undefined || movedToFreshBox || priorProxyReleased) {
     registry.kill(prev.id, "SIGTERM", "restarted")
   }
 
@@ -1595,6 +1833,7 @@ export async function restartAgentSession(
     resumeVia: desc.resumeVia ?? "",
     ...(resumeFallback ? { resumeFallback: true } : {}),
     ...(digestRecovered ? { digestRecovered: true } : {}),
+    ...(restartHandoff ? { handoff: restartHandoff } : {}),
   }
 }
 

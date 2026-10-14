@@ -77,24 +77,49 @@ lists each preset tried with its error. A preset may appear only once in
 A reviewer is told its verdict **is** the file it writes. When its turn ends
 and that file is missing or fails `parseAgentLaneReport`, the review workflow
 runs one bounded, passive recovery step before the reviewer session is torn
-down — not a standalone watcher, and not a second review:
+down — not a standalone watcher, and not a second review. Nothing below runs
+unless `review.recoveryPresets` is configured (unset it to roll back). The
+ladder, most trustworthy first:
 
-- A small recovery model — the first usable preset in `review.recoveryPresets`
-  (daemon config), with the `review.recovery` model role overriding its
-  model/auth profile when set — is given only the reviewer's latest substantive messages plus lifecycle/error
-  evidence (bounded; no repo access, no tools, an empty scratch cwd).
-- It answers `recovered`, `needs_followup`, `insufficient_evidence` or
-  `reviewer_failed`. The daemon — not the model — validates the report and
-  writes the canonical verdict file, and only when the conclusion quote is
-  found verbatim in the reviewer's own output.
-- An approval is never recovered from a turn that ended in an error, and
-  partial analysis is never turned into a pass. A recovered
-  `request_changes` must carry findings.
-- `needs_followup` sends one targeted message to the original reviewer, then
-  re-checks the file. At most one recovery model step and one follow-up per
-  reviewer execution, all inside the lane's original `timeoutMs` deadline;
-  cancel is honored throughout.
-- OpenRouter stays refused for the recovery step too.
+1. **Deterministic extraction (no model call).** The daemon reads the
+   reviewer's typed transcript (`events.jsonl`: assistant `text-delta` records
+   only — never tool calls, tool results, thoughts or flattened output lines)
+   and, if the reviewer itself stated exactly one complete, schema-valid
+   verdict as JSON in its final message, writes it verbatim. `recovery.outcome`
+   is `recovered`, `reason` says it was extracted, and no recovery
+   `sessionId`/`preset`/`model` is recorded. Not accepted: a verdict copied
+   from tool/repo output, the prompt's own `<one line>` template, an
+   incomplete or self-contradictory verdict, an approval from a turn that
+   ended in an error, or two different verdicts (a conflict). If the
+   transcript or its `turn-end` record is unavailable, provenance cannot be
+   established and nothing is extracted.
+2. **One small recovery model step** — the first usable preset in
+   `review.recoveryPresets` (daemon config), with the `review.recovery` model
+   role overriding its model/auth profile when set. It sees only the
+   reviewer's own assistant text plus lifecycle/error evidence (bounded; an
+   empty scratch cwd, read-only posture). It is a full model-harness session:
+   the prompt asks for no tools, which is an instruction, not enforcement. It
+   answers `recovered`, `needs_followup`, `insufficient_evidence` or
+   `reviewer_failed`, and it **can never approve**: an approval, a
+   `request_changes` without a finding at or above the lane's `blockOn`, or
+   prose alone is rejected. A `recovered` reply may only lift findings the
+   reviewer explicitly reported: each title (and detail) must be copied
+   verbatim from the reviewer's prose, the file must appear there as the full
+   path, the line number and the severity must be stated next to it, and the
+   daemon replaces the model's summary. Anything unsupported rejects the whole
+   reply (`invalid_output`).
+3. **One follow-up to the original reviewer** (`needs_followup`, or
+   conflicting chat verdicts), then the file is re-checked (a verdict stated
+   in the follow-up's chat is extracted the same way). This is the only path
+   to an approval that was not written to the file, and it is the original
+   reviewer's own. A follow-up turn that errors never earns an approval (an
+   approval it wrote is removed) and its error text is kept in `reason`.
+
+At most one recovery model step and one follow-up per reviewer execution (a
+shared execution recovers once), all inside the lane's original `timeoutMs`
+deadline; cancel is honored throughout. A report recovered from a turn that
+ended in an error keeps the provider's error text in `recovery.reason`.
+OpenRouter stays refused for the recovery step too.
 
 The lane keeps the reviewer's own provenance and records the recovery apart:
 `recovery: { outcome, reason?, sessionId?, preset?, model? }`. With no

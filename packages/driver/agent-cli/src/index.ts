@@ -19,6 +19,11 @@ export const SPEC_VERSION = "0.1.0-alpha" as const
 export {
   defineAgentCli,
   createAgentCliRuntime,
+  // Same bin resolution the driver spawns with (`bin: "node"` → this
+  // process's execPath, `npx`/`npm` → execPath sibling when present) —
+  // exported so a host that spawns a harness outside the runtime (the CLI's
+  // ACP smoke probe) resolves argv identically instead of PATH-guessing.
+  resolveSpawnBin,
 } from "./define-agent-cli.js"
 // The live-session control surface (setModel/setSessionMode/setEffort +
 // the availableConfigOptions/availableModes/currentModeId read-surface),
@@ -84,6 +89,17 @@ export {
   hostContextExcludes,
 } from "./host-context.js"
 export { CREDENTIAL_DATA_SUBDIR } from "./state-home.js"
+// Whole-tree teardown for a spawned adapter process — exported so hosts that
+// spawn a harness themselves (the CLI's ACP smoke probe) tear it down the
+// same way `createAgentCliRuntime` does, instead of SIGKILLing only the
+// npx/npm wrapper and leaking its descendants.
+export {
+  terminateChildTree,
+  descendantsOf,
+  type ProcessRow,
+  type TerminateTreeOptions,
+  type TerminateTreeResult,
+} from "./process-tree.js"
 export {
   applySessionSkills,
   readSessionSkillsMetadata,
@@ -150,6 +166,7 @@ export type {
   AgentCliCapabilities,
   AgentCliInstallMethod,
   AgentCliVersionCheck,
+  AgentCliUpgrade,
   AgentCliAuth,
   AgentCliSetupStep,
   AgentCliSetupSkipIf,

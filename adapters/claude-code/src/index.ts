@@ -467,6 +467,13 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       key_scope: ["conversation", "operator"],
     },
   },
+  // claude-agent-acp takes extra system-prompt text as ACP `_meta.
+  // systemPrompt = { append }` on session/new AND session/load (the wrapper
+  // re-reads it on both — native-resume cold-spawns call loadSession every
+  // turn). The driver's acp arm forwards it; the runtime projects this
+  // declaration onto the AGENT.md system-prompt channel (no first-prompt
+  // prefix, no harness warning).
+  systemPrompt: { via: "acp-meta" },
   tags: ["claude-code", "anthropic", "acp", "agent-runtime", "coding"],
   metadata: {
     // Opts claude-code into `agentproto install skill/<slug>` fan-out (no

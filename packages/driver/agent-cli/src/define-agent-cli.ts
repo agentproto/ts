@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join } from "node:path"
 import { createDoctype } from "@agentproto/define-doctype"
@@ -363,6 +363,75 @@ export function createAgentCliRuntime(
         cwd,
       })
       if (smallModelEnv) Object.assign(env, smallModelEnv)
+      // ── System-prompt channel (AgentCliDefinition.systemPrompt) ──────
+      // `inline-config` layers the text into the CLI's inline JSON config env
+      // var — AFTER the small-model pin above so this merge lands on the final
+      // JSON. `shape: "file-list"` writes the text into the session's config
+      // dir and appends that file's absolute path to the `key` array (opencode
+      // concatenates `instructions` arrays across config layers, so an existing
+      // array is extended, never replaced); no config dir ⇒ a private temp
+      // dir. `shape: "text"` sets `key` to the text
+      // itself, "\n\n"-joined after any existing string value (codex
+      // `developer_instructions`) and needs no config dir. An unparseable
+      // existing value is left untouched (same stance as `small-model.ts`: the
+      // CLI complains about its own broken config) and the dropped text warned.
+      const systemPromptDecl = definition.systemPrompt
+      // A private temp dir holding the file-list text when the host gave no
+      // config dir — removed with the session (see `close()` below).
+      let systemPromptTmpDir: string | undefined
+      const systemPromptText = opts?.appendSystemPrompt
+      if (systemPromptText && systemPromptDecl?.via === "inline-config") {
+        const isFileList = systemPromptDecl.shape === "file-list"
+        let payload: string | undefined
+        if (isFileList) {
+          // The session's config dir when the host gave one; otherwise a
+          // private temp dir — the runtime already counted on this channel
+          // (no prefix fallback), so the text must land somewhere.
+          const dir =
+            opts?.configDir ??
+            (systemPromptTmpDir = mkdtempSync(join(tmpdir(), "agentproto-system-prompt-")))
+          mkdirSync(dir, { recursive: true })
+          payload = join(dir, "agentproto-system-prompt.md")
+          writeFileSync(payload, systemPromptText)
+        } else {
+          payload = systemPromptText
+        }
+        if (payload !== undefined) {
+          const prior = env[systemPromptDecl.env]
+          let inline: Record<string, unknown> | undefined
+          if (prior === undefined || prior === "") {
+            inline = {}
+          } else {
+            try {
+              const parsed: unknown = JSON.parse(prior)
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                inline = parsed as Record<string, unknown>
+              }
+            } catch {
+              // Not JSON — leave the value for the CLI to complain about.
+            }
+            if (!inline) {
+              // The runtime already skipped its prefix fallback for this
+              // channel, so a dropped text must at least be said out loud.
+              console.warn(
+                `[agent-cli] system prompt: ${systemPromptDecl.env} is not a JSON object — ` +
+                  "the AGENT.md system-prompt text is not delivered to this session.",
+              )
+            }
+          }
+          if (inline) {
+            const existing = inline[systemPromptDecl.key]
+            inline[systemPromptDecl.key] = isFileList
+              ? Array.isArray(existing)
+                ? [...existing, payload]
+                : [payload]
+              : typeof existing === "string" && existing.length > 0
+                ? `${existing}\n\n${payload}`
+                : payload
+            env[systemPromptDecl.env] = JSON.stringify(inline)
+          }
+        }
+      }
       // After ALL env layers (ambient, mode/option patches, billing-auth,
       // opts.env) so the append lands on the final PATH — see the helper's
       // doc for why even an absolute-path npx needs this.
@@ -377,7 +446,19 @@ export function createAgentCliRuntime(
         env.PATH = [npxFast.binDir, ...(env.PATH ?? "").split(delimiter).filter(Boolean)].join(delimiter)
       }
       const spawnBin = npxFast?.bin ?? resolvedBin
-      const spawnArgs = npxFast?.args ?? composed.binArgs
+      let spawnArgs = npxFast?.args ?? composed.binArgs
+      // `systemPrompt.via: "argv"`: the flag rides THIS process's argv, so it
+      // lands on every spawn — a native-resume cold start recomposes bin_args
+      // the same way, so resume is covered by construction. A `proprietary`
+      // arm builds its own argv in its client (pi's `client.ts`) and is handed
+      // the text through `connect` below instead; it never spawns here.
+      if (
+        systemPromptText &&
+        systemPromptDecl?.via === "argv" &&
+        definition.protocol !== "proprietary"
+      ) {
+        spawnArgs = [...spawnArgs, systemPromptDecl.flag, systemPromptText]
+      }
       // Win32 batch-file shims (see `win32-spawn.ts`'s module doc — recap
       // point 10, the Windows-host device-sandbox `spawn EINVAL`): rewrite
       // npm `.cmd` shims to their real node entry (preferred, stays
@@ -778,6 +859,18 @@ export function createAgentCliRuntime(
       // host having to opt in per spawn.
       const turnIdleTimeoutMs =
         opts?.turnIdleTimeoutMs ?? definition.session?.turn_idle_timeout_ms
+      // Which system-prompt channels reach the arm THROUGH connect():
+      // `acp-meta` (the arm forwards it as `_meta.systemPrompt.append` on BOTH
+      // newSession and loadSession — native-resume re-reads it on every cold
+      // spawn) and `argv` on a `proprietary` arm (its client owns the argv and
+      // pushes the manifest's flag itself). `inline-config` already landed in
+      // `env` above, and a non-proprietary `argv` in the spawn args.
+      const connectSystemPrompt =
+        systemPromptText !== undefined &&
+        (systemPromptDecl?.via === "acp-meta" ||
+          (systemPromptDecl?.via === "argv" && definition.protocol === "proprietary"))
+          ? systemPromptText
+          : undefined
       await arm.connect({
         cwd,
         env,
@@ -789,6 +882,11 @@ export function createAgentCliRuntime(
         ...(configModel ? { model: configModel } : {}),
         ...(optEffort ? { effort: String(optEffort) } : {}),
         ...(configMode ? { mode: configMode } : {}),
+        // Channel decision above: `acp-meta` (the arm's `_meta.systemPrompt`)
+        // or a `proprietary` arm's own `argv` push.
+        ...(connectSystemPrompt !== undefined
+          ? { appendSystemPrompt: connectSystemPrompt }
+          : {}),
         ...(opts?.onActivity ? { onActivity: opts.onActivity } : {}),
         ...(turnIdleTimeoutMs !== undefined ? { turnIdleTimeoutMs } : {}),
         ...(opts?.permissionHold ? { permissionHold: true } : {}),
@@ -946,6 +1044,7 @@ export function createAgentCliRuntime(
           // wrapper that may ignore SIGTERM, with the real adapter (and its
           // MCP servers / headless Chrome) running underneath it.
           if (child) await terminateChildTree(child)
+          if (systemPromptTmpDir) rmSync(systemPromptTmpDir, { recursive: true, force: true })
         },
       }
     },

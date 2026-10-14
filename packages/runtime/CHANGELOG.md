@@ -1,5 +1,68 @@
 # @agentproto/runtime
 
+## 5.20.0
+
+### Minor Changes
+
+- 1bfce97: `ListTasks` on the A2A app task endpoint pages through an app's tasks newest first, with `contextId` / `status` / `statusTimestampAfter` filters, `pageSize` (1–100, default 50) + opaque `pageToken` paging, `historyLength` trimming, and artifacts kept only when `includeArtifacts` is true.
+- 22cfadd: A2A app tasks support push notifications: the four config methods store per-task webhooks, task updates are delivered to them as `StreamResponse` POSTs (also from `SendMessage`/`SendStreamingMessage`'s `configuration.pushNotificationConfig`), and the Agent Card advertises `capabilities.pushNotifications`.
+- 8ad6546: Stream A2A tasks over SSE with `SendStreamingMessage` and `SubscribeToTask`, and advertise `capabilities.streaming` on the Agent Card.
+- 834ec33: Run exposed workflow skills as A2A tasks.
+- fe3c879: An AIP-42 AGENT.md now reaches every harness, not just mastra-agent. `app_run` and workflow agent refs share one projection (`projectAgentToSpawn`): body, persona, boundaries and traits become the first prompt's prefix, declared tools scope a daemon gateway mount (`allowTools`) for any adapter, declared skills reach the spawn's `skills`, and each gap the harness can't honour raises a `session:harness-warning`. `composeInstructions` moves to `@agentproto/agent`. `app_run` spawns now get the daemon `/mcp` URL, workflow host spawns deliver session skills, and the AGENT.md path goes only to adapters whose manifest declares `metadata.agentManifestOption` (mastra-agent), so antigravity's `agent` option (an `agy` agent name) is no longer handed a path.
+- acb8329: App agents now resolve their spawn adapter from AGENT.md metadata or a model route (claude-* → claude-code, opencode/* and opencode-go/* → opencode) and fail with a clear error instead of silently falling back to mastra-agent.
+
+  Behavior change: an agent with no `metadata.adapter`/`metadata.harness` and a model outside those routes (for example `openrouter/...` or `gpt-5`) used to run on mastra-agent. It now fails: `app_run` lists it in `errors`, and workflow agent-ref resolution throws for the whole app. Add `metadata: { adapter: mastra-agent }` to its AGENT.md, or pass `adapter` to `app_run`, to keep the previous behavior.
+
+- ddc14a6: Box (sandbox) sessions on a workspace with a remote now get a `wt/<slug>` work branch by default (`worktree: false` opts out), so they always have a delivery target recorded on the session. At each turn end the checkpoint hook adopts a different `wt/` branch the agent moved to as the delivery target. `session_restart` on a dead box now restarts on a fresh box from the workspace's base branch when no work branch was recorded, and when it truly cannot proceed the error says why and points at `agentproto workspace remote set <slug> --url … --token-stdin`.
+- cedd329: Sandbox deliveries now delete the `agentproto-checkpoint/<branch>` remote branch once the work it rescued is safe (clean checkout, work branch pushed or nothing ahead): a session no longer leaves a stale checkpoint branch on the remote forever, and branch GC reclaims leftovers whose work branch is merged (`checkpoint-superseded`).
+- 27700c4: Size presets for the e2b workstation: `config.size` (`nano`, `small`, `medium`, `large`, `x-large`, `xx-large`) boots that preset's published `agentproto-workstation-<size>` template. `config.template` still wins, and with neither set the bare `agentproto-workstation` template boots, now built at the default `large` (4 vCPU / 8 GB). An unknown size fails with the list of valid sizes; a size e2b refused to create (today `x-large` / `xx-large`, over the plan's 8 vCPU / 8192 MB cap) fails with the recorded e2b error. Exports `SIZES`, `DEFAULT_SIZE` and the `WorkstationSize` type. The workstation templates now bake the GitHub CLI (`gh`, pinned and checksum-verified).
+
+  Sandbox agents can open PRs themselves: a spawn whose workspace has a remote token now also gets that same daemon-derived token as `GH_TOKEN`, next to `AGENTPROTO_GIT_TOKEN`, so `gh pr create` works in the box (the token needs Contents + Pull requests write). `GH_TOKEN` is reserved like `AGENTPROTO_GIT_TOKEN`: it is stripped from caller-declared `env.passthrough` / `env.auth.state.env` / `join.tokenEnv`, and it never resolves to the daemon's own `GH_TOKEN`. A caller that used to pass `GH_TOKEN` through `env.passthrough` no longer gets it in the box.
+
+- e8da13a: Stop the prior box session before a sandbox `session_restart` starts a replacement, and persist `sandboxRemoteSessionId`; adds `SessionsRegistry.releaseSandboxSession`.
+- ff572e6: Model role presets: switch the repo-maintenance reviewers between five named model sets with one key.
+
+  - `@agentproto/runtime`: `MODEL_ROLE_PRESETS` (`opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet`) and a new `modelRolePreset` config key (hot), a layer between the daemon's `models` and the built-in defaults. `model_roles` takes a per-call `preset`, reports the preset in effect and each role's required `adapter` (`opencode/…`/`opencode-go/…` → `opencode`, `claude-*` → `claude-code`, via `adapterForModelId`).
+  - `@agentproto/workflow-runtime`: an `entry.mjs` agent step may pass `adapter` as a run-time selector; a selector that returns undefined keeps the agent ref's adapter.
+  - `@agentproto/apps`: the `maintain` workflow takes `reviewPreset` and spawns each reviewer on the adapter its model needs, so an OpenCode Go free model runs on opencode instead of claude-code.
+  - `@agentproto/cli`: `agentproto maintain --review-preset <name>`.
+
+- c6f1288: Sandbox sessions survive a box that dies outside `close()`. The host now checkpoints a box's work branch periodically (every 5 min, `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS`, `0` = off) and at each turn end: it pushes `wt/<slug>` when ahead and force-pushes a snapshot of uncommitted work (built through a throwaway index) to `agentproto-checkpoint/wt/<slug>`, falling back to a host-side `checkpoint.bundle`. A watchdog probes the box daemon's `/health` and, after 3 failed or 10 unanswered probes, takes a last checkpoint and marks the session crashed so it can be restarted. `session_restart` on a session whose box is gone now boots a fresh box, re-clones the workspace remote, checks out the pushed branch and re-applies the snapshot, instead of failing. The e2b provider enables a 4 GiB swap file on fresh boots (`config.swapMb`, `0` = off).
+- f4d5fbb: Make the sandbox checkpoint safety net configurable instead of one env var: `defaults.sandbox.checkpoint` (`enabled`, `on: ["turn-end","teardown"]`, `refPrefix`, `minIntervalMs`, `timeoutMs`) in config.json, overridable per spawn via `agent_start({ sandboxCheckpoint: false | {...} })`. The spawn's override is kept on the session descriptor so a restart or a boot-time re-attach resolves the same policy. `"teardown"` absent from `on` reverts the teardown delivery to only counting uncommitted files. A checkpoint's commit message and record now carry the turn number it was taken after, and a session whose box ended with uncommitted work in it now sends its parent an explicit notice naming the rescue branch and a `git fetch` command, instead of only writing it into its own transcript. `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS` keeps working as the fallback for `minIntervalMs`.
+- 060dea8: `session_migrate` (MCP, `POST /sessions/:id/migrate`, `agentproto sessions migrate`) resumes a sandbox session on a new box: it takes a final checkpoint of the old box when it is still reachable, boots a fresh box from the workspace remote, restores the work branch and the pushed uncommitted snapshot (commits stay commits, the snapshot stays uncommitted), carries the transcript over via the context checkpoint, then stops the old box. A shared `restoreCheckpointSteps` planner now backs spawn, restart and migrate.
+- 795c382: Sandbox sessions now survive a host daemon restart. Shutdown detaches provider-box sessions instead of killing them: the host closes its connection only, leaves the box and its agent session running, persists a re-attach record (`sandboxReattach`, row stays `running` with `hostDetached`), and asks the provider to extend the box lifetime to 60 minutes (`BootedSandbox.extendTimeout`, implemented for e2b via `setTimeout`; providers cap it, a rejected request leaves the existing lifetime). At boot, before eager resume, the daemon reconnects through `SandboxProvider.connect`, replays the events the box produced meanwhile from the saved transcript seq, and re-binds the same session id without re-prompting the agent. A box that no longer exists ends the row with the new `sandbox_gone` end reason and a `gone` ledger entry. `/health` and `daemon_health` gain `sandboxSessions`, and `agentproto daemon restart`/`stop` report how many sandbox sessions were detached and re-attached. Explicit kill, idle reap and cost kill still tear the box down; device-paired sandboxes and local sessions are unchanged.
+- e74439f: Sandbox sessions are now recoverable for workspaces with no `remote` in workspaces.json. The clone source is derived from the checkout's git `origin` (ssh forms normalized to https, public repos only, cloned anonymously and read-only with no credential attached, never persisted); a workspace with no usable origin has its box working dir checkpointed to the host as a size-capped, owner-only tarball at turn end and teardown, and `session_restart` on a fresh box extracts it. Missing pieces are reported with how to fix them. The sandbox agent-session host also forwards the provider's `writeFile`.
+- 19c82a5: `turnRetry` can now rotate to another model instead of retrying the throttled one. `turnRetry.rotate` is an ordered list of `{ model, profileRef? }` fallbacks: on a rate-limit or no-output stall (`rotateOn`, add `upstream-5xx` to opt in) the live session is switched to the first eligible target before the continuation prompt, and the `[turn-retry]` notice and a `session:turn-retry` `rotated` event (with `fromModel`/`toModel`) record it. A daemon-wide model cooldown (Retry-After honoured, else `cooldownMs`, default 10 min) keeps every session off a throttled model and is exposed read-only as `modelCooldowns` in `daemon_health` and `/health`. Targets must pass the profile `models` allow-list and the spawn adapter/wallet checks; with none eligible the retry falls back to the same model. A free OpenCode model (`-free`, `big-pickle`) only rotates to free ids: `agent_start` rejects a paid id with `turn_retry_rotate_invalid`, as do user and harness presets. Harness presets (`harness_preset_create`) can now carry `turnRetry`. v1 rotates within the session's current profile only. The CLI `--turn-retry` JSON validates `rotate`, `rotateOn` and `cooldownMs`.
+
+### Patch Changes
+
+- c209fa3: A2A tasks completed by turn end now report FAILED when a session's turn ended in error, and carry the turn-end timestamp
+- 36dac26: Sandbox boxes are kept alive while their session is working: the proxy re-arms the box lifetime (throttled to once per 60s) when a prompt is dispatched and as box events stream back, never while idle. The e2b `extendTimeout` clamps to the 1h account cap, and `BootedSandbox`/`SandboxAgentSessionHost` expose the box's configured `lifetimeMs`.
+- 2dda22e: Rebuild the `agentproto-workstation` e2b templates (stable and dev) on `@agentproto/cli` 1.20.0 with the latest adapters, so boxes apply the sub-account env forwarded from the host (#1890) and the sandbox exec fix (#1886).
+- 3c5c88f: Add the `chrome-live` browser provider (attaches to the user's running Chrome via the remote debugging toggle) and register it in the `@agentproto/adapter-browser` facade. `@agentproto/runtime` only gets docs and test updates.
+- e8da13a: `session_restart` stops the prior in-box session before re-spawning, so two adapters never run in the same sandbox box.
+- ffc3208: Seq-aware transcript export and checkpoint cutoff: `ExportedMessage.seq` carries the `events.jsonl` seq of the record that started the message (a batched assistant turn carries its first record's seq), `exportDaemonEventsSession` takes an `untilSeq` option that skips records past the cutoff so a transcript can be cut at a message boundary, and `splitMessagesAtSeq` splits an exported message list into head/tail at a cutoff. `buildContextCheckpoint` takes the same `untilSeq`, passes it through to the export, and records it as `cutoffSeq` on the checkpoint (`checkpoint-schema.ts` / `schemas/checkpoint.v1.json` updated).
+- Updated dependencies [22cfadd]
+- Updated dependencies [8ad6546]
+- Updated dependencies [fe3c879]
+- Updated dependencies [3c5c88f]
+- Updated dependencies [36dac26]
+- Updated dependencies [3c5c88f]
+- Updated dependencies [ff572e6]
+- Updated dependencies [795c382]
+- Updated dependencies [e74439f]
+  - @agentproto/a2a@0.2.0
+  - @agentproto/workflow-runtime@0.18.0
+  - @agentproto/agent@0.3.0
+  - @agentproto/adapter-browser@0.4.0
+  - @agentproto/sandbox@0.11.0
+  - @agentproto/apps@0.23.0
+  - @agentproto/review@0.6.0
+  - @agentproto/app-kit@1.7.5
+  - @agentproto/mcp-server@0.6.4
+  - @agentproto/eval-reporters@0.2.24
+  - @agentproto/telemetry-langfuse@0.2.22
+
 ## 5.19.0
 
 ### Minor Changes

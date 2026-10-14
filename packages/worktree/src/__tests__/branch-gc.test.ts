@@ -21,6 +21,7 @@ import {
   createLadderContext,
   InMemoryBranchVerdictStore,
   BranchVerdictError,
+  CHECKPOINT_BRANCH_PREFIX,
   type BranchGcPlan,
   type BranchGcPlanEntry,
   type PlanBranchGcInput,
@@ -800,5 +801,96 @@ describe("branch gc — apply", () => {
     expect(outcomes.find((o) => o.name === "feat/b")?.result).toBe("deleted")
     expect(outcomes.some((o) => o.result === "failed")).toBe(false)
     expect(await refExists(bare, "refs/heads/feat/b")).toBe(false)
+  })
+})
+
+// ── sandbox checkpoint branches ──────────────────────────────────────────
+
+describe("branch gc — sandbox checkpoint branches", () => {
+  /** Park a checkpoint ref on origin the way a sandbox box force-pushes its
+   *  snapshot, then refresh the tracking refs. */
+  async function pushCheckpoint(repo: string, work: string, tip: string): Promise<void> {
+    await execGit(repo, ["push", "-q", "origin", `${tip}:refs/heads/${CHECKPOINT_BRANCH_PREFIX}${work}`])
+    await execGit(repo, ["fetch", "-q", "origin"])
+  }
+
+  it("checkpoint ref, work branch merged: reclaim with checkpoint-superseded", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const tip = await branchWith(repo, "wt/feat", { "w.txt": "w\n" })
+    await execGit(repo, ["merge", "-q", "--ff-only", "wt/feat"])
+    await execGit(repo, ["push", "-q", "origin", "main"])
+    // A snapshot commit taken ON the merged work tip — `<checkpoint>^` is
+    // the tip that landed, like a real box's snapshot.
+    await execGit(repo, ["checkout", "-q", "-b", "tmp/snap", "wt/feat"])
+    const snap = await commitFiles(repo, { "s.txt": "s\n" }, "snapshot")
+    await execGit(repo, ["checkout", "-q", "main"])
+    await execGit(repo, ["branch", "-q", "-D", "tmp/snap"])
+    await pushCheckpoint(repo, "wt/feat", snap)
+
+    const e = entry(await plan(repo, { base: "origin/main" }), `${CHECKPOINT_BRANCH_PREFIX}wt/feat`, "remote")
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "checkpoint-superseded", status: "merged" })
+    expect(await sha(repo, `${snap}^`)).toBe(tip)
+  })
+
+  it("checkpoint ref, work branch unmerged: review, never auto-reclaimed", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const tip = await branchWith(repo, "wt/wip", { "w.txt": "w\n" })
+    await pushCheckpoint(repo, "wt/wip", tip)
+
+    const p = await plan(repo, { base: "origin/main" })
+    expect(entry(p, `${CHECKPOINT_BRANCH_PREFIX}wt/wip`, "remote")).toMatchObject({ class: "review", status: "unmerged" })
+    expect(entry(p, "wt/wip")).toMatchObject({ class: "review" })
+  })
+
+  it("checkpoint ref, work branch gone: review — the snapshot may be the only copy", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const snap = await branchWith(repo, "tmp/snap", { "s.txt": "s\n" })
+    await pushCheckpoint(repo, "wt/dead", snap)
+    await execGit(repo, ["branch", "-q", "-D", "tmp/snap"])
+
+    const e = entry(await plan(repo, { base: "origin/main" }), `${CHECKPOINT_BRANCH_PREFIX}wt/dead`, "remote")
+    expect(e).toMatchObject({ class: "review", status: "unmerged" })
+  })
+
+  it("an OLD merged PR with the same reused work-branch name but a different head is review", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    // The generation PR #55 landed — long gone from the branch.
+    const oldHead = await branchWith(repo, "tmp/old", { "old.txt": "old\n" })
+    await execGit(repo, ["branch", "-q", "-D", "tmp/old"])
+    // A NEW checkpoint of the reused name: its snapshot parent is unrelated
+    // to the PR's head, so the old PR proves nothing about it.
+    const snap = await branchWith(repo, "tmp/snap", { "s.txt": "s\n" })
+    await pushCheckpoint(repo, "wt/reused", snap)
+    await execGit(repo, ["branch", "-q", "-D", "tmp/snap"])
+
+    const forge = new FakeForge([], [mergedPr(55, "wt/reused", oldHead)])
+    const e = entry(await plan(repo, { base: "origin/main", forge }), `${CHECKPOINT_BRANCH_PREFIX}wt/reused`, "remote")
+    expect(e).toMatchObject({ class: "review", status: "unmerged" })
+  })
+
+  it("a snapshot taken on a commit AFTER the merged tip is review, not reclaim", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const landed = await branchWith(repo, "wt/late", { "a.txt": "a\n" })
+    await execGit(repo, ["merge", "-q", "--ff-only", "wt/late"])
+    await execGit(repo, ["push", "-q", "origin", "main", "wt/late"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    // The box kept going: work HEAD moved past what landed, and the snapshot
+    // was taken on THAT later commit — the extra work may never have landed.
+    await execGit(repo, ["checkout", "-q", "wt/late"])
+    await commitFiles(repo, { "b.txt": "b\n" }, "post-land work")
+    await execGit(repo, ["checkout", "-q", "-b", "tmp/snap", "wt/late"])
+    const snap = await commitFiles(repo, { "s.txt": "s\n" }, "snapshot")
+    await execGit(repo, ["checkout", "-q", "main"])
+    await execGit(repo, ["branch", "-q", "-D", "tmp/snap"])
+    await pushCheckpoint(repo, "wt/late", snap)
+
+    const e = entry(await plan(repo, { base: "origin/main" }), `${CHECKPOINT_BRANCH_PREFIX}wt/late`, "remote")
+    expect(e).toMatchObject({ class: "review" })
+    expect(await sha(repo, `${snap}^`)).not.toBe(landed)
   })
 })
