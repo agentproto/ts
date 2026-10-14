@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { describe, it, expect } from "vitest"
-import { hermes, hermesRuntime } from "../index.js"
+import {
+  MAX_HERMES_SYSTEM_PROMPT_CHARS,
+  bundledHermesSystemPromptPluginDir,
+  hermes,
+  hermesRuntime,
+} from "../index.js"
 import { probeHermesBin } from "./hermes-bin-capability.js"
 
 describe("@agentproto/adapter-hermes", () => {
@@ -59,6 +66,30 @@ describe("@agentproto/adapter-hermes", () => {
   it("declares persistent session policy", () => {
     expect(hermes.session?.mode).toBe("persistent")
     expect(hermes.session?.idle_timeout_ms).toBe(1_800_000)
+  })
+
+  // The channel itself: the driver writes the AGENT.md text to a file and
+  // points this env var at it; the bundled plugin reads the SAME var. The
+  // cross-check below keeps the two declarations from drifting apart.
+  it("declares the env-file system-prompt channel", () => {
+    expect(hermes.systemPrompt).toEqual({
+      via: "env-file",
+      env: "AGENTPROTO_SYSTEM_PROMPT_FILE",
+      maxChars: MAX_HERMES_SYSTEM_PROMPT_CHARS,
+    })
+    expect(MAX_HERMES_SYSTEM_PROMPT_CHARS).toBe(7500)
+  })
+
+  it("the bundled plugin reads the env var the manifest points at", () => {
+    const decl = hermes.systemPrompt
+    expect(decl?.via).toBe("env-file")
+    const envVar = decl?.via === "env-file" ? decl.env : undefined
+    expect(envVar).toBeDefined()
+    const plugin = readFileSync(
+      join(bundledHermesSystemPromptPluginDir(), "__init__.py"),
+      "utf8",
+    )
+    expect(plugin).toContain(`"${envVar}"`)
   })
 
   it("hermesRuntime returns a runtime bound to the hermes handle", () => {
