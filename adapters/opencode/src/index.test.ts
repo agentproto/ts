@@ -53,10 +53,30 @@ describe("@agentproto/adapter-opencode", () => {
     // External: the runtime injects no bearer (an agentproto-held OAT/access
     // token on opencode's x-api-key channel is rejected upstream) — it
     // verifies the CLI's own `opencode auth login` is present (per provider)
-    // and scrubs api-key vars.
+    // and scrubs api-key vars. Each subscription also carries the BOX-LOGIN
+    // BRIDGE marker so a fresh box gets a redacted copy of the CLI's own
+    // auth file before `host.start` (keep-list + expiry path, never a token).
     expect(opencode.authSubscription).toEqual([
-      { external: true, provider: "anthropic" },
-      { external: true, provider: "openai" },
+      {
+        external: true,
+        provider: "anthropic",
+        boxLogin: {
+          recipe: "opencode",
+          methodId: "anthropic-oauth",
+          keep: ["anthropic.type", "anthropic.access", "anthropic.expires", "anthropic.refresh"],
+          expiresPath: "anthropic.expires",
+        },
+      },
+      {
+        external: true,
+        provider: "openai",
+        boxLogin: {
+          recipe: "opencode",
+          methodId: "openai-oauth",
+          keep: ["openai.type", "openai.access", "openai.expires", "openai.refresh"],
+          expiresPath: "openai.expires",
+        },
+      },
     ])
   })
 
