@@ -56,6 +56,7 @@ import {
   makePrStateResolver,
 } from "./worktree.js"
 import { makeBranchGcRunner, makeBranchGcVerdictReader, makeBranchGcVerdictRecorder } from "./branch.js"
+import { systemPromptCapsFor } from "./system-prompt-caps.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
   loadWorkspacesConfig,
@@ -126,7 +127,7 @@ import {
 import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
 import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/driver-agent-cli"
-import { hermesSystemPromptPluginStatus, readHermesUsage } from "@agentproto/adapter-hermes"
+import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
 import { registerBuiltinSubaccountProviders } from "../util/subaccount-providers.js"
 import { readClaudeCodeUsage } from "@agentproto/adapter-claude-code"
@@ -480,14 +481,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // system prompt — the runtime then skips its first-prompt prefix +
       // warning fallback. hermes is conditional: its channel IS the
       // agentproto hermes plugin, so it only counts while that plugin is
-      // installed AND enabled under $HERMES_HOME (cheap file reads, run on
-      // every resolve — one per spawn — so installing the plugin takes
-      // effect without a daemon restart).
-      const systemPromptDecl = adapter.handle.systemPrompt
-      const hermesPlugin =
-        slug === "hermes" ? hermesSystemPromptPluginStatus({ env: process.env }) : undefined
-      const hermesSystemPromptReady =
-        hermesPlugin !== undefined && hermesPlugin.installed && hermesPlugin.enabled
+      // installed AND enabled (evaluated on every resolve — see
+      // `system-prompt-caps.ts`, which owns the rule and the fallback
+      // reason).
+      const systemPromptCaps = systemPromptCapsFor(
+        slug,
+        adapter.handle.systemPrompt,
+        process.env,
+      )
       return {
         async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, appendSystemPrompt }) {
           // Build config.options only when there's something to set — an
@@ -550,26 +551,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         supportsFsZones: adapter.handle.protocol !== "proprietary",
         supportsHostContextIsolation: agentCliSupportsHostContextIsolation(slug),
         // A declared channel is real unless a conditional one (hermes')
-        // currently fails its live plugin check — see `hermesPlugin` above.
-        supportsSystemPrompt:
-          systemPromptDecl !== undefined && (slug !== "hermes" || hermesSystemPromptReady),
-        // The channel's char budget (the manifest `systemPrompt.maxChars`,
-        // hermes' plugin 7500) — the runtime falls back to a prefix + a
-        // warning naming the limit rather than the driver truncating.
-        ...(systemPromptDecl !== undefined &&
-        "maxChars" in systemPromptDecl &&
-        systemPromptDecl.maxChars !== undefined
-          ? { systemPromptMaxChars: systemPromptDecl.maxChars }
-          : {}),
-        // A declared-but-currently-unusable channel (hermes without the
-        // plugin) names the fix in the runtime's fallback warning.
-        ...(slug === "hermes" && systemPromptDecl !== undefined && !hermesSystemPromptReady
-          ? {
-              systemPromptUnavailable:
-                "the agentproto hermes plugin is not installed/enabled — " +
-                "run `agentproto adapters hermes-plugin install --enable`",
-            }
-          : {}),
+        // currently fails its live plugin check — plus its char budget and,
+        // when declared-but-unusable, the reason the runtime's fallback
+        // warning should name (`system-prompt-caps.ts`).
+        ...systemPromptCaps,
         // Only adapters whose manifest declares `metadata.sessionSkills`
         // (a delivery dir the driver writes the imported skills into) take
         // part in per-session skill delivery. Gating on this keeps hermes'
