@@ -14,15 +14,21 @@
  *      choice is accepted only inside the closed set, with finite
  *      probabilities, at/above `minProbability` with `minMargin` — and only
  *      when evidence meets the completeness requirement.
- *   3. Exactly ONE tool-less LLM escalation (`escalate` dep) on uncertainty
- *      or classifier failure. Its self-reported confidence is NOT calibrated
- *      and is never threshold-checked; its choice is closed-set validated.
+ *   3. Exactly ONE bounded LLM escalation (`escalate` dep) on uncertainty
+ *      or classifier failure. The primitive does not restrict the backend's
+ *      tools — whoever injects `escalate` owns that, and must report what its
+ *      adapter actually enforces. Its self-reported confidence is NOT
+ *      calibrated and is never threshold-checked; its choice is closed-set
+ *      validated.
  *   4. The policy's conservative default (raised to any matched floor).
  *
  * Missing/invalid probabilities are uncertainty, not certainty. Classifier
- * or escalation failure is recorded as failure — never as approval. Cache
- * keys fold policy hash + evidence hash + classifier config; concurrent
- * identical decisions share one computation.
+ * or escalation failure is recorded as failure — never as approval. Only a
+ * `status: "decided"` outcome is cached (24h TTL); the conservative fallback
+ * is returned to the caller but never cached, so a transient backend failure
+ * cannot be replayed as a trusted answer. Cache keys fold policy hash,
+ * evidence hash and the identity of the backends that actually answered;
+ * concurrent identical decisions share one computation.
  */
 
 import type { DecisionPolicy, DecisionWhen } from "./decision-policy.js"
@@ -51,11 +57,38 @@ export interface DecideDeps {
     readonly state: unknown
     readonly question: JevChoiceQuestion
   }) => Promise<ClassifierOutcome>
-  /** One tool-less LLM escalation. No tools, no repo access, closed choice out. */
+  /** One bounded LLM escalation, closed choice out. The caller owns (and
+   *  must honestly report) what tool access that backend has. */
   readonly escalate?: (input: {
     readonly packet: string
   }) => Promise<EscalationOutcome>
+  /** Identity of the classifier backend (kind, endpoint host, model). Part of
+   *  the cache key; a `classify` dep WITHOUT one is uncacheable (fail closed —
+   *  two different backends must never share an answer). */
+  readonly classifierIdentity?: DecisionBackendIdentity
+  /** Same, for the `escalate` backend (e.g. `adapter:model@profile`). */
+  readonly escalationIdentity?: string
 }
+
+export interface DecisionBackendIdentity {
+  readonly kind: string
+  readonly host?: string
+  readonly model?: string
+}
+
+export interface DecideOptions {
+  /** `false`: skip the cache and single-flight entirely (workflow stages —
+   *  the workflow journal owns replay there). Default true. */
+  readonly cache?: boolean
+  /** Clock for TTL checks (tests). */
+  readonly now?: () => number
+}
+
+/** `decided`: a rule, floor, classifier or escalation settled it.
+ *  `fallback`: nothing settled it — the policy's conservative default (raised
+ *  to any floor) was applied. A fallback is a safe ANSWER, not a trusted one,
+ *  and is never cached. */
+export type DecisionStatus = "decided" | "fallback"
 
 // ── outcome ───────────────────────────────────────────────────────────────
 
@@ -71,6 +104,7 @@ export interface DecisionEscalationHistoryEntry {
 export interface DecisionOutcome {
   readonly choice: string
   readonly source: DecisionSource
+  readonly status: DecisionStatus
   /** Why this source fired (uncertainty, failure kind, clamping, …). */
   readonly reason?: string
   readonly matchedRules: readonly string[]
@@ -123,7 +157,9 @@ const DENY_PATTERNS: ReadonlyArray<{ readonly re: RegExp; readonly klass: "paths
   { re: /^std(out|err)$/i, klass: "messages" },
 ]
 
-function deniedClass(
+/** Which export class (`paths` | `code` | `messages`) the policy withholds
+ *  for an evidence key, or null when the key may leave the process. */
+export function deniedEvidenceClass(
   key: string,
   evidencePolicy: DecisionPolicy["evidence"],
 ): "paths" | "code" | "messages" | null {
@@ -171,7 +207,7 @@ export function projectTier1Evidence(
     }
   } else {
     for (const [key, value] of Object.entries(evidence)) {
-      const denied = deniedClass(key, ep)
+      const denied = deniedEvidenceClass(key, ep)
       if (denied) {
         omitted.push(key)
         continue
@@ -239,7 +275,7 @@ export function projectTier1Evidence(
   return { state, omitted, truncated }
 }
 
-/** Tier-2 packet for the ONE tool-less escalation: ordered prompt lines —
+/** Tier-2 packet for the ONE escalation: ordered prompt lines —
  *  policy context and the uncertainty reason FIRST, evidence last — capped at
  *  `escalation.maxInputChars` so truncation only ever eats evidence, with an
  *  explicit omission marker. */
@@ -252,7 +288,7 @@ export function buildEscalationPacket(
   const projected: Record<string, unknown> = {}
   const omitted: string[] = []
   for (const [key, value] of Object.entries(evidence)) {
-    const denied = deniedClass(key, ep)
+    const denied = deniedEvidenceClass(key, ep)
     if (denied) {
       omitted.push(key)
       continue
@@ -302,7 +338,13 @@ export function evaluateWhen(when: DecisionWhen, evidence: Record<string, unknow
 // ── cache ─────────────────────────────────────────────────────────────────
 
 const DECISION_CACHE_MAX = 500
-const decisionCache = new Map<string, DecisionOutcome>()
+export const DECISION_CACHE_TTL_MS = 24 * 60 * 60_000
+const DECISION_CACHE_SCHEMA = 1
+interface CacheEntry {
+  readonly outcome: DecisionOutcome
+  readonly expiresAt: number
+}
+const decisionCache = new Map<string, CacheEntry>()
 const inFlight = new Map<string, Promise<DecisionOutcome>>()
 
 /** Drop every cached decision (tests, policy swaps). */
@@ -374,6 +416,8 @@ async function decideOnce(
     hasEscalation: deps.escalate !== undefined,
   })
   const base = { policyHash, evidenceHash, classifierConfigHash } as const
+  // Decided unless the final default branch says otherwise.
+  const decidedStatus: DecisionStatus = "decided"
   const choiceIndex = (c: string): number => policy.choices.indexOf(c)
   const strongest = policy.choices[policy.choices.length - 1]!
 
@@ -421,6 +465,7 @@ async function decideOnce(
         evidenceRefs: evidenceRefsOf(evidence),
         truncated,
         incompleteEvidence: incomplete,
+        status: decidedStatus,
         ...base,
         ...extra,
       }
@@ -434,6 +479,7 @@ async function decideOnce(
       evidenceRefs: evidenceRefsOf(evidence),
       truncated,
       incompleteEvidence: incomplete,
+      status: decidedStatus,
       ...base,
       ...extra,
     }
@@ -517,7 +563,7 @@ async function decideOnce(
     uncertainty = policy.classifier.kind === "none" ? "classifier disabled by policy" : "no classifier backend available"
   }
 
-  // ── 3. exactly one tool-less escalation on uncertainty ─────────────────
+  // ── 3. exactly one escalation on uncertainty ─────────────────
   if (policy.escalation.enabled && policy.escalation.limit >= 1 && deps.escalate) {
     const { packet } = buildEscalationPacket(policy, evidence, {
       uncertainty,
@@ -553,6 +599,7 @@ async function decideOnce(
   // ── 4. conservative default (never below a matched floor) ──────────────
   return finishFloorClamp(policy.defaultChoice, "default", {
     reason: uncertainty,
+    status: "fallback",
   })
 }
 
@@ -561,23 +608,46 @@ async function decideOnce(
  * those fall through to the conservative default with the failure recorded
  * in `escalationHistory`. Only `classify`/`escalate` contract violations
  * (unknown choices, bad probabilities) count as uncertainty.
+ *
+ * Caching: only `status: "decided"` outcomes are stored. A `fallback` is
+ * returned but evicts nothing and is recomputed next time. A backend dep with
+ * no declared identity makes the call uncacheable (and unshared).
  */
 export async function decide(
   policy: DecisionPolicy,
   evidence: unknown,
   deps: DecideDeps = {},
+  options: DecideOptions = {},
 ): Promise<DecisionOutcome> {
   const record: Record<string, unknown> =
     evidence !== null && typeof evidence === "object" && !Array.isArray(evidence)
       ? (evidence as Record<string, unknown>)
       : { value: evidence }
-  const policyHash = decisionPolicyHash(policy)
-  const evidenceHash = hashStable(record)
-  const depBits = `${deps.classify ? "c" : ""}${deps.escalate ? "e" : ""}`
-  const key = `${policyHash}:${evidenceHash}:${policy.classifier.kind}:${policy.classifier.model ?? ""}:${policy.classifier.minProbability}:${policy.classifier.minMargin}:${policy.escalation.enabled ? policy.escalation.limit : 0}:${depBits}`
+  const cacheable =
+    options.cache !== false &&
+    (deps.classify === undefined || deps.classifierIdentity !== undefined) &&
+    (deps.escalate === undefined || deps.escalationIdentity !== undefined)
+  if (!cacheable) return decideOnce(policy, record, deps)
+
+  const now = options.now ?? Date.now
+  const key = hashStable({
+    policySha: decisionPolicyHash(policy),
+    evidenceSha: hashStable(record),
+    backend: deps.classify ? (deps.classifierIdentity ?? null) : null,
+    escalation: {
+      enabled: policy.escalation.enabled,
+      limit: policy.escalation.enabled ? policy.escalation.limit : 0,
+      maxInputChars: policy.escalation.maxInputChars,
+      backend: deps.escalate ? (deps.escalationIdentity ?? null) : null,
+    },
+    schemaVersion: DECISION_CACHE_SCHEMA,
+  })
 
   const hit = decisionCache.get(key)
-  if (hit) return { ...hit, cached: true }
+  if (hit) {
+    if (hit.expiresAt > now()) return { ...hit.outcome, cached: true }
+    decisionCache.delete(key)
+  }
 
   const pending = inFlight.get(key)
   if (pending) {
@@ -587,11 +657,13 @@ export async function decide(
 
   const work = decideOnce(policy, record, deps)
     .then(outcome => {
-      decisionCache.set(key, outcome)
-      while (decisionCache.size > DECISION_CACHE_MAX) {
-        const oldest = decisionCache.keys().next().value
-        if (oldest === undefined) break
-        decisionCache.delete(oldest)
+      if (outcome.status === "decided") {
+        decisionCache.set(key, { outcome, expiresAt: now() + DECISION_CACHE_TTL_MS })
+        while (decisionCache.size > DECISION_CACHE_MAX) {
+          const oldest = decisionCache.keys().next().value
+          if (oldest === undefined) break
+          decisionCache.delete(oldest)
+        }
       }
       return outcome
     })

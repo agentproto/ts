@@ -1,6 +1,6 @@
 /**
  * The decision router: DECISION.md parsing, rules-first resolution with
- * mandatory floors, one bounded classifier call, one tool-less escalation,
+ * mandatory floors, one bounded classifier call, one bounded escalation,
  * conservative default, evidence export policy, and the shared decision
  * cache. Fake classifier/escalation only — no network, no live models.
  */
@@ -14,13 +14,15 @@ import {
   buildEscalationPacket,
   clearDecisionCache,
   decide,
+  decisionCacheSize,
+  DECISION_CACHE_TTL_MS,
   evaluateWhen,
   projectTier1Evidence,
   type ClassifierOutcome,
   type EscalationOutcome,
 } from "../decision.js"
 import { decisionPolicyHash, parseDecisionPolicy } from "../decision-policy.js"
-import { makeJevDecisionClassifier } from "../decision-tools.js"
+import { jevClassifierIdentity, makeJevDecisionClassifier } from "../decision-tools.js"
 import { setJevConfigLoader } from "../jev-client.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
 
@@ -40,6 +42,8 @@ const ok = (choice: string, probabilities: Record<string, number>, extra: Partia
 })
 
 const fail = (error: string): ClassifierOutcome => ({ ok: false, error })
+
+const JEV = { kind: "jev", host: "jev.test", model: "m1" } as const
 
 afterEach(() => {
   clearDecisionCache()
@@ -324,13 +328,16 @@ describe("decide — escalation bounds", () => {
 })
 
 describe("decide — cache and concurrent sharing", () => {
+  const STANDARD = () => ok("standard", { light: 0.05, standard: 0.9, deep: 0.05 })
+  const ev = { changeTypes: "code", complete: true }
+
   it("identical policy+evidence+config decisions are computed once and served cached", async () => {
-    const classify = vi.fn(async () => ok("standard", { light: 0.05, standard: 0.9, deep: 0.05 }))
-    const ev = { changeTypes: "code", complete: true }
-    const a = await decide(reviewPolicy(), ev, { classify })
-    const b = await decide(reviewPolicy(), ev, { classify })
+    const classify = vi.fn(async () => STANDARD())
+    const a = await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
+    const b = await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
     expect(classify).toHaveBeenCalledTimes(1)
     expect(a.cached).toBeUndefined()
+    expect(a.status).toBe("decided")
     expect(b.cached).toBe(true)
     expect(b.choice).toBe(a.choice)
   })
@@ -342,16 +349,104 @@ describe("decide — cache and concurrent sharing", () => {
         release = r
       }),
     )
-    const ev = { changeTypes: "code", complete: true }
-    const p1 = decide(reviewPolicy(), ev, { classify })
-    const p2 = decide(reviewPolicy(), ev, { classify })
+    const p1 = decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
+    const p2 = decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
     await new Promise(r => setTimeout(r, 10))
-    release(ok("standard", { light: 0.05, standard: 0.9, deep: 0.05 }))
+    release(STANDARD())
     const [a, b] = await Promise.all([p1, p2])
     expect(classify).toHaveBeenCalledTimes(1)
     expect(a.shared || b.shared).toBe(true)
     expect(a.choice).toBe("standard")
     expect(b.choice).toBe("standard")
+  })
+
+  it("a backend failure is a fallback and is NOT cached; the next call retries and a recovered backend is cached", async () => {
+    const classify = vi
+      .fn<() => Promise<ClassifierOutcome>>()
+      .mockResolvedValueOnce(fail("502 bad gateway"))
+      .mockResolvedValue(STANDARD())
+    const first = await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
+    expect(first).toMatchObject({ choice: "deep", source: "default", status: "fallback" })
+    expect(decisionCacheSize()).toBe(0)
+    const second = await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
+    expect(classify).toHaveBeenCalledTimes(2)
+    expect(second).toMatchObject({ choice: "standard", source: "classifier", status: "decided" })
+    expect(second.cached).toBeUndefined()
+    const third = await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
+    expect(third.cached).toBe(true)
+    expect(classify).toHaveBeenCalledTimes(2)
+  })
+
+  it("a thrown classifier and an invalid choice are fallbacks and never cached", async () => {
+    const thrower = vi.fn(async (): Promise<ClassifierOutcome> => {
+      throw new Error("socket hang up")
+    })
+    const invalid = vi.fn(async () => ok("nonsense", { nonsense: 1 }))
+    for (const classify of [thrower, invalid]) {
+      const out = await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
+      expect(out.status).toBe("fallback")
+    }
+    expect(decisionCacheSize()).toBe(0)
+  })
+
+  it("an incomplete-evidence fallback is never cached", async () => {
+    const classify = vi.fn(async () => STANDARD())
+    const out = await decide(reviewPolicy(), { changeTypes: "code", complete: false }, { classify, classifierIdentity: JEV })
+    expect(out.status).toBe("fallback")
+    expect(decisionCacheSize()).toBe(0)
+  })
+
+  it("a rule-settled decision is cached as decided", async () => {
+    const out = await decide(reviewPolicy(), { changeTypes: "docs-only", riskCategories: [], signals: [] })
+    expect(out).toMatchObject({ choice: "light", source: "rule", status: "decided" })
+    expect(decisionCacheSize()).toBe(1)
+  })
+
+  it("a changed classifier model or host is a different key (config change misses)", async () => {
+    const classify = vi.fn(async () => STANDARD())
+    await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV })
+    await decide(reviewPolicy(), ev, { classify, classifierIdentity: { ...JEV, model: "m2" } })
+    await decide(reviewPolicy(), ev, { classify, classifierIdentity: { ...JEV, host: "other.test" } })
+    expect(classify).toHaveBeenCalledTimes(3)
+    expect(decisionCacheSize()).toBe(3)
+  })
+
+  it("a changed escalation backend identity is a different key", async () => {
+    const classify = vi.fn(async () => ok("standard", { light: 0.5, standard: 0.55, deep: 0.45 }))
+    const escalate = vi.fn(async (): Promise<EscalationOutcome> => ({ ok: true, choice: "standard" }))
+    const e = { changeTypes: "code", complete: true }
+    await decide(reviewPolicy(), e, { classify, classifierIdentity: JEV, escalate, escalationIdentity: "opencode:a-free" })
+    await decide(reviewPolicy(), e, { classify, classifierIdentity: JEV, escalate, escalationIdentity: "opencode:b-free" })
+    expect(escalate).toHaveBeenCalledTimes(2)
+  })
+
+  it("a backend dep with no declared identity is uncacheable and unshared", async () => {
+    const classify = vi.fn(async () => STANDARD())
+    await decide(reviewPolicy(), ev, { classify })
+    await decide(reviewPolicy(), ev, { classify })
+    expect(classify).toHaveBeenCalledTimes(2)
+    expect(decisionCacheSize()).toBe(0)
+  })
+
+  it("options.cache=false bypasses the cache and single-flight", async () => {
+    const classify = vi.fn(async () => STANDARD())
+    await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV }, { cache: false })
+    await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV }, { cache: false })
+    expect(classify).toHaveBeenCalledTimes(2)
+    expect(decisionCacheSize()).toBe(0)
+  })
+
+  it("entries expire after the 24h TTL", async () => {
+    const classify = vi.fn(async () => STANDARD())
+    let t = 1_000
+    const now = () => t
+    await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV }, { now })
+    t += DECISION_CACHE_TTL_MS - 1
+    expect((await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV }, { now })).cached).toBe(true)
+    t += 2
+    const after = await decide(reviewPolicy(), ev, { classify, classifierIdentity: JEV }, { now })
+    expect(after.cached).toBeUndefined()
+    expect(classify).toHaveBeenCalledTimes(2)
   })
 
   it("changed criteria change the policy hash; changed evidence changes the evidence hash", () => {
@@ -403,6 +498,7 @@ describe("makeJevDecisionClassifier", () => {
     )
     const out = await decide(reviewPolicy(), { changeTypes: "code", riskCategories: [], signals: [], complete: true }, {
       classify: makeJevDecisionClassifier({ apiKey: "k", fetchImpl: fetchImpl as unknown as typeof fetch }),
+      classifierIdentity: jevClassifierIdentity("m", "https://jev.example/v1"),
     })
     expect(out.choice).toBe("standard")
     expect(out.source).toBe("classifier")
