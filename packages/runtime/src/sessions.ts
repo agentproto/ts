@@ -27,6 +27,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import { cloudSessionIdOf } from "./cloud-vendors.js"
 import {
   CONVERSATION_STORES,
   conversationTerminalSlugFor,
@@ -4413,6 +4414,13 @@ export interface SessionsRegistry {
    *  policy state — never touches the live agent. Throws when the id is
    *  unknown. */
   setKeepAlive(id: string, keepAlive: boolean): SessionDescriptor
+  /** Merge string-valued descriptor meta hints onto an existing session
+   *  (`meta` is `Record<string, string>` — values are encoded, e.g. the
+   *  JSON-encoded `meta.cloud` mapping from cloud-vendors.ts). Keys already
+   *  present are overwritten; other keys are untouched. Persists via the
+   *  same `schedulePersist` every descriptor mutation uses. Never touches
+   *  the live agent. Throws when the id is unknown. */
+  mergeMeta(id: string, patch: Record<string, string>): SessionDescriptor
   /** Set or clear a session's list-visibility pin (the `session_set_pinned`
    *  MCP verb / `POST /sessions/:id/pin`). `true` flips
    *  `SessionDescriptor.pinned` on — pure sort/display state for the CLI
@@ -7685,7 +7693,12 @@ export function createSessionsRegistry(opts?: {
         const fresh = await resumeAgent({
           adapterSlug,
           cwd,
-          resumeSessionId: adapterSessionId,
+          // AIP-66 cloud: the cloud adapter resumes the VENDOR's own session
+          // id, learned onto `meta.cloud.sessionId` — prefer it over the ACP
+          // uuid (which is not the vendor id). A cloud row whose id was never
+          // learned falls back to `adapterSessionId` and fails closed at the
+          // vendor if that isn't resolvable there.
+          resumeSessionId: cloudSessionIdOf(rt.desc) ?? adapterSessionId,
           // The prior descriptor — the hook re-resolves billing-auth off its
           // `auth.mode` echo / `accessProfile` / model / route (money bug fix).
           descriptor: rt.desc,
@@ -12731,6 +12744,14 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`setKeepAlive: no session "${id}"`)
       rt.desc.keepAlive = keepAlive
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    mergeMeta(id, patch) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`mergeMeta: no session "${id}"`)
+      rt.desc.meta = { ...rt.desc.meta, ...patch }
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc

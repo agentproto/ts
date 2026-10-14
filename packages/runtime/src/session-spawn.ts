@@ -12,6 +12,18 @@ import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import {
+  CLOUD_SESSION_META_FILE_ENV,
+  CloudSpawnError,
+  cloudMetaOf,
+  cloudSessionIdOf,
+  cloudSessionMetaFilePath,
+  encodeCloudSessionMeta,
+  resolveCloudSpawn,
+  watchCloudSessionMeta,
+  type CloudSessionMeta,
+  type ResolvedCloudSpawn,
+} from "./cloud-vendors.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
 import {
   discoverRestoredAdapterConversation,
@@ -1227,6 +1239,15 @@ export interface SpawnAgentSessionInput {
   adapter: string
   /** Canonical harness slug — recorded on the descriptor; defaults to `adapter`. */
   harness?: string
+  /** Managed cloud vendor slug (AIP-66). Set ⇒ this spawn resolves to the
+   *  vendor's cloud adapter (`cloud:"anthropic"` ⇒ adapter
+   *  `claude-code-cloud`, harness `claude-code`) BEFORE inference/preset/
+   *  worktree/sandbox/auth/profile resolution, and the vendor's session
+   *  identity is persisted as `meta.cloud = { vendor, sessionId, url }`.
+   *  Mutually exclusive with `sandbox`; the §4 fields it can never apply
+   *  (worktree, commandSandbox, mcpServers, daemonMount, bundles, browser,
+   *  appServe, inference) are refused by name — see cloud-vendors.ts. */
+  cloud?: string
   cwd?: string
   workspaceSlug?: string
   /** CONTROLLER-side marker (issue #1647): set ONLY by the device-sandbox
@@ -1681,6 +1702,7 @@ export type SpawnAgentSessionResult =
         | "device_bridge_workspace_unknown"
         | "worktree_async_wait_conflict"
         | "turn_retry_rotate_invalid"
+        | "cloud_spawn_refused"
       message: string
       details?: Record<string, unknown>
     }
@@ -1765,6 +1787,34 @@ export async function spawnAgentSession(
   // captured value; after stripping, only the boolean stays in scope.
   const deviceBridgeArrival = input.deviceBridge === true
   if (input.deviceBridge !== undefined) delete input.deviceBridge
+  // AIP-66 managed cloud (see cloud-vendors.ts): `cloud: "<vendor>"` resolves
+  // FIRST — before inference, presets, worktree, sandbox, auth, and profile
+  // resolution — so a refused field can never half-spawn and the vendor's
+  // adapter/harness pin replaces the caller's for the rest of this spawn. A
+  // refusal is typed (`cloud_spawn_refused`, field-named) and never falls
+  // back to a default vendor.
+  let cloudResolved: ResolvedCloudSpawn | undefined
+  if (input.cloud !== undefined) {
+    try {
+      cloudResolved = resolveCloudSpawn({ ...input, cloud: input.cloud })
+    } catch (err) {
+      if (err instanceof CloudSpawnError) {
+        return {
+          ok: false,
+          code: "cloud_spawn_refused",
+          message: `agent_start: ${err.message}`,
+          ...(err.field ? { details: { field: err.field } } : {}),
+        }
+      }
+      throw err
+    }
+    const { cloud: _cloud, ...withoutCloud } = input
+    input = {
+      ...withoutCloud,
+      adapter: cloudResolved.adapter,
+      harness: cloudResolved.harness,
+    }
+  }
   // `inference` (SESSION-INFERENCE-BINDING): resolved FIRST, before presets
   // or the model/route reconciliation below, into ordinary `model`/`route`/
   // `access`/`auth`/`deferredTools` values — everything downstream of this
@@ -1861,7 +1911,9 @@ export async function spawnAgentSession(
   // unset, and `model` only when the caller named none. A harness with no
   // default preset (the common case, and every test that doesn't provision one)
   // reads an empty store and leaves the spawn untouched.
-  if (!input.access?.profileRef) {
+  // A cloud spawn (AIP-66) never resolves a host billing profile — the
+  // vendor owns auth/billing — so the preset layer is skipped for it.
+  if (!cloudResolved && !input.access?.profileRef) {
     const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
     if (preset) {
       // A default preset that bills through a since-disabled (or deleted)
@@ -2604,8 +2656,15 @@ export async function spawnAgentSession(
     const row = registry.get(id)
     if (row) {
       if (!row.adapterSessionId || row.adapterSlug !== input.adapter) return undefined
+      // AIP-66 cloud re-attach: the cloud adapter resumes the VENDOR's own
+      // session id (`session/load` adopts it), which the runtime persisted
+      // onto `meta.cloud.sessionId` once learned. Prefer it over the ACP uuid
+      // (which is NOT the vendor id); a cloud session whose id was never
+      // learned falls back to the ordinary adapterSessionId and fails closed
+      // at the vendor if that isn't resolvable there.
+      const cloudId = cloudSessionIdOf(row)
       return {
-        adapterSessionId: row.adapterSessionId,
+        adapterSessionId: cloudId ?? row.adapterSessionId,
         ...(row.adapterConfigDir ? { configDir: row.adapterConfigDir } : {}),
         sourceSessionId: row.id,
       }
@@ -3198,7 +3257,11 @@ export async function spawnAgentSession(
     typeof spawnDefaults.options?.base_url === "string" && spawnDefaults.options.base_url.length > 0
   const hasCustomRouteBaseUrl =
     typeof input.route?.baseUrl === "string" && input.route.baseUrl.length > 0
-  const shouldSkipAuthResolution = hasExplicitBaseUrlOption || hasCustomRouteBaseUrl
+  // A cloud spawn (AIP-66) resolves no host credential at all — the vendor
+  // owns auth; the adapter logs in with the vendor's own OAuth flow — so
+  // auth/profile resolution is skipped outright for it.
+  const shouldSkipAuthResolution =
+    hasExplicitBaseUrlOption || hasCustomRouteBaseUrl || cloudResolved !== undefined
   let authSpec: ResolvedAuthSpec | undefined
   let authEcho: AuthEcho | undefined
   let accessProfileEcho:
@@ -3227,7 +3290,7 @@ export async function spawnAgentSession(
   // router echo (hermes/pi/opencode, above) keeps its echo-only behaviour
   // unchanged while the profile-resolved gateway also drives wire routing.
   let profileResolvedRoute: RouteSpec | undefined
-  if (resolved && input.access?.profileRef) {
+  if (resolved && input.access?.profileRef && !cloudResolved) {
     const result = await resolveAccessProfileAuth({
       adapter: input.adapter,
       profileRef: input.access.profileRef,
@@ -4371,6 +4434,17 @@ export async function spawnAgentSession(
           // `app_run` spawn, so a daemon-tool proxy the child builds can
           // auto-fill `appId` into an `app_*` call that omits one.
           ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
+          // AIP-66 cloud (cloud-vendors.ts): tell the cloud relay where to
+          // write the learned vendor session id — a path inside the SAME
+          // isolated config dir the adapter was handed above, never a
+          // credential.
+          ...(cloudResolved
+            ? {
+                [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(
+                  resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
+                ),
+              }
+            : {}),
         },
         // Exact-file AGENTS.md read grant — the driver derives the
         // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
@@ -4456,6 +4530,21 @@ export async function spawnAgentSession(
     // `composedPreamble`) — the adapter still receives the single
     // concatenated `effectivePrompt`, unchanged.
     const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
+    // AIP-66 cloud session identity (cloud-vendors.ts): persist the vendor
+    // binding as `meta.cloud` (JSON-encoded — descriptor meta values are
+    // strings). A fresh cloud spawn starts with just the vendor; a RE-ATTACH
+    // carries the full learned mapping (vendor + sessionId + url) forward
+    // from the source row so the revived descriptor keeps the vendor id.
+    const carriedCloudMeta = resumeSource ? cloudMetaOf(resumeSource) : undefined
+    const cloudMeta: CloudSessionMeta | undefined = cloudResolved
+      ? {
+          vendor: cloudResolved.vendor.slug,
+          ...(carriedCloudMeta?.sessionId !== undefined
+            ? { sessionId: carriedCloudMeta.sessionId }
+            : {}),
+          ...(carriedCloudMeta?.url !== undefined ? { url: carriedCloudMeta.url } : {}),
+        }
+      : undefined
     const desc = registry.spawnAgent({
       id: mintedSessionId,
       ...resumeLineageFields,
@@ -4516,12 +4605,13 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId || appBoundary || input.workflowOwner
+      ...(input.boardId || appBoundary || input.workflowOwner || cloudMeta
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
               ...workflowOwnerMeta(input.workflowOwner),
               ...(appBoundary ? boundaryMeta(appBoundary) : {}),
+              ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
             },
           }
         : {}),
@@ -4605,6 +4695,28 @@ export async function spawnAgentSession(
     // found — present-or-absent, so an undefined field already means absent.
     if (workspaceRulesResolution.path) desc.rulesMd = workspaceRulesResolution.path
     liveSessionId = desc.id
+    // AIP-66 cloud learning (cloud-vendors.ts): the vendor session id only
+    // exists after the relay's first prompt reaches the vendor — poll the
+    // meta file the relay writes (path handed via
+    // CLOUD_SESSION_META_FILE_ENV above) and stamp the learned mapping onto
+    // `meta.cloud` the moment it appears, so a later restart/re-attach can
+    // resume the VENDOR id. Self-stops on learn, on session death, or at
+    // the timeout; timers are unref'd so they never hold the process open.
+    if (cloudResolved) {
+      watchCloudSessionMeta({
+        metaFilePath: cloudSessionMetaFilePath(
+          resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
+        ),
+        vendor: cloudResolved.vendor.slug,
+        shouldContinue: () => {
+          const s = registry.get(desc.id)?.status
+          return s === "starting" || s === "running"
+        },
+        onLearned: learned => {
+          registry.mergeMeta(desc.id, { cloud: encodeCloudSessionMeta(learned) })
+        },
+      })
+    }
     // PLAN-D1 §1 — the boot-time ledger stamp ran before this id existed;
     // backfill it now so `sandbox list` can point at the spawning session.
     // Best-effort.

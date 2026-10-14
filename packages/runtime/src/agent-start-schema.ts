@@ -530,6 +530,19 @@ export const agentStartInputShape = {
   sandboxCheckpoint: jsonTolerant(sandboxCheckpointOverrideSchema)
     .optional()
     .describe(`Per-spawn sandbox checkpoint override: false disables, or an object. ${help("sandboxCheckpoint")}`),
+  cloud: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Managed cloud vendor slug (AIP-66, e.g. 'anthropic') — the VENDOR " +
+        "owns the machine and the harness; the host relays through the " +
+        "vendor's cloud adapter (adapter resolves to the vendor's, e.g. " +
+        "'claude-code-cloud'). DISTINCT from `sandbox` (a host-booted box) " +
+        "and mutually exclusive with it and the other fields the vendor can " +
+        "never apply (worktree, commandSandbox, mcpServers, daemonMount, " +
+        `bundles, browser, appServe, inference). ${help("cloud")}`
+    ),
   appServe: jsonTolerant(
     z
       .object({

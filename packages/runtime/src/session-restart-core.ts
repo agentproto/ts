@@ -60,6 +60,7 @@ import {
   type SessionAccessProfileEcho,
 } from "./sessions.js"
 import { isRetired } from "./session-retirement.js"
+import { cloudSessionIdOf } from "./cloud-vendors.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
@@ -988,7 +989,7 @@ export async function restartAgentSession(
   // is a box path, meaningless on the host FS.
   const augmented =
     sandboxId !== undefined || opts.forceAgentResume ? prev : await augmentWithFsResume(prev)
-  const strategy: RestartStrategy =
+  let strategy: RestartStrategy =
     sandboxId !== undefined
       ? // The box daemon's own `agent_start` now takes a resume target (its
         // prior in-box session id) and rehydrates that adapter conversation
@@ -1005,6 +1006,15 @@ export async function restartAgentSession(
       : opts.forceAgentResume
         ? { kind: "agent", resumeSessionId: prev.adapterSessionId }
         : decideRestartStrategy(augmented)
+  // AIP-66 cloud: the cloud adapter resumes the VENDOR's own session id,
+  // learned onto `meta.cloud.sessionId` — prefer it over the ACP uuid (which
+  // is not the vendor id) in every agent-resume strategy. A cloud row whose
+  // id was never learned keeps `prev.adapterSessionId` and fails closed at
+  // the vendor if that isn't resolvable there.
+  if (strategy.kind === "agent" && strategy.resumeSessionId !== undefined) {
+    const cloudId = cloudSessionIdOf(prev)
+    if (cloudId !== undefined) strategy = { ...strategy, resumeSessionId: cloudId }
+  }
 
   if (strategy.kind !== "agent") {
     // A request this path can't serve, not a server fault: a command session
