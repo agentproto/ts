@@ -227,6 +227,15 @@ describe("restart handoff — full prior transcript + structured prompt", () => 
           commandPreview: "fake-cli (box test double)",
           async startSession(args): Promise<AgentSessionLike> {
             receivedStarts.push(args as Record<string, unknown>)
+            // The box still holds the registry row, but its conversation
+            // store is gone (the dead box's files never came back) — the
+            // ACP-level "not found" rejection. The box daemon retries the
+            // start fresh, the host sees a blank answer and flags the
+            // fallback: exactly the precondition the structured handoff
+            // below exists for.
+            if (args.resumeSessionId) {
+              throw new Error(`Resource not found (session ${args.resumeSessionId})`)
+            }
             return fakeAgentSession("box")
           },
         }
