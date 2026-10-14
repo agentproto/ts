@@ -1004,10 +1004,11 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(result.isError).toBe(true)
     const err = toolJson(result)
     expect(err.status).toBe(400)
-    // A rejected override now carries the typed restart code (the legacy
-    // `restart_override_invalid` spelling survives only on the pre-flight
-    // PTY-with-override guard, below).
-    expect(err.error).toBe("override_invalid")
+    // A rejected override carries the typed restart payload: a stable code
+    // plus the human sentence, instead of a bare error string.
+    const typed = err.error as { code?: string; reason?: string }
+    expect(typed.code).toBe("override_invalid")
+    expect(typed.reason).toMatch(/isn't valid for this session/)
     // No new session spawned — rejected before startSession.
     expect(calls).toHaveLength(0)
     expect(registry.list()).toHaveLength(before)
@@ -1034,7 +1035,11 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(result.isError).toBe(true)
     const err = toolJson(result)
     expect(err.status).toBe(400)
-    expect(err.error).toBe("restart_override_invalid")
+    // Same typed payload as the access-profile rejection above — one
+    // vocabulary for every rejected override, not a per-guard spelling.
+    const typed = err.error as { code?: string; message?: string }
+    expect(typed.code).toBe("override_invalid")
+    expect(typed.message).toMatch(/only applies to agent-cli sessions/)
 
     await close()
     registry.shutdown()

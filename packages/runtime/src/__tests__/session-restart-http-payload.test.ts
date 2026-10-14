@@ -18,7 +18,7 @@ import type { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
 
 import { startHttpServer } from "../http-server.js"
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import { createSessionsRegistry, type AgentSessionLike, type PtyFactory } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createRuntimeEvents } from "../events.js"
 import { SESSION_RESTART_REASONS } from "../session-restart-core.js"
@@ -56,6 +56,18 @@ function noopHeartbeat(): HeartbeatRunner {
   return { start() {}, stop() {}, async fireNow() {} }
 }
 
+/** The PTY override-guard test below only needs a descriptor with no
+ *  `adapterSlug` — the route rejects the request before anything talks to
+ *  the PTY, so a stub process is all the registry needs. */
+const fakePtyFactory: PtyFactory = () => ({
+  pid: 4242,
+  write: () => {},
+  resize: () => {},
+  kill: () => {},
+  onData: () => {},
+  onExit: () => {},
+})
+
 function idleAgentSession(): AgentSessionLike {
   return {
     sessionId: "s",
@@ -92,6 +104,7 @@ async function boot(
   const registry = createSessionsRegistry({
     persist: false,
     sessionEvents: createSessionEventBus(),
+    spawnPty: fakePtyFactory,
   })
   const http = await startHttpServer({
     port,
