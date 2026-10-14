@@ -1,5 +1,45 @@
 # @agentproto/cli
 
+## 1.21.0
+
+### Minor Changes
+
+- ff572e6: Model role presets: switch the repo-maintenance reviewers between five named model sets with one key.
+
+  - `@agentproto/runtime`: `MODEL_ROLE_PRESETS` (`opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet`) and a new `modelRolePreset` config key (hot), a layer between the daemon's `models` and the built-in defaults. `model_roles` takes a per-call `preset`, reports the preset in effect and each role's required `adapter` (`opencode/…`/`opencode-go/…` → `opencode`, `claude-*` → `claude-code`, via `adapterForModelId`).
+  - `@agentproto/workflow-runtime`: an `entry.mjs` agent step may pass `adapter` as a run-time selector; a selector that returns undefined keeps the agent ref's adapter.
+  - `@agentproto/apps`: the `maintain` workflow takes `reviewPreset` and spawns each reviewer on the adapter its model needs, so an OpenCode Go free model runs on opencode instead of claude-code.
+  - `@agentproto/cli`: `agentproto maintain --review-preset <name>`.
+
+- 060dea8: `session_migrate` (MCP, `POST /sessions/:id/migrate`, `agentproto sessions migrate`) resumes a sandbox session on a new box: it takes a final checkpoint of the old box when it is still reachable, boots a fresh box from the workspace remote, restores the work branch and the pushed uncommitted snapshot (commits stay commits, the snapshot stays uncommitted), carries the transcript over via the context checkpoint, then stops the old box. A shared `restoreCheckpointSteps` planner now backs spawn, restart and migrate.
+- 795c382: Sandbox sessions now survive a host daemon restart. Shutdown detaches provider-box sessions instead of killing them: the host closes its connection only, leaves the box and its agent session running, persists a re-attach record (`sandboxReattach`, row stays `running` with `hostDetached`), and asks the provider to extend the box lifetime to 60 minutes (`BootedSandbox.extendTimeout`, implemented for e2b via `setTimeout`; providers cap it, a rejected request leaves the existing lifetime). At boot, before eager resume, the daemon reconnects through `SandboxProvider.connect`, replays the events the box produced meanwhile from the saved transcript seq, and re-binds the same session id without re-prompting the agent. A box that no longer exists ends the row with the new `sandbox_gone` end reason and a `gone` ledger entry. `/health` and `daemon_health` gain `sandboxSessions`, and `agentproto daemon restart`/`stop` report how many sandbox sessions were detached and re-attached. Explicit kill, idle reap and cost kill still tear the box down; device-paired sandboxes and local sessions are unchanged.
+
+### Patch Changes
+
+- fe3c879: An AIP-42 AGENT.md now reaches every harness, not just mastra-agent. `app_run` and workflow agent refs share one projection (`projectAgentToSpawn`): body, persona, boundaries and traits become the first prompt's prefix, declared tools scope a daemon gateway mount (`allowTools`) for any adapter, declared skills reach the spawn's `skills`, and each gap the harness can't honour raises a `session:harness-warning`. `composeInstructions` moves to `@agentproto/agent`. `app_run` spawns now get the daemon `/mcp` URL, workflow host spawns deliver session skills, and the AGENT.md path goes only to adapters whose manifest declares `metadata.agentManifestOption` (mastra-agent), so antigravity's `agent` option (an `agy` agent name) is no longer handed a path.
+- f422e23: Docs: sync OPENCODE.md and the CLI README with the latest release.
+- 27700c4: Size presets for the e2b workstation: `config.size` (`nano`, `small`, `medium`, `large`, `x-large`, `xx-large`) boots that preset's published `agentproto-workstation-<size>` template. `config.template` still wins, and with neither set the bare `agentproto-workstation` template boots, now built at the default `large` (4 vCPU / 8 GB). An unknown size fails with the list of valid sizes; a size e2b refused to create (today `x-large` / `xx-large`, over the plan's 8 vCPU / 8192 MB cap) fails with the recorded e2b error. Exports `SIZES`, `DEFAULT_SIZE` and the `WorkstationSize` type. The workstation templates now bake the GitHub CLI (`gh`, pinned and checksum-verified).
+
+  Sandbox agents can open PRs themselves: a spawn whose workspace has a remote token now also gets that same daemon-derived token as `GH_TOKEN`, next to `AGENTPROTO_GIT_TOKEN`, so `gh pr create` works in the box (the token needs Contents + Pull requests write). `GH_TOKEN` is reserved like `AGENTPROTO_GIT_TOKEN`: it is stripped from caller-declared `env.passthrough` / `env.auth.state.env` / `join.tokenEnv`, and it never resolves to the daemon's own `GH_TOKEN`. A caller that used to pass `GH_TOKEN` through `env.passthrough` no longer gets it in the box.
+
+- 19c82a5: `turnRetry` can now rotate to another model instead of retrying the throttled one. `turnRetry.rotate` is an ordered list of `{ model, profileRef? }` fallbacks: on a rate-limit or no-output stall (`rotateOn`, add `upstream-5xx` to opt in) the live session is switched to the first eligible target before the continuation prompt, and the `[turn-retry]` notice and a `session:turn-retry` `rotated` event (with `fromModel`/`toModel`) record it. A daemon-wide model cooldown (Retry-After honoured, else `cooldownMs`, default 10 min) keeps every session off a throttled model and is exposed read-only as `modelCooldowns` in `daemon_health` and `/health`. Targets must pass the profile `models` allow-list and the spawn adapter/wallet checks; with none eligible the retry falls back to the same model. A free OpenCode model (`-free`, `big-pickle`) only rotates to free ids: `agent_start` rejects a paid id with `turn_retry_rotate_invalid`, as do user and harness presets. Harness presets (`harness_preset_create`) can now carry `turnRetry`. v1 rotates within the session's current profile only. The CLI `--turn-retry` JSON validates `rotate`, `rotateOn` and `cooldownMs`.
+- Updated dependencies [cedd329]
+- Updated dependencies [3c5c88f]
+- Updated dependencies [d3549e7]
+- Updated dependencies [36dac26]
+- Updated dependencies [27700c4]
+- Updated dependencies [2dda22e]
+- Updated dependencies [3c5c88f]
+- Updated dependencies [ff572e6]
+- Updated dependencies [c6f1288]
+- Updated dependencies [795c382]
+  - @agentproto/worktree@0.15.0
+  - @agentproto/adapter-browser@0.4.0
+  - @agentproto/sandbox-e2b@0.8.0
+  - @agentproto/apps@0.23.0
+  - @agentproto/app-kit@1.7.5
+  - @agentproto/sandbox-box@0.2.30
+
 ## 1.20.0
 
 ### Minor Changes

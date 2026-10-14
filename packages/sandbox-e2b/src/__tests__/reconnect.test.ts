@@ -85,7 +85,18 @@ describe("e2bSandboxProvider.connect", () => {
     )
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("agentproto serve --port 18790 --bind 0.0.0.0"),
-      expect.objectContaining({ background: true, envs: { OPENROUTER_API_KEY: "k" } }),
+      expect.objectContaining({
+        background: true,
+        // passthrough + the box's build env (default preset: 4 vCPU / 8192 MB
+        // → concurrency 2, heap 2457) — a restarted daemon gets the same env
+        // a fresh boot would give it
+        envs: {
+          OPENROUTER_API_KEY: "k",
+          NODE_OPTIONS: "--max-old-space-size=2457",
+          npm_config_workspace_concurrency: "2",
+          TURBO_CONCURRENCY: "2",
+        },
+      }),
     )
   })
 

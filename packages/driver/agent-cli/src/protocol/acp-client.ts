@@ -283,6 +283,12 @@ export function createAcpProtocolArm(
           sessionId: opts.resumeSessionId,
           cwd,
           mcpServers: opts.mcpServers,
+          // claude-agent-acp re-reads `_meta.systemPrompt` on loadSession too
+          // (native-resume cold-spawns every turn) — sent on BOTH calls or
+          // the text is lost after turn 1.
+          ...(opts.appendSystemPrompt
+            ? { meta: { systemPrompt: { append: opts.appendSystemPrompt } } }
+            : {}),
         })
       } else {
         session = await client.newSession({
@@ -291,6 +297,9 @@ export function createAcpProtocolArm(
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
           ...(opts.mode ? { mode: opts.mode } : {}),
+          ...(opts.appendSystemPrompt
+            ? { meta: { systemPrompt: { append: opts.appendSystemPrompt } } }
+            : {}),
         })
       }
     },

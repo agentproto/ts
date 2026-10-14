@@ -388,9 +388,12 @@ never composed; `nocache` implies `compose: false`.
   independent agreement). The claims rubric never shares with correctness.
 - If the reviewer's turn ends without a valid verdict file, a bounded recovery
   step (`review.recoveryPresets` / the `review.recovery` model role) may
-  recover the verdict from the reviewer's own latest output, or classify why
-  the review failed; `recovery` records it apart from the reviewer. It never
-  fabricates an approval from partial or errored analysis. See
+  first extract a verdict the reviewer itself stated as complete JSON in its
+  own chat, lift grounded BLOCKING findings from its prose, ask the original
+  reviewer once to state its verdict, or classify why the review failed;
+  `recovery` records it apart from the reviewer. The recovery model never
+  approves, and an approval comes only from the original reviewer — never
+  from partial or errored analysis, tool output, or a quote. See
   `docs/cli/verbs/review.md`.
 - The reviewer spawns with role `executor`, under the calling session.
 - It gets a pointer-style prompt: the range plus the rubric path. There's no

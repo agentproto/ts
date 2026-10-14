@@ -13,7 +13,8 @@
  * the runtime does not depend on `@agentproto/a2a`.
  */
 
-import { appendFile, mkdir, open, readFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { appendFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 /** A2A spec version the field names and error codes below follow. */
@@ -70,6 +71,16 @@ export const JSON_RPC_ERROR = {
   extensionSupportRequired: -32008,
   versionNotSupported: -32009,
 } as const
+
+/** A thrown JSON-RPC failure: the handler answers with `code` + `message`. */
+export class RpcFailure extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message)
+  }
+}
 
 // ── A2A Task shapes ────────────────────────────────────────────────────
 
@@ -641,6 +652,333 @@ export function createA2aTaskLedger(dir: string): A2aTaskLedger {
         })
         .map(wrapped => wrapped.entry)
     },
+  }
+}
+
+// ── push notification configs ─────────────────────────────────────────
+
+/** `AuthenticationInfo` (A2A 1.0 §4.3.2): the HTTP auth scheme plus its
+ *  credentials, sent as `Authorization: <scheme> <credentials>`. */
+export interface A2aAuthenticationInfo {
+  scheme: string
+  credentials?: string
+}
+
+/** `TaskPushNotificationConfig` (A2A 1.0 §4.3.1, ProtoJSON lowerCamelCase):
+ *  one webhook registration for one task. */
+export interface A2aTaskPushNotificationConfig {
+  /** Opaque config id (given by the client or a fresh `randomUUID()`). */
+  id: string
+  taskId: string
+  /** The webhook URL every update is POSTed to. `https:` only, except
+   *  `http:` to a loopback host (local testing). */
+  url: string
+  /** A token unique for this task or session, echoed to the receiver as the
+   *  `X-A2A-Notification-Token` header. */
+  token?: string
+  authentication?: A2aAuthenticationInfo
+  tenant?: string
+}
+
+/** Max configs one task may carry; a create beyond it is `invalidParams`. */
+export const A2A_PUSH_CONFIG_LIMIT = 10
+
+/** Thrown by the store's `create` when a task already has
+ *  `A2A_PUSH_CONFIG_LIMIT` configs. */
+export class A2aPushConfigLimitError extends Error {
+  constructor(taskId: string) {
+    super(`task "${taskId}" already has ${A2A_PUSH_CONFIG_LIMIT} push notification configs (the maximum)`)
+    this.name = "A2aPushConfigLimitError"
+  }
+}
+
+// `URL.hostname` keeps the brackets on an IPv6 literal (`[::1]`).
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "::1", "[::1]"])
+
+/**
+ * The push-config URL rule: `https:` only, except `http:` to
+ * `localhost` / `127.0.0.1` / `::1` (local testing), and never a URL with
+ * userinfo. Returns a human-readable rejection, or `undefined` when the URL
+ * is acceptable.
+ */
+export function checkA2aPushUrl(url: string): string | undefined {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return `push notification url is not a valid URL: ${JSON.stringify(url)}`
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    return "push notification url must not carry userinfo (user:password@)"
+  }
+  if (parsed.protocol === "https:") return undefined
+  if (parsed.protocol === "http:" && LOOPBACK_HOSTS.has(parsed.hostname)) return undefined
+  return `push notification url must be https: (or http: to localhost / 127.0.0.1 / ::1), got ${JSON.stringify(parsed.protocol)}`
+}
+
+const isPlainObjectStrict = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v)
+
+/**
+ * Validate a raw `TaskPushNotificationConfig`-shaped value and stamp
+ * `taskId` (and `id` when the caller has none). Throws `Error(message)` on
+ * any shape or URL problem — the JSON-RPC layer maps that to `invalidParams`
+ * (`id` is assigned here so a rejected config never claims one).
+ */
+export function parseA2aTaskPushNotificationConfig(
+  raw: unknown,
+  opts: { taskId: string; id?: string },
+): A2aTaskPushNotificationConfig {
+  if (!isPlainObjectStrict(raw)) throw new Error("push notification config must be an object")
+  const url = raw.url
+  if (typeof url !== "string" || url === "") throw new Error("push notification config url must be a non-empty string")
+  const badUrl = checkA2aPushUrl(url)
+  if (badUrl) throw new Error(badUrl)
+  let token: string | undefined
+  if (raw.token !== undefined) {
+    if (typeof raw.token !== "string" || raw.token === "") throw new Error("push notification config token must be a non-empty string")
+    token = raw.token
+  }
+  let authentication: A2aAuthenticationInfo | undefined
+  if (raw.authentication !== undefined) {
+    const auth = raw.authentication
+    if (!isPlainObjectStrict(auth)) throw new Error("push notification config authentication must be an object")
+    if (typeof auth.scheme !== "string" || auth.scheme === "") {
+      throw new Error("push notification config authentication.scheme must be a non-empty string")
+    }
+    let credentials: string | undefined
+    if (auth.credentials !== undefined) {
+      if (typeof auth.credentials !== "string") throw new Error("push notification config authentication.credentials must be a string")
+      credentials = auth.credentials
+    }
+    authentication = { scheme: auth.scheme, ...(credentials !== undefined ? { credentials } : {}) }
+  }
+  let tenant: string | undefined
+  if (raw.tenant !== undefined) {
+    if (typeof raw.tenant !== "string") throw new Error("push notification config tenant must be a string")
+    tenant = raw.tenant
+  }
+  let id = opts.id
+  if (id === undefined) {
+    if (raw.id !== undefined) {
+      if (typeof raw.id !== "string" || raw.id === "") throw new Error("push notification config id must be a non-empty string")
+      id = raw.id
+    } else {
+      id = randomUUID()
+    }
+  }
+  return {
+    id,
+    taskId: opts.taskId,
+    url,
+    ...(token !== undefined ? { token } : {}),
+    ...(authentication !== undefined ? { authentication } : {}),
+    ...(tenant !== undefined ? { tenant } : {}),
+  }
+}
+
+export interface A2aPushConfigStore {
+  /** Store one config for a task. A config with an existing `id` replaces
+   *  it; a new one beyond `A2A_PUSH_CONFIG_LIMIT` per task throws
+   *  `A2aPushConfigLimitError`. */
+  create(appId: string, config: A2aTaskPushNotificationConfig): Promise<A2aTaskPushNotificationConfig>
+  get(appId: string, taskId: string, id: string): Promise<A2aTaskPushNotificationConfig | undefined>
+  /** Every config of one task, in creation order. */
+  list(appId: string, taskId: string): Promise<A2aTaskPushNotificationConfig[]>
+  /** Remove one config; resolves `true` when it existed. */
+  delete(appId: string, taskId: string, id: string): Promise<boolean>
+}
+
+/** Write chains of every push config store, keyed by file path. */
+const pushConfigWriteChains = new Map<string, Promise<unknown>>()
+
+/** Per-app JSON file beside the task ledger
+ *  (`<dir>/<encoded appId>.push.json`): `{ [taskId]: TaskPushNotificationConfig[] }`.
+ *  Every write is atomic (tmp file + rename). */
+export function createA2aPushConfigStore(dir: string): A2aPushConfigStore {
+  const fileFor = (appId: string): string => join(dir, `${encodeURIComponent(appId)}.push.json`)
+  const readAll = async (appId: string): Promise<Record<string, A2aTaskPushNotificationConfig[]>> => {
+    let raw: string
+    try {
+      raw = await readFile(fileFor(appId), "utf8")
+    } catch {
+      return {}
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (!isPlainObjectStrict(parsed)) return {}
+      const out: Record<string, A2aTaskPushNotificationConfig[]> = {}
+      for (const [taskId, configs] of Object.entries(parsed)) {
+        if (Array.isArray(configs)) {
+          out[taskId] = configs.filter(isPlainObjectStrict) as unknown as A2aTaskPushNotificationConfig[]
+        }
+      }
+      return out
+    } catch {
+      return {}
+    }
+  }
+  const writeAll = async (appId: string, all: Record<string, A2aTaskPushNotificationConfig[]>): Promise<void> => {
+    await mkdir(dir, { recursive: true })
+    const file = fileFor(appId)
+    const tmp = `${file}.${randomUUID()}.tmp`
+    await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, "utf8")
+    await rename(tmp, file)
+  }
+  /** In-process write lock: create/delete are read-modify-write, so two
+   *  concurrent calls on the same file would lose one write. Each mutation
+   *  chains onto the previous one for that file (reads stay lock-free). The
+   *  chain map is module-level: the HTTP handler builds a fresh store per
+   *  request, so a per-store map would never see the other request. */
+  const chains = pushConfigWriteChains
+  const withLock = <T>(file: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = chains.get(file) ?? Promise.resolve()
+    const run = prev.then(fn)
+    const guard = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    chains.set(file, guard)
+    void guard.then(() => {
+      if (chains.get(file) === guard) chains.delete(file)
+    })
+    return run
+  }
+  return {
+    create(appId, config) {
+      return withLock(fileFor(appId), async () => {
+        const all = await readAll(appId)
+        const configs = all[config.taskId] ?? []
+        const existing = configs.findIndex(c => c.id === config.id)
+        if (existing === -1 && configs.length >= A2A_PUSH_CONFIG_LIMIT) {
+          throw new A2aPushConfigLimitError(config.taskId)
+        }
+        if (existing === -1) configs.push(config)
+        else configs[existing] = config
+        all[config.taskId] = configs
+        await writeAll(appId, all)
+        return config
+      })
+    },
+    async get(appId, taskId, id) {
+      const all = await readAll(appId)
+      return all[taskId]?.find(c => c.id === id)
+    },
+    async list(appId, taskId) {
+      const all = await readAll(appId)
+      return all[taskId] ?? []
+    },
+    delete(appId, taskId, id) {
+      return withLock(fileFor(appId), async () => {
+        const all = await readAll(appId)
+        const configs = all[taskId]
+        if (!configs) return false
+        const idx = configs.findIndex(c => c.id === id)
+        if (idx === -1) return false
+        configs.splice(idx, 1)
+        if (configs.length === 0) delete all[taskId]
+        else all[taskId] = configs
+        await writeAll(appId, all)
+        return true
+      })
+    },
+  }
+}
+
+// ── task watcher (SSE + push share one poll loop) ─────────────────────
+
+/** `{statusUpdate}` payload of a `StreamResponse` (A2A 1.0 oneof member). */
+export interface A2aStatusUpdateEvent {
+  taskId: string
+  contextId?: string
+  status: A2aTask["status"]
+  final?: boolean
+}
+
+/** `{artifactUpdate}` payload of a `StreamResponse` (A2A 1.0 oneof member). */
+export interface A2aArtifactUpdateEvent {
+  taskId: string
+  contextId?: string
+  artifact: A2aArtifact
+  lastChunk?: boolean
+}
+
+/** What a `watchTask` iteration yields: one `StreamResponse` member, or an
+ *  `error` marker (a mid-stream `readTask` failure — not a StreamResponse,
+ *  the consumers log/close on it). */
+export type A2aWatchEvent =
+  | { task: A2aTask }
+  | { statusUpdate: A2aStatusUpdateEvent }
+  | { artifactUpdate: A2aArtifactUpdateEvent }
+  | { error: { code: number; message: string } }
+
+/** `watchTask` options: the poll cadence, the absolute deadline (ms per
+ *  `now`), an abort signal (consumer disconnect), whether to yield the
+ *  initial `{task}`, and the injectable clock/sleep tests use to run fast. */
+export interface A2aWatchTaskOptions {
+  readTask: (taskId: string) => Promise<A2aTask>
+  pollMs: number
+  deadline: number
+  signal?: { aborted: boolean }
+  initial?: boolean
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * The poll loop both `SendStreamingMessage` / `SubscribeToTask` (over SSE)
+ * and push delivery run on: read the task, yield a `{task}` when `initial`
+ * asks for one, then every `pollMs` yield `{artifactUpdate}` for each
+ * artifact not seen yet and a `{statusUpdate}` whenever the state or its
+ * timestamp moved — artifacts first, so the final `{statusUpdate: {final:
+ * true}}` of a terminal state is always last. Ends on the terminal event,
+ * the `deadline` (yielding a `{statusUpdate}` of the state the task is
+ * actually in, claiming `final` only when that state is terminal), the
+ * `signal`, or a read failure (one `{error}` yield, then done).
+ */
+export async function* watchTask(taskId: string, opts: A2aWatchTaskOptions): AsyncGenerator<A2aWatchEvent> {
+  const now = opts.now ?? Date.now
+  const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms)))
+  const first = await opts.readTask(taskId)
+  if (opts.initial === true) yield { task: first }
+  const sent = new Set((first.artifacts ?? []).map(a => a.artifactId))
+  let task = first
+  for (;;) {
+    if (opts.signal?.aborted === true) return
+    await sleep(opts.pollMs)
+    if (opts.signal?.aborted) return
+    let next: A2aTask
+    try {
+      next = await opts.readTask(taskId)
+    } catch (err) {
+      yield {
+        error: {
+          code: err instanceof RpcFailure ? err.code : JSON_RPC_ERROR.internal,
+          message: err instanceof RpcFailure ? err.message : err instanceof Error ? err.message : String(err),
+        },
+      }
+      return
+    }
+    for (const artifact of next.artifacts ?? []) {
+      if (sent.has(artifact.artifactId)) continue
+      sent.add(artifact.artifactId)
+      yield { artifactUpdate: { taskId, contextId: next.contextId, artifact, lastChunk: true } }
+    }
+    const terminal = TERMINAL_TASK_STATES.has(next.status.state)
+    const changed = next.status.state !== task.status.state || next.status.timestamp !== task.status.timestamp
+    const expired = now() >= opts.deadline
+    task = next
+    if (terminal || changed || expired) {
+      yield {
+        statusUpdate: {
+          taskId,
+          contextId: next.contextId,
+          status: next.status,
+          ...(terminal ? { final: true } : {}),
+        },
+      }
+    }
+    if (terminal || expired) return
   }
 }
 

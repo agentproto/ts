@@ -97,6 +97,12 @@ import {
   type SandboxCheckpointConfig,
   type ResolvedSandboxCheckpointConfig,
 } from "./sandbox-delivery.js"
+import { resolveSandboxWorkspaceSource } from "./sandbox-workspace-derive-remote.js"
+import {
+  setupTarWorkspace,
+  tarCheckpointProxyOpts,
+  type TarCheckpointTarget,
+} from "./sandbox-tar-checkpoint.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -1264,6 +1270,11 @@ export interface SpawnAgentSessionInput {
    *  depth/quota/role gates, and an explicit `boardId` on a task verb still
    *  wins over it. */
   boardId?: string
+  /** Workflow ownership of this spawn, stamped onto the descriptor as
+   *  `meta.workflowRunId` / `workflowId` / `workflowStepId` — the same keys a
+   *  `wf:*` agent-step session carries, so reports and session outcomes link
+   *  the session to its run and step. Descriptor-only: no gate reads it. */
+  workflowOwner?: { runId: string; workflowId: string; stepId: string }
   /** Source label for this spawn (channel/harness). Descriptor-only. */
   origin?: string
   /** Installed app id this spawn runs on behalf of (`app_run` sets this to
@@ -1386,6 +1397,15 @@ export interface SpawnAgentSessionInput {
    *  a `session:harness-warning` with the spawn's own boundary warnings and
    *  returned in the result's `warnings`. */
   harnessWarnings?: string[]
+  /** Extra system-prompt text for this session (the AIP-42 AGENT.md body,
+   *  when the resolved adapter declares a real system-prompt channel —
+   *  `ResolvedAgentAdapter.supportsSystemPrompt`). Delivered through
+   *  `startSession({ appendSystemPrompt })` → the driver's declared channel;
+   *  a sandbox spawn or an adapter with no channel falls back to a
+   *  first-prompt prefix + harness warning right here (never-silent, same
+   *  rule as `allowTools`). Persisted on the descriptor so restart /
+   *  fresh-continuation can re-apply it. */
+  appendSystemPrompt?: string
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   notifyUrl?: string
   notifySecret?: string
@@ -1706,6 +1726,12 @@ export function deviceContractLine(device: string): string {
   )
 }
 
+function workflowOwnerMeta(owner: SpawnAgentSessionInput["workflowOwner"]): Record<string, string> {
+  return owner
+    ? { workflowRunId: owner.runId, workflowId: owner.workflowId, workflowStepId: owner.stepId }
+    : {}
+}
+
 export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
@@ -2010,6 +2036,10 @@ export async function spawnAgentSession(
   // that is the one shape where the host path is meaningless in the box and
   // the box should hold a fresh checkout of the repo instead.
   let sandboxWorkspace: { slug: string; remote: WorkspaceRemote } | undefined
+  // No configured/derivable remote: the box works in a tar-checkpointed dir.
+  let sandboxTarWorkspace: { slug: string } | undefined
+  // Why a remote was derived or skipped — written to the session's transcript.
+  let sandboxSourceNotices: string[] = []
   if (!cwd || !resolvedSlug) {
     try {
       const config = await loadWorkspacesConfig()
@@ -2019,8 +2049,11 @@ export async function spawnAgentSession(
           if (ws) {
             cwd = ws.path
             resolvedSlug = ws.slug
-            if (input.sandbox !== undefined && !isDeviceSpawn && ws.remote) {
-              sandboxWorkspace = { slug: ws.slug, remote: ws.remote }
+            if (input.sandbox !== undefined && !isDeviceSpawn) {
+              const source = await resolveSandboxWorkspaceSource(ws)
+              sandboxSourceNotices = source.notices
+              if (source.kind === "remote") sandboxWorkspace = { slug: ws.slug, remote: source.remote }
+              else sandboxTarWorkspace = { slug: ws.slug }
             }
           } else if (deviceBridgeArrival) {
             // DEVICE-BRIDGE ONLY (issue #1647): a spawn that crossed the
@@ -2977,6 +3010,31 @@ export async function spawnAgentSession(
         " for a sandbox spawn.",
     }
   }
+  // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────
+  // An adapter that declared a manifest `systemPrompt` channel takes the
+  // text through `startSession({ appendSystemPrompt })` (the driver applies
+  // it per `via`). A sandbox spawn — the box resolves and spawns its OWN
+  // adapter build, so this host's channel declaration doesn't travel with
+  // it — or a resolved adapter that declared no channel falls back to
+  // prefixing the text onto the first prompt: warned right here, prefixed
+  // in the composition below, same never-silent rule as `allowTools`.
+  const appendSystemPromptChannel =
+    input.appendSystemPrompt !== undefined &&
+    input.sandbox === undefined &&
+    resolved?.supportsSystemPrompt === true
+      ? input.appendSystemPrompt
+      : undefined
+  if (input.appendSystemPrompt !== undefined && appendSystemPromptChannel === undefined) {
+    spawnWarnings.push(
+      `agent_start: system-prompt text not delivered via a system-prompt channel — ` +
+        (input.sandbox !== undefined
+          ? "a sandbox spawn starts the adapter on the box, which owns its own configuration."
+          : `adapter "${input.adapter}" declares no manifest systemPrompt channel.`) +
+        (typeof input.prompt === "string"
+          ? " It rides the first prompt's prefix instead."
+          : " There is no string first prompt to prefix it onto, so it is not delivered."),
+    )
+  }
   // ── App boundary: enforceability (never a silent downgrade) ─────────────
   // Daemon file tools / command_execute are always confined by identity. The
   // harness's NATIVE tools are confined only through the OS sandbox + a
@@ -3571,6 +3629,12 @@ export async function spawnAgentSession(
       ),
       ...agentsMdParts,
       parentContextLine,
+      // No-channel fallback for `appendSystemPrompt` (decision above): the
+      // text the harness won't take as a real system prompt lands directly
+      // ahead of the caller's own ask, like `prefixPrompt` would compose it.
+      ...(appendSystemPromptChannel === undefined && input.appendSystemPrompt !== undefined
+        ? [input.appendSystemPrompt]
+        : []),
       input.prompt,
     ]
       .filter((p): p is string => !!p)
@@ -3730,7 +3794,9 @@ export async function spawnAgentSession(
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
+        ...(input.boardId || input.workflowOwner
+          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner) } }
+          : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
@@ -3751,6 +3817,11 @@ export async function spawnAgentSession(
             }
           : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
+        // System-prompt text, carried on the row so restart/lazy-resume can
+        // re-apply it on the same channel decision (channel or prefix).
+        ...(input.appendSystemPrompt !== undefined
+          ? { appendSystemPrompt: input.appendSystemPrompt }
+          : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       })
       // Stamp the AGENTS.md resolution (WP-R2) on the pending descriptor so
@@ -3866,6 +3937,12 @@ export async function spawnAgentSession(
             ...(input.permissionHold ? { permissionHold: true } : {}),
             ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
             ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
+            // AGENT.md text on the adapter's declared system-prompt channel
+            // (channel decision computed above — never set for a sandbox or
+            // a no-channel adapter, which fell back to the prefix instead).
+            ...(appendSystemPromptChannel !== undefined
+              ? { appendSystemPrompt: appendSystemPromptChannel }
+              : {}),
             onActivity: () => registry.pulseActivity(pendingDesc.id),
           })
           let asyncPrompt = effectivePrompt
@@ -4049,6 +4126,13 @@ export async function spawnAgentSession(
         ...(accessProfileEcho ? { authProfileRef: accessProfileEcho.profileRef } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
+        ...(sandboxTarWorkspace
+          ? {
+              tarWorkspace: sandboxTarWorkspace,
+              sessionId: mintedSessionId,
+              onNotice: (text: string) => registry.recordNotice(mintedSessionId, text),
+            }
+          : {}),
         ...(sandboxWorkspace
           ? {
               workspace: sandboxWorkspace,
@@ -4089,6 +4173,7 @@ export async function spawnAgentSession(
       sandboxDeliveryTarget = booted.deliveryTarget
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
+      sandboxSourceNotices = [...sandboxSourceNotices, ...(booted.notices ?? [])]
       if (isDeviceSandboxTarget(input.sandbox)) {
         // BOOTSTRAP P7a — persist the controller→host id mapping. The proxy's
         // `sessionId` is the HOST's own session id (the inner `agent_start`'s
@@ -4188,6 +4273,12 @@ export async function spawnAgentSession(
         // extra read paths) from this option itself, so the option is the
         // single authority. See additionalReadPathsForAgentsMd above.
         ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
+        // AGENT.md text on the adapter's declared system-prompt channel
+        // (channel decision computed above — never set for a sandbox or
+        // a no-channel adapter, which fell back to the prefix instead).
+        ...(appendSystemPromptChannel !== undefined
+          ? { appendSystemPrompt: appendSystemPromptChannel }
+          : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
@@ -4274,6 +4365,9 @@ export async function spawnAgentSession(
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
+      ...(input.appendSystemPrompt !== undefined
+        ? { appendSystemPrompt: input.appendSystemPrompt }
+        : {}),
       ...(bundleIds.length > 0 ? { bundles: bundleIds } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
@@ -4287,10 +4381,11 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId || appBoundary
+      ...(input.boardId || appBoundary || input.workflowOwner
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
+              ...workflowOwnerMeta(input.workflowOwner),
               ...(appBoundary ? boundaryMeta(appBoundary) : {}),
             },
           }
@@ -4358,6 +4453,7 @@ export async function spawnAgentSession(
     if (initialTitle) desc.title = initialTitle
     if (boundaryWarnings.length > 0) registry.emitHarnessWarning(desc.id, boundaryWarnings, input.label)
     if (input.harnessWarnings?.length) registry.emitHarnessWarning(desc.id, input.harnessWarnings, input.label)
+    for (const notice of sandboxSourceNotices) registry.recordNotice(desc.id, notice)
     // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
     // `sessions --json` / the summaries view can report the resolved path +
     // mode. `agentsMdMode` is non-optional once resolution ran — always set
@@ -4583,6 +4679,9 @@ export type SandboxBootResult =
        *  device provider resolves a name target to its fingerprint at boot).
        *  Stamped onto the descriptor's `hostFingerprint` by the caller. */
       deviceFingerprint?: string
+      /** Spawn-time explanations (derived remote, tar mode, …) the caller
+       *  records on the new session. */
+      notices?: string[]
     }
   | {
       ok: false
@@ -4918,6 +5017,10 @@ export async function bootSandboxAgentSession(opts: {
    *  disjoint filesystem (`handle.defaultCwd`) — a same-machine provider keeps
    *  using the host path. */
   workspace?: { slug: string; remote: WorkspaceRemote }
+  /** Workspace with no usable git remote: the box works in `<home>/<slug>`,
+   *  checkpointed to the host as a tarball (`sandbox-tar-checkpoint.ts`).
+   *  Needs `sessionId`. `restoreFrom` is a saved archive to extract first. */
+  tarWorkspace?: { slug: string; restoreFrom?: string }
   /** The caller's normalized `agent_start.worktree`: pins the `wt/<slug>` cut
    *  in the box's checkout. Absent mints a default one; `false` opts out
    *  (plain default-branch checkout, no delivery). Meaningful only together
@@ -4932,6 +5035,8 @@ export async function bootSandboxAgentSession(opts: {
   /** Called when the turn-end safety net adopts a different `wt/` branch the
    *  agent moved to in the box — the caller persists it on the session record. */
   onDeliveryTargetChanged?: (target: SandboxDeliveryTarget) => void
+  /** Receives a human-readable notice for each periodic tar checkpoint. */
+  onNotice?: (text: string) => void
   /** Resolved `defaults.sandbox.checkpoint` → `agent_start.sandboxCheckpoint`
    *  (`resolveSandboxCheckpointConfig`) — drives whether/how the checkpoint
    *  timer + per-turn hook are wired, whether the teardown delivery
@@ -5237,6 +5342,38 @@ export async function bootSandboxAgentSession(opts: {
   const deliverySessionId = opts.sessionId
   const boxExec = host.exec
   const boxReadFile = host.readFile
+  let tarTarget: TarCheckpointTarget | undefined
+  const bootNotices: string[] = []
+  if (opts.tarWorkspace && !workspacePlan && handle.defaultCwd && deliverySessionId) {
+    const tar = await setupTarWorkspace({
+      ...(boxExec ? { exec: boxExec } : {}),
+      ...(boxReadFile ? { readFile: boxReadFile } : {}),
+      ...(host.writeFile ? { writeFile: host.writeFile } : {}),
+      homeDir: handle.defaultCwd,
+      slug: opts.tarWorkspace.slug,
+      sessionDir: sessionTranscriptDir(deliverySessionId),
+      ...(opts.tarWorkspace.restoreFrom ? { restoreFrom: opts.tarWorkspace.restoreFrom } : {}),
+    })
+    if (!tar.ok) {
+      if (reuseSandboxId !== undefined && host.pause) {
+        await host.pause().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "paused")
+      } else {
+        await host.stop().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "stopped")
+      }
+      return {
+        ok: false,
+        code: "sandbox_workspace_setup_failed",
+        message: `agent_start: restoring workspace "${opts.tarWorkspace.slug}" in the sandbox failed — ${tar.message}`,
+      }
+    }
+    bootNotices.push(...tar.notices)
+    if (tar.target) {
+      tarTarget = tar.target
+      boxCwd = tar.target.dir
+    }
+  }
   if (workspacePlan && opts.workspace) {
     const slug = opts.workspace.slug
     const failSetup = async (message: string, step?: string): Promise<SandboxBootResult> => {
@@ -5407,6 +5544,16 @@ export async function bootSandboxAgentSession(opts: {
             ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),
           })
         : {}),
+      ...(tarTarget && deliverySessionId
+        ? tarCheckpointProxyOpts({
+            exec: boxExec,
+            ...(boxReadFile ? { readFile: boxReadFile } : {}),
+            target: tarTarget,
+            outDir: sessionTranscriptDir(deliverySessionId),
+            config: opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+            ...(opts.onNotice ? { notify: opts.onNotice } : {}),
+          })
+        : {}),
       // A device target is another daemon reached over the E2E bridge, not
       // a box whose `/health` this host can probe directly.
       ...(deviceTarget === undefined ? { watchdog: {} } : {}),
@@ -5417,6 +5564,7 @@ export async function bootSandboxAgentSession(opts: {
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(deliveryTarget ? { deliveryTarget } : {}),
+    ...(bootNotices.length > 0 ? { notices: bootNotices } : {}),
     // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.

@@ -120,12 +120,22 @@ export const pi: AgentCliHandle = defineAgentCli({
   ],
   version_check: {
     // PRESENCE probe — local binary check, not a registry query. Covers BOTH
-    // install methods: the npm -g package and the curl installer both put a
+    // install methods: the npm -g package and the curl installer both put an
     // `pi` executable on PATH, and it runs `--version` fully offline.
     cmd: "pi --version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     range: ">=0.80.0",
     timeout_ms: 15_000,
+  },
+  // The npm -g package is the declared upgrade channel (the curl installer
+  // lands the same `pi` binary). pi is `protocol: "proprietary"`, so the
+  // post-upgrade ACP smoke probe is skipped for it ("not ACP") — success is
+  // judged by the re-read `pi --version` instead, and a failed re-read rolls
+  // back to the recorded version.
+  upgrade: {
+    latest: { npm: "@earendil-works/pi-coding-agent" },
+    cmd: ["npm", "i", "-g", "@earendil-works/pi-coding-agent@latest"],
+    rollback: ["npm", "i", "-g", "@earendil-works/pi-coding-agent@{version}"],
   },
   auth: {
     ref: "./SECRETS.md",
@@ -160,6 +170,12 @@ export const pi: AgentCliHandle = defineAgentCli({
     setEnv: "ANTHROPIC_OAUTH_TOKEN",
     provider: "anthropic",
   },
+  // AGENT.md-system-prompt channel: pi takes extra system-prompt text as its
+  // own `--append-system-prompt <text>` flag. pi is `protocol: "proprietary"`
+  // — its client builds the child argv itself — so `client.ts`'s connect
+  // pushes the flag (on a `--session` resume spawn too, since every connect
+  // recomposes argv) instead of the driver composing bin_args here.
+  systemPrompt: { via: "argv", flag: "--append-system-prompt" },
   sandbox: "./SANDBOX.md",
   protocol: "proprietary",
   adapter: "@agentproto/adapter-pi",

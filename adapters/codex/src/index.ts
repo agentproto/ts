@@ -95,6 +95,16 @@ export const codex: AgentCliHandle = defineAgentCli({
     // an app boundary hides (the host git root) and codex aborts on.
     seed: { "config.toml": "project_root_markers = []\n" },
   },
+  // AGENT.md-system-prompt channel: codex-acp 1.13.1 parses the `CODEX_CONFIG`
+  // JSON env at startup and merges it into the config of BOTH `thread/start`
+  // and `thread/resume`; codex 0.157's `developer_instructions` config key adds
+  // a developer message.
+  systemPrompt: {
+    via: "inline-config",
+    env: "CODEX_CONFIG",
+    key: "developer_instructions",
+    shape: "text",
+  },
   protocol: "acp",
   acp: "./codex-acp.ACP.md",
   session: {

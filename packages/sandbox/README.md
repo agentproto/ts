@@ -75,6 +75,22 @@ caller's explicit `env.passthrough` entries are kept and deduped. When no
 credential resolved — or the host cannot resolve the var — nothing is
 injected and the spawn proceeds: the flag is a convenience, not a contract.
 
+## Lifetime: re-armed while the session works
+
+A provider box has a lifetime (e2b: `timeoutMs`, 45 min by default, 1 h
+account cap). It counts from the last re-arm, not from boot. While its
+session is active the runtime keeps re-arming it with the same duration:
+on each prompt dispatch, on streamed box events (at most once a minute), and
+every 10 minutes while a turn is in flight, even one that streams nothing
+for a long time (a single long tool call). An idle box is not renewed and
+expires on schedule.
+
+About 5 minutes before the deadline it knows about, the proxy acts once
+more. If a turn is still in flight it tries one last renewal. If the session
+is idle, or that renewal fails, it runs a final checkpoint while the box's
+filesystem can still be reached. A detached box (host-daemon restart)
+follows its own rule: it is asked for 1 h from the moment of detach.
+
 ## Lifecycle: pause is the default teardown
 
 Closing a session PAUSES its box by default (`pause({ keepMemory: true })`)

@@ -116,6 +116,16 @@ export const opencode: AgentCliHandle = defineAgentCli({
     range: ">=1.0.0",
     timeout_ms: 15_000,
   },
+  // The npm -g install is the declared upgrade channel; the curl installer
+  // puts the same `opencode` binary on PATH, and `npm i -g opencode-ai@latest`
+  // is the documented way to move it forward. Rollback reinstalls the exact
+  // version that was in place, so a failed post-upgrade ACP smoke probe can
+  // restore it.
+  upgrade: {
+    latest: { npm: "opencode-ai" },
+    cmd: ["npm", "i", "-g", "opencode-ai@latest"],
+    rollback: ["npm", "i", "-g", "opencode-ai@{version}"],
+  },
   auth: {
     ref: "./SECRETS.md",
     state: {
@@ -156,6 +166,17 @@ export const opencode: AgentCliHandle = defineAgentCli({
       dirFiles: [".opencode/opencode.json", ".opencode/opencode.jsonc"],
       projectDisableEnv: "OPENCODE_DISABLE_PROJECT_CONFIG",
     },
+  },
+  // AGENT.md-system-prompt channel: opencode concatenates `instructions`
+  // arrays across config layers, so the driver writes the text to
+  // `<configDir>/agentproto-system-prompt.md` and appends that path to
+  // OPENCODE_CONFIG_CONTENT's `instructions` array (after the small-model
+  // pin, which shares the same env var).
+  systemPrompt: {
+    via: "inline-config",
+    env: "OPENCODE_CONFIG_CONTENT",
+    key: "instructions",
+    shape: "file-list",
   },
   sandbox: "./SANDBOX.md",
   protocol: "acp",

@@ -778,10 +778,35 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     // lead the step's prompt, skills fill `harness.skills` unless the step
     // pins its own, and what the harness can't honour rides as warnings.
     instructions = resolved.instructions
+    let channelFallback = false
+    // A channel-capable adapter's text travels on `harness.systemPrompt`
+    // (→ the spawn's `appendSystemPrompt`), never in the prompt. The channel
+    // was resolved for `resolved.adapter` on THIS host, so it only holds when
+    // the step spawns that adapter here: a different/selector adapter or a
+    // sandbox step (the box spawns its own adapter, and the host path has no
+    // prompt to prefix at spawn time) falls back to the prompt prefix.
+    if (resolved.systemPrompt !== undefined) {
+      if (adapter === resolved.adapter && step.sandbox === undefined) {
+        if (harness?.systemPrompt === undefined) {
+          harness = { ...(harness ?? {}), systemPrompt: resolved.systemPrompt }
+        }
+      } else {
+        instructions = resolved.systemPrompt
+        channelFallback = true
+      }
+    }
     if (resolved.skills !== undefined && resolved.skills.length > 0 && harness?.skills === undefined) {
       harness = { ...(harness ?? {}), skills: resolved.skills }
     }
-    if (resolved.warnings !== undefined && resolved.warnings.length > 0) agentWarnings = resolved.warnings
+    const warnings = [...(resolved.warnings ?? [])]
+    if (channelFallback) {
+      warnings.push(
+        `agent "${String(agentRef)}": the system-prompt channel resolved for "${String(resolved.adapter)}" ` +
+          "does not apply to this step (other adapter or sandbox) — the AGENT.md text is delivered " +
+          "as the step prompt's prefix instead.",
+      )
+    }
+    if (warnings.length > 0) agentWarnings = warnings
   }
 
   // AIP-58 §3 Outcome rule: a step declaring NEITHER an output schema NOR a

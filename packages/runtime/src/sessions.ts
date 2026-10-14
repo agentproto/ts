@@ -2170,6 +2170,12 @@ export interface SessionDescriptor {
    *  (the adapter-facing id list): these name concrete copied folders under
    *  `~/.agentproto/skills/<id>/`. */
   sessionSkills?: ResolvedSessionSkill[]
+  /** Extra system-prompt text the spawn asked for (the AIP-42 AGENT.md
+   *  body) — recorded verbatim so restart / fresh-continuation re-apply it
+   *  (through the adapter's declared channel when one exists, else the same
+   *  first-prompt prefix + warning the original spawn used — see
+   *  `session-spawn.ts`'s channel decision). Absent ⇒ nothing to re-apply. */
+  appendSystemPrompt?: string
   /** Capability bundle ids (`bundle_list`) resolved for this spawn (PLAN D
    *  phase 1) — ids only, never the expanded imported-MCP snapshots (those
    *  live only in `mcpServers` above, as reference-only proxy URLs). Absent
@@ -2483,6 +2489,15 @@ export interface SessionDescriptor {
    * cursor. The box itself is found via `sandboxId`/`sandboxProvider`.
    */
   sandboxReattach?: SandboxReattachRecord
+  /**
+   * The session id on the BOX's own daemon (the sandbox proxy's `sessionId`)
+   * — stamped when the proxy is bound and kept for the row's whole life,
+   * unlike {@link sandboxReattach} which only exists while the row is live.
+   * `session_restart` reads it to stop the prior box session before starting
+   * a new one in the same box: a row that ended on a host-side error can
+   * leave its box session running, and nothing else remembers its id.
+   */
+  sandboxRemoteSessionId?: string
   /**
    * BOOTSTRAP P7a — for a `device:<fp|name>` sandbox spawn: the id of the
    * session the HOST's own daemon created (`BootedSandbox`'s inner
@@ -4804,6 +4819,17 @@ export interface SessionsRegistry {
    * lifetime extension. Idempotent.
    */
   detachSandboxSessions(): Promise<{ detached: number }>
+  /**
+   * `session_restart` of a sandbox session: cut this row's proxy loose from
+   * its box WITHOUT touching the box or its agent session — the connection
+   * and the proxy's timers are dropped, and the proxy's later `close()` (from
+   * `kill()`) becomes a no-op, so closing the row can no longer tear down the
+   * box its replacement now runs in. Unlike a shutdown detach, the row is NOT
+   * marked for the boot reattach pass. Returns the box-side session id the
+   * proxy was driving, when it had one to give; undefined for a row with no
+   * live detachable proxy (already closed, unbound, device-paired, local).
+   */
+  releaseSandboxSession(id: string): string | undefined
   /** Rows a previous daemon process detached (or crashed holding) that the
    *  boot reattach pass has not resolved yet. */
   sandboxReattachCandidates(): SessionDescriptor[]
@@ -4965,6 +4991,9 @@ export interface SpawnAgentInput {
    *  dir — recorded verbatim onto {@link SessionDescriptor.sessionSkills}. See
    *  that field's doc. */
   sessionSkills?: ResolvedSessionSkill[]
+  /** Extra system-prompt text for this spawn — recorded verbatim onto
+   *  {@link SessionDescriptor.appendSystemPrompt}. See that field's doc. */
+  appendSystemPrompt?: string
   /** Capability bundle ids resolved for this spawn — recorded verbatim onto
    *  {@link SessionDescriptor.bundles}; see that field's doc. */
   bundles?: string[]
@@ -7764,6 +7793,9 @@ export function createSessionsRegistry(opts?: {
    */
   const bindAgentSession = (rt: SessionRuntime, session: AgentSessionLike): void => {
     rt.agentSession = session
+    if (rt.desc.remote === true && typeof session.sessionId === "string" && session.sessionId.length > 0) {
+      rt.desc.sandboxRemoteSessionId = session.sessionId
+    }
     session.onDisconnect?.(err => {
       const id = rt.desc.id
       // Re-read the CURRENT binding rather than closing over `session`: by
@@ -10124,6 +10156,11 @@ export function createSessionsRegistry(opts?: {
         ...(input.sessionSkills && input.sessionSkills.length > 0
           ? { sessionSkills: input.sessionSkills }
           : {}),
+        // Persist the system-prompt text so restart/fresh-continuation can
+        // re-apply it (see `SessionDescriptor.appendSystemPrompt`).
+        ...(input.appendSystemPrompt !== undefined
+          ? { appendSystemPrompt: input.appendSystemPrompt }
+          : {}),
         ...(input.bundles && input.bundles.length > 0 ? { bundles: input.bundles } : {}),
         // Persist the isolated-config location so restart/lazy-resume can
         // hand the respawned adapter the SAME dir (native-resume store).
@@ -10307,6 +10344,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
         ...(input.sessionSkills && input.sessionSkills.length > 0
           ? { sessionSkills: input.sessionSkills }
+          : {}),
+        ...(input.appendSystemPrompt !== undefined
+          ? { appendSystemPrompt: input.appendSystemPrompt }
           : {}),
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
         ...(input.parentSessionId
@@ -12697,6 +12737,11 @@ export function createSessionsRegistry(opts?: {
       }
       if (detached > 0) schedulePersist()
       return { detached }
+    },
+    releaseSandboxSession(id) {
+      const session = sessions.get(id)?.agentSession
+      if (!session?.detach) return undefined
+      return session.detach()?.remoteSessionId
     },
     sandboxReattachCandidates() {
       return Array.from(sessions.values())

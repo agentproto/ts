@@ -65,6 +65,28 @@ the default size, `large` (4 vCPU / 8192 MB).
   booting a smaller box.
 - e2b has no GPU sandboxes, so there is no GPU size.
 
+## Build environment
+
+Next to the 4 GiB swap file it enables on a fresh boot, the provider sizes
+Node builds to the box: pnpm runs one package build per vCPU by default and
+each tsup DTS worker takes Node's default heap, so a plain `pnpm build` dies
+with `JavaScript heap out of memory` long before the RAM is gone. On every
+boot it derives a budget from the resolved size preset —
+`concurrency = max(1, min(cpu, floor(ram MB / 3072)))` and
+`heap = clamp(floor(ram MB * 0.6 / concurrency), 768, 4096)` (the default
+4 vCPU / 8192 MB box → 2 builds at a 2457 MB heap) — and ships it as
+`NODE_OPTIONS=--max-old-space-size=…`, `npm_config_workspace_concurrency`
+and `TURBO_CONCURRENCY` two ways: in the daemon's start env, so the daemon
+and every adapter it spawns inherit them, and in
+`/etc/profile.d/agentproto-build.sh`, so every login-shell command in the box
+(the agent's bash tool, any `exec`) sources them too. An explicit
+`config.template` has no recorded size, so the box is probed once at boot
+(`nproc`, `free -m`). A caller's own value always wins: a passed
+`NODE_OPTIONS` with `--max-old-space-size` is kept untouched, one without
+gets the box heap appended. Override the numbers with
+`config.buildEnv: { concurrency, heapMb }`, or disable the whole thing with
+`config.buildEnv: false`.
+
 ## Pushing and opening PRs from the box
 
 The workstation template bakes the GitHub CLI (`gh`, pinned in
