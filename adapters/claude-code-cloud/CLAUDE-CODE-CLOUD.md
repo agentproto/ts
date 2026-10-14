@@ -1,0 +1,96 @@
+# claude-code-cloud — ACP wire profile
+
+AIP-44 ACP profile for the AIP-66 managed cloud agent adapter. The agent
+side is implemented in `src/acp-server.ts` against
+`@agentclientprotocol/sdk`'s `AgentSideConnection`, spawned over stdio
+(`agentproto-claude-code-cloud-acp`). Unlike every other Claude Code
+adapter, this one runs NO harness locally: the vendor owns the machine and
+the harness (Anthropic's Claude Code cloud sessions), and this server
+relays the vendor's own client + sessions API onto ACP.
+
+## Lifecycle
+
+| Method                 | Behaviour                                                                                                                                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `initialize`           | Returns `PROTOCOL_VERSION` + `agentCapabilities.loadSession=false` (re-attach is via the persisted vendor session id, AIP-66 §5).                                                |
+| `authenticate`         | No-op. Auth is the user's claude.ai login inside the claude CLI (keychain); preflighted per turn (`claude auth status` — api_key auth and not-logged-in are refused).          |
+| `session/new`          | Validates `cwd` per AIP-66 §3 BEFORE any vendor side effect: a git checkout, clean working tree, an `origin` remote, and a HEAD contained in some `origin/*` ref. Refuses `mcpServers` (AIP-66 §4). |
+| `session/prompt`       | First prompt → `claude --cloud "<prompt>"` under a PTY (start; answers the first-run folder-trust prompt), later prompts → `claude -p "<text>" --cloud <session id>` (send-only). Then polls `GET /v1/code/sessions/{id}/events` (2s, backing off to 10s) until a NEW `result` event arrives. |
+| `session/cancel`       | UNSUPPORTED — the vendor exposes no interrupt verb; the call throws (AIP-66 §6). The in-flight cloud turn is not aborted and is never reported cancelled.                        |
+| `session/set_config_option` | Empty configurable set (no model menu — the vendor picks the model).                                                                                                       |
+
+## Message mapping
+
+Vendor events (Claude Code stream-json payloads) reuse the
+`@agentproto/adapter-claude-sdk` mappers — the payloads ARE stream-json SDK
+messages:
+
+| Event / payload                          | ACP `session/update`                                |
+| ---------------------------------------- | --------------------------------------------------- |
+| `assistant` → `text` block               | `agent_message_chunk`                               |
+| `assistant` → `tool_use` block           | `tool_call` (in_progress)                           |
+| `user` → `tool_result` block             | `tool_call_update`                                  |
+| `result` (with usage)                    | `usage_update` (tokens + `total_cost_usd`)          |
+| `result` (error)                         | error text as `agent_message_chunk`; stop `refusal` |
+| first turn after start                   | session URL as an `agent_message_chunk` (inspectable) |
+
+A turn ends ONLY on the vendor's own `result` event (AIP-66 §6) — never on
+a timer or on poll silence. Stop reason: `end_turn` for a success result,
+`refusal` when `is_error` or `subtype != "success"`.
+
+## Usage telemetry
+
+When the `result` event carries `total_cost_usd` and/or `usage`, it is
+mapped to ACP `usage_update` (`cost` USD, `tokensIn`/`tokensOut` extension).
+When it carries neither, NO usage update is emitted — usage is unmeasured,
+never a fabricated zero (AIP-66 §7).
+
+## Session identity
+
+One ACP session = exactly one vendor cloud session (AIP-66 §5). The vendor
+id (`session_<id>`, API spelling `cse_<id>`) is returned by the start path
+and kept for every later turn; the host is expected to persist it on the
+session descriptor (`meta.cloud = { vendor, sessionId, url }`) and re-attach
+rather than start a new vendor session after a restart.
+
+## Repo source (AIP-66 §3)
+
+The cloud runs the user's REPO from its git remote — never an uploaded
+working tree. `session/new` refuses: a non-git cwd, a dirty tree, a missing
+`origin` remote, and an unpushed HEAD. Commit and push before spawning.
+
+## Refused spawn fields (AIP-66 §4)
+
+`sandbox`, `worktree`, `commandSandbox`, `mcpServers`, `daemonMount`,
+`bundles`, `browser`, `appServe`, `inference` have no meaning for a
+vendor-owned harness. The host MUST refuse a cloud spawn that sets any of
+them; this adapter's ACP server also refuses `mcpServers` at `session/new`
+as a fail-closed backstop. `model` / `effort` / `mode` are not exposed: the
+CLI's cloud path accepts no model flag, and the vendor picks the model.
+
+## Auth / secrets
+
+The credential is the user's claude.ai OAuth login, owned by the claude CLI
+(macOS keychain service `Claude Code-credentials`; org uuid from
+`~/.claude.json`). The adapter reads it only to call the sessions API
+(`Authorization: Bearer`, never logged or persisted) and never copies it
+into descriptors, events or transcripts (AIP-66 §8). Every claude child
+process gets `ANTHROPIC_API_KEY` and the Bedrock/Vertex/Foundry/… redirect
+toggles DELETED from its env so the CLI cannot authenticate another way.
+A CLI authenticated by API key, or not logged in, is refused with a pointer
+to `claude auth login`.
+
+## Surfaces
+
+| Verb    | Vendor mapping                                                        |
+| ------- | --------------------------------------------------------------------- |
+| start   | `claude --cloud "<prompt>"` (requires a TTY)                          |
+| prompt  | `claude -p "<text>" --cloud <session id>` (send-only, no TTY)         |
+| observe | `GET https://api.anthropic.com/v1/code/sessions/{id}/events`          |
+| state   | `GET /v1/code/sessions/{id}` (`status_bucket`, `worker_status`, …)    |
+| list    | `GET /v1/code/sessions`                                               |
+| pull    | `claude --teleport <session id>` (host-level; not wired here)         |
+
+Observed with Claude Code CLI 2.1.296–2.1.299 (2026-10-14). These are
+undocumented vendor surfaces and may change — the version gate pins the
+floor at 2.1.296.
