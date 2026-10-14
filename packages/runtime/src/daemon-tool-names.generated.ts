@@ -96,6 +96,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "cron_runs",
   "cron_update",
   "daemon_health",
+  "decision_decide",
   "device_add",
   "device_list",
   "device_prompt",
