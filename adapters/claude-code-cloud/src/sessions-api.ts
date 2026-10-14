@@ -136,13 +136,31 @@ export interface CloudSessionEvent {
   created_at: string
   event_id: string
   event_type: string
+  /** A STRING of an integer, strictly increasing within the session. The
+   *  ordering key: parse with `Number()` (see {@link eventSequence}). */
+  sequence_num: string
+  /** Who produced the event — "worker" (the vendor's harness) or "client". */
+  source?: string
   payload: unknown
 }
 
 export interface CloudEventsPage {
   data: CloudSessionEvent[]
-  /** Pass back as `cursor` on the next poll to resume after this page. */
+  /** The `sequence_num` of the OLDEST event on the page, present on the
+   *  first (newest) page. Pass back as `?cursor=<n>` to fetch the NEXT
+   *  OLDER page — the cursor pages BACKWARD in time, never forward. */
   resume_cursor?: string
+  /** Alias for {@link resume_cursor}, seen on the first page only. */
+  next_cursor?: string
+}
+
+/** Parse an event's `sequence_num` as a number, or null when absent /
+ *  non-numeric (such an event cannot be ordered and is skipped). */
+export function eventSequence(event: CloudSessionEvent): number | null {
+  const raw = event.sequence_num
+  if (typeof raw !== "string" || raw.trim() === "") return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
 }
 
 /** GET /v1/code/sessions/{id} — wrapped in `response_shape`. */
@@ -236,8 +254,9 @@ export class SessionsApi {
   }
 
   /**
-   * GET /v1/code/sessions/{id}/events — newest first. Pass the previous
-   * page's `resume_cursor` as `cursor` to resume after it.
+   * GET /v1/code/sessions/{id}/events — newest first. With no `cursor` this
+   * returns the NEWEST page; pass the page's `resume_cursor` (the oldest
+   * event's `sequence_num`) as `cursor` to fetch the next OLDER page.
    */
   async listEvents(
     id: string,

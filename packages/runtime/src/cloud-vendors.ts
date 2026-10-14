@@ -97,9 +97,10 @@ export interface ResolvedCloudSpawn {
   readonly vendor: CloudVendor
   /** The adapter slug to spawn locally (the vendor's relay adapter). */
   readonly adapter: string
-  /** The canonical harness name for the descriptor — the requested
-   *  `harness`/`adapter` when it names one of the vendor's harnesses,
-   *  else the vendor's relay adapter slug. */
+  /** The canonical harness name for the descriptor — the vendor's HARNESS
+   *  (AIP-66 §2), never the local relay adapter slug. The requested
+   *  `harness` when it names one of the vendor's harnesses, else the
+   *  vendor's canonical harness (its first listed one). */
   readonly harness: string
 }
 
@@ -112,7 +113,7 @@ export const CLOUD_ADAPTER_PLACEHOLDER = "(cloud)"
 
 function refuseField(field: CloudRefusedSpawnField, vendor: string): never {
   throw new CloudSpawnError(
-    `agent_start: \`cloud: "${vendor}"\` cannot be combined with \`${field}\` — a ` +
+    `\`cloud: "${vendor}"\` cannot be combined with \`${field}\` — a ` +
       "managed cloud agent runs on the vendor's own machine and harness " +
       "(AIP-66 §4), so that field could never take effect. Drop it, or drop " +
       "`cloud`.",
@@ -145,14 +146,14 @@ export function resolveCloudSpawn(input: CloudSpawnInput): ResolvedCloudSpawn {
   if (!vendor) {
     const known = Object.keys(CLOUD_VENDORS).join(", ")
     throw new CloudSpawnError(
-      `agent_start: unknown cloud vendor "${input.cloud}" — this host knows: ${known}. ` +
+      `unknown cloud vendor "${input.cloud}" — this host knows: ${known}. ` +
         "Refusing to fall back to a default vendor (AIP-66 §2).",
     )
   }
 
   if (input.sandbox !== undefined) {
     throw new CloudSpawnError(
-      `agent_start: \`cloud: "${vendor.slug}"\` and \`sandbox\` are mutually exclusive ` +
+      `\`cloud: "${vendor.slug}"\` and \`sandbox\` are mutually exclusive ` +
         "(AIP-66 §1) — a managed cloud agent is vendor-hosted, a sandbox is a " +
         "host-booted box. Set exactly one.",
       "sandbox",
@@ -193,18 +194,22 @@ export function resolveCloudSpawn(input: CloudSpawnInput): ResolvedCloudSpawn {
     requestedRaw === undefined || requestedRaw === CLOUD_ADAPTER_PLACEHOLDER
       ? undefined
       : requestedRaw
+  // The descriptor's `harness` is the VENDOR's harness (AIP-66 §2), never
+  // the local relay adapter slug: `adapter` stays "claude-code-cloud" but
+  // `harness` is "claude-code". Only an explicit harness the vendor runs
+  // overrides the vendor's canonical one.
+  const canonicalHarness = vendor.harnesses[0] ?? vendor.adapter
   if (requested === undefined) {
-    return { vendor, adapter: vendor.adapter, harness: vendor.adapter }
+    return { vendor, adapter: vendor.adapter, harness: canonicalHarness }
   }
-  if (requested === vendor.adapter || vendor.harnesses.includes(requested)) {
-    return {
-      vendor,
-      adapter: vendor.adapter,
-      harness: vendor.harnesses.includes(requested) ? requested : vendor.adapter,
-    }
+  if (requested === vendor.adapter) {
+    return { vendor, adapter: vendor.adapter, harness: canonicalHarness }
+  }
+  if (vendor.harnesses.includes(requested)) {
+    return { vendor, adapter: vendor.adapter, harness: requested }
   }
   throw new CloudSpawnError(
-    `agent_start: adapter/harness "${requested}" does not run on cloud vendor ` +
+    `adapter/harness "${requested}" does not run on cloud vendor ` +
       `"${vendor.slug}" — allowed harnesses: ${vendor.harnesses.join(", ")} ` +
       `(or the vendor's relay adapter "${vendor.adapter}") (AIP-66 §2).`,
   )

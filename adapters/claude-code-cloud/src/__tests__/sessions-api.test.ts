@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest"
 import {
   SessionsApi,
   envCredentialSource,
+  eventSequence,
   keychainCredentialSource,
   normalizeSessionId,
   toCliSessionId,
   type CloudCredential,
+  type CloudSessionEvent,
 } from "../sessions-api.js"
 
 /** Fixture fetch: routes a request to a canned Response. Records calls. */
@@ -71,6 +73,28 @@ describe("id normalization", () => {
   })
 })
 
+describe("eventSequence", () => {
+  function ev(sequence_num: string): CloudSessionEvent {
+    return {
+      created_at: "0",
+      event_id: "e",
+      event_type: "assistant",
+      sequence_num,
+      payload: {},
+    }
+  }
+
+  it("parses the string sequence_num to a number", () => {
+    expect(eventSequence(ev("23"))).toBe(23)
+    expect(eventSequence(ev("0"))).toBe(0)
+  })
+
+  it("returns null for a non-numeric sequence_num (the event is unorderable)", () => {
+    expect(eventSequence(ev(""))).toBeNull()
+    expect(eventSequence(ev("not-a-number"))).toBeNull()
+  })
+})
+
 describe("SessionsApi", () => {
   it("GETs a session by its normalized id with the vendor headers", async () => {
     const { fetchImpl, calls } = fixtureFetch(() =>
@@ -92,35 +116,47 @@ describe("SessionsApi", () => {
     expect(headers["x-organization-uuid"]).toBe("org-1")
   })
 
-  it("listEvents round-trips the resume_cursor as the next page cursor", async () => {
+  it("listEvents: no cursor = newest page (newest first); cursor = the next OLDER page", async () => {
     const { fetchImpl, calls } = fixtureFetch(url =>
-      url.includes("cursor=cur-1")
-        ? json({ data: [{ created_at: "2", event_id: "e2", event_type: "result", payload: {} }], resume_cursor: "cur-2" })
+      url.includes("cursor=11")
+        ? json({
+            data: [
+              { created_at: "10", event_id: "e10", event_type: "assistant", sequence_num: "10", payload: {} },
+              { created_at: "9", event_id: "e9", event_type: "user", sequence_num: "9", payload: {} },
+            ],
+            resume_cursor: "9",
+          })
         : json({
             data: [
-              { created_at: "1", event_id: "e1", event_type: "assistant", payload: {} },
-              { created_at: "0", event_id: "e0", event_type: "user", payload: {} },
+              { created_at: "12", event_id: "e12", event_type: "result", sequence_num: "12", payload: {} },
+              { created_at: "11", event_id: "e11", event_type: "assistant", sequence_num: "11", payload: {} },
             ],
-            resume_cursor: "cur-1",
+            resume_cursor: "11",
+            next_cursor: "11",
           }),
     )
     const api = new SessionsApi({
       credentials: { get: async () => ({ accessToken: "tok" }) },
       fetchImpl,
     })
+    // No cursor → the NEWEST page, newest first. resume_cursor is the OLDEST
+    // seq on the page (11), which is also the first page's next_cursor.
     const page1 = await api.listEvents("session_abc")
-    expect(page1.resume_cursor).toBe("cur-1")
-    expect(page1.data.map(e => e.event_id)).toEqual(["e1", "e0"])
+    expect(page1.data.map(e => e.sequence_num)).toEqual(["12", "11"])
+    expect(page1.resume_cursor).toBe("11")
+    expect(page1.next_cursor).toBe("11")
     expect(calls[0]!.url).toBe(
       "https://api.anthropic.com/v1/code/sessions/cse_abc/events",
     )
 
+    // Passing that cursor back pages BACKWARD to older events (seq < 11).
     const page2 = await api.listEvents("session_abc", {
       cursor: page1.resume_cursor,
     })
-    expect(page2.data[0]?.event_type).toBe("result")
+    expect(page2.data.map(e => e.sequence_num)).toEqual(["10", "9"])
+    expect(page2.resume_cursor).toBe("9")
     expect(calls[1]!.url).toBe(
-      "https://api.anthropic.com/v1/code/sessions/cse_abc/events?cursor=cur-1",
+      "https://api.anthropic.com/v1/code/sessions/cse_abc/events?cursor=11",
     )
   })
 

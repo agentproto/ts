@@ -60,9 +60,11 @@ import {
 } from "./cli.js"
 import {
   SessionsApi,
+  eventSequence,
   keychainCredentialSource,
   toCliSessionId,
   type CloudEventsPage,
+  type CloudSessionEvent,
   type CredentialSource,
 } from "./sessions-api.js"
 import { CLOUD_VENDOR_SLUG, writeCloudSessionMeta } from "./meta-file.js"
@@ -90,6 +92,15 @@ export const POLL_MAX_MS = 10_000
  * event (AIP-66 §6).
  */
 export const MAX_LIST_EVENTS_FAILURES = 5
+
+/**
+ * Cap on history pages walked BACKWARD within one observe tick. The API's
+ * cursor pages backward in time (newest page first), so catching up after a
+ * gap of more than one page (50 events) means following `resume_cursor`
+ * toward older events. A single tick is bounded so a pathological cursor
+ * cannot hold a poll open; 20 pages (1000 events) is far past any real gap.
+ */
+export const OBSERVE_PAGES_LIMIT = 20
 
 /** Node/network error codes a transient fetch failure can surface (walked
  *  down the `cause` chain — undici wraps them under "fetch failed"). */
@@ -156,43 +167,16 @@ interface CloudSessionState {
   /** Vendor session id (`session_…`), set by the first prompt's start. */
   vendorSessionId: string | null
   vendorUrl: string | null
-  /** Events page cursor across polls; null until the API hands one back. */
-  pollCursor: string | null
-  /** Event ids already projected this turn (and previous turns) — the
-   *  newest-first first page overlaps turns, so dedup is mandatory. Bounded:
-   *  ids are remembered in projection order (oldest first) and the OLDEST
-   *  are evicted past {@link SEEN_EVENT_IDS_LIMIT}, so the set cannot grow
-   *  for the life of the session. */
-  readonly seenEventIds: Set<string>
+  /** Highest `sequence_num` already projected or seeded. The observe loop
+   *  projects only events with a greater seq, in ascending order — the
+   *  cursor itself is NOT tracked because it pages BACKWARD in time
+   *  (sessions-api.ts), so progress must key off the monotonic seq. */
+  lastSeq: number
+  /** The seq high-water recorded right before this turn's prompt was sent.
+   *  Only a vendor `result` with a seq ABOVE this ends the turn (AIP-66
+   *  §6) — an old result that predates the prompt never can. */
+  turnBaseline: number
   promptInFlight: boolean
-}
-
-/**
- * Cap on remembered event ids per session. Dedup spans turns (an old
- * `result` must not end a new turn), but the session may live indefinitely —
- * so the set is bounded, evicting in insertion order: those ids were
- * projected on the earliest polls, behind the pagination cursor the API
- * serves forward from.
- */
-export const SEEN_EVENT_IDS_LIMIT = 500
-
-/**
- * Cap on history pages `session/load` pre-marks. A resume must mark every
- * event that already exists, but the vendor is paginated — one page is not
- * enough. The bound keeps a slow or pathological cursor from holding the
- * load open indefinitely; 50 pages is far past any realistic session.
- */
-export const SEED_EVENT_PAGES_LIMIT = 50
-
-/** Record a projected event id, evicting the oldest past the cap. */
-function rememberSeenEventId(session: CloudSessionState, id: string): void {
-  const seen = session.seenEventIds
-  seen.add(id)
-  while (seen.size > SEEN_EVENT_IDS_LIMIT) {
-    const oldest = seen.values().next()
-    if (oldest.done) break
-    seen.delete(oldest.value)
-  }
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -324,8 +308,8 @@ export class ClaudeCloudAcpAgent implements Agent {
       cwd: params.cwd,
       vendorSessionId: null,
       vendorUrl: null,
-      pollCursor: null,
-      seenEventIds: new Set(),
+      lastSeq: 0,
+      turnBaseline: 0,
       promptInFlight: false,
     })
     return { sessionId: id }
@@ -383,16 +367,16 @@ export class ClaudeCloudAcpAgent implements Agent {
       cwd: params.cwd,
       vendorSessionId,
       vendorUrl: null,
-      pollCursor: null,
-      seenEventIds: new Set(),
+      lastSeq: 0,
+      turnBaseline: 0,
       promptInFlight: false,
     }
     this.#sessions.set(vendorSessionId, session)
-    // The vendor's history is already there: pre-mark every existing event
-    // id so the first post-attach prompt is ended ONLY by ITS own `result`
-    // (AIP-66 §6) — without this, the previous turn's `result`, still in
-    // the newest events page, would end the new turn on arrival.
-    await this.#seedSeenEvents(session, vendorSessionId)
+    // The vendor's history is already there: seed `lastSeq` at the newest
+    // existing seq so the first post-attach prompt is ended ONLY by ITS own
+    // `result` (AIP-66 §6) — without this, the previous turn's `result`,
+    // still in the newest events page, could end the new turn on arrival.
+    await this.#seedHistory(session, vendorSessionId)
     // Report the adopted identity (meta-file.ts) — the host re-persists
     // `meta.cloud = { vendor, sessionId, url? }` from it.
     await writeCloudSessionMeta({ vendor: CLOUD_VENDOR_SLUG, sessionId: vendorSessionId })
@@ -401,44 +385,76 @@ export class ClaudeCloudAcpAgent implements Agent {
     return {}
   }
 
-  /** Mark the vendor's pre-existing events as already projected. Best
-   *  effort: a failed seed degrades to (at worst) an early end on an older
-   *  `result` — it must never turn a re-attach into a failed load, which
-   *  AIP-66 §5 forbids replacing with a fresh start anyway.
+  /** Seed `lastSeq` from the vendor's newest events page. Best effort: a
+   *  failed seed degrades to (at worst) an early end on an older `result` —
+   *  it must never turn a re-attach into a failed load, which AIP-66 §5
+   *  forbids replacing with a fresh start anyway.
    *
-   *  Walks the WHOLE history, oldest page first, following `resume_cursor`
-   *  until it stops advancing (or a page comes back empty) — one page is
-   *  not enough: a later page can hold the previous turn's `result`, which
-   *  would otherwise end the first post-attach prompt on arrival. The
-   *  events API is newest-first WITHIN a page and pages forward in time, so
-   *  `pollCursor` must end at the NEWEST position (the last cursor we
-   *  advanced to) — that is exactly where {@link #observeTurn}'s normal
-   *  poll loop resumes from, so the first poll returns only events written
-   *  after the history just marked. */
-  async #seedSeenEvents(session: CloudSessionState, vendorSessionId: string): Promise<void> {
+   *  ONE newest-page GET with no cursor: it returns the newest page (newest
+   *  first), so its max `sequence_num` is the history high-water. No
+   *  backward paging is needed — `lastSeq` only has to be high enough that
+   *  the first post-attach poll projects nothing already in the history. */
+  async #seedHistory(session: CloudSessionState, vendorSessionId: string): Promise<void> {
     try {
-      let cursor: string | undefined
-      for (let page = 0; page < SEED_EVENT_PAGES_LIMIT; page += 1) {
-        const res = await this.#api.listEvents(
-          vendorSessionId,
-          cursor ? { cursor } : {},
-        )
-        const events = res.data ?? []
-        for (const event of events) rememberSeenEventId(session, event.event_id)
-        const next = res.resume_cursor
-        // Exhausted when the page is empty, there is no cursor, or the
-        // cursor did not advance (the API repeats the newest cursor at the
-        // end of history).
-        if (events.length === 0 || !next || next === cursor) break
-        cursor = next
-      }
-      if (cursor !== undefined) session.pollCursor = cursor
+      session.lastSeq = await this.#highWaterSeq(vendorSessionId)
     } catch (err) {
       process.stderr.write(
-        `[claude-code-cloud] session/load: could not pre-mark the vendor's ` +
-          `existing events (${err instanceof Error ? err.message : String(err)})\n`,
+        `[claude-code-cloud] session/load: could not seed the vendor's ` +
+          `existing event high-water (${err instanceof Error ? err.message : String(err)})\n`,
       )
     }
+  }
+
+  /** Max `sequence_num` on the session's newest events page (0 when the
+   *  page is empty). One newest-page GET, no cursor. */
+  async #highWaterSeq(vendorSessionId: string): Promise<number> {
+    const res = await this.#api.listEvents(vendorSessionId, {})
+    let max = 0
+    for (const event of res.data ?? []) {
+      const seq = eventSequence(event)
+      if (seq !== null && seq > max) max = seq
+    }
+    return max
+  }
+
+  /**
+   * Read every event newer than `lastSeq`, in ascending seq order, walking
+   * the API's cursor BACKWARD as far as needed. The API serves the NEWEST
+   * page with no cursor and pages toward OLDER events via `?cursor=<n>`
+   * (sessions-api.ts), so catching up across a >1-page gap means following
+   * `resume_cursor` and collecting the seqs above `lastSeq` until a page
+   * reaches already-projected history. Capped at {@link OBSERVE_PAGES_LIMIT}
+   * pages per call.
+   */
+  async #collectNewEvents(
+    vendorSessionId: string,
+    lastSeq: number,
+  ): Promise<Array<{ seq: number; event: CloudSessionEvent }>> {
+    const collected: Array<{ seq: number; event: CloudSessionEvent }> = []
+    let cursor: string | undefined
+    for (let page = 0; page < OBSERVE_PAGES_LIMIT; page += 1) {
+      const res: CloudEventsPage = await this.#api.listEvents(
+        vendorSessionId,
+        cursor ? { cursor } : {},
+      )
+      const events = res.data ?? []
+      let oldest: number | null = null
+      for (const event of events) {
+        const seq = eventSequence(event)
+        if (seq === null) continue // unorderable — skip
+        if (oldest === null || seq < oldest) oldest = seq
+        if (seq > lastSeq) collected.push({ seq, event })
+      }
+      // Stop once this page reaches already-projected history (its oldest
+      // seq is at or below lastSeq + 1 — nothing at or below lastSeq is
+      // needed), or the vendor offers no further cursor.
+      if (events.length === 0 || oldest === null || oldest <= lastSeq + 1) break
+      const next = res.resume_cursor ?? res.next_cursor
+      if (!next || next === cursor) break
+      cursor = next
+    }
+    collected.sort((a, b) => a.seq - b.seq)
+    return collected
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -481,7 +497,14 @@ export class ClaudeCloudAcpAgent implements Agent {
             },
           },
         })
+        // A brand-new session has no prior events: the turn's baseline is 0.
+        session.turnBaseline = 0
       } else {
+        // Follow-up (or a re-attach via session/load): record the seq
+        // high-water BEFORE sending, so only a `result` written after this
+        // point can end the turn. Reading it after the send would race the
+        // new turn's own events into the baseline and hang the turn.
+        session.turnBaseline = await this.#highWaterSeq(session.vendorSessionId)
         await this.#cli.sendPrompt(session.vendorSessionId, text, {
           cwd: session.cwd,
         })
@@ -499,12 +522,11 @@ export class ClaudeCloudAcpAgent implements Agent {
     let delay = this.#pollInitialMs
     let failures = 0
     for (;;) {
-      let page: CloudEventsPage
+      let fresh: Array<{ seq: number; event: CloudSessionEvent }>
       try {
-        page = await this.#api.listEvents(
-          vendorId,
-          session.pollCursor ? { cursor: session.pollCursor } : {},
-        )
+        // Collect everything newer than lastSeq, ascending — the API pages
+        // backward, so #collectNewEvents walks older pages as needed.
+        fresh = await this.#collectNewEvents(vendorId, session.lastSeq)
       } catch (err) {
         // A transient read failure (HTTP 5xx, network) says nothing about the
         // turn — retry with the poll backoff, up to MAX_LIST_EVENTS_FAILURES
@@ -522,18 +544,9 @@ export class ClaudeCloudAcpAgent implements Agent {
         continue
       }
       failures = 0
-      if (page.resume_cursor) session.pollCursor = page.resume_cursor
-      const fresh = (page.data ?? [])
-        .filter(event => !session.seenEventIds.has(event.event_id))
-        .sort((a, b) => {
-          if (a.created_at !== b.created_at) {
-            return a.created_at < b.created_at ? -1 : 1
-          }
-          return a.event_id < b.event_id ? -1 : 1
-        })
       let stopReason: StopReason | null = null
-      for (const event of fresh) {
-        rememberSeenEventId(session, event.event_id)
+      for (const { seq, event } of fresh) {
+        session.lastSeq = Math.max(session.lastSeq, seq)
         if (event.event_type === "result") {
           if (resultStopReason(event.payload) === "refusal") {
             const errText = errorResultText(event.payload)
@@ -547,7 +560,11 @@ export class ClaudeCloudAcpAgent implements Agent {
           for (const update of resultEventUpdates(event.payload)) {
             await this.#send(session.id, update)
           }
-          stopReason = resultStopReason(event.payload)
+          // Only a result written AFTER this turn's prompt ends it: an old
+          // result at or below the baseline is ignored (AIP-66 §6).
+          if (seq > session.turnBaseline) {
+            stopReason = resultStopReason(event.payload)
+          }
         } else if (event.event_type === "user") {
           // Follow-up turns: the vendor echoes the user's own prompt back as
           // a `user` event — the host already rendered that prompt, so it is
@@ -570,7 +587,7 @@ export class ClaudeCloudAcpAgent implements Agent {
           }
         }
         // system / env_manager_log / rate_limit_event / … carry no ACP
-        // projection; they still consume a seen-id above.
+        // projection; advancing lastSeq past them still marks them seen.
       }
       if (stopReason) return { stopReason }
       await this.#sleep(delay)

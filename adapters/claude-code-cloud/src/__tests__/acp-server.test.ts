@@ -13,7 +13,6 @@ import type {
 import {
   ClaudeCloudAcpAgent,
   MAX_LIST_EVENTS_FAILURES,
-  POLL_INITIAL_MS,
   resultEventUpdates,
   resultStopReason,
   type CloudCliDeps,
@@ -23,173 +22,188 @@ import { CLOUD_SESSION_META_FILE_ENV, CLOUD_VENDOR_SLUG } from "../meta-file.js"
 import type { CloudEventsPage, CloudSessionEvent } from "../sessions-api.js"
 
 // ── fixtures (FAKE ids/text, shaped like the 2026-10-14 observations) ──────
+//
+// The REAL events API (GET /v1/code/sessions/{id}/events):
+//   - no `cursor` → the NEWEST page, newest first;
+//   - `resume_cursor` (alias `next_cursor`, first page only) is the
+//     sequence_num of the OLDEST event on the page;
+//   - passing `?cursor=<n>` returns the next OLDER page — the cursor pages
+//     BACKWARD in time, never forward.
+// The FakeEvents backend below reproduces exactly that.
 
 const VENDOR_ID = "session_01FakeId"
 const VENDOR_URL = "https://claude.ai/code/session_01FakeId?tab=cloud"
 
-function assistantEvent(id: string, text: string): CloudSessionEvent {
+/** One vendor event carrying a monotonic `sequence_num`. */
+function event(
+  seq: number,
+  event_type: string,
+  payload: unknown,
+): CloudSessionEvent {
   return {
-    created_at: `2026-10-14T10:00:${id}.000Z`,
-    event_id: id,
-    event_type: "assistant",
-    payload: {
-      type: "assistant",
-      message: {
-        id: "msg_fake",
-        type: "message",
-        role: "assistant",
-        model: "claude-fake",
-        content: [{ type: "text", text }],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      },
-      session_id: VENDOR_ID,
-      parent_tool_use_id: null,
-    },
+    created_at: new Date(Date.UTC(2026, 9, 14, 10, 0, seq)).toISOString(),
+    event_id: `${event_type}-${seq}`,
+    event_type,
+    sequence_num: String(seq),
+    source: "worker",
+    payload,
   }
 }
 
-function toolUseEvent(id: string): CloudSessionEvent {
-  return {
-    created_at: `2026-10-14T10:00:${id}.000Z`,
-    event_id: id,
-    event_type: "assistant",
-    payload: {
-      type: "assistant",
-      message: {
-        id: "msg_fake",
-        type: "message",
-        role: "assistant",
-        model: "claude-fake",
-        content: [
-          {
-            type: "tool_use",
-            id: "toolu_fake_1",
-            name: "Bash",
-            input: { command: "ls -la" },
-          },
-        ],
-        stop_reason: "tool_use",
-        stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      },
-      session_id: VENDOR_ID,
-      parent_tool_use_id: null,
+function assistantEvent(seq: number, text: string): CloudSessionEvent {
+  return event(seq, "assistant", {
+    type: "assistant",
+    message: {
+      id: `msg-${seq}`,
+      type: "message",
+      role: "assistant",
+      model: "claude-fake",
+      content: [{ type: "text", text }],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
     },
-  }
+    session_id: VENDOR_ID,
+    parent_tool_use_id: null,
+  })
 }
 
-function toolResultEvent(id: string): CloudSessionEvent {
-  return {
-    created_at: `2026-10-14T10:00:${id}.000Z`,
-    event_id: id,
-    event_type: "user",
-    payload: {
-      type: "user",
-      message: {
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: "toolu_fake_1",
-            content: "file1\nfile2",
-            is_error: false,
-          },
-        ],
-      },
-      session_id: VENDOR_ID,
-      parent_tool_use_id: null,
+function toolUseEvent(seq: number): CloudSessionEvent {
+  return event(seq, "assistant", {
+    type: "assistant",
+    message: {
+      id: `msg-${seq}`,
+      type: "message",
+      role: "assistant",
+      model: "claude-fake",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_fake_1",
+          name: "Bash",
+          input: { command: "ls -la" },
+        },
+      ],
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
     },
-  }
+    session_id: VENDOR_ID,
+    parent_tool_use_id: null,
+  })
+}
+
+function toolResultEvent(seq: number): CloudSessionEvent {
+  return event(seq, "user", {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_fake_1",
+          content: "file1\nfile2",
+          is_error: false,
+        },
+      ],
+    },
+    session_id: VENDOR_ID,
+    parent_tool_use_id: null,
+  })
 }
 
 /** Follow-up-turn prompt echo: the vendor echoes the user's own prompt back
  *  as a `user` event carrying the prompt text (observed on turn 2+). */
-function promptEchoEvent(id: string, text: string): CloudSessionEvent {
-  return {
-    created_at: `2026-10-14T10:00:${id}.000Z`,
-    event_id: id,
-    event_type: "user",
-    payload: {
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text }] },
-      session_id: VENDOR_ID,
-      parent_tool_use_id: null,
-    },
-  }
+function promptEchoEvent(seq: number, text: string): CloudSessionEvent {
+  return event(seq, "user", {
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text }] },
+    session_id: VENDOR_ID,
+    parent_tool_use_id: null,
+  })
 }
 
 /** A `user` event whose payload is NOT an SDK user message: projecting it
  *  through the generic mapper would emit a chunk. The echo guard keys off
  *  the EVENT type, so this must be dropped too. */
-function userEventWithChunkPayload(id: string, text: string): CloudSessionEvent {
-  return {
-    created_at: `2026-10-14T10:00:${id}.000Z`,
-    event_id: id,
-    event_type: "user",
-    payload: {
-      type: "assistant",
-      message: {
-        id: "msg_fake",
-        type: "message",
-        role: "assistant",
-        model: "claude-fake",
-        content: [{ type: "text", text }],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      },
-      session_id: VENDOR_ID,
-      parent_tool_use_id: null,
+function userEventWithChunkPayload(seq: number, text: string): CloudSessionEvent {
+  return event(seq, "user", {
+    type: "assistant",
+    message: {
+      id: `msg-${seq}`,
+      type: "message",
+      role: "assistant",
+      model: "claude-fake",
+      content: [{ type: "text", text }],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
     },
-  }
+    session_id: VENDOR_ID,
+    parent_tool_use_id: null,
+  })
 }
 
 function resultEvent(
-  id: string,
+  seq: number,
   overrides: Record<string, unknown> = {},
 ): CloudSessionEvent {
-  return {
-    created_at: `2026-10-14T10:00:${id}.000Z`,
-    event_id: id,
-    event_type: "result",
-    payload: {
-      type: "result",
-      subtype: "success",
-      is_error: false,
-      num_turns: 2,
-      result: "all done",
-      total_cost_usd: 0.17,
-      duration_ms: 1234,
-      duration_api_ms: 1000,
-      usage: {
-        input_tokens: 12,
-        output_tokens: 34,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 5,
-      },
-      ...overrides,
+  return event(seq, "result", {
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 2,
+    result: "all done",
+    total_cost_usd: 0.17,
+    duration_ms: 1234,
+    duration_api_ms: 1000,
+    usage: {
+      input_tokens: 12,
+      output_tokens: 34,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 5,
     },
-  }
+    ...overrides,
+  })
 }
 
-/** Events client fed by a queue of pages; records the cursor of each call. */
-function fakeApi(pages: CloudEventsPage[]): {
-  api: CloudEventsClient
-  calls: Array<{ id: string; cursor?: string }>
-} {
-  const calls: Array<{ id: string; cursor?: string }> = []
-  let i = 0
-  return {
-    api: {
-      async listEvents(id, opts) {
-        calls.push({ id, ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}) })
-        // Repeat the last page when the queue runs dry (turn still running).
-        return pages[Math.min(i++, pages.length - 1)] ?? { data: [] }
-      },
-    },
-    calls,
+/**
+ * A fake events backend with the REAL paging semantics: no cursor → newest
+ * page, newest first; `cursor` → the next OLDER page (seq strictly below the
+ * cursor). `resume_cursor` is the oldest seq on the page; `next_cursor` is
+ * carried on the first (no-cursor) page only. Events are added at any time
+ * (tests push while the observe loop is running).
+ */
+class FakeEvents {
+  #entries: Array<{ seq: number; event: CloudSessionEvent }> = []
+  readonly calls: Array<{ id: string; cursor?: string }> = []
+
+  constructor(readonly pageSize = 50) {}
+
+  push(...events: CloudSessionEvent[]): void {
+    for (const e of events) this.#entries.push({ seq: Number(e.sequence_num), event: e })
+  }
+
+  api(): CloudEventsClient {
+    return { listEvents: async (id, opts) => this.list(id, opts?.cursor) }
+  }
+
+  list(id: string, cursor?: string): CloudEventsPage {
+    this.calls.push({ id, ...(cursor !== undefined ? { cursor } : {}) })
+    const cutoff =
+      cursor !== undefined ? Number(cursor) : Number.POSITIVE_INFINITY
+    const older = [...this.#entries]
+      .filter(e => e.seq < cutoff)
+      .sort((a, b) => b.seq - a.seq)
+    const page = older.slice(0, this.pageSize)
+    const oldest = page.length > 0 ? page[page.length - 1]!.seq : undefined
+    return {
+      data: page.map(e => e.event),
+      ...(oldest !== undefined ? { resume_cursor: String(oldest) } : {}),
+      ...(cursor === undefined && oldest !== undefined
+        ? { next_cursor: String(oldest) }
+        : {}),
+    }
   }
 }
 
@@ -207,6 +221,7 @@ function harness(opts: {
   api: CloudEventsClient
   pollInitialMs?: number
   pollMaxMs?: number
+  onSleep?: () => void
 }): Harness {
   const conn = { sessionUpdate: vi.fn(async () => {}) }
   const start = vi.fn(async () => ({
@@ -218,6 +233,7 @@ function harness(opts: {
   const sleepDelays: number[] = []
   const sleep = vi.fn(async (ms: number) => {
     sleepDelays.push(ms)
+    opts.onSleep?.()
   })
   const validateRepo = vi.fn(async () => {})
   const cli: CloudCliDeps = {
@@ -268,24 +284,34 @@ function updates(conn: Harness["conn"]): SessionNotification["update"][] {
   )
 }
 
+/** Text carried by every agent_message_chunk, in projection order. */
+function chunkTexts(conn: Harness["conn"]): string[] {
+  return updates(conn)
+    .filter(u => u.sessionUpdate === "agent_message_chunk")
+    .map(u => {
+      const c = (u as { content?: { text?: string } }).content
+      return typeof c?.text === "string" ? c.text : ""
+    })
+}
+
 // ── tests ───────────────────────────────────────────────────────────────────
 
 describe("ClaudeCloudAcpAgent", () => {
   it("session/new validates the repo source before creating anything", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
+    const events = new FakeEvents()
+    const h = harness({ api: events.api() })
     h.validateRepo.mockRejectedValueOnce(new Error("working tree is dirty"))
     await expect(newSession(h)).rejects.toThrow(/working tree is dirty/)
 
-    const h2 = harness({ api })
+    const h2 = harness({ api: events.api() })
     const id = await newSession(h2, "/repo")
     expect(h2.validateRepo).toHaveBeenCalledWith("/repo")
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it("session/new refuses mcpServers (AIP-66 §4)", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
+    const events = new FakeEvents()
+    const h = harness({ api: events.api() })
     await expect(newSession(h, "/repo", [{ name: "x" }])).rejects.toThrow(
       /mcpServers is not supported/,
     )
@@ -293,24 +319,15 @@ describe("ClaudeCloudAcpAgent", () => {
   })
 
   it("first prompt starts a cloud session, surfaces the URL, and ends on the new result with usage", async () => {
-    const { api, calls } = fakeApi([
-      // Turn-1 events arrive across polls: first page has partial turn-1
-      // events (+ the cursor to resume from), second poll sees the result.
-      {
-        data: [assistantEvent("a1", "Working on it")],
-        resume_cursor: "cur-0",
-      },
-      {
-        data: [
-          resultEvent("r1"),
-          toolResultEvent("u1"),
-          toolUseEvent("a2"),
-          assistantEvent("a1", "Working on it"),
-        ],
-        resume_cursor: "cur-1",
-      },
-    ])
-    const h = harness({ api, pollInitialMs: 10 })
+    const events = new FakeEvents()
+    // Turn-1 events arrive across polls: the first tick sees only the
+    // assistant text; the rest are written while the loop is sleeping.
+    events.push(assistantEvent(1, "Working on it"))
+    const h = harness({
+      api: events.api(),
+      pollInitialMs: 10,
+      onSleep: () => events.push(toolUseEvent(2), toolResultEvent(3), resultEvent(4)),
+    })
     const sessionId = await newSession(h)
     const res: PromptResponse = await h.agent.prompt(prompt(sessionId, "hello"))
 
@@ -334,9 +351,7 @@ describe("ClaudeCloudAcpAgent", () => {
           JSON.stringify(u).includes("Working on it"),
       ),
     ).toBe(true)
-    expect(
-      projected.some(u => u.sessionUpdate === "tool_call"),
-    ).toBe(true)
+    expect(projected.some(u => u.sessionUpdate === "tool_call")).toBe(true)
     expect(
       projected.some(
         u => u.sessionUpdate === "tool_call_update" && u.status === "completed",
@@ -348,60 +363,132 @@ describe("ClaudeCloudAcpAgent", () => {
       tokensIn: 17, // input 12 + cache_read 5 + cache_creation 0
       tokensOut: 34,
     })
-    // Polling round-trips the API's resume_cursor from the previous page.
-    expect(calls).toEqual([
-      { id: VENDOR_ID },
-      { id: VENDOR_ID, cursor: "cur-0" },
-    ])
+    // Every poll asks for the NEWEST page (no cursor) — progress is tracked
+    // by sequence_num, not by a forward cursor.
+    expect(events.calls.every(c => c.cursor === undefined)).toBe(true)
+  })
+
+  it("projects events in ASCENDING sequence_num order (the API serves them newest-first)", async () => {
+    const events = new FakeEvents()
+    // Pushed out of order; the backend always serves them newest-first.
+    events.push(
+      assistantEvent(3, "third"),
+      assistantEvent(1, "first"),
+      assistantEvent(2, "second"),
+      resultEvent(4),
+    )
+    const h = harness({ api: events.api() })
+    const sessionId = await newSession(h)
+    const res = await h.agent.prompt(prompt(sessionId, "hi"))
+
+    expect(res.stopReason).toBe("end_turn")
+    const texts = chunkTexts(h.conn).filter(t =>
+      ["first", "second", "third"].includes(t),
+    )
+    expect(texts).toEqual(["first", "second", "third"])
+  })
+
+  it("ends the turn on a new result spread across two pages written while polling", async () => {
+    // pageSize 2 forces a multi-page catch-up within one tick.
+    const events = new FakeEvents(2)
+    events.push(assistantEvent(1, "start"))
+    let wrote = false
+    const h = harness({
+      api: events.api(),
+      onSleep: () => {
+        if (wrote) return
+        wrote = true
+        events.push(assistantEvent(2, "middle"), assistantEvent(3, "late"), resultEvent(4))
+      },
+    })
+    const sessionId = await newSession(h)
+    const res = await h.agent.prompt(prompt(sessionId, "hi"))
+
+    expect(res.stopReason).toBe("end_turn")
+    // The second tick had to page BACKWARD (a cursor call) to reach its
+    // lastSeq boundary.
+    expect(events.calls.some(c => c.cursor !== undefined)).toBe(true)
+    const texts = chunkTexts(h.conn)
+    expect(texts).toContain("middle")
+    expect(texts).toContain("late")
+    expect(
+      updates(h.conn).filter(u => u.sessionUpdate === "usage_update"),
+    ).toHaveLength(1)
+  })
+
+  it("projects EVERY event when more than one page (50) is written between two ticks, paging backward", async () => {
+    const events = new FakeEvents() // pageSize 50
+    events.push(assistantEvent(1, "seed"))
+    let wrote = false
+    const h = harness({
+      api: events.api(),
+      onSleep: () => {
+        if (wrote) return
+        wrote = true
+        // 60 new events (seq 2..61): more than one page.
+        for (let seq = 2; seq <= 60; seq += 1) events.push(assistantEvent(seq, `m${seq}`))
+        events.push(resultEvent(61))
+      },
+    })
+    const sessionId = await newSession(h)
+    const res = await h.agent.prompt(prompt(sessionId, "hi"))
+
+    expect(res.stopReason).toBe("end_turn")
+    const texts = chunkTexts(h.conn)
+    // All 59 assistant events between the seed and the result projected.
+    expect(texts).toContain("m2")
+    expect(texts).toContain("m60")
+    expect(texts.filter(t => /^m\d+$/.test(t))).toHaveLength(59)
+    // The catch-up paged BACKWARD past the first (newest) page to reach the
+    // seed's boundary.
+    expect(events.calls.filter(c => c.cursor !== undefined).length).toBeGreaterThanOrEqual(1)
   })
 
   it("second prompt sends to the same vendor session; old events never end the new turn", async () => {
-    const { api } = fakeApi([
-      // Turn 1: the result ends it immediately.
-      { data: [resultEvent("r1")], resume_cursor: "cur-1" },
-      // Turn 2, poll 1: ONLY the already-seen turn-1 events (incl. the old
-      // result) — the turn must NOT end here.
-      { data: [resultEvent("r1")], resume_cursor: "cur-1" },
-      // Turn 2, poll 2: the NEW turn-2 result.
-      { data: [resultEvent("r2")], resume_cursor: "cur-2" },
-    ])
-    const h = harness({ api })
+    const events = new FakeEvents()
+    events.push(assistantEvent(1, "turn one"), resultEvent(2))
+    const h = harness({ api: events.api() })
     const sessionId = await newSession(h)
 
-    // Turn 1 — establish seen events.
+    // Turn 1 — establish the high-water (result at seq 2).
     await h.agent.prompt(prompt(sessionId, "first"))
     h.conn.sessionUpdate.mockClear()
 
-    // Turn 2.
+    // Turn 2: the new events written after the send (the pre-prompt
+    // high-water GET has already run by the time sendPrompt is called).
+    h.send.mockImplementation(async () => {
+      events.push(assistantEvent(3, "turn two"), resultEvent(4))
+      return { stdout: "Sent to cloud session." }
+    })
+
     const res = await h.agent.prompt(prompt(sessionId, "second"))
     expect(res.stopReason).toBe("end_turn")
     expect(h.start).toHaveBeenCalledTimes(1) // NOT called again
     expect(h.send).toHaveBeenCalledWith(VENDOR_ID, "second", { cwd: "/repo" })
-    // Exactly one turn-2 result projection, not two.
-    expect(h.sleep).toHaveBeenCalledTimes(1) // one empty(ish) poll before r2
+    // Only the turn-2 result projects a usage_update — the turn-1 result is
+    // below lastSeq and never re-projected.
+    expect(
+      updates(h.conn).filter(u => u.sessionUpdate === "usage_update"),
+    ).toHaveLength(1)
   })
 
   it("never replays a follow-up turn's user-event prompt echo as a chunk", async () => {
-    const { api } = fakeApi([
-      // Turn 1: the result ends it.
-      { data: [resultEvent("r1")], resume_cursor: "cur-1" },
-      // Turn 2: the vendor echoes the prompt as a `user` event (twice, once
-      // in the plain echo shape and once under a payload that the generic
-      // mapper WOULD turn into a chunk), a real tool_result, then the result.
-      {
-        data: [
-          promptEchoEvent("u2", "second"),
-          userEventWithChunkPayload("u3", "second again"),
-          toolResultEvent("u4"),
-          resultEvent("r2"),
-        ],
-        resume_cursor: "cur-2",
-      },
-    ])
-    const h = harness({ api })
+    const events = new FakeEvents()
+    events.push(resultEvent(1))
+    const h = harness({ api: events.api() })
     const sessionId = await newSession(h)
     await h.agent.prompt(prompt(sessionId, "first"))
     h.conn.sessionUpdate.mockClear()
+
+    h.send.mockImplementation(async () => {
+      events.push(
+        promptEchoEvent(2, "second"),
+        userEventWithChunkPayload(3, "second again"),
+        toolResultEvent(4),
+        resultEvent(5),
+      )
+      return { stdout: "Sent to cloud session." }
+    })
 
     const res = await h.agent.prompt(prompt(sessionId, "second"))
     expect(res.stopReason).toBe("end_turn")
@@ -414,9 +501,7 @@ describe("ClaudeCloudAcpAgent", () => {
     expect(chunks).not.toContain('"text":"second"')
     expect(chunks).not.toContain("second again")
     // …but tool results (also `user` events) still project.
-    expect(
-      projected.some(u => u.sessionUpdate === "tool_call_update"),
-    ).toBe(true)
+    expect(projected.some(u => u.sessionUpdate === "tool_call_update")).toBe(true)
     // Exactly one usage_update: the turn-2 result, not a replayed turn-1 one.
     expect(
       projected.filter(u => u.sessionUpdate === "usage_update"),
@@ -434,8 +519,8 @@ describe("ClaudeCloudAcpAgent", () => {
           )
         }
         return {
-          data: [assistantEvent("a1", "recovered"), resultEvent("r1")],
-          resume_cursor: "cur-1",
+          data: [resultEvent(2), assistantEvent(1, "recovered")],
+          resume_cursor: "1",
         }
       },
     }
@@ -474,9 +559,7 @@ describe("ClaudeCloudAcpAgent", () => {
     expect(calls).toBe(MAX_LIST_EVENTS_FAILURES) // no unbounded retrying
     expect(h.sleepDelays).toEqual([10, 20, 40, 40]) // backoff before each
     // Never ended the turn on anything but a vendor `result`.
-    expect(
-      updates(h.conn).some(u => u.sessionUpdate === "usage_update"),
-    ).toBe(false)
+    expect(updates(h.conn).some(u => u.sessionUpdate === "usage_update")).toBe(false)
   })
 
   it("fails the turn immediately on a non-transient listEvents error", async () => {
@@ -492,28 +575,23 @@ describe("ClaudeCloudAcpAgent", () => {
     const h = harness({ api })
     const sessionId = await newSession(h)
 
-    await expect(h.agent.prompt(prompt(sessionId, "hi"))).rejects.toThrow(
-      /HTTP 404/,
-    )
+    await expect(h.agent.prompt(prompt(sessionId, "hi"))).rejects.toThrow(/HTTP 404/)
     expect(calls).toBe(1)
     expect(h.sleep).not.toHaveBeenCalled()
   })
 
   it("an error result stops as refusal and surfaces the error text", async () => {
-    const { api } = fakeApi([
-      {
-        data: [
-          resultEvent("r1", {
-            subtype: "error",
-            is_error: true,
-            result: "the vendor refused the turn",
-            total_cost_usd: 0.01,
-            usage: { input_tokens: 1, output_tokens: 1 },
-          }),
-        ],
-      },
-    ])
-    const h = harness({ api })
+    const events = new FakeEvents()
+    events.push(
+      resultEvent(1, {
+        subtype: "error",
+        is_error: true,
+        result: "the vendor refused the turn",
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+    )
+    const h = harness({ api: events.api() })
     const sessionId = await newSession(h)
     const res = await h.agent.prompt(prompt(sessionId, "boom"))
     expect(res.stopReason).toBe("refusal")
@@ -528,52 +606,41 @@ describe("ClaudeCloudAcpAgent", () => {
   })
 
   it("a result without usage emits no usage_update (unmeasured, not zero)", async () => {
-    const { api } = fakeApi([
-      {
-        data: [
-          {
-            created_at: "2026-10-14T10:00:00.000Z",
-            event_id: "r0",
-            event_type: "result",
-            payload: { type: "result", subtype: "success", is_error: false },
-          },
-        ],
-      },
-    ])
-    const h = harness({ api })
+    const events = new FakeEvents()
+    events.push(event(1, "result", { type: "result", subtype: "success", is_error: false }))
+    const h = harness({ api: events.api() })
     const sessionId = await newSession(h)
     const res = await h.agent.prompt(prompt(sessionId, "hi"))
     expect(res.stopReason).toBe("end_turn")
-    expect(
-      updates(h.conn).some(u => u.sessionUpdate === "usage_update"),
-    ).toBe(false)
+    expect(updates(h.conn).some(u => u.sessionUpdate === "usage_update")).toBe(false)
   })
 
   it("backs the poll off from the initial to the max interval", async () => {
-    const { api } = fakeApi([
-      { data: [] },
-      { data: [] },
-      { data: [] },
-      { data: [] },
-      { data: [resultEvent("r1")] },
-    ])
-    const h = harness({ api, pollInitialMs: 10, pollMaxMs: 40 })
+    const events = new FakeEvents()
+    let sleeps = 0
+    const h = harness({
+      api: events.api(),
+      pollInitialMs: 10,
+      pollMaxMs: 40,
+      onSleep: () => {
+        sleeps += 1
+        if (sleeps === 4) events.push(resultEvent(1))
+      },
+    })
     const sessionId = await newSession(h)
     await h.agent.prompt(prompt(sessionId, "slow turn"))
     expect(h.sleepDelays).toEqual([10, 20, 40, 40])
   })
 
   it("session/cancel is unsupported", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
-    await expect(
-      h.agent.cancel({ sessionId: "s" } as never),
-    ).rejects.toThrow(/session\/cancel is unsupported/)
+    const h = harness({ api: new FakeEvents().api() })
+    await expect(h.agent.cancel({ sessionId: "s" } as never)).rejects.toThrow(
+      /session\/cancel is unsupported/,
+    )
   })
 
   it("reports an empty configurable-option set (no model menu)", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
+    const h = harness({ api: new FakeEvents().api() })
     await expect(
       h.agent.setSessionConfigOption({} as never),
     ).resolves.toEqual({ configOptions: [] })
@@ -596,102 +663,65 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
   }
 
   it("initialize advertises the loadSession capability", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
+    const h = harness({ api: new FakeEvents().api() })
     const res = await h.agent.initialize({} as never)
     expect(res.agentCapabilities?.loadSession).toBe(true)
   })
 
   it("session/load adopts the vendor id — the next prompt SENDS, never starts a new cloud session", async () => {
-    // Cursor-aware events client: while seeding it serves the session's
-    // single-page pre-existing history (whose OLD `result` must not end the
-    // new turn) and stops once the cursor stops advancing; once the prompt
-    // is in flight it serves only post-attach events.
-    const calls: Array<{ id: string; cursor?: string }> = []
-    let prompting = false
-    const api: CloudEventsClient = {
-      async listEvents(id, opts) {
-        calls.push({ id, ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}) })
-        if (!prompting) {
-          // History is one page: the first read serves it, resuming from its
-          // cursor finds nothing more and the cursor stops advancing.
-          if (!opts?.cursor) {
-            return { data: [resultEvent("r0")], resume_cursor: "cur-0" }
-          }
-          return { data: [], resume_cursor: "cur-0" }
-        }
-        return { data: [resultEvent("r1")], resume_cursor: "cur-1" }
-      },
-    }
-    const h = harness({ api })
+    const events = new FakeEvents()
+    // Pre-existing history ending in an OLD result (seq 1).
+    events.push(resultEvent(1))
+    const h = harness({ api: events.api() })
     await loadSession(h, VENDOR_ID)
-    // The load paged the whole (single-page) history and stopped at the
-    // newest cursor.
-    expect(calls).toEqual([
-      { id: VENDOR_ID },
-      { id: VENDOR_ID, cursor: "cur-0" },
-    ])
+    // The seed is ONE newest-page GET (no cursor, no backward paging).
+    expect(events.calls).toEqual([{ id: VENDOR_ID }])
 
-    prompting = true
+    // The post-attach turn's result appears once sendPrompt runs.
+    h.send.mockImplementation(async () => {
+      events.push(resultEvent(2))
+      return { stdout: "Sent to cloud session." }
+    })
+
     const res: PromptResponse = await h.agent.prompt(prompt(VENDOR_ID, "again"))
     expect(res.stopReason).toBe("end_turn")
     // Re-attach goes through sendPrompt — a resumed relay MUST NOT start a
     // replacement vendor session (AIP-66 §5).
     expect(h.start).not.toHaveBeenCalled()
     expect(h.send).toHaveBeenCalledWith(VENDOR_ID, "again", { cwd: "/repo" })
-    // The observe poll resumed from the seed's cursor, so the old result
-    // was never even fetched — only the new turn's result ended the turn.
-    expect(calls).toEqual([
-      { id: VENDOR_ID },
-      { id: VENDOR_ID, cursor: "cur-0" },
-      { id: VENDOR_ID, cursor: "cur-0" },
-    ])
+    // The old result (seq 1) is at/below the seeded high-water: it never
+    // projects and never ends a turn. Exactly one usage_update — the new one.
+    expect(
+      updates(h.conn).filter(u => u.sessionUpdate === "usage_update"),
+    ).toHaveLength(1)
+    // All reads were newest-page reads (no cursor).
+    expect(events.calls.every(c => c.cursor === undefined)).toBe(true)
   })
 
-  it("session/load pre-marks a multi-page history — an older result cannot end the first post-attach prompt", async () => {
-    // Page 1 (oldest) is this turn's old history; page 2 (newer) carries the
-    // PREVIOUS turn's `result` (r0). The seed must page through BOTH, or the
-    // first post-attach poll (resuming past page 1) would fetch r0 unmarked
-    // and end the new turn on arrival.
-    const calls: Array<{ id: string; cursor?: string }> = []
-    let prompting = false
-    const api: CloudEventsClient = {
-      async listEvents(id, opts) {
-        calls.push({ id, ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}) })
-        if (!prompting) {
-          if (!opts?.cursor) {
-            return { data: [assistantEvent("a0", "older page")], resume_cursor: "cur-1" }
-          }
-          if (opts.cursor === "cur-1") {
-            return {
-              data: [
-                resultEvent("r0", {
-                  total_cost_usd: 9.99,
-                  usage: { input_tokens: 999, output_tokens: 999 },
-                }),
-              ],
-              resume_cursor: "cur-2",
-            }
-          }
-          return { data: [], resume_cursor: "cur-2" }
-        }
-        return { data: [resultEvent("r1")], resume_cursor: "cur-3" }
-      },
-    }
-    const h = harness({ api })
+  it("session/load seeds past a multi-page history — an older result cannot end the first post-attach prompt", async () => {
+    // pageSize 2: the history is many pages deep. A single newest-page GET
+    // still seeds lastSeq above the previous turn's OLD result (seq 2),
+    // because only the max sequence_num on the newest page matters.
+    const events = new FakeEvents(2)
+    events.push(
+      assistantEvent(1, "older page"),
+      resultEvent(2, { total_cost_usd: 9.99, usage: { input_tokens: 999, output_tokens: 999 } }),
+      assistantEvent(3, "newer page"),
+      assistantEvent(4, "newest"),
+    )
+    const h = harness({ api: events.api() })
     await loadSession(h, VENDOR_ID)
-    // Both history pages were read before the cursor stopped advancing.
-    expect(calls).toEqual([
-      { id: VENDOR_ID },
-      { id: VENDOR_ID, cursor: "cur-1" },
-      { id: VENDOR_ID, cursor: "cur-2" },
-    ])
+    // ONE newest-page GET — backward paging is not needed for the seed.
+    expect(events.calls).toEqual([{ id: VENDOR_ID }])
 
     h.conn.sessionUpdate.mockClear()
-    prompting = true
+    h.send.mockImplementation(async () => {
+      events.push(resultEvent(5))
+      return { stdout: "Sent to cloud session." }
+    })
     const res: PromptResponse = await h.agent.prompt(prompt(VENDOR_ID, "again"))
     expect(res.stopReason).toBe("end_turn")
-    // The turn did NOT end on the (pre-marked) older result: its distinctive
+    // The turn did NOT end on the (seeded) older result: its distinctive
     // cost/usage never projects, only the new turn's result does.
     const projected = updates(h.conn)
     expect(JSON.stringify(projected)).not.toContain("9.99")
@@ -701,8 +731,7 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
   })
 
   it("session/load refuses an id the vendor could never own — and starts nothing in its place", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
+    const h = harness({ api: new FakeEvents().api() })
     await expect(loadSession(h, "acp-uuid-never-learned")).rejects.toThrow(
       /vendor session id/,
     )
@@ -711,21 +740,14 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
   })
 
   it("session/load accepts the API's cse_ spelling too", async () => {
-    let prompting = false
-    const api: CloudEventsClient = {
-      async listEvents(_id, opts) {
-        if (!prompting) {
-          if (!opts?.cursor) {
-            return { data: [resultEvent("r0")], resume_cursor: "cur-0" }
-          }
-          return { data: [], resume_cursor: "cur-0" }
-        }
-        return { data: [resultEvent("r1")], resume_cursor: "cur-1" }
-      },
-    }
-    const h = harness({ api })
+    const events = new FakeEvents()
+    events.push(resultEvent(1))
+    const h = harness({ api: events.api() })
     await loadSession(h, "cse_01FakeId")
-    prompting = true
+    h.send.mockImplementation(async () => {
+      events.push(resultEvent(2))
+      return { stdout: "Sent to cloud session." }
+    })
     const res = await h.agent.prompt(prompt(VENDOR_ID, "again"))
     expect(res.stopReason).toBe("end_turn")
     // Normalized to the CLI's session_ spelling before hitting the vendor.
@@ -733,25 +755,22 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
   })
 
   it("session/load refuses mcpServers (AIP-66 §4 backstop)", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
-    await expect(loadSession(h, VENDOR_ID, "/repo", [{ name: "x" }])).rejects.toThrow(
-      /mcpServers is not supported/,
-    )
+    const h = harness({ api: new FakeEvents().api() })
+    await expect(
+      loadSession(h, VENDOR_ID, "/repo", [{ name: "x" }]),
+    ).rejects.toThrow(/mcpServers is not supported/)
     expect(h.validateRepo).not.toHaveBeenCalled()
   })
 
   it("session/load re-validates the repo source before adopting anything (AIP-66 §3)", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
+    const h = harness({ api: new FakeEvents().api() })
     h.validateRepo.mockRejectedValueOnce(new Error("working tree is dirty"))
     await expect(loadSession(h, VENDOR_ID)).rejects.toThrow(/working tree is dirty/)
     expect(h.send).not.toHaveBeenCalled()
   })
 
   it("session/load validates the session id BEFORE the repo source — a bad id reports its error first", async () => {
-    const { api } = fakeApi([])
-    const h = harness({ api })
+    const h = harness({ api: new FakeEvents().api() })
     // Even with a repo the validator would reject, the malformed id is the
     // error the caller hears.
     h.validateRepo.mockRejectedValueOnce(new Error("working tree is dirty"))
@@ -768,8 +787,9 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
     const prev = process.env[CLOUD_SESSION_META_FILE_ENV]
     process.env[CLOUD_SESSION_META_FILE_ENV] = path
     try {
-      const { api } = fakeApi([{ data: [resultEvent("r1")], resume_cursor: "cur-1" }])
-      const h = harness({ api })
+      const events = new FakeEvents()
+      events.push(resultEvent(1))
+      const h = harness({ api: events.api() })
       const id = await newSession(h)
       await h.agent.prompt(prompt(id, "hello"))
 
@@ -802,8 +822,9 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
         JSON.stringify({ vendor: CLOUD_VENDOR_SLUG, sessionId: VENDOR_ID, url: VENDOR_URL }),
         "utf8",
       )
-      const { api } = fakeApi([{ data: [resultEvent("r0")], resume_cursor: "cur-0" }])
-      const h = harness({ api })
+      const events = new FakeEvents()
+      events.push(resultEvent(1))
+      const h = harness({ api: events.api() })
       await loadSession(h, VENDOR_ID)
       // A load carries no URL of its own — the one already on disk survives.
       expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
@@ -822,8 +843,9 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
     const prev = process.env[CLOUD_SESSION_META_FILE_ENV]
     delete process.env[CLOUD_SESSION_META_FILE_ENV]
     try {
-      const { api } = fakeApi([{ data: [resultEvent("r0")], resume_cursor: "cur-0" }])
-      const h = harness({ api })
+      const events = new FakeEvents()
+      events.push(resultEvent(1))
+      const h = harness({ api: events.api() })
       await expect(loadSession(h, VENDOR_ID)).resolves.toBeDefined()
     } finally {
       if (prev !== undefined) process.env[CLOUD_SESSION_META_FILE_ENV] = prev
@@ -840,9 +862,7 @@ describe("result helpers", () => {
   })
 
   it("extracts the usage_update only when the vendor reported usage", () => {
-    const withUsage = resultEventUpdates(
-      resultEvent("r1").payload,
-    )
+    const withUsage = resultEventUpdates(resultEvent(1).payload)
     expect(withUsage).toHaveLength(1)
     expect(withUsage[0]).toMatchObject({ sessionUpdate: "usage_update" })
     expect(resultEventUpdates({ type: "result" })).toEqual([])

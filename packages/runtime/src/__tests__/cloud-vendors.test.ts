@@ -141,12 +141,27 @@ describe("resolveCloudSpawn — resolution", () => {
     })
   })
 
-  it("unset adapter/harness → the vendor's relay adapter", () => {
+  it("unset adapter/harness → the vendor's relay adapter, vendor's harness", () => {
     expect(resolveCloudSpawn({ cloud: "anthropic" })).toEqual({
       vendor: CLOUD_VENDORS["anthropic"],
       adapter: "claude-code-cloud",
-      harness: "claude-code-cloud",
+      harness: "claude-code",
     })
+  })
+
+  it("records the vendor's HARNESS, not the local relay adapter slug (AIP-66 §2)", () => {
+    // `adapter` is the local relay ("claude-code-cloud"); the descriptor's
+    // `harness` must be the VENDOR's harness ("claude-code") — even when the
+    // requested adapter IS the relay adapter.
+    const fromUnset = resolveCloudSpawn({ cloud: "anthropic" })
+    expect(fromUnset.adapter).toBe("claude-code-cloud")
+    expect(fromUnset.harness).toBe("claude-code")
+    const fromRelayAdapter = resolveCloudSpawn({
+      cloud: "anthropic",
+      adapter: "claude-code-cloud",
+    })
+    expect(fromRelayAdapter.adapter).toBe("claude-code-cloud")
+    expect(fromRelayAdapter.harness).toBe("claude-code")
   })
 
   it("the spawn surfaces' placeholder adapter resolves exactly like an unset adapter", () => {
@@ -157,7 +172,7 @@ describe("resolveCloudSpawn — resolution", () => {
     expect(resolveCloudSpawn({ cloud: "anthropic", adapter: CLOUD_ADAPTER_PLACEHOLDER })).toEqual({
       vendor: CLOUD_VENDORS["anthropic"],
       adapter: "claude-code-cloud",
-      harness: "claude-code-cloud",
+      harness: "claude-code",
     })
   })
 
@@ -165,7 +180,7 @@ describe("resolveCloudSpawn — resolution", () => {
     expect(resolveCloudSpawn({ cloud: "anthropic", adapter: "claude-code-cloud" })).toEqual({
       vendor: CLOUD_VENDORS["anthropic"],
       adapter: "claude-code-cloud",
-      harness: "claude-code-cloud",
+      harness: "claude-code",
     })
   })
 })
