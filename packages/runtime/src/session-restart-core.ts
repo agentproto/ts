@@ -126,6 +126,7 @@ import {
   resolveSandboxCheckpointConfig,
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
+import { savedAdapterStoreArchive } from "./sandbox-adapter-store.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import { resolveSandboxWorkspaceSource } from "./sandbox-workspace-derive-remote.js"
 import {
@@ -1257,7 +1258,7 @@ export async function restartAgentSession(
       const boxGone = isSandboxBoxGoneError(err) || err instanceof SandboxHostBootFailedError
       let freshBlocker: string | undefined
       if (boxGone) {
-        const fresh = await spawnOnFreshBox(providerSlug, restartedSessionId, sandboxMcpServers)
+        const fresh = await spawnOnFreshBox(providerSlug, restartedSessionId, sandboxMcpServers, resumeSessionId)
         if (fresh.ok) return fresh.desc
         freshBlocker = fresh.blocker
       }
@@ -1379,6 +1380,10 @@ export async function restartAgentSession(
             outDir: sessionTranscriptDir(restartedSessionId),
             config: checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
             baseRef: "origin/HEAD",
+            // The conversation-store passenger is keyed by THIS session's
+            // box-side id — the id the descriptor records as
+            // `adapterSessionId` (the proxy's `sessionId`).
+            adapterStore: { adapterSessionId: remoteSessionId, adapter: adapterSlug },
             onDelivery: record => {
               registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
             },
@@ -1415,16 +1420,37 @@ export async function restartAgentSession(
   // (pushed commits + checkpoint snapshot); without one the fresh box starts
   // from the workspace's base branch on a new default work branch. `blocker`
   // says why the restart cannot proceed.
+  //
+  // The adapter's CONVERSATION store rides along when a checkpoint saved one
+  // (`adapter-store.tar.gz` next to the prior session's `checkpoint.json`):
+  // it is extracted into the new box at the same path BEFORE the adapter
+  // starts, and the restored store's id is passed through the box
+  // `agent_start`'s `resumeSessionId` field so the box rehydrates that
+  // conversation — the same field a live-box re-attach uses. A box that
+  // rejects/ignores it falls back exactly like a live re-attach: blank
+  // in-box spawn + the host's digest handoff (`resumeFallback` below).
   const spawnOnFreshBox = async (
     providerSlug: string,
     restartedSessionId: string,
     sandboxMcpServers: SessionDescriptor["mcpServers"],
+    resumeSessionId?: string,
   ): Promise<{ ok: true; desc: SessionDescriptor } | { ok: false; blocker: string }> => {
     const target = prev.sandboxDeliveryTarget
     const prevDir = sessionTranscriptDir(prev.id)
     const resumeBranch = target?.branch.startsWith(SANDBOX_BRANCH_PREFIX) ? target.branch : undefined
     const noBranchNote = resumeBranch ? "" : " and the session recorded no work branch to resume from"
     const tarTarget = target ? undefined : await readTarTarget(prevDir)
+    const adapterStoreArchive = savedAdapterStoreArchive(prevDir)
+    // Attempt the in-box resume ONLY when the conversation store actually
+    // came back with the checkpoint: a fresh box daemon knows nothing of the
+    // dead box's ids, so without the store files there is nothing to
+    // rehydrate and the flagged fallback (digest handoff) is the honest
+    // answer — never a resume attempt doomed to fail.
+    const boxResumeId =
+      resumeSessionId !== undefined && prev.resumable !== false && adapterStoreArchive !== undefined
+        ? resumeSessionId
+        : undefined
+    if (resumeSessionId !== undefined && boxResumeId === undefined) resumeFallback = true
     const notices: string[] = []
     let workspaceArgs: Pick<Parameters<typeof bootSandboxAgentSession>[0], "workspace" | "worktree" | "tarWorkspace">
     let slug: string
@@ -1485,6 +1511,10 @@ export async function restartAgentSession(
       ...(effEffort ? { effort: effEffort } : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
+      // The saved conversation store is extracted into the box before the
+      // adapter starts, and its id is the box `agent_start`'s resume target.
+      ...(adapterStoreArchive ? { adapterStoreRestore: { restoreFrom: adapterStoreArchive } } : {}),
+      ...(boxResumeId ? { resumeSessionId: boxResumeId } : {}),
       ...workspaceArgs,
       sessionId: restartedSessionId,
       onDelivery: record => {
@@ -1505,6 +1535,12 @@ export async function restartAgentSession(
           `workspace "${slug}" could not be started — ${booted.message}`,
       )
     }
+    // A resume attempt the box reported as blank (old box daemon that strips
+    // the unknown field, a store the discovery couldn't bind, or an adapter
+    // rejection the box absorbed into a fresh spawn) is a flagged fallback:
+    // the digest handoff below still runs — never a silent claim of
+    // continuity. Same honesty rule as the live-box re-attach path.
+    if (boxResumeId !== undefined && !booted.resumeVia) resumeFallback = true
     notices.push(...(booted.notices ?? []))
     const restarted = registerBoxSession(restartedSessionId, sandboxMcpServers, {
       agentSession: booted.agentSession,
@@ -1512,6 +1548,7 @@ export async function restartAgentSession(
       provider: booted.provider,
       sandboxTeardown: booted.sandboxTeardown,
       cwd: booted.cwd,
+      ...(booted.resumeVia ? { resumeVia: "resumed via ACP" as const } : {}),
       ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
     })
