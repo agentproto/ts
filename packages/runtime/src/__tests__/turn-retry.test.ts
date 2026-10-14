@@ -24,12 +24,15 @@ import {
   computeTurnRetryDelayMs,
   createTurnRetryController,
   decideTurnRetry,
+  decideTurnRetryAction,
   extractRetryAfterMs,
   isReadOnlyToolName,
+  isSandboxSession,
   NO_OUTPUT_STALL_MARKER,
   TURN_RETRY_PROMPT_SOURCE,
 } from "../turn-retry.js"
 import { parseTurnRetryPolicy, resolveTurnRetryPolicy, type TurnRetryPolicy } from "../turn-retry-policy.js"
+import type { MigrateSandboxSessionResult } from "../session-migrate.js"
 
 // ── pure halves ──────────────────────────────────────────────────────────
 
@@ -666,5 +669,236 @@ describe("turnRetry plumbing", () => {
       on: ["rate-limit"],
     })
     expect(() => userPresetSchema.parse({ id: "x", label: "x", turnRetry: { on: [] } })).toThrow()
+  })
+})
+
+// ── turnRetry.action: "migrate" ────────────────────────────────────────────
+
+describe("isSandboxSession", () => {
+  it("returns true for remote agent-cli sessions", () => {
+    expect(isSandboxSession({ kind: "agent-cli", remote: true })).toBe(true)
+  })
+  it("returns false for local agent-cli sessions", () => {
+    expect(isSandboxSession({ kind: "agent-cli", remote: false })).toBe(false)
+  })
+  it("returns false for non-agent-cli sessions", () => {
+    expect(isSandboxSession({ kind: "external", remote: true })).toBe(false)
+  })
+})
+
+describe("decideTurnRetryAction", () => {
+  const baseRetry = {
+    action: "retry" as const,
+    errorClass: "rate-limit" as const,
+    attempt: 1,
+    delayMs: 5000,
+    error: "429 status code",
+  }
+  const rule = { action: "migrate" as const, maxRetries: 3, maxMigrations: 2 }
+
+  it("passes through unchanged when action is retry", () => {
+    const result = decideTurnRetryAction(baseRetry, { ...rule, action: "retry" }, { kind: "agent-cli", remote: true }, { attempts: 0, migrations: 0 })
+    expect(result.action).toBe("retry")
+    if (result.action === "retry") expect(result.delayMs).toBe(5000)
+  })
+
+  it("falls back to retry with note when session is not sandbox", () => {
+    const result = decideTurnRetryAction(baseRetry, rule, { kind: "agent-cli", remote: false }, { attempts: 0, migrations: 0 })
+    expect(result.action).toBe("retry")
+    if (result.action === "retry") expect(result.note).toContain("needs a sandbox session")
+  })
+
+  it("migrates when sandbox session and under migration cap", () => {
+    const result = decideTurnRetryAction(baseRetry, rule, { kind: "agent-cli", remote: true }, { attempts: 0, migrations: 0 })
+    expect(result.action).toBe("migrate")
+    if (result.action === "migrate") {
+      expect(result.errorClass).toBe("rate-limit")
+      expect(result.attempt).toBe(1)
+      expect(result.error).toBe("429 status code")
+    }
+  })
+
+  it("falls back to retry with note when migration cap reached but retry budget remains", () => {
+    const result = decideTurnRetryAction(baseRetry, rule, { kind: "agent-cli", remote: true }, { attempts: 0, migrations: 2 })
+    expect(result.action).toBe("retry")
+    if (result.action === "retry") expect(result.note).toContain("migration cap reached")
+  })
+
+  it("gives up when both migration cap and retry budget are spent", () => {
+    const result = decideTurnRetryAction(baseRetry, rule, { kind: "agent-cli", remote: true }, { attempts: 3, migrations: 2 })
+    expect(result.action).toBe("give-up")
+    if (result.action === "give-up") {
+      expect(result.errorClass).toBe("rate-limit")
+      expect(result.attempts).toBe(3)
+      expect(result.error).toBe("429 status code")
+    }
+  })
+
+  it("uses 1-based migration attempt number", () => {
+    const r1 = decideTurnRetryAction(baseRetry, rule, { kind: "agent-cli", remote: true }, { attempts: 0, migrations: 0 })
+    const r2 = decideTurnRetryAction(baseRetry, rule, { kind: "agent-cli", remote: true }, { attempts: 0, migrations: 1 })
+    if (r1.action === "migrate") expect(r1.attempt).toBe(1)
+    if (r2.action === "migrate") expect(r2.attempt).toBe(2)
+  })
+})
+
+describe("turn retry — migrate action (wired with fake migrateSession)", () => {
+  const FAST = { baseDelayMs: 0, factor: 1, maxDelayMs: 0 }
+
+  function makeMigrationResult(newId: string): MigrateSandboxSessionResult {
+    return {
+      ok: true,
+      descriptor: { id: newId, kind: "agent-cli", status: "running", remote: true } as SessionDescriptor,
+      migratedFrom: "s1",
+      checkpoint: {} as any,
+      restore: { source: "live", snapshot: {} as any, branch: "main", record: {} as any },
+      oldSessionKilled: false,
+    }
+  }
+
+  function migrateHarness(opts: {
+    migrateSession?: (prev: SessionDescriptor) => Promise<MigrateSandboxSessionResult>
+    row?: Partial<SessionDescriptor>
+    turnRetry?: Parameters<typeof resolveTurnRetryPolicy>[0]
+  }) {
+    const sessionEvents = createSessionEventBus()
+    const events: SessionTurnRetryEvent[] = []
+    sessionEvents.on("session:turn-retry", ev => events.push(ev))
+    const notices: string[] = []
+    const enqueued: Array<{ sessionId: string; message: unknown }> = []
+    const row = {
+      id: "s1",
+      kind: "agent-cli",
+      status: "running",
+      remote: true,
+      turnRetry: resolveTurnRetryPolicy(opts.turnRetry ?? { on: ["rate-limit"], action: "migrate", maxMigrations: 2, ...FAST }),
+      ...opts.row,
+    } as SessionDescriptor
+    const registry = {
+      get: (id: string) => (id === row.id ? row : undefined),
+      list: () => [row],
+      enqueuePrompt: async (id: string, message: unknown) => {
+        if (id !== row.id && id !== "s2") throw new Error(`no session "${id}"`)
+        enqueued.push({ sessionId: id, message })
+        return { queued: false, delivery: "delivered" }
+      },
+      recordNotice: (id: string, text: string) => {
+        if (id !== row.id && id !== "s2") return false
+        notices.push(text)
+        return true
+      },
+      patchTurnRetry: (id: string, patch: Record<string, unknown>) => {
+        if (id !== row.id && id !== "s2") return false
+        const r = (id === row.id ? row : { id: "s2", kind: "agent-cli", remote: true, status: "running", turnRetry: row.turnRetry }) as unknown as Record<string, unknown>
+        for (const key of ["turnRetryAttempts", "turnMigrations", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
+          if (!(key in patch)) continue
+          const value = patch[key]
+          if (value === null || value === undefined) delete r[key]
+          else r[key] = value
+        }
+        return true
+      },
+    }
+    const controller = createTurnRetryController({
+      registry,
+      sessionEvents,
+      migrateSession: opts.migrateSession,
+      log: () => {},
+      setTimer: (fn) => setTimeout(fn, 0),
+    })
+    const turnEnd = (error: string) =>
+      sessionEvents.emit({
+        type: "session:turn-end",
+        sessionId: row.id,
+        awaitingInput: false,
+        reason: "error",
+        error,
+        ts: new Date().toISOString(),
+      })
+    return { row, events, notices, enqueued, controller, turnEnd, phases: () => events.map(e => e.phase) }
+  }
+
+  it("migrates sandbox session to fresh box and re-prompts there", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => makeMigrationResult("s2"),
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("migrated"), "migration")
+
+    // Migration emits scheduled + migrated (no sent phase - sent is for in-place retries)
+    expect(h.phases()).toEqual(["scheduled", "migrated"])
+    expect(h.events[1]).toMatchObject({ phase: "migrated", attempt: 1, migratedTo: "s2" })
+    expect(h.notices).toContain("[turn-retry] rate-limit: migrate 1/2 to a fresh box in 0s")
+    expect(h.notices).toContain("[turn-retry] migrated 1/2 (rate-limit) — the session moved to s2; sending continuation prompt")
+    // Continuation prompt sent on the NEW session
+    expect(h.enqueued).toHaveLength(1)
+    expect(h.enqueued[0]?.sessionId).toBe("s2")
+    // Migration counter booked on old session
+    expect(h.row.turnMigrations).toBe(1)
+    h.controller.dispose()
+  })
+
+  it("falls back to normal retry when migrateSession is not wired", async () => {
+    const h = migrateHarness({
+      migrateSession: undefined,
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("sent"), "fallback retry")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed", "sent"])
+    expect(h.events[1]?.phase).toBe("migrate-failed")
+    expect(h.events[1]?.skipReason).toBe("no migration orchestrator is configured")
+    // Normal retry booked on old session
+    expect(h.row.turnRetryAttempts).toBe(1)
+    expect(h.row.turnMigrations).toBeUndefined()
+    h.controller.dispose()
+  })
+
+  it("falls back to normal retry when migrateSession throws", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => { throw new Error("box boot failed") },
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    } as any)
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("sent"), "fallback retry after throw")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed", "sent"])
+    expect(h.events[1]?.skipReason).toContain("migration failed: box boot failed")
+    expect(h.row.turnRetryAttempts).toBe(1)
+    h.controller.dispose()
+  })
+
+  it("stops at maxMigrations and falls back to normal retry", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => makeMigrationResult("s2"),
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 1, ...FAST },
+      row: { turnMigrations: 1 },
+    })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("sent"), "cap reached fallback")
+
+    // When cap reached, falls back to normal retry WITHOUT migrate-failed phase
+    // (migrate-failed is only for actual migration attempts that fail)
+    expect(h.phases()).toEqual(["scheduled", "sent"])
+    // The fallback note is recorded in the transcript
+    expect(h.notices.some(n => n.includes("no migration: migration cap reached"))).toBe(true)
+    h.controller.dispose()
+  })
+
+  it("gives up when both maxMigrations and maxRetries are spent", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => makeMigrationResult("s2"),
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 1, maxRetries: 1, ...FAST },
+      row: { turnMigrations: 1, turnRetryAttempts: 1 },
+    })
+    h.turnEnd("429 status code")
+    await until(() => h.phases().includes("exhausted"), "give up")
+
+    // give-up emits exhausted directly, no scheduled phase
+    expect(h.phases()).toEqual(["exhausted"])
+    expect(h.events[0]?.phase).toBe("exhausted")
+    h.controller.dispose()
   })
 })
