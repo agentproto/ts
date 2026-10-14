@@ -4054,6 +4054,10 @@ export async function createGateway(
     // /apps/:appId/tool-call twin must run the exact chain the MCP
     // app_tool_call verb runs.
     appToolCallDeps: { dispatchTool, callImportedTool: callImportedAppTool },
+    // AIP-53 link-token scoping: backs `POST /apps/:appId/link-auth`
+    // (app-link-auth.ts) — the same store `telegram_bot_token_set`/
+    // `registerTelegramBotTools` above read/write.
+    telegramCreds: telegramBotCreds,
     // POST /inbound push ingress — same shared transmitterBindings store
     // and liveness/restart adapters the inbound watcher's "route"/
     // "route-or-spawn" modes use above. No `spawnForContact`: an

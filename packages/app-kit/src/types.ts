@@ -119,6 +119,23 @@ export interface AppUiDefinition {
    */
   readonly renders?: readonly string[]
   /**
+   * Argument-level refinement of `tools`: for each tool id (which MUST also
+   * be in `tools`), a map of argument name → `"$link.<claim>"` reference
+   * into the claims carried by a scoped app-link token (AIP-53 link-token
+   * scoping; see `@agentproto/runtime`'s `app-link-token.ts`). When a UI
+   * call to that tool arrives under a valid scoped link/session token, the
+   * named argument is checked against the matching claim — absent is
+   * injected from the claim, present-and-different is refused — so a link
+   * minted for one session (or one authorized Telegram user) cannot be
+   * used to read another's. A tool with no entry here is unaffected by
+   * scoping either way; a tool id used as a key that isn't also in `tools`
+   * is a definition error (the scope would constrain a call the allowlist
+   * already refuses). Calls made WITHOUT a scoped token (the normal local/
+   * MCP path) are not affected by this field at all — it only narrows the
+   * link-token surface.
+   */
+  readonly toolScope?: Readonly<Record<string, Readonly<Record<string, string>>>>
+  /**
    * Preferred local port when this app's UI is served standalone
    * (`agentproto app serve`). A declared port is a hint only — it falls
    * back to auto-assignment when taken or when no port is given.
