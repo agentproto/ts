@@ -1,5 +1,16 @@
 # @agentproto/sandbox
 
+## 0.11.1
+
+### Patch Changes
+
+- dc01c8b: Sandbox session proxy re-arms the box lifetime every 10 minutes while a turn is in flight and runs a pre-deadline guard (final renewal or checkpoint). Docs and provider comments updated.
+- Updated dependencies [24f1cf5]
+- Updated dependencies [c1e3dfd]
+  - @agentproto/secrets@2.0.2
+  - @agentproto/workflow-runtime@0.19.0
+  - @agentproto/worktree@0.15.1
+
 ## 0.11.0
 
 ### Minor Changes

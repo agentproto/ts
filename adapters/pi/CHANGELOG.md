@@ -1,5 +1,17 @@
 # @agentproto/adapter-pi
 
+## 0.4.19
+
+### Patch Changes
+
+- 5d2f4b3: Harness freshness + safe upgrades: `agentproto harness outdated|check|upgrade`. Adapters can now declare an AIP-45 `upgrade` block (latest-version source, in-place upgrade argv, optional exact-version rollback); the six globally-installed harnesses (opencode, hermes, gemini, pi, mastracode, copilot-cli) declare one. `upgrade` re-runs an ACP smoke probe (initialize + session/new, no prompt) after every upgrade and rolls back to the recorded previous version when it fails, guarded by the `version_check.range` check and a live-daemon-session check (both bypassable with `--force`).
+- c1e3dfd: Harness-neutral system-prompt channel for AIP-42 AGENT.md projection. An adapter whose manifest declares `systemPrompt` now receives the projected AGENT.md text through that channel instead of as a first-prompt prefix, and no `session:harness-warning` is raised for it. Three `via` channels: `acp-meta` (claude-code — ACP `_meta.systemPrompt.append` on `session/new` and `session/load`), `inline-config` (opencode `instructions` file path and codex `developer_instructions`, layered into the CLI's inline JSON config env var) and `argv` (pi's `--append-system-prompt`, on every spawn including resume). Every other adapter keeps today's prefix + warning behaviour, and a sandbox spawn still warns — the box owns its own adapter configuration.
+- Updated dependencies [24f1cf5]
+- Updated dependencies [5d2f4b3]
+- Updated dependencies [e1a291b]
+- Updated dependencies [c1e3dfd]
+  - @agentproto/driver-agent-cli@2.13.0
+
 ## 0.4.18
 
 ### Patch Changes

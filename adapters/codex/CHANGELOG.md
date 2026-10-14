@@ -1,5 +1,17 @@
 # @agentproto/adapter-codex
 
+## 2.0.26
+
+### Patch Changes
+
+- 24f1cf5: Codex and opencode logins are now file-based: the login JSON stored in the secrets store is copied into the box at boot and re-copied on restart, then refreshed in place with a throttle and a digest gate so an unchanged file is never re-uploaded, and the auth block carries a `loginFile` marker pointing at the copied file instead of embedding a token so no credential lands in the session record — when the secret is missing or unreadable the session degrades fail-loud with an error naming the missing key instead of silently starting an unauthenticated agent.
+- c1e3dfd: Harness-neutral system-prompt channel for AIP-42 AGENT.md projection. An adapter whose manifest declares `systemPrompt` now receives the projected AGENT.md text through that channel instead of as a first-prompt prefix, and no `session:harness-warning` is raised for it. Three `via` channels: `acp-meta` (claude-code — ACP `_meta.systemPrompt.append` on `session/new` and `session/load`), `inline-config` (opencode `instructions` file path and codex `developer_instructions`, layered into the CLI's inline JSON config env var) and `argv` (pi's `--append-system-prompt`, on every spawn including resume). Every other adapter keeps today's prefix + warning behaviour, and a sandbox spawn still warns — the box owns its own adapter configuration.
+- Updated dependencies [24f1cf5]
+- Updated dependencies [5d2f4b3]
+- Updated dependencies [e1a291b]
+- Updated dependencies [c1e3dfd]
+  - @agentproto/driver-agent-cli@2.13.0
+
 ## 2.0.25
 
 ### Patch Changes

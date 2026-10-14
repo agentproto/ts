@@ -1,5 +1,11 @@
 # @agentproto/worktree-agent-example
 
+## 0.0.32
+
+### Patch Changes
+
+- @agentproto/worktree@0.15.1
+
 ## 0.0.31
 
 ### Patch Changes

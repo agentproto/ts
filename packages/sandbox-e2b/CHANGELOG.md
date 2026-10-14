@@ -1,5 +1,14 @@
 # @agentproto/sandbox-e2b
 
+## 0.8.1
+
+### Patch Changes
+
+- dc01c8b: Sandbox boxes no longer expire under a busy turn that streams nothing: while a turn is in flight the session proxy re-arms the box lifetime every 10 minutes, on top of the per-prompt and per-event renewals. About 5 minutes before the box's known deadline the proxy renews once more if a turn is still in flight, and otherwise (idle, or the renewal failed) runs a final checkpoint while the box is still reachable, instead of probing it after it is gone. Heartbeat and guard stop on close and on detach.
+- dc01c8b: Sandbox session proxy re-arms the box lifetime every 10 minutes while a turn is in flight and runs a pre-deadline guard (final renewal or checkpoint). Docs and provider comments updated.
+- Updated dependencies [dc01c8b]
+  - @agentproto/sandbox@0.11.1
+
 ## 0.8.0
 
 ### Minor Changes

@@ -1,5 +1,141 @@
 # @agentproto/runtime
 
+## 5.21.0
+
+### Minor Changes
+
+- f776cd2: feat(runtime): restartPolicy can move a box session to a fresh box when its box is gone
+
+  `restartPolicy.on` gains a third value, `"sandbox-gone"`. A box session
+  (`agent_start.sandbox`) that dies WITH ITS BOX GONE — lifetime cap reached,
+  provider reclaim, unrecoverable unreachability — can no longer be revived
+  in place, so a policy listing `"sandbox-gone"` schedules the same fresh-box
+  move `session_restart` takes (`restartAgentSession` → `spawnOnFreshBox`:
+  re-clone the workspace remote, re-check the `wt/` work branch out, restore
+  the last checkpoint) instead, after the same exponential backoff and under
+  the same `maxRetries`/`windowMs` crash-loop cap. The replacement session is
+  prompted once to continue the original task from where the pushed work
+  stops; a blocked move (no workspace remote, no tarball checkpoint, provider
+  missing) leaves the session dead with a single `[sandbox-gone]` notice and
+  never loops.
+
+  Box-gone detection reuses evidence the daemon already has — the reattach
+  pass's `endedReason:"sandbox_gone"`, recorded proxy/provider death messages,
+  the sandbox ledger's `gone` state, and one provider liveness probe — with no
+  new polling loop. Off unless a session's `restartPolicy.on` lists
+  `"sandbox-gone"`; classic `crashed`/`error` in-place revival is unchanged,
+  and non-box sessions never consult the probe.
+
+  New daemon config `daemon.sandboxGoneRestartDefault` (off unless set) applies
+  that policy to box sessions spawned with no explicit `restartPolicy`, so an
+  executor box can opt in once instead of per spawn; an explicit per-session
+  policy still wins, and turning it on also arms the restart sweep at 30s when
+  `daemon.restartSweepIntervalMs` is unset. Nothing changes for anyone who has
+  not set it.
+
+- 24f1cf5: Codex and opencode logins are now file-based: the login JSON stored in the secrets store is copied into the box at boot and re-copied on restart, then refreshed in place with a throttle and a digest gate so an unchanged file is never re-uploaded, and the auth block carries a `loginFile` marker pointing at the copied file instead of embedding a token so no credential lands in the session record — when the secret is missing or unreadable the session degrades fail-loud with an error naming the missing key instead of silently starting an unauthenticated agent.
+- 37562ef: New typed decision router: `DECISION.md` policies (markdown + YAML
+  frontmatter) parse via `parseDecisionPolicy`, and `decide(policy, evidence)`
+  resolves one closed choice rules-first — ordered rules, mandatory `floor`
+  choices no classifier may downgrade (a floor pinning the strongest choice
+  makes zero model calls), then at most one bounded Jev typed-choice classifier
+  call through the existing generic client (`minProbability`/`minMargin`
+  thresholds; missing probabilities are uncertainty, not certainty), then
+  exactly one optional tool-less LLM escalation whose self-reported confidence
+  is never threshold-checked, then the conservative default. The default
+  evidence export policy sends no paths/code/messages; tier-1 state is
+  field-allowlisted, string-capped and size-ceiled with omission markers, and
+  truncated/incomplete evidence cannot be classifier-accepted. Outcomes carry
+  choice, source (`rule | rule-floor | classifier | escalation | default`),
+  matched rules, probability/margin data, escalation history, evidence refs
+  and policy/evidence/classifier-config hashes; decisions are cached and
+  concurrent identical calls share one computation. Surfaces: `decision_decide`
+  on the root `/mcp` server (Jev key/baseUrl from the existing `jev` config;
+  no escalation backend wired at the tool layer) plus package exports. Ships
+  the review-routing example policy, `docs/decision-policy.md`, and a labeled
+  studio integration design artifact (studio itself is not wired).
+- 25e09ae: Ship the `decision-route` workflow (`workflows/decision-route/WORKFLOW.md`) and
+  its `decision_*` stage tools: collect bounded metadata-only evidence (paths and
+  code only on an explicit DECISION.md opt-in, secrets scrubbed), apply the
+  DECISION.md rules with zero models, classify unresolved ranges through one Jev
+  direct-API call, escalate through at most ONE configured agent-harness session,
+  map the closed choice to a REVIEW.md binding and, in `enforce` mode only, run
+  and validate the review. `shadow` is the default and starts no review lane.
+
+  The execution profile is enforced before any spawn: `local-free` allows only
+  OpenCode `-free` / `big-pickle` ids (including role overrides, fallbacks and
+  `review.recovery`), `remote-sonnet` also allows the configured Claude Code
+  Sonnet, E2B placement grants no entitlement, and unknown identity fails
+  closed. The conservative `deep` route cannot bypass the profile. Every stage
+  records workflow / run / step / profile / model / wait reason, parents spawned
+  sessions under the workflow run, and reports failures, timeouts and
+  cancellations separately from approval. Tool restrictions are reported as
+  configured vs enforced, never as a hard no-tools guarantee.
+
+  `decide()` no longer caches backend failures: a conservative fallback is never
+  remembered as a trusted decision, and a changed classifier identity misses.
+  Agent session spawns accept a `workflowOwner` that is stamped into the session meta.
+
+- e1a291b: feat(adapter-hermes): system-prompt channel via an agentproto hermes plugin — ships a bundled `agentproto-system-prompt` hermes plugin (reads `AGENTPROTO_SYSTEM_PROMPT_FILE`, registers cache-safe sections at `after_memory`, frozen at session start), `hermesSystemPromptPluginStatus`/`installHermesSystemPromptPlugin` helpers, and `agentproto adapters hermes-plugin status|install [--enable] [--json]` (enable = explicit consent via `hermes plugins enable`). Delivery budget `MAX_HERMES_SYSTEM_PROMPT_CHARS` = 7500. The driver gains the `env-file` `systemPrompt` channel (writes `<session config dir>/agentproto-system-prompt.md`, a private temp dir when none, removed on close; points the declared env var at it), and the runtime wires it end to end: the hermes resolver entry sets `supportsSystemPrompt` only while the plugin is installed AND enabled (checked per spawn), `systemPromptMaxChars`/`systemPromptUnavailable` degrade an over-limit or unavailable channel to a first-prompt prefix + a warning naming the limit or the install command (session-spawn, workflow agent host, restart, and agent projection).
+- 2f4e9d1: Add `turnRetry.action: "migrate"` (with `maxMigrations`): on a matching turn failure the daemon migrates the session to a fresh sandbox box via `migrateSandboxSession`, falling back to a normal retry on failure. Adds `migrated`/`migrate-failed` retry phases and the `turnMigrations` descriptor counter, carried over to the migrated session.
+- f776cd2: restartPolicy.on gains "sandbox-gone": a dead box session whose box is gone moves to a fresh box (runtime), new daemon.sandboxGoneRestartDefault wired through `serve` (cli), and the vscode RestartPolicy type accepts the new value.
+- 65cd742: Add typed `SessionRestartError` (with helpers and types) to the runtime, and surface the typed restart failure reason through the apps panel bridge, the CLI `describeRestartFailure` output, and the VS Code extension.
+- 2f4e9d1: `session_migrate` (MCP, `POST /sessions/:id/migrate`, `agentproto sessions migrate`) resumes a sandbox session on a new box: it takes a final checkpoint of the old box when it is still reachable, boots a fresh box from the workspace remote, restores the work branch and the pushed uncommitted snapshot (commits stay commits, the snapshot stays uncommitted), carries the transcript over via the context checkpoint, then stops the old box. A shared `restoreCheckpointSteps` planner now backs spawn, restart and migrate.
+- c1e3dfd: Harness-neutral system-prompt channel for AIP-42 AGENT.md projection. An adapter whose manifest declares `systemPrompt` now receives the projected AGENT.md text through that channel instead of as a first-prompt prefix, and no `session:harness-warning` is raised for it. Three `via` channels: `acp-meta` (claude-code — ACP `_meta.systemPrompt.append` on `session/new` and `session/load`), `inline-config` (opencode `instructions` file path and codex `developer_instructions`, layered into the CLI's inline JSON config env var) and `argv` (pi's `--append-system-prompt`, on every spawn including resume). Every other adapter keeps today's prefix + warning behaviour, and a sandbox spawn still warns — the box owns its own adapter configuration.
+
+### Patch Changes
+
+- 50d43af: A2A push delivery no longer blocks the JSON-RPC answer, sends a finished task's final event only to the new config, delivers to every config in parallel, serializes config writes and logs only the webhook origin.
+- 55a7a96: A sandbox checkpoint now carries the adapter's own conversation store: the box's isolated adapter-config dir for this session is archived next to `checkpoint.json` as `adapter-store.tar.gz` (20 MiB cap, recorded on the checkpoint record, never failing the checkpoint), and a restart onto a FRESH box uploads and extracts it before the adapter starts — then passes the restored id through the box `agent_start`'s resume field so the conversation resumes natively instead of starting blank.
+- 189a0f8: A session restarted on its still-alive sandbox box now resumes the adapter's own conversation inside the box (`agent_start` gained an internal `resumeSessionId` resume target; a rejected id falls back to a fresh in-box spawn plus the transcript digest, as before).
+- 0f7808d: Sync the published package READMEs with the latest A2A push-notification and session-migration behavior.
+- dc01c8b: Sandbox boxes no longer expire under a busy turn that streams nothing: while a turn is in flight the session proxy re-arms the box lifetime every 10 minutes, on top of the per-prompt and per-event renewals. About 5 minutes before the box's known deadline the proxy renews once more if a turn is still in flight, and otherwise (idle, or the renewal failed) runs a final checkpoint while the box is still reachable, instead of probing it after it is gone. Heartbeat and guard stop on close and on detach.
+- dc01c8b: Sandbox session proxy re-arms the box lifetime every 10 minutes while a turn is in flight and runs a pre-deadline guard (final renewal or checkpoint). Docs and provider comments updated.
+- 5109708: Review verdict recovery now fails closed. A complete, schema-valid verdict the reviewer itself stated as JSON in its own final message is extracted deterministically from its typed transcript (`events.jsonl` assistant records only, never tool output) before any recovery model is spawned; conflicting, templated, contradictory or errored-turn approvals are not extracted. The recovery model can no longer approve or be satisfied by a 12-character quote: it may only lift blocking findings whose title, detail, full file path, line and severity are grounded verbatim in the reviewer's prose, and it asks for one follow-up to the original reviewer otherwise. A follow-up turn that errors never earns an approval, and a failed turn's provider error text is kept in `recovery.reason`. Recovery stays inert unless `review.recoveryPresets` is configured.
+- de86dfe: A restarted session that could not resume natively (a box restart — re-attach
+  to a live box or a fresh box after the old one died — or a local blank
+  fallback) now gets the FULL prior conversation instead of a 7k-char digest.
+  On every box restart the prior session's daemon transcript is exported to
+  Markdown (tool bodies capped at 2000 chars) and written into the box at
+  `/home/user/.agentproto/prior-sessions/<sessionId>.md` (ancestors of a
+  restart chain too, up to 5 hops; via the host's `writeFile` or base64 chunks
+  over `exec`). The injected first-turn context is a structured handoff — a
+  frame stating what happened / what was restored / what was lost, a
+  deterministic-extractor checkpoint (`renderCheckpointPrompt`, no LLM handoff
+  turn: the prior agent is dead), the most recent turns (~24k chars), and the
+  transcript path(s) with an instruction to read them before redoing anything).
+  Local blank-fallback restarts write the transcript into the new session's
+  host dir and get the same frame; the old `buildResumeContextDigest` stays as
+  the fallback when the export or write fails, and a handoff failure never
+  fails the restart. Restart results now carry
+  `handoff: { transcriptPath, checkpointId, recentChars, totalMessages }` so
+  CLI/VS Code/session-chat can say "conversation restored from transcript
+  (N messages)".
+- 65cd742: Session restart failures are now typed: a restart that cannot complete throws `SessionRestartError`, carrying a stable `code` (`sandbox_gone`, `sandbox_unreachable`, `sandbox_provider_missing`, `sandbox_box_start_failed`, `no_workspace`, `no_workspace_remote`, `no_known_branch`, `adapter_not_found`, `unsupported_strategy`, `retired`, `override_invalid`), a human `reason`, and an optional `action` hint (`fix-config` / `spawn-fresh` / `spawn-on-branch`) that a client can turn into a button. Transports surface these as a nested `{ error: { code, reason, action?, message }, message }` payload, so the HTTP route, the `session_restart` MCP verb and the CLI all report _why_ a restart failed and what to do next instead of leaking provider-internal strings. The session-chat bridge rejects a typed `session_restart` failure with its `reason` sentence rather than the raw payload, and `agentproto sessions restart` prints the `reason` first with the technical detail underneath.
+- f302725: Sandbox checkpoint and teardown-delivery pushes (work branch, uncommitted-work snapshot, snapshot cleanup) now run with `--no-verify`, so a repo's `pre-push` hook (e.g. a changeset gate) can no longer block the safety-net backup.
+- 7fb3f52: The always-on MCP tool list budget is now 63 KB: the box-login and sandbox-gone restart fields landed together at 62.17 KB.
+- 1318308: `turnRetry.action: "migrate"` follow-ups: the migrated session now inherits the `turnRetry` policy itself (so its first migration no longer drops the rule) and the migration cap is enforced across sessions; `maxMigrations` accepts `0`; a give-up after migrations says so in the `[turn-retry] gave up after` notice; a failed migration with a spent retry budget gives up instead of booking an over-budget retry. `--turn-retry` (CLI) validates and documents `action` / `maxMigrations`.
+- Updated dependencies [24f1cf5]
+- Updated dependencies [0f7808d]
+- Updated dependencies [5d2f4b3]
+- Updated dependencies [e1a291b]
+- Updated dependencies [dc01c8b]
+- Updated dependencies [5109708]
+- Updated dependencies [65cd742]
+- Updated dependencies [65cd742]
+- Updated dependencies [c1e3dfd]
+  - @agentproto/secrets@2.0.2
+  - @agentproto/driver-agent-cli@2.13.0
+  - @agentproto/a2a@0.2.1
+  - @agentproto/sandbox@0.11.1
+  - @agentproto/review@0.6.1
+  - @agentproto/apps@0.23.1
+  - @agentproto/acp@0.11.0
+  - @agentproto/workflow-runtime@0.19.0
+  - @agentproto/pairing-host@0.2.7
+  - @agentproto/eval-reporters@0.2.25
+  - @agentproto/telemetry-langfuse@0.2.23
+
 ## 5.20.0
 
 ### Minor Changes

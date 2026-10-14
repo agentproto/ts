@@ -1,5 +1,36 @@
 # agentproto-vscode
 
+## 0.22.11
+
+### Patch Changes
+
+- f776cd2: restartPolicy.on gains "sandbox-gone": a dead box session whose box is gone moves to a fresh box (runtime), new daemon.sandboxGoneRestartDefault wired through `serve` (cli), and the vscode RestartPolicy type accepts the new value.
+- 65cd742: Add typed `SessionRestartError` (with helpers and types) to the runtime, and surface the typed restart failure reason through the apps panel bridge, the CLI `describeRestartFailure` output, and the VS Code extension.
+- Updated dependencies [50d43af]
+- Updated dependencies [55a7a96]
+- Updated dependencies [f776cd2]
+- Updated dependencies [24f1cf5]
+- Updated dependencies [189a0f8]
+- Updated dependencies [37562ef]
+- Updated dependencies [25e09ae]
+- Updated dependencies [0f7808d]
+- Updated dependencies [dc01c8b]
+- Updated dependencies [e1a291b]
+- Updated dependencies [dc01c8b]
+- Updated dependencies [2f4e9d1]
+- Updated dependencies [f776cd2]
+- Updated dependencies [65cd742]
+- Updated dependencies [5109708]
+- Updated dependencies [de86dfe]
+- Updated dependencies [65cd742]
+- Updated dependencies [f302725]
+- Updated dependencies [2f4e9d1]
+- Updated dependencies [c1e3dfd]
+- Updated dependencies [7fb3f52]
+- Updated dependencies [1318308]
+  - @agentproto/runtime@5.21.0
+  - @agentproto/apps@0.23.1
+
 ## 0.22.10
 
 ### Patch Changes

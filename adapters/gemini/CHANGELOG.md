@@ -1,5 +1,16 @@
 # @agentproto/adapter-gemini
 
+## 0.2.27
+
+### Patch Changes
+
+- 5d2f4b3: Harness freshness + safe upgrades: `agentproto harness outdated|check|upgrade`. Adapters can now declare an AIP-45 `upgrade` block (latest-version source, in-place upgrade argv, optional exact-version rollback); the six globally-installed harnesses (opencode, hermes, gemini, pi, mastracode, copilot-cli) declare one. `upgrade` re-runs an ACP smoke probe (initialize + session/new, no prompt) after every upgrade and rolls back to the recorded previous version when it fails, guarded by the `version_check.range` check and a live-daemon-session check (both bypassable with `--force`).
+- Updated dependencies [24f1cf5]
+- Updated dependencies [5d2f4b3]
+- Updated dependencies [e1a291b]
+- Updated dependencies [c1e3dfd]
+  - @agentproto/driver-agent-cli@2.13.0
+
 ## 0.2.26
 
 ### Patch Changes

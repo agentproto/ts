@@ -1,5 +1,11 @@
 # @agentproto/a2a
 
+## 0.2.1
+
+### Patch Changes
+
+- 0f7808d: Sync the published package READMEs with the latest A2A push-notification and session-migration behavior.
+
 ## 0.2.0
 
 ### Minor Changes

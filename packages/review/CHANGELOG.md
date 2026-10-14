@@ -1,5 +1,11 @@
 # @agentproto/review
 
+## 0.6.1
+
+### Patch Changes
+
+- 5109708: README wording update describing the fail-closed verdict recovery ladder.
+
 ## 0.6.0
 
 ### Minor Changes
