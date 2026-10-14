@@ -1368,19 +1368,6 @@ export async function restartAgentSession(
           `box ${host.sandboxId} — the handoff will fall back to the digest`,
       )
     }
-    // Re-attach the adapter conversation the box itself still holds: the
-    // stop above killed the PROCESS, but the box daemon keeps its registry
-    // row (status-only `kill`), whose `adapterSessionId` + isolated config
-    // dir are exactly what its `agent_start({ resumeSessionId })` resolves.
-    // The killed row's id is preferred (`priorRemoteSessionId` survives
-    // proxy-less restarts); a legacy row without one degrades to the host's
-    // recorded id, and a row the box no longer knows degrades to a blank
-    // spawn the `resumeVia` check below flags.
-    const boxResumeId =
-      resumeSessionId === undefined || prev.resumable === false
-        ? undefined
-        : (priorRemoteSessionId ?? resumeSessionId)
-    let boxResumed = false
 
     // BOX-LOGIN BRIDGE — same upload the fresh boot does: a re-attach can land
     // on a box booted BEFORE this bridge existed (or by a host whose copy
