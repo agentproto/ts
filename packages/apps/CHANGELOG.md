@@ -1,5 +1,15 @@
 # @agentproto/apps
 
+## 0.23.2
+
+### Patch Changes
+
+- 56efb5a: Cache the panel generation instead of re-running it on every apps command. `generate:ui` (the three Vite panel builds behind one entry) is now a turbo task — `packages/apps/turbo.json`, inputs scoped to the `ui/**` sources, `panel-bridge.ts`, the vite configs and the three build scripts, outputs the three gitignored `panel.generated.ts` modules — and `build` / `check-types` / `test` depend on it, so an unchanged UI is a cache hit instead of three fresh Vite builds. Outside turbo the `prebuild`/`precheck-types`/`pretest`/`pretest:watch` hooks fall back to `scripts/ensure-ui-generated.mjs`, which generates only when a file is missing, so a fresh clone still works with plain `pnpm --filter @agentproto/apps build` / `test`.
+- a727b5f: Build the three panel HTML bundles (work-board, review-panel, store) at build time instead of committing `src/**/panel.generated.ts`. A new `generate:ui` script (the three existing `build:ui*` scripts behind one entry) runs from `prebuild`/`precheck-types`/`pretest`/`predev`, the generated files are gitignored and dropped from git, and CI's three UI drift-check steps go away — a PR that touches `panel-bridge.ts` or a panel UI no longer has to regenerate and commit a large generated file, and it can no longer conflict or land stale on main.
+- Updated dependencies [38a1c34]
+- Updated dependencies [8b4135e]
+  - @agentproto/app-kit@1.8.0
+
 ## 0.23.1
 
 ### Patch Changes
