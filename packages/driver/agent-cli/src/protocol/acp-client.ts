@@ -283,6 +283,15 @@ export function createAcpProtocolArm(
           sessionId: opts.resumeSessionId,
           cwd,
           mcpServers: opts.mcpServers,
+          // Re-assert the requested model/effort/mode on the RESUMED session:
+          // a cold-resume spawns a fresh subprocess whose in-memory config
+          // starts from the harness default, and opencode persists+restores its
+          // own session model. Omitting these let a restarted opencode session
+          // drift to its default `opencode/big-pickle` (a rate-limited free id)
+          // while agentproto still reported the requested model/route.
+          ...(opts.model ? { model: opts.model } : {}),
+          ...(opts.effort ? { effort: opts.effort } : {}),
+          ...(opts.mode ? { mode: opts.mode } : {}),
           // claude-agent-acp re-reads `_meta.systemPrompt` on loadSession too
           // (native-resume cold-spawns every turn) — sent on BOTH calls or
           // the text is lost after turn 1.

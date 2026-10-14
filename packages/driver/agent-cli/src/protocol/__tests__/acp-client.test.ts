@@ -135,6 +135,30 @@ describe("AcpProtocolArm.connect — model + effort threading", () => {
 
     expect(newSessionCalls[0]).not.toHaveProperty("mode")
   })
+
+  it("re-forwards model/effort/mode to client.loadSession on resume", async () => {
+    // Regression: loadSession used to apply nothing, so a restarted opencode
+    // session dropped the requested model and ran its own default
+    // (`opencode/big-pickle`). The resume path must re-assert all three.
+    loadSessionCalls.length = 0
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({
+      ...baseConnect,
+      cwd: "/work",
+      resumeSessionId: "prev-9",
+      model: "opencode-go/deepseek-v4.1-flash",
+      effort: "low",
+      mode: "plan",
+    })
+
+    expect(loadSessionCalls).toHaveLength(1)
+    expect(loadSessionCalls[0]).toMatchObject({
+      sessionId: "prev-9",
+      model: "opencode-go/deepseek-v4.1-flash",
+      effort: "low",
+      mode: "plan",
+    })
+  })
 })
 
 describe("AcpProtocolArm.connect — onActivity threading", () => {

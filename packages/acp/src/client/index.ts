@@ -13,7 +13,11 @@ import {
   ndJsonStream,
   type Client as AcpClientHandlers,
   type SessionConfigOption,
+  type SessionConfigSelectGroup,
+  type SessionConfigSelectOption,
+  type SessionConfigSelectOptions,
   type SessionMode,
+  type SessionModeState,
   type Stream,
 } from "@agentclientprotocol/sdk"
 import type {
@@ -314,6 +318,26 @@ export interface AcpClient {
     cwd: string
     mcpServers?: unknown[]
     /**
+     * Model to re-assert via `session/set_config_option` immediately after
+     * `loadSession`. A native-resume spawns a fresh subprocess whose session
+     * config starts from the harness default; some harnesses (opencode)
+     * PERSIST and restore the session's own model, so a resumed session that
+     * omits this silently runs the harness default — a different provider on a
+     * different bill for a derived-from-model adapter. Same best-effort
+     * contract as {@link newSession}'s `model` (a rejection is recorded on
+     * `modelApplyRejection`, never fatal here). Omit to keep the resumed
+     * session's own model.
+     */
+    model?: string
+    /** Effort level to re-assert on the resumed session — same contract as
+     *  {@link newSession}'s `effort`. Omit to keep the model's own default. */
+    effort?: string
+    /** Mode to re-assert on the resumed session via
+     *  `session/set_config_option(configId:"mode")` — same contract as
+     *  {@link newSession}'s `mode`. Omit to keep the resumed session's own
+     *  mode. */
+    mode?: string
+    /**
      * Extra `_meta` for the `session/load` request — same contract as
      * {@link newSession}'s `meta` (claude-agent-acp re-reads e.g.
      * `_meta.systemPrompt` on load too, so a channel-backed text must be
@@ -577,6 +601,73 @@ export async function createAcpClient(
   const initMeta = (initResponse as { _meta?: Record<string, unknown> | null })._meta ?? undefined
   const steeringSupported = isSteeringAdvertised(initMeta)
 
+  // Apply the operator's model/effort/mode over the freshly-created session's
+  // config options. Shared by newSession AND loadSession: loadSession used to
+  // apply NOTHING, so a resumed session silently kept the harness's own default
+  // model instead of the operator's. For a derived-from-model adapter
+  // (opencode & co.) that is a different provider on a different bill — and
+  // opencode's default `opencode/big-pickle` is a per-IP rate-limited free id,
+  // so the resumed session then failed "Rate limit exceeded" while its
+  // agentproto metadata still claimed the requested model/route. Model is
+  // applied FIRST (a model switch rebuilds the effort option list), then
+  // effort, then mode. A model rejection is recorded structurally for the
+  // driver's derived-from-model guard; effort/mode rejections stay best-effort
+  // (agentproto#186).
+  const applyConfigOptions = async (
+    sessionId: string,
+    params: { model?: string; effort?: string; mode?: string },
+  ): Promise<{ modelApplyRejection?: { requested: string; reason: string } }> => {
+    let modelApplyRejection: { requested: string; reason: string } | undefined
+    if (params.model) {
+      try {
+        await connection.setSessionConfigOption({
+          configId: "model",
+          value: params.model,
+          sessionId,
+        } as never)
+        options.onActivity?.()
+      } catch (err) {
+        const reason = configOptionErrorDetail(err)
+        modelApplyRejection = { requested: params.model, reason }
+        console.warn(
+          `[acp] set_config_option model="${params.model}" rejected by server ` +
+            `— keeping the agent's default model. Reason: ${reason}`,
+        )
+      }
+    }
+    if (params.effort) {
+      try {
+        await connection.setSessionConfigOption({
+          configId: "effort",
+          value: params.effort,
+          sessionId,
+        } as never)
+        options.onActivity?.()
+      } catch (err) {
+        console.warn(
+          `[acp] set_config_option effort="${params.effort}" rejected by server ` +
+            `(best-effort): ${configOptionErrorDetail(err)}`,
+        )
+      }
+    }
+    if (params.mode) {
+      try {
+        await connection.setSessionConfigOption({
+          configId: "mode",
+          value: params.mode,
+          sessionId,
+        } as never)
+        options.onActivity?.()
+      } catch (err) {
+        console.warn(
+          `[acp] set_config_option mode="${params.mode}" rejected by server ` +
+            `(best-effort): ${configOptionErrorDetail(err)}`,
+        )
+      }
+    }
+    return modelApplyRejection ? { modelApplyRejection } : {}
+  }
+
   return {
     connection,
     isConnected: () => !connection.signal.aborted,
@@ -593,99 +684,22 @@ export async function createAcpClient(
       } as never)
       options.onActivity?.()
       const sessionId = (response as { sessionId: string }).sessionId
+      const configOptions = response.configOptions ?? []
+      const { modes, currentModeId } = sessionModes(response.modes, configOptions)
       const state: SessionState = {
         events: [],
         resolveNext: null,
         done: false,
         active: false,
-        configOptions: response.configOptions ?? [],
-        modes: response.modes?.availableModes ?? [],
-        currentModeId: response.modes?.currentModeId,
+        configOptions,
+        modes,
+        currentModeId,
         outOfTurnListeners: new Set(),
         orphanedPromptTimeoutMs:
           options.orphanedPromptTimeoutMs ?? DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS,
       }
       sessions.set(sessionId, state)
-      // Apply model + effort via session/set_config_option immediately
-      // after newSession. The claude-agent-acp wrapper handles these as
-      // configId:"model" and configId:"effort". Both are optional — when
-      // omitted the agent keeps its own defaults (which vary by model).
-      // We call these sequentially so a model switch (which rebuilds the
-      // effort options) always precedes the effort set.
-      let modelApplyRejection: { requested: string; reason: string } | undefined
-      if (params.model) {
-        try {
-          await connection.setSessionConfigOption({
-            configId: "model",
-            value: params.model,
-            sessionId,
-          } as never)
-          options.onActivity?.()
-        } catch (err) {
-          // Non-fatal by design. claude-agent-acp validates the requested
-          // model against the concrete option ids it advertises for THIS
-          // session (e.g. "default", "opus[1m]", "sonnet", "claude-sonnet-5",
-          // "haiku") and rejects anything it can't resolve — including stale
-          // or gated ids like "claude-sonnet-4-6" — with a JSON-RPC -32603
-          // whose only useful text is buried in `error.data.details`
-          // ("Invalid value for config option model: <id>"). Letting that
-          // reject `newSession` turned a bad model id into an opaque
-          // "spawn failed — Internal error" that killed the whole session
-          // (agentproto#186). The accepted vocabulary is dynamic (it varies
-          // by wrapper version and account entitlements), so there is no
-          // version-stable way to know it before the call — a rejected model
-          // must therefore never be fatal. This is NOT a silent drop: the
-          // requested id AND the server's own reason are logged, recorded on
-          // the returned session as `modelApplyRejection` (so a host that
-          // CAN'T tolerate running on the default model — derived-from-model
-          // adapters, where model = route = bill — can escalate), and the
-          // session continues on the agent's default model.
-          const reason = configOptionErrorDetail(err)
-          modelApplyRejection = { requested: params.model, reason }
-          console.warn(
-            `[acp] set_config_option model="${params.model}" rejected by server ` +
-              `— keeping the agent's default model. Reason: ${reason}`,
-          )
-        }
-      }
-      if (params.effort) {
-        try {
-          await connection.setSessionConfigOption({
-            configId: "effort",
-            value: params.effort,
-            sessionId,
-          } as never)
-          options.onActivity?.()
-        } catch (err) {
-          // Best-effort: this ACP server does not support the "effort" config
-          // option (e.g. claude-agent-acp ignores unknown config keys and
-          // some versions reject them outright). A rejected set_config_option
-          // must never kill the spawn — effort is silently ignored instead.
-          console.warn(
-            `[acp] set_config_option effort="${params.effort}" rejected by server ` +
-              `(best-effort): ${configOptionErrorDetail(err)}`,
-          )
-        }
-      }
-      if (params.mode) {
-        try {
-          await connection.setSessionConfigOption({
-            configId: "mode",
-            value: params.mode,
-            sessionId,
-          } as never)
-          options.onActivity?.()
-        } catch (err) {
-          // Best-effort: this ACP server does not support the "mode" config
-          // option, or doesn't recognize the requested mode id. A rejected
-          // set_config_option must never kill the spawn — mode is silently
-          // ignored (the session keeps whatever mode the agent defaults to).
-          console.warn(
-            `[acp] set_config_option mode="${params.mode}" rejected by server ` +
-              `(best-effort): ${configOptionErrorDetail(err)}`,
-          )
-        }
-      }
+      const { modelApplyRejection } = await applyConfigOptions(sessionId, params)
       return buildSession(
         connection,
         sessionId,
@@ -711,19 +725,29 @@ export async function createAcpClient(
         ...(params.meta ? { _meta: params.meta } : {}),
       } as never)
       options.onActivity?.()
+      const configOptions = response.configOptions ?? []
+      const { modes, currentModeId } = sessionModes(response.modes, configOptions)
       const state: SessionState = {
         events: [],
         resolveNext: null,
         done: false,
         active: false,
-        configOptions: response.configOptions ?? [],
-        modes: response.modes?.availableModes ?? [],
-        currentModeId: response.modes?.currentModeId,
+        configOptions,
+        modes,
+        currentModeId,
         outOfTurnListeners: new Set(),
         orphanedPromptTimeoutMs:
           options.orphanedPromptTimeoutMs ?? DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS,
       }
       sessions.set(params.sessionId, state)
+      // Re-assert the operator's model/effort/mode on the RESUMED session — a
+      // native-resume spawns a fresh subprocess whose in-memory config starts
+      // from the harness default, and opencode (unlike claude-code) PERSISTS
+      // and restores the session's model. Without this the requested model is
+      // silently dropped and the resumed session runs the harness default
+      // (opencode: `opencode/big-pickle`, a rate-limited free id). The driver's
+      // derived-from-model guard consumes the returned rejection.
+      const { modelApplyRejection } = await applyConfigOptions(params.sessionId, params)
       return buildSession(
         connection,
         params.sessionId,
@@ -732,7 +756,7 @@ export async function createAcpClient(
         options.onActivity,
         options.turnIdleTimeoutMs,
         cancelPermissionsForSession,
-        undefined,
+        modelApplyRejection,
         steeringSupported,
       )
     },
@@ -1664,6 +1688,61 @@ function configOptionErrorDetail(err: unknown): string {
     }
   }
   return String(err)
+}
+
+/**
+ * Flatten a config option's selectable values. ACP allows a select option to
+ * carry either a flat `SessionConfigSelectOption[]` or grouped
+ * `SessionConfigSelectGroup[]` (each group holding its own options); callers
+ * only care about the leaf values either way.
+ */
+function selectOptionValues(
+  options: SessionConfigSelectOptions,
+): SessionConfigSelectOption[] {
+  return (
+    options as Array<SessionConfigSelectOption | SessionConfigSelectGroup>
+  ).flatMap(entry => ("options" in entry ? entry.options : [entry]))
+}
+
+/**
+ * The session's advertised modes, normalized to the SDK's `SessionModeState`
+ * shape regardless of which ACP channel carried them.
+ *
+ * Most ACP servers publish their mode registry as the `modes` field of the
+ * `session/new` / `session/load` response. OpenCode (1.19+) does not: it leaves
+ * `modes` undefined and advertises the SAME registry as a `category:"mode"`
+ * entry in `configOptions` (`{id:"mode", options:[build, plan]}`), switched
+ * over the wire by `session/set_mode` or
+ * `session/set_config_option(configId:"mode")`. Without folding that entry in,
+ * `availableModes` is empty for every opencode session, so NO canonical posture
+ * (`plan`, `bypass`, …) ever resolves to a native mode — they all degrade to a
+ * prompt-injection preamble, and a live `set_posture` reports
+ * `requires-restart` instead of switching the harness's real `plan` mode.
+ */
+function sessionModes(
+  native: SessionModeState | null | undefined,
+  configOptions: SessionConfigOption[],
+): { modes: SessionMode[]; currentModeId: string | undefined } {
+  if (native?.availableModes?.length) {
+    return { modes: native.availableModes, currentModeId: native.currentModeId }
+  }
+  const modeOption = configOptions.find(
+    option => option.category === "mode" && option.type === "select",
+  )
+  if (modeOption && modeOption.type === "select") {
+    return {
+      modes: selectOptionValues(modeOption.options).map(option => ({
+        id: option.value,
+        name: option.name,
+        ...(option.description ? { description: option.description } : {}),
+      })),
+      currentModeId: modeOption.currentValue,
+    }
+  }
+  return {
+    modes: native?.availableModes ?? [],
+    currentModeId: native?.currentModeId,
+  }
 }
 
 function extractText(content: unknown): string {
