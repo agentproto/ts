@@ -2574,9 +2574,10 @@ export async function spawnAgentSession(
   // that dir.
   const resolveResumeTarget = async (
     id: string | undefined,
-  ):
-    | { adapterSessionId: string; configDir?: string; sourceSessionId?: string }
-    | undefined => {
+  ): Promise<
+    { adapterSessionId: string; configDir?: string; sourceSessionId?: string }
+    | undefined
+  > => {
     if (!id) return undefined
     const row = registry.get(id)
     if (row) {
