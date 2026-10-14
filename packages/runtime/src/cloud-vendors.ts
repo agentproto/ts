@@ -103,6 +103,13 @@ export interface ResolvedCloudSpawn {
   readonly harness: string
 }
 
+/** Placeholder `adapter` value the spawn surfaces pass when `cloud` is set
+ *  and no adapter/harness/preset supplied one (their input types require a
+ *  string). `resolveCloudSpawn` treats it — like an unset adapter — as
+ *  "use the vendor's relay adapter". Parenthesized so it cannot collide
+ *  with a real adapter slug. */
+export const CLOUD_ADAPTER_PLACEHOLDER = "(cloud)"
+
 function refuseField(field: CloudRefusedSpawnField, vendor: string): never {
   throw new CloudSpawnError(
     `agent_start: \`cloud: "${vendor}"\` cannot be combined with \`${field}\` — a ` +
@@ -126,7 +133,9 @@ function refuseField(field: CloudRefusedSpawnField, vendor: string): never {
  *   "off"/unset, non-empty `mcpServers`, `daemonMount`, non-empty
  *   `bundles`, `browser` other than false/unset, `appServe`,
  *   `inference`) → refuse, naming the field;
- * - adapter/harness unset → the vendor's adapter; adapter in the
+ * - adapter/harness unset (or the {@link CLOUD_ADAPTER_PLACEHOLDER} the
+ *   spawn surfaces pass when their input types demand a string) → the
+ *   vendor's adapter; adapter in the
  *   vendor's `harnesses`, or equal to the vendor's adapter → the
  *   vendor's adapter; anything else → refuse with an error naming the
  *   vendor and its allowed harnesses.
@@ -175,7 +184,15 @@ export function resolveCloudSpawn(input: CloudSpawnInput): ResolvedCloudSpawn {
     refuseField("inference", vendor.slug)
   }
 
-  const requested = input.harness ?? input.adapter
+  const requestedRaw = input.harness ?? input.adapter
+  // The spawn surfaces' input types require an `adapter` string even when
+  // `cloud` is set and nothing chose an adapter — they pass
+  // CLOUD_ADAPTER_PLACEHOLDER in that case. Treat it, exactly like an unset
+  // adapter, as "use the vendor's relay adapter".
+  const requested =
+    requestedRaw === undefined || requestedRaw === CLOUD_ADAPTER_PLACEHOLDER
+      ? undefined
+      : requestedRaw
   if (requested === undefined) {
     return { vendor, adapter: vendor.adapter, harness: vendor.adapter }
   }

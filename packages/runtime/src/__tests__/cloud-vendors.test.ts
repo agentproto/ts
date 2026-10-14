@@ -20,6 +20,7 @@ import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import { agentStartInputSchema } from "../agent-start-schema.js"
 import {
+  CLOUD_ADAPTER_PLACEHOLDER,
   CLOUD_SESSION_META_FILE_ENV,
   CLOUD_VENDORS,
   CloudSpawnError,
@@ -139,6 +140,18 @@ describe("resolveCloudSpawn — resolution", () => {
 
   it("unset adapter/harness → the vendor's relay adapter", () => {
     expect(resolveCloudSpawn({ cloud: "anthropic" })).toEqual({
+      vendor: CLOUD_VENDORS["anthropic"],
+      adapter: "claude-code-cloud",
+      harness: "claude-code-cloud",
+    })
+  })
+
+  it("the spawn surfaces' placeholder adapter resolves exactly like an unset adapter", () => {
+    // The MCP/HTTP surfaces' input types require an `adapter` string even
+    // when `cloud` is set and nothing chose one — they pass
+    // CLOUD_ADAPTER_PLACEHOLDER, which must never be refused as an unknown
+    // harness.
+    expect(resolveCloudSpawn({ cloud: "anthropic", adapter: CLOUD_ADAPTER_PLACEHOLDER })).toEqual({
       vendor: CLOUD_VENDORS["anthropic"],
       adapter: "claude-code-cloud",
       harness: "claude-code-cloud",
@@ -545,6 +558,48 @@ describe("agent_start — cloud spawn", () => {
       sessionId: "session_learned",
       url: "https://claude.ai/code/session_learned",
     })
+  })
+
+  it("cloud with NO adapter resolves to the vendor's cloud adapter (no 'adapter is required' failure)", async () => {
+    const startSession = vi.fn(async () => mockSession("acp_uuid_no_adapter"))
+    const { client, registry, resolveAgentAdapter } = await setup(startSession)
+
+    const body = parseToolJson(
+      await client.callTool({
+        name: "agent_start",
+        arguments: { cloud: "anthropic", prompt: "hello cloud", cwd: "/tmp" },
+      }),
+    )
+    expect(body.id).toMatch(/^sess_/)
+    // spawnAgentSession resolved the vendor's relay adapter.
+    expect(resolveAgentAdapter).toHaveBeenCalled()
+    for (const call of resolveAgentAdapter.mock.calls) {
+      expect(call[0]).toBe("claude-code-cloud")
+    }
+    expect(registry.get(body.id)?.adapterSlug).toBe("claude-code-cloud")
+    expect(cloudMetaOf(registry.get(body.id) as any)).toEqual({ vendor: "anthropic" })
+  })
+
+  it("cloud + adapter 'hermes' → cloud_spawn_refused, naming the vendor's allowed harness", async () => {
+    const startSession = vi.fn(async () => mockSession("never"))
+    const { client, registry, resolveAgentAdapter } = await setup(startSession)
+
+    const res = (await client.callTool({
+      name: "agent_start",
+      arguments: { cloud: "anthropic", adapter: "hermes", prompt: "hi", cwd: "/tmp" },
+    })) as { isError?: boolean; content?: Array<{ text?: string }> }
+    expect(res.isError).toBe(true)
+    // Structured like the HTTP route: the typed code plus a message naming
+    // the vendor and its allowed harnesses.
+    const body = parseToolJson(res)
+    expect(body.error).toBe("cloud_spawn_refused")
+    expect(body.message).toContain("hermes")
+    expect(body.message).toContain("anthropic")
+    expect(body.message).toContain("claude-code")
+    // Refused before any side effect.
+    expect(resolveAgentAdapter).not.toHaveBeenCalled()
+    expect(startSession).not.toHaveBeenCalled()
+    expect(registry.list()).toHaveLength(0)
   })
 
   it("mergeMeta overwrites only the named key and persists through the registry", async () => {
