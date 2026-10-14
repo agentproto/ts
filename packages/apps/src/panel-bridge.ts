@@ -203,12 +203,29 @@ function _isEnvelope(v){
 // runtime app-tools.ts dispatchAllowlistedAppTool) wraps an already-wrapped
 // builtin result a second time, and an inner isError rides inside that outer
 // success — so isError is honoured at each layer, not just the first.
+//
+// A TYPED restart failure (runtime's SessionRestartError — what the chat's
+// "Restart session" affordance gets back from session_restart when the box
+// is gone) carries a human 'error.reason' beside its code; for those, and
+// only those, the rejection carries that sentence instead of the raw
+// payload/technical detail the UI would otherwise echo at the user.
+function _restartReason(text){
+  try {
+    var payload = JSON.parse(text || '');
+    var typed = payload && payload.error;
+    if (typed && typeof typed === 'object' &&
+        typeof typed.code === 'string' && typeof typed.reason === 'string') {
+      return typed.reason;
+    }
+  } catch(_) {}
+  return null;
+}
 function _unwrapToolResult(result){
   var env = result;
   while (true){
     var first = env && env.content && env.content[0];
     var text = (first && first.text) || '';
-    if (env && env.isError) throw new Error(text || 'tool error');
+    if (env && env.isError) throw new Error(_restartReason(text) || text || 'tool error');
     try { var value = JSON.parse(text || '{}'); } catch(_) { return text; }
     if (!_isEnvelope(value)) return value;
     env = value;

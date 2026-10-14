@@ -125,6 +125,40 @@ describe("panelBridgeScript callTool envelope unwrap", () => {
     await expect(viaHost({ isError: true })).rejects.toThrow("tool error")
   })
 
+  it("a typed restart failure rejects with its human reason, not the raw payload", async () => {
+    // The "Restart session" path: session_restart's error body is
+    // `{error:{code,reason,message}, message, …}` — the caller must see the
+    // sentence, never the JSON (or the provider's raw string inside it).
+    const payload = JSON.stringify({
+      error: {
+        code: "sandbox_gone",
+        reason:
+          "The box this session ran in is gone, so the session can't be resumed where it was.",
+        message:
+          'restartAgentSession: sandbox "sbx_1" expired or is unreachable (provider "e2b") — spawn a fresh session.',
+      },
+      message: "restartAgentSession: sandbox \"sbx_1\" expired or is unreachable",
+    })
+    await expect(viaHost(text(payload, true))).rejects.toThrow(
+      "The box this session ran in is gone, so the session can't be resumed where it was.",
+    )
+    await expect(viaHost(text(payload, true))).rejects.not.toThrow(/sbx_1/)
+    // Inner error under an outer success (the standalone tool-call wrap) —
+    // same sentence, at the layer where it rides.
+    await expect(viaStandalone(text(JSON.stringify(text(payload, true))))).rejects.toThrow(
+      /is gone/,
+    )
+  })
+
+  it("keeps the raw text for every uncoded error", async () => {
+    await expect(viaHost(text("session_restart: adapter 'nope' not found.", true))).rejects.toThrow(
+      "session_restart: adapter 'nope' not found.",
+    )
+    await expect(
+      viaHost(text(JSON.stringify({ error: "restart_failed", message: "boom" }), true)),
+    ).rejects.toThrow("boom")
+  })
+
   it("returns non-JSON text as the string and does not mistake plain objects for envelopes", async () => {
     await expect(viaHost(text("plain words"))).resolves.toBe("plain words")
     await expect(viaHost(envelope({ content: "not an array" }))).resolves.toEqual({ content: "not an array" })

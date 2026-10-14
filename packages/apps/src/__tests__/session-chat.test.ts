@@ -283,6 +283,61 @@ describe("makeSessionChatApp", () => {
   })
 })
 
+describe("session-chat — Restart session failure surface", () => {
+  const html = sessionChatEmbedHtml({})
+
+  // The widget embeds the shared bridge verbatim; its envelope-unwrap block
+  // is what a `session_restart` rejection from the chat's "Restart session"
+  // affordance lands in. Evaluate that slice against a stubbed transport.
+  function callToolWith(result: unknown): () => Promise<unknown> {
+    const start = html.indexOf("// An MCP tool-result envelope")
+    const end = html.indexOf("// ── Display-mode")
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    return new Function(
+      "rpcRequest",
+      "_standaloneApp",
+      `${html.slice(start, end)}\nreturn callTool;`,
+    )(() => Promise.resolve(result), null) as () => Promise<unknown>
+  }
+
+  it("rejects a typed restart failure with its human reason, not the raw payload", async () => {
+    const reason =
+      "The box this session ran in is gone, so the session can't be resumed where it was."
+    const typed = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: {
+              code: "sandbox_gone",
+              reason,
+              message:
+                'restartAgentSession: sandbox "sbx_1" expired or is unreachable (provider "e2b") — spawn a fresh session.',
+            },
+            message: "restartAgentSession: sandbox \"sbx_1\" expired or is unreachable",
+          }),
+        },
+      ],
+      isError: true,
+    }
+    const callTool = callToolWith(typed)
+
+    await expect(callTool()).rejects.toThrow(reason)
+    await expect(callTool()).rejects.not.toThrow(/sbx_1/)
+  })
+
+  it("still surfaces an uncoded tool error verbatim (no invented sentence)", async () => {
+    const raw = {
+      content: [{ type: "text", text: "session_restart: adapter 'nope' not found." }],
+      isError: true,
+    }
+    await expect(callToolWith(raw)()).rejects.toThrow(
+      "session_restart: adapter 'nope' not found.",
+    )
+  })
+})
+
 describe("sessionChatApp (AppHandle / catalog path)", () => {
   it("is a zero-agent UI-only app whose static ui.html is the fallback notice", () => {
     expect(sessionChatApp.id).toBe("@agentproto/session-chat-widget")

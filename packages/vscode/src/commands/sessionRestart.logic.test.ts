@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
-import { canRestart, describeNotATerminal, describeRestart, parseRestartResult, restartedSessionView } from "./sessionRestart.logic.js"
+import { canRestart, describeNotATerminal, describeRestart, parseRestartFailure, parseRestartResult, restartFailureActionLabel, restartFailureMessage, restartSpawnOptions, restartedSessionView } from "./sessionRestart.logic.js"
 
 function session(overrides: Partial<SessionDescriptor> = {}): SessionDescriptor {
   return {
@@ -225,5 +225,143 @@ describe("nativeResumeDecline parsing + describeNotATerminal", () => {
     expect(describeNotATerminal(undefined)).toBe(
       "the restart did not request (or the daemon did not report) a native terminal — it resumed via ACP instead.",
     )
+  })
+})
+
+describe("parseRestartFailure", () => {
+  const MCP_PAYLOAD = JSON.stringify({
+    error: {
+      code: "sandbox_gone",
+      reason: "The box this session ran in is gone, so the session can't be resumed where it was.",
+      message:
+        'restartAgentSession: sandbox "sbx_1" expired or is unreachable (provider "e2b") — spawn a fresh session.',
+      action: { kind: "spawn-on-branch", branch: "wt/restart-typed-errors-ui" },
+    },
+    message:
+      'restartAgentSession: sandbox "sbx_1" expired or is unreachable (provider "e2b") — spawn a fresh session.',
+    status: 500,
+    ok: false,
+    sessionId: "sess_old",
+  })
+
+  it("parses the MCP session_restart payload from the thrown message", () => {
+    const failure = parseRestartFailure(new Error(MCP_PAYLOAD))
+    expect(failure?.code).toBe("sandbox_gone")
+    expect(failure?.reason).toMatch(/is gone/)
+    expect(failure?.detail).toMatch(/sbx_1/)
+    expect(failure?.action).toEqual({ kind: "spawn-on-branch", branch: "wt/restart-typed-errors-ui" })
+  })
+
+  it("parses the same payload embedded after an HTTP status line", () => {
+    const failure = parseRestartFailure(
+      new Error(`POST /sessions/s1/restart failed: HTTP 500 ${MCP_PAYLOAD}`),
+    )
+    expect(failure?.code).toBe("sandbox_gone")
+    expect(failure?.action).toEqual({ kind: "spawn-on-branch", branch: "wt/restart-typed-errors-ui" })
+  })
+
+  it("returns undefined for a raw, uncoded message (today's toast stays)", () => {
+    expect(
+      parseRestartFailure(
+        new Error(
+          'restartAgentSession: sandbox "sbx_1" expired or is unreachable (provider "e2b") — spawn a fresh session.',
+        ),
+      ),
+    ).toBeUndefined()
+    expect(parseRestartFailure(new Error("HTTP 500: something exploded"))).toBeUndefined()
+    expect(parseRestartFailure(undefined)).toBeUndefined()
+  })
+
+  it("returns undefined for the uncoded restart_failed fallback body", () => {
+    expect(
+      parseRestartFailure(new Error(JSON.stringify({ error: "restart_failed", message: "boom" }))),
+    ).toBeUndefined()
+  })
+
+  it("keeps the three action spellings and drops unknown ones", () => {
+    const payload = (action: unknown) =>
+      JSON.stringify({ error: { code: "sandbox_gone", reason: "gone", ...(action ? { action } : {}) } })
+    expect(parseRestartFailure(new Error(payload({ kind: "spawn-fresh" })))?.action).toEqual({
+      kind: "spawn-fresh",
+    })
+    expect(
+      parseRestartFailure(new Error(payload({ kind: "fix-config", detail: "configure a provider" })))?.action,
+    ).toEqual({ kind: "fix-config", detail: "configure a provider" })
+    expect(parseRestartFailure(new Error(payload({ kind: "mystery" })))?.action).toBeUndefined()
+    expect(parseRestartFailure(new Error(payload(undefined)))?.action).toBeUndefined()
+  })
+})
+
+describe("restartFailureMessage / restartFailureActionLabel", () => {
+  it("shows the human reason, never the raw provider string", () => {
+    const failure = parseRestartFailure(
+      new Error(
+        JSON.stringify({
+          error: {
+            code: "sandbox_unreachable",
+            reason: "The box this session ran in isn't answering, so the session can't be resumed there right now.",
+            message:
+              'restartAgentSession: sandbox "sbx_2" expired or is unreachable (provider "e2b") — spawn a fresh session. <provider error>',
+          },
+        }),
+      ),
+    )!
+    expect(restartFailureMessage(failure)).toBe(
+      "The box this session ran in isn't answering, so the session can't be resumed there right now.",
+    )
+    expect(restartFailureMessage(failure)).not.toContain("sbx_2")
+  })
+
+  it("appends a fix-config remediation to the sentence", () => {
+    const failure = parseRestartFailure(
+      new Error(
+        JSON.stringify({
+          error: {
+            code: "sandbox_provider_missing",
+            reason: "This daemon can't reach the sandbox provider that ran this session.",
+            message: "restartAgentSession: sandbox provider \"e2b\" not found",
+            action: { kind: "fix-config", detail: "set up sandbox provider \"e2b\"" },
+          },
+        }),
+      ),
+    )!
+    expect(restartFailureMessage(failure)).toBe(
+      'This daemon can\'t reach the sandbox provider that ran this session. set up sandbox provider "e2b".',
+    )
+    // A fix-config hint has no one-click spawn — nothing to press.
+    expect(restartFailureActionLabel(failure)).toBeUndefined()
+  })
+
+  it("labels the two spawn recoveries as the buttons the UI shows", () => {
+    const withAction = (action: unknown) =>
+      parseRestartFailure(
+        new Error(JSON.stringify({ error: { code: "sandbox_gone", reason: "gone", action } })),
+      )!
+    expect(restartFailureActionLabel(withAction({ kind: "spawn-on-branch", branch: "wt/foo" }))).toBe(
+      "Start a new session on wt/foo",
+    )
+    expect(restartFailureActionLabel(withAction({ kind: "spawn-fresh" }))).toBe(
+      "Start a fresh session",
+    )
+    expect(restartFailureActionLabel(withAction(undefined))).toBeUndefined()
+  })
+})
+
+describe("restartSpawnOptions", () => {
+  it("pins the recorded work branch as the spawn's worktree slug", () => {
+    expect(
+      restartSpawnOptions({ kind: "spawn-on-branch", branch: "wt/restart-typed-errors-ui" }),
+    ).toEqual({ worktree: { slug: "restart-typed-errors-ui" } })
+    // The daemon's provisioner cuts branch `wt/<slug>`, so a branch outside
+    // the sandbox prefix is passed through untouched.
+    expect(restartSpawnOptions({ kind: "spawn-on-branch", branch: "feature/x" })).toEqual({
+      worktree: { slug: "feature/x" },
+    })
+  })
+
+  it("leaves a fresh spawn un-pinned and never invents a worktree", () => {
+    expect(restartSpawnOptions({ kind: "spawn-fresh" })).toBeUndefined()
+    expect(restartSpawnOptions({ kind: "fix-config", detail: "set up a provider" })).toBeUndefined()
+    expect(restartSpawnOptions(undefined)).toBeUndefined()
   })
 })

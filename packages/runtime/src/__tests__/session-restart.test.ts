@@ -659,7 +659,13 @@ describe("session_restart", () => {
     })
     expect(result.isError).toBe(true)
     const body = toolJson(result)
-    expect(String(body.error)).toMatch(/generic command session/)
+    // Typed refusal: a stable code, and the strategy's own sentence as both
+    // the human reason and the detail (a 400 — the request can't be served).
+    expect(body.status).toBe(400)
+    const typed = body.error as { code?: string; message?: string; reason?: string }
+    expect(typed.code).toBe("unsupported_strategy")
+    expect(typed.message).toMatch(/generic command session/)
+    expect(typed.reason).toMatch(/generic command session/)
 
     await close()
     registry.shutdown()
@@ -998,7 +1004,11 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(result.isError).toBe(true)
     const err = toolJson(result)
     expect(err.status).toBe(400)
-    expect(err.error).toBe("restart_override_invalid")
+    // A rejected override carries the typed restart payload: a stable code
+    // plus the human sentence, instead of a bare error string.
+    const typed = err.error as { code?: string; reason?: string }
+    expect(typed.code).toBe("override_invalid")
+    expect(typed.reason).toMatch(/isn't valid for this session/)
     // No new session spawned — rejected before startSession.
     expect(calls).toHaveLength(0)
     expect(registry.list()).toHaveLength(before)
@@ -1025,7 +1035,11 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(result.isError).toBe(true)
     const err = toolJson(result)
     expect(err.status).toBe(400)
-    expect(err.error).toBe("restart_override_invalid")
+    // Same typed payload as the access-profile rejection above — one
+    // vocabulary for every rejected override, not a per-guard spelling.
+    const typed = err.error as { code?: string; message?: string }
+    expect(typed.code).toBe("override_invalid")
+    expect(typed.message).toMatch(/only applies to agent-cli sessions/)
 
     await close()
     registry.shutdown()

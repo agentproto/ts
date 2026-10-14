@@ -173,3 +173,107 @@ export function describeRestart(before: SessionDescriptor, after: RestartResult)
 
   return sentences.join(" ")
 }
+
+// ── Typed restart failures (runtime's SessionRestartError on the wire) ──────
+
+/** The recovery hint a typed restart failure may carry — the three spellings
+ *  runtime's `SessionRestartAction` puts on the wire. */
+export type RestartFailureAction =
+  | { kind: "spawn-on-branch"; branch: string }
+  | { kind: "spawn-fresh" }
+  | { kind: "fix-config"; detail: string }
+
+/** A restart failure the daemon typed for us: a stable `code`, a one-line
+ *  human `reason`, the technical `message` behind it, and an optional next
+ *  step the UI turns into a button. */
+export interface RestartFailure {
+  code: string
+  reason: string
+  detail?: string
+  action?: RestartFailureAction
+}
+
+const RESTART_ACTION_KINDS = new Set(["spawn-on-branch", "spawn-fresh", "fix-config"])
+
+/**
+ * Parse a caught restart error into its typed parts, or `undefined` when the
+ * failure carries no code (a plain driver error — the caller then shows
+ * today's raw-message toast, unchanged).
+ *
+ * Both transport spellings are accepted: the MCP `session_restart` tool puts
+ * the payload itself in the thrown message (`{"error":{code,reason,…},…}`),
+ * and an HTTP route's message embeds the same JSON after its status line —
+ * so the JSON object is located by its first `{`, never by guessing.
+ */
+export function parseRestartFailure(err: unknown): RestartFailure | undefined {
+  const raw = (err instanceof Error ? err.message : String(err)).trim()
+  const start = raw.indexOf("{")
+  const json = start >= 0 ? raw.slice(start) : raw
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== "object") return undefined
+  const rec = parsed as Record<string, unknown>
+  // `{error:{code,reason,…}, message}` (nested) or a flattened
+  // `{code,reason,…}` — the nested spelling is what the transports send.
+  const boxed =
+    rec.error && typeof rec.error === "object" ? (rec.error as Record<string, unknown>) : rec
+  if (typeof boxed.code !== "string" || typeof boxed.reason !== "string") return undefined
+  const failure: RestartFailure = { code: boxed.code, reason: boxed.reason }
+  const detail = boxed.message ?? rec.message
+  if (typeof detail === "string" && detail.length > 0) failure.detail = detail
+  const action = boxed.action
+  if (action && typeof action === "object") {
+    const a = action as Record<string, unknown>
+    if (typeof a.kind === "string" && RESTART_ACTION_KINDS.has(a.kind)) {
+      if (a.kind === "spawn-on-branch" && typeof a.branch === "string") {
+        failure.action = { kind: "spawn-on-branch", branch: a.branch }
+      } else if (a.kind === "fix-config" && typeof a.detail === "string") {
+        failure.action = { kind: "fix-config", detail: a.detail }
+      } else if (a.kind === "spawn-fresh") {
+        failure.action = { kind: "spawn-fresh" }
+      }
+    }
+  }
+  return failure
+}
+
+/** The toast body: the human `reason`, with a `fix-config` remediation
+ *  appended (it IS the sentence's second half) — never the raw provider
+ *  string the reason exists to replace. */
+export function restartFailureMessage(failure: RestartFailure): string {
+  return failure.action?.kind === "fix-config"
+    ? `${failure.reason} ${failure.action.detail}.`
+    : failure.reason
+}
+
+/** The button label for a failure's action hint, or `undefined` when the
+ *  failure offers no one-click recovery (nothing to press). */
+export function restartFailureActionLabel(failure: RestartFailure): string | undefined {
+  const action = failure.action
+  if (!action) return undefined
+  if (action.kind === "spawn-on-branch") return `Start a new session on ${action.branch}`
+  if (action.kind === "spawn-fresh") return "Start a fresh session"
+  return undefined
+}
+
+/**
+ * The `agentproto.spawnAgent` options for a failure's recovery action — what
+ * the caller passes when the button is pressed, so "Start a new session on
+ * `<branch>`" actually spawns ON that branch instead of opening a wizard that
+ * lands anywhere. The daemon's `worktree.slug` names the branch `wt/<slug>`
+ * (the provisioner cuts `wt/<slug>` from `base`), so the recorded branch maps
+ * onto it by dropping the `wt/` prefix — the same slice the runtime's own
+ * fresh-box recovery does. `spawn-fresh` (and a failure with no action) return
+ * `undefined`: a plain spawn, no pinned worktree.
+ */
+export function restartSpawnOptions(
+  action: RestartFailureAction | undefined,
+): { worktree: { slug: string } } | undefined {
+  if (action?.kind !== "spawn-on-branch") return undefined
+  const slug = action.branch.startsWith("wt/") ? action.branch.slice("wt/".length) : action.branch
+  return { worktree: { slug } }
+}
