@@ -645,7 +645,9 @@ export function createTurnRetryController(opts: {
     const cap = desc.turnRetry?.maxMigrations ?? 0
     const prevAttempts = desc.turnRetryAttempts
     const prevLastTurnRetryAt = desc.lastTurnRetryAt
-    const fallbackToRetry = (why: string): void => {
+    // `migrations` is what the session has really spent: the pre-booking count
+    // when the migration never started, `p.attempt` once it was booked.
+    const fallbackToRetry = (why: string, migrations: number): void => {
       emit(desc, {
         phase: "migrate-failed",
         errorClass: p.errorClass,
@@ -673,7 +675,7 @@ export function createTurnRetryController(opts: {
           turnRetryGaveUpNotice({
             attempts: spentAttempts,
             errorClass: p.errorClass,
-            migrations: desc.turnMigrations ?? 0,
+            migrations,
           }),
         )
         return
@@ -692,7 +694,7 @@ export function createTurnRetryController(opts: {
     }
 
     const migrate = opts.migrateSession
-    if (!migrate) return fallbackToRetry("no migration orchestrator is configured")
+    if (!migrate) return fallbackToRetry("no migration orchestrator is configured", desc.turnMigrations ?? 0)
 
     // Book the migration BEFORE it runs: a sandbox boot takes a while, and the
     // counter must be spent whether the migration lands or fails.
@@ -703,7 +705,7 @@ export function createTurnRetryController(opts: {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       log(`[turn-retry] ${id}: migration failed: ${msg}`)
-      return fallbackToRetry(`migration failed: ${msg}`)
+      return fallbackToRetry(`migration failed: ${msg}`, p.attempt)
     }
 
     const migratedTo = fresh.descriptor.id
