@@ -83,11 +83,24 @@ describe("delivery commands", () => {
   it("quote the checkout, branch and base, and carry no credential", () => {
     const commands = [buildProbeCommand(target), buildPushCommand(target), buildBundleCommand(target)]
     expect(commands[0]).toContain(`'${target.baseSha}..refs/heads/wt/x'`)
-    expect(commands[1]).toBe("git -C '/home/user/agentproto' push -u origin 'wt/x'")
+    expect(commands[1]).toBe("git -C '/home/user/agentproto' push --no-verify -u origin 'wt/x'")
     expect(commands[2]).toContain(`'${target.baseSha}..wt/x'`)
     for (const command of commands) {
       expect(command).not.toContain(FAKE_TOKEN)
       expect(command).not.toMatch(/https?:\/\//)
+    }
+  })
+
+  it("skip client-side hooks on every push, so a repo's pre-push gate cannot block a checkpoint", () => {
+    const pushes = [
+      buildPushCommand(target),
+      buildCheckpointPushCommand(target),
+      buildCheckpointPushCommand(target, "custom/"),
+      buildCheckpointDeleteCommand(target),
+    ]
+    for (const command of pushes) {
+      expect(command).toMatch(/ push --no-verify /)
+      expect(command).not.toMatch(/ push (?!--no-verify )/)
     }
   })
 })
@@ -185,7 +198,7 @@ describe("runSandboxDelivery", () => {
     // Teardown of a clean, safe worktree always tries the checkpoint delete.
     expect(record.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
     expect(box.commands).toHaveLength(2)
-    expect(box.commands[1]?.command).toContain("push origin --delete")
+    expect(box.commands[1]?.command).toContain("push --no-verify origin --delete")
   })
 
   it("falls back to a bundle saved on the host when the push fails", async () => {
@@ -310,7 +323,7 @@ describe("uncommitted-work snapshot", () => {
     expect(probe).not.toMatch(/git (stash|reset|checkout|commit )/)
     expect(probe.match(/git add/g)).toHaveLength(1)
     expect(buildCheckpointPushCommand(target)).toBe(
-      "git -C '/home/user/agentproto' push origin '+refs/agentproto/checkpoint:refs/heads/agentproto-checkpoint/wt/x'",
+      "git -C '/home/user/agentproto' push --no-verify origin '+refs/agentproto/checkpoint:refs/heads/agentproto-checkpoint/wt/x'",
     )
   })
 
@@ -462,18 +475,18 @@ describe("uncommitted-work snapshot", () => {
     expect(checkpointBranchOf("wt/x")).toBe("agentproto-checkpoint/wt/x")
     expect(checkpointBranchOf("wt/x", "custom/")).toBe("custom/wt/x")
     expect(buildCheckpointPushCommand(target, "custom/")).toBe(
-      "git -C '/home/user/agentproto' push origin '+refs/agentproto/checkpoint:refs/heads/custom/wt/x'",
+      "git -C '/home/user/agentproto' push --no-verify origin '+refs/agentproto/checkpoint:refs/heads/custom/wt/x'",
     )
   })
 
   it("buildCheckpointDeleteCommand deletes the checkpoint ref, quoting both, and treats a missing ref as success", () => {
     expect(buildCheckpointDeleteCommand(target)).toBe(
-      "git -C '/home/user/agentproto' push origin --delete 'agentproto-checkpoint/wt/x' 2>&1 || " +
+      "git -C '/home/user/agentproto' push --no-verify origin --delete 'agentproto-checkpoint/wt/x' 2>&1 || " +
         "{ git ls-remote --exit-code origin 'refs/heads/agentproto-checkpoint/wt/x' >/dev/null; " +
         "test $? -eq 2 && echo checkpoint-ref-absent; }",
     )
     expect(buildCheckpointDeleteCommand(target, "custom/")).toBe(
-      "git -C '/home/user/agentproto' push origin --delete 'custom/wt/x' 2>&1 || " +
+      "git -C '/home/user/agentproto' push --no-verify origin --delete 'custom/wt/x' 2>&1 || " +
         "{ git ls-remote --exit-code origin 'refs/heads/custom/wt/x' >/dev/null; " +
         "test $? -eq 2 && echo checkpoint-ref-absent; }",
     )
@@ -518,7 +531,7 @@ describe("checkpoint cleanup", () => {
     expect(record.push.status).toBe("pushed")
     expect(record.checkpointCleanup).toEqual({ status: "deleted", ref: "agentproto-checkpoint/wt/x" })
     const deleteCmd = box.commands.find(c => c.command.includes("--delete"))?.command ?? ""
-    expect(deleteCmd).toContain("push origin --delete 'agentproto-checkpoint/wt/x'")
+    expect(deleteCmd).toContain("push --no-verify origin --delete 'agentproto-checkpoint/wt/x'")
     expect(formatDeliveryNotice(record)).toContain("checkpoint cleanup: deleted")
   })
 
