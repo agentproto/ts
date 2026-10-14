@@ -271,17 +271,13 @@ export async function restoreAdapterStore(input: RestoreAdapterStoreInput): Prom
 export async function discoverRestoredAdapterConversation(input: {
   adapter: string
   configDir: string
-  /** The box-side cwd the conversation was written under — claude-code's
-   *  project-slug dir (and opencode's `directory` scoping) derive from it.
-   *  Pass `""` when unknown (the cwd-scoped stores then simply find
-   *  nothing, and the resume falls back to a blank spawn). */
   cwd?: string
 }): Promise<string | undefined> {
   const store = CONVERSATION_STORES[input.adapter]
   if (!store) return undefined
   try {
     const candidates = await store.discover({
-      cwd: input.cwd ?? "",
+      ...(input.cwd ? { cwd: input.cwd } : {}),
       configDir: input.configDir,
     })
     return candidates[0]?.conversationId
