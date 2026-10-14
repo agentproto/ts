@@ -603,26 +603,36 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
   })
 
   it("session/load adopts the vendor id — the next prompt SENDS, never starts a new cloud session", async () => {
-    // Cursor-aware events client: without a cursor it serves the session's
-    // pre-existing history (whose OLD `result` must not end the new turn);
-    // with the seed's cursor it serves only post-attach events.
+    // Cursor-aware events client: while seeding it serves the session's
+    // single-page pre-existing history (whose OLD `result` must not end the
+    // new turn) and stops once the cursor stops advancing; once the prompt
+    // is in flight it serves only post-attach events.
     const calls: Array<{ id: string; cursor?: string }> = []
-    const history: CloudEventsPage = {
-      data: [resultEvent("r0")],
-      resume_cursor: "cur-0",
-    }
+    let prompting = false
     const api: CloudEventsClient = {
       async listEvents(id, opts) {
         calls.push({ id, ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}) })
-        if (!opts?.cursor) return history
+        if (!prompting) {
+          // History is one page: the first read serves it, resuming from its
+          // cursor finds nothing more and the cursor stops advancing.
+          if (!opts?.cursor) {
+            return { data: [resultEvent("r0")], resume_cursor: "cur-0" }
+          }
+          return { data: [], resume_cursor: "cur-0" }
+        }
         return { data: [resultEvent("r1")], resume_cursor: "cur-1" }
       },
     }
     const h = harness({ api })
     await loadSession(h, VENDOR_ID)
-    // The load pre-marked the history page (seed = one no-cursor read).
-    expect(calls).toEqual([{ id: VENDOR_ID }])
+    // The load paged the whole (single-page) history and stopped at the
+    // newest cursor.
+    expect(calls).toEqual([
+      { id: VENDOR_ID },
+      { id: VENDOR_ID, cursor: "cur-0" },
+    ])
 
+    prompting = true
     const res: PromptResponse = await h.agent.prompt(prompt(VENDOR_ID, "again"))
     expect(res.stopReason).toBe("end_turn")
     // Re-attach goes through sendPrompt — a resumed relay MUST NOT start a
@@ -634,7 +644,60 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
     expect(calls).toEqual([
       { id: VENDOR_ID },
       { id: VENDOR_ID, cursor: "cur-0" },
+      { id: VENDOR_ID, cursor: "cur-0" },
     ])
+  })
+
+  it("session/load pre-marks a multi-page history — an older result cannot end the first post-attach prompt", async () => {
+    // Page 1 (oldest) is this turn's old history; page 2 (newer) carries the
+    // PREVIOUS turn's `result` (r0). The seed must page through BOTH, or the
+    // first post-attach poll (resuming past page 1) would fetch r0 unmarked
+    // and end the new turn on arrival.
+    const calls: Array<{ id: string; cursor?: string }> = []
+    let prompting = false
+    const api: CloudEventsClient = {
+      async listEvents(id, opts) {
+        calls.push({ id, ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}) })
+        if (!prompting) {
+          if (!opts?.cursor) {
+            return { data: [assistantEvent("a0", "older page")], resume_cursor: "cur-1" }
+          }
+          if (opts.cursor === "cur-1") {
+            return {
+              data: [
+                resultEvent("r0", {
+                  total_cost_usd: 9.99,
+                  usage: { input_tokens: 999, output_tokens: 999 },
+                }),
+              ],
+              resume_cursor: "cur-2",
+            }
+          }
+          return { data: [], resume_cursor: "cur-2" }
+        }
+        return { data: [resultEvent("r1")], resume_cursor: "cur-3" }
+      },
+    }
+    const h = harness({ api })
+    await loadSession(h, VENDOR_ID)
+    // Both history pages were read before the cursor stopped advancing.
+    expect(calls).toEqual([
+      { id: VENDOR_ID },
+      { id: VENDOR_ID, cursor: "cur-1" },
+      { id: VENDOR_ID, cursor: "cur-2" },
+    ])
+
+    h.conn.sessionUpdate.mockClear()
+    prompting = true
+    const res: PromptResponse = await h.agent.prompt(prompt(VENDOR_ID, "again"))
+    expect(res.stopReason).toBe("end_turn")
+    // The turn did NOT end on the (pre-marked) older result: its distinctive
+    // cost/usage never projects, only the new turn's result does.
+    const projected = updates(h.conn)
+    expect(JSON.stringify(projected)).not.toContain("9.99")
+    expect(
+      projected.filter(u => u.sessionUpdate === "usage_update"),
+    ).toHaveLength(1)
   })
 
   it("session/load refuses an id the vendor could never own — and starts nothing in its place", async () => {
@@ -648,12 +711,21 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
   })
 
   it("session/load accepts the API's cse_ spelling too", async () => {
-    const { api } = fakeApi([
-      { data: [resultEvent("r0")], resume_cursor: "cur-0" },
-      { data: [resultEvent("r1")], resume_cursor: "cur-1" },
-    ])
+    let prompting = false
+    const api: CloudEventsClient = {
+      async listEvents(_id, opts) {
+        if (!prompting) {
+          if (!opts?.cursor) {
+            return { data: [resultEvent("r0")], resume_cursor: "cur-0" }
+          }
+          return { data: [], resume_cursor: "cur-0" }
+        }
+        return { data: [resultEvent("r1")], resume_cursor: "cur-1" }
+      },
+    }
     const h = harness({ api })
     await loadSession(h, "cse_01FakeId")
+    prompting = true
     const res = await h.agent.prompt(prompt(VENDOR_ID, "again"))
     expect(res.stopReason).toBe("end_turn")
     // Normalized to the CLI's session_ spelling before hitting the vendor.
@@ -674,6 +746,19 @@ describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
     const h = harness({ api })
     h.validateRepo.mockRejectedValueOnce(new Error("working tree is dirty"))
     await expect(loadSession(h, VENDOR_ID)).rejects.toThrow(/working tree is dirty/)
+    expect(h.send).not.toHaveBeenCalled()
+  })
+
+  it("session/load validates the session id BEFORE the repo source — a bad id reports its error first", async () => {
+    const { api } = fakeApi([])
+    const h = harness({ api })
+    // Even with a repo the validator would reject, the malformed id is the
+    // error the caller hears.
+    h.validateRepo.mockRejectedValueOnce(new Error("working tree is dirty"))
+    await expect(loadSession(h, "acp-uuid-never-learned")).rejects.toThrow(
+      /vendor session id/,
+    )
+    expect(h.validateRepo).not.toHaveBeenCalled()
     expect(h.send).not.toHaveBeenCalled()
   })
 

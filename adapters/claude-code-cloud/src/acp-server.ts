@@ -176,6 +176,14 @@ interface CloudSessionState {
  */
 export const SEEN_EVENT_IDS_LIMIT = 500
 
+/**
+ * Cap on history pages `session/load` pre-marks. A resume must mark every
+ * event that already exists, but the vendor is paginated — one page is not
+ * enough. The bound keeps a slow or pathological cursor from holding the
+ * load open indefinitely; 50 pages is far past any realistic session.
+ */
+export const SEED_EVENT_PAGES_LIMIT = 50
+
 /** Record a projected event id, evicting the oldest past the cap. */
 function rememberSeenEventId(session: CloudSessionState, id: string): void {
   const seen = session.seenEventIds
@@ -346,9 +354,9 @@ export class ClaudeCloudAcpAgent implements Agent {
           "agents (AIP-66 §4) — the vendor owns the harness",
       )
     }
-    // AIP-66 §3 — refuse BEFORE any vendor side effect: a re-attach runs
-    // code from this cwd on the vendor's machine too.
-    await this.#validateRepo(params.cwd)
+    // Reject a malformed session id BEFORE the repo check: the id is what
+    // identifies the session to re-attach, so a bad one is reported first
+    // (AIP-66 §5) rather than masked by an unrelated repo-source failure.
     let vendorSessionId: string
     try {
       // Accepts the vendor's own spellings (`session_<id>` / `cse_<id>`)
@@ -364,6 +372,9 @@ export class ClaudeCloudAcpAgent implements Agent {
           "to — and this relay will not start a replacement.",
       )
     }
+    // AIP-66 §3 — refuse BEFORE any vendor side effect: a re-attach runs
+    // code from this cwd on the vendor's machine too.
+    await this.#validateRepo(params.cwd)
     // Keyed BY THE VENDOR ID: the ACP client registers the loaded session
     // under the id it passed in, so `session/prompt` (and our own
     // `session/update` notifications) address this state by that id.
@@ -393,12 +404,35 @@ export class ClaudeCloudAcpAgent implements Agent {
   /** Mark the vendor's pre-existing events as already projected. Best
    *  effort: a failed seed degrades to (at worst) an early end on an older
    *  `result` — it must never turn a re-attach into a failed load, which
-   *  AIP-66 §5 forbids replacing with a fresh start anyway. */
+   *  AIP-66 §5 forbids replacing with a fresh start anyway.
+   *
+   *  Walks the WHOLE history, oldest page first, following `resume_cursor`
+   *  until it stops advancing (or a page comes back empty) — one page is
+   *  not enough: a later page can hold the previous turn's `result`, which
+   *  would otherwise end the first post-attach prompt on arrival. The
+   *  events API is newest-first WITHIN a page and pages forward in time, so
+   *  `pollCursor` must end at the NEWEST position (the last cursor we
+   *  advanced to) — that is exactly where {@link #observeTurn}'s normal
+   *  poll loop resumes from, so the first poll returns only events written
+   *  after the history just marked. */
   async #seedSeenEvents(session: CloudSessionState, vendorSessionId: string): Promise<void> {
     try {
-      const page = await this.#api.listEvents(vendorSessionId, {})
-      if (page.resume_cursor) session.pollCursor = page.resume_cursor
-      for (const event of page.data ?? []) rememberSeenEventId(session, event.event_id)
+      let cursor: string | undefined
+      for (let page = 0; page < SEED_EVENT_PAGES_LIMIT; page += 1) {
+        const res = await this.#api.listEvents(
+          vendorSessionId,
+          cursor ? { cursor } : {},
+        )
+        const events = res.data ?? []
+        for (const event of events) rememberSeenEventId(session, event.event_id)
+        const next = res.resume_cursor
+        // Exhausted when the page is empty, there is no cursor, or the
+        // cursor did not advance (the API repeats the newest cursor at the
+        // end of history).
+        if (events.length === 0 || !next || next === cursor) break
+        cursor = next
+      }
+      if (cursor !== undefined) session.pollCursor = cursor
     } catch (err) {
       process.stderr.write(
         `[claude-code-cloud] session/load: could not pre-mark the vendor's ` +

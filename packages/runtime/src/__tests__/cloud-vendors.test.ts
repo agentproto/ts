@@ -314,6 +314,44 @@ describe("readCloudSessionMetaFile / watchCloudSessionMeta", () => {
     }
   })
 
+  it("watchCloudSessionMeta ignores a meta file written for another vendor and keeps watching", async () => {
+    const path = join(dir, "cloud-session.json")
+    const onLearned = vi.fn()
+    const stop = watchCloudSessionMeta({
+      metaFilePath: path,
+      vendor: "anthropic",
+      onLearned,
+      intervalMs: 1,
+      timeoutMs: 2_000,
+    })
+    try {
+      // A file naming a DIFFERENT vendor is not this watch's to learn — the
+      // vendor option is not dead: the poll keeps watching.
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(
+        path,
+        JSON.stringify({ vendor: "openai", sessionId: "session_other" }),
+        "utf8",
+      )
+      await new Promise(resolve => setTimeout(resolve, 25))
+      expect(onLearned).not.toHaveBeenCalled()
+
+      // It was still watching: once the file names THIS vendor, it learns.
+      await writeFile(
+        path,
+        JSON.stringify({ vendor: "anthropic", sessionId: "session_mine" }),
+        "utf8",
+      )
+      await vi.waitFor(() => expect(onLearned).toHaveBeenCalledTimes(1))
+      expect(onLearned).toHaveBeenCalledWith({
+        vendor: "anthropic",
+        sessionId: "session_mine",
+      })
+    } finally {
+      stop()
+    }
+  })
+
   it("watchCloudSessionMeta stops when shouldContinue turns false (session died)", async () => {
     const path = join(dir, "cloud-session.json")
     const onLearned = vi.fn()

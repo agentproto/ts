@@ -350,8 +350,10 @@ export async function resolveCloudResumeId(
 /** Bounded poll of the relay's meta file: the vendor session id only
  *  exists AFTER the first prompt reaches the vendor, so a cloud spawn
  *  watches (default: every 2s, timers unref'd) until the relay writes it,
- *  then calls `onLearned` exactly once and stops. The returned function
- *  stops the watch early (session died, learned).
+ *  then calls `onLearned` exactly once and stops. A meta file naming a
+ *  DIFFERENT vendor is ignored — the watch keeps polling until a file for
+ *  `opts.vendor` appears. The returned function stops the watch early
+ *  (session died, learned).
  *  `shouldContinue` is re-checked every tick (e.g. `() =>
  *  registry.get(id)?.status === "alive"`) so a dead session doesn't keep
  *  polling. By default there is NO fixed timeout — the watch lives exactly
@@ -390,7 +392,7 @@ export function watchCloudSessionMeta(opts: {
       return
     }
     const meta = await readCloudSessionMetaFile(opts.metaFilePath)
-    if (meta && (meta.vendor === opts.vendor || meta.vendor.length > 0)) {
+    if (meta && meta.vendor === opts.vendor) {
       try {
         await opts.onLearned(meta)
       } finally {
