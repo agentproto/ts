@@ -7,6 +7,8 @@ agentproto adapters install <pkg>              npm i -g + add to config
 agentproto adapters uninstall <pkg>            Remove from config (+ npm rm)
 agentproto adapters enable <pkg>               Add to config (assume installed)
 agentproto adapters disable <pkg>              Remove from config (keep installed)
+agentproto adapters hermes-plugin status|install [--enable] [--json]
+                                               Hermes system-prompt plugin
 ```
 
 Manages runtime adapters. An adapter extends the swarm kernel's
@@ -155,6 +157,35 @@ Config-only operations — assume the package is already installed (or
 deliberately keep it installed). Adds/removes from `adapters[]`
 without running npm. Equivalent to `install --skip-npm` /
 `uninstall --skip-npm`.
+
+### `hermes-plugin`
+
+```bash
+agentproto adapters hermes-plugin status
+agentproto adapters hermes-plugin status --json
+agentproto adapters hermes-plugin install
+agentproto adapters hermes-plugin install --enable
+```
+
+Manages the bundled `agentproto-system-prompt` plugin for the hermes
+harness. Hermes' ACP server has no system-prompt channel of its own, so
+this plugin is what lets a projected AGENT.md reach hermes as a real
+system prompt (up to 7500 chars); without it the text falls back to a
+first-prompt prefix plus a `session:harness-warning`.
+
+- `status` — where the plugin lives, whether it is installed and
+  enabled, and the bundled version. Always exits 0.
+- `install` — copies the bundled plugin into `$HERMES_HOME/plugins`
+  (updating an older installed copy). Nothing else changes: the plugin
+  is not active until enabled.
+- `install --enable` — also runs `hermes plugins enable
+  agentproto-system-prompt` (argv, never a shell, `config.yaml` is not
+  edited by hand). Enabling is the explicit-consent step.
+
+The daemon checks installed + enabled on every spawn, so installing takes
+effect without a daemon restart. See
+[`adapters/hermes/HERMES.md`](../../../adapters/hermes/HERMES.md) for the
+channel details.
 
 ## Overriding a built-in
 

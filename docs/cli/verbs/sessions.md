@@ -646,6 +646,12 @@ end and teardown, and the restart extracts it. When the restart cannot
 proceed the error says what is missing and how to fix it, e.g.
 `agentproto workspace remote set <slug> --url … --token-stdin`.
 
+**Sandbox sessions whose box is still alive.** Restarting one re-attaches the
+adapter's own conversation inside that box (the box daemon resumes the prior
+in-box session) instead of starting blank. When the box no longer knows the id
+or the session is not resumable, it falls back to a fresh in-box spawn plus the
+transcript digest, as before.
+
 ### `prompt <id-or-name>`
 
 ```bash

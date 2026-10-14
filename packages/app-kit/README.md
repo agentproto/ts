@@ -460,7 +460,12 @@ file/command/terminal.
 ## Runtime note
 
 `toMastraAgents` is the path where a `body` becomes a **true** model
-`instructions` field, because that wiring lives in the mastra adapter. The
-generic daemon session-spawn has no system-prompt field today (instructions ride
-in as prepended prompt text for CLI adapters), so an emitted AGENT.md reaches the
-model as a real system prompt only through a mastra-family runtime.
+`instructions` field, because that wiring lives in the mastra adapter. For the
+generic daemon session-spawn, an adapter whose manifest declares `systemPrompt`
+(claude-code via ACP `_meta`, opencode and codex via their inline config, pi via
+`--append-system-prompt`, hermes via its agentproto plugin while installed and
+enabled) receives the projected
+AGENT.md text through that channel as a real system prompt, with no warning. Every
+other CLI adapter still gets the instructions as prepended first-prompt text plus a
+`session:harness-warning`, and so does a sandbox spawn (the box owns its own adapter
+configuration).
