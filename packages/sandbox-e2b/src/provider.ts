@@ -58,8 +58,17 @@ const DEFAULT_PORT = 18790
  * `npm i -g` (~90s) + a multi-minute agent turn crosses 5:00 mid-turn, e2b
  * reaps the VM, and the next request cold-boots it WITHOUT the daemon —
  * surfacing as the baffling `"The sandbox is running but port is not open"`
- * 502 (observed live killing a PR-review turn). 45 minutes covers any
- * plausible session; `config.timeoutMs` still overrides in either direction.
+ * 502 (observed live killing a PR-review turn). `config.timeoutMs` still
+ * overrides in either direction.
+ *
+ * This is the box's lifetime from its last re-arm, not a cap on the session:
+ * the runtime's sandbox session proxy re-arms it (`extendTimeout`, same
+ * duration) on prompt dispatch, on streamed events, and every 10 minutes
+ * while a turn is in flight even if it streams nothing (one long tool call).
+ * An idle box is left to expire. Ahead of the deadline the proxy either
+ * renews once more (turn in flight) or runs a final checkpoint while the box
+ * is still reachable — see `BOX_ACTIVE_RENEW_INTERVAL_MS` /
+ * `BOX_DEADLINE_GUARD_LEAD_MS` in `@agentproto/runtime`.
  */
 const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
 /** Account-level ceiling: `sandbox.setTimeout` rejects anything above 1 hour
