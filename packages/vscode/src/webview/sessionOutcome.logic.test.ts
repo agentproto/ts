@@ -39,6 +39,21 @@ describe("outcomeCardFor", () => {
     expect(tone({ status: "empty", summary: undefined, termination: { status: "killed" } })).toBe("muted")
   })
 
+  it("an operator resolution declaring the work COMPLETE overrides the error tone", () => {
+    // The dead-sandbox case: status "error", but the row has been marked
+    // completed (verdict "done", or the "Mark as completed" relabel). The
+    // termination line still names the real death — only the tone changes.
+    const tone = (o: Partial<SessionOutcome>) => outcomeCardFor({ outcome: base(o) })!.tone
+    expect(tone({ verdict: "done", termination: { status: "error" } })).toBe("ok")
+    expect(
+      tone({ termination: { status: "error", reason: "operator-completed", previousReason: "crashed" } }),
+    ).toBe("ok")
+    // An empty-but-completed row is muted, not red.
+    expect(tone({ verdict: "done", status: "empty", summary: undefined, termination: { status: "error" } })).toBe("muted")
+    // Any other verdict keeps the error tone.
+    expect(tone({ verdict: "partial", termination: { status: "error" } })).toBe("error")
+  })
+
   it("formats duration, cost and tokens", () => {
     const card = outcomeCardFor({
       outcome: base({ cost: { usd: 1.234, tokensIn: 12_300, tokensOut: 800, durationMs: 45_000 } }),

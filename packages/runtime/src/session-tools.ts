@@ -5585,33 +5585,41 @@ export function registerSessionTools(
   // `closeWithOutcome` carries its own guards: refuses anything that isn't a
   // live idle agent-cli row, and records blocked/needs-input as a non-closing
   // wrapupFlag — the same liveness contract every steward close obeys.
+  // An ALREADY-terminal row is not refused: it goes to `registry.resolveOutcome`,
+  // which records the same resolution WITHOUT reviving the row or touching
+  // its real cause of death — that is how a sandbox session that died after
+  // its work was fully pushed stops reading FAILED forever.
   server.tool(
     "session_mark_completed",
-    "Mark a live session as completed — closes it with verdict:'done' and " +
-      "tags it as steward-completed. Use when a human (or an agent's judge) " +
+    "Mark a session as completed — records a Level-2 outcome with verdict:'done' " +
+      "and tags it as steward-completed. Use when a human (or an agent's judge) " +
       "decides the session's work is done — the declared path: no wrapup " +
-      "plan, no classification. One call fuses what would otherwise be " +
-      "`session_wrapup_apply` without a plan: the verdict (with an optional " +
-      "summary + who judged it) is written onto the session's Level-2 " +
-      "`SessionOutcome` and the session is closed gracefully "
-      + "the same way wrapup-apply does, left lazy-resumable (never deleted). " +
+      "plan, no classification. Works on BOTH a live session (closed gracefully, " +
+      "left lazy-resumable) and one that has ALREADY ended (the resolution is " +
+      "recorded on its outcome — never revived, cause of death untouched — so " +
+      "list/recap/UI stop showing it as failed). One call fuses what would " +
+      "otherwise be `session_wrapup_apply` without a plan: the verdict (with an " +
+      "optional summary + who judged it) is written onto the session's Level-2 " +
+      "`SessionOutcome`. " +
       "`verdict:'partial'`/'failed'/'abandoned' close as not-completed " +
-      "(`endedReason:'steward-abandoned'`); `'blocked'`/'needs-input' are " +
-      "NOT completions — the session stays running and the verdict is " +
-      "recorded as a flag instead. Refused (result ok:false) when the " +
-      "session is missing, not agent-cli, already terminal, mid-turn/" +
-      "awaiting input/permission, or has a background task in flight.",
+      "(`endedReason:'steward-abandoned'` on a live row; on an ended row they " +
+      "only label the outcome); `'blocked'`/'needs-input' are NOT completions — " +
+      "the session stays running and the verdict is recorded as a flag instead, " +
+      "so they are refused on an already-terminal session. Refused " +
+      "(result ok:false) when the session is missing, not agent-cli, " +
+      "mid-turn/awaiting input/permission, or has a background task in flight.",
     {
-      sessionId: z.string().min(1).describe("Session id or name — from `session_list`, must be a live agent-cli session."),
+      sessionId: z.string().min(1).describe("Session id or name — from `session_list`; a live agent-cli session, or one that has already ended."),
       verdict: z
         .enum(["done", "abandoned", "partial", "failed", "blocked", "needs-input"])
         .optional()
         .describe(
           "Default 'done'. 'done' closes as completed " +
-            "(`endedReason:'steward-completed'`); 'partial'/'failed'/" +
-            "'abandoned' close as not-completed (steward-abandoned) with the " +
-            "verdict nuance kept on the outcome; 'blocked'/'needs-input' " +
-            "flag instead — the session keeps running.",
+            "(`endedReason:'steward-completed'`) or, on an already-ended session, " +
+            "records the completion (relabelled `operator-completed` on the outcome, " +
+            "the real cause of death kept); 'partial'/'failed'/'abandoned' close as " +
+            "not-completed (steward-abandoned) with the verdict nuance kept on the " +
+            "outcome; 'blocked'/'needs-input' flag instead — a running session only.",
         ),
       summary: z.string().optional().describe("Overrides the outcome's derived summary (trimmed to the same cap as the derived one)."),
       note: z.string().optional().describe("Free-text note explaining the verdict."),
@@ -5651,32 +5659,35 @@ export function registerSessionTools(
         }
       }
       const verdict = input.verdict ?? "done"
-      // A TERMINAL session has no turn left to complete — refuse it as a
-      // distinct error instead of letting closeWithOutcome fold it into the
-      // generic stale refusal, so the caller sees NOT-live vs BUSY as two
-      // different things.
       const status = registry.get(desc.id)?.status ?? desc.status
-      if (status !== "running" && status !== "starting") {
+      const live = status === "running" || status === "starting"
+      // "blocked" / "needs-input" are flags on a session that KEEPS RUNNING —
+      // a terminal row has no turn left to wait on, so there is nothing
+      // honest to record. Refuse those as the distinct not-live error; every
+      // other verdict is a resolution an operator may legitimately declare
+      // about a session that already died.
+      if (!live && (verdict === "blocked" || verdict === "needs-input")) {
         return {
           content: [{ type: "text", text: JSON.stringify({ ok: false, error: "not_live", status, sessionId: desc.id }) }],
           isError: true,
         }
       }
       const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
-      const applied = registry.closeWithOutcome(desc.id, {
+      const resolution = {
         verdict,
         ...(input.summary !== undefined ? { summary: input.summary } : {}),
         ...(input.note !== undefined ? { note: input.note } : {}),
         judgedBy: input.judgedBy ?? "steward-rules",
         source,
         ...pickOutcomeDetail(input, "user"),
-      })
+      } satisfies Parameters<typeof registry.closeWithOutcome>[1]
+      const applied = live ? registry.closeWithOutcome(desc.id, resolution) : registry.resolveOutcome(desc.id, resolution)
       const out = {
         ok: applied,
         sessionId: desc.id,
         verdict,
-        action: verdict === "blocked" || verdict === "needs-input" ? "flagged" : "closed",
-        ...(!applied ? { error: "refused_stale_or_busy" } : {}),
+        action: verdict === "blocked" || verdict === "needs-input" ? "flagged" : live ? "closed" : "resolved",
+        ...(!applied ? { error: live ? "refused_stale_or_busy" : "refused" } : {}),
       }
       return { content: [{ type: "text", text: JSON.stringify(applied ? { ...out, endedReason: registry.get(desc.id)?.endedReason } : out) }] }
     },

@@ -36,6 +36,7 @@
  */
 
 import { loadConfig } from "./config.js"
+import { isOutcomeCompleted } from "./session-outcome.js"
 
 /** Env override for the grace window (seconds). Highest-priority source,
  *  ahead of the `sessions.attentionDelaySec` config field — see
@@ -79,6 +80,12 @@ export interface SessionPresenceInput {
   lastTurnErroredAt?: string
   /** How the session ended, when it has. */
   exitCode?: number
+  /** The recorded outcome (full or compact list projection) — consulted for
+   *  the terminal branch only: a resolution declaring the session's work
+   *  COMPLETE (`isOutcomeCompleted` — `verdict:"done"` / the "Mark as
+   *  completed" relabel) reads `quiet`, not `attention`, however badly the
+   *  process itself died. */
+  outcome?: { verdict?: string; termination?: { reason?: string } }
 }
 
 export interface PresenceOptions {
@@ -121,7 +128,8 @@ export function inAttentionGrace(
  * unclassified, so every consumer can render a total badge from this one
  * function: one that ended badly (`status:"error"` or a non-zero exit) reads
  * `attention` — a crashed/failed row still deserves a glance — while a clean
- * or stopped one reads `quiet`.
+ * or stopped one reads `quiet`, as does a row an operator has since resolved
+ * as completed (`outcome` — `isOutcomeCompleted`).
  */
 export function presenceFor(
   s: SessionPresenceInput,
@@ -154,8 +162,12 @@ export function presenceFor(
 
 /** Terminal-error detection shared by the classifier — `status:"error"` or a
  *  non-zero `exitCode` (a non-zero exit on a `killed` row is how SIGTERM reads,
- *  so exit code alone is NOT enough; status "killed" already maps to quiet). */
+ *  so exit code alone is NOT enough; status "killed" already maps to quiet).
+ *  A recorded resolution declaring the work COMPLETE (`isOutcomeCompleted`)
+ *  wins over both: an operator who has already said "this was fine" is not
+ *  going to act on the amber lane, so the row reads `quiet`. */
 function isTerminalError(s: SessionPresenceInput): boolean {
+  if (isOutcomeCompleted(s.outcome)) return false
   if (s.status === "error") return true
   return s.status === "exited" && typeof s.exitCode === "number" && s.exitCode > 0
 }
