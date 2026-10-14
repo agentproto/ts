@@ -821,4 +821,118 @@ describe("runSandboxReattachPass", () => {
     expect(providerMock.create).not.toHaveBeenCalled()
     registry.shutdown()
   })
+
+  /* ------------------------------------------------------------------ */
+  /* Per-row deadline                                                    */
+  /* ------------------------------------------------------------------ */
+
+  const never = <T,>(): Promise<T> => new Promise<T>(() => {})
+
+  it("a provider whose connect never resolves ends the row failed with the timeout detail, pending 0", async () => {
+    seedDetached([{ id: "s1" }])
+    providerMock.create.mockImplementation(() => never<ReturnType<typeof makeHost>>())
+    const registry = newRegistry()
+    const finish = vi.spyOn(registry, "finishSandboxReattach")
+
+    const summary = await runSandboxReattachPass({
+      registry,
+      resolveSandboxProvider: resolver,
+      timeoutMs: 40,
+    })
+
+    expect(summary).toEqual({ candidates: 1, reattached: 0, gone: 0, ended: 0, failed: 1 })
+    expect(finish).toHaveBeenCalledWith("s1", {
+      kind: "failed",
+      detail: "reattach timed out after 40ms",
+    })
+    // Row falls back to the plain daemon-restart ghost (never left pending).
+    expect(registry.get("s1")).toMatchObject({ status: "killed", endedReason: "daemon-restart" })
+    expect(registry.sandboxSessionStats().reattach).toMatchObject({
+      detachedAtBoot: 1,
+      failed: 1,
+      pending: 0,
+    })
+    registry.shutdown()
+  })
+
+  it("a timed-out row whose provider still says the box is gone ends sandbox_gone", async () => {
+    seedDetached([{ id: "s1" }])
+    providerMock.create.mockImplementation(() => never<ReturnType<typeof makeHost>>())
+    const goneResolver: SandboxProviderResolver = async slug =>
+      slug === "e2b"
+        ? ({
+            provider: { id: "e2b", probe: vi.fn(async () => ({ alive: false })) },
+          } as never)
+        : null
+    // Real boot records the box in the ledger before reattach runs.
+    const now = new Date().toISOString()
+    upsertSandboxLedger({
+      sandboxId: "sbx_1",
+      provider: "e2b",
+      state: "connected",
+      createdAt: now,
+      updatedAt: now,
+    })
+    const registry = newRegistry()
+
+    const summary = await runSandboxReattachPass({
+      registry,
+      resolveSandboxProvider: goneResolver,
+      timeoutMs: 40,
+    })
+
+    expect(summary).toMatchObject({ candidates: 1, gone: 1, failed: 0, reattached: 0 })
+    expect(registry.get("s1")).toMatchObject({ status: "killed", endedReason: "sandbox_gone" })
+    expect(readSandboxLedger().find(e => e.sandboxId === "sbx_1")?.state).toBe("gone")
+    expect(registry.sandboxSessionStats().reattach).toMatchObject({ pending: 0 })
+    registry.shutdown()
+  })
+
+  it("a deadline that fires with the host already open detaches the half-open handle — never kills the box", async () => {
+    seedDetached([{ id: "s1" }])
+    const host = makeHost()
+    providerMock.create.mockResolvedValue(host)
+    // The box probe never answers: only the row deadline can settle this.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => never<Response>()),
+    )
+    const registry = newRegistry()
+
+    const summary = await runSandboxReattachPass({
+      registry,
+      resolveSandboxProvider: resolver,
+      timeoutMs: 40,
+    })
+
+    expect(summary).toMatchObject({ candidates: 1, failed: 1, reattached: 0 })
+    expect(registry.sandboxSessionStats().reattach).toMatchObject({ pending: 0 })
+    // detach() only drops the MCP connection + timers…
+    expect(host.close).toHaveBeenCalled()
+    // …the live box is left exactly as it was.
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(host.kill).not.toHaveBeenCalled()
+    registry.shutdown()
+  })
+
+  it("honours an explicit timeoutMs over the 30s default", async () => {
+    seedDetached([{ id: "s1" }])
+    providerMock.create.mockImplementation(() => never<ReturnType<typeof makeHost>>())
+    const registry = newRegistry()
+
+    const startedAt = Date.now()
+    await runSandboxReattachPass({
+      registry,
+      resolveSandboxProvider: resolver,
+      timeoutMs: 700,
+      concurrency: 1,
+    })
+    const elapsed = Date.now() - startedAt
+
+    // Settles at the configured deadline, not at DEFAULT_REATTACH_TIMEOUT_MS.
+    expect(elapsed).toBeGreaterThanOrEqual(600)
+    expect(elapsed).toBeLessThan(15_000)
+    expect(registry.sandboxSessionStats().reattach).toMatchObject({ pending: 0 })
+    registry.shutdown()
+  }, 20_000)
 })
