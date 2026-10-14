@@ -120,9 +120,11 @@ import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
-import { createTurnRetryController } from "./turn-retry.js"
+import { createTurnRetryController, type MigrateSessionFn } from "./turn-retry.js"
 import { createModelCooldowns } from "./model-cooldowns.js"
 import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
+import { migrateSandboxSession } from "./session-migrate.js"
+import { createCheckpointSources } from "./checkpoint-extract.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
@@ -2401,6 +2403,37 @@ export async function createGateway(
   // map (the free-tier limit is per model per IP): the controller fills it and
   // `turnRetry.rotate` reads it for every session; read-only in `daemon_health`.
   const modelCooldowns = createModelCooldowns()
+  // `turnRetry.action: "migrate"`'s orchestration arm: PR 2's
+  // `migrateSandboxSession`, called in-process (no MCP round-trip) with the
+  // same spawn deps the `session_migrate` tool threads. Absent without an
+  // adapter resolver — a migrate decision then falls back to a normal retry
+  // with a notice (turn-retry.ts's "no migration orchestrator" path).
+  // `supervisor` / `taskLedger` / `orchestratorInjector` are declared further
+  // down this file, so the closure reads them at CALL time — a turn-retry
+  // migration only ever fires long after boot.
+  const turnRetryMigrateSession: MigrateSessionFn | undefined = opts.resolveAgentAdapter
+    ? prev =>
+        migrateSandboxSession(
+          {
+            registry: sessions,
+            resolveAgentAdapter: opts.resolveAgentAdapter!,
+            daemonMcpUrl,
+            ...(webhookNotifier ? { webhookNotifier } : {}),
+            resolveSandboxProvider: resolveSandboxProviderResolved,
+            ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+            ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+            ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+            ...(orchestratorInjector ? { buildOrchestratorMcp: orchestratorInjector } : {}),
+          },
+          prev,
+          {
+            sources: createCheckpointSources({
+              ...(supervisor ? { supervisor } : {}),
+              ...(taskLedger ? { taskLedger } : {}),
+            }),
+          },
+        )
+    : undefined
   const turnRetryController = createTurnRetryController({
     registry: sessions,
     sessionEvents,
@@ -2409,6 +2442,7 @@ export async function createGateway(
       getProfile: getAuthProfile,
       ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
     }),
+    ...(turnRetryMigrateSession ? { migrateSession: turnRetryMigrateSession } : {}),
   })
 
   // Completion-policy supervisor — watches sessions and runs shell gates.
