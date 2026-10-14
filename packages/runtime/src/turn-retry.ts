@@ -39,6 +39,15 @@
  * back to today's same-model behaviour and says so in the `[turn-retry]`
  * notice. v1 switches the model on the session's current profile only.
  *
+ * Migration (`turnRetry.action: "migrate"`): a matching failure on a SANDBOX
+ * session moves the session to a fresh box — a new IP, the same workspace
+ * branch, the transcript carried over — via the injected `migrateSession`
+ * orchestration (PR 2's `session_migrate`, called in-process, not over MCP),
+ * then re-prompts "continue" on the migrated session. A non-sandbox session
+ * and a spent `maxMigrations` cap both fall back to a normal retry, with a
+ * `[turn-retry]` notice explaining why; a migration that fails leaves the old
+ * session untouched and falls back to a normal retry as well.
+ *
  * NEVER retries: an interrupted turn (user Stop, `interrupt:true` prompt), a
  * killed / exited / errored session (kill, `maxCostUsd` cost-cap kill — the
  * process-death path belongs to `restartPolicy`), a session with a failed
@@ -53,6 +62,7 @@
 
 import type { SessionDescriptor } from "./sessions.js"
 import type { SessionEventBus, SessionTurnRetryEvent } from "./session-event-bus.js"
+import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
 import {
@@ -254,6 +264,71 @@ export function buildContinuationPrompt(error: string | undefined): string {
   return `Continue where you stopped; the previous turn failed with: ${error ?? "an unknown provider error"}`
 }
 
+/** Does this row run in a sandbox box (rather than as a local subprocess)?
+ *  A `device:` box also says `remote`, but the deep pre-flight (work branch,
+ *  workspace remote, checkpoint) is `assessMigration`'s job — this is only
+ *  the "CAN it be a box migration at all" gate, matching the class of
+ *  session `turnRetry.action: "migrate"` is written for. */
+export function isSandboxSession(desc: Pick<SessionDescriptor, "kind" | "remote">): boolean {
+  return desc.kind === "agent-cli" && desc.remote === true
+}
+
+/** The parts of a `turnRetry` rule that steer the action decision. */
+export type TurnRetryActionRule = Pick<TurnRetryPolicy, "action" | "maxRetries" | "maxMigrations">
+
+/** What a retry-eligible failure becomes once the action is applied. */
+export type TurnRetryActionDecision =
+  /** Re-prompt the same live session after backoff (the default action, or a
+   *  migrate-action fallback — `note` then explains the downgrade). */
+  | { action: "retry"; errorClass: TurnRetryClass; attempt: number; delayMs: number; error?: string; note?: string }
+  /** Move the sandbox session to a fresh box and re-prompt it there. */
+  | { action: "migrate"; errorClass: TurnRetryClass; attempt: number; error?: string }
+  /** Stop: no migration left AND no retry budget left. */
+  | { action: "give-up"; errorClass: TurnRetryClass; attempts: number; error?: string }
+
+/**
+ * Pure decision for a retry-ELIGIBLE failure (one `decideTurnRetry` already
+ * returned `retry` — every never-retry rule lives there) once the policy's
+ * `action` is applied:
+ *
+ *  - `action: "retry"` (the default) passes `base` through unchanged — an
+ *    existing policy behaves exactly as before;
+ *  - `action: "migrate"` on a SANDBOX session under the `maxMigrations` cap
+ *    migrates (`attempt` is the 1-based migration number);
+ *  - `action: "migrate"` on a non-sandbox session, or once the cap is spent,
+ *    falls back to the normal retry/give-up path — `retry` while
+ *    `counters.attempts` is inside `maxRetries` (with a `note` the wiring
+ *    stamps into the transcript), `give-up` once it is spent.
+ */
+export function decideTurnRetryAction(
+  base: Extract<TurnRetryDecision, { action: "retry" }>,
+  rule: TurnRetryActionRule,
+  sessionKind: Pick<SessionDescriptor, "kind" | "remote">,
+  counters: { attempts: number; migrations: number },
+): TurnRetryActionDecision {
+  if (rule.action !== "migrate") return base
+  if (!isSandboxSession(sessionKind)) {
+    return {
+      ...base,
+      note:
+        'turnRetry action "migrate" needs a sandbox session — this session runs on the host, ' +
+        "so it is retried where it is",
+    }
+  }
+  if (counters.migrations >= rule.maxMigrations) {
+    if (counters.attempts >= rule.maxRetries) {
+      return { action: "give-up", errorClass: base.errorClass, attempts: counters.attempts, error: base.error }
+    }
+    return {
+      ...base,
+      note:
+        `migration cap reached (${counters.migrations}/${rule.maxMigrations}) — ` +
+        "retrying on the current box",
+    }
+  }
+  return { action: "migrate", errorClass: base.errorClass, attempt: counters.migrations + 1, error: base.error }
+}
+
 /** Turn-end reasons that are NOT a clean completion — they never reset the
  *  retry counter (our own stall interrupt ends a turn as `cancelled`/
  *  `aborted`, and must not wipe the count it is incrementing). */
@@ -273,6 +348,7 @@ export interface TurnRetryRegistry {
     id: string,
     patch: {
       turnRetryAttempts?: number | null
+      turnMigrations?: number | null
       lastTurnRetryAt?: string | null
       nextTurnRetryAt?: string | null
     },
@@ -322,6 +398,10 @@ interface PendingRetry {
   turnsCompleted?: number
   /** stall guard: the row must still carry this very stall. */
   stalledSinceMs?: number
+  /** `migrate` (box migration, `turnRetry.action`) instead of an in-place
+   *  retry. `attempt` then counts migrations, booked against
+   *  `turnMigrations` rather than `turnRetryAttempts`. */
+  mode?: "retry" | "migrate"
 }
 
 export interface TurnRetryController {
@@ -329,6 +409,12 @@ export interface TurnRetryController {
   /** Ids with a scheduled-but-unsent retry (for tests/diagnostics). */
   pendingIds(): string[]
 }
+
+/** Move a sandbox session onto a fresh box — the in-process arm of PR 2's
+ *  `session_migrate` orchestration (`migrateSandboxSession`), injected here
+ *  so the controller keeps only a narrow structural dependency. Throws on a
+ *  session that cannot be migrated (the old session is then left untouched). */
+export type MigrateSessionFn = (prev: SessionDescriptor) => Promise<MigrateSandboxSessionResult>
 
 export function createTurnRetryController(opts: {
   registry: TurnRetryRegistry
@@ -338,6 +424,9 @@ export function createTurnRetryController(opts: {
   cooldowns?: ModelCooldowns
   /** Extra async eligibility gate for rotation targets (adapter/route + profile allow-list). */
   checkRotationTarget?: RotationTargetCheck
+  /** Box-migration orchestration for `turnRetry.action: "migrate"`. Absent ⇒ a
+   *  migration decision falls back to a normal retry with a notice. */
+  migrateSession?: MigrateSessionFn
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   log?: (line: string) => void
@@ -365,12 +454,16 @@ export function createTurnRetryController(opts: {
 
   const emit = (
     desc: SessionDescriptor,
-    ev: Omit<SessionTurnRetryEvent, "type" | "sessionId" | "label" | "ts" | "maxRetries">,
+    ev: Omit<
+      SessionTurnRetryEvent,
+      "type" | "sessionId" | "label" | "ts" | "maxRetries" | "maxMigrations"
+    >,
   ): void => {
     sessionEvents.emit({
       type: "session:turn-retry",
       sessionId: desc.id,
       maxRetries: desc.turnRetry?.maxRetries ?? 0,
+      maxMigrations: desc.turnRetry?.maxMigrations ?? 0,
       ...ev,
       ...(desc.label ? { label: desc.label } : {}),
       ts: new Date(now()).toISOString(),
@@ -386,7 +479,12 @@ export function createTurnRetryController(opts: {
     const desc = registry.get(id)
     if (desc) {
       emit(desc, { phase: "cancelled", errorClass: p.errorClass, attempt: p.attempt, skipReason: why })
-      registry.recordNotice(id, `[turn-retry] cancelled retry ${p.attempt}: ${why}`)
+      registry.recordNotice(
+        id,
+        p.mode === "migrate"
+          ? `[turn-retry] cancelled migration ${p.attempt}: ${why}`
+          : `[turn-retry] cancelled retry ${p.attempt}: ${why}`,
+      )
     }
   }
 
@@ -448,6 +546,156 @@ export function createTurnRetryController(opts: {
     same(rejected.join("; ") || "none listed")
   }
 
+  /**
+   * Send the continuation prompt and record the outcome. The attempt must
+   * already be booked by the caller; `rollback` undoes that booking when
+   * admission is rejected, `extra` annotates the transcript notice (used when
+   * a migration fell back to retrying on the current box).
+   */
+  const sendContinuation = (
+    id: string,
+    desc: SessionDescriptor,
+    p: PendingRetry,
+    attempt: number,
+    opts: { rollback: () => void; extra?: string },
+  ): void => {
+    registry
+      .enqueuePrompt(id, buildContinuationPrompt(p.error), {
+        source: TURN_RETRY_PROMPT_SOURCE,
+        origin: "daemon",
+        ...(p.kind === "stall" ? { interrupt: true } : {}),
+      })
+      .then(
+        () => {
+          // Admission succeeded — only NOW is the retry actually "sent" (and
+          // only now does the attempt it booked stick).
+          const fresh = registry.get(id) ?? desc
+          emit(fresh, {
+            phase: "sent",
+            errorClass: p.errorClass,
+            attempt,
+            ...(p.error ? { error: p.error } : {}),
+          })
+          registry.recordNotice(
+            id,
+            `[turn-retry] retry ${attempt}/${fresh.turnRetry?.maxRetries ?? "?"} (${p.errorClass}) — sending continuation prompt` +
+              (opts.extra ? ` (${opts.extra})` : ""),
+          )
+        },
+        err => {
+          // Admission REJECTED (concurrent prompt, kill, failed resume): the
+          // retry never happened — roll the booking back so it costs nothing
+          // against `maxRetries`, and report it as a cancellation, never `sent`.
+          const msg = err instanceof Error ? err.message : String(err)
+          log(`[turn-retry] ${id}: continuation prompt rejected: ${msg}`)
+          opts.rollback()
+          registry.recordNotice(id, `[turn-retry] cancelled retry ${attempt}: continuation prompt rejected: ${msg}`)
+          const fresh = registry.get(id) ?? desc
+          emit(fresh, {
+            phase: "cancelled",
+            errorClass: p.errorClass,
+            attempt,
+            skipReason: `continuation prompt rejected: ${msg}`,
+            ...(p.error ? { error: p.error } : {}),
+          })
+        },
+      )
+  }
+
+  /**
+   * `turnRetry.action: "migrate"` — move the sandbox session to a fresh box
+   * (new IP) through the injected orchestration, then re-prompt "continue" on
+   * the MIGRATED session. Any failure (no orchestrator wired, a session that
+   * cannot be migrated, a refused spawn) leaves the old session untouched and
+   * falls back to a normal retry on the current box, so a migrate rule can
+   * never strand a session: the migration is booked either way (a spent
+   * attempt still counts against the cap, so a broken migration path cannot
+   * loop), and the fallback books a normal retry attempt.
+   */
+  const fireMigration = async (
+    id: string,
+    p: PendingRetry,
+    desc: SessionDescriptor,
+    nowIso: string,
+  ): Promise<void> => {
+    const cap = desc.turnRetry?.maxMigrations ?? 0
+    const prevAttempts = desc.turnRetryAttempts
+    const prevLastTurnRetryAt = desc.lastTurnRetryAt
+    const fallbackToRetry = (why: string): void => {
+      emit(desc, {
+        phase: "migrate-failed",
+        errorClass: p.errorClass,
+        attempt: p.attempt,
+        skipReason: why,
+        ...(p.error ? { error: p.error } : {}),
+      })
+      registry.recordNotice(id, `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}) — retrying on the current box`)
+      const attempt = (prevAttempts ?? 0) + 1
+      registry.patchTurnRetry(id, { turnRetryAttempts: attempt, lastTurnRetryAt: nowIso })
+      sendContinuation(id, desc, p, attempt, {
+        rollback: () =>
+          registry.patchTurnRetry(id, {
+            turnRetryAttempts: prevAttempts ?? null,
+            lastTurnRetryAt: prevLastTurnRetryAt ?? null,
+          }),
+        extra: "after a migration that did not run",
+      })
+    }
+
+    const migrate = opts.migrateSession
+    if (!migrate) return fallbackToRetry("no migration orchestrator is configured")
+
+    // Book the migration BEFORE it runs: a sandbox boot takes a while, and the
+    // counter must be spent whether the migration lands or fails.
+    registry.patchTurnRetry(id, { turnMigrations: p.attempt, lastTurnRetryAt: nowIso })
+    let fresh: MigrateSandboxSessionResult
+    try {
+      fresh = await migrate(desc)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log(`[turn-retry] ${id}: migration failed: ${msg}`)
+      return fallbackToRetry(`migration failed: ${msg}`)
+    }
+
+    const migratedTo = fresh.descriptor.id
+    // Carry the migration counter onto the NEW session: the old row is
+    // retired, and without this every migration would reset the cap to zero
+    // — a box that keeps hitting rate limits would migrate forever. Same for
+    // the retry budget (`turnRetryAttempts`) so the fallback path on the new
+    // box does not start a fresh maxRetries either.
+    registry.patchTurnRetry(migratedTo, {
+      turnMigrations: p.attempt,
+      turnRetryAttempts: prevAttempts ?? null,
+    })
+    emit(desc, {
+      phase: "migrated",
+      errorClass: p.errorClass,
+      attempt: p.attempt,
+      migratedTo,
+      ...(p.error ? { error: p.error } : {}),
+    })
+    registry.recordNotice(
+      id,
+      `[turn-retry] migrated ${p.attempt}/${cap} (${p.errorClass}) — the session moved to ${migratedTo}; sending continuation prompt`,
+    )
+    try {
+      await registry.enqueuePrompt(migratedTo, buildContinuationPrompt(p.error), {
+        source: TURN_RETRY_PROMPT_SOURCE,
+        origin: "daemon",
+      })
+      registry.recordNotice(
+        migratedTo,
+        `[turn-retry] this session continues ${id} after a box migration (${p.errorClass})`,
+      )
+    } catch (err) {
+      // The new box is up; if it refuses the continuation prompt the session
+      // still lives there (the old one is gone), so this is a log + notice.
+      const msg = err instanceof Error ? err.message : String(err)
+      log(`[turn-retry] ${id}: continuation prompt on the migrated session ${migratedTo} rejected: ${msg}`)
+      registry.recordNotice(migratedTo, `[turn-retry] continuation prompt rejected: ${msg}`)
+    }
+  }
+
   const fire = (id: string, p: PendingRetry): void => {
     if (pending.get(id) !== p) return
     pending.delete(id)
@@ -466,10 +714,19 @@ export function createTurnRetryController(opts: {
             : undefined
     if (stale) {
       emit(desc, { phase: "cancelled", errorClass: p.errorClass, attempt: p.attempt, skipReason: stale })
-      registry.recordNotice(id, `[turn-retry] cancelled retry ${p.attempt}: ${stale}`)
+      registry.recordNotice(
+        id,
+        p.mode === "migrate"
+          ? `[turn-retry] cancelled migration ${p.attempt}: ${stale}`
+          : `[turn-retry] cancelled retry ${p.attempt}: ${stale}`,
+      )
       return
     }
     const nowIso = new Date(now()).toISOString()
+    if (p.mode === "migrate") {
+      void fireMigration(id, p, desc, nowIso)
+      return
+    }
     const prevAttempts = desc.turnRetryAttempts
     const prevLastTurnRetryAt = desc.lastTurnRetryAt
     // Book the attempt BEFORE sending: a continuation turn that itself fails
@@ -479,47 +736,13 @@ export function createTurnRetryController(opts: {
     rotateIfConfigured(desc, p)
       .catch(err => log(`[turn-retry] ${id}: rotation failed: ${err instanceof Error ? err.message : String(err)}`))
       .then(() =>
-        registry.enqueuePrompt(id, buildContinuationPrompt(p.error), {
-          source: TURN_RETRY_PROMPT_SOURCE,
-          origin: "daemon",
-          ...(p.kind === "stall" ? { interrupt: true } : {}),
+        sendContinuation(id, desc, p, p.attempt, {
+          rollback: () =>
+            registry.patchTurnRetry(id, {
+              turnRetryAttempts: prevAttempts ?? null,
+              lastTurnRetryAt: prevLastTurnRetryAt ?? null,
+            }),
         }),
-      )
-      .then(
-        () => {
-          // Admission succeeded — only NOW is the retry actually "sent" (and
-          // only now does the attempt it booked stick).
-          emit(desc, {
-            phase: "sent",
-            errorClass: p.errorClass,
-            attempt: p.attempt,
-            ...(p.error ? { error: p.error } : {}),
-          })
-          registry.recordNotice(
-            id,
-            `[turn-retry] retry ${p.attempt}/${desc.turnRetry?.maxRetries ?? "?"} (${p.errorClass}) — sending continuation prompt`,
-          )
-        },
-        err => {
-          // Admission REJECTED (concurrent prompt, kill, failed resume): the
-          // retry never happened — roll the booking back so it costs nothing
-          // against `maxRetries`, and report it as a cancellation, never `sent`.
-          const msg = err instanceof Error ? err.message : String(err)
-          log(`[turn-retry] ${id}: continuation prompt rejected: ${msg}`)
-          registry.patchTurnRetry(id, {
-            turnRetryAttempts: prevAttempts ?? null,
-            lastTurnRetryAt: prevLastTurnRetryAt ?? null,
-          })
-          registry.recordNotice(id, `[turn-retry] cancelled retry ${p.attempt}: continuation prompt rejected: ${msg}`)
-          const fresh = registry.get(id) ?? desc
-          emit(fresh, {
-            phase: "cancelled",
-            errorClass: p.errorClass,
-            attempt: p.attempt,
-            skipReason: `continuation prompt rejected: ${msg}`,
-            ...(p.error ? { error: p.error } : {}),
-          })
-        },
       )
   }
 
@@ -543,55 +766,101 @@ export function createTurnRetryController(opts: {
     if (!desc?.turnRetry) return
     const decision = decideTurnRetry(desc, trigger, { halted: halted.has(id) })
     if (decision.action !== "ignore") noteThrottle(desc, trigger, decision.errorClass)
-    switch (decision.action) {
+    // `turnRetry.action: "migrate"` composes on top of the plain decision: a
+    // retry-eligible failure on a sandbox session migrates the session to a
+    // fresh box instead, and every other case falls back to the normal path.
+    const plan =
+      decision.action === "retry"
+        ? decideTurnRetryAction(decision, desc.turnRetry, desc, {
+            attempts: desc.turnRetryAttempts ?? 0,
+            migrations: desc.turnMigrations ?? 0,
+          })
+        : decision
+    // The base backoff stays the schedule for a migration too (the action
+    // decision deliberately carries no delay of its own).
+    const baseDelayMs = decision.action === "retry" ? decision.delayMs : 0
+    switch (plan.action) {
       case "ignore":
         return
       case "skip":
         emit(desc, {
           phase: "skipped",
-          errorClass: decision.errorClass,
+          errorClass: plan.errorClass,
           attempt: desc.turnRetryAttempts ?? 0,
-          skipReason: decision.skipReason,
-          ...(decision.error ? { error: decision.error } : {}),
+          skipReason: plan.skipReason,
+          ...(plan.error ? { error: plan.error } : {}),
         })
-        registry.recordNotice(id, `[turn-retry] not retrying: ${decision.skipReason}`)
+        registry.recordNotice(id, `[turn-retry] not retrying: ${plan.skipReason}`)
         return
       case "exhausted":
+      case "give-up":
         emit(desc, {
           phase: "exhausted",
-          errorClass: decision.errorClass,
-          attempt: decision.attempts,
-          ...(decision.error ? { error: decision.error } : {}),
+          errorClass: plan.errorClass,
+          attempt: plan.attempts,
+          ...(plan.error ? { error: plan.error } : {}),
         })
         registry.recordNotice(
           id,
-          `[turn-retry] gave up after ${decision.attempts} consecutive retries (${decision.errorClass}) — leaving the session idle`,
+          `[turn-retry] gave up after ${plan.attempts} consecutive retries (${plan.errorClass}) — leaving the session idle`,
         )
         return
       case "retry": {
+        if (plan.note) registry.recordNotice(id, `[turn-retry] no migration: ${plan.note}`)
         const p: PendingRetry = {
           kind: trigger.kind,
-          errorClass: decision.errorClass,
-          attempt: decision.attempt,
-          ...(decision.error ? { error: decision.error } : {}),
+          errorClass: plan.errorClass,
+          attempt: plan.attempt,
+          ...(plan.error ? { error: plan.error } : {}),
           ...(trigger.kind === "turn-end"
             ? { turnsCompleted: desc.turnsCompleted ?? 0 }
             : { stalledSinceMs: desc.stalledSinceMs }),
           timer: undefined as unknown as ReturnType<typeof setTimeout>,
         }
-        p.timer = setTimer(() => fire(id, p), decision.delayMs)
+        p.timer = setTimer(() => fire(id, p), plan.delayMs)
         pending.set(id, p)
-        registry.patchTurnRetry(id, { nextTurnRetryAt: new Date(now() + decision.delayMs).toISOString() })
+        registry.patchTurnRetry(id, { nextTurnRetryAt: new Date(now() + plan.delayMs).toISOString() })
         emit(desc, {
           phase: "scheduled",
-          errorClass: decision.errorClass,
-          attempt: decision.attempt,
-          delayMs: decision.delayMs,
-          ...(decision.error ? { error: decision.error } : {}),
+          errorClass: plan.errorClass,
+          attempt: plan.attempt,
+          delayMs: plan.delayMs,
+          ...(plan.error ? { error: plan.error } : {}),
         })
         registry.recordNotice(
           id,
-          `[turn-retry] ${decision.errorClass}: retry ${decision.attempt}/${desc.turnRetry.maxRetries} in ${Math.round(decision.delayMs / 1000)}s`,
+          `[turn-retry] ${plan.errorClass}: retry ${plan.attempt}/${desc.turnRetry.maxRetries} in ${Math.round(plan.delayMs / 1000)}s`,
+        )
+        return
+      }
+      case "migrate": {
+        // The delay comes from the base decision (the pure action decision
+        // carries only the migration number); the counter booked is
+        // `turnMigrations`, not `turnRetryAttempts`.
+        const p: PendingRetry = {
+          kind: trigger.kind,
+          errorClass: plan.errorClass,
+          attempt: plan.attempt,
+          mode: "migrate",
+          ...(plan.error ? { error: plan.error } : {}),
+          ...(trigger.kind === "turn-end"
+            ? { turnsCompleted: desc.turnsCompleted ?? 0 }
+            : { stalledSinceMs: desc.stalledSinceMs }),
+          timer: undefined as unknown as ReturnType<typeof setTimeout>,
+        }
+        p.timer = setTimer(() => fire(id, p), baseDelayMs)
+        pending.set(id, p)
+        registry.patchTurnRetry(id, { nextTurnRetryAt: new Date(now() + baseDelayMs).toISOString() })
+        emit(desc, {
+          phase: "scheduled",
+          errorClass: plan.errorClass,
+          attempt: plan.attempt,
+          delayMs: baseDelayMs,
+          ...(plan.error ? { error: plan.error } : {}),
+        })
+        registry.recordNotice(
+          id,
+          `[turn-retry] ${plan.errorClass}: migrate ${plan.attempt}/${desc.turnRetry.maxMigrations} to a fresh box in ${Math.round(baseDelayMs / 1000)}s`,
         )
         return
       }
@@ -616,8 +885,13 @@ export function createTurnRetryController(opts: {
         return
       }
       const clean = !ev.interrupted && !NON_CLEAN_REASONS.has(ev.reason ?? "") && ev.error === undefined
-      if (clean && (desc.turnRetryAttempts !== undefined || desc.lastTurnRetryAt !== undefined)) {
-        registry.patchTurnRetry(ev.sessionId, { turnRetryAttempts: null, lastTurnRetryAt: null })
+      if (
+        clean &&
+        (desc.turnRetryAttempts !== undefined ||
+          desc.lastTurnRetryAt !== undefined ||
+          desc.turnMigrations !== undefined)
+      ) {
+        registry.patchTurnRetry(ev.sessionId, { turnRetryAttempts: null, turnMigrations: null, lastTurnRetryAt: null })
       }
     }),
     sessionEvents.on("session:stalled", ev => {
