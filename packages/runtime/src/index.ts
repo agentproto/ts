@@ -141,7 +141,11 @@ import {
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { wireRetirementCleanup } from "./retirement-cleanup.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
-import { runSandboxReattachPass, type SandboxReattachSummary } from "./sandbox-reattach.js"
+import {
+  DEFAULT_REATTACH_TIMEOUT_MS,
+  runSandboxReattachPass,
+  type SandboxReattachSummary,
+} from "./sandbox-reattach.js"
 import {
   runContinueOnBootPass,
   type ContinueOnBootSummary,
@@ -1292,6 +1296,16 @@ function bootResumeConcurrency(): number {
   const raw = process.env.AGENTPROTO_RESUME_CONCURRENCY
   const parsed = raw ? Number.parseInt(raw, 10) : NaN
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 4
+}
+
+/** Per-row deadline for the boot sandbox reattach pass (connect + daemon
+ *  connect + probe) — see `runSandboxReattachPass`'s `timeoutMs`. Default
+ *  {@link DEFAULT_REATTACH_TIMEOUT_MS}; override via
+ *  AGENTPROTO_REATTACH_TIMEOUT_MS, mirroring AGENTPROTO_RESUME_CONCURRENCY. */
+function bootSandboxReattachTimeoutMs(): number {
+  const raw = process.env.AGENTPROTO_REATTACH_TIMEOUT_MS
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REATTACH_TIMEOUT_MS
 }
 
 /** Build the dead-session restart hook the routing paths share (PR C).
@@ -4457,6 +4471,7 @@ export async function createGateway(
       return runSandboxReattachPass({
         registry: sessions,
         resolveSandboxProvider: resolveSandboxProviderResolved,
+        timeoutMs: bootSandboxReattachTimeoutMs(),
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },

@@ -328,28 +328,48 @@ export interface DaemonHealthInfo {
   }
 }
 
-/** After a restart: wait for the booted daemon's reattach pass to settle, then
- *  summarise it. Returns "" when nothing was detached. Detach, not kill: the
- *  provider box and its agent keep running while the daemon is down, and the
- *  next boot re-attaches to the same session ids. */
+/**
+ * Wall-clock cap on `restart`'s wait for the booted daemon's reattach pass:
+ * the runtime's per-row deadline (30s, `DEFAULT_REATTACH_TIMEOUT_MS` in
+ * `@agentproto/runtime`) plus a margin for rows beyond the default
+ * concurrency. Replaces the old `120 × 500ms poll + 800ms fetch` budget
+ * (~2.5 min of silence). Past this the CLI stops waiting — the pass keeps
+ * running inside the daemon and `agentproto daemon status` shows the tally.
+ */
+export const REATTACH_WAIT_DEFAULT_MS = 60_000
+
+/** After a restart: announce the reattach pass immediately, wait (bounded) for
+ *  the booted daemon's pass to settle, then summarise it. Returns "" when
+ *  nothing was detached. Detach, not kill: the provider box and its agent keep
+ *  running while the daemon is down, and the next boot re-attaches to the same
+ *  session ids. */
 export async function awaitSandboxReattach(
   health: HealthFetchFn,
   detachedBefore: number,
   initial: DaemonHealthInfo | null,
-  attempts = 120,
-  delayMs = 500,
+  maxWaitMs = REATTACH_WAIT_DEFAULT_MS,
+  pollMs = 500,
 ): Promise<string> {
-  if (detachedBefore <= 0 && !initial?.sandboxSessions?.reattach.detachedAtBoot) return ""
+  const detached = initial?.sandboxSessions?.reattach.detachedAtBoot || detachedBefore
+  if (detached <= 0) return ""
+  // Say what is happening NOW — the old pass sat silent for its whole budget.
+  if (initial?.sandboxSessions?.reattach.pending !== 0) {
+    process.stdout.write(
+      `  sandbox:   re-attaching ${detached} sandbox session${detached === 1 ? "" : "s"}…\n`,
+    )
+  }
+  const deadline = Date.now() + Math.max(0, maxWaitMs)
   let info = initial
-  for (let i = 0; i < attempts; i++) {
+  for (;;) {
     const r = info?.sandboxSessions?.reattach
     if (r && r.pending === 0) break
-    await new Promise(res => setTimeout(res, delayMs))
+    if (Date.now() >= deadline) break
+    await new Promise(res => setTimeout(res, pollMs))
     info = (await health()) ?? info
   }
   const r = info?.sandboxSessions?.reattach
   if (!r) {
-    return `  sandbox:   ${detachedBefore} detached; re-attach status unavailable\n`
+    return `  sandbox:   ${detached} detached; re-attach status unavailable\n`
   }
   const total = r.detachedAtBoot
   const extras = [
@@ -357,10 +377,40 @@ export async function awaitSandboxReattach(
     r.failed > 0 ? `${r.failed} unreachable` : "",
     r.pending > 0 ? `${r.pending} still pending` : "",
   ].filter(Boolean)
-  return (
+  let out =
     `  sandbox:   re-attached ${r.reattached}/${total} sandbox session${total === 1 ? "" : "s"}` +
     `${extras.length > 0 ? ` (${extras.join(", ")})` : ""}\n`
-  )
+  if (r.pending > 0) {
+    // Out of budget: the pass is still running in the daemon — say so and say
+    // where to watch it instead of leaving a bare "pending" hanging.
+    out += `  sandbox:   re-attach pass continues in the daemon — check \`agentproto daemon status\`\n`
+  }
+  return out
+}
+
+/**
+ * The `sandbox:` tally line for `daemon status` — attached sessions plus the
+ * boot reattach progress when the daemon reports one. `null` when there is
+ * nothing sandbox-related to show.
+ */
+export function renderSandboxTally(
+  sessions: NonNullable<DaemonHealthInfo["sandboxSessions"]>,
+): string | null {
+  if (sessions.attached <= 0 && sessions.reattach.detachedAtBoot <= 0) return null
+  const parts = [`${sessions.attached} attached`]
+  const r = sessions.reattach
+  if (r.detachedAtBoot > 0) {
+    const extras = [
+      r.gone > 0 ? `${r.gone} gone` : "",
+      r.failed > 0 ? `${r.failed} unreachable` : "",
+      r.pending > 0 ? `${r.pending} still pending` : "",
+    ].filter(Boolean)
+    parts.push(
+      `re-attached ${r.reattached}/${r.detachedAtBoot} sandbox session${r.detachedAtBoot === 1 ? "" : "s"}` +
+        `${extras.length > 0 ? ` (${extras.join(", ")})` : ""}`,
+    )
+  }
+  return `  sandbox:   ${parts.join(" · ")}\n`
 }
 
 /** " (workspace abc1234, built …)" — or "" when the daemon predates the
@@ -718,6 +768,7 @@ export async function runRestart(
   probeAttempts = 20,
   syncPath: PathSyncFn = selfHealDaemonPath,
   reattachPollMs = 500,
+  reattachWaitMs = REATTACH_WAIT_DEFAULT_MS,
 ): Promise<number> {
   await syncPath(run).catch(() => false)
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
@@ -739,7 +790,13 @@ export async function runRestart(
   }
   const booted = await waitForHealth(health, probeAttempts, 300)
   printLifecycleInfo("restarted", booted)
-  const reattachLine = await awaitSandboxReattach(health, detaching, booted, 120, reattachPollMs)
+  const reattachLine = await awaitSandboxReattach(
+    health,
+    detaching,
+    booted,
+    reattachWaitMs,
+    reattachPollMs,
+  )
   if (reattachLine) process.stdout.write(reattachLine)
   return 0
 }
@@ -859,6 +916,7 @@ async function runStatus(): Promise<number> {
   let health: string | null = null
   let release: string | null = null
   let buildSource: ReleaseBuildSource = null
+  let sandboxSessions: DaemonHealthInfo["sandboxSessions"] | undefined
   try {
     const res = await fetch(`http://${bind}:${port}/health`, {
       signal: AbortSignal.timeout(800),
@@ -869,6 +927,7 @@ async function runStatus(): Promise<number> {
         uptimeMs?: number
         version?: string | null
         build?: DaemonHealthInfo["build"]
+        sandboxSessions?: DaemonHealthInfo["sandboxSessions"]
       }
       health =
         `ok${body.version ? ` · v${body.version}` : ""}${renderBuild(body.build)}` +
@@ -877,6 +936,7 @@ async function runStatus(): Promise<number> {
       // the install channel + whether a newer release exists.
       buildSource = body.build?.source === "workspace" ? "workspace" : "tarball"
       release = await renderReleaseStatus(body.version ?? null, buildSource)
+      sandboxSessions = body.sandboxSessions
     } else {
       health = `HTTP ${res.status}`
     }
@@ -892,6 +952,7 @@ async function runStatus(): Promise<number> {
       (stateMatch ? ` · state=${stateMatch[1]}` : "") +
       `\n` +
       `  /health:   ${health}  (http://${bind}:${port})\n` +
+      (sandboxSessions ? (renderSandboxTally(sandboxSessions) ?? "") : "") +
       `  release:   ${release ?? "unknown"}\n` +
       `  config:    ${CONFIG_FILE_PATH()}\n` +
       `  logs:      ${p.log}\n`,
