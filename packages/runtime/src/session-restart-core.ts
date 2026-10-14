@@ -1210,6 +1210,13 @@ export async function restartAgentSession(
   // `resolveSandboxSecret`) are module-private in session-spawn.ts, so
   // byte-equivalent copies live at the bottom of this file — keep in sync
   // by inspection, same as the auth-resolution block above.
+  //
+  // In-box paths of the prior session's full transcript file(s) written
+  // during this restart (restart-handoff.ts) — both the re-attach and the
+  // fresh-box paths fill it in; the handoff assembly below consumes it once
+  // `desc` exists. Declared above the closures that assign it so the
+  // dependency is visible at a glance.
+  let boxPriorTranscriptPaths: string[] = []
   const spawnInSandbox = async (
     boxSandboxId: string,
     restartedSessionId: string,
@@ -1300,9 +1307,23 @@ export async function restartAgentSession(
     // re-attached box (outside the repo checkout, so the delivery hook never
     // commits it) — the handoff below points the fresh adapter at it. A
     // failure is not fatal; the handoff falls back to the old digest.
-    boxPriorTranscriptPaths = (
-      await writeBoxPriorTranscripts(host, prev, registry).catch(() => undefined)
-    )?.paths ?? []
+    const priorTranscripts = await writeBoxPriorTranscripts(host, prev, registry).catch(
+      err => {
+        console.warn(
+          `restartAgentSession: writing the prior transcript of ${prev.id} into box ` +
+            `${host.sandboxId} failed — ${err instanceof Error ? err.message : String(err)} ` +
+            "(the handoff will fall back to the digest)",
+        )
+        return undefined
+      },
+    )
+    boxPriorTranscriptPaths = priorTranscripts?.paths ?? []
+    if (priorTranscripts && !priorTranscripts.ok) {
+      console.warn(
+        `restartAgentSession: prior transcript of ${prev.id} could not be written into ` +
+          `box ${host.sandboxId} — the handoff will fall back to the digest`,
+      )
+    }
     let remoteSessionId: string
     try {
       const remoteDesc = await host.start({
@@ -1390,11 +1411,6 @@ export async function restartAgentSession(
   // Set once prev's proxy was detached from the re-attached box — closing
   // prev is then safe again (its `close()` no longer touches the box).
   let priorProxyReleased = false
-  // In-box paths of the prior session's full transcript file(s) written
-  // during this restart (restart-handoff.ts) — both the re-attach and the
-  // fresh-box paths fill it in; the handoff assembly below consumes it once
-  // `desc` exists.
-  let boxPriorTranscriptPaths: string[] = []
   // Box gone: boot a fresh one. A tar-mode session (workspace with no git
   // source) gets its last tarball checkpoint restored; otherwise the box is
   // cloned from the workspace remote (configured, or derived from the checkout's
@@ -1507,12 +1523,32 @@ export async function restartAgentSession(
         { env: {} },
       )
       if (freshBox) {
-        boxPriorTranscriptPaths = (
-          await writeBoxPriorTranscripts(freshBox, prev, registry).catch(() => undefined)
-        )?.paths ?? []
+        const priorTranscripts = await writeBoxPriorTranscripts(freshBox, prev, registry).catch(
+          err => {
+            console.warn(
+              `restartAgentSession: writing the prior transcript of ${prev.id} into the ` +
+                `fresh box ${booted.sandboxId} failed — ` +
+                `${err instanceof Error ? err.message : String(err)} ` +
+                "(the handoff will fall back to the digest)",
+            )
+            return undefined
+          },
+        )
+        boxPriorTranscriptPaths = priorTranscripts?.paths ?? []
+        if (priorTranscripts && !priorTranscripts.ok) {
+          console.warn(
+            `restartAgentSession: prior transcript of ${prev.id} could not be written into ` +
+              `the fresh box ${booted.sandboxId} — the handoff will fall back to the digest`,
+          )
+        }
       }
-    } catch {
+    } catch (err) {
       // Handoff is best-effort — the digest fallback covers a failed write.
+      console.warn(
+        `restartAgentSession: fresh-box transcript write for ${prev.id} skipped — ` +
+          `${err instanceof Error ? err.message : String(err)} ` +
+          "(the handoff will fall back to the digest)",
+      )
     }
     notices.push(...(booted.notices ?? []))
     const restarted = registerBoxSession(restartedSessionId, sandboxMcpServers, {
@@ -1674,16 +1710,33 @@ export async function restartAgentSession(
             ...(prev.sandboxDeliveryTarget?.baseSha
               ? { deliveryBaseSha: prev.sandboxDeliveryTarget.baseSha }
               : {}),
-          }).catch(() => undefined)
+          }).catch(err => {
+            console.warn(
+              `restartAgentSession: structured handoff for ${prev.id} could not be built — ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            )
+            return undefined
+          })
         : // Local blank-fallback: same frame, but the full transcript is
           // written into the NEW session's own host transcript dir and the
           // prompt points at that path.
-          await buildLocalRestartHandoff(prev, desc).catch(() => undefined)
+          await buildLocalRestartHandoff(prev, desc).catch(err => {
+            console.warn(
+              `restartAgentSession: structured handoff for ${prev.id} could not be built — ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            )
+            return undefined
+          })
     if (handoff) {
       desc.pendingResumeContext = handoff.text
       digestRecovered = handoff.digestRecovered
       restartHandoff = handoff.handoff
     } else {
+      console.warn(
+        `restartAgentSession: no structured handoff for ${prev.id} ` +
+          `(in-box transcript paths: ${boxPriorTranscriptPaths.length}) — ` +
+          "falling back to the 7k resume-context digest",
+      )
       const result = await buildResumeContextDigest(prev.id)
       if (result.digest) {
         desc.pendingResumeContext = result.digest

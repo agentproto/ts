@@ -136,10 +136,16 @@ async function exportTranscriptMarkdown(
  *  per shell command, well under ARG_MAX on any box. */
 const EXEC_B64_CHUNK = 48 * 1024
 
+/** Single-quote a value for interpolation into a POSIX shell command. A
+ *  literal `'` closes the quote, so embed it as `'\''`. */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
 async function writeViaExec(sink: BoxFileSink, path: string, markdown: string): Promise<void> {
   if (!sink.exec) throw new Error("box file sink has neither writeFile nor exec")
   const dir = path.slice(0, path.lastIndexOf("/"))
-  const mk = await sink.exec({ command: `mkdir -p '${dir}'` })
+  const mk = await sink.exec({ command: `mkdir -p ${shQuote(dir)}` })
   if (mk.exitCode !== 0) {
     throw new Error(`mkdir '${dir}' failed (exit ${mk.exitCode}): ${mk.stderr}`)
   }
@@ -148,7 +154,7 @@ async function writeViaExec(sink: BoxFileSink, path: string, markdown: string): 
     const chunk = b64.slice(i, i + EXEC_B64_CHUNK)
     const redirect = first ? ">" : ">>"
     const res = await sink.exec({
-      command: `printf '%s' '${chunk}' | base64 -d ${redirect} '${path}'`,
+      command: `printf '%s' '${chunk}' | base64 -d ${redirect} ${shQuote(path)}`,
     })
     if (res.exitCode !== 0) {
       throw new Error(`write '${path}' failed (exit ${res.exitCode}): ${res.stderr}`)
@@ -195,7 +201,11 @@ export async function writeBoxPriorTranscripts(
   const primaryPath = boxPriorSessionPath(prev.id)
   try {
     await writeTranscriptToBox(sink, primaryPath, primary.markdown)
-  } catch {
+  } catch (err) {
+    console.warn(
+      `writeBoxPriorTranscripts: writing ${primaryPath} failed — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
     return { ok: false, paths }
   }
   paths.push(primaryPath)
@@ -209,7 +219,11 @@ export async function writeBoxPriorTranscripts(
     const path = boxPriorSessionPath(ancestor.id)
     try {
       await writeTranscriptToBox(sink, path, exported.markdown)
-    } catch {
+    } catch (err) {
+      console.warn(
+        `writeBoxPriorTranscripts: writing ancestor transcript ${path} failed — ` +
+          `${err instanceof Error ? err.message : String(err)} (dropping the rest of the chain)`,
+      )
       break
     }
     paths.push(path)
