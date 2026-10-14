@@ -21,6 +21,14 @@
  *      is safe on the remote, delete the now-stale `agentproto-checkpoint/
  *      <branch>` so it does not pile up on the remote forever.
  *
+ * A checkpoint additionally carries the adapter's CONVERSATION store: the
+ * box-side pack/download in `sandbox-adapter-store.ts` archives the session's
+ * isolated adapter-config dir next to `checkpoint.json` as
+ * `adapter-store.tar.gz` (recorded on {@link SandboxDeliveryRecord.adapterStore}),
+ * so a restart that moves to a fresh box can put the conversation back
+ * (`session-restart-core.ts`'s `spawnOnFreshBox`) instead of starting the
+ * adapter blank. A store failure never fails the checkpoint.
+ *
  * A fresh box checking the same branch out again (`sandbox-workspace-remote`)
  * picks the pushed branch up and re-applies the checkpoint snapshot as
  * uncommitted changes, so a restart on a new box resumes where the dead one
@@ -41,6 +49,11 @@ import {
   shellQuote,
   type SandboxExec,
 } from "./sandbox-workspace-remote.js"
+import {
+  ADAPTER_STORE_TIMEOUT_MS,
+  archiveAdapterStore,
+  type AdapterStoreRecord,
+} from "./sandbox-adapter-store.js"
 
 export { CHECKPOINT_BRANCH_PREFIX }
 
@@ -119,6 +132,12 @@ export interface SandboxDeliveryRecord {
   /** True when a checkpoint found nothing new since the last delivered one. */
   unchanged?: boolean
   bundle: { status: DeliveryBundleStatus; path?: string; bytes?: number; detail?: string }
+  /** Checkpoint-mode only: the adapter's conversation store, archived next
+   *  to the record as `adapter-store.tar.gz` so a fresh-box restart can
+   *  restore it (see `sandbox-adapter-store.ts`). Absent on teardown
+   *  deliveries and on a checkpoint taken without an
+   *  {@link RunSandboxDeliveryInput.adapterStore} input. */
+  adapterStore?: AdapterStoreRecord
   /** Turn count this checkpoint/delivery was taken after, when the caller
    *  knew one (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — also baked
    *  into the snapshot commit message. Absent when no turn context was
@@ -319,6 +338,12 @@ export interface RunSandboxDeliveryInput {
    *  this is true (an idle turn must not pay a delete round trip per tick);
    *  teardown mode deletes regardless. */
   checkpointPushed?: boolean
+  /** Checkpoint-mode only: also archive this session's adapter conversation
+   *  store (its isolated adapter-config dir in the box, keyed by the
+   *  box-side `adapterSessionId`) and pull it next to the record — see
+   *  `sandbox-adapter-store.ts`. An archive failure is recorded on
+   *  {@link SandboxDeliveryRecord.adapterStore}, never thrown. */
+  adapterStore?: { adapterSessionId: string; adapter?: string }
 }
 
 function errorText(err: unknown): string {
@@ -428,6 +453,21 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
     ...(input.turn !== undefined ? { turn: input.turn } : {}),
     push: { status: "skipped" },
     bundle: { status: "skipped" },
+  }
+
+  // Checkpoint-mode passenger: archive the adapter's conversation store
+  // alongside the git state. Runs BEFORE the probe so every outcome below
+  // (push, bundle, unchanged-skip, even a probe failure) still carries the
+  // freshest store; a failure only ever lands on `record.adapterStore`.
+  if (checkpointMode && input.adapterStore) {
+    record.adapterStore = await archiveAdapterStore({
+      exec,
+      ...(input.readFile ? { readFile: input.readFile } : {}),
+      adapterSessionId: input.adapterStore.adapterSessionId,
+      ...(input.adapterStore.adapter ? { adapter: input.adapterStore.adapter } : {}),
+      outDir: input.outDir,
+      timeoutMs: Math.max(1, Math.min(ADAPTER_STORE_TIMEOUT_MS, deadlineAt - Date.now())),
+    })
   }
 
   let probe: DeliveryProbe | undefined
@@ -766,6 +806,9 @@ export function trackedSandboxDeliveryOpts(input: {
   config: ResolvedSandboxCheckpointConfig
   /** Ref the learned branch's fork point is computed against. */
   baseRef: string
+  /** Checkpoint-mode conversation-store passenger — see
+   *  {@link RunSandboxDeliveryInput.adapterStore}. */
+  adapterStore?: { adapterSessionId: string; adapter?: string }
   onDelivery?: (record: SandboxDeliveryRecord) => void
   onCheckpoint?: (record: SandboxDeliveryRecord) => void
   onTargetChanged?: (target: SandboxDeliveryTarget) => void
@@ -781,7 +824,12 @@ export function trackedSandboxDeliveryOpts(input: {
   }
   const buildCheckpoint = () =>
     sandboxCheckpointOpts(
-      { ...base, target, ...(input.onCheckpoint ? { onCheckpoint: input.onCheckpoint } : {}) },
+      {
+        ...base,
+        target,
+        ...(input.adapterStore ? { adapterStore: input.adapterStore } : {}),
+        ...(input.onCheckpoint ? { onCheckpoint: input.onCheckpoint } : {}),
+      },
       input.config,
     ).checkpoint
   let checkpoint = buildCheckpoint()
@@ -855,6 +903,13 @@ export function formatDeliveryNotice(record: SandboxDeliveryRecord): string {
       `checkpoint cleanup: ${record.checkpointCleanup.status}${
         record.checkpointCleanup.detail ? ` (${record.checkpointCleanup.detail})` : ""
       }`,
+    )
+  }
+  if (record.adapterStore) {
+    parts.push(
+      `adapter store: ${record.adapterStore.status}${
+        record.adapterStore.path ? ` at ${record.adapterStore.path}` : ""
+      }${record.adapterStore.detail ? ` (${record.adapterStore.detail})` : ""}`,
     )
   }
   const uncommittedDelivered =

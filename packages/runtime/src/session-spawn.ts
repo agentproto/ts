@@ -8,10 +8,15 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import { randomBytes } from "node:crypto"
+import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
+import {
+  discoverRestoredAdapterConversation,
+  restoreAdapterStore,
+} from "./sandbox-adapter-store.js"
 import { resolveTurnRetryPolicy, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
@@ -2582,11 +2587,19 @@ export async function spawnAgentSession(
   // picking up the owning row's config dir when one is on file. A row id
   // with no adapter conversation recorded (or a different adapter) drops
   // the resume entirely rather than passing a daemon id to the adapter.
-  const resolveResumeTarget = (
+  //
+  // The id may ALSO name a RESTORED STORE and nothing else (a fresh box
+  // after `spawnOnFreshBox` extracted `adapter-store.tar.gz` at the dead
+  // box's `~/.agentproto/adapter-config/<id>`): this daemon has no such
+  // row, but the dir on disk does — resolve the conversation id the store
+  // holds with the same discovery a local fs-resume uses, and resume from
+  // that dir.
+  const resolveResumeTarget = async (
     id: string | undefined,
-  ):
-    | { adapterSessionId: string; configDir?: string; sourceSessionId?: string }
-    | undefined => {
+  ): Promise<
+    { adapterSessionId: string; configDir?: string; sourceSessionId?: string }
+    | undefined
+  > => {
     if (!id) return undefined
     const row = registry.get(id)
     if (row) {
@@ -2596,6 +2609,21 @@ export async function spawnAgentSession(
         ...(row.adapterConfigDir ? { configDir: row.adapterConfigDir } : {}),
         sourceSessionId: row.id,
       }
+    }
+    // `id` is caller-controlled (`agent_start.resumeSessionId`): only treat
+    // it as a restored-store key when it is a plain session-id token, so a
+    // value like `../../.claude` can never point the existence probe,
+    // discovery, or the adapter's `configDir` at an arbitrary directory.
+    const restoredDir = /^[A-Za-z0-9][\w.-]*$/.test(id) && !id.includes("..")
+      ? adapterConfigDirFor(id)
+      : undefined
+    if (restoredDir && existsSync(restoredDir)) {
+      const conversationId = await discoverRestoredAdapterConversation({
+        adapter: input.adapter,
+        configDir: restoredDir,
+        ...(cwd ? { cwd } : {}),
+      })
+      if (conversationId) return { adapterSessionId: conversationId, configDir: restoredDir }
     }
     const owner = registry
       .list()
@@ -2608,7 +2636,7 @@ export async function spawnAgentSession(
       ...(owner ? { sourceSessionId: owner.id } : {}),
     }
   }
-  const resumeTarget = resolveResumeTarget(input.resumeSessionId)
+  const resumeTarget = await resolveResumeTarget(input.resumeSessionId)
   const resumeSource = resumeTarget?.sourceSessionId
     ? registry.get(resumeTarget.sourceSessionId)
     : undefined
@@ -4774,6 +4802,11 @@ export type SandboxBootResult =
       /** Spawn-time explanations (derived remote, tar mode, …) the caller
        *  records on the new session. */
       notices?: string[]
+      /** The box daemon's own `resumeVia` when `resumeSessionId` was passed
+       *  and the box's adapter actually rehydrated that conversation
+       *  (`"resumed via ACP"`). Absent on a fresh spawn or a resume the box
+       *  fell back from — never a silent claim of continuity. */
+      resumeVia?: string
     }
   | {
       ok: false
@@ -5148,6 +5181,16 @@ export async function bootSandboxAgentSession(opts: {
   checkpointConfig?: ResolvedSandboxCheckpointConfig
   /** Which checkpoint snapshot to restore onto the checkout (default `"any"`). */
   checkpointSnapshot?: CheckpointRestoreSnapshot
+  /** A saved `adapter-store.tar.gz` (from a prior session's checkpoints —
+   *  `sandbox-adapter-store.ts`): uploaded and extracted into the box at the
+   *  same path BEFORE the adapter starts, so `resumeSessionId` below can
+   *  rehydrate the conversation. A restore failure is noticed, never fatal. */
+  adapterStoreRestore?: { restoreFrom: string }
+  /** Forwarded to the box's own `agent_start`: reattach to a prior adapter
+   *  conversation (the box session id whose restored store now sits in this
+   *  box, or a raw adapter conversation id) instead of starting blank. The
+   *  box reports the outcome on the returned descriptor's `resumeVia`. */
+  resumeSessionId?: string
   /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
    *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
    *  `forwardHttpStream` dial delivers both the spawn and the first turn.
@@ -5518,6 +5561,25 @@ export async function bootSandboxAgentSession(opts: {
     }
   }
 
+  // A fresh-box restart's saved conversation store: put it back at the SAME
+  // path the dead box keyed it by, AFTER the code is restored and BEFORE the
+  // adapter starts — the resume below (`resumeSessionId`) resolves the
+  // conversation out of exactly this dir. A restore failure only notices:
+  // the spawn proceeds and the adapter starts blank (today's behaviour),
+  // because a missing conversation must never fail the restart itself.
+  if (opts.adapterStoreRestore) {
+    const restored = await restoreAdapterStore({
+      ...(host.writeFile ? { writeFile: host.writeFile } : {}),
+      ...(boxExec ? { exec: boxExec } : {}),
+      archivePath: opts.adapterStoreRestore.restoreFrom,
+    })
+    if (restored.ok) {
+      bootNotices.push(`restored the adapter conversation store (${restored.bytes} bytes)`)
+    } else {
+      bootNotices.push(`could not restore the adapter conversation store — ${restored.message}`)
+    }
+  }
+
   // BOX-LOGIN BRIDGE — upload the redacted copy of this file-based login into
   // the box BEFORE its own `agent_start` verifies one is present (the box's
   // fail-loud `verifyLocalLoginPresent` runs inside `host.start()`). Every
@@ -5570,9 +5632,11 @@ export async function bootSandboxAgentSession(opts: {
       : undefined
   let remoteSessionId: string
   let resolvedCwd = boxCwd
+  let boxResumeVia: string | undefined
   try {
     const startArgs = {
       adapter: opts.adapter,
+      ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
       ...(omitCwd ? {} : { cwd: boxCwd }),
       // Issue #1647 — DEVICE-BRIDGE ONLY: forward an EXPLICIT
       // caller-supplied `workspaceSlug` to the target daemon's own
@@ -5605,6 +5669,13 @@ export async function bootSandboxAgentSession(opts: {
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
         : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
+    // The box reports `resumeVia` only when its own adapter actually
+    // rehydrated the requested conversation (`resumeSessionId` above) —
+    // surfaced on the boot result so the caller can keep the host
+    // descriptor's resume honesty (`""` + digest fallback on a blank).
+    if (typeof (remoteDesc as { resumeVia?: unknown }).resumeVia === "string") {
+      boxResumeVia = (remoteDesc as { resumeVia: string }).resumeVia || undefined
+    }
     if (omitCwd && remoteDesc.cwd) resolvedCwd = remoteDesc.cwd
   } catch (err) {
     // The box was fully booted but its own `agent_start` failed — reap the
@@ -5681,6 +5752,10 @@ export async function bootSandboxAgentSession(opts: {
             outDir: sessionTranscriptDir(deliverySessionId),
             config: opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
             baseRef: workspacePlan.baseRef,
+            // The box session id the checkpoint's conversation-store
+            // passenger is keyed by — the id this spawn's descriptor records
+            // as `adapterSessionId` (the proxy's `sessionId`).
+            adapterStore: { adapterSessionId: remoteSessionId, adapter: opts.adapter },
             ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
             ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
             ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),
@@ -5707,6 +5782,7 @@ export async function bootSandboxAgentSession(opts: {
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(deliveryTarget ? { deliveryTarget } : {}),
     ...(bootNotices.length > 0 ? { notices: bootNotices } : {}),
+    ...(boxResumeVia ? { resumeVia: boxResumeVia } : {}),
     // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.
