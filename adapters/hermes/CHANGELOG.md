@@ -1,5 +1,20 @@
 # @agentproto/adapter-hermes
 
+## 0.5.0
+
+### Minor Changes
+
+- e1a291b: feat(adapter-hermes): system-prompt channel via an agentproto hermes plugin — ships a bundled `agentproto-system-prompt` hermes plugin (reads `AGENTPROTO_SYSTEM_PROMPT_FILE`, registers cache-safe sections at `after_memory`, frozen at session start), `hermesSystemPromptPluginStatus`/`installHermesSystemPromptPlugin` helpers, and `agentproto adapters hermes-plugin status|install [--enable] [--json]` (enable = explicit consent via `hermes plugins enable`). Delivery budget `MAX_HERMES_SYSTEM_PROMPT_CHARS` = 7500. The driver gains the `env-file` `systemPrompt` channel (writes `<session config dir>/agentproto-system-prompt.md`, a private temp dir when none, removed on close; points the declared env var at it), and the runtime wires it end to end: the hermes resolver entry sets `supportsSystemPrompt` only while the plugin is installed AND enabled (checked per spawn), `systemPromptMaxChars`/`systemPromptUnavailable` degrade an over-limit or unavailable channel to a first-prompt prefix + a warning naming the limit or the install command (session-spawn, workflow agent host, restart, and agent projection).
+
+### Patch Changes
+
+- 5d2f4b3: Harness freshness + safe upgrades: `agentproto harness outdated|check|upgrade`. Adapters can now declare an AIP-45 `upgrade` block (latest-version source, in-place upgrade argv, optional exact-version rollback); the six globally-installed harnesses (opencode, hermes, gemini, pi, mastracode, copilot-cli) declare one. `upgrade` re-runs an ACP smoke probe (initialize + session/new, no prompt) after every upgrade and rolls back to the recorded previous version when it fails, guarded by the `version_check.range` check and a live-daemon-session check (both bypassable with `--force`).
+- Updated dependencies [24f1cf5]
+- Updated dependencies [5d2f4b3]
+- Updated dependencies [e1a291b]
+- Updated dependencies [c1e3dfd]
+  - @agentproto/driver-agent-cli@2.13.0
+
 ## 0.4.38
 
 ### Patch Changes

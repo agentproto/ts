@@ -1,5 +1,66 @@
 # @agentproto/cli
 
+## 1.22.0
+
+### Minor Changes
+
+- f776cd2: feat(runtime): restartPolicy can move a box session to a fresh box when its box is gone
+
+  `restartPolicy.on` gains a third value, `"sandbox-gone"`. A box session
+  (`agent_start.sandbox`) that dies WITH ITS BOX GONE — lifetime cap reached,
+  provider reclaim, unrecoverable unreachability — can no longer be revived
+  in place, so a policy listing `"sandbox-gone"` schedules the same fresh-box
+  move `session_restart` takes (`restartAgentSession` → `spawnOnFreshBox`:
+  re-clone the workspace remote, re-check the `wt/` work branch out, restore
+  the last checkpoint) instead, after the same exponential backoff and under
+  the same `maxRetries`/`windowMs` crash-loop cap. The replacement session is
+  prompted once to continue the original task from where the pushed work
+  stops; a blocked move (no workspace remote, no tarball checkpoint, provider
+  missing) leaves the session dead with a single `[sandbox-gone]` notice and
+  never loops.
+
+  Box-gone detection reuses evidence the daemon already has — the reattach
+  pass's `endedReason:"sandbox_gone"`, recorded proxy/provider death messages,
+  the sandbox ledger's `gone` state, and one provider liveness probe — with no
+  new polling loop. Off unless a session's `restartPolicy.on` lists
+  `"sandbox-gone"`; classic `crashed`/`error` in-place revival is unchanged,
+  and non-box sessions never consult the probe.
+
+  New daemon config `daemon.sandboxGoneRestartDefault` (off unless set) applies
+  that policy to box sessions spawned with no explicit `restartPolicy`, so an
+  executor box can opt in once instead of per spawn; an explicit per-session
+  policy still wins, and turning it on also arms the restart sweep at 30s when
+  `daemon.restartSweepIntervalMs` is unset. Nothing changes for anyone who has
+  not set it.
+
+- 5d2f4b3: Harness freshness + safe upgrades: `agentproto harness outdated|check|upgrade`. Adapters can now declare an AIP-45 `upgrade` block (latest-version source, in-place upgrade argv, optional exact-version rollback); the six globally-installed harnesses (opencode, hermes, gemini, pi, mastracode, copilot-cli) declare one. `upgrade` re-runs an ACP smoke probe (initialize + session/new, no prompt) after every upgrade and rolls back to the recorded previous version when it fails, guarded by the `version_check.range` check and a live-daemon-session check (both bypassable with `--force`).
+- e1a291b: feat(adapter-hermes): system-prompt channel via an agentproto hermes plugin — ships a bundled `agentproto-system-prompt` hermes plugin (reads `AGENTPROTO_SYSTEM_PROMPT_FILE`, registers cache-safe sections at `after_memory`, frozen at session start), `hermesSystemPromptPluginStatus`/`installHermesSystemPromptPlugin` helpers, and `agentproto adapters hermes-plugin status|install [--enable] [--json]` (enable = explicit consent via `hermes plugins enable`). Delivery budget `MAX_HERMES_SYSTEM_PROMPT_CHARS` = 7500. The driver gains the `env-file` `systemPrompt` channel (writes `<session config dir>/agentproto-system-prompt.md`, a private temp dir when none, removed on close; points the declared env var at it), and the runtime wires it end to end: the hermes resolver entry sets `supportsSystemPrompt` only while the plugin is installed AND enabled (checked per spawn), `systemPromptMaxChars`/`systemPromptUnavailable` degrade an over-limit or unavailable channel to a first-prompt prefix + a warning naming the limit or the install command (session-spawn, workflow agent host, restart, and agent projection).
+- f776cd2: restartPolicy.on gains "sandbox-gone": a dead box session whose box is gone moves to a fresh box (runtime), new daemon.sandboxGoneRestartDefault wired through `serve` (cli), and the vscode RestartPolicy type accepts the new value.
+- 2f4e9d1: `session_migrate` (MCP, `POST /sessions/:id/migrate`, `agentproto sessions migrate`) resumes a sandbox session on a new box: it takes a final checkpoint of the old box when it is still reachable, boots a fresh box from the workspace remote, restores the work branch and the pushed uncommitted snapshot (commits stay commits, the snapshot stays uncommitted), carries the transcript over via the context checkpoint, then stops the old box. A shared `restoreCheckpointSteps` planner now backs spawn, restart and migrate.
+
+### Patch Changes
+
+- 65cd742: Add typed `SessionRestartError` (with helpers and types) to the runtime, and surface the typed restart failure reason through the apps panel bridge, the CLI `describeRestartFailure` output, and the VS Code extension.
+- 65cd742: Session restart failures are now typed: a restart that cannot complete throws `SessionRestartError`, carrying a stable `code` (`sandbox_gone`, `sandbox_unreachable`, `sandbox_provider_missing`, `sandbox_box_start_failed`, `no_workspace`, `no_workspace_remote`, `no_known_branch`, `adapter_not_found`, `unsupported_strategy`, `retired`, `override_invalid`), a human `reason`, and an optional `action` hint (`fix-config` / `spawn-fresh` / `spawn-on-branch`) that a client can turn into a button. Transports surface these as a nested `{ error: { code, reason, action?, message }, message }` payload, so the HTTP route, the `session_restart` MCP verb and the CLI all report _why_ a restart failed and what to do next instead of leaking provider-internal strings. The session-chat bridge rejects a typed `session_restart` failure with its `reason` sentence rather than the raw payload, and `agentproto sessions restart` prints the `reason` first with the technical detail underneath.
+- c1e3dfd: Harness-neutral system-prompt channel for AIP-42 AGENT.md projection. An adapter whose manifest declares `systemPrompt` now receives the projected AGENT.md text through that channel instead of as a first-prompt prefix, and no `session:harness-warning` is raised for it. Three `via` channels: `acp-meta` (claude-code — ACP `_meta.systemPrompt.append` on `session/new` and `session/load`), `inline-config` (opencode `instructions` file path and codex `developer_instructions`, layered into the CLI's inline JSON config env var) and `argv` (pi's `--append-system-prompt`, on every spawn including resume). Every other adapter keeps today's prefix + warning behaviour, and a sandbox spawn still warns — the box owns its own adapter configuration.
+- 1318308: `turnRetry.action: "migrate"` follow-ups: the migrated session now inherits the `turnRetry` policy itself (so its first migration no longer drops the rule) and the migration cap is enforced across sessions; `maxMigrations` accepts `0`; a give-up after migrations says so in the `[turn-retry] gave up after` notice; a failed migration with a spent retry budget gives up instead of booking an over-budget retry. `--turn-retry` (CLI) validates and documents `action` / `maxMigrations`.
+- Updated dependencies [24f1cf5]
+- Updated dependencies [dc01c8b]
+- Updated dependencies [5d2f4b3]
+- Updated dependencies [e1a291b]
+- Updated dependencies [dc01c8b]
+- Updated dependencies [65cd742]
+- Updated dependencies [65cd742]
+- Updated dependencies [c1e3dfd]
+  - @agentproto/secrets@2.0.2
+  - @agentproto/driver-agent-cli@2.13.0
+  - @agentproto/sandbox-e2b@0.8.1
+  - @agentproto/apps@0.23.1
+  - @agentproto/acp@0.11.0
+  - @agentproto/pairing-host@0.2.7
+  - @agentproto/worktree@0.15.1
+  - @agentproto/sandbox-box@0.2.31
+
 ## 1.21.0
 
 ### Minor Changes
