@@ -94,6 +94,15 @@ export const hermes: AgentCliHandle = defineAgentCli({
     range: ">=0.13.0 <1.0.0",
     timeout_ms: 5000,
   },
+  // hermes is a git install (its own install.sh), so the latest version is
+  // the newest GitHub release and the upgrade is hermes' own in-place
+  // updater. No `rollback`: a git updater has no pinned previous version to
+  // reinstall, so a failed smoke probe reports the old version instead of
+  // pretending it can restore one.
+  upgrade: {
+    latest: { githubRelease: "NousResearch/hermes-agent" },
+    cmd: ["hermes", "update"],
+  },
   auth: {
     ref: "./SECRETS.md",
     // No ANTHROPIC_API_KEY — hermes is the budget arm and deliberately does

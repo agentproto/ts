@@ -23,6 +23,7 @@ import { runSessions } from "../commands/sessions.js"
 import { runInstall } from "../commands/install.js"
 import { runPermissions } from "../commands/permissions.js"
 import { runAdapters } from "../commands/adapters.js"
+import { runHarness } from "../commands/harness.js"
 import { runAcp } from "../commands/acp.js"
 import { runWorkflow } from "../commands/workflow.js"
 import { runTask } from "../commands/task.js"
@@ -74,6 +75,7 @@ const CASES: Array<{
   { verb: "install", file: "../commands/install.ts", help: () => runInstall(["--help"]) },
   { verb: "permissions", file: "../commands/permissions.ts", help: () => runPermissions(["--help"]) },
   { verb: "adapters", file: "../commands/adapters.ts", help: () => runAdapters(["--help"]) },
+  { verb: "harness", file: "../commands/harness.ts", help: () => runHarness(["--help"]) },
   { verb: "acp", file: "../commands/acp.ts", help: () => runAcp(["--help"]) },
   { verb: "workflow", file: "../commands/workflow.ts", help: () => runWorkflow(["--help"]) },
   { verb: "task", file: "../commands/task.ts", help: () => runTask(["--help"]) },

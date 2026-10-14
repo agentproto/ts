@@ -48,6 +48,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto daemon`](./verbs/daemon.md) — install/start/restart/stop the background service
 - [`agentproto devices`](./verbs/devices.md) — list/rename/revoke devices known to this daemon
 - [`agentproto doctor`](./verbs/doctor.md) — read-only health check of the whole install (`--json` for bug reports)
+- [`agentproto harness`](./verbs/harness.md) — freshness + safe upgrades of the agent CLI each adapter spawns (`outdated` / `check` / `upgrade`, with rollback)
 - [`agentproto host`](./verbs/host.md) — `load`: why is this machine slow; `health`: OK/WARN/CRIT verdict on whether it can take more agents
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
 - [`agentproto install-mcp`](./verbs/install-mcp.md) — register the daemon's MCP server with installed coding CLIs
@@ -102,6 +103,7 @@ Pick whichever matches what you're trying to do:
 - [Build your own agent app](./guides/build-your-own-agent-app.md) — concepts, authoring, UI, data, lifecycle, testing, and packaging, end to end
 - [Sandboxes and rendezvous: boot-and-drive vs. attach](./guides/sandbox-rendezvous.md) — connection models, keeping a box reachable, and the cost tradeoffs
 - [Hand off from Claude Code to Codex](./guides/handoff.md) — checkpoint a session and continue its work on another harness, with `--dry-run`
+- [Harness upgrades](./guides/harness-upgrades.md) — keep the agent CLIs adapters spawn current: `harness outdated|check|upgrade`, the pinned-npx rule, range guard, rollback, and a weekly report cron
 
 ### File reference
 
