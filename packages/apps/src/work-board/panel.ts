@@ -20,13 +20,16 @@
  * types.ts/render.ts/style.css, bundled by ./ui/vite.config.ts with
  * vite-plugin-singlefile) and lands in ./panel.generated.ts — a gitignored
  * build artifact, never committed: `generate:ui`
- * (scripts/build-work-board-ui.mjs plus the review-panel and store twins,
- * run from the package's prebuild/precheck-types/pretest hooks) rebuilds it
- * from whatever is on disk before anything reads it, so what ships is never
- * stale. Vite + vite-plugin-singlefile are devDependencies of this package,
- * so the step is local to its own build. See ./ui/vite.config.ts for how
- * the shared `panelBridgeScript` (../panel-bridge.ts) gets inlined as a
- * classic `<script>` ahead of the bundled module script.
+ * (scripts/build-work-board-ui.mjs plus the review-panel and store twins)
+ * rebuilds it from whatever is on disk before anything reads it, so what
+ * ships is never stale — as turbo's cached `generate:ui` task
+ * (../../turbo.json) ahead of build/check-types/test, with
+ * scripts/ensure-ui-generated.mjs's existence fallback in the pre* hooks for
+ * runs outside turbo. Vite + vite-plugin-singlefile are devDependencies of
+ * this package, so the step is local to its own build. See
+ * ./ui/vite.config.ts for how the shared `panelBridgeScript`
+ * (../panel-bridge.ts) gets inlined as a classic `<script>` ahead of the
+ * bundled module script.
  *
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage (../panel-bridge.ts,
