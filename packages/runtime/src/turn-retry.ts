@@ -658,6 +658,15 @@ export function createTurnRetryController(opts: {
     }
 
     const migratedTo = fresh.descriptor.id
+    // Carry the migration counter onto the NEW session: the old row is
+    // retired, and without this every migration would reset the cap to zero
+    // — a box that keeps hitting rate limits would migrate forever. Same for
+    // the retry budget (`turnRetryAttempts`) so the fallback path on the new
+    // box does not start a fresh maxRetries either.
+    registry.patchTurnRetry(migratedTo, {
+      turnMigrations: p.attempt,
+      turnRetryAttempts: prevAttempts ?? null,
+    })
     emit(desc, {
       phase: "migrated",
       errorClass: p.errorClass,
