@@ -208,15 +208,20 @@ export function deliveryKey(probe: DeliveryProbe): string {
   return `${probe.head ?? "?"}:${probe.ahead}:${probe.snapshotTree ?? "clean"}`
 }
 
+/** Every push from the box skips client-side hooks: a checkpoint or teardown
+ *  delivery is a safety-net backup, and a repo's `pre-push` gate (e.g. one
+ *  that requires a changeset) must not stop it from landing. */
+const PUSH = "push --no-verify"
+
 export function buildPushCommand(target: SandboxDeliveryTarget): string {
-  return `git -C ${shellQuote(target.checkoutDir)} push -u origin ${shellQuote(target.branch)}`
+  return `git -C ${shellQuote(target.checkoutDir)} ${PUSH} -u origin ${shellQuote(target.branch)}`
 }
 
 /** Force-push the snapshot: each checkpoint replaces the previous one.
  *  `refPrefix` — see {@link checkpointBranchOf}. */
 export function buildCheckpointPushCommand(target: SandboxDeliveryTarget, refPrefix?: string): string {
   const refspec = shellQuote(`+${SNAPSHOT_REF}:refs/heads/${checkpointBranchOf(target.branch, refPrefix)}`)
-  return `git -C ${shellQuote(target.checkoutDir)} push origin ${refspec}`
+  return `git -C ${shellQuote(target.checkoutDir)} ${PUSH} origin ${refspec}`
 }
 
 /** Marker {@link buildCheckpointDeleteCommand} prints when the remote no
@@ -232,7 +237,7 @@ export const CHECKPOINT_REF_ABSENT_MARKER = "checkpoint-ref-absent"
 export function buildCheckpointDeleteCommand(target: SandboxDeliveryTarget, refPrefix?: string): string {
   const ref = checkpointBranchOf(target.branch, refPrefix)
   return (
-    `git -C ${shellQuote(target.checkoutDir)} push origin --delete ${shellQuote(ref)} 2>&1 || ` +
+    `git -C ${shellQuote(target.checkoutDir)} ${PUSH} origin --delete ${shellQuote(ref)} 2>&1 || ` +
     `{ git ls-remote --exit-code origin ${shellQuote(`refs/heads/${ref}`)} >/dev/null; ` +
     `test $? -eq 2 && echo ${CHECKPOINT_REF_ABSENT_MARKER}; }`
   )

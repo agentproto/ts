@@ -236,7 +236,7 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
 
     const commands = execCalls.map(c => c.command)
-    expect(commands.some(c => c.includes("push -u origin 'wt/x'"))).toBe(true)
+    expect(commands.some(c => c.includes("push --no-verify -u origin 'wt/x'"))).toBe(true)
     const delivery = registry.get(id)?.sandboxDelivery
     expect(delivery).toMatchObject({ branch: "wt/x", baseSha: BASE_SHA, ahead: 2, push: { status: "pushed" } })
     const persisted = JSON.parse(await readFile(join(hostDir, "sessions", id, "delivery.json"), "utf8"))
@@ -262,7 +262,7 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
 
     registry.kill(id)
     await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
-    expect(execCalls.some(c => c.command.includes(`push -u origin '${target?.branch}'`))).toBe(true)
+    expect(execCalls.some(c => c.command.includes(`push --no-verify -u origin '${target?.branch}'`))).toBe(true)
     expect(registry.get(id)?.sandboxDelivery).toMatchObject({ branch: target?.branch, push: { status: "pushed" } })
   })
 
@@ -316,8 +316,8 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       )
       registry.kill(id)
       await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
-      expect(execCalls.some(c => c.command.includes("push -u origin 'wt/by-hand'"))).toBe(true)
-      expect(execCalls.some(c => c.command.includes("push -u origin 'wt/x'"))).toBe(false)
+      expect(execCalls.some(c => c.command.includes("push --no-verify -u origin 'wt/by-hand'"))).toBe(true)
+      expect(execCalls.some(c => c.command.includes("push --no-verify -u origin 'wt/x'"))).toBe(false)
     })
 
     it("leaves the recorded target alone when the box is on a non-wt/ branch", async () => {
