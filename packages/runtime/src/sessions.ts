@@ -1743,6 +1743,14 @@ export interface SessionDescriptor {
    *  without an error or an interrupt. PERSISTED; absent until the first
    *  retry. */
   turnRetryAttempts?: number
+  /** Consecutive box migrations the turn-retry controller has DONE since the
+   *  last clean turn-end (`turnRetry.action: "migrate"` on a sandbox session)
+   *  — the migration counter, compared against `turnRetry.maxMigrations`.
+   *  Independent of {@link turnRetryAttempts}; reset (deleted) by the next
+   *  turn that completes without an error or an interrupt. Carried over onto
+   *  the migrated session so the cap survives a migration. PERSISTED; absent
+   *  until the first migration. */
+  turnMigrations?: number
   /** ISO 8601 timestamp of the most recent continuation prompt the
    *  turn-retry controller sent. Reset with `turnRetryAttempts`. */
   lastTurnRetryAt?: string
@@ -4694,6 +4702,7 @@ export interface SessionsRegistry {
     id: string,
     patch: {
       turnRetryAttempts?: number | null
+      turnMigrations?: number | null
       lastTurnRetryAt?: string | null
       nextTurnRetryAt?: string | null
     },
@@ -12225,7 +12234,7 @@ export function createSessionsRegistry(opts?: {
     patchTurnRetry(id, patch) {
       const rt = sessions.get(id)
       if (!rt) return false
-      for (const key of ["turnRetryAttempts", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
+      for (const key of ["turnRetryAttempts", "turnMigrations", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
         if (!(key in patch)) continue
         const value = patch[key]
         if (value === null || value === undefined) delete rt.desc[key]

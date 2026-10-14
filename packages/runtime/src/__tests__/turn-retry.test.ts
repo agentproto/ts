@@ -93,7 +93,9 @@ describe("parseTurnRetryPolicy", () => {
   it("fills defaults from the shorthand", () => {
     expect(parseTurnRetryPolicy("all")).toEqual({
       on: ["rate-limit", "upstream-5xx", "no-output-stall"],
+      action: "retry",
       maxRetries: 3,
+      maxMigrations: 2,
       baseDelayMs: 5000,
       factor: 2,
       maxDelayMs: 60000,
