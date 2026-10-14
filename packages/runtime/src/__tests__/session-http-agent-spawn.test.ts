@@ -610,3 +610,31 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     }
   })
 })
+
+describe("POST /sessions/agent — auth field (parseAuthField)", () => {
+  it("keeps the mode and the box-login bridge marker on the parsed auth block", () => {
+    const args = buildSpawnSessionHttpArgs({ auth: { mode: "subscription", loginFile: true } }, "codex")
+    expect(args.auth).toEqual({ mode: "subscription", loginFile: true })
+  })
+
+  it("accepts a JSON-stringified auth block, like the route's other object fields", () => {
+    const args = buildSpawnSessionHttpArgs(
+      { auth: JSON.stringify({ mode: "subscription", loginFile: true, apiKey: "sk-test" }) },
+      "codex",
+    )
+    expect(args.auth).toEqual({ mode: "subscription", loginFile: true, apiKey: "sk-test" })
+  })
+
+  it("drops a truthy-but-not-true loginFile — the marker is boolean-strict, never half-truthy", () => {
+    const args = buildSpawnSessionHttpArgs({ auth: { mode: "subscription", loginFile: "true" } }, "codex")
+    expect(args.auth).toEqual({ mode: "subscription" })
+  })
+
+  it("drops an unknown auth key instead of forwarding it across the wire", () => {
+    const args = buildSpawnSessionHttpArgs(
+      { auth: { mode: "api-key", apiKey: "sk-x", smuggled: 1 } },
+      "claude-code",
+    )
+    expect(args.auth).toEqual({ mode: "api-key", apiKey: "sk-x" })
+  })
+})

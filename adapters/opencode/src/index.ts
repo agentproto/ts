@@ -219,9 +219,44 @@ export const opencode: AgentCliHandle = defineAgentCli({
   //     method docblock for the full trace.
   // Each is scoped to its own `provider`, so neither ever lights up the
   // other's (or openrouter/groq's) models.
+  // BOX-LOGIN BRIDGE (both surfaces): a fresh box has no
+  // `~/.local/share/opencode/auth.json`, so the box's own fail-loud login
+  // verify would refuse every opencode subscription spawn. The host uploads a
+  // REDACTED copy of just this provider's entry before `host.start()`:
+  //   - `type` is the discriminator opencode keys the entry by
+  //     (`Auth.set(provider.id, {type: "oauth", …})`) — without it the entry
+  //     isn't recognized as an OAuth login at all;
+  //   - `access` is the bearer the CLI presents, `expires` its epoch-MILLIS
+  //     expiry (also the bridge's expiry gate — an already-dead login is
+  //     refused instead of copied);
+  //   - `refresh` is NEVER the host's value: it is keep-listed EXACTLY so the
+  //     bridge empties it (same discipline as codex's `tokens.refresh_token`),
+  //     so the box holds the field's shape and none of its material — a refresh
+  //     attempt from the box fails loud rather than silently re-minting a
+  //     long-lived credential the host never intended to share.
+  // The sibling provider's entry (and everything else in the host's store)
+  // stays on the host.
   authSubscription: [
-    { external: true, provider: "anthropic" },
-    { external: true, provider: "openai" },
+    {
+      external: true,
+      provider: "anthropic",
+      boxLogin: {
+        recipe: "opencode",
+        methodId: "anthropic-oauth",
+        keep: ["anthropic.type", "anthropic.access", "anthropic.expires", "anthropic.refresh"],
+        expiresPath: "anthropic.expires",
+      },
+    },
+    {
+      external: true,
+      provider: "openai",
+      boxLogin: {
+        recipe: "opencode",
+        methodId: "openai-oauth",
+        keep: ["openai.type", "openai.access", "openai.expires", "openai.refresh"],
+        expiresPath: "openai.expires",
+      },
+    },
   ],
   models: {
     // Default to a canonical catalog model (claude-sonnet-4-5). The legacy

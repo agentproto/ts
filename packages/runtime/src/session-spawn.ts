@@ -34,6 +34,7 @@ import {
   SubscriptionSourceError,
   modelIdPrefixProvider,
   subscriptionSurfaceFor,
+  boxLoginDeclFor,
   resolveBundleDefaults,
   resolveDefaultContextProfile,
   type SpawnDefaultsConfig,
@@ -63,6 +64,13 @@ import {
 } from "./claude-code-oauth-source.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
+import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
+import {
+  buildLoginCopy,
+  createBoxLoginRefresher,
+  type BoxLoginDecl,
+  type BoxLoginRefreshOutcome,
+} from "./box-login-bridge.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
   checkModelAdapterEligibility,
@@ -3329,6 +3337,9 @@ export async function spawnAgentSession(
           : {}),
         ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
         ...forwardedSubaccountAuthInputs(spawnDefaults.auth),
+        // Box-login bridge marker (per-spawn, forwarded through the auth
+        // block) — see `box-login-bridge.ts`.
+        ...(spawnDefaults.auth.loginFile === true ? { loginFile: true } : {}),
       })
       if (result) {
         authSpec = result.spec
@@ -4122,6 +4133,11 @@ export async function spawnAgentSession(
     const checkpointConfig = resolveSandboxCheckpointConfig(configDefaults?.sandbox?.checkpoint, input.sandboxCheckpoint)
 
     if (input.sandbox !== undefined) {
+      // BOX-LOGIN BRIDGE declaration for this spawn — the matching external
+      // surface's `boxLogin`, or undefined for any bearer/api-key spawn (see
+      // `boxLoginDeclFor`). Resolved ONCE here so the boot below and the auth
+      // block it stamps agree on the same declaration.
+      const boxLogin = boxLoginDeclFor(resolved?.authDescriptor, authSpec, authEcho?.provider)
       const booted = await bootSandboxAgentSession({
         sandbox: input.sandbox,
         resolveSandboxProvider,
@@ -4154,6 +4170,10 @@ export async function spawnAgentSession(
         // Forward the already-resolved credential when the caller selected a
         // profile; raw explicit auth remains supported for existing callers.
         ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec, authEcho) } : input.auth ? { auth: input.auth } : {}),
+        // BOX-LOGIN BRIDGE: the file-based login this spawn bills through
+        // must exist INSIDE the box before its own fail-loud verify runs —
+        // see `box-login-bridge.ts`. Absent for every bearer/api-key spawn.
+        ...(boxLogin ? { boxLogin } : {}),
         // PLAN-C — the resolved spec rides along so `env.autoPassthrough`
         // can inject the credential's env-var NAME into `env.passthrough`
         // (never the value) before the box boots.
@@ -5069,6 +5089,16 @@ export async function bootSandboxAgentSession(opts: {
    *  the call-site comment (fresh boxes have no config and claude-code never
    *  inherits shell-env subscription auth). */
   auth?: DefaultsAdapterAuthConfig
+  /** BOX-LOGIN BRIDGE — the external surface's `boxLogin` declaration for a
+   *  file-based subscription (see `box-login-bridge.ts`). When present AND
+   *  this provider can take a file upload (`handle.defaultCwd` +
+   *  `host.writeFile`, never a device box), the redacted login copy is
+   *  written into the box BEFORE `host.start()` and the forwarded `auth`
+   *  block is stamped `loginFile: true` so the box skips its missing-
+   *  credential fail-fast. Every other case degrades to today's fail-loud
+   *  verify: the stamp is applied ONLY after a successful write, so a box
+   *  never spawns unauthenticated on a copy that never landed. */
+  boxLogin?: BoxLoginDecl
   /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
    *  when one was resolved (config-default wallet / access profile). Consulted
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
@@ -5485,6 +5515,35 @@ export async function bootSandboxAgentSession(opts: {
     }
   }
 
+  // BOX-LOGIN BRIDGE — upload the redacted copy of this file-based login into
+  // the box BEFORE its own `agent_start` verifies one is present (the box's
+  // fail-loud `verifyLocalLoginPresent` runs inside `host.start()`). Every
+  // guard that fails here DEGRADES to today's behavior: no copy is written,
+  // `loginFile` is never stamped, and the box verifies its own login exactly
+  // as it does now — never a silent unauthenticated spawn. A device box is
+  // excluded outright: its filesystem belongs to another machine, so a
+  // host-side home path means nothing there.
+  let boxLoginUpload: { boxPath: string; digest: string } | undefined
+  let refreshBoxLogin: (() => Promise<BoxLoginRefreshOutcome>) | undefined
+  if (opts.boxLogin && opts.auth?.mode === "subscription" && handle.defaultCwd && host.writeFile && !isDeviceBox) {
+    const decl = opts.boxLogin
+    const writeFile = host.writeFile
+    const uploaded = await uploadBoxLoginCopy({ decl, homeDir: handle.defaultCwd, writeFile })
+    if (uploaded.ok) {
+      boxLoginUpload = { boxPath: uploaded.boxPath, digest: uploaded.digest }
+      refreshBoxLogin = createBoxLoginRefresher({
+        decl,
+        path: uploaded.boxPath,
+        read: () => readRecipeLoginJson(decl.recipe, decl.methodId),
+        write: writeFile,
+        digest: uploaded.digest,
+      })
+    } else {
+      // Named file, never a token — see `uploadBoxLoginCopy`'s message rules.
+      bootNotices.push(uploaded.message)
+    }
+  }
+
   // `omitCwdWhenImplicit` (device sandbox — see that field's doc): the
   // caller passed no explicit cwd, so don't forward the HOST's own
   // resolved `boxCwd` (fallback workspace/worktree path) into a box whose
@@ -5529,7 +5588,12 @@ export async function bootSandboxAgentSession(opts: {
       ...(opts.route ? { route: opts.route } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
-      ...(opts.auth ? { auth: opts.auth } : {}),
+      // BOX-LOGIN BRIDGE — stamp the marker ONLY on a copy that actually
+      // landed in the box (`boxLoginUpload`), so the box's own fail-loud
+      // verify is skipped exactly when (and only when) the file is there.
+      ...(opts.auth
+        ? { auth: boxLoginUpload ? { ...opts.auth, loginFile: true } : opts.auth }
+        : {}),
       // F2 — the initial prompt rides the SAME dial as the spawn (device only).
       ...(carriedPrompt !== undefined ? { prompt: carriedPrompt } : {}),
     }
@@ -5589,6 +5653,12 @@ export async function bootSandboxAgentSession(opts: {
       host,
       remoteSessionId,
       lifecyclePolicy,
+      // BOX-LOGIN BRIDGE refresh — re-upload the copy when the HOST's login
+      // file changes under a long-lived box (see `createBoxLoginRefresher`;
+      // the proxy owns the throttle + closed/detached gate). Absent when the
+      // boot-time upload never happened, so a degraded spawn stays degraded
+      // instead of discovering a write path it never had.
+      ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
       // A provider box outlives a host-daemon restart (shutdown detaches
       // instead of killing it, boot re-attaches). Device sandboxes keep the
@@ -5661,6 +5731,49 @@ export async function bootSandboxAgentSession(opts: {
         }
       : {}),
   }
+}
+
+/**
+ * BOX-LOGIN BRIDGE — read the host's login file, build the redacted copy, and
+ * upload it into the box at its home-relative path. Any failure resolves to
+ * `{ok: false, message}` (never throws) so the caller degrades to today's
+ * fail-loud verify: a bridge that cannot run must not be the thing that kills
+ * the spawn, and must NEVER leave a box that spawned unauthenticated — hence
+ * the caller stamps `loginFile` only on an `ok: true`. Messages name the FILE
+ * or the recipe; no token value ever appears in one (see
+ * `box-login-bridge.ts`'s result messages, and the caught-error guards here).
+ */
+export async function uploadBoxLoginCopy(opts: {
+  decl: BoxLoginDecl
+  /** The provider's `defaultCwd` — the box home the relative path joins onto. */
+  homeDir: string
+  writeFile: (path: string, data: Uint8Array) => Promise<void>
+}): Promise<{ ok: true; boxPath: string; digest: string } | { ok: false; message: string }> {
+  let raw: string
+  try {
+    raw = await readRecipeLoginJson(opts.decl.recipe, opts.decl.methodId)
+  } catch {
+    return {
+      ok: false,
+      message:
+        `box login bridge: the "${opts.decl.recipe}" login file could not be read on the host — ` +
+        "the sandbox will verify its own login as before.",
+    }
+  }
+  const copy = buildLoginCopy(opts.decl, raw)
+  if (!copy.ok) return { ok: false, message: copy.message }
+  const boxPath = join(opts.homeDir, copy.path)
+  try {
+    await opts.writeFile(boxPath, new TextEncoder().encode(copy.body))
+  } catch (err) {
+    return {
+      ok: false,
+      message:
+        `box login bridge: writing "${boxPath}" into the sandbox failed — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  return { ok: true, boxPath, digest: copy.digest }
 }
 
 /**

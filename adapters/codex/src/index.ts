@@ -82,6 +82,34 @@ export const codex: AgentCliHandle = defineAgentCli({
   authSubscription: {
     external: true,
     conflictEnv: ["CODEX_API_KEY"],
+    // BOX-LOGIN BRIDGE — a fresh box has no `~/.codex/auth.json`, so the box's
+    // own fail-loud login verify would refuse every codex subscription spawn.
+    // The host re-creates a REDACTED copy there before `host.start()`:
+    //   - `tokens.access_token` / `tokens.id_token`: what codex authenticates
+    //     with. `id_token` must be a parseable JWT — codex 0.162.1 aborts on
+    //     `missing field id_token` (verified against the real CLI).
+    //   - `tokens.account_id`, `last_refresh`: the host's own values, kept so
+    //     the box's codex reads a coherent file. `last_refresh` is explicitly
+    //     kept despite containing "refresh" — it's a non-secret timestamp, and
+    //     the bridge's deny rule exempts it by name.
+    //   - `tokens.refresh_token`: NEVER the host's value. codex's parser
+    //     REQUIRES the field to exist as a string (`missing field` and
+    //     `invalid type: null` both abort the CLI before it starts — verified
+    //     against codex 0.162.1), so it is keep-listed EXACTLY to be emptied:
+    //     the bridge writes `""`, and the box's codex then fails loud at the
+    //     network instead of silently running unauthenticated.
+    // No `expiresPath`: codex's expiry lives inside the `id_token` JWT claim,
+    // not at a pluckable path, so there is nothing here to gate on.
+    boxLogin: {
+      recipe: "codex",
+      keep: [
+        "tokens.access_token",
+        "tokens.id_token",
+        "tokens.account_id",
+        "tokens.refresh_token",
+        "last_refresh",
+      ],
+    },
   },
   sandbox: "./SANDBOX.md",
   // Codex keeps a sqlite state db, PATH aliases and rollouts under CODEX_HOME

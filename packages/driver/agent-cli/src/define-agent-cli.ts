@@ -310,7 +310,17 @@ export function createAgentCliRuntime(
         // user must see BOTH paths, not just the one preference[0] happened
         // to land on (that was the bug: an api-key-only user told to buy a
         // subscription).
-        if (!authSpec.credential) {
+        // A resolved CREDENTIAL is what this path injects; the box-login
+        // bridge marker (`authSpec.loginFile`, see
+        // `AgentCliAuthSubscription.boxLogin`) means the credential is a FILE
+        // the host already uploaded into the box — so there is no bearer to
+        // inject and, deliberately, NO missing-credential fail-fast either:
+        // the file beside the spawn is what bills. Only reachable when the
+        // spec's runtime did not also set `externalCredential` (which stops
+        // above) — the belt-and-braces that keeps a host/box version skew
+        // from failing a spawn whose login file IS present. With NEITHER,
+        // today's fail-loud behavior is untouched.
+        if (authSpec.credential === undefined && !authSpec.loginFile) {
           const slug = definition.id
           const providerLabel = definition.provider ?? "<provider>"
           const configBlock =
@@ -332,6 +342,10 @@ export function createAgentCliRuntime(
                   `${storeHint}, then add ${configBlock}. Never inherited from the shell.`
           throw new RuntimeConfigError("missing_auth_credential", "opts.auth.credential", message)
         }
+        // Everything below is keyed to an INJECTED credential — a login-file
+        // spawn has none and must not be steered into a login-less data home
+        // (that would HIDE the very file this spawn bills through).
+        if (authSpec.credential !== undefined) {
         env[authSpec.setEnv] = authSpec.credential
         if (authSpec.extraEnv) {
           for (const [key, value] of Object.entries(authSpec.extraEnv)) {
@@ -348,6 +362,7 @@ export function createAgentCliRuntime(
         if (definition.credentialDataHome && authSpec.isolateDataHome !== false) {
           credentialDataDir = isolatedCredentialDataHome(opts?.configDir)
           env[definition.credentialDataHome.env] = credentialDataDir
+        }
         }
         }
       }

@@ -8,9 +8,13 @@
  * website password for a remote browser). The prompt impl is INJECTED — no
  * hard TTY dependency at import, same discipline as `fetchImpl` on
  * `httpTarget`. The result is sensitive: seal it immediately, never print it.
+ *
+ * `readRecipeLoginJson` is the sibling read that returns the recipe's WHOLE
+ * login document (no `jsonPath` extraction) — see its docblock.
  */
 
 import { resolveCredential, extractJsonPath } from "../index.js"
+import { resolveRecipeMethod } from "./registry.js"
 import type { CredentialSourceSpec } from "./types.js"
 
 export interface ResolveSourceOptions {
@@ -81,4 +85,44 @@ async function resolveKeychain(source: {
   }
   if (!raw) throw new Error(`keychain item '${source.keychain}' is empty`)
   return source.jsonPath ? extractJsonPath(raw, source.jsonPath) : raw
+}
+
+/**
+ * Read the WHOLE login-file JSON a recipe's method points at — the box-login
+ * bridge's raw input (`box-login-bridge.ts`), unlike {@link resolveSourceSpec}
+ * which extracts ONE credential field via `jsonPath`.
+ *
+ * Deliberately narrow about sources: only `file` and `keychain` carry a JSON
+ * document (an `env`/`prompt` source holds a bare credential, not a login
+ * file), so those are skipped and the chain fails when nothing else resolves.
+ * The `jsonPath` of each source is IGNORED — the caller wants the document the
+ * CLI itself parses, not the one extractable field inside it. The value is
+ * sensitive: hand it straight to the bridge, never print it.
+ *
+ * `methodId` selects a multi-surface recipe's flavor (opencode:
+ * `anthropic-oauth` / `openai-oauth`); omitted ⇒ the recipe's default method,
+ * matching {@link resolveSourceSpec}'s callers.
+ */
+export async function readRecipeLoginJson(
+  recipeId: string,
+  methodId?: string,
+): Promise<string> {
+  const { method } = resolveRecipeMethod(recipeId, methodId)
+  const chain = Array.isArray(method.source) ? method.source : [method.source]
+  const errors: string[] = []
+  for (const spec of chain) {
+    try {
+      if ("file" in spec) {
+        return await resolveCredential({ fromFile: spec.file })
+      }
+      if ("keychain" in spec) {
+        return await resolveKeychain({ keychain: spec.keychain, ...(spec.account !== undefined ? { account: spec.account } : {}) })
+      }
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err))
+    }
+  }
+  throw new Error(
+    `no login file for recipe '${recipeId}' method '${method.id}' (${errors.join("; ") || "only env/prompt sources declared"})`,
+  )
 }

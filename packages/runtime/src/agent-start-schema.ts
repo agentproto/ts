@@ -281,6 +281,13 @@ export const agentStartInputShape = {
       token: z.string().optional(),
       source: z.string().optional(),
       apiKey: z.string().optional(),
+      // BOX-LOGIN BRIDGE — the HOST's forward-to-box marker: `true` means "the
+      // redacted login copy for this file-based subscription was uploaded into
+      // this box", which is the ONE thing that lets `resolveAuthSpec` skip its
+      // missing-credential fail-fast. Set by the host's spawn/restart code only
+      // after a successful write (see `box-login-bridge.ts`), never by a
+      // client — hence a strict boolean, never a string/number.
+      loginFile: z.boolean().optional(),
     // Passthrough: a host forwards sub-account scope (credentialEnv/extraEnv/
     // isolateDataHome) to its sandbox box; spawn-defaults validates those keys.
     }).passthrough()

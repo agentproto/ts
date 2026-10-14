@@ -74,6 +74,7 @@ import {
   resolveAuthSpec,
   SubscriptionSourceError,
   modelIdPrefixProvider,
+  boxLoginDeclFor,
   forwardedSubaccountAuthInputs,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
@@ -81,7 +82,9 @@ import {
   type AuthEcho,
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
-import { bootSandboxAgentSession, stampDaemonCallerSessionId } from "./session-spawn.js"
+import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
+import { bootSandboxAgentSession, stampDaemonCallerSessionId, uploadBoxLoginCopy } from "./session-spawn.js"
+import { createBoxLoginRefresher, type BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 import { findWorkspace, loadWorkspacesConfig } from "./workspaces-config.js"
 import { SANDBOX_BRANCH_PREFIX } from "./sandbox-workspace-remote.js"
 import { stripOwnCallerStamp } from "./session-continue-fresh.js"
@@ -446,6 +449,7 @@ export async function resolveResumeAuth(
       : {}),
     ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
     ...forwardedSubaccountAuthInputs(spawnDefaults.auth),
+    ...(spawnDefaults.auth.loginFile === true ? { loginFile: true } : {}),
   })
   let authSpec = result?.spec
   const authEcho = result?.echo
@@ -977,6 +981,13 @@ export async function restartAgentSession(
     authEcho = resumeAuth.authEcho
   }
 
+  // BOX-LOGIN BRIDGE declaration for THIS restart — see `spawn-defaults.ts`'s
+  // `boxLoginDeclFor`. Undefined for bearer/api-key sessions and for adapters
+  // that declare no `boxLogin`, which leaves both restart paths below exactly
+  // as they are today. Computed once here so the re-attach path and the
+  // fresh-box path bridge the SAME declaration.
+  const boxLogin = boxLoginDeclFor(resolved?.authDescriptor, authSpec, authEcho?.provider)
+
   // Copying `prev.mcpServers` verbatim would carry the OLD session's own
   // `callerSessionId` stamp (baked in at ITS spawn time) onto the fresh
   // restart — every spawn/`command_execute` the restarted session makes
@@ -1362,6 +1373,42 @@ export async function restartAgentSession(
           `box ${host.sandboxId} — the handoff will fall back to the digest`,
       )
     }
+
+    // BOX-LOGIN BRIDGE — same upload the fresh boot does: a re-attach can land
+    // on a box booted BEFORE this bridge existed (or by a host whose copy
+    // never took), and `host.start`'s own fail-loud login verify runs inside
+    // this call. Degrades exactly like `session-spawn.ts`'s: no copy → no
+    // `loginFile` stamp → today's behavior, never a box spawned without the
+    // file it was told to expect. A device box can't reach this path at all
+    // (`parseSandboxProviderSlug` matches `sandbox:<provider>` only), so no
+    // device guard is needed here.
+    let boxLoginUpload: { boxPath: string; digest: string } | undefined
+    let refreshBoxLogin: (() => Promise<BoxLoginRefreshOutcome>) | undefined
+    if (
+      boxLogin &&
+      authSpec?.mode === "subscription" &&
+      authSpec.externalCredential === true &&
+      handle.defaultCwd &&
+      host.writeFile
+    ) {
+      const decl = boxLogin
+      const writeFile = host.writeFile
+      const uploaded = await uploadBoxLoginCopy({ decl, homeDir: handle.defaultCwd, writeFile })
+      if (uploaded.ok) {
+        boxLoginUpload = { boxPath: uploaded.boxPath, digest: uploaded.digest }
+        refreshBoxLogin = createBoxLoginRefresher({
+          decl,
+          path: uploaded.boxPath,
+          read: () => readRecipeLoginJson(decl.recipe, decl.methodId),
+          write: writeFile,
+          digest: uploaded.digest,
+        })
+      } else {
+        // Named file, never a token — `uploadBoxLoginCopy`'s message rules.
+        console.warn(`[restartAgentSession] ${uploaded.message}`)
+      }
+    }
+
     let remoteSessionId: string
     try {
       const remoteDesc = await host.start({
@@ -1380,7 +1427,15 @@ export async function restartAgentSession(
         ...(effEffort ? { effort: effEffort } : {}),
         ...(prev.label ? { label: prev.label } : {}),
         ...(sandboxMcpServers ? { mcpServers: toBoxMcpServerMounts(sandboxMcpServers) } : {}),
-        ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho) } : {}),
+        // BOX-LOGIN BRIDGE: stamp `loginFile` ONLY on a copy that actually
+        // landed — the stamp is what tells the box's verify the file exists.
+        ...(authSpec
+          ? {
+              auth: boxLoginUpload
+                ? { ...sandboxAuthForBox(authSpec, authEcho), loginFile: true }
+                : sandboxAuthForBox(authSpec, authEcho),
+            }
+          : {}),
       })
       remoteSessionId = remoteDesc.id
       // The box reports `resumeVia` only when its own adapter actually
@@ -1410,6 +1465,11 @@ export async function restartAgentSession(
       host,
       remoteSessionId,
       lifecyclePolicy,
+      // BOX-LOGIN BRIDGE refresh — re-upload the copy when the HOST's login
+      // file changes under this re-attached box (see `createBoxLoginRefresher`;
+      // the proxy owns the throttle + closed/detached gate). Absent when the
+      // pre-start upload never happened, so a degraded restart stays degraded.
+      ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
       ...(providerSlug.startsWith("device:") ? {} : { detachable: true }),
       ...(tarTarget
@@ -1536,6 +1596,11 @@ export async function restartAgentSession(
       ...(effEffort ? { effort: effEffort } : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
+      // BOX-LOGIN BRIDGE: the fresh box verifies a login file exists before it
+      // starts — `bootSandboxAgentSession` uploads the redacted copy first and
+      // stamps `loginFile` on the block above, degrading to today's fail-loud
+      // verify when it cannot. See `box-login-bridge.ts`.
+      ...(boxLogin ? { boxLogin } : {}),
       ...workspaceArgs,
       sessionId: restartedSessionId,
       onDelivery: record => {
