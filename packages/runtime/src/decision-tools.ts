@@ -8,18 +8,25 @@
  *
  * The classifier backend is the existing generic Jev client
  * (`callJevSystemOne`), resolved through `resolveJevApiKey`/`resolveJevConfig`
- * — no new credential surface. The tool-less LLM escalation is NOT wired
- * here by default: embedding consumers (review host, steward) inject their
- * own no-tool escalation backend into `decide()` when configured. Acts on
- * nothing; never an MCP error result for a failed classification.
+ * — no new credential surface. No escalation backend is wired here: the
+ * harness escalation lives in the staged workflow tools
+ * (`decision-workflow-tools.ts`), where the execution profile gates it before
+ * any spawn. Acts on nothing; never an MCP error result for a failed
+ * classification.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 
-import { decide, type ClassifierOutcome } from "./decision.js"
+import { decide, type ClassifierOutcome, type DecisionBackendIdentity } from "./decision.js"
 import { parseDecisionPolicy } from "./decision-policy.js"
-import { callJevSystemOne, resolveJevApiKey, resolveJevConfig } from "./jev-client.js"
+import {
+  callJevSystemOne,
+  JEV_DEFAULT_MODEL,
+  JEV_DEFAULT_URL,
+  resolveJevApiKey,
+  resolveJevConfig,
+} from "./jev-client.js"
 
 const JEV_QUESTION_KEY = "decision"
 
@@ -31,6 +38,10 @@ export function makeJevDecisionClassifier(opts: {
   readonly baseUrl?: string | undefined
   readonly fetchImpl?: typeof fetch
   readonly sleep?: (ms: number) => Promise<void>
+  /** Transient-status retries inside the Jev client (default: the client's own). */
+  readonly maxRetries?: number | undefined
+  /** Per-attempt timeout (default: the client's own). */
+  readonly timeoutMs?: number | undefined
 }): (input: { state: unknown; question: { instructions: string; criteria: Readonly<Record<string, string>> } }) => Promise<ClassifierOutcome> {
   return async input => {
     if (!opts.apiKey) return { ok: false, error: "JEV_API_KEY not configured" }
@@ -49,6 +60,8 @@ export function makeJevDecisionClassifier(opts: {
         ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
         ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
         ...(opts.sleep !== undefined ? { sleep: opts.sleep } : {}),
+        ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       },
     )
     if (!outcome.ok) return { ok: false, error: outcome.error }
@@ -72,6 +85,21 @@ export function makeJevDecisionClassifier(opts: {
   }
 }
 
+/** Cache identity of the Jev backend: kind + endpoint host + model. A key
+ *  change (different model/host) must never replay another backend's answer. */
+export function jevClassifierIdentity(
+  model: string | undefined,
+  baseUrl: string | undefined,
+): DecisionBackendIdentity {
+  let host = "default"
+  try {
+    host = new URL(baseUrl ?? JEV_DEFAULT_URL).host
+  } catch {
+    host = "invalid-url"
+  }
+  return { kind: "jev", host, model: model ?? JEV_DEFAULT_MODEL }
+}
+
 export function registerDecisionTools(server: McpServer): void {
   server.tool(
     "decision_decide",
@@ -80,11 +108,14 @@ export function registerDecisionTools(server: McpServer): void {
       "then at most one bounded Jev typed-choice classifier call, then the " +
       "policy's conservative default. Returns `{ choice, source, matchedRules, " +
       "probabilities?, confidence?, margin?, policyHash, evidenceHash, " +
-      "classifierConfigHash, escalationHistory, truncated, incompleteEvidence }` " +
-      "— never an error result for a failed classification, never a mutation. " +
-      "`source` is rule | rule-floor | classifier | escalation | default; only " +
-      "choices declared in the policy can appear. The default export policy " +
-      "sends no paths/code/messages to the classifier.",
+      "classifierConfigHash, escalationHistory, truncated, incompleteEvidence, " +
+      "status }` — never an error result for a failed classification, never a " +
+      "mutation. `source` is rule | rule-floor | classifier | escalation | default; " +
+      "`status` is `decided` or `fallback` (the conservative default applied — a " +
+      "safe answer, not a trusted one, and never cached). Only choices declared in " +
+      "the policy can appear. The default export policy sends no " +
+      "paths/code/messages to the classifier. No escalation runs here; use the " +
+      "`decision_*` workflow stage tools for the profile-gated harness escalation.",
     {
       policy: z
         .string()
@@ -113,6 +144,7 @@ export function registerDecisionTools(server: McpServer): void {
           ...(classifierModel !== undefined ? { model: classifierModel } : {}),
           ...(jevCfg.baseUrl !== undefined ? { baseUrl: jevCfg.baseUrl } : {}),
         }),
+        classifierIdentity: jevClassifierIdentity(classifierModel, jevCfg.baseUrl),
       })
       return { content: [{ type: "text", text: JSON.stringify(outcome) }] }
     },

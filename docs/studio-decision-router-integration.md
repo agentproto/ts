@@ -1,81 +1,88 @@
-# Studio decision-router integration — DESIGN ARTIFACT (not implemented here)
+# Studio review client ↔ decision-route workflow
 
-**Status: design only.** The studio repository is a separate clone and was
-NOT present in the checkout that shipped the agentproto decision primitive
-(`packages/runtime/src/decision*.ts`, `decision_decide` tool,
-`docs/decision-policy.md`). Nothing in this file has been applied or tested
-against studio; treat it as the concrete integration patch to run in a
-studio checkout next. Do not read it as "studio wiring is done".
+**Status: contract verified, not activated.** Checked read-only against the
+merged studio change (agentik-studio #684, "one reviewer per range and an
+explicit free-only profile"): `scripts/gate.mjs`, `REVIEW.md`,
+`scripts/review/router-jev.mjs`. Nothing here edits studio, changes operator
+config, restarts a daemon or turns semantic routing on. The studio gate keeps
+its deterministic router as the only enforcing path.
 
-Goal (from the accepted plan, step 0 + 1): studio's review gate routes each
-run through the shared `decide()` primitive with a `DECISION.md` policy
-(choices `light | standard | deep`), replacing the review-specific selection
-in `scripts/review/router.mjs`, while `REVIEW.md` bindings drop from four
-default substantive reviews to exactly one per binding.
+## The contract (what #684 established)
 
-## Expected files (studio repo)
-
-| File | Change |
+| Studio (merged) | decision-route |
 | --- | --- |
-| `scripts/review/DECISION.md` | NEW — the review routing policy (below). |
-| `scripts/review/router.mjs` | Keep deterministic skip logic; delegate standard-vs-deep (and light) to `decision_decide` / `decide()` with evidence built from the existing router inputs. |
-| `scripts/review/router.config.json` | Map choices → bindings; single reviewer + one fallback preset each; keep the free-model guard + subscription exception. |
-| `scripts/gate.mjs` | `bindingsFor` returns exactly ONE default binding (light / local / deep); `GATE_DEEP=always\|never` preserved; optional sequential second-opinion mode off by default; never re-review after block/incomplete. |
-| `scripts/gate.test.mjs`, router tests | Spawn-count assertions: ordinary → 1 substantive reviewer; docs-only → claims only; hard-risk → deep only (no preliminary standard); block → no second attempt. |
-| `scripts/review/rubrics/*` | Combined correctness+claims rubric built from the existing two; deterministic checks stay in command lanes, run once. |
-| `REVIEW.md` | `local` = deterministic checks + one combined free reviewer; `light` = gate tests + one claims reviewer; `deep` = deterministic checks + one combined subscription reviewer. |
-| `scripts/review/router-jev.mjs` | Shadow-mode comparison only during rollout; enforcement switches to the shared primitive; retire the parallel path once fixtures agree. |
+| Exactly ONE review binding per range: `light`, `local`, `deep`, `deep-free` | choice → binding map (`bindings` input); a binding names checks, a check names a preset — never a model id |
+| Router decisions `skip` / `standard` / `deep` | `bindings` default `{skip: light, light: light, standard: local, deep: deep}` accepts both vocabularies |
+| `GATE_EXEC_PROFILE=subscription` (default) | `profile: remote-sonnet` — free OpenCode ids + the configured Claude Code Sonnet |
+| `GATE_EXEC_PROFILE=free-only`; `deep` → `deep-free`; gate refuses if any selectable lane, fallback or `review.recovery` preset is not a free OpenCode preset | `profile: local-free`; `freeBindings: {deep: deep-free}`; the workflow checks the same set (primaries, fallbacks, recovery preset + role override, rotate targets, OpenRouter) **before spawn** and refuses — no Sonnet substitute |
+| `GATE_DEEP=auto\|always\|never` | stays in the studio client (a policy override); not read by the workflow |
+| `GATE_JEV=on`: Jev is **shadow only**, metadata only, logged to `.logs/gate/router/shadow.jsonl`, never affects the verdict | `mode: shadow` (default): the whole decision runs, no review lane starts, report state `shadow` |
 
-## Policy mapping
+One binding, one profile variable: the studio client maps its single
+`GATE_EXEC_PROFILE` to the workflow `profile` and nothing else
+(`profileFor()` in the example client below). The workflow never reads
+studio config; the profile can only narrow, never widen, what the daemon's
+presets allow.
 
-| Studio concept | DECISION.md |
-| --- | --- |
-| skip | rule (docs-only / no-op evidence) → `light` or a skip rule resolved before the router |
-| standard reviewer (free, combined) | choice `standard` |
-| deep reviewer (subscription) | choice `deep` |
-| claims-only binding | choice `light` |
-| hard-risk paths | `floor: true` rule → `deep` (never downgraded) |
-| provably docs-only range | resolve rule → `light`, zero model calls |
-| ambiguous ordinary change | classifier + thresholds; escalation once; default `deep` |
+Two intentional differences to know about:
 
-Evidence builder (studio-owned): change counts/types, risk categories from
-the existing router criteria, signal flags, completeness — no paths, code or
-commit text by default (matches the primitive's closed export policy; the
-studio policy sets `tier1Fields` explicitly).
+- The workflow's *default* profile is `local-free` (fail-safe); studio's
+  default is `subscription`. The client always passes the profile explicitly.
+- Under `local-free` the operator must name the escalation target
+  (`profileOptions.escalation.preset` → an OpenCode `-free` preset). With no
+  target the escalation is recorded `refused` and the conservative default
+  applies; nothing paid is substituted.
 
-## Sketch: router.mjs delegation (unapplied)
+## Exact invocation
 
-```js
-// pseudocode — validate against the real router.mjs shape in the studio tree
-import { parseDecisionPolicy, decide } from "@agentproto/runtime" // or decision_decide tool step
-
-const policy = parseDecisionPolicy(await readFile(new URL("./DECISION.md", import.meta.url), "utf8"))
-if (!policy.ok) throw new Error(`DECISION.md invalid: ${policy.policy ?? policy.errors.join("; ")}`)
-
-const evidence = {
-  changeCounts: summary.counts,
-  changeTypes: summary.types,          // e.g. "docs-only" | "code"
-  riskCategories: summary.riskCategories,
-  signals: summary.signals,            // e.g. ["hardRisk"]
-  completeness: summary.complete ? 1 : 0,
-  evidenceRefs: summary.refs,
-}
-const decision = await decide(policy.policy, evidence, { /* Jev classifier via existing router-jev adapter; escalate: small-model no-tool call when GATE_JEV escalation configured */ })
-// decision.choice: "light" | "standard" | "deep" → pick the single binding; log decision.source + policyHash in the report
+```sh
+agentproto workflow run-file \
+  packages/runtime/workflows/decision-route/WORKFLOW.md \
+  --cwd /path/to/repo \
+  --input-json '{"cwd":"/path/to/repo","policyPath":"DECISION.md","profile":"local-free","mode":"shadow","profileOptions":{"escalation":{"preset":"my-opencode-free"}}}'
+agentproto workflow status <runId>
 ```
 
-## Rollout order (per the accepted plan)
+(`<pkg>/workflows/decision-route/WORKFLOW.md` in an installed
+`@agentproto/runtime`; MCP equivalent: `workflow_run_file`.) The `validate`
+step output is the report: `state`, `approved`, `choice`, `decisionSource`,
+`decisionStatus`, `binding`, `fallbackCount`, `recoveryCount`, `escalation`
+(attempt, adapter, model, wait reason, configured-vs-enforced tool controls),
+and `trace` with workflow / run id / step / parent session / profile.
 
-1. Land this primitive in agentproto (done in that repo's PR).
-2. Studio: add `DECISION.md` + tests with fixtures replayed in SHADOW mode
-   (`router-jev.mjs`-style comparison): assert the router's choice matches
-   the previous deterministic router on ordinary, docs-only and hard-risk
-   fixtures before enforcement.
-3. Switch `bindingsFor` to one binding per run; keep `GATE_DEEP` semantics;
-   add the opt-in sequential second opinion (off by default; not after
-   block/incomplete).
-4. Only then enforce decision-backed routing; retire the shadow path.
+Executable shadow client: `workflows/decision-route/examples/shadow-client.mjs`
+(runs the CLI above, waits bounded, appends one line to a shadow log;
+failures are non-fatal and never exit non-zero).
 
-Budget note: whole-workflow attempt/deadline ceilings (plan step 3) are
-runtime work and are NOT part of this artifact — do not claim token caps
-active until that runtime support ships.
+## Studio follow-up seam (separate PR in the studio repo — NOT done here)
+
+Smallest change, shadow by default, beside the existing `shadowRange()`
+(`scripts/gate.mjs`, the Jev shadow):
+
+1. Add `scripts/review/DECISION.md` — start from `examples/DECISION.md`.
+   Align its `riskCategories` / `signals` names with what `router.mjs`
+   emits (`categories`, `signals`) so the hard-risk floor fires on the same
+   evidence. Choices `skip|standard|deep` or `light|standard|deep` both map.
+2. Add a gated sibling of `shadowRange`, e.g. `GATE_DECISION_ROUTE=shadow`
+   (default off), that calls `shadow-client.mjs` with
+   `GATE_EXEC_PROFILE`, appending to
+   `.logs/gate/router/decision-route-shadow.jsonl`. Pass the router's
+   metadata via `buildEvidence(files, ruleResult)`; the router's own
+   *decision* is deliberately not part of the evidence.
+3. Compare `report.choice` with the deterministic router per range for a
+   while. Only after agreement is established — and only by an operator —
+   switch `bindingsFor()` to take the workflow's `binding` for an
+   `approved`-capable state. Until then the verdict path is untouched.
+4. Keep the studio free-only guard (`checkProfilePresets`): it is the
+   client-side early exit; the workflow's preflight is the daemon-side check.
+
+## Remaining activation steps (operator-owned, none performed)
+
+1. Ship/upgrade `@agentproto/runtime` to a daemon that registers the
+   `decision_*` tools (the daemon restart is the operator's call).
+2. Define presets: an OpenCode `-free` escalation preset; reviewer presets
+   referenced by REVIEW.md (`opencode-free-review`, `claude-sonnet-review` in
+   the example).
+3. Enable Jev only where intended (`remote-sonnet` + `jev.apiKey`); metadata
+   only leaves the machine.
+4. Land the studio seam above in shadow, review the log, then decide.

@@ -51,6 +51,8 @@ import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
 import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 import { registerDecisionTools } from "./decision-tools.js"
+import { createDaemonEscalationHost } from "./decision-escalation.js"
+import { registerDecisionWorkflowTools } from "./decision-workflow-tools.js"
 export {
   DECISION_POLICY_SCHEMA_VERSION,
   decisionPolicyHash,
@@ -2680,6 +2682,21 @@ export async function createGateway(
       })
     : undefined
 
+  // The review host's verdict-recovery config, read per recovery so a config
+  // change applies without a restart. Shared with the decision-route
+  // workflow tools, which preflight it against the execution profile.
+  const getReviewRecovery = () => {
+    const presets = (daemonConfig.review?.recoveryPresets ?? []).filter(
+      (p): p is string => typeof p === "string" && p.trim().length > 0,
+    )
+    if (presets.length === 0) return undefined
+    const role = resolveModelRoleEntry("review.recovery", { daemon: daemonConfig.models })
+    return {
+      presets,
+      ...(role ? { model: { model: role.model, ...(role.profile ? { profile: role.profile } : {}) } } : {}),
+    }
+  }
+
   // Review runner — singleton per daemon (review-runner.ts), shared across
   // all MCP connections like `workflowRunner`. Attestations persist to the
   // review ledger under ~/.agentproto/reviews (a throwaway temp root when
@@ -2712,17 +2729,7 @@ export async function createGateway(
             eventRing,
             resolveAgentAdapter: opts.resolveAgentAdapter,
             ...(daemonConfig.review?.laneRetries !== undefined ? { laneRetries: daemonConfig.review.laneRetries } : {}),
-            getRecovery: () => {
-              const presets = (daemonConfig.review?.recoveryPresets ?? []).filter(
-                (p): p is string => typeof p === "string" && p.trim().length > 0,
-              )
-              if (presets.length === 0) return undefined
-              const role = resolveModelRoleEntry("review.recovery", { daemon: daemonConfig.models })
-              return {
-                presets,
-                ...(role ? { model: { model: role.model, ...(role.profile ? { profile: role.profile } : {}) } } : {}),
-              }
-            },
+            getRecovery: getReviewRecovery,
             spawnDeps: {
               resolveSandboxProvider: resolveSandboxProviderResolved,
               ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
@@ -3339,6 +3346,32 @@ export async function createGateway(
     // from `tool` steps. Classifier = the generic Jev client; no escalation
     // backend is wired at the tool layer.
     registerDecisionTools(server)
+    // `decision_*` stage tools — the staged `decision-route` workflow
+    // (workflows/decision-route). The escalation host is built per call from
+    // the resolved execution profile, which re-checks the live session.
+    registerDecisionWorkflowTools(server, {
+      reviewRunner,
+      getRecovery: getReviewRecovery,
+      presetLookups: {
+        resolveRole: role => resolveModelRoleEntry(role, { daemon: daemonConfig.models }),
+      },
+      ...(opts.resolveAgentAdapter
+        ? {
+            createEscalationHost: profile =>
+              createDaemonEscalationHost({
+                registry: sessions,
+                sessionEvents,
+                eventRing,
+                resolveAgentAdapter: opts.resolveAgentAdapter!,
+                spawnDeps: {
+                  resolveSandboxProvider: resolveSandboxProviderResolved,
+                  ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+                },
+                profile,
+              }),
+          }
+        : {}),
+    })
     // Persisted harness→profile bindings (harness_preset_list/create/delete/
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.

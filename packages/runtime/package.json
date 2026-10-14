@@ -184,6 +184,7 @@
     "dist",
     "docs",
     "schemas",
+    "workflows",
     "README.md",
     "LICENSE"
   ],
