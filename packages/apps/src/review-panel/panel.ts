@@ -13,12 +13,10 @@
  * template string — same technique as work-board (see that package's
  * ./panel.ts docblock): the source lives in ./ui/** (index.html/main.ts/
  * types.ts/render.ts/style.css, bundled by ./ui/vite.config.ts with
- * vite-plugin-singlefile) and is committed, pre-built, into
- * ./panel.generated.ts by `pnpm --filter @agentproto/apps run build:ui:reviews`
- * (scripts/build-review-panel-ui.mjs) — so this package still builds with
- * plain `pnpm build` on a fresh clone, no Vite step in the critical path.
- * `build:ui:reviews:check` (wired into CI) fails if that generated file
- * drifts from what the Vite sources actually produce.
+ * vite-plugin-singlefile) and lands in ./panel.generated.ts — a gitignored
+ * build artifact, never committed, rebuilt from whatever is on disk before
+ * anything reads it by `generate:ui` (scripts/build-review-panel-ui.mjs, run
+ * from the package's prebuild/precheck-types/pretest hooks).
  *
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage (../panel-bridge.ts)

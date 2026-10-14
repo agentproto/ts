@@ -15,13 +15,13 @@
  * `STORE_HTML` is a real single-file Vite build, not a hand-authored
  * template string: the source lives in ./ui/** (index.html/main.ts/
  * types.ts/render.ts/style.css, bundled by ./ui/vite.config.ts with
- * vite-plugin-singlefile) and is committed, pre-built, into
- * ./panel.generated.ts by `pnpm --filter @agentproto/apps run
- * build:ui:store` (scripts/build-store-ui.mjs) — same committed-generated
- * contract as work-board (panel.generated.ts lives in git,
- * `build:ui:store:check` fails the CI drift gate). See ./ui/vite.config.ts
- * for how the shared `panelBridgeScript` (../panel-bridge.ts) gets inlined
- * as a classic `<script>` ahead of the bundled module script.
+ * vite-plugin-singlefile) and lands in ./panel.generated.ts — a gitignored
+ * build artifact, never committed, same contract as work-board:
+ * `generate:ui` (scripts/build-store-ui.mjs, run from the package's
+ * prebuild/precheck-types/pretest hooks) rebuilds it from whatever is on
+ * disk before anything reads it. See ./ui/vite.config.ts for how the shared
+ * `panelBridgeScript` (../panel-bridge.ts) gets inlined as a classic
+ * `<script>` ahead of the bundled module script.
  *
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage (../panel-bridge.ts,
