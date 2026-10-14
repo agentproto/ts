@@ -265,6 +265,7 @@ import { computeContextPct } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
   restartAgentSession,
@@ -5491,6 +5492,12 @@ export function buildSpawnSessionHttpArgs(
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
     ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
+    // AIP-66 managed cloud vendor — the HTTP twin of the MCP `agent_start`
+    // tool's `cloud` field. Forwarded verbatim; spawnAgentSession's
+    // resolveCloudSpawn refuses an unknown vendor or a §4 field by name
+    // (`cloud_spawn_refused`, 400 via spawnFailureStatus) before any side
+    // effect, and resolves the vendor's own adapter/harness in its place.
+    ...(typeof b.cloud === "string" && b.cloud.length > 0 ? { cloud: b.cloud } : {}),
     ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
     ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
       ? { workspaceSlug: b.workspaceSlug }
@@ -5837,7 +5844,8 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_not_found" ||
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
-    code === "device_spawn_unreachable"
+    code === "device_spawn_unreachable" ||
+    code === "cloud_spawn_refused"
   ) {
     return 400
   }
@@ -6630,12 +6638,19 @@ async function handleSessions(
     // Default harness for a local endpoint bind: `inference` with no
     // explicit adapter/harness/preset defaults to "pi" (SESSION-INFERENCE-
     // BINDING item 3) — mirrors agent-tools.ts's `agent_start` handler.
+    // AIP-66 managed cloud: a `cloud` spawn with no adapter/harness/preset
+    // does NOT fail `missing_adapter` — the VENDOR's cloud adapter is
+    // resolved inside spawnAgentSession (resolveCloudSpawn), so the
+    // placeholder its `adapter: string` type demands is passed instead.
+    const cloud = typeof b.cloud === "string" && b.cloud.length > 0 ? b.cloud : undefined
     const adapter =
       typeof b.adapter === "string"
         ? b.adapter
         : typeof b.harness === "string"
           ? b.harness
-          : (preset?.adapter ?? preset?.harness ?? (b.inference ? "pi" : ""))
+          : (preset?.adapter ??
+            preset?.harness ??
+            (b.inference ? "pi" : cloud ? CLOUD_ADAPTER_PLACEHOLDER : ""))
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true

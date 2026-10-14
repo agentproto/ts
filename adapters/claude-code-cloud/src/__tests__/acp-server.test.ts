@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type {
   AgentSideConnection,
+  LoadSessionRequest,
   NewSessionRequest,
   PromptRequest,
   PromptResponse,
@@ -15,6 +19,7 @@ import {
   type CloudCliDeps,
   type CloudEventsClient,
 } from "../acp-server.js"
+import { CLOUD_SESSION_META_FILE_ENV, CLOUD_VENDOR_SLUG } from "../meta-file.js"
 import type { CloudEventsPage, CloudSessionEvent } from "../sessions-api.js"
 
 // ── fixtures (FAKE ids/text, shaped like the 2026-10-14 observations) ──────
@@ -573,6 +578,171 @@ describe("ClaudeCloudAcpAgent", () => {
       h.agent.setSessionConfigOption({} as never),
     ).resolves.toEqual({ configOptions: [] })
     await expect(h.agent.setSessionMode({} as never)).resolves.toEqual({})
+  })
+})
+
+describe("ClaudeCloudAcpAgent — session/load re-attach (AIP-66 §5)", () => {
+  async function loadSession(
+    h: Harness,
+    sessionId: string,
+    cwd = "/repo",
+    mcpServers: unknown[] = [],
+  ): Promise<unknown> {
+    return h.agent.loadSession({
+      sessionId,
+      cwd,
+      mcpServers,
+    } as unknown as LoadSessionRequest)
+  }
+
+  it("initialize advertises the loadSession capability", async () => {
+    const { api } = fakeApi([])
+    const h = harness({ api })
+    const res = await h.agent.initialize({} as never)
+    expect(res.agentCapabilities?.loadSession).toBe(true)
+  })
+
+  it("session/load adopts the vendor id — the next prompt SENDS, never starts a new cloud session", async () => {
+    // Cursor-aware events client: without a cursor it serves the session's
+    // pre-existing history (whose OLD `result` must not end the new turn);
+    // with the seed's cursor it serves only post-attach events.
+    const calls: Array<{ id: string; cursor?: string }> = []
+    const history: CloudEventsPage = {
+      data: [resultEvent("r0")],
+      resume_cursor: "cur-0",
+    }
+    const api: CloudEventsClient = {
+      async listEvents(id, opts) {
+        calls.push({ id, ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}) })
+        if (!opts?.cursor) return history
+        return { data: [resultEvent("r1")], resume_cursor: "cur-1" }
+      },
+    }
+    const h = harness({ api })
+    await loadSession(h, VENDOR_ID)
+    // The load pre-marked the history page (seed = one no-cursor read).
+    expect(calls).toEqual([{ id: VENDOR_ID }])
+
+    const res: PromptResponse = await h.agent.prompt(prompt(VENDOR_ID, "again"))
+    expect(res.stopReason).toBe("end_turn")
+    // Re-attach goes through sendPrompt — a resumed relay MUST NOT start a
+    // replacement vendor session (AIP-66 §5).
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.send).toHaveBeenCalledWith(VENDOR_ID, "again", { cwd: "/repo" })
+    // The observe poll resumed from the seed's cursor, so the old result
+    // was never even fetched — only the new turn's result ended the turn.
+    expect(calls).toEqual([
+      { id: VENDOR_ID },
+      { id: VENDOR_ID, cursor: "cur-0" },
+    ])
+  })
+
+  it("session/load refuses an id the vendor could never own — and starts nothing in its place", async () => {
+    const { api } = fakeApi([])
+    const h = harness({ api })
+    await expect(loadSession(h, "acp-uuid-never-learned")).rejects.toThrow(
+      /vendor session id/,
+    )
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.send).not.toHaveBeenCalled()
+  })
+
+  it("session/load accepts the API's cse_ spelling too", async () => {
+    const { api } = fakeApi([
+      { data: [resultEvent("r0")], resume_cursor: "cur-0" },
+      { data: [resultEvent("r1")], resume_cursor: "cur-1" },
+    ])
+    const h = harness({ api })
+    await loadSession(h, "cse_01FakeId")
+    const res = await h.agent.prompt(prompt(VENDOR_ID, "again"))
+    expect(res.stopReason).toBe("end_turn")
+    // Normalized to the CLI's session_ spelling before hitting the vendor.
+    expect(h.send).toHaveBeenCalledWith(VENDOR_ID, "again", { cwd: "/repo" })
+  })
+
+  it("session/load refuses mcpServers (AIP-66 §4 backstop)", async () => {
+    const { api } = fakeApi([])
+    const h = harness({ api })
+    await expect(loadSession(h, VENDOR_ID, "/repo", [{ name: "x" }])).rejects.toThrow(
+      /mcpServers is not supported/,
+    )
+    expect(h.validateRepo).not.toHaveBeenCalled()
+  })
+
+  it("session/load re-validates the repo source before adopting anything (AIP-66 §3)", async () => {
+    const { api } = fakeApi([])
+    const h = harness({ api })
+    h.validateRepo.mockRejectedValueOnce(new Error("working tree is dirty"))
+    await expect(loadSession(h, VENDOR_ID)).rejects.toThrow(/working tree is dirty/)
+    expect(h.send).not.toHaveBeenCalled()
+  })
+
+  it("reports the learned identity to the host's meta file — and never a credential (AIP-66 §8)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agp-cloud-meta-"))
+    const path = join(dir, "cloud-session.json")
+    const prev = process.env[CLOUD_SESSION_META_FILE_ENV]
+    process.env[CLOUD_SESSION_META_FILE_ENV] = path
+    try {
+      const { api } = fakeApi([{ data: [resultEvent("r1")], resume_cursor: "cur-1" }])
+      const h = harness({ api })
+      const id = await newSession(h)
+      await h.agent.prompt(prompt(id, "hello"))
+
+      const raw = await readFile(path, "utf8")
+      expect(JSON.parse(raw)).toEqual({
+        vendor: CLOUD_VENDOR_SLUG,
+        sessionId: VENDOR_ID,
+        url: VENDOR_URL,
+      })
+      // Exactly the three §5 fields — the vendor's OAuth credential never
+      // enters this file.
+      expect(Object.keys(JSON.parse(raw)).sort()).toEqual(["sessionId", "url", "vendor"])
+      expect(raw).not.toMatch(/accessToken|oauth|Bearer/i)
+    } finally {
+      if (prev === undefined) delete process.env[CLOUD_SESSION_META_FILE_ENV]
+      else process.env[CLOUD_SESSION_META_FILE_ENV] = prev
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("session/load re-reports the adopted id, preserving the learned URL on disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agp-cloud-meta-"))
+    const path = join(dir, "cloud-session.json")
+    const prev = process.env[CLOUD_SESSION_META_FILE_ENV]
+    process.env[CLOUD_SESSION_META_FILE_ENV] = path
+    try {
+      // The file the FIRST spawn's relay wrote (id + URL learned at start).
+      await writeFile(
+        path,
+        JSON.stringify({ vendor: CLOUD_VENDOR_SLUG, sessionId: VENDOR_ID, url: VENDOR_URL }),
+        "utf8",
+      )
+      const { api } = fakeApi([{ data: [resultEvent("r0")], resume_cursor: "cur-0" }])
+      const h = harness({ api })
+      await loadSession(h, VENDOR_ID)
+      // A load carries no URL of its own — the one already on disk survives.
+      expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+        vendor: CLOUD_VENDOR_SLUG,
+        sessionId: VENDOR_ID,
+        url: VENDOR_URL,
+      })
+    } finally {
+      if (prev === undefined) delete process.env[CLOUD_SESSION_META_FILE_ENV]
+      else process.env[CLOUD_SESSION_META_FILE_ENV] = prev
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("no meta file env → the side file is simply not written (best-effort)", async () => {
+    const prev = process.env[CLOUD_SESSION_META_FILE_ENV]
+    delete process.env[CLOUD_SESSION_META_FILE_ENV]
+    try {
+      const { api } = fakeApi([{ data: [resultEvent("r0")], resume_cursor: "cur-0" }])
+      const h = harness({ api })
+      await expect(loadSession(h, VENDOR_ID)).resolves.toBeDefined()
+    } finally {
+      if (prev !== undefined) process.env[CLOUD_SESSION_META_FILE_ENV] = prev
+    }
   })
 })
 

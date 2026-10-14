@@ -38,6 +38,7 @@ import type {
   AdapterListEntry,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
+import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
@@ -413,7 +414,13 @@ export function registerAgentTools(
       // always wins.
       const adapter =
         input.adapter ?? input.harness ?? preset?.adapter ?? preset?.harness ?? (input.inference ? "pi" : undefined)
-      if (!adapter) {
+      // AIP-66 `cloud` spawn with no adapter/harness/preset choice: the
+      // VENDOR's cloud adapter is resolved inside spawnAgentSession
+      // (resolveCloudSpawn) — pass the placeholder its `adapter: string`
+      // type demands rather than failing here. A cloud spawn that names a
+      // foreign harness is still refused there, by name
+      // (`cloud_spawn_refused`, naming the vendor's allowed harnesses).
+      if (!adapter && !input.cloud) {
         return {
           content: [{ type: "text", text: "agent_start: adapter is required unless the selected preset provides one." }],
           isError: true,
@@ -440,7 +447,7 @@ export function registerAgentTools(
         },
         {
           ...spawnInput,
-          adapter,
+          adapter: adapter ?? CLOUD_ADAPTER_PLACEHOLDER,
           // Auto-stamp the source channel (#session-visibility): when the
           // caller didn't pass an explicit `origin`, fall back to the connecting
           // client's `?origin=` label so a bridge-client spawn (cowork/vscode/
@@ -498,11 +505,14 @@ export function registerAgentTools(
       // always been reported as a structured JSON blob (error/message/
       // +details); every other failure is a plain-text message.
       // Preserved verbatim here so the MCP tool's output shape doesn't
-      // change under this refactor.
+      // change under this refactor. AIP-66 `cloud_spawn_refused` joins the
+      // structured set so MCP callers can branch on the code (HTTP already
+      // surfaces it as `error` via `spawnFailureStatus`'s body).
       const text =
         result.code === "orchestrator_max_depth_exceeded" ||
         result.code === "orchestrator_child_quota_exceeded" ||
-        result.code === "role_spawn_denied"
+        result.code === "role_spawn_denied" ||
+        result.code === "cloud_spawn_refused"
           ? JSON.stringify(
               { error: result.code, message: result.message, ...result.details },
               null,

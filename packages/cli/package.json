@@ -117,6 +117,7 @@
   "devDependencies": {
     "@agentproto/adapter-antigravity": "workspace:*",
     "@agentproto/adapter-claude-code": "workspace:*",
+    "@agentproto/adapter-claude-code-cloud": "workspace:*",
     "@agentproto/adapter-claude-sdk": "workspace:*",
     "@agentproto/adapter-codex": "workspace:*",
     "@agentproto/adapter-gemini": "workspace:*",

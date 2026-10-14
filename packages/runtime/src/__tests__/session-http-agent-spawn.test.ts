@@ -638,3 +638,95 @@ describe("POST /sessions/agent — auth field (parseAuthField)", () => {
     expect(args.auth).toEqual({ mode: "api-key", apiKey: "sk-x" })
   })
 })
+
+describe("POST /sessions/agent — AIP-66 managed cloud (cloud field)", () => {
+  it("buildSpawnSessionHttpArgs forwards `cloud` verbatim; junk dropped", () => {
+    expect(buildSpawnSessionHttpArgs({ cloud: "anthropic" }, "claude-code-cloud").cloud).toBe(
+      "anthropic",
+    )
+    expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("cloud")
+    expect(buildSpawnSessionHttpArgs({ cloud: "" }, "mock")).not.toHaveProperty("cloud")
+    expect(buildSpawnSessionHttpArgs({ cloud: 42 }, "mock")).not.toHaveProperty("cloud")
+  })
+
+  it("cloud with NO adapter → 201 via the vendor's cloud adapter (no missing_adapter)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async (_opts: Record<string, any>) => fakeAgentSession())
+    const resolveAgentAdapter = vi.fn<AgentAdapterResolver>(async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    }))
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cloud: "anthropic", cwd: "/tmp", prompt: "hello cloud" }),
+      })
+      expect(res.status).toBe(201)
+      const desc = (await res.json()) as SessionDescriptor
+      expect(desc.adapterSlug).toBe("claude-code-cloud")
+      expect(resolveAgentAdapter).toHaveBeenCalled()
+      for (const call of resolveAgentAdapter.mock.calls) {
+        expect(call[0]).toBe("claude-code-cloud")
+      }
+      // The relay is told where to write the learned vendor session id.
+      expect(startSession.mock.calls[0]?.[0]?.env?.["AGENTPROTO_CLOUD_SESSION_META_FILE"]).toMatch(
+        /cloud-session\.json$/,
+      )
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("cloud + adapter 'hermes' → 400 cloud_spawn_refused, naming the vendor's allowed harness", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter = vi.fn<AgentAdapterResolver>(async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    }))
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cloud: "anthropic", adapter: "hermes", cwd: "/tmp", prompt: "hi" }),
+      })
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { error?: string; message?: string }
+      expect(body.error).toBe("cloud_spawn_refused")
+      expect(body.message).toContain("hermes")
+      expect(body.message).toContain("anthropic")
+      expect(body.message).toContain("claude-code")
+      // Refused before any side effect.
+      expect(resolveAgentAdapter).not.toHaveBeenCalled()
+      expect(startSession).not.toHaveBeenCalled()
+      expect(registry.list()).toHaveLength(0)
+    } finally {
+      await http.stop()
+    }
+  })
+})
