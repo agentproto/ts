@@ -602,7 +602,8 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  `AgentCliStartOptions.appendSystemPrompt`), which applies it per the
      *  adapter manifest's declared `systemPrompt.via` channel (`acp-meta`
      *  `_meta.systemPrompt.append` on new+load, `inline-config` the
-     *  inline-config env, `argv` the CLI flag). ONLY meaningful when this
+     *  inline-config env, `argv` the CLI flag, `env-file` the env var naming
+     *  the written text file). ONLY meaningful when this
      *  adapter's resolver entry sets `supportsSystemPrompt` — the runtime
      *  (`session-spawn.ts`) falls back to a first-prompt prefix + harness
      *  warning when that flag is absent/false, so the text is never
@@ -618,12 +619,25 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   supportsHostContextIsolation?: boolean
   /** True when this adapter declares a real system-prompt channel for
    *  `startSession({ appendSystemPrompt })` — i.e. its AIP-45 manifest has
-   *  `systemPrompt` (`acp-meta` / `inline-config` / `argv`). Absent/false ⇒
-   *  `session-spawn.ts` falls back to prefixing the text onto the first
-   *  prompt and raising an `agent_start` harness warning (never-silent,
-   *  matching `allowTools`); when true the text rides the channel instead
-   *  and NO warning is raised. */
+   *  `systemPrompt` (`acp-meta` / `inline-config` / `argv` / `env-file`),
+   *  and (for a conditional channel like hermes') the conditions for it
+   *  hold on this host. Absent/false ⇒ `session-spawn.ts` falls back to
+   *  prefixing the text onto the first prompt and raising an `agent_start`
+   *  harness warning (never-silent, matching `allowTools`); when true the
+   *  text rides the channel instead and NO warning is raised. */
   supportsSystemPrompt?: boolean
+  /** Character budget of this adapter's declared system-prompt channel (the
+   *  manifest `systemPrompt.maxChars`, e.g. hermes' plugin 7500). Set ⇒ a
+   *  longer text does NOT ride the channel: `session-spawn.ts` falls back to
+   *  the first-prompt prefix + a warning naming the limit, and
+   *  `agent-projection.ts` projects the text as `instructions` instead of
+   *  `systemPrompt`. */
+  systemPromptMaxChars?: number
+  /** Why `supportsSystemPrompt` is false even though the manifest declares a
+   *  channel (hermes: the agentproto hermes plugin is not installed/enabled
+   *  on this host). Appended to the spawn fallback warning so the fix is
+   *  named, not guessed. Evaluated per resolve, never cached at boot. */
+  systemPromptUnavailable?: string
   /** True when this adapter takes part in per-session imported-skill delivery
    *  — i.e. its manifest declares `metadata.sessionSkills` telling the driver
    *  where to materialize `start({ sessionSkills })`. Adapters without it

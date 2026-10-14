@@ -3013,23 +3013,38 @@ export async function spawnAgentSession(
   // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────
   // An adapter that declared a manifest `systemPrompt` channel takes the
   // text through `startSession({ appendSystemPrompt })` (the driver applies
-  // it per `via`). A sandbox spawn — the box resolves and spawns its OWN
+  // it per `via`). Three things keep that from happening, each with its own
+  // never-silent fallback to a first-prompt prefix + warning (same rule as
+  // `allowTools`): a sandbox spawn — the box resolves and spawns its OWN
   // adapter build, so this host's channel declaration doesn't travel with
-  // it — or a resolved adapter that declared no channel falls back to
-  // prefixing the text onto the first prompt: warned right here, prefixed
-  // in the composition below, same never-silent rule as `allowTools`.
+  // it; a resolved adapter whose channel is currently unavailable
+  // (`supportsSystemPrompt` false with a `systemPromptUnavailable` reason —
+  // hermes without its plugin); and text longer than the channel's budget
+  // (`systemPromptMaxChars` — hermes' plugin caps at 7500 chars).
   const appendSystemPromptChannel =
     input.appendSystemPrompt !== undefined &&
     input.sandbox === undefined &&
-    resolved?.supportsSystemPrompt === true
+    resolved?.supportsSystemPrompt === true &&
+    !(
+      resolved.systemPromptMaxChars !== undefined &&
+      input.appendSystemPrompt.length > resolved.systemPromptMaxChars
+    )
       ? input.appendSystemPrompt
       : undefined
   if (input.appendSystemPrompt !== undefined && appendSystemPromptChannel === undefined) {
+    const reason =
+      input.sandbox !== undefined
+        ? "a sandbox spawn starts the adapter on the box, which owns its own configuration."
+        : resolved?.supportsSystemPrompt === true
+          ? `the text is ${input.appendSystemPrompt.length} chars, over this harness's ${resolved.systemPromptMaxChars}-char system-prompt limit.`
+          : `adapter "${input.adapter}" declares no manifest systemPrompt channel${
+              resolved?.systemPromptUnavailable !== undefined
+                ? ` (${resolved.systemPromptUnavailable})`
+                : ""
+            }.`
     spawnWarnings.push(
       `agent_start: system-prompt text not delivered via a system-prompt channel — ` +
-        (input.sandbox !== undefined
-          ? "a sandbox spawn starts the adapter on the box, which owns its own configuration."
-          : `adapter "${input.adapter}" declares no manifest systemPrompt channel.`) +
+        reason +
         (typeof input.prompt === "string"
           ? " It rides the first prompt's prefix instead."
           : " There is no string first prompt to prefix it onto, so it is not delivered."),

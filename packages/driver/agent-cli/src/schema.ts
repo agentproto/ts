@@ -543,6 +543,11 @@ export const agentCliFrontmatterSchema = z
         shape: z.enum(["file-list", "text"]),
       }).strict(),
       z.object({ via: z.literal("argv"), flag: z.string().min(1) }).strict(),
+      z.object({
+        via: z.literal("env-file"),
+        env: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+        maxChars: z.number().int().positive().optional(),
+      }).strict(),
     ]).optional(),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),

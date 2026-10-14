@@ -393,15 +393,31 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     // the agent ref's projected `systemPrompt`): a channel-capable adapter
     // takes it through `startSession({ appendSystemPrompt })`. This host
     // path has NO prompt at spawn time (the step's prompt arrives later via
-    // `agent_prompt`), so an adapter without a channel gets the never-silent
-    // warning here — there is nothing to prefix onto yet.
+    // `agent_prompt`), so an adapter without a usable channel gets the
+    // never-silent warning here — there is nothing to prefix onto yet.
+    // Same two extra conditions as `session-spawn.ts`: the channel must be
+    // declared AND live (no `systemPromptUnavailable` reason), and the text
+    // must fit its `systemPromptMaxChars` budget.
     const appendSystemPrompt =
-      harness?.systemPrompt !== undefined && resolved.supportsSystemPrompt === true
+      harness?.systemPrompt !== undefined &&
+      resolved.supportsSystemPrompt === true &&
+      !(
+        resolved.systemPromptMaxChars !== undefined &&
+        harness.systemPrompt.length > resolved.systemPromptMaxChars
+      )
         ? harness.systemPrompt
         : undefined
     if (harness?.systemPrompt !== undefined && appendSystemPrompt === undefined) {
+      // Inside this branch the text exists but didn't ride the channel:
+      // either the adapter has none (today), or it has one and the text
+      // exceeded its budget.
       harnessWarnings.push(
-        `harness.systemPrompt: this harness has no system-prompt channel — the AGENT.md text is not delivered.`,
+        resolved.supportsSystemPrompt !== true
+          ? `harness.systemPrompt: this harness has no system-prompt channel — the AGENT.md text is not delivered.` +
+              (resolved.systemPromptUnavailable !== undefined
+                ? ` (${resolved.systemPromptUnavailable})`
+                : "")
+          : `harness.systemPrompt: the text is ${harness.systemPrompt.length} chars, over this harness's ${resolved.systemPromptMaxChars}-char system-prompt limit — not delivered.`,
       )
     }
     let fsZones: ReturnType<typeof boundaryToSandboxZones> | undefined

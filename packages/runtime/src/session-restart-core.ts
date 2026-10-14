@@ -1079,8 +1079,14 @@ export async function restartAgentSession(
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
       // Re-apply the AGENT.md system-prompt text on the SAME declared channel
       // (the original spawn already warned + prefixed when the adapter had
-      // none — a channel-less lineage has nothing left to re-apply here).
-      ...(prev.appendSystemPrompt && resolved.supportsSystemPrompt === true
+      // none — a channel-less lineage has nothing left to re-apply here) —
+      // and only when it still fits the channel's char budget: an over-limit
+      // text was prefixed at spawn, and re-applying it through the channel
+      // would silently exceed the harness's cap.
+      ...(prev.appendSystemPrompt &&
+      resolved.supportsSystemPrompt === true &&
+      (resolved.systemPromptMaxChars === undefined ||
+        prev.appendSystemPrompt.length <= resolved.systemPromptMaxChars)
         ? { appendSystemPrompt: prev.appendSystemPrompt }
         : {}),
       ...(authSpec ? { auth: authSpec } : {}),

@@ -1410,7 +1410,9 @@ export interface AgentCliStartOptions {
    * `newSession` and `loadSession`); `inline-config` layers the text into its
    * env var BEFORE the child spawns; `argv` is appended to the child's own
    * args (or, for a `proprietary` arm that composes its own argv, handed to
-   * the connect below). An adapter that declares no `systemPrompt` ignores
+   * the connect below); `env-file` writes the text to a file and points the
+   * declared env var at it (before the child spawns). An adapter that
+   * declares no `systemPrompt` ignores
    * this; the runtime is expected to have already fallen back to a
    * first-prompt prefix + harness warning in that case (never-silent).
    */
@@ -1483,6 +1485,13 @@ export type AgentCliSystemPrompt =
   | { via: "inline-config"; env: string; key: string; shape: "file-list" | "text" }
   /** A CLI flag taking the text, passed on EVERY spawn incl. resume (pi `--append-system-prompt`). */
   | { via: "argv"; flag: string }
+  /** Write the text to `<session config dir>/agentproto-system-prompt.md` (a private temp dir
+   *  when no config dir, removed on close) and set `env` to the file's absolute path — for a
+   *  harness that reads the text through its own env var (hermes' agentproto plugin reads
+   *  `AGENTPROTO_SYSTEM_PROMPT_FILE`). `maxChars` documents the channel's budget (hermes:
+   *  7500); the runtime checks it and falls back to a prefix + warning rather than the driver
+   *  truncating. */
+  | { via: "env-file"; env: string; maxChars?: number }
 
 export interface AgentCliStateHome {
   /** Env var the CLI reads its home from (codex: `CODEX_HOME`). */
