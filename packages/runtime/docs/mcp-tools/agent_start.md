@@ -617,6 +617,30 @@ in place. The two are independent and combine (or not) freely;
 `commandSandbox` is ignored for a `sandbox` spawn (the box's own daemon
 would need to apply it).
 
+## cloud
+
+Spawn a MANAGED CLOUD agent (AIP-66) instead of a local one: pass a vendor
+slug (`"anthropic"`) and the VENDOR owns the machine and the harness — the
+host spawns nothing locally and relays through the vendor's cloud adapter
+(`cloud: "anthropic"` resolves `adapter` to `claude-code-cloud`, harness
+`claude-code`), so `adapter`/`harness` may be omitted. An explicit one must
+name one of the vendor's harnesses or its relay adapter, else the spawn is
+refused with `cloud_spawn_refused` naming the allowed ones; an unknown
+vendor slug is refused too — never mapped to a default.
+
+DISTINCT from `sandbox` (a host-booted box); mutually exclusive with it
+and with every field the vendor can never apply (`worktree`,
+`commandSandbox`, `mcpServers`, `daemonMount`, `bundles`, `browser`,
+`appServe`, `inference`) — each is refused BY NAME (`cloud_spawn_refused`,
+`details.field`), never silently dropped, and always before any side
+effect.
+
+The vendor session id is learned after the first prompt and persisted on
+the descriptor as `meta.cloud = { vendor, sessionId, url }`; a later
+restart or `resumeSessionId` re-attach resumes the VENDOR's own session
+(AIP-66 §5) rather than starting a new one. No credential is ever carried
+through `cloud`, `meta.cloud` or the relay's side file (AIP-66 §8).
+
 ## appServe
 
 Serve an agentproto app's UI from INSIDE the sandbox box and return its

@@ -56,6 +56,44 @@ and kept for every later turn; the host is expected to persist it on the
 session descriptor (`meta.cloud = { vendor, sessionId, url }`) and re-attach
 rather than start a new vendor session after a restart.
 
+## Re-attach (AIP-66 §5)
+
+The vendor id only exists AFTER the first prompt reaches the vendor, so the
+handoff from relay to host is a side file plus a poll, and the re-attach
+itself rides the ordinary ACP `session/load` resume path:
+
+- **Meta-file handoff.** At spawn the host sets
+  `AGENTPROTO_CLOUD_SESSION_META_FILE` to a path inside the session's
+  isolated config dir. Whenever the relay learns the vendor id — after
+  `claude --cloud` prints it, or when `session/load` adopts an id handed
+  back by the host — it writes exactly the three §5 fields
+  `{ vendor, sessionId, url }` there (`src/meta-file.ts`, atomic
+  temp-file + rename, best-effort: a failed write never sinks the turn,
+  and a re-attach preserves an existing `url` for the same id). The file
+  is the ONLY channel: no credential, keychain material, or bearer token
+  ever enters it, the descriptor's `meta.cloud`, logs or events (AIP-66
+  §8) — it is byte-scoped to those three fields.
+- **The host's watch.** The runtime polls that file every 2s (timers
+  unref'd, NO fixed timeout) and stamps the learned mapping onto the
+  session's `meta.cloud` the moment it appears; the watch stops on learn
+  or when the session ends.
+- **`session/load`.** A restart or re-attach hands the relay the vendor id
+  persisted on `meta.cloud.sessionId` through the standard ACP
+  `session/load`. The relay validates it against the repo source first
+  (an id that isn't `session_`/`cse_`, or whose repo no longer matches,
+  fails closed), ADOPTS it — never starting a replacement vendor session —
+  pre-marks the vendor's existing events so only the next turn's own
+  `result` can end it, and resumes through `sendPrompt`
+  (`claude -p --cloud <id>`).
+- **The resume fallback.** The spawn-time watch dies with a daemon
+  restart, so every resume point first reads `meta.cloud.sessionId`; when
+  the descriptor never learned one, the runtime falls back to reading the
+  relay's meta file inside the row's own config dir
+  (`cloudSessionMetaFilePath`) and stamps the found mapping back onto the
+  descriptor before resuming. Only when both sources are empty does the
+  resume fall back to the ordinary ACP uuid, which fails closed at the
+  vendor.
+
 ## Repo source (AIP-66 §3)
 
 The cloud runs the user's REPO from its git remote — never an uploaded
