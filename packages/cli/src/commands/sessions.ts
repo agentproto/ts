@@ -1262,6 +1262,41 @@ export function describeSpawnFailure(msg: string): string {
 }
 
 /**
+ * Re-frame a daemon RESTART failure that carries the typed restart payload
+ * (`{error:{code,reason,action?,message}, message}` — what the daemon's
+ * restart surfaces return when a box is gone, its provider is missing, the
+ * override was rejected, …).
+ *
+ * `formatHttpError` keeps a JSON body intact behind its `HTTP <status>: `
+ * prefix, so the payload is reachable from the message `httpPostJson`
+ * rejects with. When it is, the human `reason` comes FIRST (the line a
+ * person reads) and the technical `message` follows on an indented line;
+ * anything untyped is returned byte-for-byte unchanged, so every other
+ * failure keeps today's output.
+ */
+export function describeRestartFailure(msg: string): string {
+  const m = /^HTTP \d+:\s*/i.exec(msg)
+  const bodyText = m ? msg.slice(m[0].length) : msg
+  let body: { error?: unknown; message?: unknown }
+  try {
+    body = JSON.parse(bodyText.trim()) as { error?: unknown; message?: unknown }
+  } catch {
+    return msg
+  }
+  const err = body.error
+  if (!err || typeof err !== "object") return msg
+  const typed = err as { code?: unknown; reason?: unknown; message?: unknown }
+  if (typeof typed.code !== "string" || typeof typed.reason !== "string") return msg
+  const detail =
+    typeof typed.message === "string"
+      ? typed.message
+      : typeof body.message === "string"
+        ? body.message
+        : null
+  return detail ? `${typed.reason}\n  ${detail}` : typed.reason
+}
+
+/**
  * `agentproto sessions prompt <id-or-name> --prompt <text> [--wait] [--interrupt]
  *                              [--force] [--json]`
  *
@@ -4364,7 +4399,7 @@ async function runWatch(
             .then(msg => flash(msg))
             .catch(err =>
               flash(
-                `restart error: ${err instanceof Error ? err.message : String(err)}`,
+                `restart error: ${describeRestartFailure(err instanceof Error ? err.message : String(err))}`,
               ),
             )
             .finally(() => void refresh().then(render))
@@ -5133,12 +5168,12 @@ async function runRestart(args: readonly string[]): Promise<number> {
         resumeFallback = true
       } catch (err2) {
         process.stderr.write(
-          `agentproto sessions restart: ${err2 instanceof Error ? err2.message : String(err2)}\n`,
+          `agentproto sessions restart: ${describeRestartFailure(err2 instanceof Error ? err2.message : String(err2))}\n`,
         )
         return 1
       }
     } else {
-      process.stderr.write(`agentproto sessions restart: ${msg}\n`)
+      process.stderr.write(`agentproto sessions restart: ${describeRestartFailure(msg)}\n`)
       return 1
     }
   }

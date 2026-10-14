@@ -15,7 +15,7 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { resolveSessionArg } from "./sessionActions.js"
 import { describeSession } from "./sessionActions.logic.js"
-import { canRestart, describeRestart, parseRestartResult, restartedSessionView } from "./sessionRestart.logic.js"
+import { canRestart, describeRestart, parseRestartFailure, parseRestartResult, restartFailureActionLabel, restartFailureMessage, restartedSessionView } from "./sessionRestart.logic.js"
 
 export function registerSessionRestart(
   ctx: vscode.ExtensionContext,
@@ -60,9 +60,22 @@ async function restartSessionCommand(
       result.id,
     )
   } catch (err) {
-    vscode.window.showErrorMessage(
-      `agentproto: restart of ${describeSession(session)} failed — ${describeError(err)}`,
-    )
+    // A typed restart failure (runtime's SessionRestartError on the wire) is
+    // shown as its human `reason` plus a one-click recovery button; anything
+    // else keeps today's raw-message toast.
+    const failure = parseRestartFailure(err)
+    const headline = `agentproto: restart of ${describeSession(session)} failed — `
+    if (failure) {
+      const label = restartFailureActionLabel(failure)
+      if (label) {
+        const picked = await vscode.window.showErrorMessage(headline + restartFailureMessage(failure), label)
+        if (picked) await vscode.commands.executeCommand("agentproto.spawnAgent")
+      } else {
+        vscode.window.showErrorMessage(headline + restartFailureMessage(failure))
+      }
+      return
+    }
+    vscode.window.showErrorMessage(headline + describeError(err))
   }
 }
 

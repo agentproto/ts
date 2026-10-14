@@ -24,6 +24,11 @@ import {
   resumeInterruptedNotice,
   runResumeInPlace,
 } from "./sessionResume.logic.js"
+import {
+  parseRestartFailure,
+  restartFailureActionLabel,
+  restartFailureMessage,
+} from "./sessionRestart.logic.js"
 
 export function registerSessionResume(
   ctx: vscode.ExtensionContext,
@@ -75,9 +80,23 @@ async function resumeSessionCommand(
       notice ? `${describeResume(session)} Note: ${notice}.` : describeResume(session),
     )
   } catch (err) {
-    vscode.window.showErrorMessage(
-      `agentproto: resume of ${describeSession(session)} failed — ${describeError(err)}`,
-    )
+    // Typed restart failures (dead box, missing provider, …) surface here
+    // with a code + human reason + recovery hint — show the sentence and the
+    // button instead of the daemon's raw provider string; every other error
+    // keeps today's message.
+    const failure = parseRestartFailure(err)
+    const headline = `agentproto: resume of ${describeSession(session)} failed — `
+    if (failure) {
+      const label = restartFailureActionLabel(failure)
+      if (label) {
+        const picked = await vscode.window.showErrorMessage(headline + restartFailureMessage(failure), label)
+        if (picked) await vscode.commands.executeCommand("agentproto.spawnAgent")
+      } else {
+        vscode.window.showErrorMessage(headline + restartFailureMessage(failure))
+      }
+      return
+    }
+    vscode.window.showErrorMessage(headline + describeError(err))
   }
 }
 
