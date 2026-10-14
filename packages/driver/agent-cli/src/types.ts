@@ -818,6 +818,14 @@ export interface AgentCliDefinition {
    * user's own config files already set it. See `small-model.ts`.
    */
   smallModel?: AgentCliSmallModel
+  /**
+   * How this CLI takes extra system-prompt text for a session. Absent ⇒ no
+   * channel (the runtime falls back to a first-prompt prefix + harness
+   * warning). Consumed by the driver at spawn time; the runtime resolver
+   * projects presence of this field onto `ResolvedAgentAdapter.
+   * supportsSystemPrompt`.
+   */
+  systemPrompt?: AgentCliSystemPrompt
   runner?: string | Record<string, unknown>
   protocol: AgentCliProtocol
   /** REQUIRED when protocol=acp. Workspace-relative ref to AIP-44 ACP.md. */
@@ -912,6 +920,17 @@ export interface AgentCliConnectOptions {
    * unset and are unaffected.
    */
   mode?: string
+  /**
+   * Extra system-prompt text for this session. Set for two channels:
+   * `systemPrompt.via: "acp-meta"` (the ACP arm forwards it as
+   * `_meta.systemPrompt = { append: text }` on BOTH `session/new` and
+   * `session/load` — native-resume re-reads it on every cold spawn) and
+   * `via: "argv"` on a `proprietary` arm, which composes its own argv and
+   * pushes the manifest's flag here (pi's client). See
+   * {@link AgentCliStartOptions.appendSystemPrompt} for the full contract;
+   * the runtime only sets this for an adapter that declared a channel.
+   */
+  appendSystemPrompt?: string
   /**
    * Called on ANY adapter-process activity observed by the protocol
    * arm — incoming ACP `session/update` notifications (even ones that
@@ -1348,6 +1367,19 @@ export interface AgentCliStartOptions {
    */
   isolateHostContext?: boolean
   /**
+   * Extra system-prompt text for this session (an AIP-42 AGENT.md projection
+   * that resolved a real channel — see {@link AgentCliDefinition.systemPrompt}).
+   * Applied per the manifest's declared `systemPrompt.via`: `acp-meta` rides
+   * the connect below (forwarded as ACP `_meta.systemPrompt.append` on both
+   * `newSession` and `loadSession`); `inline-config` layers the text into its
+   * env var BEFORE the child spawns; `argv` is appended to the child's own
+   * args (or, for a `proprietary` arm that composes its own argv, handed to
+   * the connect below). An adapter that declares no `systemPrompt` ignores
+   * this; the runtime is expected to have already fallen back to a
+   * first-prompt prefix + harness warning in that case (never-silent).
+   */
+  appendSystemPrompt?: string
+  /**
    * Skill folders to deliver into this session's isolated config dir before
    * the child starts. Each `path` folder is copied to
    * `<adapterConfigDir>/<dir>/<alias>/`, where `dir` (and optional `env` naming
@@ -1397,6 +1429,24 @@ export interface AgentCliSmallModel {
     projectDisableEnv?: string
   }
 }
+
+/**
+ * How a CLI takes extra system-prompt text for a session — see
+ * {@link AgentCliDefinition.systemPrompt}.
+ */
+export type AgentCliSystemPrompt =
+  /** ACP `session/new` + `session/load` `_meta.systemPrompt = { append: text }`
+   *  (claude-agent-acp). Sent on BOTH calls: claude-code's native-resume
+   *  cold-spawns and calls `loadSession` every turn, and the wrapper re-reads
+   *  `_meta.systemPrompt` there. */
+  | { via: "acp-meta" }
+  /** Layer into the CLI's inline JSON config env var. `shape: "file-list"` writes the text to
+   *  `<session config dir>/agentproto-system-prompt.md` and appends its absolute path to the `key`
+   *  array (opencode `instructions`); `shape: "text"` sets `key` to the text itself, joined with
+   *  "\n\n" after any existing string value (codex `developer_instructions`). Other keys kept. */
+  | { via: "inline-config"; env: string; key: string; shape: "file-list" | "text" }
+  /** A CLI flag taking the text, passed on EVERY spawn incl. resume (pi `--append-system-prompt`). */
+  | { via: "argv"; flag: string }
 
 export interface AgentCliStateHome {
   /** Env var the CLI reads its home from (codex: `CODEX_HOME`). */

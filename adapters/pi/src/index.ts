@@ -160,6 +160,12 @@ export const pi: AgentCliHandle = defineAgentCli({
     setEnv: "ANTHROPIC_OAUTH_TOKEN",
     provider: "anthropic",
   },
+  // AGENT.md-system-prompt channel: pi takes extra system-prompt text as its
+  // own `--append-system-prompt <text>` flag. pi is `protocol: "proprietary"`
+  // — its client builds the child argv itself — so `client.ts`'s connect
+  // pushes the flag (on a `--session` resume spawn too, since every connect
+  // recomposes argv) instead of the driver composing bin_args here.
+  systemPrompt: { via: "argv", flag: "--append-system-prompt" },
   sandbox: "./SANDBOX.md",
   protocol: "proprietary",
   adapter: "@agentproto/adapter-pi",

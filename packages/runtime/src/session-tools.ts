@@ -843,11 +843,13 @@ export interface SessionListCompactItem {
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
- * registry to reattach native PTYs, but must never cross the tool boundary. */
+ * registry to reattach native PTYs, but must never cross the tool boundary.
+ * The AGENT.md system-prompt text (`appendSystemPrompt`) is kept for restart
+ * re-application only and is not echoed either. */
 const publicSessionDescriptor = (
   session: SessionDescriptor,
-): Omit<SessionDescriptor, "ptyResumeEnv"> => {
-  const { ptyResumeEnv: _privateResumeEnv, ...publicDescriptor } = session
+): Omit<SessionDescriptor, "ptyResumeEnv" | "appendSystemPrompt"> => {
+  const { ptyResumeEnv: _privateResumeEnv, appendSystemPrompt: _privateSystemPrompt, ...publicDescriptor } = session
   return publicDescriptor
 }
 

@@ -223,6 +223,12 @@ export async function continueAgentSessionFresh(
     keepAlive: prev.keepAlive,
     notifyParentOnCrash: prev.notifyParentOnCrash,
     permissionHold: prev.permissionHold,
+    // The lineage's AGENT.md system-prompt text — `spawnAgentSession`
+    // re-decides the delivery path for whatever adapter this fresh session
+    // lands on (channel vs prefix+warning), including after a harness switch.
+    ...(prev.appendSystemPrompt !== undefined
+      ? { appendSystemPrompt: prev.appendSystemPrompt }
+      : {}),
     // The fresh session stays inside the same app boundary as `prev`.
     ...(boundaryFromMeta(prev.meta) ? { appBoundary: boundaryFromMeta(prev.meta)! } : {}),
     ...opts.spawn,

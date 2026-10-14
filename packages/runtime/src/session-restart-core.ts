@@ -1067,6 +1067,12 @@ export async function restartAgentSession(
       ...(effMode ? { mode: effMode } : {}),
       ...(restartMcpServers ? { mcpServers: restartMcpServers } : {}),
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
+      // Re-apply the AGENT.md system-prompt text on the SAME declared channel
+      // (the original spawn already warned + prefixed when the adapter had
+      // none — a channel-less lineage has nothing left to re-apply here).
+      ...(prev.appendSystemPrompt && resolved.supportsSystemPrompt === true
+        ? { appendSystemPrompt: prev.appendSystemPrompt }
+        : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
       // Spawn-time guarantees survive a restart: the adapter runs under the
@@ -1133,6 +1139,11 @@ export async function restartAgentSession(
       // `prev.sessionSkills` names stable copies under the registry root, so
       // they carry forward verbatim like `mcpServers` (see the field's doc).
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
+      // Echoed forward like `sessionSkills`, so the NEXT restart still knows
+      // the lineage's AGENT.md text (the channel pass above re-applies it).
+      ...(prev.appendSystemPrompt
+        ? { appendSystemPrompt: prev.appendSystemPrompt }
+        : {}),
       ...(prevBoundary ? { meta: boundaryMeta(prevBoundary) } : {}),
       ...(effModel ? { model: effModel } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
