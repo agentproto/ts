@@ -633,6 +633,19 @@ an axis). This is the way to apply an axis that a [live switch](#config-axes-mcp
 reported as `requires-restart`. Only agent-CLI sessions have axes to override —
 a PTY/command restart with overrides is rejected `400`.
 
+**Sandbox sessions whose box is gone.** Restarting a [sandbox](#sandbox)
+session whose box died boots a fresh box instead of failing. The clone source
+is the workspace's registered `remote`, or, when none is set, the checkout's
+git `origin` (public repos only, cloned anonymously and read-only; never
+saved to `workspaces.json`). With a recorded `wt/<slug>` work branch the new
+box checks it out again (pushed commits plus the uncommitted-work snapshot
+from `agentproto-checkpoint/<branch>`); without one it starts from the
+workspace's base branch on a new work branch. A workspace with no usable git
+source is checkpointed to the host as a size-capped (50 MiB) tarball at turn
+end and teardown, and the restart extracts it. When the restart cannot
+proceed the error says what is missing and how to fix it, e.g.
+`agentproto workspace remote set <slug> --url … --token-stdin`.
+
 ### `prompt <id-or-name>`
 
 ```bash

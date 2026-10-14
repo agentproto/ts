@@ -31,6 +31,7 @@ import { providerEnvVar } from "./providers-store.js"
 import type { ContextContinuityPolicy } from "./context-continuity.js"
 import type { DeferredToolsConfig } from "./deferred-tools.js"
 import type { SandboxCheckpointConfig } from "./sandbox-delivery.js"
+import type { BoxLoginDecl } from "./box-login-bridge.js"
 
 /**
  * `defaults.mcp` block — daemon-wide MCP gateway policy, distinct from the
@@ -97,6 +98,13 @@ export interface DefaultsAdapterAuthConfig {
   extraEnv?: Record<string, string>
   /** `false` opts out of the adapter's login-less credential data home. */
   isolateDataHome?: boolean
+  /** BOX-LOGIN BRIDGE marker: the host already uploaded a redacted copy of
+   *  this file-based login INTO the box (`box-login-bridge.ts`), so the box
+   *  must not fail-fast on a missing credential — the file beside the spawn
+   *  IS the credential. Per-spawn only, stamped by the host just before
+   *  `host.start()`; never read from config defaults. Absent ⇒ today's
+   *  fail-loud behavior, unchanged. */
+  loginFile?: boolean
 }
 
 export interface DefaultsAdapterConfig {
@@ -263,6 +271,11 @@ export interface ResolvedSpawnAuthMaterial {
   credentialEnvOverride?: string
   extraEnv?: Record<string, string>
   isolateDataHome?: boolean
+  /** Per-spawn BOX-LOGIN BRIDGE marker — see
+   *  {@link DefaultsAdapterAuthConfig.loginFile}. Never from config: a static
+   *  `loginFile` in `~/.agentproto/config.json` would outlive the copy it
+   *  describes. */
+  loginFile?: boolean
 }
 
 const AUTH_ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/
@@ -348,6 +361,7 @@ export function resolveSpawnDefaults(
       ...(credentialEnvOverride !== undefined ? { credentialEnvOverride } : {}),
       ...(forwardedExtraEnv !== undefined ? { extraEnv: forwardedExtraEnv } : {}),
       ...(input.auth?.isolateDataHome === false ? { isolateDataHome: false } : {}),
+      ...(input.auth?.loginFile === true ? { loginFile: true } : {}),
     },
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
   }
@@ -479,6 +493,13 @@ export interface AuthSubscriptionSurface {
    *  Omitted for a fixed-provider adapter (claude-code, codex) — their
    *  descriptor-level `provider` already pins it. */
   provider?: string
+  /** BOX-LOGIN BRIDGE declaration — see `box-login-bridge.ts`. Only valid on
+   *  an {@link external} surface (the schema enforces that): how the host
+   *  re-creates a REDACTED copy of this file-based login inside a sandbox
+   *  box, which boots with neither the host's login file nor its keychain.
+   *  `keep` is the allowlist; refresh-like keys are dropped unconditionally
+   *  even when keep-listed. */
+  boxLogin?: BoxLoginDecl
 }
 
 /**
@@ -570,6 +591,12 @@ export interface ResolvedAuthSpec {
    *  home for this spawn (a sub-account provider that needs the adapter's own
    *  login). Omitted ⇒ the adapter's declaration applies. */
   isolateDataHome?: boolean
+  /** BOX-LOGIN BRIDGE marker forwarded from the box's `agent_start.auth`:
+   *  the host uploaded the login file this external subscription reads, so
+   *  the driver's missing-credential fail-fast is satisfied by that FILE
+   *  rather than by an injected bearer (which an external surface never has).
+   *  Carries no token — the file already sits on the box's filesystem. */
+  loginFile?: boolean
 }
 
 /** Where the resolved credential came from — the observable billing axis
@@ -657,6 +684,10 @@ export interface ResolveAuthSpecInput {
   extraEnv?: Record<string, string>
   /** Passed through to {@link ResolvedAuthSpec.isolateDataHome}. */
   isolateDataHome?: boolean
+  /** Passed through to {@link ResolvedAuthSpec.loginFile} — the box-login
+   *  bridge marker the box's own `agent_start.auth` carried (per-spawn only;
+   *  never derived here). */
+  loginFile?: boolean
   /** Explicit gateway route from `SessionConfig.route.gateway`. When this
    *  matches a `ProviderPreset` or a registered custom route, the route's
    *  `baseUrl`/`keyEnv`/`scrubEnv` drive resolution instead of the model-
@@ -728,6 +759,26 @@ export function subscriptionSurfaceFor(
     sub.find(s => s.provider !== undefined && s.provider === endpoint) ??
     sub.find(s => s.provider === undefined)
   )
+}
+
+/**
+ * The box-login bridge declaration for THIS spawn — the matching
+ * `authSubscription` surface's `boxLogin`, consulted only when the resolved
+ * auth is a FILE-BASED (external) subscription (the one shape a box cannot
+ * satisfy on its own: it boots with neither the host's login file nor its
+ * keychain). Returns undefined for every bearer/api-key spawn, for an adapter
+ * that declares no `boxLogin`, and for a provider whose surface can't be
+ * matched — each of which leaves the spawn exactly as it is today. Shared by
+ * `session-spawn.ts` (fresh boot) and `session-restart-core.ts` (box
+ * re-attach) so both sides of a restart bridge the SAME declaration.
+ */
+export function boxLoginDeclFor(
+  descriptor: AdapterAuthDescriptor | undefined,
+  authSpec: ResolvedAuthSpec | undefined,
+  provider: string | undefined,
+): BoxLoginDecl | undefined {
+  if (!descriptor || authSpec?.externalCredential !== true || !provider) return undefined
+  return subscriptionSurfaceFor(descriptor.authSubscription, provider)?.boxLogin
 }
 
 export function resolveAuthSpec(
@@ -952,6 +1003,9 @@ export function resolveAuthSpec(
     explicit: input.explicit,
     enforce,
     ...(externalCredential ? { externalCredential: true } : {}),
+    // The bridge marker rides ONLY with a credential-less external login —
+    // an injected bearer (or an api-key) needs no file to point at.
+    ...(input.loginFile === true && externalCredential ? { loginFile: true } : {}),
     ...(neitherConfigured ? { neitherConfigured } : {}),
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(input.extraEnv && credential !== undefined ? { extraEnv: input.extraEnv } : {}),

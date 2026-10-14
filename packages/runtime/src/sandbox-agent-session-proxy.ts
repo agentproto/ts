@@ -35,6 +35,7 @@ import type {
 } from "./sessions.js"
 import { DEFAULT_CHECKPOINT_INTERVAL_MS } from "./sandbox-delivery.js"
 import { recordSandboxState } from "./sandbox-ledger.js"
+import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
 const MAX_POLL_MS = 49_000
@@ -56,6 +57,12 @@ export const DEFAULT_WATCHDOG_INTERVAL_MS = 30_000
 export const DEFAULT_WATCHDOG_FAILURE_THRESHOLD = 3
 export const DEFAULT_WATCHDOG_UNRESPONSIVE_THRESHOLD = 10
 const WATCHDOG_PROBE_TIMEOUT_MS = 10_000
+/** BOX-LOGIN BRIDGE — minimum gap between attempts to re-upload the box's
+ *  login copy. The copy is only rewritten when its digest differs from what
+ *  the box holds (the caller's gate), so this bounds the cost of the
+ *  re-read + rebuild itself, not the writes. Mirrors {@link BOX_RENEW_THROTTLE_MS}'s
+ *  "activity only, throttled, fire-and-forget" discipline. */
+export const BOX_LOGIN_REFRESH_THROTTLE_MS = 5 * 60_000
 
 /** Outcome of one liveness probe:
  *  - `"dead"`: the provider's edge answered non-2xx (daemon not listening,
@@ -196,6 +203,16 @@ export interface SandboxAgentSessionProxyOpts {
    *  turn; every later `send()` prompts normally. Off for every other
    *  provider (local/e2b/Box keep byte-identical behaviour). */
   promptCarriedInStart?: boolean
+  /** BOX-LOGIN BRIDGE — re-upload the box's login copy when the HOST's own
+   *  login file changes under a long-lived box (a re-login while this session
+   *  runs). Called beside every active-only `renewBoxLifetime()` site, behind
+   *  {@link BOX_LOGIN_REFRESH_THROTTLE_MS} and the caller's digest gate (a
+   *  byte-identical copy is never rewritten). Skipped once the proxy is
+   *  closed or detached — a detached box is nobody's to touch. A rejection is
+   *  logged, never thrown: a refresh miss must not fail the turn. Absent for
+   *  every spawn whose boot-time upload didn't happen (see
+   *  `session-spawn.ts`'s degrade path) and for every non-file-based login. */
+  refreshLoginFile?: () => Promise<BoxLoginRefreshOutcome>
   /** Runs once in `close()`, after the box's agent session is killed and
    *  before the box is stopped or paused — the last moment its filesystem is
    *  still reachable. A rejection is swallowed: delivery trouble never blocks
@@ -666,6 +683,26 @@ export function createSandboxAgentSessionProxy(
     await runCheckpoint(turnsSent)
   }
 
+  /** BOX-LOGIN BRIDGE — re-upload the box's login copy because this session
+   *  is actively working and the HOST's login file may have changed under it.
+   *  Throttled, fire-and-forget, and gated exactly like `renewBoxLifetime`:
+   *  never after `close()`/`detach()`, never for a box nobody is driving. A
+   *  rejection is logged (naming nothing but the failure), never thrown. */
+  let lastLoginRefreshAt = 0
+  const refreshLoginFile = (): void => {
+    if (!opts.refreshLoginFile || closed || detached) return
+    const now = Date.now()
+    if (now - lastLoginRefreshAt < BOX_LOGIN_REFRESH_THROTTLE_MS) return
+    lastLoginRefreshAt = now
+    try {
+      opts.refreshLoginFile().catch(err => {
+        console.warn("[sandbox-proxy] failed to refresh the box login file:", err)
+      })
+    } catch (err) {
+      console.warn("[sandbox-proxy] failed to refresh the box login file:", err)
+    }
+  }
+
   /** After a detach every path out of an in-flight turn lands here and never
    *  returns: a throw or a normal return would make the registry's turn loop
    *  record a synthetic turn-end / error status for a session that is in
@@ -702,7 +739,10 @@ export function createSandboxAgentSessionProxy(
     if (!sseBody) {
       try {
         for await (const evt of pollAgentOutputFallback(host, remoteSessionId, since)) {
-          if (quietEndMs === undefined) renewBoxLifetime()
+          if (quietEndMs === undefined) {
+            renewBoxLifetime()
+            refreshLoginFile()
+          }
           yield evt
         }
       } catch (err) {
@@ -726,7 +766,10 @@ export function createSandboxAgentSessionProxy(
         const evt = recordToStreamEvent(record)
         if (!evt) continue
         // An idle re-attach replay (`quietEndMs` set) is stale backlog, not work.
-        if (quietEndMs === undefined) renewBoxLifetime()
+        if (quietEndMs === undefined) {
+          renewBoxLifetime()
+          refreshLoginFile()
+        }
         if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
         else if (evt.kind === "tool-call") sawToolCall = true
         if (evt.kind === "turn-end") {
@@ -910,6 +953,7 @@ export function createSandboxAgentSessionProxy(
       // the turn). Just consume the stream below.
       if (!(opts.promptCarriedInStart && isFirstTurn)) {
         renewBoxLifetime()
+        refreshLoginFile()
         await host.prompt(remoteSessionId, prompt)
       }
     } catch (err) {

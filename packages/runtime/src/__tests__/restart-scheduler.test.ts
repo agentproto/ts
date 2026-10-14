@@ -142,6 +142,33 @@ describe("isEligibleForRestart", () => {
       ),
     ).toBe(false)
   })
+
+  it("restarts a provider-confirmed box-gone row (endedReason sandbox_gone) when the policy opts into \"sandbox-gone\"", () => {
+    expect(
+      isEligibleForRestart(
+        row({ id: "a", status: "killed", endedReason: "sandbox_gone", restartPolicy: { ...BASE_POLICY, on: ["sandbox-gone"] } }),
+      ),
+    ).toBe(true)
+  })
+
+  it("does NOT restart a box-gone row when the policy only opts into \"crashed\"/\"error\"", () => {
+    expect(
+      isEligibleForRestart(row({ id: "a", status: "killed", endedReason: "sandbox_gone" })),
+    ).toBe(false)
+    expect(
+      isEligibleForRestart(
+        row({ id: "a", status: "killed", endedReason: "sandbox_gone", restartPolicy: { ...BASE_POLICY, on: ["crashed", "error"] } }),
+      ),
+    ).toBe(false)
+  })
+
+  it("does NOT restart a box-gone row without a restartPolicy at all", () => {
+    expect(
+      isEligibleForRestart(
+        row({ id: "a", status: "killed", endedReason: "sandbox_gone", restartPolicy: undefined }),
+      ),
+    ).toBe(false)
+  })
 })
 
 // ── Layer 2: backoff curve + rolling-window crash-loop cap ─────────────────
@@ -238,6 +265,7 @@ describe("evaluateRestartDecision", () => {
 
 function stubSweepRegistry(rows: SessionDescriptor[], opts?: { resuming?: Set<string>; failIds?: Set<string> }) {
   const triggered: string[] = []
+  const freshBoxTriggered: string[] = []
   const registry: RestartSchedulerRegistry = {
     get: id => rows.find(r => r.id === id),
     list: () => rows,
@@ -246,10 +274,14 @@ function stubSweepRegistry(rows: SessionDescriptor[], opts?: { resuming?: Set<st
       triggered.push(id)
       return !(opts?.failIds?.has(id) ?? false)
     },
+    triggerSandboxGoneRestart: async id => {
+      freshBoxTriggered.push(id)
+      return !(opts?.failIds?.has(id) ?? false)
+    },
     applyRestartSchedule: () => true,
     giveUpRestart: () => true,
   }
-  return { registry, triggered }
+  return { registry, triggered, freshBoxTriggered }
 }
 
 describe("runRestartSweepPass", () => {
@@ -314,6 +346,36 @@ describe("runRestartSweepPass", () => {
     expect(summary).toEqual({ enabled: true, candidates: 1, resumed: 0, ids: ["flaky"] })
     expect(triggered).toEqual(["flaky"])
   })
+
+  it("dispatches a nextRestartFreshBox row to triggerSandboxGoneRestart, never the in-place resume", async () => {
+    const { registry, triggered, freshBoxTriggered } = stubSweepRegistry([
+      row({
+        id: "gone",
+        nextRestartAt: new Date(NOW - 1_000).toISOString(),
+        nextRestartFreshBox: true,
+      }),
+    ])
+    const summary = await runRestartSweepPass({ registry, restartSweepIntervalMs: 5_000, now })
+    expect(summary).toEqual({ enabled: true, candidates: 1, resumed: 1, ids: ["gone"] })
+    expect(freshBoxTriggered).toEqual(["gone"])
+    expect(triggered).toEqual([])
+  })
+
+  it("a nextRestartFreshBox row whose fresh-box move fails is a candidate but not resumed", async () => {
+    const { registry, freshBoxTriggered } = stubSweepRegistry(
+      [
+        row({
+          id: "blocked",
+          nextRestartAt: new Date(NOW - 1_000).toISOString(),
+          nextRestartFreshBox: true,
+        }),
+      ],
+      { failIds: new Set(["blocked"]) },
+    )
+    const summary = await runRestartSweepPass({ registry, restartSweepIntervalMs: 5_000, now })
+    expect(summary).toEqual({ enabled: true, candidates: 1, resumed: 0, ids: ["blocked"] })
+    expect(freshBoxTriggered).toEqual(["blocked"])
+  })
 })
 
 // ── Layer 4: createRestartScheduler — the event-driven half ────────────────
@@ -327,6 +389,7 @@ describe("createRestartScheduler", () => {
       list: () => [desc],
       isResuming: () => false,
       triggerResume: async () => true,
+      triggerSandboxGoneRestart: async () => true,
       applyRestartSchedule: (id, update) => {
         applied.push({ id, update })
         return true
@@ -391,6 +454,117 @@ describe("createRestartScheduler", () => {
     bus.emit({ type: "session:exited", sessionId: "a", status: "exited", exitCode: 0, ts: "2026-07-23T01:00:00Z" })
     expect(applied).toEqual([])
     expect(gaveUp).toEqual([])
+    scheduler.dispose()
+  })
+
+  // ── "sandbox-gone" branch ────────────────────────────────────────────────
+  const boxRow = (over: Partial<SessionDescriptor>): SessionDescriptor =>
+    row({
+      id: "box",
+      status: "error",
+      remote: true,
+      sandboxId: "sbx_1",
+      command: "sandbox:fake → fake-cli",
+      restartPolicy: { ...BASE_POLICY, on: ["crashed", "error", "sandbox-gone"] },
+      ...over,
+    })
+
+  it("schedules a FRESH-BOX move (freshBox: true) when the box-gone probe says the box is gone", async () => {
+    const desc = boxRow({})
+    const { registry, applied } = stubEventRegistry(desc)
+    const bus = createSessionEventBus()
+    const scheduler = createRestartScheduler({
+      registry,
+      sessionEvents: bus,
+      isSandboxBoxGone: () => true,
+      now: () => Date.parse("2026-07-23T01:00:00Z"),
+    })
+    bus.emit({ type: "session:exited", sessionId: "box", status: "error", reason: "crashed", ts: "2026-07-23T01:00:00Z" })
+    await vi.waitFor(() => expect(applied).toHaveLength(1))
+    expect((applied[0]!.update as { freshBox?: boolean }).freshBox).toBe(true)
+    scheduler.dispose()
+  })
+
+  it("falls back to the classic in-place schedule (no freshBox) when the box-gone probe says the box is alive", async () => {
+    const desc = boxRow({})
+    const { registry, applied } = stubEventRegistry(desc)
+    const bus = createSessionEventBus()
+    const scheduler = createRestartScheduler({
+      registry,
+      sessionEvents: bus,
+      isSandboxBoxGone: () => false,
+      now: () => Date.parse("2026-07-23T01:00:00Z"),
+    })
+    bus.emit({ type: "session:exited", sessionId: "box", status: "error", reason: "crashed", ts: "2026-07-23T01:00:00Z" })
+    await vi.waitFor(() => expect(applied).toHaveLength(1))
+    expect((applied[0]!.update as { freshBox?: boolean }).freshBox).toBeUndefined()
+    scheduler.dispose()
+  })
+
+  it("a policy listing ONLY \"sandbox-gone\" does not revive a box session whose box is still alive", async () => {
+    const desc = boxRow({ restartPolicy: { ...BASE_POLICY, on: ["sandbox-gone"] } })
+    const { registry, applied, gaveUp } = stubEventRegistry(desc)
+    const bus = createSessionEventBus()
+    const scheduler = createRestartScheduler({
+      registry,
+      sessionEvents: bus,
+      isSandboxBoxGone: () => false,
+      now: () => Date.parse("2026-07-23T01:00:00Z"),
+    })
+    bus.emit({ type: "session:exited", sessionId: "box", status: "error", reason: "crashed", ts: "2026-07-23T01:00:00Z" })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(applied).toEqual([])
+    expect(gaveUp).toEqual([])
+    scheduler.dispose()
+  })
+
+  it("a clean-exit box session is never routed to the fresh-box move — the probe is not even consulted", async () => {
+    const desc = boxRow({ status: "exited", exitCode: 0 })
+    const { registry, applied, gaveUp } = stubEventRegistry(desc)
+    const probe = vi.fn(() => true)
+    const bus = createSessionEventBus()
+    const scheduler = createRestartScheduler({
+      registry,
+      sessionEvents: bus,
+      isSandboxBoxGone: probe,
+      now: () => Date.parse("2026-07-23T01:00:00Z"),
+    })
+    bus.emit({ type: "session:exited", sessionId: "box", status: "exited", exitCode: 0, ts: "2026-07-23T01:00:00Z" })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect(probe).not.toHaveBeenCalled()
+    expect(applied).toEqual([])
+    expect(gaveUp).toEqual([])
+    scheduler.dispose()
+  })
+
+  it("an idle-reaped or operator-killed box session is never routed to the fresh-box move either", async () => {
+    for (const desc of [
+      boxRow({ status: "killed", endedReason: "idle-reaped" }),
+      boxRow({ status: "killed", endedReason: "daemon-restart" }),
+      boxRow({ status: "killed" }),
+    ]) {
+      const { registry, applied } = stubEventRegistry(desc)
+      const probe = vi.fn(() => true)
+      const bus = createSessionEventBus()
+      const scheduler = createRestartScheduler({ registry, sessionEvents: bus, isSandboxBoxGone: probe })
+      bus.emit({ type: "session:exited", sessionId: "box", status: "killed", reason: desc.endedReason, ts: "2026-07-23T01:00:00Z" })
+      await new Promise(resolve => setTimeout(resolve, 5))
+      expect(probe).not.toHaveBeenCalled()
+      expect(applied).toEqual([])
+      scheduler.dispose()
+    }
+  })
+
+  it("a non-box session never consults the box-gone probe (classic paths stay synchronous)", () => {
+    const desc = row({ id: "a", status: "error", endedReason: "crashed" })
+    const { registry, applied } = stubEventRegistry(desc)
+    const probe = vi.fn(() => true)
+    const bus = createSessionEventBus()
+    const scheduler = createRestartScheduler({ registry, sessionEvents: bus, isSandboxBoxGone: probe })
+    bus.emit({ type: "session:exited", sessionId: "a", status: "error", reason: "crashed", ts: "2026-07-23T01:00:00Z" })
+    // Synchronously scheduled — no microtask wait needed — and the probe untouched.
+    expect(applied).toHaveLength(1)
+    expect(probe).not.toHaveBeenCalled()
     scheduler.dispose()
   })
 

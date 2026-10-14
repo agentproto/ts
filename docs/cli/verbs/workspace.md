@@ -94,11 +94,17 @@ agentproto workspace remote unset my-project
   `1` when no remote is set.
 - `unset` drops the remote but leaves any keychain token in place.
 
-When a sandbox spawn also passes `worktree`, the daemon cuts `wt/<slug>`
-from `worktree.base` (default `origin/<branch>`) in the box and starts the
-session there. The token reaches the box only as the `AGENTPROTO_GIT_TOKEN`
-env var behind a git credential helper. Note that the agent running in the
-box can read that variable, so register a token scoped to the one repository
+A sandbox spawn on a workspace with a remote cuts a `wt/<slug>` work branch
+in the box by default, from `worktree.base` (default `origin/<branch>`), and
+starts the session there; pass `worktree: false` to opt out and work on the
+remote's default branch with no work branch (and so no delivery). The token
+reaches the box only as the `AGENTPROTO_GIT_TOKEN` env var behind a git
+credential helper, and the same token is also set as `GH_TOKEN` so `gh pr
+create` works in the box (the token needs Contents + Pull requests write).
+Both names are reserved: they are stripped from caller-declared
+`env.passthrough` / `env.auth.state.env` / `join.tokenEnv`, and `GH_TOKEN`
+never resolves to the daemon's own. Note that the agent running in the
+box can read these variables, so register a token scoped to the one repository
 and revoke it when the work is done; a box booted with a workspace's token
 can only be reused by that same workspace. At teardown the work branch is
 pushed to `origin` if it is ahead of its base, with a `git bundle` fallback

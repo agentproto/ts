@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
 import { resolveTurnRetryPolicy, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
@@ -33,6 +34,7 @@ import {
   SubscriptionSourceError,
   modelIdPrefixProvider,
   subscriptionSurfaceFor,
+  boxLoginDeclFor,
   resolveBundleDefaults,
   resolveDefaultContextProfile,
   type SpawnDefaultsConfig,
@@ -62,6 +64,13 @@ import {
 } from "./claude-code-oauth-source.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
+import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
+import {
+  buildLoginCopy,
+  createBoxLoginRefresher,
+  type BoxLoginDecl,
+  type BoxLoginRefreshOutcome,
+} from "./box-login-bridge.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
   checkModelAdapterEligibility,
@@ -1298,8 +1307,11 @@ export interface SpawnAgentSessionInput {
   appBoundary?: AppBoundary
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
-   *  blank. Not exposed on the MCP `agent_start` tool today — only the
-   *  HTTP route (`sessions restart`) passes this. */
+   *  blank. Accepts a raw adapter conversation id (the HTTP
+   *  `sessions restart` / `POST /sessions` route) OR a session id on
+   *  THIS daemon (the box re-attach path passes the prior in-box
+   *  session id — resolved to that row's conversation + isolated
+   *  config dir; see `agent-start-schema.ts` `resumeSessionId`). */
   resumeSessionId?: string
   /** The caller's initial ask — a plain string (the common case, composed
    *  with the role/AGENTS.md/RULES.md preamble below into one string turn),
@@ -1418,8 +1430,11 @@ export interface SpawnAgentSessionInput {
   costBudget?: CostBudget
   /** Opt-in auto-restart policy (restart-scheduler, PR-2). When set, an
    *  unexpected death (`crashed` and/or `error`, per `restartPolicy.on`) is
-   *  proactively revived in place — see `RestartPolicy`'s doc in
-   *  `sessions.ts`. Omitted ⇒ today's lazy-resume-only behaviour. */
+   *  proactively revived in place — EXCEPT a box session whose box is gone
+   *  (`"sandbox-gone"` in `on`), which moves to a fresh box instead; see
+   *  `RestartPolicy`'s doc in `sessions.ts`. Omitted ⇒ today's
+   *  lazy-resume-only behaviour (or the `daemon.sandboxGoneRestartDefault`
+   *  box-session default, when that's on). */
   restartPolicy?: RestartPolicy
   /** Opt-in turn-retry policy (`turn-retry.ts`): re-prompt the live session
    *  when a turn fails on a transient provider error. Defaults are filled
@@ -2555,21 +2570,52 @@ export async function spawnAgentSession(
   // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
   // this exact id rather than a second, different one (PR 7 / Gap 7).
   const mintedSessionId = mintSessionId()
-  // A direct spawn that reattaches an adapter-native conversation some
-  // existing row already owns (`POST /sessions { resumeSessionId }`) is a
-  // revival of that row — record the lineage rather than forking silently.
-  const resumeSource = input.resumeSessionId
-    ? registry
-        .list()
-        .filter(
-          d => d.adapterSessionId === input.resumeSessionId && d.adapterSlug === input.adapter,
-        )
-        .sort((x, y) => (x.startedAt ?? "").localeCompare(y.startedAt ?? ""))
-        .at(-1)
+  // A direct spawn that reattaches an adapter-native conversation
+  // (`agent_start`/`POST /sessions { resumeSessionId }`) is a revival of
+  // that conversation — record the lineage rather than forking silently.
+  //
+  // The id may name a ROW ON THIS DAEMON (the box re-attach path passes the
+  // prior in-box session id): resume that row's adapter conversation and
+  // reuse its isolated-config dir (the provider's conversation store lives
+  // inside it — a fresh dir is exactly what silently degrades a resume to a
+  // blank spawn). A raw adapter conversation id keeps today's semantics,
+  // picking up the owning row's config dir when one is on file. A row id
+  // with no adapter conversation recorded (or a different adapter) drops
+  // the resume entirely rather than passing a daemon id to the adapter.
+  const resolveResumeTarget = (
+    id: string | undefined,
+  ):
+    | { adapterSessionId: string; configDir?: string; sourceSessionId?: string }
+    | undefined => {
+    if (!id) return undefined
+    const row = registry.get(id)
+    if (row) {
+      if (!row.adapterSessionId || row.adapterSlug !== input.adapter) return undefined
+      return {
+        adapterSessionId: row.adapterSessionId,
+        ...(row.adapterConfigDir ? { configDir: row.adapterConfigDir } : {}),
+        sourceSessionId: row.id,
+      }
+    }
+    const owner = registry
+      .list()
+      .filter(d => d.adapterSessionId === id && d.adapterSlug === input.adapter)
+      .sort((x, y) => (x.startedAt ?? "").localeCompare(y.startedAt ?? ""))
+      .at(-1)
+    return {
+      adapterSessionId: id,
+      ...(owner?.adapterConfigDir ? { configDir: owner.adapterConfigDir } : {}),
+      ...(owner ? { sourceSessionId: owner.id } : {}),
+    }
+  }
+  const resumeTarget = resolveResumeTarget(input.resumeSessionId)
+  const resumeSource = resumeTarget?.sourceSessionId
+    ? registry.get(resumeTarget.sourceSessionId)
     : undefined
-  const resumeLineageFields = resumeSource
-    ? { resumedFrom: resumeSource.id, resumeVia: "resumed via ACP" }
-    : {}
+  // Recorded ONLY once a resume attempt actually succeeds (the local branch
+  // below): a rejected id that fell back to a fresh spawn must never claim
+  // continuity on the descriptor.
+  let resumeLineageFields: { resumedFrom?: string; resumeVia?: string } | undefined
   // Default the daemon's own gateway onto spawns that supplied no
   // `mcpServers` — two distinct rationales, one mechanism (see
   // `shouldInjectDaemonSelfMount` for the per-adapter reasoning):
@@ -3294,6 +3340,9 @@ export async function spawnAgentSession(
           : {}),
         ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
         ...forwardedSubaccountAuthInputs(spawnDefaults.auth),
+        // Box-login bridge marker (per-spawn, forwarded through the auth
+        // block) — see `box-login-bridge.ts`.
+        ...(spawnDefaults.auth.loginFile === true ? { loginFile: true } : {}),
       })
       if (result) {
         authSpec = result.spec
@@ -4087,6 +4136,11 @@ export async function spawnAgentSession(
     const checkpointConfig = resolveSandboxCheckpointConfig(configDefaults?.sandbox?.checkpoint, input.sandboxCheckpoint)
 
     if (input.sandbox !== undefined) {
+      // BOX-LOGIN BRIDGE declaration for this spawn — the matching external
+      // surface's `boxLogin`, or undefined for any bearer/api-key spawn (see
+      // `boxLoginDeclFor`). Resolved ONCE here so the boot below and the auth
+      // block it stamps agree on the same declaration.
+      const boxLogin = boxLoginDeclFor(resolved?.authDescriptor, authSpec, authEcho?.provider)
       const booted = await bootSandboxAgentSession({
         sandbox: input.sandbox,
         resolveSandboxProvider,
@@ -4119,6 +4173,10 @@ export async function spawnAgentSession(
         // Forward the already-resolved credential when the caller selected a
         // profile; raw explicit auth remains supported for existing callers.
         ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec, authEcho) } : input.auth ? { auth: input.auth } : {}),
+        // BOX-LOGIN BRIDGE: the file-based login this spawn bills through
+        // must exist INSIDE the box before its own fail-loud verify runs —
+        // see `box-login-bridge.ts`. Absent for every bearer/api-key spawn.
+        ...(boxLogin ? { boxLogin } : {}),
         // PLAN-C — the resolved spec rides along so `env.autoPassthrough`
         // can inject the credential's env-var NAME into `env.passthrough`
         // (never the value) before the box boots.
@@ -4225,14 +4283,17 @@ export async function spawnAgentSession(
         input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
         cwd,
       )
-      agentSession = await resolved!.startSession({
+      const localStartArgs = {
         cwd,
-        ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+        ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
         // Persistent isolated-config dir, keyed by this session's id —
         // recorded on the descriptor below so restart/lazy-resume can hand
         // the respawned adapter the same dir (native-resume store).
-        // Adapters that don't isolate a config dir ignore it.
-        configDir: adapterConfigDirFor(mintedSessionId),
+        // Adapters that don't isolate a config dir ignore it. A RESUME
+        // reuses the target's dir instead (see `resolveResumeTarget`) — the
+        // provider's conversation store lives inside it, so a fresh dir is
+        // exactly what turns a resume into a blank spawn.
+        configDir: resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(launchConfig.options ? { options: launchConfig.options } : {}),
@@ -4282,7 +4343,38 @@ export async function spawnAgentSession(
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
-      })
+      }
+      try {
+        agentSession = await resolved!.startSession(localStartArgs)
+        // The adapter accepted the resume id — the conversation continues.
+        // Claimed only here (not up front) so a fallback fresh spawn never
+        // wears a phantom `resumeVia` (resume-honesty).
+        if (resumeTarget) {
+          resumeLineageFields = {
+            ...(resumeSource ? { resumedFrom: resumeSource.id } : {}),
+            resumeVia: "resumed via ACP",
+          }
+        }
+      } catch (err) {
+        // Same "not found" retry as `session_restart`
+        // (session-restart-core.ts): the adapter rejected the resume id, or
+        // its transport died mid-load — the stored conversation couldn't be
+        // rehydrated, and one fresh-spawn retry is strictly better than
+        // failing the whole start. Never retried without a resume id (that
+        // would just loop the original error).
+        const msg = err instanceof Error ? err.message : String(err)
+        if (
+          !resumeTarget ||
+          !(RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
+        ) {
+          throw err
+        }
+        const { resumeSessionId: _dropped, ...freshStartArgs } = localStartArgs
+        agentSession = await resolved!.startSession({
+          ...freshStartArgs,
+          configDir: adapterConfigDirFor(mintedSessionId),
+        })
+      }
       // A harness that advertises a matching ACP mode gets the canonical
       // posture as a real boundary before the initial prompt is sent. When no
       // native mode exists, the initial prompt carries the advisory preamble;
@@ -5000,6 +5092,16 @@ export async function bootSandboxAgentSession(opts: {
    *  the call-site comment (fresh boxes have no config and claude-code never
    *  inherits shell-env subscription auth). */
   auth?: DefaultsAdapterAuthConfig
+  /** BOX-LOGIN BRIDGE — the external surface's `boxLogin` declaration for a
+   *  file-based subscription (see `box-login-bridge.ts`). When present AND
+   *  this provider can take a file upload (`handle.defaultCwd` +
+   *  `host.writeFile`, never a device box), the redacted login copy is
+   *  written into the box BEFORE `host.start()` and the forwarded `auth`
+   *  block is stamped `loginFile: true` so the box skips its missing-
+   *  credential fail-fast. Every other case degrades to today's fail-loud
+   *  verify: the stamp is applied ONLY after a successful write, so a box
+   *  never spawns unauthenticated on a copy that never landed. */
+  boxLogin?: BoxLoginDecl
   /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
    *  when one was resolved (config-default wallet / access profile). Consulted
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
@@ -5416,6 +5518,35 @@ export async function bootSandboxAgentSession(opts: {
     }
   }
 
+  // BOX-LOGIN BRIDGE — upload the redacted copy of this file-based login into
+  // the box BEFORE its own `agent_start` verifies one is present (the box's
+  // fail-loud `verifyLocalLoginPresent` runs inside `host.start()`). Every
+  // guard that fails here DEGRADES to today's behavior: no copy is written,
+  // `loginFile` is never stamped, and the box verifies its own login exactly
+  // as it does now — never a silent unauthenticated spawn. A device box is
+  // excluded outright: its filesystem belongs to another machine, so a
+  // host-side home path means nothing there.
+  let boxLoginUpload: { boxPath: string; digest: string } | undefined
+  let refreshBoxLogin: (() => Promise<BoxLoginRefreshOutcome>) | undefined
+  if (opts.boxLogin && opts.auth?.mode === "subscription" && handle.defaultCwd && host.writeFile && !isDeviceBox) {
+    const decl = opts.boxLogin
+    const writeFile = host.writeFile
+    const uploaded = await uploadBoxLoginCopy({ decl, homeDir: handle.defaultCwd, writeFile })
+    if (uploaded.ok) {
+      boxLoginUpload = { boxPath: uploaded.boxPath, digest: uploaded.digest }
+      refreshBoxLogin = createBoxLoginRefresher({
+        decl,
+        path: uploaded.boxPath,
+        read: () => readRecipeLoginJson(decl.recipe, decl.methodId),
+        write: writeFile,
+        digest: uploaded.digest,
+      })
+    } else {
+      // Named file, never a token — see `uploadBoxLoginCopy`'s message rules.
+      bootNotices.push(uploaded.message)
+    }
+  }
+
   // `omitCwdWhenImplicit` (device sandbox — see that field's doc): the
   // caller passed no explicit cwd, so don't forward the HOST's own
   // resolved `boxCwd` (fallback workspace/worktree path) into a box whose
@@ -5460,7 +5591,12 @@ export async function bootSandboxAgentSession(opts: {
       ...(opts.route ? { route: opts.route } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
-      ...(opts.auth ? { auth: opts.auth } : {}),
+      // BOX-LOGIN BRIDGE — stamp the marker ONLY on a copy that actually
+      // landed in the box (`boxLoginUpload`), so the box's own fail-loud
+      // verify is skipped exactly when (and only when) the file is there.
+      ...(opts.auth
+        ? { auth: boxLoginUpload ? { ...opts.auth, loginFile: true } : opts.auth }
+        : {}),
       // F2 — the initial prompt rides the SAME dial as the spawn (device only).
       ...(carriedPrompt !== undefined ? { prompt: carriedPrompt } : {}),
     }
@@ -5520,6 +5656,12 @@ export async function bootSandboxAgentSession(opts: {
       host,
       remoteSessionId,
       lifecyclePolicy,
+      // BOX-LOGIN BRIDGE refresh — re-upload the copy when the HOST's login
+      // file changes under a long-lived box (see `createBoxLoginRefresher`;
+      // the proxy owns the throttle + closed/detached gate). Absent when the
+      // boot-time upload never happened, so a degraded spawn stays degraded
+      // instead of discovering a write path it never had.
+      ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
       // A provider box outlives a host-daemon restart (shutdown detaches
       // instead of killing it, boot re-attaches). Device sandboxes keep the
@@ -5592,6 +5734,49 @@ export async function bootSandboxAgentSession(opts: {
         }
       : {}),
   }
+}
+
+/**
+ * BOX-LOGIN BRIDGE — read the host's login file, build the redacted copy, and
+ * upload it into the box at its home-relative path. Any failure resolves to
+ * `{ok: false, message}` (never throws) so the caller degrades to today's
+ * fail-loud verify: a bridge that cannot run must not be the thing that kills
+ * the spawn, and must NEVER leave a box that spawned unauthenticated — hence
+ * the caller stamps `loginFile` only on an `ok: true`. Messages name the FILE
+ * or the recipe; no token value ever appears in one (see
+ * `box-login-bridge.ts`'s result messages, and the caught-error guards here).
+ */
+export async function uploadBoxLoginCopy(opts: {
+  decl: BoxLoginDecl
+  /** The provider's `defaultCwd` — the box home the relative path joins onto. */
+  homeDir: string
+  writeFile: (path: string, data: Uint8Array) => Promise<void>
+}): Promise<{ ok: true; boxPath: string; digest: string } | { ok: false; message: string }> {
+  let raw: string
+  try {
+    raw = await readRecipeLoginJson(opts.decl.recipe, opts.decl.methodId)
+  } catch {
+    return {
+      ok: false,
+      message:
+        `box login bridge: the "${opts.decl.recipe}" login file could not be read on the host — ` +
+        "the sandbox will verify its own login as before.",
+    }
+  }
+  const copy = buildLoginCopy(opts.decl, raw)
+  if (!copy.ok) return { ok: false, message: copy.message }
+  const boxPath = join(opts.homeDir, copy.path)
+  try {
+    await opts.writeFile(boxPath, new TextEncoder().encode(copy.body))
+  } catch (err) {
+    return {
+      ok: false,
+      message:
+        `box login bridge: writing "${boxPath}" into the sandbox failed — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  return { ok: true, boxPath, digest: copy.digest }
 }
 
 /**

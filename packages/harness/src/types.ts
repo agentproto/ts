@@ -84,6 +84,12 @@ export interface StartAgentArgs {
     baseUrl?: string
   }
   effort?: string
+  /** Reattach to a prior adapter conversation instead of starting blank —
+   *  the box re-attach path (`session_restart` on a live box) passes the
+   *  prior in-box session id; a daemon also accepts a raw adapter
+   *  conversation id. Omitted for a fresh spawn. The answer rides the
+   *  returned descriptor's `resumeVia`. */
+  resumeSessionId?: string
   mcpServers?: McpServerMount[]
   orchestrator?: OrchestratorOption
   notifyUrl?: string
@@ -108,6 +114,10 @@ export interface SessionDescriptor {
   parentSessionId?: string
   depth?: number
   startedAt: string
+  /** Which resume path `agent_start` used — `"resumed via ACP"` when the
+   *  spawn's `resumeSessionId` rehydrated the prior conversation; absent on
+   *  a fresh spawn (or a resume the adapter rejected, which fell back). */
+  resumeVia?: string
 }
 
 /** Connection options for the shared MCP transport. */

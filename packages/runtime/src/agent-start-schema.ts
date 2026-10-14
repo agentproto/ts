@@ -281,6 +281,13 @@ export const agentStartInputShape = {
       token: z.string().optional(),
       source: z.string().optional(),
       apiKey: z.string().optional(),
+      // BOX-LOGIN BRIDGE — the HOST's forward-to-box marker: `true` means "the
+      // redacted login copy for this file-based subscription was uploaded into
+      // this box", which is the ONE thing that lets `resolveAuthSpec` skip its
+      // missing-credential fail-fast. Set by the host's spawn/restart code only
+      // after a successful write (see `box-login-bridge.ts`), never by a
+      // client — hence a strict boolean, never a string/number.
+      loginFile: z.boolean().optional(),
     // Passthrough: a host forwards sub-account scope (credentialEnv/extraEnv/
     // isolateDataHome) to its sandbox box; spawn-defaults validates those keys.
     }).passthrough()
@@ -401,9 +408,12 @@ export const agentStartInputShape = {
   restartPolicy: jsonTolerant(
     z.object({
       on: z
-        .array(z.enum(["crashed", "error"]))
+        .array(z.enum(["crashed", "error", "sandbox-gone"]))
         .min(1)
-        .describe("Which automatic death reasons trigger a restart. Never a clean exit, kill, idle-reap, or cost-budget kill."),
+        .describe(
+          "Which automatic death reasons trigger a restart (`sandbox-gone`: box lost, " +
+            "move to a fresh box). Never a clean exit, kill, idle-reap, or cost-budget kill.",
+        ),
       maxRetries: z
         .number()
         .int()
@@ -603,6 +613,24 @@ export const agentStartInputShape = {
         "spawn crossed a device pairing. Do not set — an explicit " +
         "`workspaceSlug` that the target daemon has not registered fails " +
         "instead of falling back to its active workspace."
+    ),
+  // CONTROLLER-INTERNAL — not a tool-caller surface. The host daemon's box
+  // re-attach path (`session_restart` on a session whose sandbox box is
+  // still alive) hands the BOX daemon the prior in-box session id so the
+  // box continues that adapter conversation instead of starting blank; the
+  // HTTP `POST /sessions` route passes a raw adapter conversation id. The
+  // box resolves a session id on ITS OWN registry to that row's adapter
+  // conversation + isolated config dir (the same ACP-level resume a local
+  // restart uses) and reports the outcome on the descriptor's `resumeVia`.
+  resumeSessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Internal: reattach to a prior adapter conversation — a session id " +
+        "on this daemon (that row's adapter conversation and isolated " +
+        "config dir are reused) or a raw adapter conversation id. Set by a " +
+        "host re-attaching its sandbox box; not for tool callers."
     ),
 }
 

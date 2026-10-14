@@ -119,7 +119,7 @@ export interface SessionAccessProfileEcho {
  *  round-trips through spawn/descriptor reads; no client UI reads into it
  *  yet). */
 export interface RestartPolicy {
-  on: ("crashed" | "error")[]
+  on: ("crashed" | "error" | "sandbox-gone")[]
   maxRetries: number
   windowMs: number
   baseDelayMs: number
