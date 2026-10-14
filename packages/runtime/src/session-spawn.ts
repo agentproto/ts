@@ -1276,6 +1276,11 @@ export interface SpawnAgentSessionInput {
    *  depth/quota/role gates, and an explicit `boardId` on a task verb still
    *  wins over it. */
   boardId?: string
+  /** Workflow ownership of this spawn, stamped onto the descriptor as
+   *  `meta.workflowRunId` / `workflowId` / `workflowStepId` — the same keys a
+   *  `wf:*` agent-step session carries, so reports and session outcomes link
+   *  the session to its run and step. Descriptor-only: no gate reads it. */
+  workflowOwner?: { runId: string; workflowId: string; stepId: string }
   /** Source label for this spawn (channel/harness). Descriptor-only. */
   origin?: string
   /** Installed app id this spawn runs on behalf of (`app_run` sets this to
@@ -1728,6 +1733,12 @@ export function deviceContractLine(device: string): string {
     `call (read it first); if you \`cd\` somewhere else (a nested repo ` +
     `included), re-resolve and re-read the AGENTS.md of wherever you end up.`
   )
+}
+
+function workflowOwnerMeta(owner: SpawnAgentSessionInput["workflowOwner"]): Record<string, string> {
+  return owner
+    ? { workflowRunId: owner.runId, workflowId: owner.workflowId, workflowStepId: owner.stepId }
+    : {}
 }
 
 export async function spawnAgentSession(
@@ -3840,7 +3851,9 @@ export async function spawnAgentSession(
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
+        ...(input.boardId || input.workflowOwner
+          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner) } }
+          : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
@@ -4459,10 +4472,11 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId || appBoundary
+      ...(input.boardId || appBoundary || input.workflowOwner
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
+              ...workflowOwnerMeta(input.workflowOwner),
               ...(appBoundary ? boundaryMeta(appBoundary) : {}),
             },
           }

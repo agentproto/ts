@@ -116,6 +116,16 @@ export const opencode: AgentCliHandle = defineAgentCli({
     range: ">=1.0.0",
     timeout_ms: 15_000,
   },
+  // The npm -g install is the declared upgrade channel; the curl installer
+  // puts the same `opencode` binary on PATH, and `npm i -g opencode-ai@latest`
+  // is the documented way to move it forward. Rollback reinstalls the exact
+  // version that was in place, so a failed post-upgrade ACP smoke probe can
+  // restore it.
+  upgrade: {
+    latest: { npm: "opencode-ai" },
+    cmd: ["npm", "i", "-g", "opencode-ai@latest"],
+    rollback: ["npm", "i", "-g", "opencode-ai@{version}"],
+  },
   auth: {
     ref: "./SECRETS.md",
     state: {

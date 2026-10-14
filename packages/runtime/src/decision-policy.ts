@@ -81,7 +81,7 @@ const classifierSchema = z.object({
 })
 
 const escalationSchema = z.object({
-  /** One tool-less LLM escalation on uncertainty, ever. Never a loop. */
+  /** At most one bounded harness escalation on uncertainty, ever (read-only posture, no MCP servers; harness built-ins are not claimed disabled). Never a loop. */
   enabled: z.boolean().default(true),
   limit: z.number().int().min(0).max(1).default(1),
   /** Character ceiling for the tier-2 escalation packet. Default 6000. */
