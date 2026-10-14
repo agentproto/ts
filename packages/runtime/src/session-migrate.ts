@@ -378,6 +378,13 @@ export async function migrateSandboxSession(
       sandboxCheckpointRestore: chosen.snapshot,
       label: prev.label ? `${prev.label} (migrated)` : undefined,
       title: prev.title ? `${prev.title} (migrated)` : undefined,
+      // The policy rides along exactly like `session-restart-core.ts` carries
+      // `prev.turnRetry`: without it the replacement box has no `turnRetry`
+      // at all, so the next transient failure could neither retry nor migrate
+      // (and `turnRetry.action: "migrate"` would be silently lost by its own
+      // first migration). `spawnAgentSession` re-resolves it with
+      // `resolveTurnRetryPolicy`, which is idempotent on a resolved policy.
+      ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
     },
   })
 

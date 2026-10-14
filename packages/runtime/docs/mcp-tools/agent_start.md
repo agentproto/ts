@@ -386,9 +386,10 @@ live session a short continuation prompt:
 
 > Continue where you stopped; the previous turn failed with: <error>
 
-Shape: `{ on, maxRetries?, baseDelayMs?, factor?, maxDelayMs?, retryAfterToolCalls? }`.
-Only `on` is required; the rest default to `maxRetries: 3`,
-`baseDelayMs: 5000`, `factor: 2`, `maxDelayMs: 60000`.
+Shape: `{ on, action?, maxRetries?, maxMigrations?, baseDelayMs?, factor?, maxDelayMs?, retryAfterToolCalls? }`.
+Only `on` is required; the rest default to `action: "retry"`,
+`maxRetries: 3`, `maxMigrations: 2`, `baseDelayMs: 5000`, `factor: 2`,
+`maxDelayMs: 60000`.
 
 `on` lists the classes to retry. The error text comes from the turn's
 in-band error (`lastTurnErrorMessage`), or from the stall watchdog:
@@ -423,9 +424,32 @@ descriptor as `turnRetryAttempts` (also `lastTurnRetryAt`, and
 that completes cleanly. A new prompt, a kill, or a stall that recovers on its
 own during the backoff cancels the pending retry. Each transition is emitted
 as a `session:turn-retry` event (`scheduled` / `sent` / `cancelled` /
-`exhausted` / `skipped`) and stamped as a `[turn-retry]` notice in the
-session transcript. Pending retries are in-memory: a daemon restart drops
-them.
+`exhausted` / `skipped` / `migrated` / `migrate-failed`) and stamped as a
+`[turn-retry]` notice in the session transcript. Pending retries are
+in-memory: a daemon restart drops them.
+
+`action` decides what a matching failure does:
+
+- `"retry"` (the default) — the behaviour above: re-prompt the same live
+  session after backoff;
+- `"migrate"` — on a SANDBOX session, move it to a fresh box (new IP, same
+  work branch, transcript carried over) and re-prompt "continue" there,
+  capped by `maxMigrations` consecutive migrations.
+
+The migration cap is counted on the descriptor's `turnMigrations`: it resets
+on the same clean turn that resets `turnRetryAttempts`, and it is carried
+onto the migrated session (together with `turnRetryAttempts` and the
+`turnRetry` policy itself), so a box that keeps getting throttled migrates at
+most `maxMigrations` times in total.
+
+A non-sandbox session, a spent cap, or a migration that cannot run (no
+orchestrator, no work branch, a refused spawn) all fall back to the normal
+retry above, with a `[turn-retry] no migration: …` /
+`[turn-retry] did not migrate …` notice; a failed migration leaves the old
+session untouched. Once `maxRetries` is spent as well there is nothing left
+to fall back to: the daemon reports `exhausted` and gives up. The transitions
+land as `migrated` (with `migratedTo`) and `migrate-failed` (with
+`skipReason`) events.
 
 CLI: `agentproto sessions start --turn-retry all` (or a comma list of
 classes, or a JSON object). User presets and harness presets

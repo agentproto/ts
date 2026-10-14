@@ -46,7 +46,8 @@
  * then re-prompts "continue" on the migrated session. A non-sandbox session
  * and a spent `maxMigrations` cap both fall back to a normal retry, with a
  * `[turn-retry]` notice explaining why; a migration that fails leaves the old
- * session untouched and falls back to a normal retry as well.
+ * session untouched and falls back to a normal retry as well — or reports
+ * exhaustion and gives up, when the retry budget is already spent too.
  *
  * NEVER retries: an interrupted turn (user Stop, `interrupt:true` prompt), a
  * killed / exited / errored session (kill, `maxCostUsd` cost-cap kill — the
@@ -264,6 +265,23 @@ export function buildContinuationPrompt(error: string | undefined): string {
   return `Continue where you stopped; the previous turn failed with: ${error ?? "an unknown provider error"}`
 }
 
+/** The `[turn-retry]` give-up notice, shared by every path that stops for
+ *  good. `migrations` is passed when the `migrate` action was in play — the
+ *  plain `exhausted` decision (retry budget spent, no migration involved)
+ *  leaves it out, so its wording is unchanged. */
+export function turnRetryGaveUpNotice(opts: {
+  attempts: number
+  errorClass: string
+  migrations?: number
+}): string {
+  const migrations =
+    opts.migrations === undefined ? "" : ` and ${opts.migrations} migration${opts.migrations === 1 ? "" : "s"}`
+  return (
+    `[turn-retry] gave up after ${opts.attempts} consecutive retries${migrations}` +
+    ` (${opts.errorClass}) — leaving the session idle`
+  )
+}
+
 /** Does this row run in a sandbox box (rather than as a local subprocess)?
  *  A `device:` box also says `remote`, but the deep pre-flight (work branch,
  *  workspace remote, checkpoint) is `assessMigration`'s job — this is only
@@ -284,7 +302,7 @@ export type TurnRetryActionDecision =
   /** Move the sandbox session to a fresh box and re-prompt it there. */
   | { action: "migrate"; errorClass: TurnRetryClass; attempt: number; error?: string }
   /** Stop: no migration left AND no retry budget left. */
-  | { action: "give-up"; errorClass: TurnRetryClass; attempts: number; error?: string }
+  | { action: "give-up"; errorClass: TurnRetryClass; attempts: number; migrations: number; error?: string }
 
 /**
  * Pure decision for a retry-ELIGIBLE failure (one `decideTurnRetry` already
@@ -317,7 +335,13 @@ export function decideTurnRetryAction(
   }
   if (counters.migrations >= rule.maxMigrations) {
     if (counters.attempts >= rule.maxRetries) {
-      return { action: "give-up", errorClass: base.errorClass, attempts: counters.attempts, error: base.error }
+      return {
+        action: "give-up",
+        errorClass: base.errorClass,
+        attempts: counters.attempts,
+        migrations: counters.migrations,
+        error: base.error,
+      }
     }
     return {
       ...base,
@@ -621,7 +645,9 @@ export function createTurnRetryController(opts: {
     const cap = desc.turnRetry?.maxMigrations ?? 0
     const prevAttempts = desc.turnRetryAttempts
     const prevLastTurnRetryAt = desc.lastTurnRetryAt
-    const fallbackToRetry = (why: string): void => {
+    // `migrations` is what the session has really spent: the pre-booking count
+    // when the migration never started, `p.attempt` once it was booked.
+    const fallbackToRetry = (why: string, migrations: number): void => {
       emit(desc, {
         phase: "migrate-failed",
         errorClass: p.errorClass,
@@ -629,8 +655,33 @@ export function createTurnRetryController(opts: {
         skipReason: why,
         ...(p.error ? { error: p.error } : {}),
       })
+      const spentAttempts = prevAttempts ?? 0
+      if (spentAttempts >= (desc.turnRetry?.maxRetries ?? 0)) {
+        // The retry budget is already spent: a failed migration must not book
+        // an over-budget retry on top of it — report exhaustion and stop,
+        // exactly like the `exhausted` decision does.
+        registry.recordNotice(
+          id,
+          `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}) — the retry budget is spent`,
+        )
+        emit(desc, {
+          phase: "exhausted",
+          errorClass: p.errorClass,
+          attempt: spentAttempts,
+          ...(p.error ? { error: p.error } : {}),
+        })
+        registry.recordNotice(
+          id,
+          turnRetryGaveUpNotice({
+            attempts: spentAttempts,
+            errorClass: p.errorClass,
+            migrations,
+          }),
+        )
+        return
+      }
       registry.recordNotice(id, `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}) — retrying on the current box`)
-      const attempt = (prevAttempts ?? 0) + 1
+      const attempt = spentAttempts + 1
       registry.patchTurnRetry(id, { turnRetryAttempts: attempt, lastTurnRetryAt: nowIso })
       sendContinuation(id, desc, p, attempt, {
         rollback: () =>
@@ -643,7 +694,7 @@ export function createTurnRetryController(opts: {
     }
 
     const migrate = opts.migrateSession
-    if (!migrate) return fallbackToRetry("no migration orchestrator is configured")
+    if (!migrate) return fallbackToRetry("no migration orchestrator is configured", desc.turnMigrations ?? 0)
 
     // Book the migration BEFORE it runs: a sandbox boot takes a while, and the
     // counter must be spent whether the migration lands or fails.
@@ -654,7 +705,7 @@ export function createTurnRetryController(opts: {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       log(`[turn-retry] ${id}: migration failed: ${msg}`)
-      return fallbackToRetry(`migration failed: ${msg}`)
+      return fallbackToRetry(`migration failed: ${msg}`, p.attempt)
     }
 
     const migratedTo = fresh.descriptor.id
@@ -802,7 +853,14 @@ export function createTurnRetryController(opts: {
         })
         registry.recordNotice(
           id,
-          `[turn-retry] gave up after ${plan.attempts} consecutive retries (${plan.errorClass}) — leaving the session idle`,
+          turnRetryGaveUpNotice({
+            attempts: plan.attempts,
+            errorClass: plan.errorClass,
+            // A `give-up` (both caps spent) names the migrations too; a plain
+            // `exhausted` (retry budget spent, nothing migrated) keeps the
+            // wording it always had.
+            ...(plan.action === "give-up" ? { migrations: plan.migrations } : {}),
+          }),
         )
         return
       case "retry": {

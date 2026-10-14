@@ -41,8 +41,8 @@ export interface TurnRetryPolicy {
   maxRetries: number
   /** Box migrations allowed without a clean turn in between (action `migrate`
    *  only). Independent of `maxRetries`: once the cap is spent the failure
-   *  falls back to a normal retry / give-up. Default
-   *  {@link TURN_MIGRATE_DEFAULTS}. */
+   *  falls back to a normal retry / give-up. Non-negative — `0` means the
+   *  migrate action never migrates. Default {@link TURN_MIGRATE_DEFAULTS}. */
   maxMigrations: number
   /** First retry's backoff delay (ms), before `factor` compounds it. */
   baseDelayMs: number
@@ -125,7 +125,7 @@ export const turnRetryInputSchema = z.object({
   baseDelayMs: z.number().int().nonnegative().optional(),
   factor: z.number().min(1).optional(),
   maxDelayMs: z.number().int().nonnegative().optional(),
-  maxMigrations: z.number().int().positive().optional(),
+  maxMigrations: z.number().int().nonnegative().optional(),
   retryAfterToolCalls: z.boolean().optional(),
   rotate: z
     .array(z.object({ model: z.string().min(1), profileRef: z.string().min(1).optional() }))
