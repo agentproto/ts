@@ -30,6 +30,7 @@ import type {
   CredSource,
   ProviderCapability,
 } from "@agentproto/provider-kit"
+import { MAX_HERMES_SYSTEM_PROMPT_CHARS } from "./system-prompt-plugin.js"
 
 /**
  * Build hermes's model menu from the shared provider catalog instead of a
@@ -135,6 +136,23 @@ export const hermes: AgentCliHandle = defineAgentCli({
     // legitimate tool-call chain doesn't false-positive) is generous
     // enough to not trip during normal use.
     turn_idle_timeout_ms: 300_000,
+  },
+  // System-prompt channel via the bundled `agentproto-system-prompt` hermes
+  // plugin (plugin/agentproto-system-prompt/). Hermes' ACP mode passes no
+  // `ephemeral_system_prompt` (and `HERMES_EPHEMERAL_SYSTEM_PROMPT` is only
+  // read by the CLI/gateway, not `hermes acp`), so the plugin's
+  // `register_system_prompt_section` is the ONLY channel: it reads the path
+  // in this env var and registers the file's text as cache-safe sections
+  // hermes renders once at session start and freezes (the text survives
+  // resume). The runtime only routes through this channel while the plugin
+  // is installed AND enabled on the host (`hermesSystemPromptPluginStatus`,
+  // checked per spawn — `agentproto adapters hermes-plugin install
+  // --enable`); over `maxChars` it falls back to a first-prompt prefix + a
+  // warning naming the limit.
+  systemPrompt: {
+    via: "env-file",
+    env: "AGENTPROTO_SYSTEM_PROMPT_FILE",
+    maxChars: MAX_HERMES_SYSTEM_PROMPT_CHARS,
   },
   models: {
     // Cheap OpenRouter models by default — hermes is the budget delegation
@@ -458,5 +476,21 @@ export async function readHermesUsage(
     return null
   }
 }
+
+export {
+  HERMES_SYSTEM_PROMPT_PLUGIN_NAME,
+  MAX_HERMES_SYSTEM_PROMPT_CHARS,
+  bundledHermesSystemPromptPluginDir,
+  hermesSystemPromptPluginStatus,
+  installHermesSystemPromptPlugin,
+  resolveHermesHome,
+} from "./system-prompt-plugin.js"
+export type {
+  HermesSystemPromptPluginEnableResult,
+  HermesSystemPromptPluginStatus,
+  HermesSystemPromptPluginStatusOptions,
+  InstallHermesSystemPromptPluginOptions,
+  InstallHermesSystemPromptPluginResult,
+} from "./system-prompt-plugin.js"
 
 export type { AgentCliHandle, AgentCliRuntime }

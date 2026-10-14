@@ -56,6 +56,7 @@ import {
   makePrStateResolver,
 } from "./worktree.js"
 import { makeBranchGcRunner, makeBranchGcVerdictReader, makeBranchGcVerdictRecorder } from "./branch.js"
+import { systemPromptCapsFor } from "./system-prompt-caps.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
   loadWorkspacesConfig,
@@ -474,6 +475,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.gatewayAuth ? { gatewayAuth: adapter.handle.gatewayAuth } : {}),
         ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
+      // An AIP-45 manifest declaring `systemPrompt` (`acp-meta` /
+      // `inline-config` / `argv` / `env-file`) means `start({
+      // appendSystemPrompt })` really lands the text in the harness's own
+      // system prompt — the runtime then skips its first-prompt prefix +
+      // warning fallback. hermes is conditional: its channel IS the
+      // agentproto hermes plugin, so it only counts while that plugin is
+      // installed AND enabled (evaluated on every resolve — see
+      // `system-prompt-caps.ts`, which owns the rule and the fallback
+      // reason).
+      const systemPromptCaps = systemPromptCapsFor(
+        slug,
+        adapter.handle.systemPrompt,
+        process.env,
+      )
       return {
         async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, appendSystemPrompt }) {
           // Build config.options only when there's something to set — an
@@ -535,11 +550,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // process) wraps its spawn through the OS sandbox, where zones apply.
         supportsFsZones: adapter.handle.protocol !== "proprietary",
         supportsHostContextIsolation: agentCliSupportsHostContextIsolation(slug),
-        // An AIP-45 manifest declaring `systemPrompt` (`acp-meta` /
-        // `inline-config` / `argv`) means `start({ appendSystemPrompt })` really
-        // lands the text in the harness's own system prompt — the runtime
-        // then skips its first-prompt prefix + warning fallback.
-        supportsSystemPrompt: adapter.handle.systemPrompt !== undefined,
+        // A declared channel is real unless a conditional one (hermes')
+        // currently fails its live plugin check — plus its char budget and,
+        // when declared-but-unusable, the reason the runtime's fallback
+        // warning should name (`system-prompt-caps.ts`).
+        ...systemPromptCaps,
         // Only adapters whose manifest declares `metadata.sessionSkills`
         // (a delivery dir the driver writes the imported skills into) take
         // part in per-session skill delivery. Gating on this keeps hermes'

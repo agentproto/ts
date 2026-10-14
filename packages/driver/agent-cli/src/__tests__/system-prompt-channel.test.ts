@@ -1,17 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PassThrough } from "node:stream"
 import { EventEmitter } from "node:events"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { ChildProcess } from "node:child_process"
 
 /**
- * `AgentCliDefinition.systemPrompt` — the three `via` channels the driver
+ * `AgentCliDefinition.systemPrompt` — the four `via` channels the driver
  * applies to `start({ appendSystemPrompt })`: `acp-meta` (ACP `_meta` on
  * newSession AND loadSession), `inline-config` (file-list and text shapes,
- * layered into the CLI's inline JSON config env var) and `argv` (the flag on
- * the child's own spawn args).
+ * layered into the CLI's inline JSON config env var), `argv` (the flag on
+ * the child's own spawn args) and `env-file` (the text written to a file
+ * whose absolute path lands in the declared env var).
  */
 
 const spawnCalls: Array<{ args: string[]; env: Record<string, string> }> = []
@@ -46,13 +47,14 @@ vi.mock("node:child_process", async importOriginal => {
 vi.mock("@agentproto/acp/client", () => ({
   createAcpClient: vi.fn(async () => ({
     agentCapabilities: {},
+    async close() {},
     async newSession(params: Record<string, unknown>) {
       acpCalls.newSession.push(params)
-      return { sessionId: "sess-1" }
+      return { sessionId: "sess-1", async close() {} }
     },
     async loadSession(params: Record<string, unknown>) {
       acpCalls.loadSession.push(params)
-      return { sessionId: params.sessionId }
+      return { sessionId: params.sessionId, async close() {} }
     },
     async setSessionConfigOption() {
       return {}
@@ -134,6 +136,7 @@ describe("system-prompt channel at spawn", () => {
       "OPENCODE_CONFIG",
       "OPENCODE_CONFIG_CONTENT",
       "CODEX_CONFIG",
+      "AGENTPROTO_SYSTEM_PROMPT_FILE",
     ]) {
       saved[k] = process.env[k]
       delete process.env[k]
@@ -278,6 +281,43 @@ describe("system-prompt channel at spawn", () => {
       await runtime.start({ cwd: base })
       expect(spawnCalls[0]!.args).not.toContain("--append-system-prompt")
       expect(spawnCalls[0]!.args).toContain("test-acp-wrapper")
+    })
+  })
+
+  describe("via env-file", () => {
+    const envFileLike = (): AgentCliDefinition => ({
+      ...acpLike({
+        via: "env-file",
+        env: "AGENTPROTO_SYSTEM_PROMPT_FILE",
+        maxChars: 7500,
+      }),
+      id: "hermes-like",
+      bin_args: ["-y", "hermes-like", "acp"],
+    })
+
+    it("writes the text to the session config dir and points the env var at the file's absolute path", async () => {
+      const configDir = join(base, "session-config")
+      const runtime = createAgentCliRuntime(defineAgentCli(envFileLike()))
+      await runtime.start({ cwd: base, configDir, appendSystemPrompt: "AGENT.md text" })
+      const file = spawnCalls[0]!.env.AGENTPROTO_SYSTEM_PROMPT_FILE!
+      expect(file).toBe(join(configDir, "agentproto-system-prompt.md"))
+      expect(readFileSync(file, "utf8")).toBe("AGENT.md text")
+    })
+
+    it("without a config dir, writes to a private temp dir that is removed on close", async () => {
+      const runtime = createAgentCliRuntime(defineAgentCli(envFileLike()))
+      const session = await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text" })
+      const file = spawnCalls[0]!.env.AGENTPROTO_SYSTEM_PROMPT_FILE!
+      expect(readFileSync(file, "utf8")).toBe("AGENT.md text")
+      const tmpDir = dirname(file)
+      await session.close()
+      expect(existsSync(tmpDir)).toBe(false)
+    })
+
+    it("sets no env var without the text", async () => {
+      const runtime = createAgentCliRuntime(defineAgentCli(envFileLike()))
+      await runtime.start({ cwd: base })
+      expect(spawnCalls[0]!.env.AGENTPROTO_SYSTEM_PROMPT_FILE).toBeUndefined()
     })
   })
 })

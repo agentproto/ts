@@ -432,6 +432,7 @@ async function projectionCapsFor(
     ...(resolved.agentManifestOption !== undefined ? { agentManifestOption: resolved.agentManifestOption } : {}),
     ...(resolved.deliversSessionSkills ? { deliversSessionSkills: true } : {}),
     ...(resolved.supportsSystemPrompt ? { supportsSystemPrompt: true } : {}),
+    ...(resolved.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
     ...(resolved.declaredOptions !== undefined ? { declaredOptions: resolved.declaredOptions } : {}),
   }
 }

@@ -450,6 +450,9 @@ importers:
       '@agentproto/provider-kit':
         specifier: workspace:*
         version: link:../../packages/provider-kit
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*

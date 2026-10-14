@@ -1,0 +1,3 @@
+name: agentproto-system-prompt
+version: 0.1.0
+description: Delivers an agentproto-supplied system prompt file into hermes as cache-safe system-prompt sections.

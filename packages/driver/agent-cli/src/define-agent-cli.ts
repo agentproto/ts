@@ -390,11 +390,28 @@ export function createAgentCliRuntime(
       // `developer_instructions`) and needs no config dir. An unparseable
       // existing value is left untouched (same stance as `small-model.ts`: the
       // CLI complains about its own broken config) and the dropped text warned.
+      // `env-file` writes the same file and points the declared env var at its
+      // absolute path (hermes' agentproto plugin reads
+      // `AGENTPROTO_SYSTEM_PROMPT_FILE`).
       const systemPromptDecl = definition.systemPrompt
       // A private temp dir holding the file-list text when the host gave no
       // config dir — removed with the session (see `close()` below).
       let systemPromptTmpDir: string | undefined
       const systemPromptText = opts?.appendSystemPrompt
+      // Write the system-prompt text to `<config dir>/agentproto-system-prompt.md`
+      // — or a private temp dir when the host gave no config dir (tracked in
+      // `systemPromptTmpDir` for removal in `close()`) — and return the file's
+      // absolute path. Shared by the `inline-config` file-list shape and the
+      // `env-file` channel.
+      const writeSystemPromptFile = (text: string): string => {
+        const dir =
+          opts?.configDir ??
+          (systemPromptTmpDir = mkdtempSync(join(tmpdir(), "agentproto-system-prompt-")))
+        mkdirSync(dir, { recursive: true })
+        const file = join(dir, "agentproto-system-prompt.md")
+        writeFileSync(file, text)
+        return file
+      }
       if (systemPromptText && systemPromptDecl?.via === "inline-config") {
         const isFileList = systemPromptDecl.shape === "file-list"
         let payload: string | undefined
@@ -402,12 +419,7 @@ export function createAgentCliRuntime(
           // The session's config dir when the host gave one; otherwise a
           // private temp dir — the runtime already counted on this channel
           // (no prefix fallback), so the text must land somewhere.
-          const dir =
-            opts?.configDir ??
-            (systemPromptTmpDir = mkdtempSync(join(tmpdir(), "agentproto-system-prompt-")))
-          mkdirSync(dir, { recursive: true })
-          payload = join(dir, "agentproto-system-prompt.md")
-          writeFileSync(payload, systemPromptText)
+          payload = writeSystemPromptFile(systemPromptText)
         } else {
           payload = systemPromptText
         }
@@ -446,6 +458,15 @@ export function createAgentCliRuntime(
             env[systemPromptDecl.env] = JSON.stringify(inline)
           }
         }
+      }
+      // `env-file`: the same file the file-list shape writes, with the
+      // declared env var set to its absolute path (hermes' agentproto plugin
+      // reads `AGENTPROTO_SYSTEM_PROMPT_FILE`; one `hermes acp` process per
+      // session, so the path always reaches the plugin). `maxChars` is the
+      // runtime's budget to check BEFORE the spawn — never a driver-side
+      // truncation (a silent cut would change the agent's instructions).
+      if (systemPromptText && systemPromptDecl?.via === "env-file") {
+        env[systemPromptDecl.env] = writeSystemPromptFile(systemPromptText)
       }
       // After ALL env layers (ambient, mode/option patches, billing-auth,
       // opts.env) so the append lands on the final PATH — see the helper's
