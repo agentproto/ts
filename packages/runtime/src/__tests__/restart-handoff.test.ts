@@ -227,6 +227,13 @@ describe("restart handoff — full prior transcript + structured prompt", () => 
           commandPreview: "fake-cli (box test double)",
           async startSession(args): Promise<AgentSessionLike> {
             receivedStarts.push(args as Record<string, unknown>)
+            // These tests cover the blank-fallback handoff: the box adapter
+            // has lost the prior conversation, so it rejects the resume id
+            // and the box retries fresh (a box that resumes natively gets
+            // no handoff at all).
+            if ((args as { resumeSessionId?: string }).resumeSessionId) {
+              throw new Error(`Resource not found (session ${(args as { resumeSessionId: string }).resumeSessionId})`)
+            }
             return fakeAgentSession("box")
           },
         }

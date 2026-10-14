@@ -160,3 +160,114 @@ describe("revival lineage (continuedFrom)", () => {
     registry.shutdown()
   })
 })
+
+/** `agent_start`'s internal `resumeSessionId` (the box re-attach path): a
+ *  resume id naming a ROW on this daemon resolves to that row's adapter
+ *  conversation + isolated config dir; rejections fall back to a fresh
+ *  spawn that never claims continuity. */
+describe("agent_start resume target resolution", () => {
+  function resolverWith(
+    startSession: (opts: Record<string, unknown>) => Promise<AgentSessionLike>,
+  ): { resolveAgentAdapter: AgentAdapterResolver; starts: Array<Record<string, unknown>> } {
+    const starts: Array<Record<string, unknown>> = []
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: (async (opts: Record<string, unknown>) => {
+        starts.push(opts)
+        return startSession(opts)
+      }) as never,
+      commandPreview: "mock-adapter",
+    })
+    return { resolveAgentAdapter, starts }
+  }
+
+  it("a resumeSessionId naming a ROW resumes that row's conversation with its isolated config dir", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { resolveAgentAdapter, starts } = resolverWith(async () => fakeAgentSession())
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock-adapter",
+      adapterConfigDir: "/tmp/cfg-abc",
+    })
+    registry.kill(prev.id)
+
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter },
+      { adapter: "mock-adapter", cwd: process.cwd(), resumeSessionId: prev.id } as never,
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(starts).toHaveLength(1)
+    // The ROW id resolves to the row's ADAPTER conversation id…
+    expect(starts[0]?.resumeSessionId).toBe(prev.adapterSessionId)
+    // …with the row's isolated config dir (the provider's conversation
+    // store lives inside it), never a fresh one for the new id.
+    expect(starts[0]?.configDir).toBe("/tmp/cfg-abc")
+    expect(result.descriptor.resumeVia).toBe("resumed via ACP")
+    expect(result.descriptor.resumedFrom).toBe(prev.id)
+    registry.shutdown()
+  })
+
+  it("a row with no recorded adapter conversation drops the resume (blank spawn, no continuity claim)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { resolveAgentAdapter, starts } = resolverWith(async () => fakeAgentSession())
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock-adapter",
+      adapterConfigDir: "/tmp/cfg-abc",
+    })
+    registry.get(prev.id)!.adapterSessionId = ""
+    registry.kill(prev.id)
+
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter },
+      { adapter: "mock-adapter", cwd: process.cwd(), resumeSessionId: prev.id } as never,
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(starts).toHaveLength(1)
+    expect(starts[0]?.resumeSessionId).toBeUndefined()
+    expect(result.descriptor.resumeVia).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("an adapter rejection of the resume id retries fresh and claims no continuity", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { resolveAgentAdapter, starts } = resolverWith(async opts => {
+      if (opts.resumeSessionId) {
+        // The ACP-level rejection shape (RESUME_ID_REJECTED_RE).
+        throw new Error(`Resource not found (session ${String(opts.resumeSessionId)})`)
+      }
+      return fakeAgentSession()
+    })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock-adapter",
+      adapterConfigDir: "/tmp/cfg-old",
+    })
+    registry.kill(prev.id)
+
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter },
+      { adapter: "mock-adapter", cwd: process.cwd(), resumeSessionId: prev.id } as never,
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(starts).toHaveLength(2)
+    expect(starts[0]?.resumeSessionId).toBe(prev.adapterSessionId)
+    expect(starts[0]?.configDir).toBe("/tmp/cfg-old")
+    // The retry: no resume id, a FRESH config dir — the rejected id's store
+    // is exactly the one that couldn't be rehydrated.
+    expect(starts[1]?.resumeSessionId).toBeUndefined()
+    expect(starts[1]?.configDir).not.toBe("/tmp/cfg-old")
+    // A fallback fresh spawn never wears a phantom resume claim.
+    expect(result.descriptor.resumeVia).toBeUndefined()
+    expect(result.descriptor.resumedFrom).toBeUndefined()
+    registry.shutdown()
+  })
+})

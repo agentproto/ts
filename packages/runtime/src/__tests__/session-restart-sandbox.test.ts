@@ -91,9 +91,13 @@ function makeFakeCliResolver(): AgentAdapterResolver {
 }
 
 /** Boot a real in-process daemon (the "box") whose provider supports
- *  `connect()` — the re-attach path a sandbox restart must take. */
+ *  `connect()` — the re-attach path a sandbox restart must take.
+ *  `rejectResumeIds` makes the box's fake adapter reject any resume target
+ *  (the claude-style "not found" shape) — its `agent_start` then retries
+ *  fresh, so the host sees a blank answer and flags the fallback. */
 async function bootReconnectableBox(
   receivedStarts: Array<Record<string, unknown>>,
+  opts: { rejectResumeIds?: boolean } = {},
 ): Promise<{
   provider: SandboxProvider
   gateway: GatewayHandle
@@ -116,6 +120,11 @@ async function bootReconnectableBox(
         commandPreview: "fake-cli (box test double)",
         async startSession(args): Promise<AgentSessionLike> {
           receivedStarts.push(args as Record<string, unknown>)
+          if (opts.rejectResumeIds && args.resumeSessionId) {
+            // The ACP-level rejection shape (RESUME_ID_REJECTED_RE) — same
+            // "Resource not found" the local restart tests use.
+            throw new Error(`Resource not found (session ${args.resumeSessionId})`)
+          }
           return fakeAgentSession("box")
         },
       }
@@ -181,12 +190,13 @@ describe("restartAgentSession on a sandboxed session", () => {
     killPrev?: boolean
     deliveryTarget?: SandboxDeliveryTarget
     workspaceSlug?: string
+    rejectResumeIds?: boolean
   } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
   }> {
     receivedStarts.length = 0
-    box = await bootReconnectableBox(receivedStarts)
+    box = await bootReconnectableBox(receivedStarts, { rejectResumeIds: opts.rejectResumeIds })
     hostWorkspace = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-host-"))
     registry = createSessionsRegistry({
       persist: false,
@@ -207,7 +217,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     return makeResolver(box)
   }
 
-  it("re-attaches the EXISTING box via connect() and re-spawns the adapter inside it — never a local spawn", async () => {
+  it("re-attaches the EXISTING box via connect() and resumes the in-box conversation — never a local spawn", async () => {
     const { resolver, providerResolver } = await setup()
 
     const result = await restartAgentSession(registry, resolver, prev, {
@@ -217,17 +227,95 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(box.connectCalls).toEqual(["sbx_prev_1"])
     expect(receivedStarts).toHaveLength(1)
     expect(receivedStarts[0]?.cwd).toBe("/home/user")
+    // The box daemon's `agent_start` got the prior in-box session id as its
+    // resume target — the box rehydrates that adapter conversation instead
+    // of starting blank behind a 7k-char digest.
+    expect(receivedStarts[0]?.resumeSessionId).toBe(prev.adapterSessionId)
 
     expect(result.resumedFrom).toBe(prev.id)
-    expect(result.resumeFallback).toBe(true)
+    // The box accepted the resume: no flagged fallback, no digest.
+    expect(result.resumeFallback).toBeUndefined()
+    expect(result.digestRecovered).toBeUndefined()
+    expect(result.desc.resumeVia).toBe("resumed via ACP")
+    expect(result.resumeVia).toBe("resumed via ACP")
     expect(result.desc.remote).toBe(true)
     expect(result.desc.sandboxId).toBe("sbx_prev_1")
     expect(result.desc.sandboxTeardown).toBe("pause")
     expect(result.desc.command).toBe("sandbox:fake → fake-cli")
-    expect(result.desc.command).toBe("sandbox:fake → fake-cli")
-    expect(result.desc.resumeVia).toBe("")
     expect(result.desc.cwd).toBe("/home/user")
     expect(result.desc.adapterSlug).toBe("fake-cli")
+  })
+
+  // A KNOWN row on the box daemon (the shape a real restart hits: the
+  // adapter session was spawned THROUGH the box's own agent_start): the
+  // restart passes the prior in-box session id, the box resolves that row's
+  // adapter conversation + isolated config dir, and both reach the box
+  // adapter's startSession — the same ACP-level resume a local restart uses.
+  it("resumes a known in-box row: the box adapter gets the row's conversation id + isolated config dir", async () => {
+    receivedStarts.length = 0
+    box = await bootReconnectableBox(receivedStarts)
+    hostWorkspace = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-host-"))
+    registry = createSessionsRegistry({ persist: false, transcriptDir: join(hostWorkspace, "transcripts") })
+    // The prior adapter session, on the BOX daemon, with its isolated config dir.
+    const priorInBox = box.gateway.sessions.spawnAgent({
+      workspaceSlug: "default",
+      cwd: box.workspace,
+      agentSession: fakeAgentSession("box"),
+      adapterSlug: "fake-cli",
+      adapterConfigDir: "/tmp/box-cfg-1",
+    })
+    // The host row that drove it — its adapterSessionId IS the box session id.
+    prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/home/user",
+      agentSession: { ...fakeAgentSession("proxy"), sessionId: priorInBox.id },
+      adapterSlug: "fake-cli",
+      commandPreview: "sandbox:fake → fake-cli",
+      remote: true,
+      sandboxId: "sbx_prev_1",
+      sandboxTeardown: "pause",
+    })
+    registry.markCrashed(prev.id, "transport-closed")
+    const { resolver, providerResolver } = makeResolver(box)
+
+    const result = await restartAgentSession(registry, resolver, registry.get(prev.id)!, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    expect(receivedStarts).toHaveLength(1)
+    // The box adapter rehydrated the row's conversation, in the row's config dir.
+    expect(receivedStarts[0]?.resumeSessionId).toBe(priorInBox.adapterSessionId)
+    expect(receivedStarts[0]?.configDir).toBe("/tmp/box-cfg-1")
+    // The box reported the resume back up: no fallback, no digest.
+    expect(result.resumeFallback).toBeUndefined()
+    expect(result.digestRecovered).toBeUndefined()
+    expect(result.desc.resumeVia).toBe("resumed via ACP")
+    const replacement = result.desc.sandboxRemoteSessionId
+    expect(replacement).toBeDefined()
+    expect(box.gateway.sessions.get(replacement!)?.resumeVia).toBe("resumed via ACP")
+    expect(box.gateway.sessions.get(replacement!)?.resumedFrom).toBe(priorInBox.id)
+  })
+
+  // An adapter-side rejection of the resume id (conversation store gone)
+  // must degrade to a blank in-box spawn + the transcript digest — never a
+  // failed restart, never a silent claim of continuity. The box's own
+  // `agent_start` retries fresh after the rejection, so the host sees one
+  // box call whose descriptor carries no `resumeVia`.
+  it("flags the fallback (and still restarts) when the box adapter rejects the resume id", async () => {
+    const { resolver, providerResolver } = await setup({ rejectResumeIds: true })
+
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    // Two box-adapter starts: the rejected resume attempt, then the fresh retry.
+    expect(receivedStarts).toHaveLength(2)
+    expect(receivedStarts[0]?.resumeSessionId).toBe(prev.adapterSessionId)
+    expect(receivedStarts[1]?.resumeSessionId).toBeUndefined()
+    expect(result.resumeFallback).toBe(true)
+    expect(result.desc.resumeVia).toBe("")
+    expect(result.desc.remote).toBe(true)
+    expect(result.desc.sandboxId).toBe("sbx_prev_1")
   })
 
   it("forwards the overrides (model/effort) to the box's agent_start and stamps them on the fresh descriptor", async () => {
@@ -576,6 +664,13 @@ describe("restartAgentSession on a sandboxed session", () => {
       expect(result.desc.sandboxId).toBe("sbx_fresh_2")
       expect(result.desc.cwd).toBe("/home/user/agentproto")
       expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
+      // A FRESH box holds no prior conversation — the adapter starts blank
+      // (never with the dead box's resume id), keeping the digest path.
+      expect(receivedStarts[0]?.resumeSessionId).toBeUndefined()
+      // Even though the prior row carried a resume id, the fresh box is a
+      // blank fallback, so the handoff/digest still runs.
+      expect(prev.adapterSessionId).toBeDefined()
+      expect(result.resumeFallback).toBe(true)
       expect(result.desc.sandboxDeliveryTarget).toMatchObject({ branch: "wt/resume-me", baseSha: "e".repeat(40) })
       const commands = execCalls.map(c => c.command)
       expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/agentproto.git'"))).toBe(true)
