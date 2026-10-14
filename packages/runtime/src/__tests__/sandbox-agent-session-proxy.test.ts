@@ -415,3 +415,69 @@ describe("sandbox proxy — onBeforeTeardown", () => {
     expect(host.stop).toHaveBeenCalledTimes(1)
   })
 })
+
+
+describe("sandbox proxy — interrupt without replay", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("settles the cancelled stream and sends only the replacement prompt once", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>
+    let opened!: () => void
+    const streamOpened = new Promise<void>(resolve => { opened = resolve })
+    const host = makeHost()
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(input)
+      if (init?.method === "POST") {
+        expect(url.pathname).toBe("/sessions/remote_1/interrupt")
+        expect(url.search).toBe("")
+        streamController.enqueue(new TextEncoder().encode(
+          'data: {"seq":1,"kind":"turn-end","reason":"cancelled"}\n\n',
+        ))
+        streamController.close()
+        return new Response('{"ok":true,"wasBusy":true}')
+      }
+      if (fetchMock.mock.calls.length === 1) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { streamController = controller; opened() },
+        }))
+      }
+      expect(url.searchParams.get("since")).toBe("1")
+      return sseResponse([
+        { seq: 2, kind: "text-delta", text: "new answer" },
+        { seq: 3, kind: "turn-end", reason: "completed" },
+      ])
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+    const previous = collect(proxy.send("previous request"))
+    await streamOpened
+    await proxy.cancel()
+    expect(await previous).toEqual([{ kind: "turn-end", reason: "cancelled" }])
+    expect(await collect(proxy.send("replacement request"))).toEqual([
+      { kind: "text-delta", text: "new answer" },
+      { kind: "turn-end", reason: "completed" },
+    ])
+    expect(host.prompt).toHaveBeenCalledTimes(2)
+    expect(host.prompt).toHaveBeenNthCalledWith(1, "remote_1", "previous request")
+    expect(host.prompt).toHaveBeenNthCalledWith(2, "remote_1", "replacement request")
+    expect(host.kill).not.toHaveBeenCalled()
+  })
+
+  it("interrupts a reattached session even when this proxy has sent no prompt", async () => {
+    const host = makeHost()
+    const fetchMock = vi.fn(async () => new Response('{"ok":true,"wasBusy":false}'))
+    vi.stubGlobal("fetch", fetchMock)
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+    await proxy.cancel()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(host.prompt).not.toHaveBeenCalled()
+  })
+
+  it.each([404, 409, 500])("surfaces HTTP %s without replaying the previous prompt", async status => {
+    const host = makeHost()
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status })))
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+    await expect(proxy.cancel()).rejects.toThrow(`remote interrupt failed (HTTP ${status})`)
+    expect(host.prompt).not.toHaveBeenCalled()
+  })
+})
