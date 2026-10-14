@@ -42,13 +42,10 @@ import {
   type StopReason,
 } from "@agentclientprotocol/sdk"
 import { promptText, sdkMessageToUpdates } from "@agentproto/adapter-claude-sdk"
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import {
   defaultCloudCliRunner,
-  preflightAuth,
   sendPrompt as defaultSendPrompt,
   startCloudSession as defaultStartCloudSession,
-  cloudChildEnv,
   type StartedCloudSession,
 } from "./cli.js"
 import {
@@ -57,7 +54,17 @@ import {
   type CloudEventsPage,
   type CredentialSource,
 } from "./sessions-api.js"
-import { validateRepoSource, type GitRunner } from "./repo-source.js"
+import { validateRepoSource } from "./repo-source.js"
+
+/**
+ * The wire shape the cloud events API serves as `event.payload`: a Claude
+ * Code stream-json SDK message. Derived from `sdkMessageToUpdates`'s
+ * parameter so this package does not need a direct dependency on
+ * `@anthropic-ai/claude-agent-sdk` (which would otherwise be a transitive
+ * dep of `adapter-claude-sdk` and could break under strict pnpm or leak
+ * into the emitted d.ts).
+ */
+type SDKMessage = Parameters<typeof sdkMessageToUpdates>[0]
 
 /** Poll cadence: 2s, backing off to 10s while the turn is still running. */
 export const POLL_INITIAL_MS = 2_000
