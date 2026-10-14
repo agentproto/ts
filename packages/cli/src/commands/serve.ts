@@ -1054,6 +1054,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
           `${color.reset}\n`,
       )
     }
+    if (reattached.unserved > 0) {
+      // Rows in a bucket this daemon does not serve belong to the daemon that
+      // does — they are left untouched (not resolved as pending forever).
+      process.stderr.write(
+        `${color.dim}${reattached.unserved} detached row(s) belong to other workspaces (not served by this daemon)${color.reset}\n`,
+      )
+    }
     const eager = await gateway.resumeSessionsOnBoot({
       isServed: desc =>
         resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,

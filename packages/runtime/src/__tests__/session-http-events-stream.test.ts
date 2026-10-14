@@ -224,7 +224,10 @@ describe("GET /sessions/:id/events/stream", () => {
   })
 
   afterEach(() => {
-    rmSync(tmp, { recursive: true, force: true })
+    // A late event write can re-create a dir `rmSync` just emptied (ENOTEMPTY
+    // on the parent rmdir); `maxRetries` retries the whole removal — same
+    // deflake as command-tools.test.ts.
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
     vi.clearAllMocks()
   })
 

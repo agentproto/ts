@@ -103,6 +103,27 @@ describe("daemon restart — sandbox sessions", () => {
     expect(code).toBe(0)
     expect(out.text()).not.toContain("sandbox")
   })
+
+  it("surfaces unserved rows as a note and does not wait on them", async () => {
+    let calls = 0
+    const health = vi.fn(async () => {
+      calls++
+      // Pre-restart: nothing attached. Post-boot: all detached rows belong to
+      // another workspace, so this daemon's pass has nothing to resolve.
+      return calls === 1
+        ? withSandbox(0)
+        : withSandbox(0, { detachedAtBoot: 3, unserved: 3, pending: 0 })
+    })
+    const out = captureStdout()
+    const code = await runRestart(okLaunchctl, health, 3, noSyncPath, 1)
+    out.restore()
+
+    expect(code).toBe(0)
+    const text = out.text()
+    expect(text).toContain("3 detached rows belong to other workspaces (not served by this daemon)")
+    expect(text).not.toContain("still pending")
+    expect(text).not.toContain("pass continues in the daemon")
+  })
 })
 
 describe("awaitSandboxReattach", () => {
@@ -134,6 +155,21 @@ describe("awaitSandboxReattach", () => {
   it("says the status is unavailable when the new daemon never reports it", async () => {
     const line = await awaitSandboxReattach(async () => null, 2, null, 5, 1)
     expect(line).toContain("2 detached; re-attach status unavailable")
+  })
+
+  it("notes unserved rows as belonging to other workspaces and never reports them as pending", async () => {
+    const info = withSandbox(0, { detachedAtBoot: 3, unserved: 3, pending: 0 })
+    const line = await awaitSandboxReattach(async () => info, 3, info, 5, 1)
+    expect(line).toContain("3 detached rows belong to other workspaces (not served by this daemon)")
+    expect(line).not.toContain("still pending")
+    expect(line).not.toContain("re-attached")
+  })
+
+  it("excludes unserved rows from the tally denominator while still reporting the rest", async () => {
+    const info = withSandbox(1, { detachedAtBoot: 3, unserved: 1, reattached: 2, pending: 0 })
+    const line = await awaitSandboxReattach(async () => info, 3, info, 5, 1)
+    expect(line).toContain("re-attached 2/2 sandbox sessions")
+    expect(line).toContain("1 detached row belong to other workspaces (not served by this daemon)")
   })
 
   it("prints a progress line up front instead of sitting silent", async () => {
@@ -190,6 +226,17 @@ describe("renderSandboxTally (daemon status)", () => {
     })
     expect(line).toContain("2 attached")
     expect(line).toContain("re-attached 1/3 sandbox sessions (1 gone, 1 still pending)")
+  })
+
+  it("notes unserved rows and keeps them out of the tally and out of pending", () => {
+    const line = renderSandboxTally({
+      attached: 1,
+      reattach: { detachedAtBoot: 3, reattached: 1, gone: 0, failed: 0, unserved: 2, pending: 0 },
+    })
+    expect(line).toContain("1 attached")
+    expect(line).toContain("re-attached 1/1 sandbox session")
+    expect(line).toContain("2 detached rows belong to other workspaces (not served by this daemon)")
+    expect(line).not.toContain("still pending")
   })
 
   it("shows only the attached count when nothing was detached at boot", () => {

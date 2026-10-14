@@ -932,7 +932,7 @@ daemon re-attaches every detached row:
 | Box unreachable / provider not resolvable (transient) | plain `killed` / `daemon-restart` ghost, so eager resume still applies |
 
 Counts are on `GET /health` and `daemon_health` as
-`sandboxSessions: { attached, reattach: { detachedAtBoot, reattached, gone, failed, pending } }`,
+`sandboxSessions: { attached, reattach: { detachedAtBoot, reattached, gone, failed, unserved, pending } }`,
 and `agentproto daemon restart` prints them (see
 [`daemon`](./daemon.md#start--restart--stop)).
 

@@ -219,7 +219,10 @@ describe("AIP-58 §6 Journal — WorkflowRunner.retry() (P5)", () => {
   })
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
+    // A late fire-and-forget write can re-create a dir `rmSync` just emptied
+    // (ENOTEMPTY on the parent rmdir); `maxRetries` retries the whole removal,
+    // absorbing it — same deflake as command-tools.test.ts.
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("failure at step 3 of 5 — retry replays steps 1-2 from the journal (no re-dispatch) and runs 3-5 fresh", async () => {
@@ -882,7 +885,10 @@ describe("AIP-58 §6 Journal — retry carries the original run's workspace", ()
   })
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
+    // A late fire-and-forget write can re-create a dir `rmSync` just emptied
+    // (ENOTEMPTY on the parent rmdir); `maxRetries` retries the whole removal,
+    // absorbing it — same deflake as command-tools.test.ts.
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   function setup(opts: Parameters<typeof makeWriteGateWorkflow>[0]) {

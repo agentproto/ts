@@ -4910,6 +4910,11 @@ export interface SessionsRegistry {
   sandboxReattachCandidates(): SessionDescriptor[]
   /** Resolve one re-attach candidate — see {@link SandboxReattachResult}. */
   finishSandboxReattach(id: string, result: SandboxReattachResult): SandboxReattachOutcome
+  /** Record how many detached-at-boot rows belong to a workspace bucket this
+   *  daemon does not serve. Those rows are left untouched for the daemon that
+   *  does serve them, and excluded from `pending` — see
+   *  {@link SandboxSessionStats.reattach}. */
+  noteSandboxReattachUnserved(count: number): void
   /** Live + restart bookkeeping for `/health` and `daemon_health`. */
   sandboxSessionStats(): SandboxSessionStats
   /** Stop persisting + close all sessions. Killed children are not
@@ -4951,7 +4956,12 @@ export interface SandboxSessionStats {
     reattached: number
     gone: number
     failed: number
-    /** `detachedAtBoot` minus everything resolved so far. */
+    /** Rows detached at boot that belong to a workspace bucket this daemon
+     *  does not serve — left untouched for the daemon that does. Never
+     *  reported as `pending`. */
+    unserved: number
+    /** `detachedAtBoot` minus everything resolved so far (and minus
+     *  `unserved`). */
     pending: number
   }
 }
@@ -5850,7 +5860,7 @@ export function createSessionsRegistry(opts?: {
   // Boot-time bookkeeping for sandbox sessions the previous daemon process
   // detached (or died holding) — see `loadHistorySnapshot` and the
   // `finishSandboxReattach` registry method.
-  const reattachBoot = { detachedAtBoot: 0, reattached: 0, gone: 0, failed: 0 }
+  const reattachBoot = { detachedAtBoot: 0, reattached: 0, gone: 0, failed: 0, unserved: 0 }
   if (persist) {
     if (partitioned) {
       // Read-only on the legacy artifact, once, guarded by its own
@@ -13084,6 +13094,9 @@ export function createSessionsRegistry(opts?: {
       emitExited(rt)
       return { status: result.kind }
     },
+    noteSandboxReattachUnserved(count) {
+      reattachBoot.unserved = Math.max(0, Math.floor(count))
+    },
     sandboxSessionStats() {
       let attached = 0
       for (const rt of sessions.values()) {
@@ -13103,7 +13116,8 @@ export function createSessionsRegistry(opts?: {
           reattached: reattachBoot.reattached,
           gone: reattachBoot.gone,
           failed: reattachBoot.failed,
-          pending: Math.max(0, reattachBoot.detachedAtBoot - resolved),
+          unserved: reattachBoot.unserved,
+          pending: Math.max(0, reattachBoot.detachedAtBoot - resolved - reattachBoot.unserved),
         },
       }
     },

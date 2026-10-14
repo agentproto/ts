@@ -72,6 +72,10 @@ export interface SandboxReattachSummary {
   /** Box unreachable / provider unresolvable / row timed out — row fell back
    *  to the plain `daemon-restart` ghost. */
   failed: number
+  /** Detached rows that belong to a workspace bucket this daemon does not
+   *  serve — left untouched for the daemon that does. Not counted in
+   *  `candidates`. */
+  unserved: number
 }
 
 /**
@@ -189,7 +193,7 @@ export async function runSandboxReattachPass(opts: {
     SessionsRegistry,
     "sandboxReattachCandidates" | "finishSandboxReattach" | "recordSandboxDelivery" | "recordSandboxCheckpoint"
   > &
-    Partial<Pick<SessionsRegistry, "recordNotice">>
+    Partial<Pick<SessionsRegistry, "recordNotice" | "noteSandboxReattachUnserved">>
   resolveSandboxProvider: SandboxProviderResolver
   /** Max boxes reconnected concurrently. */
   concurrency?: number
@@ -205,16 +209,24 @@ export async function runSandboxReattachPass(opts: {
   const { registry } = opts
   const limit = Math.max(1, Math.floor(opts.concurrency ?? 4))
   const timeoutMs = Math.max(1, Math.floor(opts.timeoutMs ?? DEFAULT_REATTACH_TIMEOUT_MS))
-  const candidates = registry
-    .sandboxReattachCandidates()
-    .filter(d => opts.isServed?.(d) ?? true)
-    .sort((a, b) => (b.lastActivityAt ?? b.startedAt).localeCompare(a.lastActivityAt ?? a.startedAt))
+  const allCandidates = registry.sandboxReattachCandidates()
+  // Rows a previous daemon detached that live in a workspace bucket THIS
+  // daemon does not serve: another daemon owns them, so we must not resolve
+  // them (that would race/steal) — but we DO report them so they don't read
+  // as eternally `pending`. Left untouched; `hostDetached` stays set.
+  const served = allCandidates.filter(d => opts.isServed?.(d) ?? true)
+  const unserved = allCandidates.length - served.length
+  registry.noteSandboxReattachUnserved?.(unserved)
+  const candidates = served.sort((a, b) =>
+    (b.lastActivityAt ?? b.startedAt).localeCompare(a.lastActivityAt ?? a.startedAt),
+  )
   const summary: SandboxReattachSummary = {
     candidates: candidates.length,
     reattached: 0,
     gone: 0,
     ended: 0,
     failed: 0,
+    unserved,
   }
 
   /**
