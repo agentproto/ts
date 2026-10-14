@@ -7739,6 +7739,7 @@ async function handleSessions(
         resumedFrom: restarted.resumedFrom,
         resumeVia: restarted.resumeVia,
         ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+        ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
       })
     } catch (err) {
       if (err instanceof RestartOverrideError) {

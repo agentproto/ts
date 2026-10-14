@@ -525,6 +525,12 @@ export interface RestartAgentSessionResult {
    *  lets callers distinguish "fresh with zero context" from "fresh
    *  with partial digest injected" for the restart banner. */
   digestRecovered?: boolean
+  /** Structured handoff the restart injected instead of the old digest:
+   *  the full transcript file's path, the checkpoint id, and how much
+   *  conversation was recovered — so CLI/VS Code/session-chat can say
+   *  "conversation restored from transcript (N messages)". Absent when
+   *  no handoff could be built (the digest fallback ran, or nothing). */
+  handoff?: RestartHandoff
 }
 
 export interface RestartAgentSessionOptions {
@@ -640,6 +646,10 @@ export interface RestartPreferInPlaceResult {
   resumeVia: string
   resumeFallback?: boolean
   digestRecovered?: boolean
+  /** Present when the new-id fallback built a structured handoff (see
+   *  `RestartAgentSessionResult.handoff`); absent for an in-place revival
+   *  or a fallback with no recoverable transcript. */
+  handoff?: RestartHandoff
 }
 
 /** The shared in-place eligibility decision: the row must be ENDED (not
@@ -730,6 +740,7 @@ export async function restartPreferInPlace(
     resumeVia: restarted.resumeVia,
     ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
     ...(restarted.digestRecovered ? { digestRecovered: true } : {}),
+    ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
   }
 }
 
@@ -1758,6 +1769,7 @@ export async function restartAgentSession(
     resumeVia: desc.resumeVia ?? "",
     ...(resumeFallback ? { resumeFallback: true } : {}),
     ...(digestRecovered ? { digestRecovered: true } : {}),
+    ...(restartHandoff ? { handoff: restartHandoff } : {}),
   }
 }
 

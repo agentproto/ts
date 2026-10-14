@@ -4707,6 +4707,7 @@ export function registerSessionTools(
                     resumedFrom: restarted.resumedFrom,
                     resumeVia: restarted.resumeVia,
                     ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+                    ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
                   },
                   null,
                   2
@@ -5041,6 +5042,7 @@ export function registerSessionTools(
                   resumedFrom: restarted.resumedFrom,
                   resumeVia: restarted.resumeVia,
                   ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+                  ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
                   ...(nativeResumeDecline ? { nativeResumeDecline } : {}),
                 },
                 null,
