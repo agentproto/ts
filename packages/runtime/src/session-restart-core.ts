@@ -90,6 +90,7 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
+import { writeBoxPriorTranscripts } from "./restart-handoff.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
@@ -1279,6 +1280,13 @@ export async function restartAgentSession(
         )
       }
     }
+    // Best-effort: write the prior session's full transcript into the
+    // re-attached box (outside the repo checkout, so the delivery hook never
+    // commits it) — the handoff below points the fresh adapter at it. A
+    // failure is not fatal; the handoff falls back to the old digest.
+    boxPriorTranscriptPaths = (
+      await writeBoxPriorTranscripts(host, prev, registry).catch(() => undefined)
+    )?.paths ?? []
     let remoteSessionId: string
     try {
       const remoteDesc = await host.start({
@@ -1366,6 +1374,11 @@ export async function restartAgentSession(
   // Set once prev's proxy was detached from the re-attached box — closing
   // prev is then safe again (its `close()` no longer touches the box).
   let priorProxyReleased = false
+  // In-box paths of the prior session's full transcript file(s) written
+  // during this restart (restart-handoff.ts) — both the re-attach and the
+  // fresh-box paths fill it in; the handoff assembly below consumes it once
+  // `desc` exists.
+  let boxPriorTranscriptPaths: string[] = []
   // Box gone: boot a fresh one. A tar-mode session (workspace with no git
   // source) gets its last tarball checkpoint restored; otherwise the box is
   // cloned from the workspace remote (configured, or derived from the checkout's
@@ -1462,6 +1475,28 @@ export async function restartAgentSession(
         `restartAgentSession: sandbox "${prev.sandboxId}" is gone and a fresh box for ` +
           `workspace "${slug}" could not be started — ${booted.message}`,
       )
+    }
+    // Best-effort: write the prior session's full transcript into the FRESH
+    // box too. `bootSandboxAgentSession` doesn't expose the booted box's
+    // file seam, so reconnect to the just-booted box for the write — and
+    // never stop/pause that handle (it would tear the fresh box down). A
+    // failure is not fatal; the handoff falls back to the old digest.
+    try {
+      const freshHandle = opts.resolveSandboxProvider
+        ? await opts.resolveSandboxProvider(providerSlug)
+        : null
+      const freshBox = await freshHandle?.provider.connect?.(
+        booted.sandboxId,
+        { provider: providerSlug, config: {} },
+        { env: {} },
+      )
+      if (freshBox) {
+        boxPriorTranscriptPaths = (
+          await writeBoxPriorTranscripts(freshBox, prev, registry).catch(() => undefined)
+        )?.paths ?? []
+      }
+    } catch {
+      // Handoff is best-effort — the digest fallback covers a failed write.
     }
     notices.push(...(booted.notices ?? []))
     const restarted = registerBoxSession(restartedSessionId, sandboxMcpServers, {
