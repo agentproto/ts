@@ -63,6 +63,14 @@ export const copilotCli: AgentCliHandle = defineAgentCli({
     range: ">=0.0.410",
     timeout_ms: 15_000,
   },
+  // npm is the first declared install channel, so the npm shape is the
+  // upgrade story: latest from the registry, in-place reinstall, exact-
+  // version rollback for a failed post-upgrade ACP smoke probe.
+  upgrade: {
+    latest: { npm: "@github/copilot" },
+    cmd: ["npm", "i", "-g", "@github/copilot@latest"],
+    rollback: ["npm", "i", "-g", "@github/copilot@{version}"],
+  },
   auth: {
     ref: "./SECRETS.md",
     // Documented token precedence: COPILOT_GITHUB_TOKEN > GH_TOKEN >

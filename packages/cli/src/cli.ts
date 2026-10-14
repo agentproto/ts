@@ -22,6 +22,7 @@ import { runConfig } from "./commands/config.js"
 import { runInstall } from "./commands/install.js"
 import { runSetupCommand } from "./commands/setup.js"
 import { runAdapters } from "./commands/adapters.js"
+import { runHarness } from "./commands/harness.js"
 import { runRun } from "./commands/run.js"
 import { runChat } from "./commands/chat.js"
 import { runChatTui } from "./commands/chat-tui.js"
@@ -83,6 +84,9 @@ Usage:
                        declares no verify_sha256 (refused by default in
                        non-interactive contexts)
   agentproto adapters  <list|show|outdated|install|uninstall|enable|disable> [args]
+  agentproto harness   <outdated|check|upgrade> [args]
+                       freshness + safe upgrades of the agent CLI the adapter
+                       spawns (the harness) — see agentproto harness --help
   agentproto setup     [--yes] [--dry-run] [--json] [--only <step>...] [--skip <step>...]
                                            onboarding wizard: zero to a working install
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
@@ -238,6 +242,8 @@ Examples:
   agentproto install runtime-profile/standard  # drops .claude/ swarm scaffolding into the cwd
   agentproto setup openclaw                # re-run setup (idempotent via skip_if + ledger)
   agentproto run claude-code --cwd . --prompt "summarise this repo"
+  agentproto harness outdated --json   # which spawned agent CLIs are behind
+  agentproto harness upgrade opencode  # upgrade one harness in place (rollback on failed probe)
   agentproto run-swarm --manifest .runtime/local.yaml --verbose
   agentproto workspace add ~/code/my-project --slug my-project
   agentproto workspace list
@@ -260,6 +266,7 @@ const VERBS = new Set([
   "doctor",
   "install",
   "adapters",
+  "harness",
   "setup",
   "run",
   "chat",
@@ -367,6 +374,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runInstall(rest)
     case "adapters":
       return runAdapters(rest)
+    case "harness":
+      return runHarness(rest)
     case "setup":
       return runSetupCommand(rest)
     case "run":

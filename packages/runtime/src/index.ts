@@ -51,6 +51,8 @@ import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
 import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 import { registerDecisionTools } from "./decision-tools.js"
+import { createDaemonEscalationHost } from "./decision-escalation.js"
+import { registerDecisionWorkflowTools } from "./decision-workflow-tools.js"
 export {
   DECISION_POLICY_SCHEMA_VERSION,
   decisionPolicyHash,
@@ -149,9 +151,11 @@ import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { isSandboxBoxGone } from "./sandbox-gone.js"
-import { createTurnRetryController } from "./turn-retry.js"
+import { createTurnRetryController, type MigrateSessionFn } from "./turn-retry.js"
 import { createModelCooldowns } from "./model-cooldowns.js"
 import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
+import { migrateSandboxSession } from "./session-migrate.js"
+import { createCheckpointSources } from "./checkpoint-extract.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
@@ -2525,6 +2529,37 @@ export async function createGateway(
   // map (the free-tier limit is per model per IP): the controller fills it and
   // `turnRetry.rotate` reads it for every session; read-only in `daemon_health`.
   const modelCooldowns = createModelCooldowns()
+  // `turnRetry.action: "migrate"`'s orchestration arm: PR 2's
+  // `migrateSandboxSession`, called in-process (no MCP round-trip) with the
+  // same spawn deps the `session_migrate` tool threads. Absent without an
+  // adapter resolver — a migrate decision then falls back to a normal retry
+  // with a notice (turn-retry.ts's "no migration orchestrator" path).
+  // `supervisor` / `taskLedger` / `orchestratorInjector` are declared further
+  // down this file, so the closure reads them at CALL time — a turn-retry
+  // migration only ever fires long after boot.
+  const turnRetryMigrateSession: MigrateSessionFn | undefined = opts.resolveAgentAdapter
+    ? prev =>
+        migrateSandboxSession(
+          {
+            registry: sessions,
+            resolveAgentAdapter: opts.resolveAgentAdapter!,
+            daemonMcpUrl,
+            ...(webhookNotifier ? { webhookNotifier } : {}),
+            resolveSandboxProvider: resolveSandboxProviderResolved,
+            ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+            ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+            ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+            ...(orchestratorInjector ? { buildOrchestratorMcp: orchestratorInjector } : {}),
+          },
+          prev,
+          {
+            sources: createCheckpointSources({
+              ...(supervisor ? { supervisor } : {}),
+              ...(taskLedger ? { taskLedger } : {}),
+            }),
+          },
+        )
+    : undefined
   const turnRetryController = createTurnRetryController({
     registry: sessions,
     sessionEvents,
@@ -2533,6 +2568,7 @@ export async function createGateway(
       getProfile: getAuthProfile,
       ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
     }),
+    ...(turnRetryMigrateSession ? { migrateSession: turnRetryMigrateSession } : {}),
   })
 
   // Completion-policy supervisor — watches sessions and runs shell gates.
@@ -2777,6 +2813,21 @@ export async function createGateway(
       })
     : undefined
 
+  // The review host's verdict-recovery config, read per recovery so a config
+  // change applies without a restart. Shared with the decision-route
+  // workflow tools, which preflight it against the execution profile.
+  const getReviewRecovery = () => {
+    const presets = (daemonConfig.review?.recoveryPresets ?? []).filter(
+      (p): p is string => typeof p === "string" && p.trim().length > 0,
+    )
+    if (presets.length === 0) return undefined
+    const role = resolveModelRoleEntry("review.recovery", { daemon: daemonConfig.models })
+    return {
+      presets,
+      ...(role ? { model: { model: role.model, ...(role.profile ? { profile: role.profile } : {}) } } : {}),
+    }
+  }
+
   // Review runner — singleton per daemon (review-runner.ts), shared across
   // all MCP connections like `workflowRunner`. Attestations persist to the
   // review ledger under ~/.agentproto/reviews (a throwaway temp root when
@@ -2809,17 +2860,7 @@ export async function createGateway(
             eventRing,
             resolveAgentAdapter: opts.resolveAgentAdapter,
             ...(daemonConfig.review?.laneRetries !== undefined ? { laneRetries: daemonConfig.review.laneRetries } : {}),
-            getRecovery: () => {
-              const presets = (daemonConfig.review?.recoveryPresets ?? []).filter(
-                (p): p is string => typeof p === "string" && p.trim().length > 0,
-              )
-              if (presets.length === 0) return undefined
-              const role = resolveModelRoleEntry("review.recovery", { daemon: daemonConfig.models })
-              return {
-                presets,
-                ...(role ? { model: { model: role.model, ...(role.profile ? { profile: role.profile } : {}) } } : {}),
-              }
-            },
+            getRecovery: getReviewRecovery,
             spawnDeps: {
               resolveSandboxProvider: resolveSandboxProviderResolved,
               ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
@@ -3436,6 +3477,32 @@ export async function createGateway(
     // from `tool` steps. Classifier = the generic Jev client; no escalation
     // backend is wired at the tool layer.
     registerDecisionTools(server)
+    // `decision_*` stage tools — the staged `decision-route` workflow
+    // (workflows/decision-route). The escalation host is built per call from
+    // the resolved execution profile, which re-checks the live session.
+    registerDecisionWorkflowTools(server, {
+      reviewRunner,
+      getRecovery: getReviewRecovery,
+      presetLookups: {
+        resolveRole: role => resolveModelRoleEntry(role, { daemon: daemonConfig.models }),
+      },
+      ...(opts.resolveAgentAdapter
+        ? {
+            createEscalationHost: profile =>
+              createDaemonEscalationHost({
+                registry: sessions,
+                sessionEvents,
+                eventRing,
+                resolveAgentAdapter: opts.resolveAgentAdapter!,
+                spawnDeps: {
+                  resolveSandboxProvider: resolveSandboxProviderResolved,
+                  ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+                },
+                profile,
+              }),
+          }
+        : {}),
+    })
     // Persisted harness→profile bindings (harness_preset_list/create/delete/
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.

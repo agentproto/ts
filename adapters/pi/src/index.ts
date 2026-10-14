@@ -120,12 +120,22 @@ export const pi: AgentCliHandle = defineAgentCli({
   ],
   version_check: {
     // PRESENCE probe — local binary check, not a registry query. Covers BOTH
-    // install methods: the npm -g package and the curl installer both put a
+    // install methods: the npm -g package and the curl installer both put an
     // `pi` executable on PATH, and it runs `--version` fully offline.
     cmd: "pi --version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     range: ">=0.80.0",
     timeout_ms: 15_000,
+  },
+  // The npm -g package is the declared upgrade channel (the curl installer
+  // lands the same `pi` binary). pi is `protocol: "proprietary"`, so the
+  // post-upgrade ACP smoke probe is skipped for it ("not ACP") — success is
+  // judged by the re-read `pi --version` instead, and a failed re-read rolls
+  // back to the recorded version.
+  upgrade: {
+    latest: { npm: "@earendil-works/pi-coding-agent" },
+    cmd: ["npm", "i", "-g", "@earendil-works/pi-coding-agent@latest"],
+    rollback: ["npm", "i", "-g", "@earendil-works/pi-coding-agent@{version}"],
   },
   auth: {
     ref: "./SECRETS.md",

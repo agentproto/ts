@@ -85,8 +85,8 @@ workflow"). Closed choices map to review bindings:
 Rules run first and are deterministic. `hard-risk` is a floor: it pins
 `deep` and no classifier or default may settle below it. Ambiguous ranges
 get at most one Jev typed-choice call; low confidence, a small margin,
-incomplete/truncated evidence or a classifier failure allow one tool-less
-LLM escalation; anything still unresolved takes the conservative default
+incomplete/truncated evidence or a classifier failure allow one bounded
+harness escalation (read-only posture); anything still unresolved takes the conservative default
 (`deep`). A blocking finding stops the flow — it never triggers another
 model to obtain approval.
 
