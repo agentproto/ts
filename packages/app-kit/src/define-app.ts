@@ -168,6 +168,14 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       if (typeof argMap !== "object" || argMap === null || Array.isArray(argMap)) {
         throw new AppDefinitionError(`\`ui.toolScope.${toolId}\` must be an object of argName -> "$link.<claim>".`)
       }
+      // An empty entry (`{}`) would make `toolId` callable with NO argument
+      // constraint at all under a scoped link token — defeating the whole
+      // point of scoping it rather than just leaving it out of `toolScope`.
+      if (Object.keys(argMap).length === 0) {
+        throw new AppDefinitionError(
+          `\`ui.toolScope.${toolId}\` is empty — a scoped tool needs at least one argName -> "$link.<claim>" constraint, or it shouldn't be in \`toolScope\` at all.`,
+        )
+      }
       for (const [argName, claimRef] of Object.entries(argMap)) {
         if (typeof claimRef !== "string" || !/^\$link\.[A-Za-z0-9_]+$/.test(claimRef)) {
           throw new AppDefinitionError(

@@ -27,6 +27,14 @@ describe("validateTelegramInitData", () => {
     if (!result.ok) expect(result.error).toMatch(/stale/)
   })
 
+  it("rejects a meaningfully future-dated auth_date", () => {
+    const futureAuthDate = Math.floor(Date.now() / 1000) + 3600
+    const initData = signInitData(buildInitDataFields({ authDate: futureAuthDate }), FAKE_BOT_TOKEN)
+    const result = validateTelegramInitData(initData, FAKE_BOT_TOKEN)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/future/)
+  })
+
   it("rejects when signed with the wrong bot token", () => {
     const initData = signInitData(buildInitDataFields(), FAKE_BOT_TOKEN)
     expect(validateTelegramInitData(initData, "different-token").ok).toBe(false)

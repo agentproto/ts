@@ -631,6 +631,14 @@ describe("defineApp — ui.toolScope (AIP-53 link-token scoping)", () => {
     ).toThrow(AppDefinitionError)
   })
 
+  it("throws on an empty toolScope entry — it would grant the tool with no argument constraint at all", () => {
+    expect(() =>
+      defineApp({
+        ui: { html: "<html></html>", tools: ["conversation_read"], toolScope: { conversation_read: {} } },
+      }),
+    ).toThrow(AppDefinitionError)
+  })
+
   it("throws when toolScope's own value isn't an object", () => {
     expect(() =>
       defineApp({

@@ -200,6 +200,51 @@ describe("authorizeAppLink", () => {
     if (!result.ok) expect(result.status).toBe(401)
   })
 
+  it("caps an outsized sessionTtlMs claim at the 24h hard cap", async () => {
+    const keyPath = tmpKeyPath()
+    const { token: linkToken } = mintAppLinkToken({
+      appId: "@agentik/session-chat",
+      claims: { sessionId: "sess_abc", telegramUserId: "42", sessionTtlMs: String(999 * 24 * 60 * 60_000) },
+      ttlMs: 60_000,
+      pendingTelegramAuth: true,
+      keyPath,
+    })
+    const initData = signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN)
+    const result = await authorizeAppLink({
+      linkToken,
+      initData,
+      telegramCreds: fakeTelegramCreds({ default: FAKE_BOT_TOKEN }),
+      keyPath,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    const verified = verifyAppLinkSessionToken(result.sessionToken, keyPath)
+    expect(verified.ok).toBe(true)
+    if (verified.ok) {
+      const ttlSeconds = verified.payload.exp - Math.floor(Date.now() / 1000)
+      expect(ttlSeconds).toBeLessThanOrEqual(24 * 60 * 60 + 5)
+    }
+  })
+
+  it("concurrent redemption of the SAME link token: only one wins, even with the same valid initData", async () => {
+    const keyPath = tmpKeyPath()
+    const { token: linkToken } = mintAppLinkToken({
+      appId: "@agentik/session-chat",
+      claims: { sessionId: "sess_abc", telegramUserId: "42" },
+      ttlMs: 60_000,
+      pendingTelegramAuth: true,
+      keyPath,
+    })
+    const telegramCreds = fakeTelegramCreds({ default: FAKE_BOT_TOKEN })
+    const initData = signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN)
+    const [first, second] = await Promise.all([
+      authorizeAppLink({ linkToken, initData, telegramCreds, keyPath }),
+      authorizeAppLink({ linkToken, initData, telegramCreds, keyPath }),
+    ])
+    const succeeded = [first, second].filter(r => r.ok)
+    expect(succeeded.length).toBe(1)
+  })
+
   it("honours a custom botAlias claim from app_link_mint", async () => {
     const keyPath = tmpKeyPath()
     const { token: linkToken } = mintAppLinkToken({

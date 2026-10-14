@@ -59,6 +59,10 @@ export function validateTelegramInitData(
   if (!Number.isFinite(authDate)) return { ok: false, error: "invalid auth_date" }
   const ageSeconds = Date.now() / 1000 - authDate
   if (ageSeconds > maxAgeSeconds) return { ok: false, error: "stale initData" }
+  // A meaningfully future-dated auth_date is never legitimate (Telegram
+  // stamps it server-side at hello time) — allow only ordinary clock skew.
+  const FUTURE_SKEW_TOLERANCE_SECONDS = 60
+  if (ageSeconds < -FUTURE_SKEW_TOLERANCE_SECONDS) return { ok: false, error: "auth_date is in the future" }
 
   const userRaw = params.get("user")
   if (!userRaw) return { ok: false, error: "missing user" }

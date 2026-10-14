@@ -113,6 +113,18 @@ describe("performAppToolCall — scoped mode (linkClaims)", () => {
     expect((scoped as { isError?: boolean }).isError).toBe(true)
   })
 
+  it("a non-string explicit arg value (e.g. sessionId: 42) fails closed rather than loosely coercing", async () => {
+    const dispatchTool = vi.fn(async () => ({ ok: true }))
+    const result = await performAppToolCall(
+      registryWithScopedApp(),
+      { appId: "@agentik/session-chat", tool: "conversation_read", args: { sessionId: 42 } },
+      { dispatchTool },
+      CLAIMS,
+    )
+    expect(dispatchTool).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+  })
+
   it("a toolScope claim the token doesn't carry is refused with a clear error", async () => {
     const appRegistry = createAppRegistry()
     appRegistry.upsertApp({

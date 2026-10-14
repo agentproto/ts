@@ -35,6 +35,11 @@ import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 
 const DEFAULT_INIT_DATA_MAX_AGE_SECONDS = 300
 const DEFAULT_SESSION_TTL_MS = 30 * 60_000
+/** Hard cap on `sessionTtlMs` — it's only ever set by the privileged
+ *  `app_link_mint`, but an unbounded value there would still mean a typo'd
+ *  or deliberately huge TTL mints a session token valid far longer than a
+ *  Telegram link-auth flow should ever need. */
+const MAX_SESSION_TTL_MS = 24 * 60 * 60_000
 
 /** signature -> exp (epoch seconds). Per-boot only, like `embed-tokens.ts`'s
  *  registry — a daemon restart naturally invalidates every outstanding
@@ -91,7 +96,8 @@ function sessionTtlMsFromClaim(claims: VerifiedAppLinkToken["claims"]): number {
   const raw = claims.sessionTtlMs
   if (!raw) return DEFAULT_SESSION_TTL_MS
   const parsed = Number.parseInt(raw, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SESSION_TTL_MS
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SESSION_TTL_MS
+  return Math.min(parsed, MAX_SESSION_TTL_MS)
 }
 
 /**
@@ -121,10 +127,19 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
 
   pruneConsumed(nowSec)
   const sig = appLinkTokenSignature(input.linkToken)
+  // Reserve the token SYNCHRONOUSLY, right after the `has` check and before
+  // the first `await` below — on Node's single-threaded event loop, nothing
+  // else can run between those two statements, so two concurrent requests
+  // for the same token can never both pass this check (closes a TOCTOU race
+  // that existed when the consume happened only after the async Telegram
+  // verification). A reservation that doesn't pan out (wrong initData, user
+  // mismatch) is released below so a legitimate retry still works — only a
+  // SUCCESSFUL authorization leaves it consumed.
   if (consumedLinkTokens.has(sig)) {
     log({ ok: false, route: "link-auth", appId: payload.appId, sessionId, telegramUserId: claimTelegramUserId, reason: "link token already used", ...(input.ip ? { ip: input.ip } : {}) })
     return { ok: false, status: 401, error: "this link has already been used" }
   }
+  consumedLinkTokens.set(sig, payload.exp)
 
   const botAlias = input.botAlias ?? payload.claims.botAlias ?? "default"
   const creds = await input.telegramCreds.read(botAlias)
@@ -132,11 +147,13 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
     maxAgeSeconds: DEFAULT_INIT_DATA_MAX_AGE_SECONDS,
   })
   if (!validated.ok) {
+    consumedLinkTokens.delete(sig)
     log({ ok: false, route: "link-auth", appId: payload.appId, sessionId, reason: `initData: ${validated.error}`, ...(input.ip ? { ip: input.ip } : {}) })
     return { ok: false, status: 401, error: `telegram authorization failed: ${validated.error}` }
   }
 
   if (String(validated.user.id) !== claimTelegramUserId) {
+    consumedLinkTokens.delete(sig)
     log({
       ok: false,
       route: "link-auth",
@@ -149,8 +166,7 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
     return { ok: false, status: 403, error: "this Telegram account is not authorized for this link" }
   }
 
-  // Success — consume the link token (single use) and mint the session.
-  consumedLinkTokens.set(sig, payload.exp)
+  // Success — the reservation above already marks the token consumed.
   const { token: sessionToken, exp } = mintAppLinkSessionToken({
     appId: payload.appId,
     claims: {
