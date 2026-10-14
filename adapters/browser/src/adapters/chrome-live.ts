@@ -42,6 +42,16 @@ async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<Brows
     baseUrl: `http://${url.host}`,
     wasAlreadyRunning: instance.wasAlreadyRunning,
     healthy: (await instance.health()).ok,
+    health: async () => instance.health(),
+    screenshot: async (tabId) => {
+      const shot = await instance.screenshotOwnedTarget(tabId)
+      return {
+        data: shot.base64,
+        format: "png",
+        ...(shot.width !== undefined ? { width: shot.width } : {}),
+        ...(shot.height !== undefined ? { height: shot.height } : {}),
+      }
+    },
     stop: () => instance.stop(),
   }
 }

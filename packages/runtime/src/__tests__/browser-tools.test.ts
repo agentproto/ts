@@ -256,6 +256,100 @@ describe("start_browser — schema accepts manifest runtime knobs", () => {
   })
 })
 
+describe("browser_screenshot — provider-owned capture", () => {
+  it("dispatches through the live instance, preserves image fields, and probes its health without HTTP", async () => {
+    const screenshot = vi.fn(async (tabId?: string) => {
+      if (tabId && tabId !== "agent-tab") throw new Error(`[chrome-live] target "${tabId}" is not owned by this provider instance`)
+      return { data: "AAAA", format: "png" as const, width: 1, height: 1 }
+    })
+    const health = vi.fn(async () => ({ ok: true }))
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+    const { client, cleanup } = await makeSetup({
+      resolveBrowserAdapter: id => id === "chrome-live" ? {
+        id,
+        name: "Chrome Live",
+        description: "fake",
+        defaultPort: 9222,
+        healthPath: "/json/version",
+        ensure: async () => ({
+          id,
+          port: 9222,
+          baseUrl: "http://127.0.0.1:9222",
+          wasAlreadyRunning: true,
+          healthy: true,
+          health,
+          screenshot,
+          stop: async () => {},
+        }),
+      } : undefined,
+    })
+
+    const started = await client.callTool({ name: "start_browser", arguments: { adapter: "chrome-live" } })
+    const { sessionId } = JSON.parse((started.content as Array<{ text: string }>)[0]!.text) as { sessionId: string }
+    const shot = await client.callTool({ name: "browser_screenshot", arguments: { sessionId, tabId: "agent-tab" } })
+    expect(shot.isError).toBeFalsy()
+    expect(shot.structuredContent).toEqual({ data: "AAAA", format: "png", width: 1, height: 1 })
+    expect(screenshot).toHaveBeenCalledWith("agent-tab")
+
+    const foreign = await client.callTool({ name: "browser_screenshot", arguments: { sessionId, tabId: "user-tab" } })
+    expect(foreign.isError).toBe(true)
+    expect((foreign.content as Array<{ text: string }>)[0]!.text).toContain("not owned")
+    const status = await client.callTool({ name: "browser_status", arguments: { sessionId } })
+    expect(JSON.parse((status.content as Array<{ text: string }>)[0]!.text)).toMatchObject({ healthy: true, healthBody: { ok: true } })
+    expect(health).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
+    await cleanup()
+  })
+
+  it("returns a clear error when Chrome Live has no agent-owned tab", async () => {
+    const { client, cleanup } = await makeSetup({
+      resolveBrowserAdapter: id => id === "chrome-live" ? {
+        id, name: "Chrome Live", description: "fake", defaultPort: 9222, healthPath: "/json/version",
+        ensure: async () => ({
+          id, port: 9222, baseUrl: "http://127.0.0.1:9222", wasAlreadyRunning: true, healthy: true,
+          screenshot: async () => { throw new Error("[chrome-live] no agent-owned tab is open to screenshot") },
+          stop: async () => {},
+        }),
+      } : undefined,
+    })
+    const started = await client.callTool({ name: "start_browser", arguments: { adapter: "chrome-live" } })
+    const { sessionId } = JSON.parse((started.content as Array<{ text: string }>)[0]!.text) as { sessionId: string }
+    const result = await client.callTool({ name: "browser_screenshot", arguments: { sessionId } })
+    expect(result.isError).toBe(true)
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("no agent-owned tab")
+    await cleanup()
+  })
+
+  it("does not HTTP probe a persisted Chrome Live session after its provider instance is gone", async () => {
+    const registry = createSessionsRegistry({ persistPath: join(tmp, "persisted-chrome-live.json") })
+    const server = new McpServer({ name: "test-chrome-live-restored", version: "0.0.1" })
+    registerBrowserTools(server, { registry })
+    registry.registerBrowser({
+      adapterId: "chrome-live", port: 9222, baseUrl: "http://127.0.0.1:9222",
+      wasAlreadyRunning: true, status: "running", stop: async () => {},
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "test-client-restored", version: "0.0.1" })
+    await client.connect(clientTransport)
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+    const desc = registry.list().find(item => item.browserAdapterId === "chrome-live")!
+    const status = await client.callTool({ name: "browser_status", arguments: { sessionId: desc.id } })
+    expect(JSON.parse((status.content as Array<{ text: string }>)[0]!.text)).toMatchObject({
+      healthy: null,
+      healthBody: { reason: expect.stringContaining("no HTTP health endpoint") },
+    })
+    expect(fetchSpy).not.toHaveBeenCalled()
+    const shot = await client.callTool({ name: "browser_screenshot", arguments: { sessionId: desc.id } })
+    expect(shot.isError).toBe(true)
+    expect((shot.content as Array<{ text: string }>)[0]!.text).toContain("provider instance is unavailable")
+    fetchSpy.mockRestore()
+    await client.close()
+    registry.shutdown()
+  })
+})
+
 // ── browser_screenshot ────────────────────────────────────────────────────────
 
 /**

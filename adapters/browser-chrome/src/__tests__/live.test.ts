@@ -134,6 +134,19 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     expect(f.connections).toBe(1)
   })
 
+  it("captures only an active provider-owned target over its memoized connection", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, {})
+    await expect(instance.screenshotOwnedTarget()).rejects.toThrow(/no agent-owned tab/)
+    const driver = await instance.attach()
+    await expect(instance.screenshotOwnedTarget("user-tab-1")).rejects.toThrow(/not owned/)
+    expect(await instance.screenshotOwnedTarget(driver.target.id)).toEqual({ base64: "AAAA", format: "png", width: 1, height: 1 })
+    expect(f.connections).toBe(1)
+    expect(f.httpRequests).toBe(0)
+    expect(f.violations).toEqual([])
+    await instance.stop()
+  })
+
   it("stop() closes only the targets it created and never sends Browser.close", async () => {
     const f = await fake()
     const instance = await provider(f).launch({}, {})

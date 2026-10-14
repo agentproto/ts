@@ -43,6 +43,8 @@ interface BrowserInstanceLike {
   /** False when a non-blocking cold start returned before the service
    *  finished converging (background health-wait still running). */
   healthy: boolean
+  health?(): Promise<{ ok: boolean; reason?: string }>
+  screenshot?(tabId?: string): Promise<{ data: string; format: "png" | "jpeg"; width?: number; height?: number }>
   stop(): Promise<void>
 }
 
@@ -200,6 +202,7 @@ export function registerBrowserTools(
   opts: RegisterBrowserToolsOptions
 ): void {
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
+  const liveInstances = new Map<string, BrowserInstanceLike>()
 
   // ── browser_adapter_list ────────────────────────────────────────────────────
   // Migrated onto the AIP contract layer (defineTool + implementTool +
@@ -353,6 +356,7 @@ export function registerBrowserTools(
           stop: instance.stop.bind(instance),
           label: input.label,
         })
+        liveInstances.set(desc.id, instance)
         const stillStarting = !instance.healthy
         return {
           content: [
@@ -487,7 +491,7 @@ export function registerBrowserTools(
   server.tool(
     "browser_status",
     "Get the descriptor and live health status for a specific browser session. " +
-      "Probes the service's /health endpoint to confirm it is still responding.",
+      "Probes the service's /health endpoint, or the provider's live connection when HTTP health is unavailable.",
     {
       sessionId: z
         .string()
@@ -521,7 +525,21 @@ export function registerBrowserTools(
 
       let healthy: boolean | null = null
       let healthBody: unknown = null
-      if (desc.browserBaseUrl) {
+      const liveInstance = liveInstances.get(desc.id)
+      if (desc.browserAdapterId === "chrome-live") {
+        if (liveInstance?.health) {
+          try {
+            const result = await liveInstance.health()
+            healthy = result.ok
+            healthBody = result
+          } catch (err) {
+            healthy = false
+            healthBody = { reason: err instanceof Error ? err.message : String(err) }
+          }
+        } else {
+          healthBody = { reason: "provider instance unavailable; chrome-live has no HTTP health endpoint" }
+        }
+      } else if (desc.browserBaseUrl) {
         const healthUrl = `${desc.browserBaseUrl}/health`
         const ac = new AbortController()
         const t = setTimeout(() => ac.abort(), 3000)
@@ -556,7 +574,7 @@ export function registerBrowserTools(
       "Dispatches to the correct backend by the session's browserAdapterId: " +
       "camofox → GET /tabs/:tabId/screenshot, " +
       "bureau → POST /mcp browser_screenshot, " +
-      "chromium → POST /sessions/:id/screenshot. " +
+      "chromium → POST /sessions/:id/screenshot; providers may supply their own owned-target capture. " +
       "Returns { data (base64, no data: prefix), format, width?, height? } in both text and structuredContent.",
     {
       sessionId: z
@@ -569,6 +587,7 @@ export function registerBrowserTools(
         .describe(
           "Camofox: tabId to screenshot (default: first active tab). " +
             "Chromium: service-internal session id (default: first listed session). " +
+            "Chrome Live: provider-owned target id (default: first active agent tab; foreign tabs are rejected). " +
             "Bureau: ignored (bureau screenshots its current tab)."
         ),
     },
@@ -582,6 +601,18 @@ export function registerBrowserTools(
         )
       if (!desc.browserBaseUrl)
         return errResult(`browser_screenshot: session "${input.sessionId}" has no browserBaseUrl.`)
+
+      const liveInstance = liveInstances.get(desc.id)
+      if (liveInstance?.screenshot) {
+        try {
+          return okResult(await liveInstance.screenshot(input.tabId))
+        } catch (err) {
+          return errResult(`browser_screenshot: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      if (desc.browserAdapterId === "chrome-live") {
+        return errResult("browser_screenshot: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      }
 
       // Normalise to IPv4 — node/undici resolves localhost→::1 first but these
       // services bind IPv4 only.

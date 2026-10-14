@@ -128,7 +128,11 @@ export interface ChromeLiveLaunchOptions extends BrowserLaunchOptions {
 }
 
 export type ChromeLiveProvider = Omit<BrowserProvider, "launch"> & {
-  launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<BrowserInstance>
+  launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<ChromeLiveInstance>
+}
+
+export interface ChromeLiveInstance extends BrowserInstance {
+  screenshotOwnedTarget(targetId?: string): Promise<Awaited<ReturnType<BrowserDriver["screenshot"]>>>
 }
 
 export const chromeLiveDriverCapabilities: BrowserDriverCapabilities = {
@@ -215,7 +219,7 @@ interface LiveEntry {
   lock: Promise<unknown>
   stopping?: Promise<void>
   log?: (line: string) => void
-  owner?: BrowserInstance
+  owner?: ChromeLiveInstance
 }
 
 /** What survives a dropped connection: our own targets, so a reconnect can still close them. */
@@ -410,9 +414,9 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     throw new Error("[chrome-live] the new tab kept opening outside the agent window (another Chrome window has focus); it was closed again, retry")
   }
 
-  function makeInstance(entry: LiveEntry, wasAlreadyRunning: boolean): BrowserInstance {
+  function makeInstance(entry: LiveEntry, wasAlreadyRunning: boolean): ChromeLiveInstance {
     const mine = new Set<ChromeLiveDriver>()
-    const instance: BrowserInstance = {
+    const instance: ChromeLiveInstance = {
       id: `${CHROME_LIVE_PROVIDER_ID}:${new URL(entry.url).host}`,
       endpoints: { cdp: entry.url },
       wasAlreadyRunning,
@@ -426,6 +430,16 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         } catch (err) {
           return { ok: false, reason: `chrome unresponsive: ${err instanceof Error ? err.message : String(err)}` }
         }
+      },
+
+      async screenshotOwnedTarget(targetId?: string) {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const ownedTargetId = targetId ?? entry.targets.values().next().value
+        if (!ownedTargetId) throw new Error("[chrome-live] no agent-owned tab is open to screenshot")
+        if (!entry.targets.has(ownedTargetId)) throw new Error(`[chrome-live] target "${ownedTargetId}" is not owned by this provider instance`)
+        const driver = [...entry.drivers].find(candidate => candidate.target.id === ownedTargetId)
+        if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${ownedTargetId}" has no active driver`)
+        return driver.screenshot({ format: "png", fullPage: false })
       },
 
       async attach(attachOpts?: BrowserAttachOptions): Promise<BrowserDriver> {
@@ -495,7 +509,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     return instance
   }
 
-  async function launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<BrowserInstance> {
+  async function launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
     const url = await resolveUrl(opts)
     const live = entries.get(url)
     if (live && live.state === "open" && !live.conn.closed) return makeInstance(live, true)
