@@ -685,6 +685,18 @@ export type {
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
 // PR-4's eager pass) — not a type-only export like the block above.
 export { ResumeDisabledError, SessionRetiredError } from "./sessions.js"
+// Typed restart failures: `code` + human `reason` + optional `action`, so the
+// HTTP/MCP/CLI/VS Code surfaces can show a sentence and a button instead of a
+// provider's raw string (session-restart-core.ts).
+export {
+  SessionRestartError,
+  RestartOverrideError,
+  sessionRestartErrorPayload,
+  SESSION_RESTART_REASONS,
+  type SessionRestartErrorCode,
+  type SessionRestartAction,
+  type SessionRestartErrorPayload,
+} from "./session-restart-core.js"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 // Session identity env var names injected into every spawned process
 // (assigned last, after caller-supplied env, so they cannot be forged).

@@ -177,18 +177,188 @@ export type AccessProfileResolver = (
 ) => Promise<{ profile: AuthProfile; credential?: string; subaccount?: ResolvedProfileSubaccount } | undefined>
 
 /**
+ * Why a restart failed — the machine-readable vocabulary every transport
+ * (HTTP `POST /sessions/:id/restart`, the `session_restart` MCP verb, the
+ * CLI) hands to clients so a UI can show a human sentence AND offer the
+ * right next step instead of echoing a provider's raw string.
+ *
+ * `unsupported_strategy` is an addition beyond the sandbox vocabulary: the
+ * pre-sandbox guard (`only agent-adapter sessions are resumable this way`)
+ * needs a code of its own for the same reason the sandbox paths do.
+ */
+export type SessionRestartErrorCode =
+  | "sandbox_gone"
+  | "sandbox_unreachable"
+  | "sandbox_provider_missing"
+  | "sandbox_box_start_failed"
+  | "no_workspace"
+  | "no_workspace_remote"
+  | "no_known_branch"
+  | "adapter_not_found"
+  | "unsupported_strategy"
+  | "retired"
+  | "override_invalid"
+
+/**
+ * The optional "and here's what to do about it" hint a client turns into a
+ * button. `spawn-on-branch`/`spawn-fresh` are the two recovery moves for a
+ * dead box (re-clone the recorded `wt/` work branch, or start over from the
+ * workspace's base branch); `fix-config` carries the literal remediation
+ * (the command the user has to run before a restart can succeed at all).
+ */
+export type SessionRestartAction =
+  | { kind: "spawn-on-branch"; branch: string }
+  | { kind: "spawn-fresh" }
+  | { kind: "fix-config"; detail: string }
+
+/**
+ * The one-line human sentence behind each code. Sentences, not fragments:
+ * several surfaces (session-chat, the CLI) show `reason` on its own, with
+ * the technical `message` as the detail underneath. Overridable per throw
+ * site when the generic sentence would be wrong for that specific failure.
+ */
+export const SESSION_RESTART_REASONS: Record<SessionRestartErrorCode, string> = {
+  sandbox_gone:
+    "The box this session ran in is gone, so the session can't be resumed where it was.",
+  sandbox_unreachable:
+    "The box this session ran in isn't answering, so the session can't be resumed there right now.",
+  sandbox_provider_missing:
+    "This daemon can't reach the sandbox provider that ran this session.",
+  sandbox_box_start_failed:
+    "A replacement box couldn't be started for this session.",
+  no_workspace:
+    "This session isn't tied to a registered workspace, so a new box has nothing to clone.",
+  no_workspace_remote:
+    "This session's workspace has no git remote, so a new box has nothing to clone.",
+  no_known_branch:
+    "This session recorded no work branch, so a new box has nothing to check out.",
+  adapter_not_found: "The adapter this session used isn't installed on this host.",
+  unsupported_strategy:
+    "This session's restart strategy doesn't run through the agent adapter, so it can't be restarted this way.",
+  retired: "This session is retired and is never revived automatically.",
+  override_invalid: "That restart override isn't valid for this session.",
+}
+
+/**
+ * A restart failure with a machine-readable `code`, a short human `reason`
+ * and — when there is one — an `action` hint a client can turn into a
+ * button. `message` stays the technical detail (unchanged from the plain
+ * `Error`s these replace), so logs, tests and `--json` output keep reading
+ * exactly as before; `reason` is what a person is shown.
+ *
+ * `status` is the HTTP/MCP rejection status the transports preserve
+ * (400 for a rejected override, 500 for everything else).
+ */
+export class SessionRestartError extends Error {
+  readonly code: SessionRestartErrorCode
+  readonly reason: string
+  readonly action?: SessionRestartAction
+  readonly status: number
+  constructor(
+    code: SessionRestartErrorCode,
+    message: string,
+    opts: { reason?: string; action?: SessionRestartAction; status?: number } = {},
+  ) {
+    super(message)
+    this.name = "SessionRestartError"
+    this.code = code
+    this.reason = opts.reason ?? SESSION_RESTART_REASONS[code]
+    if (opts.action) this.action = opts.action
+    this.status = opts.status ?? 500
+  }
+}
+
+/**
  * Thrown when a restart override is invalid — an unknown access profile, or a
  * profile that isn't eligible for the resolved `(adapter, route)` endpoint
  * (SPEC risks Rx/Ry). Carries `status: 400` so the MCP/HTTP surfaces reject the
  * restart with a clear reason instead of ever spawning with the wrong wallet.
+ *
+ * A {@link SessionRestartError} (`code: "override_invalid"`) so every
+ * transport reports it like any other restart failure; `instanceof
+ * RestartOverrideError` callers are untouched.
  */
-export class RestartOverrideError extends Error {
-  readonly code = "restart_override_invalid"
-  readonly status = 400
+export class RestartOverrideError extends SessionRestartError {
   constructor(message: string) {
-    super(message)
+    super("override_invalid", message, { status: 400 })
     this.name = "RestartOverrideError"
   }
+}
+
+/** Map a {@link spawnOnFreshBox} `blocker` string onto its code — the three
+ *  why-texts #1910 can produce (no workspace, no remote, no known work
+ *  branch). Order matters: a workspace blocker also mentions the missing
+ *  branch, so the workspace cause wins over the branch one. */
+export function restartBlockerCode(blocker: string): SessionRestartErrorCode {
+  if (blocker.includes("not tied to a registered workspace")) return "no_workspace"
+  if (
+    blocker.includes("has no remote configured") ||
+    blocker.includes("no longer registered") ||
+    blocker.includes("has no git remote")
+  )
+    return "no_workspace_remote"
+  if (blocker.includes("no work branch")) return "no_known_branch"
+  return "sandbox_gone"
+}
+
+/**
+ * The wire shape of a restart failure — `POST /sessions/:id/restart`'s body
+ * and the `session_restart` MCP result both carry it. `error.code`/
+ * `error.reason`/`error.action` are the typed part; `error.message` and the
+ * top-level `message` are the technical detail, kept so every existing
+ * reader (`formatHttpError` in the CLI, `describeError` in the VS Code
+ * client, `--json` consumers) still finds what it looked for before.
+ */
+export interface SessionRestartErrorPayload {
+  error: {
+    code: SessionRestartErrorCode
+    reason: string
+    message: string
+    action?: SessionRestartAction
+  }
+  message: string
+}
+
+/**
+ * Build {@link SessionRestartErrorPayload} for a thrown restart error, or
+ * `undefined` when the error carries no restart code (a plain `Error` from a
+ * driver, say) — callers keep their existing `{error:"restart_failed",
+ * message}` fallback for those, which is what "fall back to today's message
+ * when no code" means on the client too.
+ *
+ * `SessionRetiredError` is mapped rather than subclassed: it already extends
+ * `SessionNotAliveError` (whose `instanceof` callers must not move) and
+ * already carries its own `code`, so only its payload spelling is derived
+ * here.
+ */
+export function sessionRestartErrorPayload(
+  err: unknown,
+): SessionRestartErrorPayload | undefined {
+  const message = err instanceof Error ? err.message : String(err)
+  if (err instanceof SessionRestartError) {
+    return {
+      error: {
+        code: err.code,
+        reason: err.reason,
+        message,
+        ...(err.action ? { action: err.action } : {}),
+      },
+      message,
+    }
+  }
+  if (err instanceof SessionRetiredError) {
+    return {
+      error: {
+        code: "retired",
+        reason: err.continuedTo
+          ? `This session was superseded by "${err.continuedTo}" — prompt that session instead.`
+          : SESSION_RESTART_REASONS.retired,
+        message,
+      },
+      message,
+    }
+  }
+  return undefined
 }
 
 /**
@@ -807,7 +977,8 @@ export async function restartAgentSession(
         : decideRestartStrategy(augmented)
 
   if (strategy.kind !== "agent") {
-    throw new Error(
+    throw new SessionRestartError(
+      "unsupported_strategy",
       `restartAgentSession: session '${prev.id}' resolved to a '${strategy.kind}' ` +
         "restart strategy — only agent-adapter sessions are resumable this way.",
     )
@@ -815,14 +986,18 @@ export async function restartAgentSession(
 
   const adapterSlug = prev.adapterSlug
   if (!adapterSlug) {
-    throw new Error(
+    throw new SessionRestartError(
+      "adapter_not_found",
       "restartAgentSession: internal error — agent resume strategy without adapterSlug",
     )
   }
 
   const resolved = await resolveAgentAdapter(adapterSlug)
   if (!resolved && sandboxId === undefined) {
-    throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
+    throw new SessionRestartError(
+      "adapter_not_found",
+      `restartAgentSession: adapter '${adapterSlug}' not found.`,
+    )
   }
 
   let cwd = prev.cwd
@@ -1046,7 +1221,10 @@ export async function restartAgentSession(
       return spawnInSandbox(sandboxId, restartedSessionId, resumeSessionId)
     }
     if (!resolved) {
-      throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
+      throw new SessionRestartError(
+        "adapter_not_found",
+        `restartAgentSession: adapter '${adapterSlug}' not found.`,
+      )
     }
     let launchConfig: RouteAwareLaunchConfig
     try {
@@ -1253,23 +1431,29 @@ export async function restartAgentSession(
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
     if (!opts.resolveSandboxProvider) {
-      throw new Error(
+      throw new SessionRestartError(
+        "sandbox_provider_missing",
         `restartAgentSession: session '${prev.id}' runs in a sandbox but the daemon has ` +
           "no sandbox provider resolver wired — cannot re-attach its box.",
+        { action: { kind: "fix-config", detail: "restart the daemon with its sandbox provider configured" } },
       )
     }
     const providerSlug = parseSandboxProviderSlug(prev.command)
     if (!providerSlug) {
-      throw new Error(
+      throw new SessionRestartError(
+        "sandbox_provider_missing",
         `restartAgentSession: session '${prev.id}' records no sandbox provider ` +
           "(no `sandbox:<provider>` command preview) — cannot re-attach its box.",
+        { action: { kind: "fix-config", detail: "restart the session from a daemon that has its sandbox provider set up" } },
       )
     }
     const handle = await opts.resolveSandboxProvider(providerSlug)
     if (!handle) {
-      throw new Error(
+      throw new SessionRestartError(
+        "sandbox_provider_missing",
         `restartAgentSession: sandbox provider "${providerSlug}" not found — cannot ` +
           `re-attach sandbox "${boxSandboxId}".`,
+        { action: { kind: "fix-config", detail: `set up sandbox provider "${providerSlug}" on this daemon (MCP setup_sandbox_provider)` } },
       )
     }
     const sandboxMcpServers = buildRestartMcpServers(restartedSessionId)
@@ -1297,10 +1481,34 @@ export async function restartAgentSession(
         if (fresh.ok) return fresh.desc
         freshBlocker = fresh.blocker
       }
-      throw new Error(
+      // Code + reason for the client: a box the provider no longer knows is
+      // `sandbox_gone`, one that answered but whose daemon died (and was
+      // reaped) is `sandbox_unreachable`, and a fresh-box blocker narrows it
+      // further to why the fallback couldn't run. The message stays the
+      // exact technical sentence it has always been.
+      const target = prev.sandboxDeliveryTarget
+      const branch =
+        target && target.branch.startsWith(SANDBOX_BRANCH_PREFIX) ? target.branch : undefined
+      const code: SessionRestartErrorCode = freshBlocker
+        ? restartBlockerCode(freshBlocker)
+        : isSandboxBoxGoneError(err)
+          ? "sandbox_gone"
+          : "sandbox_unreachable"
+      const action: SessionRestartAction | undefined = freshBlocker
+        ? code === "no_known_branch"
+          ? { kind: "spawn-fresh" }
+          : // The blocker's own remediation command, when it names one —
+            // that is literally the thing to fix before retrying.
+            { kind: "fix-config", detail: freshBlocker.match(/`([^`]+)`/)?.[1] ?? freshBlocker }
+        : branch
+          ? { kind: "spawn-on-branch", branch }
+          : { kind: "spawn-fresh" }
+      throw new SessionRestartError(
+        code,
         `restartAgentSession: sandbox "${boxSandboxId}" expired or is unreachable ` +
           `(provider "${providerSlug}")${freshBlocker ? ` and it cannot be restarted on a fresh box: ${freshBlocker}` : " — spawn a fresh session."} ` +
           `${err instanceof Error ? err.message : String(err)}`,
+        { action },
       )
     }
     // The box is alive, so the PRIOR session's adapter may still be running
@@ -1327,10 +1535,12 @@ export async function restartAgentSession(
         await host.kill(priorRemoteSessionId)
       } catch (err) {
         await host.close().catch(() => undefined)
-        throw new Error(
+        throw new SessionRestartError(
+          "sandbox_unreachable",
           `restartAgentSession: could not stop the prior session "${priorRemoteSessionId}" ` +
             `inside sandbox "${host.sandboxId}" — refusing to start a second adapter next to ` +
             `it. ${err instanceof Error ? err.message : String(err)}`,
+          { action: { kind: "spawn-fresh" } },
         )
       }
     }
@@ -1443,9 +1653,11 @@ export async function restartAgentSession(
       if (boxResumeId && !boxResumed) resumeFallback = true
     } catch (err) {
       await host.stop().catch(() => undefined)
-      throw new Error(
+      throw new SessionRestartError(
+        "sandbox_box_start_failed",
         `restartAgentSession: the sandbox's own agent_start failed for adapter ` +
           `"${adapterSlug}" — ${err instanceof Error ? err.message : String(err)}`,
+        { action: { kind: "spawn-fresh" } },
       )
     }
     // The prior session's work branch is still in the box: carry its delivery
@@ -1640,9 +1852,11 @@ export async function restartAgentSession(
     })
     if (booted.ok) movedToFreshBox = true
     if (!booted.ok) {
-      throw new Error(
+      throw new SessionRestartError(
+        "sandbox_box_start_failed",
         `restartAgentSession: sandbox "${prev.sandboxId}" is gone and a fresh box for ` +
           `workspace "${slug}" could not be started — ${booted.message}`,
+        { action: { kind: "fix-config", detail: booted.message } },
       )
     }
     // A resume attempt the box reported as blank (old box daemon that strips

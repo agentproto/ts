@@ -23,7 +23,7 @@ import { SandboxBoxGoneError, type SandboxExecOpts, type SandboxProvider, type S
 
 import { createGateway, type GatewayHandle } from "../index.js"
 import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
-import { restartAgentSession } from "../session-restart-core.js"
+import { restartAgentSession, SessionRestartError, type SessionRestartErrorCode } from "../session-restart-core.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 import type { SandboxDeliveryTarget } from "../sandbox-delivery.js"
@@ -173,6 +173,29 @@ async function bootReconnectableBox(
     }
   }
   return { resolver, providerResolver }
+}
+
+/** Await a restart that MUST fail and hand back the typed error it threw. */
+async function restartFailure(run: Promise<unknown>): Promise<SessionRestartError> {
+  let caught: unknown
+  try {
+    await run
+  } catch (err) {
+    caught = err
+  }
+  expect(caught, `expected a SessionRestartError, got ${String(caught)}`).toBeInstanceOf(
+    SessionRestartError,
+  )
+  return caught as SessionRestartError
+}
+
+/** Assert a failed restart's `code`, and that its `reason` is a real
+ *  sentence a person can be shown (never empty, never the raw message). */
+function expectRestartCode(err: SessionRestartError, code: SessionRestartErrorCode): void {
+  expect(err.code).toBe(code)
+  expect(err.reason.length).toBeGreaterThan(10)
+  expect(err.reason).not.toBe(err.message)
+  expect(err.reason).toMatch(/\.$/)
 }
 
 describe("restartAgentSession on a sandboxed session", () => {
@@ -355,9 +378,14 @@ describe("restartAgentSession on a sandboxed session", () => {
       }
     }
 
-    await expect(
+    const failure = await restartFailure(
       restartAgentSession(registry, resolver, prev, { resolveSandboxProvider: failing }),
-    ).rejects.toThrow(/sbx_prev_1.*expired.*spawn a fresh session/i)
+    )
+    // The old raw-string behaviour stays byte-compatible (message), while the
+    // client now also gets a code + human sentence to show.
+    expect(failure.message).toMatch(/sbx_prev_1.*expired.*spawn a fresh session/i)
+    expectRestartCode(failure, "sandbox_unreachable")
+    expect(failure.action).toEqual({ kind: "spawn-fresh" })
     // The decisive regression assertion: no local adapter spawn happened.
     expect(receivedStarts).toHaveLength(0)
   })
@@ -365,9 +393,25 @@ describe("restartAgentSession on a sandboxed session", () => {
   it("fails LOUD when no sandbox provider resolver is wired (instead of spawning locally)", async () => {
     const { resolver } = await setup()
 
-    await expect(restartAgentSession(registry, resolver, prev)).rejects.toThrow(
-      /no sandbox provider resolver/,
+    const failure = await restartFailure(restartAgentSession(registry, resolver, prev))
+    expect(failure.message).toMatch(/no sandbox provider resolver/)
+    expectRestartCode(failure, "sandbox_provider_missing")
+    expect(failure.action).toMatchObject({ kind: "fix-config" })
+    expect(receivedStarts).toHaveLength(0)
+  })
+
+  it("fails LOUD when the daemon no longer knows the session's sandbox provider", async () => {
+    const { resolver } = await setup()
+
+    const failure = await restartFailure(
+      restartAgentSession(registry, resolver, prev, {
+        // The session's provider (`fake`) resolves to nothing on this daemon.
+        resolveSandboxProvider: async () => null,
+      }),
     )
+    expect(failure.message).toMatch(/sandbox provider "fake" not found/)
+    expectRestartCode(failure, "sandbox_provider_missing")
+    expect(failure.action).toMatchObject({ kind: "fix-config" })
     expect(receivedStarts).toHaveLength(0)
   })
 
@@ -584,6 +628,8 @@ describe("restartAgentSession on a sandboxed session", () => {
       execCalls: SandboxExecOpts[],
       boots: { count: number },
       files?: { writes: Array<{ path: string; bytes: number }> },
+      /** Make the fresh box's `git clone` fail, as a real box's would. */
+      failClone = false,
     ): (slug: string) => Promise<SandboxProviderHandle | null> {
       return async slug => {
         const handle = await providerResolver(slug)
@@ -620,6 +666,9 @@ describe("restartAgentSession on a sandboxed session", () => {
                   : {}),
                 async exec(o: SandboxExecOpts) {
                   execCalls.push(o)
+                  if (failClone && o.command.includes("git clone")) {
+                    return { exitCode: 1, stdout: "", stderr: "fatal: repository not found", durationMs: 1 }
+                  }
                   if (o.command.includes(BOX_ADAPTER_STORE_RESTORE_PATH)) {
                     receivedStarts.push({ __event: "adapter-store-extracted" })
                     return { exitCode: 0, stdout: "restored\n", stderr: "", durationMs: 1 }
@@ -825,23 +874,53 @@ describe("restartAgentSession on a sandboxed session", () => {
       }
       const { resolver, providerResolver } = await setup({ workspaceSlug: "agentproto" })
       const boots = { count: 0 }
-      const run = restartAgentSession(registry, resolver, prev, {
-        resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+      const failure = await restartFailure(
+        restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+        }),
+      )
+      expect(failure.message).toMatch(/sbx_prev_1.*expired or is unreachable/i)
+      expect(failure.message).toMatch(/workspace "agentproto" has no remote configured/)
+      expect(failure.message).toMatch(/no work branch/)
+      expect(failure.message).toMatch(/agentproto workspace remote set agentproto --url … --token-stdin/)
+      // The blocker is reported as ITS code (the why), not a generic box error…
+      expectRestartCode(failure, "no_workspace_remote")
+      // …and the action hands the client the literal command to run.
+      expect(failure.action).toEqual({
+        kind: "fix-config",
+        detail: "agentproto workspace remote set agentproto --url … --token-stdin",
       })
-      await expect(run).rejects.toThrow(/sbx_prev_1.*expired or is unreachable/i)
-      await expect(run).rejects.toThrow(/workspace "agentproto" has no remote configured/)
-      await expect(run).rejects.toThrow(/no work branch/)
-      await expect(run).rejects.toThrow(/agentproto workspace remote set agentproto --url … --token-stdin/)
       expect(boots.count).toBe(0)
     })
 
     it("fails loud saying the workspace is no longer registered when it was removed", async () => {
       const { resolver, providerResolver } = await setup({ deliveryTarget: target })
-      await expect(
+      const failure = await restartFailure(
         restartAgentSession(registry, resolver, prev, {
           resolveSandboxProvider: goneBoxResolver(providerResolver, [], { count: 0 }),
         }),
-      ).rejects.toThrow(/workspace "default" is no longer registered.*workspace remote set default --url … --token-stdin/s)
+      )
+      expect(failure.message).toMatch(/workspace "default" is no longer registered.*workspace remote set default --url … --token-stdin/s)
+      expectRestartCode(failure, "no_workspace_remote")
+      expect(failure.action).toEqual({
+        kind: "fix-config",
+        detail: "agentproto workspace remote set default --url … --token-stdin",
+      })
+    })
+
+    it("reports no_workspace when the session is tied to no workspace at all", async () => {
+      // No `workspaceSlug` ⇒ `spawnOnFreshBox` has nothing to clone from.
+      const { resolver, providerResolver } = await setup({ workspaceSlug: "" })
+      const boots = { count: 0 }
+      const failure = await restartFailure(
+        restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+        }),
+      )
+      expect(failure.message).toMatch(/not tied to a registered workspace/)
+      expectRestartCode(failure, "no_workspace")
+      expect(failure.action).toMatchObject({ kind: "fix-config" })
+      expect(boots.count).toBe(0)
     })
 
     function noRemoteWorkspace(path: string): void {
@@ -907,11 +986,13 @@ describe("restartAgentSession on a sandboxed session", () => {
         const { resolver, providerResolver } = await setup({ workspaceSlug: "scratch" })
         await writePendingTarRecord(sessionTranscriptDir(prev.id), { dir: "/home/user/scratch" })
         const boots = { count: 0 }
-        await expect(
+        const failure = await restartFailure(
           restartAgentSession(registry, resolver, prev, {
             resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots, { writes: [] }),
           }),
-        ).rejects.toThrow(/expired.*workspace "scratch" has no git remote and no tarball checkpoint was saved.*workspace remote set scratch/is)
+        )
+        expect(failure.message).toMatch(/expired.*workspace "scratch" has no git remote and no tarball checkpoint was saved.*workspace remote set scratch/is)
+        expectRestartCode(failure, "no_workspace_remote")
         expect(boots.count).toBe(0)
       })
 
@@ -919,12 +1000,31 @@ describe("restartAgentSession on a sandboxed session", () => {
         noRemoteWorkspace("/Users/op/scratch")
         const { resolver, providerResolver } = await setup({ workspaceSlug: "scratch" })
         const boots = { count: 0 }
-        await expect(
+        const failure = await restartFailure(
           restartAgentSession(registry, resolver, prev, {
             resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
           }),
-        ).rejects.toThrow(/workspace "scratch" has no remote configured and the session recorded no work branch.*not a git repository/is)
+        )
+        expect(failure.message).toMatch(/workspace "scratch" has no remote configured and the session recorded no work branch.*not a git repository/is)
+        expectRestartCode(failure, "no_workspace_remote")
         expect(boots.count).toBe(0)
+      })
+
+      it("reports sandbox_box_start_failed when the fresh box boots but its checkout fails", async () => {
+        wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+        const { resolver, providerResolver } = await setup({
+          deliveryTarget: target,
+          workspaceSlug: "agentproto",
+        })
+        const boots = { count: 0 }
+        const failure = await restartFailure(
+          restartAgentSession(registry, resolver, prev, {
+            resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots, undefined, true),
+          }),
+        )
+        expect(failure.message).toMatch(/fresh box for workspace "agentproto" could not be started/)
+        expectRestartCode(failure, "sandbox_box_start_failed")
+        expect(boots.count).toBe(1)
       })
 
       it("re-clones the git origin (derived, https) and resumes the work branch when the workspace has no remote", async () => {
