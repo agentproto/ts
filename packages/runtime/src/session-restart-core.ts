@@ -1766,8 +1766,8 @@ export async function restartAgentSession(
   // successful resume (pty-native or a clean ACP resume) never reaches
   // here, so it's never double-fed its own context.
   //
-  // A BOX restart (every sandbox restart is a `resumeFallback` — the box
-  // daemon's `agent_start` has no resume surface) prefers the structured
+  // A BOX restart that could not resume the in-box conversation (fresh box,
+  // or the box answered blank to the resume id) prefers the structured
   // handoff: a frame, a deterministic-extractor checkpoint, the most recent
   // turns, and the path(s) of the full transcript file(s) already written
   // into the box (`boxPriorTranscriptPaths`). A LOCAL blank-fallback gets
