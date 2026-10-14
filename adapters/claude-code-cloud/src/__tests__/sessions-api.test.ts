@@ -1,13 +1,16 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
+import { createRefreshLogin } from "../cli.js"
 import {
   SessionsApi,
   envCredentialSource,
   eventSequence,
+  isCredentialExpiring,
   keychainCredentialSource,
   normalizeSessionId,
   toCliSessionId,
   type CloudCredential,
   type CloudSessionEvent,
+  type CredentialSource,
 } from "../sessions-api.js"
 
 /** Fixture fetch: routes a request to a canned Response. Records calls. */
@@ -31,13 +34,27 @@ function json(body: unknown, status = 200): Response {
   })
 }
 
-/** Credential source with a readable call counter — proves the 401 path
- *  re-reads exactly once. */
-function countingCredentials(
-  ...credentials: CloudCredential[]
-): { get: () => Promise<CloudCredential>; reads: () => number } {
+/** A fixed credential source for tests that only need a token. */
+function staticCredentials(credential: CloudCredential): CredentialSource {
+  return {
+    async get() {
+      return credential
+    },
+    invalidate() {},
+  }
+}
+
+/** Credential source with readable call counters — proves the 401 path
+ *  re-reads exactly once and that invalidate() drops the cache. */
+function countingCredentials(...credentials: CloudCredential[]): {
+  get: () => Promise<CloudCredential>
+  invalidate: () => void
+  reads: () => number
+  invalidations: () => number
+} {
   let i = 0
   let reads = 0
+  let invalidations = 0
   return {
     async get() {
       reads++
@@ -46,7 +63,11 @@ function countingCredentials(
       if (!cred) throw new Error("credential fixture exhausted")
       return cred
     },
+    invalidate() {
+      invalidations++
+    },
     reads: () => reads,
+    invalidations: () => invalidations,
   }
 }
 
@@ -101,9 +122,7 @@ describe("SessionsApi", () => {
       json({ response_shape: { id: "cse_abc", title: "t", status: "active" } }),
     )
     const api = new SessionsApi({
-      credentials: {
-        get: async () => ({ accessToken: "tok", orgUuid: "org-1" }),
-      },
+      credentials: staticCredentials({ accessToken: "tok", orgUuid: "org-1" }),
       fetchImpl,
     })
     const res = await api.getSession("session_abc")
@@ -136,7 +155,7 @@ describe("SessionsApi", () => {
           }),
     )
     const api = new SessionsApi({
-      credentials: { get: async () => ({ accessToken: "tok" }) },
+      credentials: staticCredentials({ accessToken: "tok" }),
       fetchImpl,
     })
     // No cursor → the NEWEST page, newest first. resume_cursor is the OLDEST
@@ -165,7 +184,7 @@ describe("SessionsApi", () => {
       json({ data: [], resume_token: "r" }),
     )
     const api = new SessionsApi({
-      credentials: { get: async () => ({ accessToken: "tok" }) },
+      credentials: staticCredentials({ accessToken: "tok" }),
       fetchImpl,
     })
     await api.listSessions({ limit: 25 })
@@ -185,10 +204,30 @@ describe("SessionsApi", () => {
       { accessToken: "stale-tok" },
       { accessToken: "fresh-tok" },
     )
-    const api = new SessionsApi({ credentials, fetchImpl })
+    const refreshLogin = vi.fn(async () => {})
+    const api = new SessionsApi({ credentials, fetchImpl, refreshLogin })
     const res = await api.getSession("session_abc")
     expect(res.response_shape.id).toBe("cse_abc")
     expect(credentials.reads()).toBe(2)
+    expect(credentials.invalidations()).toBe(1)
+    expect(refreshLogin).toHaveBeenCalledTimes(1)
+  })
+
+  it("refreshes before the request when the token is already expired", async () => {
+    const credentials = countingCredentials(
+      { accessToken: "expired-tok", expiresAt: Date.now() - 1_000 },
+      { accessToken: "fresh-tok", expiresAt: Date.now() + 60 * 60_000 },
+    )
+    const refreshLogin = vi.fn(async () => {})
+    const { fetchImpl, calls } = fixtureFetch(() =>
+      json({ response_shape: { id: "cse_abc", title: "t", status: "active" } }),
+    )
+    const api = new SessionsApi({ credentials, fetchImpl, refreshLogin })
+    await api.getSession("session_abc")
+    expect(refreshLogin).toHaveBeenCalledTimes(1)
+    expect(credentials.invalidations()).toBe(1)
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers.authorization).toBe("Bearer fresh-tok")
   })
 
   it("fails with the login hint after the one 401 retry is spent", async () => {
@@ -196,17 +235,65 @@ describe("SessionsApi", () => {
       json({ error: "unauthorized" }, 401),
     )
     const credentials = countingCredentials({ accessToken: "tok" })
-    const api = new SessionsApi({ credentials, fetchImpl })
+    const refreshLogin = vi.fn(async () => {})
+    const api = new SessionsApi({ credentials, fetchImpl, refreshLogin })
     await expect(api.getSession("session_abc")).rejects.toThrow(
       /unauthorized \(401\) — run `claude auth login`/,
     )
     expect(credentials.reads()).toBe(2)
+    // One refresh only: the retry's 401 fails closed, never loops.
+    expect(refreshLogin).toHaveBeenCalledTimes(1)
+  })
+
+  it("concurrent requests around expiry share one in-flight refresh", async () => {
+    let token = "expired-tok"
+    const credentials: CredentialSource = {
+      async get() {
+        return {
+          accessToken: token,
+          expiresAt: token === "expired-tok" ? Date.now() - 1_000 : Date.now() + 60 * 60_000,
+        }
+      },
+      invalidate() {},
+    }
+    let runs = 0
+    const refreshLogin = createRefreshLogin({
+      runner: {
+        async run() {
+          runs++
+          // A real refresh re-mints the keychain token; simulate that.
+          await new Promise(r => setTimeout(r, 5))
+          token = "fresh-tok"
+          return { code: 0, stdout: "", stderr: "" }
+        },
+        runPty() {
+          throw new Error("not used")
+        },
+      },
+      env: {},
+    })
+    const { fetchImpl } = fixtureFetch(() =>
+      json({ response_shape: { id: "cse_abc", title: "t", status: "active" } }),
+    )
+    const api = new SessionsApi({ credentials, fetchImpl, refreshLogin })
+    await Promise.all([
+      api.getSession("session_abc"),
+      api.getSession("session_abc"),
+      api.getSession("session_abc"),
+    ])
+    expect(runs).toBe(1)
+  })
+
+  it("treats a token expiring inside the 5-minute skew as expired", () => {
+    expect(isCredentialExpiring({ accessToken: "t", expiresAt: Date.now() + 60_000 })).toBe(true)
+    expect(isCredentialExpiring({ accessToken: "t", expiresAt: Date.now() + 60 * 60_000 })).toBe(false)
+    expect(isCredentialExpiring({ accessToken: "t" })).toBe(false)
   })
 
   it("surfaces non-401 HTTP failures with method + status", async () => {
     const { fetchImpl } = fixtureFetch(() => json({ error: "nope" }, 500))
     const api = new SessionsApi({
-      credentials: { get: async () => ({ accessToken: "tok" }) },
+      credentials: staticCredentials({ accessToken: "tok" }),
       fetchImpl,
     })
     await expect(api.getSession("session_abc")).rejects.toThrow(
@@ -258,6 +345,40 @@ describe("credential sources", () => {
     })
   })
 
+  it("keychain source exposes expiresAt and drops its cache on invalidate", async () => {
+    let token = "stale-tok"
+    let calls = 0
+    const source = keychainCredentialSource({
+      execFileImpl: async () => {
+        calls++
+        return {
+          stdout: JSON.stringify({
+            claudeAiOauth: { accessToken: token, expiresAt: 1_700_000_000_000 },
+          }),
+        }
+      },
+      readFileSyncImpl: async () => "{}",
+      homedir: () => "/home/user",
+    })
+    // Cached: a second get() does not re-read the keychain.
+    expect((await source.get()).accessToken).toBe("stale-tok")
+    expect((await source.get()).expiresAt).toBe(1_700_000_000_000)
+    expect(calls).toBe(1)
+
+    // After an out-of-band refresh, invalidate() forces a fresh read.
+    token = "fresh-tok"
+    source.invalidate()
+    expect((await source.get()).accessToken).toBe("fresh-tok")
+    expect(calls).toBe(2)
+  })
+
+  it("env source invalidate() is a no-op (no cache)", async () => {
+    const source = envCredentialSource({ CLAUDE_CLOUD_OAUTH_TOKEN: "env-tok" })
+    expect((await source.get()).accessToken).toBe("env-tok")
+    source.invalidate()
+    expect((await source.get()).accessToken).toBe("env-tok")
+  })
+
   it("keychain source fails closed when the entry lacks an access token", async () => {
     const source = keychainCredentialSource({
       execFileImpl: async () => ({ stdout: JSON.stringify({}) }),
@@ -265,5 +386,56 @@ describe("credential sources", () => {
       homedir: () => "/home/user",
     })
     await expect(source.get()).rejects.toThrow(/run `claude auth login`/)
+  })
+})
+
+describe("createRefreshLogin", () => {
+  it("runs claude -p with the scrubbed env, detached stdin, and a 60s cap", async () => {
+    const calls: Array<{ cmd: string; args: string[]; opts: unknown }> = []
+    const refresh = createRefreshLogin({
+      runner: {
+        async run(cmd, args, opts) {
+          calls.push({ cmd, args, opts })
+          return { code: 0, stdout: "secret-token-material", stderr: "noise" }
+        },
+        runPty() {
+          throw new Error("not used")
+        },
+      },
+      env: { ANTHROPIC_API_KEY: "sk-key", CLAUDE_CODE_USE_BEDROCK: "1", KEEP: "yes" },
+      cwd: "/tmp/x",
+    })
+    await refresh()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.cmd).toBe("claude")
+    expect(calls[0]!.args).toEqual(["-p", "Reply OK", "--model", "haiku"])
+    const opts = calls[0]!.opts as {
+      cwd: string
+      env: Record<string, string>
+      stdin?: string
+      timeoutMs?: number
+    }
+    expect(opts.cwd).toBe("/tmp/x")
+    expect(opts.stdin).toBe("ignore")
+    expect(opts.timeoutMs).toBe(60_000)
+    expect(opts.env.KEEP).toBe("yes")
+    expect(opts.env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(opts.env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined()
+  })
+
+  it("fails with a login hint (no child output) on a non-zero exit", async () => {
+    const refresh = createRefreshLogin({
+      runner: {
+        async run() {
+          return { code: 1, stdout: "token=leak-me", stderr: "token=leak-me" }
+        },
+        runPty() {
+          throw new Error("not used")
+        },
+      },
+      env: {},
+    })
+    await expect(refresh()).rejects.toThrow(/could not refresh the claude.ai login \(exit 1\)/)
+    await expect(refresh()).rejects.not.toThrow(/leak-me/)
   })
 })

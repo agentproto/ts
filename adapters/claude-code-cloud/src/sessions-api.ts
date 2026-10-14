@@ -7,9 +7,11 @@
  * The credential is the user's claude.ai login, owned by the claude CLI
  * (AIP-66 §8): this module never logs it, never persists it, and never
  * writes it anywhere — it lives only in request headers for the lifetime
- * of a call. On 401 the credential source is re-read exactly once (the
- * token may have been refreshed since process start), then the call fails
- * with a message that tells the user how to log in.
+ * of a call. Before a request, an expired token (or one expiring within
+ * {@link EXPIRY_SKEW_MS}) triggers the injected login refresh, then the
+ * source cache is invalidated and re-read. On 401 the same refresh +
+ * invalidate + re-read happens once, then the call fails with a message
+ * that tells the user how to log in.
  *
  * All network access goes through an injectable `fetch` so tests can drive
  * the client from fixtures — no live Anthropic call is ever made from here.
@@ -25,17 +27,27 @@ const execFileAsync = promisify(execFile)
 
 /** A claude.ai OAuth credential. `accessToken` is the bearer the API wants;
  *  `orgUuid` is the `x-organization-uuid` header (from `~/.claude.json`'s
- *  `.oauthAccount.organizationUuid`). NEVER logged or persisted. */
+ *  `.oauthAccount.organizationUuid`). `expiresAt` is the token's expiry in
+ *  epoch milliseconds (the keychain's `.claudeAiOauth.expiresAt`), when the
+ *  source knows it. NEVER logged or persisted. */
 export interface CloudCredential {
   accessToken: string
   orgUuid?: string
+  expiresAt?: number
 }
 
+/** A token expiring within this window is treated as expired: refresh it
+ *  before sending rather than racing a request against the expiry. */
+export const EXPIRY_SKEW_MS = 5 * 60_000
+
 /** Where the host reads the vendor login from (AIP-66 §8). Implementations
- *  must not cache a token across an explicit invalidate() — a 401 re-read
- *  has to be able to observe a refreshed login. */
+ *  must not cache a token across an explicit {@link CredentialSource.invalidate}
+ *  — a refresh or a 401 re-read has to be able to observe a fresh login. */
 export interface CredentialSource {
   get(): Promise<CloudCredential>
+  /** Drop any cached credential so the next {@link get} re-reads the
+   *  underlying store (the keychain may have been refreshed out-of-band). */
+  invalidate(): void
 }
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials"
@@ -82,7 +94,7 @@ export function keychainCredentialSource(
         "-w",
       ])
       const keychain = JSON.parse(stdout) as {
-        claudeAiOauth?: { accessToken?: string }
+        claudeAiOauth?: { accessToken?: string; expiresAt?: number }
       }
       const accessToken = keychain.claudeAiOauth?.accessToken
       if (!accessToken) {
@@ -100,8 +112,16 @@ export function keychainCredentialSource(
       } catch {
         // org header is best-effort; some CLI versions work without it.
       }
-      cached = { accessToken, ...(orgUuid ? { orgUuid } : {}) }
+      const expiresAt = keychain.claudeAiOauth?.expiresAt
+      cached = {
+        accessToken,
+        ...(orgUuid ? { orgUuid } : {}),
+        ...(typeof expiresAt === "number" ? { expiresAt } : {}),
+      }
       return cached
+    },
+    invalidate() {
+      cached = null
     },
   }
 }
@@ -123,6 +143,9 @@ export function envCredentialSource(
       }
       const orgUuid = env.CLAUDE_CLOUD_ORG_UUID
       return { accessToken, ...(orgUuid ? { orgUuid } : {}) }
+    },
+    invalidate() {
+      // The env source has no cache: nothing to drop.
     },
   }
 }
@@ -223,8 +246,12 @@ export function toCliSessionId(id: string): string {
 }
 
 export interface SessionsApiOptions {
-  /** Credential source; re-read once on a 401, then the call fails. */
+  /** Credential source; invalidated + re-read when the token is expiring or
+   *  a request comes back 401, then the call fails. */
   credentials: CredentialSource
+  /** Refresh the vendor login before re-reading an expired credential and on
+   *  a 401 (e.g. cli.ts's refreshLogin). Omit to skip refreshing. */
+  refreshLogin?: () => Promise<void>
   /** Injectable fetch — tests pass a fixture router; default is globalThis.fetch. */
   fetchImpl?: typeof fetch
   /** Override for proxies/mirrors; default https://api.anthropic.com. */
@@ -233,14 +260,28 @@ export interface SessionsApiOptions {
 
 const UNAUTHORIZED_HINT = "run `claude auth login`"
 
+/** True when the token is already expired or expires within the skew window
+ *  (or when the source reports no expiry, in which case we cannot know). */
+export function isCredentialExpiring(
+  credential: CloudCredential,
+  now = Date.now(),
+): boolean {
+  return (
+    credential.expiresAt !== undefined &&
+    credential.expiresAt - now <= EXPIRY_SKEW_MS
+  )
+}
+
 export class SessionsApi {
   readonly #credentials: CredentialSource
+  readonly #refreshLogin?: () => Promise<void>
   readonly #fetch: typeof fetch
   readonly #baseUrl: string
   #credential: CloudCredential | null = null
 
   constructor(options: SessionsApiOptions) {
     this.#credentials = options.credentials
+    this.#refreshLogin = options.refreshLogin
     this.#fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis)
     this.#baseUrl = (options.baseUrl ?? "https://api.anthropic.com").replace(/\/$/, "")
   }
@@ -288,8 +329,32 @@ export class SessionsApi {
     return this.#credential
   }
 
-  async #request<T>(method: string, path: string, retriedAuth = false): Promise<T> {
+  /** Refresh the login (when injected), drop the source cache, and re-read.
+   *  A refresh failure is surfaced to the caller — better a clear "run
+   *  `claude auth login`" than a request with a known-stale token. */
+  async #refreshAndInvalidate(): Promise<void> {
+    await this.#refreshLogin?.()
+    this.#credentials.invalidate()
+    this.#credential = null
+  }
+
+  /** The credential for the next request: refresh first when it is expired
+   *  or expiring. Without an injected refresh the check is a no-op. */
+  async #freshCredential(): Promise<CloudCredential> {
     const credential = await this.#credentialNow()
+    if (this.#refreshLogin && isCredentialExpiring(credential)) {
+      await this.#refreshAndInvalidate()
+      return this.#credentialNow()
+    }
+    return credential
+  }
+
+  async #request<T>(method: string, path: string, retriedAuth = false): Promise<T> {
+    // On the retry the refresh already ran; read the source directly so a
+    // still-stale-looking `expiresAt` cannot start a second refresh.
+    const credential = retriedAuth
+      ? await this.#credentialNow()
+      : await this.#freshCredential()
     const headers: Record<string, string> = {
       authorization: `Bearer ${credential.accessToken}`,
       "anthropic-version": "2023-06-01",
@@ -298,9 +363,10 @@ export class SessionsApi {
     }
     const res = await this.#fetch(`${this.#baseUrl}${path}`, { method, headers })
     if (res.status === 401 && !retriedAuth) {
-      // The token may have been refreshed since we read it — re-read the
-      // source exactly once, then fail closed with the login hint.
-      this.#credential = null
+      // The token may have been refreshed out-of-band: refresh the login,
+      // drop the source cache and re-read exactly once, then fail closed
+      // with the login hint.
+      await this.#refreshAndInvalidate()
       return this.#request<T>(method, path, true)
     }
     if (res.status === 401) {

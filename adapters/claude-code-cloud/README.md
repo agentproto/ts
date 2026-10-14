@@ -25,8 +25,12 @@ zero — AIP-66 §7).
   from the `Claude Code-credentials` keychain entry (org uuid from
   `~/.claude.json`), or `CLAUDE_CLOUD_OAUTH_TOKEN` when injected. A CLI
   authenticated by API key, or not logged in, is refused with a pointer to
-  `claude auth login`. The token is only ever used as a request header — never
-  logged or persisted (AIP-66 §8).
+  `claude auth login`. When the token is expired (or within five minutes of
+  expiry) or the API answers 401, the adapter runs `claude -p "Reply OK"
+  --model haiku` once to let the CLI re-mint it, drops its cached credential,
+  and retries — a still-failing call reports `run \`claude auth login\``. The
+  token is only ever used as a request header — never logged or persisted
+  (AIP-66 §8).
 - **A clean, pushed git checkout as the session cwd.** The cloud runs the repo
   from its git remote, never an uploaded working tree, so `session/new`
   refuses (AIP-66 §3) a non-git cwd, a dirty working tree, a missing `origin`
