@@ -475,7 +475,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, appendSystemPrompt }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -524,12 +524,22 @@ export async function runServe(args: readonly string[]): Promise<number> {
             // passes these to adapters that advertise support below).
             ...(fsZones ? { fsZones } : {}),
             ...(isolateHostContext ? { isolateHostContext: true } : {}),
+            // AGENT.md system-prompt text — only forwarded for adapters that
+            // declare a channel (`supportsSystemPrompt` below); the runtime
+            // (session-spawn.ts) already fell back to prefix+warning for the
+            // ones that don't.
+            ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
           })
         },
         // Every agent-cli arm except `proprietary` (which owns its own
         // process) wraps its spawn through the OS sandbox, where zones apply.
         supportsFsZones: adapter.handle.protocol !== "proprietary",
         supportsHostContextIsolation: agentCliSupportsHostContextIsolation(slug),
+        // An AIP-45 manifest declaring `systemPrompt` (`acp-meta` /
+        // `inline-config` / `argv`) means `start({ appendSystemPrompt })` really
+        // lands the text in the harness's own system prompt — the runtime
+        // then skips its first-prompt prefix + warning fallback.
+        supportsSystemPrompt: adapter.handle.systemPrompt !== undefined,
         // Only adapters whose manifest declares `metadata.sessionSkills`
         // (a delivery dir the driver writes the imported skills into) take
         // part in per-session skill delivery. Gating on this keeps hermes'

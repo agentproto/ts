@@ -5,7 +5,7 @@ tracked separately (see `docs/studio-decision-router-integration.md`).
 
 `decide(policy, evidence)` is a reusable, closed-set decision primitive: one
 validated choice out of a declared set, resolved rules-first with one
-optional bounded classifier call, at most one tool-less LLM escalation, and
+optional bounded classifier call, at most one bounded escalation, and
 a conservative default. It exists so cost-sensitive workflows (review
 routing, steward classify, …) can share ONE router without sharing
 domain-specific rules: each consumer owns its evidence builder and its
@@ -33,7 +33,7 @@ classifier:
   minProbability: 0.85           # accept threshold (proposed, not calibrated)
   minMargin: 0.20                # top-two margin over allowed choices
 escalation:
-  enabled: true                  # exactly ONE tool-less LLM escalation, ever
+  enabled: true                  # exactly ONE bounded escalation, ever
   limit: 1
   maxInputChars: 6000            # tier-2 packet ceiling
 evidence:
@@ -74,7 +74,7 @@ a positive comparison). Two rule kinds:
    at/above `minProbability` with `minMargin` — and only when evidence is
    complete (not truncated, not flagged incomplete). Missing/invalid
    probabilities are uncertainty, not certainty.
-3. On uncertainty or classifier failure: exactly ONE tool-less LLM
+3. On uncertainty or classifier failure: exactly ONE bounded
    escalation with a richer bounded packet (context first, evidence last;
    omissions marked). Its choice is closed-set validated; its self-reported
    confidence is NOT calibrated and is never threshold-checked.
@@ -101,9 +101,13 @@ Tier-2 escalation packets honor the same allow/deny flags and
 
 ## Cache and concurrency
 
-Decisions are cached under policy hash + evidence hash + classifier
-configuration (and which backends were wired); changing criteria, thresholds
-or evidence invalidates. Concurrent identical `decide()` calls share one
+Only `status: decided` outcomes are cached (24h TTL, 500-entry cap). A
+`fallback` (the conservative default applied after a classifier/escalation
+failure, incomplete evidence or no backend) is a safe answer, not a trusted
+one, and is recomputed on the next call. A `classify`/`escalate` backend
+without an identity is uncacheable. Entries key on policy hash + evidence
+hash + classifier configuration + backend identity (kind/host/model), so a
+config or backend change never replays another backend's answer. Concurrent identical `decide()` calls share one
 in-flight computation. The decision cache is separate from the review
 verdict/ledger cache and never replaces it.
 
@@ -115,10 +119,65 @@ verdict/ledger cache and never replaces it.
 - `decision_decide` MCP tool (root `/mcp`, like `model_roles`): pass the
   DECISION.md markdown plus the evidence object; the tool wires the Jev
   classifier through the existing `jev.apiKey` / `jev.baseUrl` config. No
-  escalation backend is wired at the tool layer — embedding hosts inject
-  their own no-tool escalation into `decide()` when configured.
+  escalation backend is wired here — use the staged workflow below.
+- `decision-route` workflow (`packages/runtime/workflows/decision-route`) and
+  its seven `decision_*` stage tools: the operational harness (below).
 - Canonical review-routing example:
   `packages/runtime/src/__tests__/fixtures/decision/review-router.md`.
+
+## Staged workflow: `decision-route`
+
+`workflows/decision-route/WORKFLOW.md` (shipped in `@agentproto/runtime`)
+runs the primitive as seven `tool` steps owned by one workflow run:
+`collect → rules → classify → escalate → select → review → validate`. Run it
+with the existing run-file seam; shadow is the default (nothing is reviewed):
+
+```jsonc
+// MCP workflow_run_file on the daemon
+{ "path": "<pkg>/workflows/decision-route/WORKFLOW.md",
+  "cwd": "/path/to/repo",
+  "input": { "cwd": "/path/to/repo", "policyPath": "DECISION.md",
+             "profile": "local-free", "mode": "shadow",
+             "profileOptions": { "escalation": { "preset": "my-opencode-free" } } } }
+```
+
+Poll `workflow_status`; the `validate` step output is the report. Design:
+
+- **Policy vs profile.** DECISION.md owns criteria / closed choices /
+  uncertainty. The execution *profile* owns permitted models/harnesses, the
+  escalation target, attempts and deadlines — it never changes the policy.
+  `local-free` (alias `free-only`): OpenCode ids ending `-free` (or
+  `big-pickle`) only; Jev off; the operator names the escalation preset.
+  `remote-sonnet` (alias `subscription`): free ids plus the configured Claude
+  Code Sonnet; Jev on; escalation defaults to the `review.small` role.
+- **Gated before spawn.** The escalation target and every reviewer preset,
+  fallback preset, `turnRetry.rotate` target and the review-recovery preset /
+  role override are resolved through the existing preset stores and checked
+  against the profile *before* anything spawns. Unknown/dynamic identity (no
+  explicit model, `@route`, unreadable auth profile, OpenRouter) fails
+  closed; sandbox placement (E2B) grants nothing. A conservative `deep` route
+  cannot bypass the profile: a refused target refuses the whole binding
+  (nothing is substituted) and is reported as `refused`, never approved.
+- **Bounded.** Jev: one call, no retries, profile deadline. Escalation: at
+  most one session, own deadline, always killed/archived/cleaned. Review:
+  deadline then `review_cancel`. No hidden retries, no fan-out; normal
+  classifier uncertainty goes to the single escalation and is never a human
+  request. Spawned sessions carry `workflowOwner` metadata (run id /
+  workflow id / step id) and the parent session id.
+- **Honest tool limits.** The escalation session is `read-only` posture with
+  no MCP servers; the harness's built-in tools stay available, so the report
+  lists `toolControls` as *configured* vs *enforced* and the prompt's "do not
+  use tools" line is advisory. Nothing is called a no-tools guarantee.
+- **Report states.** `completed` (approval only for a `pass` verdict from
+  lanes inside the profile), `provider-unavailable`, `human-input-required`
+  (only when the escalation session itself asked), `incomplete`, `timeout`,
+  `cancelled`, `refused`, `failed`, `shadow`. Automatic continuation is not
+  scheduled by this workflow, so that state is never emitted.
+- **Evidence.** Metadata only (counts, change types, risk categories,
+  completeness) from a frozen range; paths only with `allowPaths`; the
+  collector never reads hunks or file contents (consumer-supplied evidence
+  goes through the same deny filter); secrets scrubbed; any collection failure is `complete:
+  false` so the classifier is not trusted.
 
 ## Caveats
 

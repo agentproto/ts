@@ -4,20 +4,19 @@
  *
  * A reviewer is told to write its verdict as JSON to a host-chosen path. Models
  * sometimes finish the analysis, say the conclusion in chat, and never write
- * the file. Instead of discarding a completed review, ONE small-model call
- * reads the reviewer's own latest output and either
- *   - returns the conclusion + findings it can FAITHFULLY lift from that
- *     output (the daemon, not the model, then validates and writes the file),
- *   - asks for ONE follow-up to the original reviewer (it ended without ever
- *     stating a conclusion), or
- *   - classifies why the review cannot be recovered and leaves the lane
- *     incomplete.
+ * the file. The ladder, cheapest and most trustworthy first:
+ *   1. DETERMINISTIC EXTRACTION — a complete, schema-valid verdict the original
+ *      reviewer itself wrote in its own assistant messages (typed transcript
+ *      records, never flattened tool lines) is lifted verbatim. No model call.
+ *   2. ONE small-model call that may lift only BLOCKING findings the reviewer
+ *      explicitly reported (grounded verbatim in its prose), ask for ONE
+ *      follow-up to the original reviewer, or classify why nothing can be
+ *      recovered. The recovery model NEVER produces an approval: a clean
+ *      verdict comes only from the original reviewer (step 1 or its follow-up).
+ *   3. Otherwise the lane stays incomplete.
  *
- * It is not a second review: the recovery model has no repo access and no
- * write tools, sees only bounded reviewer output, and may not add, upgrade or
- * invent findings. Everything it returns is checked here: the conclusion must
- * be quoted verbatim from the reviewer's output, an approval is never accepted
- * from an errored turn, and the report must pass the canonical lane parser.
+ * Everything the recovery model returns is checked here, and the report must
+ * pass the canonical lane parser.
  */
 
 import { parseAgentLaneReport, type AgentLaneReport, type LaneRecoveryOutcome } from "@agentproto/review"
@@ -36,8 +35,16 @@ export const RECOVERY_STEP_MIN_MS = 10_000
 export const RECOVERY_FOLLOWUP_MIN_MS = 30_000
 /** Recovery presets tried (in order) before giving up on finding one that can run. */
 export const RECOVERY_MAX_CANDIDATES = 2
-/** Shortest conclusion quote accepted as evidence of a stated conclusion. */
-const MIN_QUOTE_CHARS = 12
+/** Shortest finding title accepted as grounded in the reviewer's prose. */
+const MIN_TITLE_CHARS = 8
+/** How far from a finding's title/file a severity word or line number may sit. */
+const GROUNDING_WINDOW_CHARS = 300
+/** The summary of a report lifted by the recovery model — its own words are
+ *  never trusted into the verdict. */
+export const RECOVERED_SUMMARY =
+  "Blocking findings lifted verbatim from the reviewer's chat by the recovery step; the reviewer wrote no verdict file."
+/** Cap on assistant text scanned for an explicit report. */
+const EXTRACT_MAX_CHARS = 400_000
 
 export type ReviewerLifecycle = "clean" | "errored"
 
@@ -47,7 +54,18 @@ const collapse = (s: string): string => s.replace(/\s+/g, " ").trim()
  *  thoughts are dropped by `cleanAgentLines`; tool ERRORS and `[error]` lines
  *  stay, because they are lifecycle evidence. */
 export function boundEvidence(lines: readonly string[], maxChars = RECOVERY_EVIDENCE_MAX_CHARS): string {
-  const text = cleanAgentLines([...lines])
+  return boundText(
+    cleanAgentLines([...lines])
+      .map((l) => l.replace(/\s+$/, ""))
+      .join("\n"),
+    maxChars,
+  )
+}
+
+/** The tail of `raw`, tidied and bounded (the shared half of {@link boundEvidence}). */
+export function boundText(raw: string, maxChars = RECOVERY_EVIDENCE_MAX_CHARS): string {
+  const text = raw
+    .split("\n")
     .map((l) => l.replace(/\s+$/, ""))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -80,36 +98,38 @@ export interface RecoveryPromptInput {
 }
 
 /** The recovery model's prompt. It must answer with ONE JSON object in its
- *  reply — it has no files and no tools. */
+ *  reply. It is a plain-text instruction, not enforcement: the daemon
+ *  re-validates everything it returns ({@link evaluateRecoveryReply}). */
 export function buildRecoveryPrompt(input: RecoveryPromptInput): string {
   const { laneId, blockOn, evidence, lifecycle, lifecycleDetail, followUpPossible } = input
   return [
     `A code-review agent (lane '${laneId}') ended its turn WITHOUT writing its required verdict file. You are a recovery step, not a reviewer.`,
-    "You have no repository access and no tools — do not call any. Your whole job is to read the reviewer's own output below and report, as one JSON object in your reply, what the reviewer concluded.",
+    "You have no use for tools or repository access — do not call any. Your whole job is to read the reviewer's own output below and report, as one JSON object in your reply, the BLOCKING findings the reviewer itself reported.",
     "",
     "Rules (strict):",
-    "- Recover ONLY what the reviewer itself concluded. Never review the code, never add a finding, never raise or lower a severity, never soften wording that blocks.",
-    "- Partial analysis, a plan, a to-do list, 'I will now check…', or an error is NOT a conclusion. Uncertainty is not approval. If you cannot point at the sentence where the reviewer states its conclusion, do not recover.",
-    "- 'conclusionQuote' must be copied VERBATIM from the reviewer output (one contiguous passage that states the conclusion). It is machine-checked; a paraphrase is rejected.",
-    `- Findings keep the reviewer's own severity ("high" | "medium" | "low"; this lane blocks on "${blockOn}" or higher), title, detail, file and line exactly as the reviewer gave them.`,
-    "- Do not output 'approve' unless the reviewer explicitly says nothing needs changing / it found no problems.",
+    "- You can NEVER approve. You may only lift findings the reviewer explicitly reported. If the reviewer concluded that nothing needs changing, or you cannot tell, that is NOT yours to record" +
+      (followUpPossible ? " — answer 'needs_followup' so the original reviewer states it." : " — answer 'insufficient_evidence'."),
+    "- Never review the code, never add a finding, never raise or lower a severity, never merge or reword findings.",
+    "- Partial analysis, a plan, a to-do list, 'I will now check…', or an error is NOT a conclusion. Uncertainty is not approval.",
+    `- Each finding must be copied from the reviewer output: 'title' is ONE verbatim sentence/phrase of the reviewer's, 'detail' (optional) a verbatim passage, 'file' the full path exactly as the reviewer wrote it, 'line' only if the reviewer gave one, 'severity' the reviewer's own ("high" | "medium" | "low"; this lane blocks on "${blockOn}" or higher) stated near that finding. All of it is machine-checked against the output; anything not found there rejects the whole reply.`,
+    `- Report at least one finding at "${blockOn}" or higher, or do not recover.`,
     ...(lifecycle === "errored"
       ? [
-          `- The reviewer's turn FAILED (${lifecycleDetail ?? "error"}). Its analysis may be partial: only recover findings it explicitly reported; an approval is never acceptable from a failed turn.`,
+          `- The reviewer's turn FAILED (${lifecycleDetail ?? "error"}). Its analysis may be partial: only lift findings it explicitly reported.`,
         ]
       : []),
     "",
     "Reply with ONLY this JSON (no markdown fence, no prose):",
-    `{ "status": "recovered" | ${followUpPossible ? `"needs_followup" | ` : ""}"insufficient_evidence" | "reviewer_failed", "reason": "<one line>", "conclusionQuote": "<verbatim passage>", "report": { "decision": "approve" | "request_changes", "summary": "<one line>", "findings": [{ "severity": "high" | "medium" | "low", "title": "<one line>", "detail": "<why it matters>", "file": "<path>", "line": <number> }] } }`,
-    "- status 'recovered': the reviewer stated a conclusion; fill conclusionQuote and report.",
+    `{ "status": "recovered" | ${followUpPossible ? `"needs_followup" | ` : ""}"insufficient_evidence" | "reviewer_failed", "reason": "<one line>", "findings": [{ "severity": "high" | "medium" | "low", "title": "<verbatim>", "detail": "<verbatim, optional>", "file": "<path>", "line": <number> }] }`,
+    "- status 'recovered': the reviewer explicitly reported blocking findings; list them in 'findings'.",
     ...(followUpPossible
       ? [
-          "- status 'needs_followup': the reviewer's analysis looks complete or nearly so but it never stated a conclusion. The original reviewer will be asked once to state it. Use this only if asking could plausibly produce the conclusion.",
+          "- status 'needs_followup': the reviewer's analysis looks complete or nearly so but it never reported a blocking finding (or concluded there is none). The original reviewer will be asked once to state its verdict.",
         ]
       : []),
-    "- status 'insufficient_evidence': the output does not contain enough to state the reviewer's conclusion faithfully (partial/abandoned analysis, only planning).",
+    "- status 'insufficient_evidence': the output does not contain enough to state the reviewer's findings faithfully (partial/abandoned analysis, only planning).",
     "- status 'reviewer_failed': the reviewer could not do the review at all (error, missing access, refused, empty or off-task output).",
-    "Omit conclusionQuote and report unless status is 'recovered'.",
+    "Omit 'findings' unless status is 'recovered'.",
     "",
     `Reviewer lifecycle: ${lifecycle === "clean" ? "the turn ended normally" : `the turn failed — ${lifecycleDetail ?? "error"}`}.`,
     "",
@@ -119,18 +139,20 @@ export function buildRecoveryPrompt(input: RecoveryPromptInput): string {
   ].join("\n")
 }
 
-/** The prompt sent to the ORIGINAL reviewer when the recovery model asked for a follow-up. */
-export function buildFollowUpPrompt(verdictPath: string): string {
+/** The prompt sent to the ORIGINAL reviewer when it must state its verdict. */
+export function buildFollowUpPrompt(verdictPath: string, why: "no-conclusion" | "conflict" = "no-conclusion"): string {
   return [
-    `You ended your turn without writing your verdict file. Do not start a new review. Based only on the analysis you have already done, write EXACTLY ONE file — ${verdictPath} — containing ONLY the verdict JSON (no markdown fence) in the format you were given: { "decision": "approve" | "request_changes", "summary": "...", "findings": [...] }.`,
-    "If you had not actually reached a conclusion, say so in one sentence instead of writing the file.",
+    why === "conflict"
+      ? `Your earlier messages contained more than one, conflicting verdict, and you wrote no verdict file. Do not start a new review. Decide ONE final verdict from the analysis you have already done and write EXACTLY ONE file — ${verdictPath} — containing ONLY the verdict JSON (no markdown fence) in the format you were given: { "decision": "approve" | "request_changes", "summary": "...", "findings": [...] }.`
+      : `You ended your turn without writing your verdict file. Do not start a new review. Based only on the analysis you have already done, write EXACTLY ONE file — ${verdictPath} — containing ONLY the verdict JSON (no markdown fence) in the format you were given: { "decision": "approve" | "request_changes", "summary": "...", "findings": [...] }.`,
+    "If you had not actually reached a conclusion, say so in one sentence instead of writing the file — uncertainty is not approval.",
   ].join("\n")
 }
 
 const envelopeSchema = z.object({
   status: z.enum(["recovered", "needs_followup", "insufficient_evidence", "reviewer_failed"]),
   reason: z.string().optional(),
-  conclusionQuote: z.string().optional(),
+  findings: z.unknown().optional(),
   report: z.unknown().optional(),
 })
 
@@ -155,10 +177,69 @@ function extractJsonObject(raw: string): unknown {
   }
 }
 
+/** The reviewer's own prose, with lifecycle markers (errors, tool framing)
+ *  removed — the only text a recovered finding may be grounded in. */
+function groundingCorpus(evidence: string): string {
+  return collapse(
+    evidence
+      .split("\n")
+      .filter((l) => !/^\s*\[(error|tool-error|tool-result|tool-artifact|permission|awaiting input|notice|context|earlier output omitted)\b/.test(l))
+      .join("\n"),
+  )
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/** Every window of `corpus` around an occurrence of `needle`. */
+function windowsAround(corpus: string, needle: string): string[] {
+  const out: string[] = []
+  let from = 0
+  for (;;) {
+    const at = corpus.indexOf(needle, from)
+    if (at < 0) break
+    out.push(corpus.slice(Math.max(0, at - GROUNDING_WINDOW_CHARS), at + needle.length + GROUNDING_WINDOW_CHARS))
+    from = at + needle.length
+    if (out.length >= 50) break
+  }
+  return out
+}
+
+/** Why `finding` is not grounded in the reviewer's prose, or `undefined`. */
+function ungroundedReason(finding: AgentLaneReport["findings"][number], corpus: string): string | undefined {
+  const title = collapse(finding.title)
+  if (title.length < MIN_TITLE_CHARS || !corpus.includes(title)) {
+    return `finding title '${title.slice(0, 80)}' is not verbatim in the reviewer's output`
+  }
+  if (finding.detail !== undefined && collapse(finding.detail) && !corpus.includes(collapse(finding.detail))) {
+    return `detail of finding '${title.slice(0, 80)}' is not verbatim in the reviewer's output`
+  }
+  const sev = new RegExp(`\\b${finding.severity}\\b`, "i")
+  if (!windowsAround(corpus, title).some((w) => sev.test(w))) {
+    return `the reviewer's output does not state severity '${finding.severity}' near finding '${title.slice(0, 80)}'`
+  }
+  if (finding.file !== undefined) {
+    const file = collapse(finding.file)
+    if (!file || !corpus.includes(file)) {
+      return `finding '${title.slice(0, 80)}' names '${finding.file}', which the reviewer's output never mentions`
+    }
+    if (finding.line !== undefined) {
+      const lineRe = new RegExp(`(?<!\\d)${finding.line}(?!\\d)`)
+      if (!windowsAround(corpus, file).some((w) => lineRe.test(w))) {
+        return `finding '${title.slice(0, 80)}' cites line ${finding.line}, which the reviewer's output never gives near '${finding.file}'`
+      }
+    }
+  } else if (finding.line !== undefined) {
+    return `finding '${title.slice(0, 80)}' cites a line without a file`
+  }
+  return undefined
+}
+
 /**
  * Validate the recovery model's reply against the reviewer's evidence.
  * Never throws: anything unusable is `{ kind: "invalid" }` and leaves the
- * lane incomplete.
+ * lane incomplete. The result is NEVER an approval — only a `request_changes`
+ * whose every finding is grounded verbatim in the reviewer's own prose and
+ * at least one of which blocks.
  */
 export function evaluateRecoveryReply(
   reply: string,
@@ -181,37 +262,155 @@ export function evaluateRecoveryReply(
     return { kind: "followup", reason: reason || "reviewer never stated a conclusion" }
   }
 
-  const quote = collapse(envelope.conclusionQuote ?? "")
-  if (quote.length < MIN_QUOTE_CHARS) {
-    return { kind: "invalid", reason: "recovered report carries no conclusion quote from the reviewer's output" }
+  // Findings come from `findings`; a legacy `report` envelope is only read for
+  // its findings and an `approve` decision in it is refused outright.
+  const legacy = envelope.report && typeof envelope.report === "object" ? (envelope.report as Record<string, unknown>) : undefined
+  if (legacy?.decision === "approve") {
+    return { kind: "invalid", reason: "the recovery step never records an approval — only the original reviewer can" }
   }
-  if (!collapse(ctx.evidence).includes(quote)) {
-    return { kind: "invalid", reason: "conclusion quote is not verbatim in the reviewer's output" }
+  const rawFindings = envelope.findings ?? legacy?.findings
+  if (!Array.isArray(rawFindings) || rawFindings.length === 0) {
+    return { kind: "invalid", reason: "recovered reply carries no findings to lift" }
   }
   let report: AgentLaneReport
   try {
-    report = parseAgentLaneReport(JSON.stringify(envelope.report))
+    report = parseAgentLaneReport(JSON.stringify({ decision: "request_changes", summary: RECOVERED_SUMMARY, findings: rawFindings }))
   } catch (err) {
     return { kind: "invalid", reason: `recovered report fails the lane contract — ${err instanceof Error ? err.message : String(err)}` }
   }
-  if (report.decision === undefined) {
-    return { kind: "invalid", reason: "recovered report states no decision" }
-  }
-  const evidence = collapse(ctx.evidence)
+  const corpus = groundingCorpus(ctx.evidence)
   for (const f of report.findings) {
-    if (f.file && !evidence.includes(f.file) && !evidence.includes(f.file.split("/").pop() ?? f.file)) {
-      return { kind: "invalid", reason: `recovered finding names '${f.file}', which the reviewer's output never mentions` }
-    }
+    const problem = ungroundedReason(f, corpus)
+    if (problem) return { kind: "invalid", reason: problem }
   }
-  const blocking = report.findings.some((f) => SEVERITY_RANK[f.severity] >= SEVERITY_RANK[ctx.blockOn])
-  if (report.decision === "approve" && (blocking || ctx.lifecycle === "errored")) {
-    return {
-      kind: "invalid",
-      reason: ctx.lifecycle === "errored" ? "an approval is never recovered from a failed turn" : "recovered approval contradicts its own blocking finding",
-    }
-  }
-  if (report.decision === "request_changes" && report.findings.length === 0) {
-    return { kind: "invalid", reason: "recovered request_changes carries no findings" }
+  if (!report.findings.some((f) => SEVERITY_RANK[f.severity] >= SEVERITY_RANK[ctx.blockOn])) {
+    return { kind: "invalid", reason: `none of the recovered findings is at or above this lane's blocking severity '${ctx.blockOn}'` }
   }
   return { kind: "recovered", report, ...(reason ? { reason } : {}) }
+}
+
+// ── Typed transcript → explicit reviewer report ───────────────────────────
+
+/** What the reviewer's typed transcript (`events.jsonl` records) proves about
+ *  its latest turn. Only `text-delta` records are the model's own words; tool
+ *  calls, tool results, thoughts and prompts never count. */
+export interface ReviewerTranscript {
+  /** The reviewer's assistant text since the last prompt it received. */
+  assistantText: string
+  /** A `turn-end` record follows that prompt — the write buffers were flushed, so `assistantText` is complete. */
+  turnEnded: boolean
+  turnReason?: string
+}
+
+export function analyzeReviewerTranscript(records: readonly Record<string, unknown>[]): ReviewerTranscript {
+  let from = 0
+  records.forEach((r, i) => {
+    if (r.kind === "user-prompt") from = i + 1
+  })
+  let assistantText = ""
+  let turnEnded = false
+  let turnReason: string | undefined
+  for (const r of records.slice(from)) {
+    if (r.kind === "text-delta" && typeof r.text === "string") assistantText += r.text
+    else if (r.kind === "turn-end") {
+      turnEnded = true
+      turnReason = typeof r.reason === "string" ? r.reason : undefined
+    }
+  }
+  return { assistantText, turnEnded, ...(turnReason ? { turnReason } : {}) }
+}
+
+/** `<one line>`, `<repo-relative path>` … — the prompt's own example template. */
+const PLACEHOLDER_RE = /^\s*<[^<>]{1,80}>\s*$/
+
+function hasPlaceholder(report: AgentLaneReport): boolean {
+  const strings = [report.summary, ...report.findings.flatMap((f) => [f.title, f.detail, f.file])]
+  return strings.some((v) => typeof v === "string" && PLACEHOLDER_RE.test(v))
+}
+
+/** Balanced top-level `{…}` slices of `text` (string- and escape-aware). */
+function topLevelObjects(text: string): string[] {
+  const out: string[] = []
+  let i = 0
+  let failures = 0
+  while (i < text.length && failures < 50) {
+    const start = text.indexOf("{", i)
+    if (start < 0) break
+    let depth = 0
+    let inString = false
+    let end = -1
+    for (let j = start; j < text.length; j++) {
+      const c = text[j]
+      if (inString) {
+        if (c === "\\") j++
+        else if (c === '"') inString = false
+      } else if (c === '"') inString = true
+      else if (c === "{") depth++
+      else if (c === "}" && --depth === 0) {
+        end = j
+        break
+      }
+    }
+    if (end < 0) {
+      failures++
+      i = start + 1
+      continue
+    }
+    out.push(text.slice(start, end + 1))
+    i = end + 1
+  }
+  return out
+}
+
+export type ExplicitReportResult =
+  | { kind: "report"; report: AgentLaneReport }
+  | { kind: "none"; note?: string }
+  | { kind: "conflict"; reason: string }
+
+/**
+ * The complete, schema-valid verdict the reviewer itself stated in chat, if
+ * exactly one such verdict exists. `assistantText` MUST be the reviewer's own
+ * assistant text ({@link analyzeReviewerTranscript}) — never tool output.
+ * Fails closed: a verdict that is incomplete, still the prompt's template,
+ * self-contradictory, or an approval from a failed turn is no verdict; two
+ * different verdicts are a conflict.
+ */
+export function extractExplicitReport(
+  assistantText: string,
+  ctx: { blockOn: "high" | "medium" | "low"; lifecycle: ReviewerLifecycle },
+): ExplicitReportResult {
+  const text = assistantText.length > EXTRACT_MAX_CHARS ? assistantText.slice(-EXTRACT_MAX_CHARS) : assistantText
+  const found = new Map<string, AgentLaneReport>()
+  let sawApproveWhileErrored = false
+  for (const slice of topLevelObjects(text)) {
+    let raw: unknown
+    try {
+      raw = JSON.parse(slice)
+    } catch {
+      continue
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
+    const o = raw as Record<string, unknown>
+    if (typeof o.decision !== "string" || !Array.isArray(o.findings)) continue
+    let report: AgentLaneReport
+    try {
+      report = parseAgentLaneReport(slice)
+    } catch {
+      continue
+    }
+    if (report.decision === undefined || hasPlaceholder(report)) continue
+    const blocking = report.findings.some((f) => SEVERITY_RANK[f.severity] >= SEVERITY_RANK[ctx.blockOn])
+    if (report.decision === "approve" && blocking) continue
+    if (report.decision === "request_changes" && report.findings.length === 0) continue
+    if (report.decision === "approve" && ctx.lifecycle === "errored") {
+      sawApproveWhileErrored = true
+      continue
+    }
+    found.set(JSON.stringify(report), report)
+  }
+  if (found.size === 0) {
+    return { kind: "none", ...(sawApproveWhileErrored ? { note: "an approval stated in chat is not accepted from a failed turn" } : {}) }
+  }
+  if (found.size > 1) return { kind: "conflict", reason: `the reviewer stated ${found.size} different verdicts in chat` }
+  return { kind: "report", report: [...found.values()][0]! }
 }

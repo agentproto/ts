@@ -90,6 +90,12 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
+import {
+  buildBoxRestartHandoff,
+  buildLocalRestartHandoff,
+  writeBoxPriorTranscripts,
+  type RestartHandoff,
+} from "./restart-handoff.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
@@ -519,6 +525,12 @@ export interface RestartAgentSessionResult {
    *  lets callers distinguish "fresh with zero context" from "fresh
    *  with partial digest injected" for the restart banner. */
   digestRecovered?: boolean
+  /** Structured handoff the restart injected instead of the old digest:
+   *  the full transcript file's path, the checkpoint id, and how much
+   *  conversation was recovered — so CLI/VS Code/session-chat can say
+   *  "conversation restored from transcript (N messages)". Absent when
+   *  no handoff could be built (the digest fallback ran, or nothing). */
+  handoff?: RestartHandoff
 }
 
 export interface RestartAgentSessionOptions {
@@ -634,6 +646,10 @@ export interface RestartPreferInPlaceResult {
   resumeVia: string
   resumeFallback?: boolean
   digestRecovered?: boolean
+  /** Present when the new-id fallback built a structured handoff (see
+   *  `RestartAgentSessionResult.handoff`); absent for an in-place revival
+   *  or a fallback with no recoverable transcript. */
+  handoff?: RestartHandoff
 }
 
 /** The shared in-place eligibility decision: the row must be ENDED (not
@@ -724,6 +740,7 @@ export async function restartPreferInPlace(
     resumeVia: restarted.resumeVia,
     ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
     ...(restarted.digestRecovered ? { digestRecovered: true } : {}),
+    ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
   }
 }
 
@@ -1067,6 +1084,12 @@ export async function restartAgentSession(
       ...(effMode ? { mode: effMode } : {}),
       ...(restartMcpServers ? { mcpServers: restartMcpServers } : {}),
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
+      // Re-apply the AGENT.md system-prompt text on the SAME declared channel
+      // (the original spawn already warned + prefixed when the adapter had
+      // none — a channel-less lineage has nothing left to re-apply here).
+      ...(prev.appendSystemPrompt && resolved.supportsSystemPrompt === true
+        ? { appendSystemPrompt: prev.appendSystemPrompt }
+        : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
       // Spawn-time guarantees survive a restart: the adapter runs under the
@@ -1133,6 +1156,11 @@ export async function restartAgentSession(
       // `prev.sessionSkills` names stable copies under the registry root, so
       // they carry forward verbatim like `mcpServers` (see the field's doc).
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
+      // Echoed forward like `sessionSkills`, so the NEXT restart still knows
+      // the lineage's AGENT.md text (the channel pass above re-applies it).
+      ...(prev.appendSystemPrompt
+        ? { appendSystemPrompt: prev.appendSystemPrompt }
+        : {}),
       ...(prevBoundary ? { meta: boundaryMeta(prevBoundary) } : {}),
       ...(effModel ? { model: effModel } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
@@ -1200,6 +1228,13 @@ export async function restartAgentSession(
   // `resolveSandboxSecret`) are module-private in session-spawn.ts, so
   // byte-equivalent copies live at the bottom of this file — keep in sync
   // by inspection, same as the auth-resolution block above.
+  //
+  // In-box paths of the prior session's full transcript file(s) written
+  // during this restart (restart-handoff.ts) — both the re-attach and the
+  // fresh-box paths fill it in; the handoff assembly below consumes it once
+  // `desc` exists. Declared above the closures that assign it so the
+  // dependency is visible at a glance.
+  let boxPriorTranscriptPaths: string[] = []
   const spawnInSandbox = async (
     boxSandboxId: string,
     restartedSessionId: string,
@@ -1247,7 +1282,13 @@ export async function restartAgentSession(
       let freshBlocker: string | undefined
       if (boxGone) {
         const fresh = await spawnOnFreshBox(providerSlug, restartedSessionId, sandboxMcpServers)
-        if (fresh.ok) return fresh.desc
+        if (fresh.ok) {
+          // A new box has no adapter store to resume: the restart is a
+          // blank fallback even when the strategy carried a resume id, so
+          // the handoff/digest below must still run.
+          resumeFallback = true
+          return fresh.desc
+        }
         freshBlocker = fresh.blocker
       }
       throw new Error(
@@ -1300,6 +1341,27 @@ export async function restartAgentSession(
         ? undefined
         : (priorRemoteSessionId ?? resumeSessionId)
     let boxResumed = false
+    // Best-effort: write the prior session's full transcript into the
+    // re-attached box (outside the repo checkout, so the delivery hook never
+    // commits it) — the handoff below points the fresh adapter at it. A
+    // failure is not fatal; the handoff falls back to the old digest.
+    const priorTranscripts = await writeBoxPriorTranscripts(host, prev, registry).catch(
+      err => {
+        console.warn(
+          `restartAgentSession: writing the prior transcript of ${prev.id} into box ` +
+            `${host.sandboxId} failed — ${err instanceof Error ? err.message : String(err)} ` +
+            "(the handoff will fall back to the digest)",
+        )
+        return undefined
+      },
+    )
+    boxPriorTranscriptPaths = priorTranscripts?.paths ?? []
+    if (priorTranscripts && !priorTranscripts.ok) {
+      console.warn(
+        `restartAgentSession: prior transcript of ${prev.id} could not be written into ` +
+          `box ${host.sandboxId} — the handoff will fall back to the digest`,
+      )
+    }
     let remoteSessionId: string
     try {
       const remoteDesc = await host.start({
@@ -1494,6 +1556,48 @@ export async function restartAgentSession(
           `workspace "${slug}" could not be started — ${booted.message}`,
       )
     }
+    // Best-effort: write the prior session's full transcript into the FRESH
+    // box too. `bootSandboxAgentSession` doesn't expose the booted box's
+    // file seam, so reconnect to the just-booted box for the write — and
+    // never stop/pause that handle (it would tear the fresh box down). A
+    // failure is not fatal; the handoff falls back to the old digest.
+    try {
+      const freshHandle = opts.resolveSandboxProvider
+        ? await opts.resolveSandboxProvider(providerSlug)
+        : null
+      const freshBox = await freshHandle?.provider.connect?.(
+        booted.sandboxId,
+        { provider: providerSlug, config: {} },
+        { env: {} },
+      )
+      if (freshBox) {
+        const priorTranscripts = await writeBoxPriorTranscripts(freshBox, prev, registry).catch(
+          err => {
+            console.warn(
+              `restartAgentSession: writing the prior transcript of ${prev.id} into the ` +
+                `fresh box ${booted.sandboxId} failed — ` +
+                `${err instanceof Error ? err.message : String(err)} ` +
+                "(the handoff will fall back to the digest)",
+            )
+            return undefined
+          },
+        )
+        boxPriorTranscriptPaths = priorTranscripts?.paths ?? []
+        if (priorTranscripts && !priorTranscripts.ok) {
+          console.warn(
+            `restartAgentSession: prior transcript of ${prev.id} could not be written into ` +
+              `the fresh box ${booted.sandboxId} — the handoff will fall back to the digest`,
+          )
+        }
+      }
+    } catch (err) {
+      // Handoff is best-effort — the digest fallback covers a failed write.
+      console.warn(
+        `restartAgentSession: fresh-box transcript write for ${prev.id} skipped — ` +
+          `${err instanceof Error ? err.message : String(err)} ` +
+          "(the handoff will fall back to the digest)",
+      )
+    }
     notices.push(...(booted.notices ?? []))
     const restarted = registerBoxSession(restartedSessionId, sandboxMcpServers, {
       agentSession: booted.agentSession,
@@ -1626,17 +1730,68 @@ export async function restartAgentSession(
   // and this catch block's rejected-resume-id retry (the adapter's own
   // conversation store is gone) — so `desc` just came back as a genuinely
   // fresh spawn wearing the old session's continuity fields. Best-effort
-  // patch: reconstruct a bounded digest from the PRIOR session's own
-  // daemon transcript (survives both cases) and stash it for
+  // patch: reconstruct the prior session's context and stash it for
   // `runAgentTurn` to inject once. Gated strictly on `resumeFallback` — a
   // successful resume (pty-native or a clean ACP resume) never reaches
   // here, so it's never double-fed its own context.
+  //
+  // A BOX restart that could not resume the in-box conversation (fresh box,
+  // or the box answered blank to the resume id) prefers the structured
+  // handoff: a frame, a deterministic-extractor checkpoint, the most recent
+  // turns, and the path(s) of the full transcript file(s) already written
+  // into the box (`boxPriorTranscriptPaths`). A LOCAL blank-fallback gets
+  // the same frame with the transcript written into the new session's own
+  // host dir. The old 7k digest (`buildResumeContextDigest`) stays as the
+  // fallback when the handoff can't be built (no transcript, or the write
+  // failed). Never fails the restart.
   let digestRecovered = false
+  let restartHandoff: RestartHandoff | undefined
   if (resumeFallback) {
-    const result = await buildResumeContextDigest(prev.id)
-    if (result.digest) {
-      desc.pendingResumeContext = result.digest
-      digestRecovered = result.hasContent
+    const handoff =
+      sandboxId !== undefined
+        ? await buildBoxRestartHandoff({
+            prev,
+            transcriptPaths: boxPriorTranscriptPaths,
+            movedToFreshBox,
+            ...(prev.workspaceSlug ? { workspaceSlug: prev.workspaceSlug } : {}),
+            ...(prev.sandboxDeliveryTarget?.branch
+              ? { deliveryBranch: prev.sandboxDeliveryTarget.branch }
+              : {}),
+            ...(prev.sandboxDeliveryTarget?.baseSha
+              ? { deliveryBaseSha: prev.sandboxDeliveryTarget.baseSha }
+              : {}),
+          }).catch(err => {
+            console.warn(
+              `restartAgentSession: structured handoff for ${prev.id} could not be built — ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            )
+            return undefined
+          })
+        : // Local blank-fallback: same frame, but the full transcript is
+          // written into the NEW session's own host transcript dir and the
+          // prompt points at that path.
+          await buildLocalRestartHandoff(prev, desc).catch(err => {
+            console.warn(
+              `restartAgentSession: structured handoff for ${prev.id} could not be built — ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            )
+            return undefined
+          })
+    if (handoff) {
+      desc.pendingResumeContext = handoff.text
+      digestRecovered = handoff.digestRecovered
+      restartHandoff = handoff.handoff
+    } else {
+      console.warn(
+        `restartAgentSession: no structured handoff for ${prev.id} ` +
+          `(in-box transcript paths: ${boxPriorTranscriptPaths.length}) — ` +
+          "falling back to the 7k resume-context digest",
+      )
+      const result = await buildResumeContextDigest(prev.id)
+      if (result.digest) {
+        desc.pendingResumeContext = result.digest
+        digestRecovered = result.hasContent
+      }
     }
   }
 
@@ -1717,6 +1872,7 @@ export async function restartAgentSession(
     resumeVia: desc.resumeVia ?? "",
     ...(resumeFallback ? { resumeFallback: true } : {}),
     ...(digestRecovered ? { digestRecovered: true } : {}),
+    ...(restartHandoff ? { handoff: restartHandoff } : {}),
   }
 }
 

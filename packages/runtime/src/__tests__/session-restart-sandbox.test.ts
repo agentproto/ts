@@ -667,6 +667,10 @@ describe("restartAgentSession on a sandboxed session", () => {
       // A FRESH box holds no prior conversation — the adapter starts blank
       // (never with the dead box's resume id), keeping the digest path.
       expect(receivedStarts[0]?.resumeSessionId).toBeUndefined()
+      // Even though the prior row carried a resume id, the fresh box is a
+      // blank fallback, so the handoff/digest still runs.
+      expect(prev.adapterSessionId).toBeDefined()
+      expect(result.resumeFallback).toBe(true)
       expect(result.desc.sandboxDeliveryTarget).toMatchObject({ branch: "wt/resume-me", baseSha: "e".repeat(40) })
       const commands = execCalls.map(c => c.command)
       expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/agentproto.git'"))).toBe(true)

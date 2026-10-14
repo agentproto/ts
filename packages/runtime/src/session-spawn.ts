@@ -1271,6 +1271,11 @@ export interface SpawnAgentSessionInput {
    *  depth/quota/role gates, and an explicit `boardId` on a task verb still
    *  wins over it. */
   boardId?: string
+  /** Workflow ownership of this spawn, stamped onto the descriptor as
+   *  `meta.workflowRunId` / `workflowId` / `workflowStepId` — the same keys a
+   *  `wf:*` agent-step session carries, so reports and session outcomes link
+   *  the session to its run and step. Descriptor-only: no gate reads it. */
+  workflowOwner?: { runId: string; workflowId: string; stepId: string }
   /** Source label for this spawn (channel/harness). Descriptor-only. */
   origin?: string
   /** Installed app id this spawn runs on behalf of (`app_run` sets this to
@@ -1396,6 +1401,15 @@ export interface SpawnAgentSessionInput {
    *  a `session:harness-warning` with the spawn's own boundary warnings and
    *  returned in the result's `warnings`. */
   harnessWarnings?: string[]
+  /** Extra system-prompt text for this session (the AIP-42 AGENT.md body,
+   *  when the resolved adapter declares a real system-prompt channel —
+   *  `ResolvedAgentAdapter.supportsSystemPrompt`). Delivered through
+   *  `startSession({ appendSystemPrompt })` → the driver's declared channel;
+   *  a sandbox spawn or an adapter with no channel falls back to a
+   *  first-prompt prefix + harness warning right here (never-silent, same
+   *  rule as `allowTools`). Persisted on the descriptor so restart /
+   *  fresh-continuation can re-apply it. */
+  appendSystemPrompt?: string
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   notifyUrl?: string
   notifySecret?: string
@@ -1714,6 +1728,12 @@ export function deviceContractLine(device: string): string {
     `call (read it first); if you \`cd\` somewhere else (a nested repo ` +
     `included), re-resolve and re-read the AGENTS.md of wherever you end up.`
   )
+}
+
+function workflowOwnerMeta(owner: SpawnAgentSessionInput["workflowOwner"]): Record<string, string> {
+  return owner
+    ? { workflowRunId: owner.runId, workflowId: owner.workflowId, workflowStepId: owner.stepId }
+    : {}
 }
 
 export async function spawnAgentSession(
@@ -3025,6 +3045,31 @@ export async function spawnAgentSession(
         " for a sandbox spawn.",
     }
   }
+  // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────
+  // An adapter that declared a manifest `systemPrompt` channel takes the
+  // text through `startSession({ appendSystemPrompt })` (the driver applies
+  // it per `via`). A sandbox spawn — the box resolves and spawns its OWN
+  // adapter build, so this host's channel declaration doesn't travel with
+  // it — or a resolved adapter that declared no channel falls back to
+  // prefixing the text onto the first prompt: warned right here, prefixed
+  // in the composition below, same never-silent rule as `allowTools`.
+  const appendSystemPromptChannel =
+    input.appendSystemPrompt !== undefined &&
+    input.sandbox === undefined &&
+    resolved?.supportsSystemPrompt === true
+      ? input.appendSystemPrompt
+      : undefined
+  if (input.appendSystemPrompt !== undefined && appendSystemPromptChannel === undefined) {
+    spawnWarnings.push(
+      `agent_start: system-prompt text not delivered via a system-prompt channel — ` +
+        (input.sandbox !== undefined
+          ? "a sandbox spawn starts the adapter on the box, which owns its own configuration."
+          : `adapter "${input.adapter}" declares no manifest systemPrompt channel.`) +
+        (typeof input.prompt === "string"
+          ? " It rides the first prompt's prefix instead."
+          : " There is no string first prompt to prefix it onto, so it is not delivered."),
+    )
+  }
   // ── App boundary: enforceability (never a silent downgrade) ─────────────
   // Daemon file tools / command_execute are always confined by identity. The
   // harness's NATIVE tools are confined only through the OS sandbox + a
@@ -3619,6 +3664,12 @@ export async function spawnAgentSession(
       ),
       ...agentsMdParts,
       parentContextLine,
+      // No-channel fallback for `appendSystemPrompt` (decision above): the
+      // text the harness won't take as a real system prompt lands directly
+      // ahead of the caller's own ask, like `prefixPrompt` would compose it.
+      ...(appendSystemPromptChannel === undefined && input.appendSystemPrompt !== undefined
+        ? [input.appendSystemPrompt]
+        : []),
       input.prompt,
     ]
       .filter((p): p is string => !!p)
@@ -3778,7 +3829,9 @@ export async function spawnAgentSession(
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
+        ...(input.boardId || input.workflowOwner
+          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner) } }
+          : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
@@ -3799,6 +3852,11 @@ export async function spawnAgentSession(
             }
           : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
+        // System-prompt text, carried on the row so restart/lazy-resume can
+        // re-apply it on the same channel decision (channel or prefix).
+        ...(input.appendSystemPrompt !== undefined
+          ? { appendSystemPrompt: input.appendSystemPrompt }
+          : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       })
       // Stamp the AGENTS.md resolution (WP-R2) on the pending descriptor so
@@ -3914,6 +3972,12 @@ export async function spawnAgentSession(
             ...(input.permissionHold ? { permissionHold: true } : {}),
             ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
             ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
+            // AGENT.md text on the adapter's declared system-prompt channel
+            // (channel decision computed above — never set for a sandbox or
+            // a no-channel adapter, which fell back to the prefix instead).
+            ...(appendSystemPromptChannel !== undefined
+              ? { appendSystemPrompt: appendSystemPromptChannel }
+              : {}),
             onActivity: () => registry.pulseActivity(pendingDesc.id),
           })
           let asyncPrompt = effectivePrompt
@@ -4247,6 +4311,12 @@ export async function spawnAgentSession(
         // extra read paths) from this option itself, so the option is the
         // single authority. See additionalReadPathsForAgentsMd above.
         ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
+        // AGENT.md text on the adapter's declared system-prompt channel
+        // (channel decision computed above — never set for a sandbox or
+        // a no-channel adapter, which fell back to the prefix instead).
+        ...(appendSystemPromptChannel !== undefined
+          ? { appendSystemPrompt: appendSystemPromptChannel }
+          : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
@@ -4364,6 +4434,9 @@ export async function spawnAgentSession(
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
+      ...(input.appendSystemPrompt !== undefined
+        ? { appendSystemPrompt: input.appendSystemPrompt }
+        : {}),
       ...(bundleIds.length > 0 ? { bundles: bundleIds } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
@@ -4377,10 +4450,11 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId || appBoundary
+      ...(input.boardId || appBoundary || input.workflowOwner
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
+              ...workflowOwnerMeta(input.workflowOwner),
               ...(appBoundary ? boundaryMeta(appBoundary) : {}),
             },
           }

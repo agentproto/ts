@@ -78,6 +78,15 @@ export const mastracode: AgentCliHandle = defineAgentCli({
     range: ">=0.26.0",
     timeout_ms: 15_000,
   },
+  // `bin_args` runs `npx -y mastracode` with NO `<pkg>@<x.y.z>` pin, so the
+  // pinned-npx rule does not claim it, and `install[]` is the global npm
+  // package — plain npm shape: registry latest, in-place reinstall, and an
+  // exact-version rollback for a failed post-upgrade ACP smoke probe.
+  upgrade: {
+    latest: { npm: "mastracode" },
+    cmd: ["npm", "i", "-g", "mastracode@latest"],
+    rollback: ["npm", "i", "-g", "mastracode@{version}"],
+  },
   auth: {
     ref: "./SECRETS.md",
     state: {

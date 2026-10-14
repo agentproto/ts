@@ -242,7 +242,7 @@ describe("session_restart: gated resume-context injection on a fresh-spawn fallb
     vi.clearAllMocks()
   })
 
-  it("store-missing (rejected resume id): the fresh descriptor carries a digest built from the PRIOR session's transcript", async () => {
+  it("store-missing (rejected resume id): the fresh descriptor carries a structured handoff built from the PRIOR session's transcript", async () => {
     const registry = createSessionsRegistry({
       sessionEvents: createSessionEventBus(),
       persist: false,
@@ -281,8 +281,14 @@ describe("session_restart: gated resume-context injection on a fresh-spawn fallb
 
     expect(desc.resumeFallback).toBe(true)
     expect(typeof desc.pendingResumeContext).toBe("string")
-    expect(String(desc.pendingResumeContext)).toContain("Earlier answer.")
-    expect(String(desc.pendingResumeContext)).toMatch(/best-effort summary/)
+    const injected = String(desc.pendingResumeContext)
+    // The structured handoff frame (never the old 7k digest) …
+    expect(injected).toMatch(/^\[restart handoff — the prior session/)
+    // … the most recent turns …
+    expect(injected).toContain("Earlier answer.")
+    // … and the path of the full transcript written next to the NEW session.
+    expect(injected).toContain("prior-session.md")
+    expect(injected).toContain("## Full prior transcript")
 
     await client.close()
     registry.shutdown()

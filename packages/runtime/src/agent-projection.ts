@@ -9,9 +9,12 @@
  * handed the manifest field by field here:
  *
  *  - body + persona + boundaries + traits → one instructions text
- *    (`composeInstructions`, the same rendering mastra-agent uses). There is
- *    no system-prompt channel on a spawn yet, so it rides as the first
- *    prompt's prefix — said out loud as a warning, never silently.
+ *    (`composeInstructions`, the same rendering mastra-agent uses). An
+ *    adapter that declares a real system-prompt channel
+ *    (`caps.supportsSystemPrompt`, from its manifest's `systemPrompt`)
+ *    receives the text there (projected as `systemPrompt`, no warning);
+ *    every other adapter rides it as the first prompt's prefix — said out
+ *    loud as a warning, never silently.
  *  - `tools` (string ids) → the daemon gateway's `allowTools` scope, for
  *    every adapter (manifest-native included). The harness's OWN native
  *    tools are not filtered by that; warned.
@@ -36,6 +39,11 @@ export interface AgentProjectionCaps {
   agentManifestOption?: string
   /** The adapter takes part in per-session imported-skill delivery. */
   deliversSessionSkills?: boolean
+  /** The adapter declares a real system-prompt channel (AIP-45 manifest
+   *  `systemPrompt` — `ResolvedAgentAdapter.supportsSystemPrompt`). Set ⇒
+   *  the instructions ride `AgentSpawnProjection.systemPrompt` and NO
+   *  "no system-prompt channel" warning is raised; unset ⇒ prefix + warn. */
+  supportsSystemPrompt?: boolean
   /** The adapter's declared option ids (a `skills` option counts as skill
    *  delivery too — hermes' comma-joined `--skills`). */
   declaredOptions?: readonly { id: string }[]
@@ -57,8 +65,13 @@ export interface AgentSpawnProjection {
    *  adapter, nothing otherwise. */
   options?: Record<string, string>
   /** Instructions to deliver in-band (first-prompt prefix). Undefined for a
-   *  manifest-native adapter, which renders them itself. */
+   *  manifest-native adapter (renders them itself) and for an adapter with a
+   *  real system-prompt channel, which takes them via `systemPrompt`. */
   instructions?: string
+  /** Composed AGENT.md text for an adapter that declared a system-prompt
+   *  channel — delivered by `session-spawn.ts` through
+   *  `startSession({ appendSystemPrompt })`, not as a prompt prefix. */
+  systemPrompt?: string
   skills?: string[]
   /** Gateway allowlist (`?allowTools=`). */
   tools?: string[]
@@ -107,7 +120,11 @@ export function projectAgentToSpawn(
 
   const warnings: string[] = []
   const instructions = composeInstructions(agent.handle, agent.body)
-  if (instructions.length > 0) {
+  // A declared channel takes the composed text as `systemPrompt` (delivered
+  // through `startSession({ appendSystemPrompt })`, no prefix, no warning);
+  // everything else prefixes + warns below.
+  const hasChannel = instructions.length > 0 && caps.supportsSystemPrompt === true
+  if (instructions.length > 0 && !hasChannel) {
     warnings.push(
       `agent "${id}": this harness has no system-prompt channel — the AGENT.md body` +
         `${agent.handle.boundaries?.length ? ", boundaries" : ""}${agent.handle.persona ? ", persona" : ""}` +
@@ -136,7 +153,11 @@ export function projectAgentToSpawn(
 
   return {
     ...base,
-    ...(instructions.length > 0 ? { instructions } : {}),
+    ...(instructions.length > 0
+      ? hasChannel
+        ? { systemPrompt: instructions }
+        : { instructions }
+      : {}),
     ...(skills.ids.length > 0 && takesSkills ? { skills: skills.ids } : {}),
     ...toolsField,
     warnings,

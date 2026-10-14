@@ -2162,6 +2162,12 @@ export interface SessionDescriptor {
    *  (the adapter-facing id list): these name concrete copied folders under
    *  `~/.agentproto/skills/<id>/`. */
   sessionSkills?: ResolvedSessionSkill[]
+  /** Extra system-prompt text the spawn asked for (the AIP-42 AGENT.md
+   *  body) — recorded verbatim so restart / fresh-continuation re-apply it
+   *  (through the adapter's declared channel when one exists, else the same
+   *  first-prompt prefix + warning the original spawn used — see
+   *  `session-spawn.ts`'s channel decision). Absent ⇒ nothing to re-apply. */
+  appendSystemPrompt?: string
   /** Capability bundle ids (`bundle_list`) resolved for this spawn (PLAN D
    *  phase 1) — ids only, never the expanded imported-MCP snapshots (those
    *  live only in `mcpServers` above, as reference-only proxy URLs). Absent
@@ -4976,6 +4982,9 @@ export interface SpawnAgentInput {
    *  dir — recorded verbatim onto {@link SessionDescriptor.sessionSkills}. See
    *  that field's doc. */
   sessionSkills?: ResolvedSessionSkill[]
+  /** Extra system-prompt text for this spawn — recorded verbatim onto
+   *  {@link SessionDescriptor.appendSystemPrompt}. See that field's doc. */
+  appendSystemPrompt?: string
   /** Capability bundle ids resolved for this spawn — recorded verbatim onto
    *  {@link SessionDescriptor.bundles}; see that field's doc. */
   bundles?: string[]
@@ -10138,6 +10147,11 @@ export function createSessionsRegistry(opts?: {
         ...(input.sessionSkills && input.sessionSkills.length > 0
           ? { sessionSkills: input.sessionSkills }
           : {}),
+        // Persist the system-prompt text so restart/fresh-continuation can
+        // re-apply it (see `SessionDescriptor.appendSystemPrompt`).
+        ...(input.appendSystemPrompt !== undefined
+          ? { appendSystemPrompt: input.appendSystemPrompt }
+          : {}),
         ...(input.bundles && input.bundles.length > 0 ? { bundles: input.bundles } : {}),
         // Persist the isolated-config location so restart/lazy-resume can
         // hand the respawned adapter the SAME dir (native-resume store).
@@ -10321,6 +10335,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
         ...(input.sessionSkills && input.sessionSkills.length > 0
           ? { sessionSkills: input.sessionSkills }
+          : {}),
+        ...(input.appendSystemPrompt !== undefined
+          ? { appendSystemPrompt: input.appendSystemPrompt }
           : {}),
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
         ...(input.parentSessionId

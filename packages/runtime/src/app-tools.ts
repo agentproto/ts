@@ -320,6 +320,7 @@ export async function resolveAgentRefsForWorkflow(
       ...(projected.tools !== undefined ? { tools: projected.tools } : {}),
       ...(projected.skills !== undefined ? { skills: projected.skills } : {}),
       ...(projected.instructions !== undefined ? { instructions: projected.instructions } : {}),
+      ...(projected.systemPrompt !== undefined ? { systemPrompt: projected.systemPrompt } : {}),
       ...(projected.warnings.length > 0 ? { warnings: projected.warnings } : {}),
     }
   }
@@ -430,6 +431,7 @@ async function projectionCapsFor(
   return {
     ...(resolved.agentManifestOption !== undefined ? { agentManifestOption: resolved.agentManifestOption } : {}),
     ...(resolved.deliversSessionSkills ? { deliversSessionSkills: true } : {}),
+    ...(resolved.supportsSystemPrompt ? { supportsSystemPrompt: true } : {}),
     ...(resolved.declaredOptions !== undefined ? { declaredOptions: resolved.declaredOptions } : {}),
   }
 }
@@ -2172,6 +2174,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
         const projected = projectAgentToSpawn(loaded, await capsFor(adapterSlug), model)
         const spawnModel = projected.model
+        // Only the PREFIX rides the prompt (no-channel adapter); a channel
+        // adapter's text goes through `appendSystemPrompt` instead, so it
+        // never duplicates here.
         const spawnPrompt = prefixPrompt(projected.instructions, input.prompt)
         const result = await spawnAgentSession(
           {
@@ -2195,6 +2200,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             ...(projected.options ? { options: projected.options } : {}),
             ...(projected.skills ? { skills: projected.skills } : {}),
             ...(projected.tools ? { allowTools: projected.tools } : {}),
+            ...(projected.systemPrompt !== undefined
+              ? { appendSystemPrompt: projected.systemPrompt }
+              : {}),
             ...(projected.warnings.length > 0 ? { harnessWarnings: projected.warnings } : {}),
             ...(input.access ? { access: input.access } : {}),
             appId: app.appId,
