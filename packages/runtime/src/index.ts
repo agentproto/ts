@@ -609,6 +609,7 @@ export {
 export {
   compactOutcome,
   deriveSessionOutcome,
+  isOutcomeCompleted,
   type SessionOutcome,
   type SessionOutcomeArtifact,
   type SessionOutcomeCompact,

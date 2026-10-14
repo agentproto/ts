@@ -599,16 +599,28 @@ export interface SessionSummary {
  * one edit.
  */
 export interface SessionOutcome {
-  source: "derived"
+  source: "derived" | "judged" | "declared"
   /** `produced` — said something or left an artifact; `empty` — neither. */
   status: "produced" | "empty"
   /** Last assistant message, trimmed (~600 chars, tail kept). */
   summary?: string
+  /** Level-2 resolution only — a judge/declaration's verdict on what the
+   *  session's work amounted to. `verdict: "done"` is the operator's
+   *  "this was fine" and outranks the raw termination status in badges. */
+  verdict?: "done" | "abandoned" | "partial" | "failed" | "blocked" | "needs-input"
+  /** Who reached `verdict` — a judge session id, or `"steward-rules"`. */
+  judgedBy?: string
+  /** Free-text note from the judge/declaration explaining `verdict`. */
+  note?: string
   /** Copy of the end state — the termination axis. */
   termination: {
     status: string
-    /** `daemon-restart` / `idle-reaped` / `crashed`; absent otherwise. */
+    /** `daemon-restart` / `idle-reaped` / `crashed` / `operator-completed`
+     *  (the "Mark as completed" relabel); absent otherwise. */
     reason?: string
+    /** Set only by the `operator-completed` relabel: the reason the row
+     *  carried BEFORE it, so the true death mechanism is never lost. */
+    previousReason?: string
     exitCode?: number
     /** Killed with a turn in flight. */
     midTurn?: boolean
@@ -625,6 +637,9 @@ export interface SessionOutcome {
 export interface SessionOutcomeCompact {
   status: SessionOutcome["status"]
   summary?: string
+  /** The Level-2 verdict, when one was recorded — the only resolution signal
+   *  the compact projection keeps (no `termination` rides along). */
+  verdict?: SessionOutcome["verdict"]
 }
 
 /** A pending ACP permission request held in the cross-session inbox. */

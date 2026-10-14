@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import type { SessionDescriptor } from "../client/types.js"
+import type { SessionDescriptor, SessionOutcome } from "../client/types.js"
 import {
   ACTIVITY_ROW_MAX,
   activityLineFor,
@@ -18,6 +18,7 @@ import {
   activityFor,
   iconFor,
   iconForSession,
+  isOutcomeCompleted,
   presenceIconFor,
   subtreeBusiestActivity,
   isResumableInPlace,
@@ -45,6 +46,19 @@ function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
     pid: 123,
     status: "running",
     startedAt: "2026-01-01T00:00:00Z",
+    ...over,
+  }
+}
+
+/** A full (non-compact) recorded outcome — the shape `session_mark_completed`
+ *  / the "Mark as completed" relabel write. Defaults to a bare error death so
+ *  a test only states the resolution it cares about. */
+function fullOutcome(over: Partial<SessionOutcome> = {}): SessionOutcome {
+  return {
+    source: "derived",
+    status: "empty",
+    termination: { status: "error" },
+    recordedAt: "2026-01-01T00:00:00Z",
     ...over,
   }
 }
@@ -436,6 +450,48 @@ describe("activityFor", () => {
     expect(
       activityFor(session({ status: "exited", exitCode: 0, lastTurnErroredAt: "2026-01-01T00:05:00Z" })),
     ).toBe("done")
+  })
+
+  it("a terminal session an operator RESOLVED as completed reads done, however it died", () => {
+    // The FAILED-badge case: a sandbox box that died AFTER its work was
+    // pushed. `session_mark_completed` records the resolution on `outcome`
+    // without touching status / exitCode / endedReason.
+    expect(
+      activityFor(
+        session({ status: "error", outcome: fullOutcome({ verdict: "done" }) }),
+      ),
+    ).toBe("done")
+    // The compact list projection keeps only the verdict — same answer.
+    expect(activityFor(session({ status: "exited", exitCode: 1, outcome: { status: "empty", verdict: "done" } }))).toBe("done")
+    // The "Mark as completed" relabel (verdict-free) counts too.
+    expect(
+      activityFor(
+        session({
+          status: "error",
+          outcome: fullOutcome({ termination: { status: "error", reason: "operator-completed", previousReason: "crashed" } }),
+        }),
+      ),
+    ).toBe("done")
+  })
+
+  it("any other recorded verdict keeps the failed reading", () => {
+    expect(
+      activityFor(session({ status: "error", outcome: fullOutcome({ verdict: "partial" }) })),
+    ).toBe("failed")
+  })
+})
+
+describe("isOutcomeCompleted", () => {
+  it("is true for a done verdict or the operator-completed relabel, false otherwise", () => {
+    expect(isOutcomeCompleted(session({}))).toBe(false)
+    expect(isOutcomeCompleted(session({ outcome: { status: "empty" } }))).toBe(false)
+    expect(isOutcomeCompleted(session({ outcome: { status: "empty", verdict: "done" } }))).toBe(true)
+    expect(
+      isOutcomeCompleted(
+        session({ outcome: fullOutcome({ termination: { status: "killed", reason: "operator-completed" } }) }),
+      ),
+    ).toBe(true)
+    expect(isOutcomeCompleted(session({ outcome: { status: "empty", verdict: "failed" } }))).toBe(false)
   })
 })
 

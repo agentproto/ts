@@ -68,8 +68,15 @@ export function outcomeCardFor(session: Pick<SessionDescriptor, "outcome"> | nul
   if (t.status === "exited" && typeof t.exitCode === "number" && t.exitCode !== 0) termination += " · code " + t.exitCode
 
   const empty = o.status === "empty"
+  // An operator/judge resolution declaring the work COMPLETE outranks the raw
+  // termination: `verdict: "done"` (session_mark_completed on a live OR
+  // already-terminal session) or the "Mark as completed" relabel. The card
+  // still SHOWS how it really died (the termination line above is untouched)
+  // — it just no longer paints it as a failure.
+  const completed = o.verdict === "done" || t.reason === "operator-completed"
   let tone: OutcomeTone
-  if (t.status === "error" || t.reason === "crashed" || (t.status === "exited" && typeof t.exitCode === "number" && t.exitCode !== 0)) tone = "error"
+  if (completed) tone = empty ? "muted" : "ok"
+  else if (t.status === "error" || t.reason === "crashed" || (t.status === "exited" && typeof t.exitCode === "number" && t.exitCode !== 0)) tone = "error"
   else if (empty) tone = "muted"
   else if (t.status === "killed" && t.reason !== "idle-reaped") tone = "warn"
   else tone = "ok"

@@ -4607,6 +4607,29 @@ export interface SessionsRegistry {
    *  BOTH branches (close and flag-only) — a stale plan is refused either
    *  way, never silently acted on. */
   closeWithOutcome(id: string, input: CloseWithOutcomeInput): boolean
+  /** Record an operator/judge resolution on a row that has ALREADY ended —
+   *  the terminal twin of {@link closeWithOutcome}, and the engine behind
+   *  `session_mark_completed` on a dead session (a sandbox box that hit its
+   *  time cap after its work was already pushed, a crashed child whose PR
+   *  had already merged). It NEVER revives anything and NEVER rewrites the
+   *  termination axis: `status`, `endedReason`, `endedAt` and `exitCode`
+   *  stay exactly as the death left them, and no process is signalled. All
+   *  it does is stamp the SAME Level-2 fields a live close writes
+   *  (`source`/`verdict`/`judgedBy`/`summary`/`note` + the structured
+   *  `OutcomeDetail`) onto the row's `SessionOutcome`, so list / recap / UI
+   *  badges derived from `outcome` (`isOutcomeCompleted`) show the row as
+   *  completed instead of failed. `verdict: "done"` additionally relabels
+   *  `outcome.termination.reason` to `"operator-completed"` (the true death
+   *  mechanism preserved in `previousReason`) and retires the row, matching
+   *  the UI's "Mark as completed" affordance (`kill(id, …,
+   *  "operator-completed")` on a terminal row) exactly.
+   *
+   *  Refuses (returns false, no-op): an unknown id, a non-agent-cli row, a
+   *  row that is still live (`running`/`starting` — that is `closeWithOutcome`'s
+   *  half of the contract), and the `"blocked"`/`"needs-input"` verdicts,
+   *  which are not completions and need a live row to wait on. Returns true
+   *  iff a resolution was recorded. */
+  resolveOutcome(id: string, input: CloseWithOutcomeInput): boolean
   /** Retire a long-idle agent-cli session to free its adapter process — the
    *  primitive the idle-session reaper (`runIdleReapPass`, PR-6) drives on a
    *  periodic sweep. Terminates the underlying adapter/child the SAME graceful
@@ -5953,6 +5976,30 @@ export function createSessionsRegistry(opts?: {
       ...(outcome.judgedBy !== undefined ? { judgedBy: outcome.judgedBy } : {}),
       ...(note ? { note } : {}),
       ...detail,
+      recordedAt: new Date().toISOString(),
+    }
+    schedulePersist()
+  }
+
+  // Layer a Level-2 (judged/declared) resolution onto the row's outcome —
+  // the shared tail of `closeWithOutcome` (live) and `resolveOutcome`
+  // (already-terminal), so both write the SAME fields with the same
+  // "merge on top of what deriveSessionOutcome computed" shape as
+  // `markOutcomeCompleted`: the derived summary/artifacts/cost survive
+  // under the judged/declared verdict. Assumes the caller has already
+  // decided this row is eligible.
+  const layerStewardOutcome = (rt: SessionRuntime, input: CloseWithOutcomeInput): void => {
+    const base = rt.desc.outcome ?? deriveSessionOutcome(rt.desc, { lastAssistantText: rt.lastAssistantText })
+    rt.desc.outcome = {
+      ...base,
+      source: input.source,
+      verdict: input.verdict,
+      ...(input.summary !== undefined
+        ? { summary: trimOutcomeText(input.summary, OUTCOME_SUMMARY_MAX, "tail") }
+        : {}),
+      ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
+      ...(input.note !== undefined ? { note: input.note } : {}),
+      ...sanitizeOutcomeDetail(input),
       recordedAt: new Date().toISOString(),
     }
     schedulePersist()
@@ -12187,23 +12234,42 @@ export function createSessionsRegistry(opts?: {
       retireRow(rt, "killed")
 
       // Layer the Level 2 fields on top of what emitExited just derived —
-      // same "merge after the termination fields are set" shape as
-      // markOutcomeCompleted, so the derived summary/artifacts/cost survive
-      // under the judged/declared verdict.
-      const base = rt.desc.outcome ?? deriveSessionOutcome(rt.desc, { lastAssistantText: rt.lastAssistantText })
-      rt.desc.outcome = {
-        ...base,
-        source: input.source,
-        verdict: input.verdict,
-        ...(input.summary !== undefined
-          ? { summary: trimOutcomeText(input.summary, OUTCOME_SUMMARY_MAX, "tail") }
-          : {}),
-        ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
-        ...(input.note !== undefined ? { note: input.note } : {}),
-        ...sanitizeOutcomeDetail(input),
-        recordedAt: new Date().toISOString(),
+      // same shared shape `resolveOutcome` uses on an already-ended row, so
+      // the derived summary/artifacts/cost survive under the judged/declared
+      // verdict.
+      layerStewardOutcome(rt, input)
+      return true
+    },
+    resolveOutcome(id, input) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      // The terminal twin of closeWithOutcome, and the exact mirror of its
+      // liveness guard: agent-cli rows only, and only one that has ALREADY
+      // ended. A live row belongs to closeWithOutcome (which owns the
+      // busy/awaiting/background-task staleness re-checks) — refusing here
+      // keeps the two primitives from racing over the same row.
+      if (rt.desc.kind !== "agent-cli") return false
+      if (rt.desc.status !== "exited" && rt.desc.status !== "killed" && rt.desc.status !== "error") {
+        return false
       }
-      schedulePersist()
+      // "blocked" / "needs-input" mean "leave it running and wait for a
+      // human" — there is no live row left to wait on, so there is nothing
+      // honest to record. Same refusal closeWithOutcome would give for the
+      // stale half of the contract, returned here as a plain no-op.
+      if (input.verdict === "blocked" || input.verdict === "needs-input") return false
+
+      // "done" is the operator's "this was fine": relabel the recorded
+      // outcome as completed (the true death mechanism is kept in
+      // `termination.previousReason`) and retire the row so no automatic
+      // pass revives work an operator has already signed off on. Every other
+      // verdict only layers the resolution — the termination axis stays
+      // exactly what it was: status, endedReason, endedAt and exitCode are
+      // never touched here, so the row still shows HOW it really died.
+      if (input.verdict === "done") {
+        markOutcomeCompleted(rt)
+        retireRow(rt, "killed")
+      }
+      layerStewardOutcome(rt, input)
       return true
     },
     reapIdle(id, idleMs = 0) {

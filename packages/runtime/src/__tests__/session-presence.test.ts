@@ -179,6 +179,20 @@ describe("presenceFor — terminal sessions fold onto the axis", () => {
   it("a killed session's non-zero SIGTERM exit code does not read as a failure", () => {
     expect(presenceFor(session({ status: "killed", exitCode: 143 }), { now: NOW })).toBe("quiet")
   })
+
+  it("a terminal row an operator has RESOLVED as completed reads quiet, however it died", () => {
+    // status "error" / a non-zero exit would otherwise be `attention` — the
+    // operator's "this was fine" resolution outranks the raw termination.
+    expect(presenceFor(session({ status: "error", outcome: { verdict: "done" } }), { now: NOW })).toBe("quiet")
+    expect(
+      presenceFor(
+        session({ status: "exited", exitCode: 1, outcome: { termination: { reason: "operator-completed" } } }),
+        { now: NOW },
+      ),
+    ).toBe("quiet")
+    // Any OTHER verdict keeps the failed reading.
+    expect(presenceFor(session({ status: "error", outcome: { verdict: "partial" } }), { now: NOW })).toBe("attention")
+  })
 })
 
 describe("inAttentionGrace", () => {

@@ -295,6 +295,29 @@ export function shouldReplaceOutcome(existing: SessionOutcome | undefined, next:
   return richness(next) > richness(existing)
 }
 
+/**
+ * True when a recorded Level-2 outcome DECLARES the session's work complete —
+ * the operator's "this was fine" resolution, which must outrank the raw
+ * termination status in every list / recap / UI badge. Two shapes carry it,
+ * and both count:
+ *   - `verdict: "done"` — stamped by `session_mark_completed` (on a live
+ *     session it closes it; on an ALREADY-terminal one it is a pure
+ *     resolution, `registry.resolveOutcome`), by `session_wrapup_apply`, or
+ *     by a manual stop's `outcome`;
+ *   - `termination.reason: "operator-completed"` — the UI's "Mark as
+ *     completed" affordance relabelling an already-ended row.
+ * Accepts the compact list projection (no `termination` — only the verdict
+ * survives that far) as well as the full record, so a list view answers the
+ * same question the transcript's outcome card does. Pure.
+ */
+export function isOutcomeCompleted(
+  o: { verdict?: string; termination?: { reason?: string } } | undefined,
+): boolean {
+  if (!o) return false
+  if (o.verdict === "done") return true
+  return o.termination?.reason === "operator-completed"
+}
+
 /** The compact projection: status + the first
  *  {@link OUTCOME_COMPACT_SUMMARY_MAX} chars of the summary. */
 export function compactOutcome(o: SessionOutcome | undefined): SessionOutcomeCompact | undefined {

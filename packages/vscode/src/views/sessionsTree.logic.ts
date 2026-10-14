@@ -131,6 +131,29 @@ export function isErrored(session: SessionDescriptor): boolean {
   )
 }
 
+/**
+ * True when a recorded outcome DECLARES the session's work complete — the
+ * operator's "this was fine" resolution, which outranks the raw termination
+ * status in every badge derived here. Two shapes carry it
+ * (`isOutcomeCompleted` in the runtime's `session-outcome.ts` is the
+ * canonical cross-package form; this is the vscode-client mirror of it,
+ * reading the mirrored `SessionDescriptor.outcome`):
+ *   - `verdict: "done"` — stamped by `session_mark_completed` on a live OR
+ *     already-terminal session (the latter is a pure resolution: the row is
+ *     never revived and its cause of death is untouched);
+ *   - `termination.reason: "operator-completed"` — the "Mark as completed"
+ *     affordance relabelling an already-ended row.
+ * Accepts the compact list projection too (no `termination` survives it —
+ * only the verdict does), so list rows answer the same question the
+ * transcript's outcome card does.
+ */
+export function isOutcomeCompleted(session: Pick<SessionDescriptor, "outcome">): boolean {
+  const o = session.outcome
+  if (!o) return false
+  if (o.verdict === "done") return true
+  return (o as { termination?: { reason?: string } }).termination?.reason === "operator-completed"
+}
+
 export function isAwaiting(session: SessionDescriptor): boolean {
   return Boolean(session.awaitingInput || session.awaitingPermission)
 }
@@ -292,7 +315,7 @@ export type SessionActivity =
   | "parked-bg" // ended its turn with background tasks still pending — a silent dead end unless someone re-prompts
   | "working" // a turn is in flight (model generating, or a tool running)
   | "idle" // alive, no turn — parked, ready for a prompt
-  | "failed" // ended badly: status "error", or a non-zero exit it wasn't asked for
+  | "failed" // ended badly: status "error", or a non-zero exit it wasn't asked for (unless a recorded outcome resolves it as completed)
   | "stopped" // killed while a turn was in flight, or before it ever finished one
   | "done" // ended cleanly on its own, OR killed only after its last turn finished
 
@@ -334,6 +357,12 @@ function killedActivityFor(session: SessionDescriptor): SessionActivity {
  */
 export function activityFor(session: SessionDescriptor, now?: number): SessionActivity {
   if (TERMINAL_STATUSES.has(session.status)) {
+    // An operator/judge resolution declaring the work COMPLETE wins over
+    // everything below: a sandbox box that died AFTER its work was fully
+    // pushed is not a failure, however it ended (status "error", a non-zero
+    // exit, a crash). The resolution is recorded by `session_mark_completed`
+    // (or the "Mark as completed" relabel) — see `isOutcomeCompleted`.
+    if (isOutcomeCompleted(session)) return "done"
     // "killed" wins over the exit code, and must: SIGTERM is HOW stopping
     // works, so a stopped session carries exitCode 143 and `isErrored` calls
     // it a failure. Two sessions on a real daemon were painted red purely
