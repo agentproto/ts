@@ -651,7 +651,7 @@ describe("POST /sessions/agent — AIP-66 managed cloud (cloud field)", () => {
 
   it("cloud with NO adapter → 201 via the vendor's cloud adapter (no missing_adapter)", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const startSession = vi.fn(async () => fakeAgentSession())
+    const startSession = vi.fn(async (_opts: Record<string, any>) => fakeAgentSession())
     const resolveAgentAdapter = vi.fn<AgentAdapterResolver>(async () => ({
       startSession,
       commandPreview: "mock-adapter",

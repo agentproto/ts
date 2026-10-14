@@ -316,15 +316,50 @@ export async function readCloudSessionMetaFile(
   }
 }
 
+/**
+ * Resolve the vendor session id to hand an adapter on a cloud resume
+ * (AIP-66 §5). Prefers the learned `meta.cloud.sessionId` on the
+ * descriptor; when the descriptor never learned one (an idle-spawned
+ * session was first prompted after the spawn-time watch was killed by a
+ * daemon restart, or the watch simply hasn't fired yet), falls back to
+ * reading the relay's meta file inside the row's own isolated config dir —
+ * that file outlives any watch. When the fallback finds an id, `merge` is
+ * invoked with the full `{ vendor, sessionId, url }` mapping so the caller
+ * can stamp it onto the descriptor (`registry.mergeMeta`) and every later
+ * resume hits the learned path directly.
+ *
+ * Never throws and never invents an id: a missing/garbage side file
+ * returns undefined and the caller's resume falls back to the ordinary
+ * `adapterSessionId`, which fails closed at the vendor.
+ */
+export async function resolveCloudResumeId(
+  desc: { id?: string; meta?: Record<string, unknown>; adapterConfigDir?: string } | undefined,
+  merge?: (meta: CloudSessionMeta) => void,
+): Promise<string | undefined> {
+  const meta = cloudMetaOf(desc)
+  if (meta?.sessionId !== undefined) return meta.sessionId
+  // Not a cloud row (no `meta.cloud` vendor binding): no side file of ours
+  // could exist in its config dir — never probe non-cloud resumes.
+  if (meta === undefined || !desc?.adapterConfigDir) return undefined
+  const fromFile = await readCloudSessionMetaFile(cloudSessionMetaFilePath(desc.adapterConfigDir))
+  if (!fromFile) return undefined
+  merge?.(fromFile)
+  return fromFile.sessionId
+}
+
 /** Bounded poll of the relay's meta file: the vendor session id only
  *  exists AFTER the first prompt reaches the vendor, so a cloud spawn
- *  watches (default: every 2s for 10 minutes, timers unref'd) until the
- *  relay writes it, then calls `onLearned` exactly once and stops. The
- *  returned function stops the watch early (session died, learned).
+ *  watches (default: every 2s, timers unref'd) until the relay writes it,
+ *  then calls `onLearned` exactly once and stops. The returned function
+ *  stops the watch early (session died, learned).
  *  `shouldContinue` is re-checked every tick (e.g. `() =>
  *  registry.get(id)?.status === "alive"`) so a dead session doesn't keep
- *  polling until the timeout. `setTimeoutFn`/`clearTimeoutFn` are
- *  injectable for tests. */
+ *  polling. By default there is NO fixed timeout — the watch lives exactly
+ *  as long as the session does: an idle-spawned cloud session may not see
+ *  its first prompt (and thus learn the id) for hours, and the resume-side
+ *  fallback ({@link resolveCloudResumeId}) only covers watches a daemon
+ *  restart killed. An explicit `timeoutMs` still caps a watch (tests).
+ *  `setTimeoutFn`/`clearTimeoutFn` are injectable for tests. */
 export function watchCloudSessionMeta(opts: {
   metaFilePath: string
   vendor: string
@@ -336,7 +371,8 @@ export function watchCloudSessionMeta(opts: {
   clearTimeoutFn?: (handle: unknown) => void
 }): () => void {
   const intervalMs = Math.max(1, opts.intervalMs ?? 2_000)
-  const timeoutMs = Math.max(intervalMs, opts.timeoutMs ?? 600_000)
+  const timeoutMs =
+    opts.timeoutMs === undefined ? Number.POSITIVE_INFINITY : Math.max(intervalMs, opts.timeoutMs)
   const set = opts.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms))
   const clear = opts.clearTimeoutFn ?? ((h) => clearTimeout(h as NodeJS.Timeout))
   const start = Date.now()

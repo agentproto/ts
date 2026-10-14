@@ -27,7 +27,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
-import { cloudSessionIdOf } from "./cloud-vendors.js"
+import { encodeCloudSessionMeta, resolveCloudResumeId } from "./cloud-vendors.js"
 import {
   CONVERSATION_STORES,
   conversationTerminalSlugFor,
@@ -7695,10 +7695,17 @@ export function createSessionsRegistry(opts?: {
           cwd,
           // AIP-66 cloud: the cloud adapter resumes the VENDOR's own session
           // id, learned onto `meta.cloud.sessionId` — prefer it over the ACP
-          // uuid (which is not the vendor id). A cloud row whose id was never
-          // learned falls back to `adapterSessionId` and fails closed at the
-          // vendor if that isn't resolvable there.
-          resumeSessionId: cloudSessionIdOf(rt.desc) ?? adapterSessionId,
+          // uuid (which is not the vendor id). resolveCloudResumeId also
+          // falls back to the relay's meta file inside this row's own config
+          // dir when the descriptor never learned the id (the spawn-time
+          // watch died with a daemon restart), stamping it back through
+          // mergeMeta. A row with neither source falls back to
+          // `adapterSessionId` and fails closed at the vendor if that isn't
+          // resolvable there.
+          resumeSessionId:
+            (await resolveCloudResumeId(rt.desc, cloud =>
+              registry.mergeMeta(rt.desc.id, { cloud: encodeCloudSessionMeta(cloud) }),
+            )) ?? adapterSessionId,
           // The prior descriptor — the hook re-resolves billing-auth off its
           // `auth.mode` echo / `accessProfile` / model / route (money bug fix).
           descriptor: rt.desc,

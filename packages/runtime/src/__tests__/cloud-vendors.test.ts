@@ -17,6 +17,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerAgentTools } from "../agent-tools.js"
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import { restartAgentSession } from "../session-restart-core.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import { agentStartInputSchema } from "../agent-start-schema.js"
 import {
@@ -27,9 +28,11 @@ import {
   CLOUD_REFUSED_SPAWN_FIELDS,
   cloudMetaOf,
   cloudSessionIdOf,
+  cloudSessionMetaFilePath,
   decodeCloudSessionMeta,
   encodeCloudSessionMeta,
   readCloudSessionMetaFile,
+  resolveCloudResumeId,
   resolveCloudSpawn,
   watchCloudSessionMeta,
   type CloudSpawnInput,
@@ -337,6 +340,180 @@ describe("readCloudSessionMetaFile / watchCloudSessionMeta", () => {
       stop()
     }
   })
+
+  it("with no timeoutMs the watch keeps watching past the old 10-minute cap — an idle-spawned session still learns hours later", async () => {
+    const path = join(dir, "cloud-session.json")
+    const onLearned = vi.fn()
+    // Virtual clock: the watch's only deadline check is `Date.now() - start
+    // >= timeoutMs`; spying on Date.now lets us jump past the old 10-minute
+    // default without waiting for it, while the poll itself stays real.
+    const realNow = Date.now.bind(Date)
+    let offsetMs = 0
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs)
+    let alive = true
+    const stop = watchCloudSessionMeta({
+      metaFilePath: path,
+      vendor: "anthropic",
+      onLearned,
+      shouldContinue: () => alive,
+      intervalMs: 5,
+      // No timeoutMs: the default must be "no fixed timeout" — the watch
+      // lives exactly as long as the session (shouldContinue).
+    })
+    try {
+      // No file yet — the poll keeps watching, never learning.
+      await new Promise(resolve => setTimeout(resolve, 40))
+      expect(onLearned).not.toHaveBeenCalled()
+
+      // Jump way past the old 10-minute default cap; the watch survives
+      // (a 10-minute timeout would have stopped it at the next tick).
+      offsetMs += 30 * 60_000
+      await new Promise(resolve => setTimeout(resolve, 40))
+      expect(onLearned).not.toHaveBeenCalled()
+
+      // The session is STILL alive and the relay finally writes the file —
+      // the watch learns it 30 virtual minutes after spawn.
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(
+        path,
+        JSON.stringify({ vendor: "anthropic", sessionId: "session_idle_later" }),
+        "utf8",
+      )
+      await vi.waitFor(() => expect(onLearned).toHaveBeenCalledTimes(1))
+      expect(onLearned).toHaveBeenCalledWith({
+        vendor: "anthropic",
+        sessionId: "session_idle_later",
+      })
+    } finally {
+      alive = false
+      nowSpy.mockRestore()
+      stop()
+    }
+  })
+
+  it("an explicit timeoutMs still caps the watch (test seam)", async () => {
+    const path = join(dir, "cloud-session.json")
+    const onLearned = vi.fn()
+    const realNow = Date.now.bind(Date)
+    let offsetMs = 0
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs)
+    const stop = watchCloudSessionMeta({
+      metaFilePath: path,
+      vendor: "anthropic",
+      onLearned,
+      intervalMs: 5,
+      timeoutMs: 30,
+    })
+    try {
+      // Past the explicit cap: the watch stops WITHOUT learning, even once
+      // the file appears afterwards.
+      offsetMs += 10 * 60_000
+      await new Promise(resolve => setTimeout(resolve, 40))
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(
+        path,
+        JSON.stringify({ vendor: "anthropic", sessionId: "session_too_late" }),
+        "utf8",
+      )
+      await new Promise(resolve => setTimeout(resolve, 40))
+      expect(onLearned).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+      stop()
+    }
+  })
+})
+
+// ── resolveCloudResumeId — the resume-side fallback (AIP-66 §5) ────────────
+
+describe("resolveCloudResumeId", () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agp-cloud-resume-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("prefers the learned meta.cloud.sessionId — no side-file read, no merge", async () => {
+    const merge = vi.fn()
+    const id = await resolveCloudResumeId(
+      {
+        id: "sess_learned",
+        meta: { cloud: encodeCloudSessionMeta({ vendor: "anthropic", sessionId: "session_learned" }) },
+        adapterConfigDir: dir,
+      },
+      merge,
+    )
+    expect(id).toBe("session_learned")
+    expect(merge).not.toHaveBeenCalled()
+  })
+
+  it("falls back to the relay's meta file in the row's config dir and merge-stamps the mapping", async () => {
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      cloudSessionMetaFilePath(dir),
+      JSON.stringify({
+        vendor: "anthropic",
+        sessionId: "session_from_file",
+        url: "https://claude.ai/code/session_from_file",
+      }),
+      "utf8",
+    )
+    const merge = vi.fn()
+    const id = await resolveCloudResumeId(
+      {
+        // Vendor binding learned at spawn; the id never stamped (watch killed
+        // by a daemon restart before the first prompt).
+        id: "sess_row",
+        meta: { cloud: encodeCloudSessionMeta({ vendor: "anthropic" }) },
+        adapterConfigDir: dir,
+      },
+      merge,
+    )
+    expect(id).toBe("session_from_file")
+    // The caller stamps the full mapping back onto the descriptor.
+    expect(merge).toHaveBeenCalledWith({
+      vendor: "anthropic",
+      sessionId: "session_from_file",
+      url: "https://claude.ai/code/session_from_file",
+    })
+  })
+
+  it("returns undefined (never merging) for a missing/garbage file, no config dir, or a non-cloud row", async () => {
+    const merge = vi.fn()
+    const cloudRowNoFile = {
+      id: "sess_a",
+      meta: { cloud: encodeCloudSessionMeta({ vendor: "anthropic" }) },
+      adapterConfigDir: dir,
+    }
+    expect(await resolveCloudResumeId(cloudRowNoFile, merge)).toBeUndefined()
+
+    await writeFile(cloudSessionMetaFilePath(dir), "{oops", "utf8")
+    expect(await resolveCloudResumeId(cloudRowNoFile, merge)).toBeUndefined()
+
+    expect(
+      await resolveCloudResumeId(
+        {
+          id: "sess_b",
+          meta: { cloud: encodeCloudSessionMeta({ vendor: "anthropic" }) },
+          // No isolated config dir → nothing to probe.
+        },
+        merge,
+      ),
+    ).toBeUndefined()
+
+    // A NON-cloud row never probes the side file, even with a config dir.
+    await writeFile(
+      cloudSessionMetaFilePath(dir),
+      JSON.stringify({ vendor: "anthropic", sessionId: "session_never" }),
+      "utf8",
+    )
+    expect(await resolveCloudResumeId({ id: "sess_c", adapterConfigDir: dir }, merge)).toBeUndefined()
+    expect(await resolveCloudResumeId(undefined, merge)).toBeUndefined()
+    expect(merge).not.toHaveBeenCalled()
+  })
 })
 
 // ── agent_start schema ─────────────────────────────────────────────────────
@@ -602,6 +779,56 @@ describe("agent_start — cloud spawn", () => {
     expect(registry.list()).toHaveLength(0)
   })
 
+  it("re-attach falls back to the relay's meta file when the watch never stamped meta.cloud (daemon-restart survivor)", async () => {
+    const startSession = vi.fn(async (_opts: Record<string, any>) => mockSession("acp_uuid_fallback"))
+    const { client, registry } = await setup(startSession)
+
+    const first = parseToolJson(
+      await client.callTool({
+        name: "agent_start",
+        arguments: { cloud: "anthropic", prompt: "first", cwd: "/tmp" },
+      }),
+    )
+    expect(first.id).toMatch(/^sess_/)
+    // The spawn-time watch died (daemon restart) before learning anything —
+    // meta.cloud is still vendor-only. The relay, however, wrote the vendor
+    // id into the meta file inside this session's isolated config dir.
+    const metaPath = (startSession.mock.calls[0]![0] as Record<string, any>).env?.[
+      CLOUD_SESSION_META_FILE_ENV
+    ] as string
+    expect(metaPath).toMatch(/cloud-session\.json$/)
+    await mkdir(dirname(metaPath), { recursive: true })
+    await writeFile(
+      metaPath,
+      JSON.stringify({ vendor: "anthropic", sessionId: "session_from_file" }),
+      "utf8",
+    )
+    expect(cloudSessionIdOf(registry.get(first.id) as any)).toBeUndefined()
+
+    startSession.mockClear()
+    const second = parseToolJson(
+      await client.callTool({
+        name: "agent_start",
+        arguments: {
+          cloud: "anthropic",
+          resumeSessionId: first.id,
+          prompt: "second",
+          cwd: "/tmp",
+        },
+      }),
+    )
+    expect(second.id).toMatch(/^sess_/)
+    // The adapter is handed the VENDOR id read from the side file.
+    const opts = startSession.mock.calls[0]![0] as Record<string, any>
+    expect(opts.resumeSessionId).toBe("session_from_file")
+    // The SOURCE row was stamped so later resumes take the learned path.
+    expect(cloudSessionIdOf(registry.get(first.id) as any)).toBe("session_from_file")
+    expect(cloudMetaOf(registry.get(second.id) as any)).toMatchObject({
+      vendor: "anthropic",
+      sessionId: "session_from_file",
+    })
+  })
+
   it("mergeMeta overwrites only the named key and persists through the registry", async () => {
     const startSession = vi.fn(async () => mockSession("acp_uuid_merge"))
     const { client, registry } = await setup(startSession)
@@ -619,5 +846,58 @@ describe("agent_start — cloud spawn", () => {
     expect(cloudMetaOf(desc as any)).toEqual({ vendor: "anthropic", sessionId: "session_2" })
     // Unrelated meta keys are untouched.
     expect(desc?.meta?.["cloud"]).toContain("session_2")
+  })
+})
+
+// ── restartAgentSession — the resume-side fallback wired in (AIP-66 §5) ────
+
+describe("restartAgentSession — cloud resume id fallback", () => {
+  it("resumes the vendor id from the meta file for a cloud row that never learned it, and stamps the source row", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agp-cloud-restart-"))
+    try {
+      await writeFile(
+        cloudSessionMetaFilePath(dir),
+        JSON.stringify({ vendor: "anthropic", sessionId: "session_restart_file" }),
+        "utf8",
+      )
+      const registry = createSessionsRegistry({ persist: false })
+      const prev = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: mockSession("acp_uuid_prev"),
+        adapterSlug: "claude-code-cloud",
+        adapterConfigDir: dir,
+        // Spawn-time binding learned; the id never stamped (watch killed by
+        // the daemon restart that is now restarting this row).
+        meta: { cloud: encodeCloudSessionMeta({ vendor: "anthropic" }) },
+      })
+      registry.kill(prev.id)
+
+      const calls: Array<{ adapter: string; resumeSessionId?: string }> = []
+      const resolver: AgentAdapterResolver = async slug => ({
+        async startSession(sessOpts: Record<string, any>) {
+          calls.push({
+            adapter: slug,
+            ...(sessOpts.resumeSessionId ? { resumeSessionId: sessOpts.resumeSessionId } : {}),
+          })
+          return mockSession("acp_uuid_restarted")
+        },
+        commandPreview: `mock-${slug}`,
+      })
+
+      const restarted = await restartAgentSession(registry, resolver, prev, {
+        forceAgentResume: true,
+        loadDefaultsConfig: async () => ({}),
+      })
+      expect(restarted.desc.id).toMatch(/^sess_/)
+      // The adapter was handed the VENDOR id read from the side file, not
+      // the row's ACP uuid.
+      expect(calls[0]?.adapter).toBe("claude-code-cloud")
+      expect(calls[0]?.resumeSessionId).toBe("session_restart_file")
+      // The source row was stamped, so the NEXT resume takes the learned path.
+      expect(cloudSessionIdOf(registry.get(prev.id) as any)).toBe("session_restart_file")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

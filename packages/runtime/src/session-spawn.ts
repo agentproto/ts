@@ -16,9 +16,9 @@ import {
   CLOUD_SESSION_META_FILE_ENV,
   CloudSpawnError,
   cloudMetaOf,
-  cloudSessionIdOf,
   cloudSessionMetaFilePath,
   encodeCloudSessionMeta,
+  resolveCloudResumeId,
   resolveCloudSpawn,
   watchCloudSessionMeta,
   type CloudSessionMeta,
@@ -2659,10 +2659,16 @@ export async function spawnAgentSession(
       // AIP-66 cloud re-attach: the cloud adapter resumes the VENDOR's own
       // session id (`session/load` adopts it), which the runtime persisted
       // onto `meta.cloud.sessionId` once learned. Prefer it over the ACP uuid
-      // (which is NOT the vendor id); a cloud session whose id was never
-      // learned falls back to the ordinary adapterSessionId and fails closed
-      // at the vendor if that isn't resolvable there.
-      const cloudId = cloudSessionIdOf(row)
+      // (which is NOT the vendor id). resolveCloudResumeId also falls back to
+      // the relay's meta file inside this row's own config dir when the
+      // descriptor never learned the id (the spawn-time watch died with a
+      // daemon restart before it was stamped) — stamping it back through
+      // mergeMeta so later resumes take the learned path. A cloud session
+      // with neither source falls back to the ordinary adapterSessionId and
+      // fails closed at the vendor if that isn't resolvable there.
+      const cloudId = await resolveCloudResumeId(row, cloud =>
+        registry.mergeMeta(row.id, { cloud: encodeCloudSessionMeta(cloud) }),
+      )
       return {
         adapterSessionId: cloudId ?? row.adapterSessionId,
         ...(row.adapterConfigDir ? { configDir: row.adapterConfigDir } : {}),
@@ -4700,8 +4706,11 @@ export async function spawnAgentSession(
     // meta file the relay writes (path handed via
     // CLOUD_SESSION_META_FILE_ENV above) and stamp the learned mapping onto
     // `meta.cloud` the moment it appears, so a later restart/re-attach can
-    // resume the VENDOR id. Self-stops on learn, on session death, or at
-    // the timeout; timers are unref'd so they never hold the process open.
+    // resume the VENDOR id. The watch has NO fixed timeout: it self-stops
+    // on learn or when the session ends (status leaves starting/running);
+    // timers are unref'd so they never hold the process open. A daemon
+    // restart that kills the watch is covered by resolveCloudResumeId's
+    // meta-file fallback at every resume point.
     if (cloudResolved) {
       watchCloudSessionMeta({
         metaFilePath: cloudSessionMetaFilePath(
