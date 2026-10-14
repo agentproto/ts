@@ -12,7 +12,8 @@
  *     with @agentproto/adapter-claude-sdk's stream-json → ACP mappers
  *     (the payloads ARE Claude Code stream-json SDK messages — reused, not
  *     forked), and ONLY the vendor's own `result` event ends the prompt
- *     (AIP-66 §6: never a timer, never silence).
+ *     (AIP-66 §6: never a timer, never silence). Transient read failures
+ *     (HTTP 5xx, network) are retried with backoff before the prompt fails.
  *   - `result` carries `total_cost_usd` + `usage` → an ACP `usage_update`
  *     (AIP-66 §7); a result without usage emits none — unmeasured, never
  *     zero.
@@ -70,6 +71,38 @@ type SDKMessage = Parameters<typeof sdkMessageToUpdates>[0]
 export const POLL_INITIAL_MS = 2_000
 export const POLL_MAX_MS = 10_000
 
+/**
+ * Budget of consecutive transient `listEvents` failures before the turn's
+ * observation fails: the first four are retried with the poll backoff, the
+ * fifth consecutive one fails the turn. The bound decides only when READING
+ * events becomes impossible — a turn still ENDS solely on a vendor `result`
+ * event (AIP-66 §6).
+ */
+export const MAX_LIST_EVENTS_FAILURES = 5
+
+/** Node/network error codes a transient fetch failure can surface (walked
+ *  down the `cause` chain — undici wraps them under "fetch failed"). */
+const NETWORK_ERROR_CODES =
+  /^(ECONNABORTED|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ENOTFOUND|EPIPE|ETIMEDOUT|UND_ERR)/
+
+/**
+ * Worth retrying: an HTTP 5xx from the vendor API, or a network-level
+ * failure. 4xx (auth, not-found, bad request) and payload/parse errors are
+ * NOT transient — retrying them would just stall the turn.
+ */
+export function isTransientListEventsError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  if (/\bHTTP 5\d\d\b/.test(err.message)) return true
+  if (/fetch failed|network error|socket hang up/i.test(err.message)) return true
+  let cause: unknown = err
+  for (let depth = 0; depth < 4 && cause; depth += 1) {
+    const code = (cause as { code?: unknown }).code
+    if (typeof code === "string" && NETWORK_ERROR_CODES.test(code)) return true
+    cause = (cause as { cause?: unknown }).cause
+  }
+  return false
+}
+
 /** Read the ACP prompt's text content blocks. */
 export { promptText }
 
@@ -115,9 +148,32 @@ interface CloudSessionState {
   /** Events page cursor across polls; null until the API hands one back. */
   pollCursor: string | null
   /** Event ids already projected this turn (and previous turns) — the
-   *  newest-first first page overlaps turns, so dedup is mandatory. */
+   *  newest-first first page overlaps turns, so dedup is mandatory. Bounded:
+   *  ids are remembered in projection order (oldest first) and the OLDEST
+   *  are evicted past {@link SEEN_EVENT_IDS_LIMIT}, so the set cannot grow
+   *  for the life of the session. */
   readonly seenEventIds: Set<string>
   promptInFlight: boolean
+}
+
+/**
+ * Cap on remembered event ids per session. Dedup spans turns (an old
+ * `result` must not end a new turn), but the session may live indefinitely —
+ * so the set is bounded, evicting in insertion order: those ids were
+ * projected on the earliest polls, behind the pagination cursor the API
+ * serves forward from.
+ */
+export const SEEN_EVENT_IDS_LIMIT = 500
+
+/** Record a projected event id, evicting the oldest past the cap. */
+function rememberSeenEventId(session: CloudSessionState, id: string): void {
+  const seen = session.seenEventIds
+  seen.add(id)
+  while (seen.size > SEEN_EVENT_IDS_LIMIT) {
+    const oldest = seen.values().next()
+    if (oldest.done) break
+    seen.delete(oldest.value)
+  }
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -303,11 +359,31 @@ export class ClaudeCloudAcpAgent implements Agent {
     const vendorId = session.vendorSessionId
     if (!vendorId) throw new Error("claude code cloud: no vendor session")
     let delay = this.#pollInitialMs
+    let failures = 0
     for (;;) {
-      const page = await this.#api.listEvents(
-        vendorId,
-        session.pollCursor ? { cursor: session.pollCursor } : {},
-      )
+      let page: CloudEventsPage
+      try {
+        page = await this.#api.listEvents(
+          vendorId,
+          session.pollCursor ? { cursor: session.pollCursor } : {},
+        )
+      } catch (err) {
+        // A transient read failure (HTTP 5xx, network) says nothing about the
+        // turn — retry with the poll backoff, up to MAX_LIST_EVENTS_FAILURES
+        // consecutive failures. Non-transient errors and an exhausted budget
+        // fail the prompt; only a vendor `result` ever ENDS the turn.
+        if (
+          !isTransientListEventsError(err) ||
+          failures + 1 >= MAX_LIST_EVENTS_FAILURES
+        ) {
+          throw err
+        }
+        failures += 1
+        await this.#sleep(delay)
+        delay = Math.min(delay * 2, this.#pollMaxMs)
+        continue
+      }
+      failures = 0
       if (page.resume_cursor) session.pollCursor = page.resume_cursor
       const fresh = (page.data ?? [])
         .filter(event => !session.seenEventIds.has(event.event_id))
@@ -319,7 +395,7 @@ export class ClaudeCloudAcpAgent implements Agent {
         })
       let stopReason: StopReason | null = null
       for (const event of fresh) {
-        session.seenEventIds.add(event.event_id)
+        rememberSeenEventId(session, event.event_id)
         if (event.event_type === "result") {
           if (resultStopReason(event.payload) === "refusal") {
             const errText = errorResultText(event.payload)
@@ -334,13 +410,21 @@ export class ClaudeCloudAcpAgent implements Agent {
             await this.#send(session.id, update)
           }
           stopReason = resultStopReason(event.payload)
-        } else if (
-          event.event_type === "user" ||
-          event.event_type === "assistant"
-        ) {
+        } else if (event.event_type === "user") {
+          // Follow-up turns: the vendor echoes the user's own prompt back as
+          // a `user` event — the host already rendered that prompt, so it is
+          // NEVER replayed as a chunk. Only `tool_result` blocks project
+          // (tool_call_update); every other user payload is dropped here.
+          for (const update of sdkMessageToUpdates(
+            event.payload as unknown as SDKMessage,
+          )) {
+            if (update.sessionUpdate === "agent_message_chunk") continue
+            await this.#send(session.id, update)
+          }
+        } else if (event.event_type === "assistant") {
           // Payloads ARE stream-json SDK messages — reuse the claude-sdk
           // adapter's mappers (assistant text → agent_message_chunk,
-          // tool_use → tool_call, tool_result → tool_call_update).
+          // tool_use → tool_call).
           for (const update of sdkMessageToUpdates(
             event.payload as unknown as SDKMessage,
           )) {

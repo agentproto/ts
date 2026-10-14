@@ -30,13 +30,16 @@ messages:
 | `assistant` → `text` block               | `agent_message_chunk`                               |
 | `assistant` → `tool_use` block           | `tool_call` (in_progress)                           |
 | `user` → `tool_result` block             | `tool_call_update`                                  |
+| `user` → prompt echo (any non-tool text) | dropped — never replayed as a chunk                  |
 | `result` (with usage)                    | `usage_update` (tokens + `total_cost_usd`)          |
 | `result` (error)                         | error text as `agent_message_chunk`; stop `refusal` |
 | first turn after start                   | session URL as an `agent_message_chunk` (inspectable) |
 
 A turn ends ONLY on the vendor's own `result` event (AIP-66 §6) — never on
 a timer or on poll silence. Stop reason: `end_turn` for a success result,
-`refusal` when `is_error` or `subtype != "success"`.
+`refusal` when `is_error` or `subtype != "success"`. Transient event-read
+failures (HTTP 5xx, network) are retried with the poll backoff — a read
+failure never ends a turn — until 5 consecutive ones fail the prompt.
 
 ## Usage telemetry
 

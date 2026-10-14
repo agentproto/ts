@@ -8,6 +8,7 @@ import type {
 } from "@agentclientprotocol/sdk"
 import {
   ClaudeCloudAcpAgent,
+  MAX_LIST_EVENTS_FAILURES,
   POLL_INITIAL_MS,
   resultEventUpdates,
   resultStopReason,
@@ -91,6 +92,48 @@ function toolResultEvent(id: string): CloudSessionEvent {
             is_error: false,
           },
         ],
+      },
+      session_id: VENDOR_ID,
+      parent_tool_use_id: null,
+    },
+  }
+}
+
+/** Follow-up-turn prompt echo: the vendor echoes the user's own prompt back
+ *  as a `user` event carrying the prompt text (observed on turn 2+). */
+function promptEchoEvent(id: string, text: string): CloudSessionEvent {
+  return {
+    created_at: `2026-10-14T10:00:${id}.000Z`,
+    event_id: id,
+    event_type: "user",
+    payload: {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text }] },
+      session_id: VENDOR_ID,
+      parent_tool_use_id: null,
+    },
+  }
+}
+
+/** A `user` event whose payload is NOT an SDK user message: projecting it
+ *  through the generic mapper would emit a chunk. The echo guard keys off
+ *  the EVENT type, so this must be dropped too. */
+function userEventWithChunkPayload(id: string, text: string): CloudSessionEvent {
+  return {
+    created_at: `2026-10-14T10:00:${id}.000Z`,
+    event_id: id,
+    event_type: "user",
+    payload: {
+      type: "assistant",
+      message: {
+        id: "msg_fake",
+        type: "message",
+        role: "assistant",
+        model: "claude-fake",
+        content: [{ type: "text", text }],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
       },
       session_id: VENDOR_ID,
       parent_tool_use_id: null,
@@ -331,6 +374,124 @@ describe("ClaudeCloudAcpAgent", () => {
     expect(h.send).toHaveBeenCalledWith(VENDOR_ID, "second", { cwd: "/repo" })
     // Exactly one turn-2 result projection, not two.
     expect(h.sleep).toHaveBeenCalledTimes(1) // one empty(ish) poll before r2
+  })
+
+  it("never replays a follow-up turn's user-event prompt echo as a chunk", async () => {
+    const { api } = fakeApi([
+      // Turn 1: the result ends it.
+      { data: [resultEvent("r1")], resume_cursor: "cur-1" },
+      // Turn 2: the vendor echoes the prompt as a `user` event (twice, once
+      // in the plain echo shape and once under a payload that the generic
+      // mapper WOULD turn into a chunk), a real tool_result, then the result.
+      {
+        data: [
+          promptEchoEvent("u2", "second"),
+          userEventWithChunkPayload("u3", "second again"),
+          toolResultEvent("u4"),
+          resultEvent("r2"),
+        ],
+        resume_cursor: "cur-2",
+      },
+    ])
+    const h = harness({ api })
+    const sessionId = await newSession(h)
+    await h.agent.prompt(prompt(sessionId, "first"))
+    h.conn.sessionUpdate.mockClear()
+
+    const res = await h.agent.prompt(prompt(sessionId, "second"))
+    expect(res.stopReason).toBe("end_turn")
+
+    const projected = updates(h.conn)
+    const chunks = JSON.stringify(
+      projected.filter(u => u.sessionUpdate === "agent_message_chunk"),
+    )
+    // The echoed prompt is never replayed to the host…
+    expect(chunks).not.toContain('"text":"second"')
+    expect(chunks).not.toContain("second again")
+    // …but tool results (also `user` events) still project.
+    expect(
+      projected.some(u => u.sessionUpdate === "tool_call_update"),
+    ).toBe(true)
+    // Exactly one usage_update: the turn-2 result, not a replayed turn-1 one.
+    expect(
+      projected.filter(u => u.sessionUpdate === "usage_update"),
+    ).toHaveLength(1)
+  })
+
+  it("retries transient listEvents failures with backoff, then finishes the turn on the vendor result", async () => {
+    let calls = 0
+    const api: CloudEventsClient = {
+      async listEvents() {
+        calls += 1
+        if (calls <= 3) {
+          throw new Error(
+            "claude code cloud: GET /v1/code/sessions/cse_fake/events failed: HTTP 503",
+          )
+        }
+        return {
+          data: [assistantEvent("a1", "recovered"), resultEvent("r1")],
+          resume_cursor: "cur-1",
+        }
+      },
+    }
+    const h = harness({ api, pollInitialMs: 10, pollMaxMs: 40 })
+    const sessionId = await newSession(h)
+    const res = await h.agent.prompt(prompt(sessionId, "hi"))
+
+    expect(res.stopReason).toBe("end_turn")
+    expect(calls).toBe(4) // three transient failures, then the page
+    expect(h.sleepDelays).toEqual([10, 20, 40]) // backoff between retries
+    expect(
+      updates(h.conn).some(
+        u =>
+          u.sessionUpdate === "agent_message_chunk" &&
+          JSON.stringify(u).includes("recovered"),
+      ),
+    ).toBe(true)
+  })
+
+  it("fails the turn after 5 consecutive transient listEvents failures", async () => {
+    let calls = 0
+    const api: CloudEventsClient = {
+      async listEvents() {
+        calls += 1
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: { code: "ECONNRESET" },
+        })
+      },
+    }
+    const h = harness({ api, pollInitialMs: 10, pollMaxMs: 40 })
+    const sessionId = await newSession(h)
+
+    await expect(h.agent.prompt(prompt(sessionId, "hi"))).rejects.toThrow(
+      /fetch failed/,
+    )
+    expect(calls).toBe(MAX_LIST_EVENTS_FAILURES) // no unbounded retrying
+    expect(h.sleepDelays).toEqual([10, 20, 40, 40]) // backoff before each
+    // Never ended the turn on anything but a vendor `result`.
+    expect(
+      updates(h.conn).some(u => u.sessionUpdate === "usage_update"),
+    ).toBe(false)
+  })
+
+  it("fails the turn immediately on a non-transient listEvents error", async () => {
+    let calls = 0
+    const api: CloudEventsClient = {
+      async listEvents() {
+        calls += 1
+        throw new Error(
+          "claude code cloud: GET /v1/code/sessions/cse_fake/events failed: HTTP 404",
+        )
+      },
+    }
+    const h = harness({ api })
+    const sessionId = await newSession(h)
+
+    await expect(h.agent.prompt(prompt(sessionId, "hi"))).rejects.toThrow(
+      /HTTP 404/,
+    )
+    expect(calls).toBe(1)
+    expect(h.sleep).not.toHaveBeenCalled()
   })
 
   it("an error result stops as refusal and surfaces the error text", async () => {
