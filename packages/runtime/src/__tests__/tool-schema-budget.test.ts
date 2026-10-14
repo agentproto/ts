@@ -36,8 +36,10 @@ import { measureToolList } from "../tool-schema-measure.js"
  *  Headroom for normal growth without re-opening this file on every field addition.
  *  `turnRetry.rotate`/`rotateOn`/`cooldownMs` fields on `agent_start`
  *  (+~0.5 KB of schema; the prose lives in `tool_help`). Headroom for normal growth
- *  without re-opening this file on every field addition. */
-const ALWAYS_ON_BUDGET_BYTES = 62_000
+ *  without re-opening this file on every field addition. Re-set to 63 KB when
+ *  `auth.loginFile` (#1933) and `restartPolicy.on: sandbox-gone` (#1935) landed
+ *  together (62.17 KB measured). */
+const ALWAYS_ON_BUDGET_BYTES = 63_000
 
 /** No single description — a tool's own, or any schema property's, at any
  *  nesting depth — may exceed this. The plan's own cap. */

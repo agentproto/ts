@@ -238,12 +238,12 @@ export const agentStartInputShape = {
         .string()
         .min(1)
         .optional()
-        .describe('Local/LAN inference endpoint id (`agentproto llm endpoints list`), or "<id>@<device>" for a paired device\'s endpoint.'),
+        .describe('A registered local/LAN inference endpoint id (`agentproto llm endpoints list`), or "<id>@<device>" for a paired device\'s own shared endpoint.'),
       model: z
         .string()
         .min(1)
         .optional()
-        .describe('Model id (with `endpoint`), or "<model>@<device|endpoint>" without it.'),
+        .describe('A bare model id (paired with `endpoint`), or the shorthand "<model>@<device|endpoint>" when `endpoint` is omitted.'),
       force: mcpBool
         .optional()
         .describe("Skip the fit-check refusal on a clear miss (the check still runs and still warns)."),
@@ -252,7 +252,7 @@ export const agentStartInputShape = {
         .min(0)
         .max(95)
         .optional()
-        .describe("Percent of the endpoint's loaded ctx held back for the fit check. Default 25."),
+        .describe("Headroom percentage held back from the endpoint's loaded ctx for the fit check. Default 25."),
     })
   )
     .optional()
@@ -441,7 +441,7 @@ export const agentStartInputShape = {
       resume: z
         .boolean()
         .optional()
-        .describe("Reserved; always revives in place today."),
+        .describe("Reserved for a future resume-vs-fresh-spawn toggle; this always revives in place today."),
     }),
   )
     .optional()
@@ -536,14 +536,14 @@ export const agentStartInputShape = {
         dir: z
           .string()
           .min(1)
-          .describe("Absolute app directory inside the box (e.g. '/home/user/apps/<slug>')."),
+          .describe("Absolute path to the app's directory INSIDE the sandbox box (e.g. '/home/user/apps/<slug>')."),
         port: z
           .number()
           .int()
           .min(1)
           .max(65535)
           .optional()
-          .describe("Port the UI binds in the box (default 3210), exposed as a public URL."),
+          .describe("Port the UI binds inside the box (default 3210). Exposed by the sandbox provider as a public URL."),
       })
       .strict(),
   )

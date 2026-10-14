@@ -2,4 +2,4 @@
 "@agentproto/runtime": patch
 ---
 
-Shorter `agent_start` field descriptions, so the always-on MCP tool list fits its byte budget again after the box-login and sandbox-gone restart changes landed together.
+The always-on MCP tool list budget is now 63 KB: the box-login and sandbox-gone restart fields landed together at 62.17 KB.
