@@ -217,3 +217,189 @@ export async function writeBoxPriorTranscripts(
   }
   return { ok: true, paths }
 }
+
+// ── Structured handoff prompt ─────────────────────────────────────────
+
+/** What the frame says happened / was restored / was lost — the facts the
+ *  restart path knows, composed by the caller. */
+export interface RestartHandoffFrame {
+  /** One line: what happened (box re-attached / box lost, moved to a fresh
+   *  one / local blank fallback). */
+  happened: string
+  /** One line: what survived the restart (branch, last commit, checkpoint). */
+  restored?: string
+  /** One line: what the restarted session NO LONGER has. */
+  lost?: string
+}
+
+function composeFrame(frame: RestartHandoffFrame): string {
+  return (
+    `[restart handoff — ${frame.happened}` +
+    (frame.restored ? `; restored: ${frame.restored}` : "") +
+    (frame.lost ? `; lost: ${frame.lost}` : "") +
+    ". This is a structured handoff reconstructed from the daemon transcript, " +
+    "not native context restoration; the full transcript file(s) referenced " +
+    "below are the complete history.]\n"
+  )
+}
+
+function buildCheckpointSection(prev: SessionDescriptor): Promise<ContextCheckpoint | undefined> {
+  // The prior agent is dead: deterministic extractors only — never the LLM
+  // handoff turn (`askSource: false`), and never the host-side git sections
+  // (a box session's `cwd` is a path inside the box, meaningless here).
+  const policy = prev.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS
+  const contextPct =
+    computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
+  return buildContextCheckpoint(
+    { ...prev, contextContinuity: policy },
+    {
+      contextPct,
+      askSource: false,
+      sections: {
+        goal: true,
+        plan: true,
+        decisions: false,
+        changedFiles: false,
+        gitStatus: false,
+        tests: true,
+        errors: true,
+        risks: false,
+        nextStep: true,
+        config: false,
+      },
+    },
+  ).then(async checkpoint => {
+    try {
+      await persistCheckpoint(checkpoint)
+    } catch {
+      // The checkpoint object is still usable in the prompt even when the
+      // host-side JSON couldn't be persisted.
+    }
+    return checkpoint
+  })
+}
+
+function renderRecentTurns(messages: ExportedMessage[]): string {
+  const visible = messages.filter(m => !m.internal)
+  let total = 0
+  let start = visible.length
+  for (let i = visible.length - 1; i >= 0; i--) {
+    const m = visible[i]
+    if (!m) continue
+    const toolLen =
+      m.toolCalls?.reduce(
+        (sum, tc) => sum + tc.name.length + Math.min(tc.args.length, RECENT_TURNS_TOOL_CHAR_CAP),
+        0,
+      ) ?? 0
+    const next = total + (m.text?.length ?? 0) + (m.reasoning?.length ?? 0) + toolLen + 32
+    if (next > RECENT_TURNS_CHAR_BUDGET && start < visible.length) break
+    total = next
+    start = i
+  }
+  const rendered = renderTranscriptMarkdown(visible.slice(start), RECENT_TURNS_TOOL_CHAR_CAP)
+  return rendered.length > RECENT_TURNS_CHAR_BUDGET
+    ? `${rendered.slice(0, RECENT_TURNS_CHAR_BUDGET)}\n… [${rendered.length - RECENT_TURNS_CHAR_BUDGET} chars truncated]`
+    : rendered
+}
+
+function composeHandoffText(
+  frame: RestartHandoffFrame,
+  checkpoint: ContextCheckpoint | undefined,
+  recentTurns: string,
+  transcriptPaths: string[],
+  prevId: string,
+): string {
+  const parts: string[] = [composeFrame(frame)]
+  if (checkpoint) {
+    parts.push(renderCheckpointPrompt(checkpoint))
+    parts.push("")
+  }
+  parts.push("## Most recent turns")
+  parts.push(recentTurns)
+  parts.push("")
+  parts.push("## Full prior transcript")
+  parts.push(
+    `The complete conversation transcript of session ${prevId} was exported to:` +
+      transcriptPaths.map(p => `\n  - ${p}`).join(""),
+  )
+  parts.push(
+    "Read the transcript file(s) above before redoing, re-deriving, or re-running " +
+      "anything the checkpoint or the recent turns above only sketch — they are " +
+      "bounded summaries; the files are the whole conversation.",
+  )
+  return parts.join("\n")
+}
+
+export interface BuildBoxRestartHandoffOptions {
+  prev: SessionDescriptor
+  /** In-box paths `writeBoxPriorTranscripts` produced (primary first). An
+   *  empty array means the write failed — the caller falls back to the old
+   *  digest, so this build is skipped. */
+  transcriptPaths: string[]
+  /** True when the dead box was left behind for a fresh one (frame differs
+   *  from a plain re-attach). */
+  movedToFreshBox: boolean
+  /** Frame facts about the workspace state — from the restart's own
+   *  resolution (`sandboxDeliveryTarget`). */
+  workspaceSlug?: string
+  deliveryBranch?: string
+  deliveryBaseSha?: string
+}
+
+/**
+ * Build the structured handoff for a BOX restart — returns undefined when
+ * there is no prior transcript (nothing was recovered), so the caller falls
+ * back to `buildResumeContextDigest`. Never throws for a bad checkpoint —
+ * the checkpoint section is simply omitted.
+ */
+export async function buildBoxRestartHandoff(
+  opts: BuildBoxRestartHandoffOptions,
+): Promise<BuiltRestartHandoff | undefined> {
+  const { prev, transcriptPaths, movedToFreshBox } = opts
+  if (transcriptPaths.length === 0) return undefined
+  let messages: ExportedMessage[]
+  try {
+    messages = (await exportDaemonEventsSession(prev.id)).messages
+  } catch {
+    return undefined
+  }
+  if (messages.length === 0) return undefined
+
+  const branchNote = opts.deliveryBranch
+    ? `work branch ${opts.deliveryBranch}` +
+      (opts.deliveryBaseSha ? ` (last recorded commit ${opts.deliveryBaseSha.slice(0, 8)})` : "")
+    : "no recorded work branch"
+  const frame: RestartHandoffFrame = movedToFreshBox
+    ? {
+        happened:
+          `the sandbox box for session ${prev.id} was lost and this session was ` +
+          "started on a fresh box (the box daemon's agent_start has no resume surface)",
+        restored: opts.workspaceSlug
+          ? `workspace "${opts.workspaceSlug}" was re-cloned into the fresh box — ${branchNote}`
+          : branchNote,
+        lost:
+          "any work in the dead box after its last checkpoint/push, and the prior " +
+          "adapter's in-adapter conversation context",
+      }
+    : {
+        happened:
+          `the sandbox box for session ${prev.id} was re-attached and a fresh ` +
+          "adapter was started inside it (the box daemon's agent_start has no resume surface)",
+        restored: `the box checkout and its state are intact — ${branchNote}`,
+        lost: "the prior adapter's in-adapter conversation context (recoverable only from the transcript)",
+      }
+
+  const checkpoint = await buildCheckpointSection(prev).catch(() => undefined)
+  const recentTurns = renderRecentTurns(messages)
+  const text = composeHandoffText(frame, checkpoint, recentTurns, transcriptPaths, prev.id)
+  return {
+    text,
+    handoff: {
+      transcriptPath: transcriptPaths[0]!,
+      checkpointId: checkpoint?.checkpointId ?? "",
+      recentChars: recentTurns.length,
+      totalMessages: messages.length,
+    },
+    digestRecovered: true,
+  }
+}

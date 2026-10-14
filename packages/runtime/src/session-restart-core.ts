@@ -90,7 +90,11 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
-import { writeBoxPriorTranscripts } from "./restart-handoff.js"
+import {
+  buildBoxRestartHandoff,
+  writeBoxPriorTranscripts,
+  type RestartHandoff,
+} from "./restart-handoff.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
@@ -1628,17 +1632,47 @@ export async function restartAgentSession(
   // and this catch block's rejected-resume-id retry (the adapter's own
   // conversation store is gone) — so `desc` just came back as a genuinely
   // fresh spawn wearing the old session's continuity fields. Best-effort
-  // patch: reconstruct a bounded digest from the PRIOR session's own
-  // daemon transcript (survives both cases) and stash it for
+  // patch: reconstruct the prior session's context and stash it for
   // `runAgentTurn` to inject once. Gated strictly on `resumeFallback` — a
   // successful resume (pty-native or a clean ACP resume) never reaches
   // here, so it's never double-fed its own context.
+  //
+  // A BOX restart (every sandbox restart is a `resumeFallback` — the box
+  // daemon's `agent_start` has no resume surface) prefers the structured
+  // handoff: a frame, a deterministic-extractor checkpoint, the most recent
+  // turns, and the path(s) of the full transcript file(s) already written
+  // into the box (`boxPriorTranscriptPaths`). The old 7k digest
+  // (`buildResumeContextDigest`) stays as the fallback when the handoff
+  // can't be built (no transcript, or the in-box write failed). Never
+  // fails the restart.
   let digestRecovered = false
+  let restartHandoff: RestartHandoff | undefined
   if (resumeFallback) {
-    const result = await buildResumeContextDigest(prev.id)
-    if (result.digest) {
-      desc.pendingResumeContext = result.digest
-      digestRecovered = result.hasContent
+    const handoff =
+      sandboxId !== undefined
+        ? await buildBoxRestartHandoff({
+            prev,
+            transcriptPaths: boxPriorTranscriptPaths,
+            movedToFreshBox,
+            ...(prev.workspaceSlug ? { workspaceSlug: prev.workspaceSlug } : {}),
+            ...(prev.sandboxDeliveryTarget?.branch
+              ? { deliveryBranch: prev.sandboxDeliveryTarget.branch }
+              : {}),
+            ...(prev.sandboxDeliveryTarget?.baseSha
+              ? { deliveryBaseSha: prev.sandboxDeliveryTarget.baseSha }
+              : {}),
+          }).catch(() => undefined)
+        : undefined
+    if (handoff) {
+      desc.pendingResumeContext = handoff.text
+      digestRecovered = handoff.digestRecovered
+      restartHandoff = handoff.handoff
+    } else {
+      const result = await buildResumeContextDigest(prev.id)
+      if (result.digest) {
+        desc.pendingResumeContext = result.digest
+        digestRecovered = result.hasContent
+      }
     }
   }
 
