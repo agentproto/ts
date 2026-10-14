@@ -662,9 +662,10 @@ describe("session_restart", () => {
     // Typed refusal: a stable code, and the strategy's own sentence as both
     // the human reason and the detail (a 400 — the request can't be served).
     expect(body.status).toBe(400)
-    expect(body.error.code).toBe("unsupported_strategy")
-    expect(body.error.message).toMatch(/generic command session/)
-    expect(body.error.reason).toMatch(/generic command session/)
+    const typed = body.error as { code?: string; message?: string; reason?: string }
+    expect(typed.code).toBe("unsupported_strategy")
+    expect(typed.message).toMatch(/generic command session/)
+    expect(typed.reason).toMatch(/generic command session/)
 
     await close()
     registry.shutdown()
