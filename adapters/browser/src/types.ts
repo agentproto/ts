@@ -197,6 +197,10 @@ export interface BrowserAdapterInstance {
    * `browser_status` / `list_browsers` will flip it to running once up.
    */
   healthy: boolean
+  /** Optional health probe for providers whose health is not an HTTP endpoint. */
+  health?(): Promise<{ ok: boolean; reason?: string }>
+  /** Optional capture on a provider-owned target. */
+  screenshot?(tabId?: string): Promise<{ data: string; format: "png" | "jpeg"; width?: number; height?: number }>
   /**
    * Best-effort stop. Sends SIGTERM to `pid` if known; otherwise a no-op
    * (externally-managed services must be stopped via their own manager).

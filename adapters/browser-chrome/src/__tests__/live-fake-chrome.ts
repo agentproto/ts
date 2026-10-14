@@ -137,6 +137,10 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
           return emit("Target.detachedFromTarget", { sessionId: `session-${targetId}`, targetId })
         case "Runtime.evaluate":
           return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: false } })
+        case "Page.getLayoutMetrics":
+          return reply(msg.id, msg.sessionId, { cssVisualViewport: { clientWidth: 1, clientHeight: 1 } })
+        case "Page.captureScreenshot":
+          return reply(msg.id, msg.sessionId, { data: "AAAA" })
         default:
           return reply(msg.id, msg.sessionId, {})
       }

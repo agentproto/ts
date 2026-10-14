@@ -38,7 +38,7 @@ export {
   isRefusedLiveCommand,
   readChromeLiveEnv,
 } from "./live.js"
-export type { ChromeLiveLaunchOptions, ChromeLiveProvider, ChromeLiveProviderConfig } from "./live.js"
+export type { ChromeLiveInstance, ChromeLiveLaunchOptions, ChromeLiveProvider, ChromeLiveProviderConfig } from "./live.js"
 
 export { CdpConnection } from "./cdp.js"
 export type { CdpEnvelope, CdpEnvelopeListener } from "./cdp.js"
