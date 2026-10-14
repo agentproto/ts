@@ -91,3 +91,110 @@ describe("authSubscription — single-or-array validation", () => {
     ).toThrow(/must NOT declare setEnv/)
   })
 })
+
+describe("authSubscription.boxLogin — box-login bridge declaration", () => {
+  it("accepts a boxLogin on an external surface (codex shape)", () => {
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: {
+          external: true,
+          boxLogin: {
+            recipe: "codex",
+            keep: ["tokens.access_token", "tokens.id_token", "tokens.account_id", "last_refresh"],
+          },
+        },
+      }),
+    ).not.toThrow()
+  })
+
+  it("accepts an optional methodId / expiresPath / home-relative file override", () => {
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: [
+          { external: true, provider: "anthropic" },
+          {
+            external: true,
+            provider: "openai",
+            boxLogin: {
+              recipe: "opencode",
+              methodId: "openai-oauth",
+              keep: ["openai.access"],
+              expiresPath: "openai.expires_at",
+              file: ".local/share/opencode/auth.json",
+            },
+          },
+        ],
+      }),
+    ).not.toThrow()
+  })
+
+  it("rejects boxLogin on a bearer (non-external) surface — only a file has something to bridge", () => {
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: {
+          setEnv: "ANTHROPIC_OAUTH_TOKEN",
+          boxLogin: { recipe: "codex", keep: ["tokens.access_token"] },
+        },
+      }),
+    ).toThrow(/boxLogin requires external: true/)
+  })
+
+  it("rejects boxLogin on a non-external entry inside an array, too", () => {
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: [
+          { external: true, provider: "anthropic" },
+          {
+            setEnv: "OPENAI_OAUTH_TOKEN",
+            provider: "openai",
+            boxLogin: { recipe: "opencode", keep: ["openai.access"] },
+          },
+        ],
+      }),
+    ).toThrow(/boxLogin requires external: true/)
+  })
+
+  it("rejects an empty keep-list — it would copy nothing the box could bill with", () => {
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: { external: true, boxLogin: { recipe: "codex", keep: [] } },
+      }),
+    ).toThrow()
+  })
+
+  it("rejects a boxLogin without a recipe or without keep", () => {
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: { external: true, boxLogin: { keep: ["tokens.access_token"] } as never },
+      }),
+    ).toThrow()
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: { external: true, boxLogin: { recipe: "codex", keep: undefined as never } },
+      }),
+    ).toThrow()
+  })
+
+  it("rejects unknown boxLogin keys (strict schema — no smuggling a token through an extra field)", () => {
+    expect(() =>
+      defineAgentCli({
+        ...base,
+        authSubscription: {
+          external: true,
+          boxLogin: {
+            recipe: "codex",
+            keep: ["tokens.access_token"],
+            token: "sk-smuggled",
+          } as never,
+        },
+      }),
+    ).toThrow()
+  })
+})

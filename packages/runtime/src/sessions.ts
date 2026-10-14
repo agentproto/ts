@@ -1724,6 +1724,12 @@ export interface SessionDescriptor {
    *  path re-schedules via the next `session:exited`) or the scheduler
    *  gives up on the crash-loop cap. */
   nextRestartAt?: string
+  /** Set alongside `nextRestartAt` when the scheduled restart is a FRESH-BOX
+   *  move (`restartPolicy.on` includes `"sandbox-gone"` and the box is gone)
+   *  rather than an in-place resume: the sweep dispatches such a schedule to
+   *  `triggerSandboxGoneRestart` (the same `session_restart` fresh-box path)
+   *  instead of `triggerResume`. Cleared with `nextRestartAt`. */
+  nextRestartFreshBox?: boolean
   /** Rolling window of ISO 8601 timestamps for restarts the scheduler has
    *  fired, trimmed to entries within the policy's `windowMs` of "now" at
    *  each evaluation. Distinct from `restartAttempts` (a single counter
@@ -1743,6 +1749,14 @@ export interface SessionDescriptor {
    *  without an error or an interrupt. PERSISTED; absent until the first
    *  retry. */
   turnRetryAttempts?: number
+  /** Consecutive box migrations the turn-retry controller has DONE since the
+   *  last clean turn-end (`turnRetry.action: "migrate"` on a sandbox session)
+   *  — the migration counter, compared against `turnRetry.maxMigrations`.
+   *  Independent of {@link turnRetryAttempts}; reset (deleted) by the next
+   *  turn that completes without an error or an interrupt. Carried over onto
+   *  the migrated session so the cap survives a migration. PERSISTED; absent
+   *  until the first migration. */
+  turnMigrations?: number
   /** ISO 8601 timestamp of the most recent continuation prompt the
    *  turn-retry controller sent. Reset with `turnRetryAttempts`. */
   lastTurnRetryAt?: string
@@ -3529,12 +3543,16 @@ export class ResumeDisabledError extends Error {
  */
 export interface RestartPolicy {
   /** Which automatic death reasons trigger a restart: `"crashed"` (the
-   *  crash-detect sweep found the adapter process gone) and/or `"error"` (an
-   *  unexpected turn error with no other intentional `endedReason`). Never
-   *  restarts a clean exit, an operator `kill()`, `"idle-reaped"`, or
-   *  `"daemon-restart"` regardless of this list — see `isEligibleForRestart`
-   *  in `restart-scheduler.ts`. */
-  on: ("crashed" | "error")[]
+   *  crash-detect sweep found the adapter process gone), `"error"` (an
+   *  unexpected turn error with no other intentional `endedReason`), and/or
+   *  `"sandbox-gone"` (a box session whose BOX is gone — lifetime cap,
+   *  provider reclaim, unrecoverable unreachability; revived by moving to a
+   *  fresh box via the `session_restart` path instead of in-place revival,
+   *  see `restart-scheduler.ts` + `sandbox-gone.ts`). Never restarts a clean
+   *  exit, an operator `kill()`, `"idle-reaped"`, or a `"daemon-restart"`
+   *  regardless of this list — see `isEligibleForRestart` in
+   *  `restart-scheduler.ts`. */
+  on: ("crashed" | "error" | "sandbox-gone")[]
   /** Rolling-window crash-loop cap: once this many restarts have fired
    *  within `windowMs`, the scheduler gives up (stamps a terminal
    *  `[crash-loop]` line and leaves the row dead) instead of scheduling
@@ -3553,6 +3571,24 @@ export interface RestartPolicy {
    *  always revives in place via `maybeResumeAgent`; the field is accepted
    *  and persisted but not yet read. */
   resume?: boolean
+}
+
+/**
+ * The policy `daemon.sandboxGoneRestartDefault` stamps on a BOX session that
+ * was spawned with no explicit `restartPolicy` (`createSessionsRegistry`'s
+ * `boxRestartPolicyDefault`). Deliberately narrow: ONLY `"sandbox-gone"` —
+ * a box moving to a fresh box when its box is gone — so opting in never also
+ * opts a session into classic `crashed`/`error` in-place revival. The caps
+ * mirror a conservative crash-loop budget: three moves inside ten minutes,
+ * then the scheduler gives up with its usual `[crash-loop]` notice.
+ */
+export const SANDBOX_GONE_DEFAULT_RESTART_POLICY: RestartPolicy = {
+  on: ["sandbox-gone"],
+  maxRetries: 3,
+  windowMs: 600_000,
+  baseDelayMs: 5_000,
+  factor: 2,
+  maxDelayMs: 60_000,
 }
 
 /** Why an eager (boot-time) in-place resume of one row was skipped without
@@ -4668,6 +4704,19 @@ export interface SessionsRegistry {
    *  live (`agentSession` bound) afterward; false for an unknown id or a
    *  resume that didn't take. */
   triggerResume(id: string, opts?: { force?: boolean }): Promise<boolean>
+  /** Execute the restart-scheduler's "box is gone" schedule for a dead box
+   *  session — the FRESH-BOX move `session_restart` takes (`restartAgentSession`
+   *  → `spawnOnFreshBox`), never an in-place revival. Driven by the sweep for
+   *  a row whose `nextRestartFreshBox` was stamped with its `nextRestartAt`.
+   *  Delegates to the gateway-wired `restartSandboxGone` hook; when the hook
+   *  reports a blocker (no workspace remote, no wiring, the move threw) this
+   *  consumes the schedule and stamps exactly one `[sandbox-gone]` notice on
+   *  the row instead of retrying. On success the superseded row's schedule is
+   *  consumed and its rolling restart window (`restartAttempts`/
+   *  `recentRestartAts`/`lastRestartAt`) is carried onto the fresh descriptor
+   *  so the `maxRetries`/`windowMs` crash-loop cap keeps counting across
+   *  moves. Returns true iff a fresh descriptor was minted. */
+  triggerSandboxGoneRestart(id: string): Promise<boolean>
   /** Stamp a row as deliberately retired (`retiredAt`, optionally `continuedTo`)
    *  and notify `onSessionRetired` listeners. Idempotent. Unknown id → undefined. */
   markRetired(
@@ -4690,6 +4739,9 @@ export interface SessionsRegistry {
       restartAttempts: number
       recentRestartAts: string[]
       lastRestartAt: string
+      /** True when the scheduled restart is a fresh-box move rather than an
+       *  in-place resume — persisted as `nextRestartFreshBox`. */
+      freshBox?: boolean
     },
   ): boolean
   /** Terminally abandon the restart-scheduler's (PR-2) crash-loop for a row:
@@ -4709,6 +4761,7 @@ export interface SessionsRegistry {
     id: string,
     patch: {
       turnRetryAttempts?: number | null
+      turnMigrations?: number | null
       lastTurnRetryAt?: string | null
       nextTurnRetryAt?: string | null
     },
@@ -5412,6 +5465,27 @@ export function createSessionsRegistry(opts?: {
    *  killed agent-cli sessions surface the legacy "not an agent
    *  session" error and the user must spawn fresh. */
   resumeAgent?: AgentSessionResumer
+  /** Hook the restart-scheduler's `"sandbox-gone"` policy drives: move a dead
+   *  box session (its box is gone) to a FRESH box — the same
+   *  `restartAgentSession` path `session_restart` takes. Wired by the gateway
+   *  (index.ts) with the daemon's adapter/sandbox resolvers; omitted ⇒
+   *  `triggerSandboxGoneRestart` consumes the schedule and stamps one
+   *  `[sandbox-gone]` notice (the restart is blocked; no retry loop). Return
+   *  `{ ok: true, newSessionId }` after the fresh descriptor was minted (the
+   *  hook is also responsible for prompting it to continue the work), or
+   *  `{ ok: false, blocker }` naming why the move cannot proceed. Throws are
+   *  treated as a blocker with the error message. */
+  restartSandboxGone?: (input: {
+    sessionId: string
+    prev: SessionDescriptor
+  }) => Promise<{ ok: true; newSessionId: string } | { ok: false; blocker: string }>
+  /** Default `restartPolicy` for a BOX spawn (`sandboxId` set) that carries
+   *  NO explicit `restartPolicy` — the `daemon.sandboxGoneRestartDefault`
+   *  opt-in, wired by the gateway as
+   *  {@link SANDBOX_GONE_DEFAULT_RESTART_POLICY}. OFF unless set: omitted ⇒
+   *  nothing changes and a policy-less spawn stays policy-less, exactly as
+   *  before. An explicit `SpawnAgentInput.restartPolicy` always wins. */
+  boxRestartPolicyDefault?: RestartPolicy
   /** When provided, the registry translates internal lifecycle transitions
    *  (turn-end, awaiting-input, exit) into SessionEvents on this bus. */
   sessionEvents?: SessionEventBus
@@ -5523,6 +5597,19 @@ export function createSessionsRegistry(opts?: {
   ])
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
+  const restartSandboxGoneHook = opts?.restartSandboxGone
+  const boxRestartPolicyDefault = opts?.boxRestartPolicyDefault
+  /** The `restartPolicy` a spawn lands on its descriptor with: the caller's
+   *  own policy when given (always wins), else — a BOX spawn with
+   *  `daemon.sandboxGoneRestartDefault` on — the sandbox-gone default.
+   *  Absent ⇒ undefined, i.e. today's policy-less spawn, unchanged. */
+  const effectiveRestartPolicy = (
+    input: { restartPolicy?: RestartPolicy; sandboxId?: string },
+  ): RestartPolicy | undefined =>
+    input.restartPolicy ??
+    (boxRestartPolicyDefault !== undefined && input.sandboxId !== undefined
+      ? boxRestartPolicyDefault
+      : undefined)
   const sessionEvents = opts?.sessionEvents
   const resolveAgentAdapter = opts?.resolveAgentAdapter
   const runWorktreeAutoReclaim = opts?.runWorktreeAutoReclaim
@@ -9236,6 +9323,7 @@ export function createSessionsRegistry(opts?: {
           delete rt.desc.restartAttempts
           delete rt.desc.lastRestartAt
           delete rt.desc.nextRestartAt
+          delete rt.desc.nextRestartFreshBox
           delete rt.desc.recentRestartAts
         }
 
@@ -10097,6 +10185,7 @@ export function createSessionsRegistry(opts?: {
     spawnAgent(input) {
       const id = input.id ?? mintSessionId()
       const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
+      const restartPolicy = effectiveRestartPolicy(input)
       const desc: SessionDescriptor = {
         id,
         kind: "agent-cli",
@@ -10206,7 +10295,7 @@ export function createSessionsRegistry(opts?: {
         // gate would silently drop the empty-string case.
         ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
-        ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(restartPolicy ? { restartPolicy } : {}),
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
@@ -10306,6 +10395,7 @@ export function createSessionsRegistry(opts?: {
     spawnAgentPending(input) {
       const id = input.id ?? mintSessionId()
       const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
+      const restartPolicy = effectiveRestartPolicy(input)
       const desc: SessionDescriptor = {
         id,
         kind: "agent-cli",
@@ -10378,7 +10468,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.permissionHold ? { permissionHold: true } : {}),
         ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
-        ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(restartPolicy ? { restartPolicy } : {}),
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
@@ -12251,6 +12341,8 @@ export function createSessionsRegistry(opts?: {
       rt.desc.restartAttempts = update.restartAttempts
       rt.desc.recentRestartAts = update.recentRestartAts
       rt.desc.lastRestartAt = update.lastRestartAt
+      if (update.freshBox === true) rt.desc.nextRestartFreshBox = true
+      else delete rt.desc.nextRestartFreshBox
       schedulePersist()
       return true
     },
@@ -12258,14 +12350,72 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt) return false
       delete rt.desc.nextRestartAt
+      delete rt.desc.nextRestartFreshBox
       appendLine(rt, message, "stderr")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
+      return true
+    },
+    async triggerSandboxGoneRestart(id) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      // Consume the schedule up front: whatever the hook does, this row must
+      // never be re-picked for the same `nextRestartAt` on a later sweep tick
+      // (on success the row is a retired corpse; on failure retrying is the
+      // crash-loop the policy's cap exists to stop).
+      const prevRestart = {
+        ...(rt.desc.restartAttempts !== undefined
+          ? { restartAttempts: rt.desc.restartAttempts }
+          : {}),
+        ...(rt.desc.recentRestartAts ? { recentRestartAts: rt.desc.recentRestartAts } : {}),
+        ...(rt.desc.lastRestartAt ? { lastRestartAt: rt.desc.lastRestartAt } : {}),
+      }
+      delete rt.desc.nextRestartAt
+      delete rt.desc.nextRestartFreshBox
+      const blocked = (detail: string): false => {
+        appendLine(
+          rt,
+          `[sandbox-gone] cannot move this session to a fresh box: ${detail} — ` +
+            "leaving it dead; fix the cause and `session_restart` it manually.",
+          "stderr",
+        )
+        transcriptWriter.recordEvent(rt.desc.id, {
+          kind: "notice",
+          text:
+            `[sandbox-gone] cannot move this session to a fresh box: ${detail} — ` +
+            "leaving it dead; fix the cause and `session_restart` it manually.",
+        })
+        schedulePersist()
+        return false
+      }
+      if (!restartSandboxGoneHook) {
+        return blocked("this daemon has no fresh-box restart wiring (no sandbox provider/adapter resolvers)")
+      }
+      let outcome: Awaited<ReturnType<NonNullable<typeof restartSandboxGoneHook>>>
+      try {
+        outcome = await restartSandboxGoneHook({ sessionId: id, prev: rt.desc })
+      } catch (err) {
+        return blocked(err instanceof Error ? err.message : String(err))
+      }
+      if (!outcome.ok) return blocked(outcome.blocker)
+      // Carry the rolling restart window onto the fresh row so the policy's
+      // `maxRetries`/`windowMs` crash-loop cap keeps counting across moves —
+      // without this, every successful move would mint a row with a clean
+      // window and a dying box could bounce forever.
+      const fresh = sessions.get(outcome.newSessionId)
+      if (fresh && Object.keys(prevRestart).length > 0) {
+        if (prevRestart.restartAttempts !== undefined) {
+          fresh.desc.restartAttempts = prevRestart.restartAttempts
+        }
+        if (prevRestart.recentRestartAts) fresh.desc.recentRestartAts = prevRestart.recentRestartAts
+        if (prevRestart.lastRestartAt) fresh.desc.lastRestartAt = prevRestart.lastRestartAt
+      }
+      schedulePersist()
       return true
     },
     patchTurnRetry(id, patch) {
       const rt = sessions.get(id)
       if (!rt) return false
-      for (const key of ["turnRetryAttempts", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
+      for (const key of ["turnRetryAttempts", "turnMigrations", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
         if (!(key in patch)) continue
         const value = patch[key]
         if (value === null || value === undefined) delete rt.desc[key]

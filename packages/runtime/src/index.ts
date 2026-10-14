@@ -130,6 +130,7 @@ import {
 } from "./http-server.js"
 import {
   createSessionsRegistry,
+  SANDBOX_GONE_DEFAULT_RESTART_POLICY,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
   SessionRetiredError,
@@ -149,9 +150,12 @@ import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
-import { createTurnRetryController } from "./turn-retry.js"
+import { isSandboxBoxGone } from "./sandbox-gone.js"
+import { createTurnRetryController, type MigrateSessionFn } from "./turn-retry.js"
 import { createModelCooldowns } from "./model-cooldowns.js"
 import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
+import { migrateSandboxSession } from "./session-migrate.js"
+import { createCheckpointSources } from "./checkpoint-extract.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
@@ -1439,6 +1443,16 @@ export interface CreateGatewayOptions {
    *  the sweep never runs, so a scheduled `nextRestartAt` sits inert.
    *  Surfaced in `daemon_health` / `GET /health`. */
   restartSweepIntervalMs?: number
+  /** `daemon.sandboxGoneRestartDefault` — OFF unless set. When true, a BOX
+   *  session spawned with no explicit `agent_start.restartPolicy` is stamped
+   *  with {@link SANDBOX_GONE_DEFAULT_RESTART_POLICY}, so a box session whose
+   *  box is gone is moved to a fresh box by the restart scheduler instead of
+   *  staying dead. An explicit per-session `restartPolicy` always wins, and
+   *  nothing else changes — classic `crashed`/`error` in-place revival still
+   *  needs its own opt-in. Turning this on with `restartSweepIntervalMs`
+   *  unset also arms the sweep at 30s (the scheduler only SCHEDULES; the
+   *  sweep EXECUTES), so the opt-in works out of the box. */
+  sandboxGoneRestartDefault?: boolean
   /** Turn-liveness watchdog threshold in ms (turn-liveness-watchdog
    *  chantier). Mirrors the `daemon.turnStallAfterMs` config knob; the CLI
    *  resolves it (env > config > a sane default — DEFAULT ON, same shape as
@@ -1719,6 +1733,14 @@ const DEFAULT_CRASH_DETECT_INTERVAL_MS = 30_000
  *  stream long before the 36-minute silence that motivated this chantier. */
 const DEFAULT_TURN_STALL_AFTER_MS = 5 * 60_000
 
+/** Sweep interval used when `sandboxGoneRestartDefault` is on and no explicit
+ *  `restartSweepIntervalMs` was configured — the opt-in is meaningless while
+ *  the sweep that EXECUTES a scheduled fresh-box move is unarmed, so it arms
+ *  one rather than silently doing nothing. Same cadence as the crash-detect
+ *  sweep: frequent enough to move a dead-box session promptly, cheap enough
+ *  to run forever. Never applies to a caller that didn't opt in. */
+const DEFAULT_SANDBOX_GONE_RESTART_SWEEP_MS = 30_000
+
 /**
  * Default always-on set when `deferredTools` is enabled without an
  * explicit `alwaysOn` override: the core spawn/drive/observe/report loop
@@ -1885,11 +1907,17 @@ export async function createGateway(
       : DEFAULT_CRASH_DETECT_INTERVAL_MS
   // Effective restart-sweep interval (restart-scheduler PR-2): OFF by
   // default, same shape as idleReapAfterMs — a caller must opt in with a
-  // positive ms value before the sweep ever runs.
+  // positive ms value before the sweep ever runs. The ONE exception is
+  // `sandboxGoneRestartDefault`: that opt-in is useless unless the sweep that
+  // EXECUTES the scheduled fresh-box move is armed, so it falls back to 30s
+  // when no explicit interval was configured. Still off for everyone who
+  // hasn't set it.
   const restartSweepIntervalMs =
     typeof opts.restartSweepIntervalMs === "number" && opts.restartSweepIntervalMs > 0
       ? opts.restartSweepIntervalMs
-      : 0
+      : opts.sandboxGoneRestartDefault === true
+        ? DEFAULT_SANDBOX_GONE_RESTART_SWEEP_MS
+        : 0
   // Effective turn-stall threshold (turn-liveness-watchdog chantier):
   // DEFAULT ON, same shape as crashDetectIntervalMs — an unset knob still
   // gets a sane default since this is non-destructive observability. A
@@ -2260,6 +2288,60 @@ export async function createGateway(
       ? { maxAgeDays: daemonConfig.daemon.sessionRetentionDays }
       : {}),
   }
+  // "Box is gone" restart hook (restart-scheduler's `sandbox-gone` policy) —
+  // the gateway-wired executor behind `registry.triggerSandboxGoneRestart`.
+  // Moves a dead box session to a FRESH box via the SAME `restartAgentSession`
+  // path `session_restart` takes (never in-place: the box is gone), then
+  // prompts the replacement once to continue the original task. Declared
+  // before `sessions` (which the closure needs) via a late-bound ref; the hook
+  // only ever runs after the registry exists.
+  let sessionsRef: SessionsRegistry | undefined
+  /** Transcript provenance for the post-move continuation prompt. */
+  const SANDBOX_GONE_PROMPT_SOURCE = "daemon:sandbox-gone-restart"
+  const restartSandboxGoneHook = async (input: {
+    sessionId: string
+    prev: SessionDescriptor
+  }): Promise<{ ok: true; newSessionId: string } | { ok: false; blocker: string }> => {
+    const { prev } = input
+    if (!sessionsRef) return { ok: false, blocker: "sessions registry not ready" }
+    if (!opts.resolveAgentAdapter) {
+      return { ok: false, blocker: "agent restart is not enabled (no resolveAgentAdapter)" }
+    }
+    const restarted = await restartAgentSession(sessionsRef, opts.resolveAgentAdapter, prev, {
+      forceAgentResume: true,
+      resolveSandboxProvider: resolveSandboxProviderResolved,
+      daemonMcpUrl,
+    })
+    // ONE short continuation prompt on the fresh session. The full prior
+    // transcript + structured handoff (lane T, `restart-handoff.ts`) rides
+    // along as the restart's own `pendingResumeContext`, so this prompt only
+    // has to say what the machine-level handoff can't: the box died, what was
+    // restored, and to keep going rather than start over.
+    const target = prev.sandboxDeliveryTarget
+    const pushed = [prev.sandboxCheckpoint, prev.sandboxDelivery].find(
+      r => r?.push.status === "pushed",
+    )
+    const pushedSha = pushed?.key?.split(":")[0]
+    const checkpointSha = prev.sandboxCheckpoint?.checkpoint?.sha
+    const restored = target
+      ? `Work branch \`${target.branch}\` was restored from the workspace remote` +
+        (pushedSha ? ` at \`${pushedSha}\`` : "") +
+        (checkpointSha ? `, with the checkpoint snapshot \`${checkpointSha}\`` : "") +
+        ", so everything already pushed is in the new checkout."
+      : "The last saved tarball checkpoint was restored into the new box."
+    await sessionsRef
+      .enqueuePrompt(
+        restarted.desc.id,
+        `Your sandbox box died (its provider lifetime cap was reached, or it was ` +
+          `reclaimed), and this session was automatically moved to a FRESH box. ` +
+          `${restored} Continue the original task from where the pushed work stops — ` +
+          `do not redo work that is already committed or checkpointed.`,
+        { source: SANDBOX_GONE_PROMPT_SOURCE },
+      )
+      .catch(() => undefined)
+    return { ok: true, newSessionId: restarted.desc.id }
+  }
+
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
@@ -2390,7 +2472,18 @@ export async function createGateway(
           },
         }
       : {}),
+    // "Box is gone" policy executor (see `restartSandboxGoneHook` above) —
+    // inert unless a session's `restartPolicy.on` lists `"sandbox-gone"`.
+    restartSandboxGone: restartSandboxGoneHook,
+    // `daemon.sandboxGoneRestartDefault` — OFF unless set, so a caller that
+    // never opted in gets today's policy-less box spawn, unchanged. When set,
+    // a BOX spawn with no explicit `restartPolicy` is stamped with the
+    // sandbox-gone default (an explicit per-session policy always wins).
+    ...(opts.sandboxGoneRestartDefault === true
+      ? { boxRestartPolicyDefault: SANDBOX_GONE_DEFAULT_RESTART_POLICY }
+      : {}),
   })
+  sessionsRef = sessions
 
   // Install the real `session` sentinel provider (AIP-60) now that
   // `sessions` exists — see `configureSessionSentinelProvider`'s doc for why
@@ -2419,8 +2512,14 @@ export async function createGateway(
   // eligible, opted-in death. Runs regardless of `restartSweepIntervalMs`:
   // that knob only arms the periodic sweep further below that EXECUTES a
   // landed schedule. Declared right after `sessions` (needs the registry +
-  // its own event bus); disposed in stop().
-  const restartScheduler = createRestartScheduler({ registry: sessions, sessionEvents })
+  // its own event bus); disposed in stop(). `isSandboxBoxGone` classifies a
+  // dead box session whose policy lists `"sandbox-gone"`: descriptor evidence
+  // first, then the ledger, then ONE provider liveness probe — no polling.
+  const restartScheduler = createRestartScheduler({
+    registry: sessions,
+    sessionEvents,
+    isSandboxBoxGone: desc => isSandboxBoxGone(desc, { resolveSandboxProvider: resolveSandboxProviderResolved }),
+  })
 
   // Turn retry (opt-in per session via `agent_start.turnRetry`) — re-prompts
   // a live session whose turn failed on a 429/5xx or stalled silently while
@@ -2430,6 +2529,37 @@ export async function createGateway(
   // map (the free-tier limit is per model per IP): the controller fills it and
   // `turnRetry.rotate` reads it for every session; read-only in `daemon_health`.
   const modelCooldowns = createModelCooldowns()
+  // `turnRetry.action: "migrate"`'s orchestration arm: PR 2's
+  // `migrateSandboxSession`, called in-process (no MCP round-trip) with the
+  // same spawn deps the `session_migrate` tool threads. Absent without an
+  // adapter resolver — a migrate decision then falls back to a normal retry
+  // with a notice (turn-retry.ts's "no migration orchestrator" path).
+  // `supervisor` / `taskLedger` / `orchestratorInjector` are declared further
+  // down this file, so the closure reads them at CALL time — a turn-retry
+  // migration only ever fires long after boot.
+  const turnRetryMigrateSession: MigrateSessionFn | undefined = opts.resolveAgentAdapter
+    ? prev =>
+        migrateSandboxSession(
+          {
+            registry: sessions,
+            resolveAgentAdapter: opts.resolveAgentAdapter!,
+            daemonMcpUrl,
+            ...(webhookNotifier ? { webhookNotifier } : {}),
+            resolveSandboxProvider: resolveSandboxProviderResolved,
+            ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+            ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+            ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+            ...(orchestratorInjector ? { buildOrchestratorMcp: orchestratorInjector } : {}),
+          },
+          prev,
+          {
+            sources: createCheckpointSources({
+              ...(supervisor ? { supervisor } : {}),
+              ...(taskLedger ? { taskLedger } : {}),
+            }),
+          },
+        )
+    : undefined
   const turnRetryController = createTurnRetryController({
     registry: sessions,
     sessionEvents,
@@ -2438,6 +2568,7 @@ export async function createGateway(
       getProfile: getAuthProfile,
       ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
     }),
+    ...(turnRetryMigrateSession ? { migrateSession: turnRetryMigrateSession } : {}),
   })
 
   // Completion-policy supervisor — watches sessions and runs shell gates.

@@ -39,7 +39,10 @@ the skill id a caller asks for. The same goes for a workflow listed under
 
 The agent runs on the adapter it would get anywhere else: `metadata.adapter`
 (or `metadata.harness`) in its `AGENT.md` first, then the default for its
-model (`claude-*` models run on `claude-code`), then `mastra-agent`:
+model (`claude-*` models run on `claude-code`, `opencode/*` and
+`opencode-go/*` models on `opencode`). There is no fallback: an agent with
+neither fails with `agent "…" has no adapter`, so add
+`metadata: { adapter: mastra-agent }` to run it on `mastra-agent`:
 
 ```yaml
 ---

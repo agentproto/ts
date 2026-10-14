@@ -281,6 +281,13 @@ export const agentStartInputShape = {
       token: z.string().optional(),
       source: z.string().optional(),
       apiKey: z.string().optional(),
+      // BOX-LOGIN BRIDGE — the HOST's forward-to-box marker: `true` means "the
+      // redacted login copy for this file-based subscription was uploaded into
+      // this box", which is the ONE thing that lets `resolveAuthSpec` skip its
+      // missing-credential fail-fast. Set by the host's spawn/restart code only
+      // after a successful write (see `box-login-bridge.ts`), never by a
+      // client — hence a strict boolean, never a string/number.
+      loginFile: z.boolean().optional(),
     // Passthrough: a host forwards sub-account scope (credentialEnv/extraEnv/
     // isolateDataHome) to its sandbox box; spawn-defaults validates those keys.
     }).passthrough()
@@ -401,9 +408,12 @@ export const agentStartInputShape = {
   restartPolicy: jsonTolerant(
     z.object({
       on: z
-        .array(z.enum(["crashed", "error"]))
+        .array(z.enum(["crashed", "error", "sandbox-gone"]))
         .min(1)
-        .describe("Which automatic death reasons trigger a restart. Never a clean exit, kill, idle-reap, or cost-budget kill."),
+        .describe(
+          "Which automatic death reasons trigger a restart (`sandbox-gone`: box lost, " +
+            "move to a fresh box). Never a clean exit, kill, idle-reap, or cost-budget kill.",
+        ),
       maxRetries: z
         .number()
         .int()

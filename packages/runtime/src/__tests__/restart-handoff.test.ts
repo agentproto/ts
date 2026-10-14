@@ -227,14 +227,12 @@ describe("restart handoff — full prior transcript + structured prompt", () => 
           commandPreview: "fake-cli (box test double)",
           async startSession(args): Promise<AgentSessionLike> {
             receivedStarts.push(args as Record<string, unknown>)
-            // The box still holds the registry row, but its conversation
-            // store is gone (the dead box's files never came back) — the
-            // ACP-level "not found" rejection. The box daemon retries the
-            // start fresh, the host sees a blank answer and flags the
-            // fallback: exactly the precondition the structured handoff
-            // below exists for.
-            if (args.resumeSessionId) {
-              throw new Error(`Resource not found (session ${args.resumeSessionId})`)
+            // These tests cover the blank-fallback handoff: the box adapter
+            // has lost the prior conversation, so it rejects the resume id
+            // and the box retries fresh (a box that resumes natively gets
+            // no handoff at all).
+            if ((args as { resumeSessionId?: string }).resumeSessionId) {
+              throw new Error(`Resource not found (session ${(args as { resumeSessionId: string }).resumeSessionId})`)
             }
             return fakeAgentSession("box")
           },

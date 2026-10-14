@@ -967,14 +967,19 @@ export interface WorkflowSuspendResumedEvent {
  *   - `exhausted` — `maxRetries` consecutive retries were already spent;
  *   - `skipped` — the failure is deliberately never retried (`skipReason`:
  *     an auth/billing error, a usage cap, an interrupted turn, a turn that
- *     already made a side-effecting tool call, a failed governance policy…).
+ *     already made a side-effecting tool call, a failed governance policy…);
+ *   - `migrated` — `turnRetry.action: "migrate"` moved the sandbox session
+ *     onto a fresh box (`migratedTo`: the new session id);
+ *   - `migrate-failed` — the box migration could not run (no orchestrator
+ *     configured, or `session_migrate` refused/failed) and the failure fell
+ *     back to a normal retry (`skipReason` carries why).
  * The same transitions are also stamped as `notice` lines in the session's
  * own transcript, so `session_story` shows them in place.
  */
 export interface SessionTurnRetryEvent {
   type: "session:turn-retry"
   sessionId: string
-  phase: "scheduled" | "rotated" | "sent" | "cancelled" | "exhausted" | "skipped"
+  phase: "scheduled" | "rotated" | "sent" | "cancelled" | "exhausted" | "skipped" | "migrated" | "migrate-failed"
   /** The failure class (`rate-limit`, `upstream-5xx`, `no-output-stall`, or
    *  a never-retried class such as `auth` / `usage-limit` / `other`). */
   errorClass: string
@@ -989,6 +994,11 @@ export interface SessionTurnRetryEvent {
   /** `rotated` only: the model the session was on, and the one it moved to. */
   fromModel?: string
   toModel?: string
+  /** `migrated` only: the new session id on the fresh box. */
+  migratedTo?: string
+  /** The session's `turnRetry.maxMigrations` (0 when the policy has none) —
+   *  the migration-cap twin of `maxRetries`. */
+  maxMigrations: number
   label?: string
   ts: string
 }

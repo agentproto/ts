@@ -223,6 +223,31 @@ const authSchema = z.object({
 //     runtime injects NOTHING and only scrubs the conflicting api-key vars.
 // `conflictEnv` are sibling credential vars scrubbed in every mode (except when
 // set); `unsetEnvAdd` is native-mode-only gateway hygiene.
+//
+// `boxLogin` is the box-login bridge declaration (external surfaces only): how
+// a HOST re-creates a redacted copy of this login inside a sandbox BOX, whose
+// fresh filesystem has neither the host's `~/.codex/auth.json` nor its
+// keychain. `keep` is the allowlist of dotted paths that survive; refresh-like
+// keys are dropped even when keep-listed (see runtime `box-login-bridge.ts`).
+const boxLoginSchema = z
+  .object({
+    // Provision-recipe id naming the login file (and the destination path,
+    // unless `file` overrides it home-relative).
+    recipe: z.string().min(1),
+    // Multi-surface recipe flavor (opencode: anthropic-oauth / openai-oauth).
+    methodId: z.string().min(1).optional(),
+    // Allowlist of dotted paths retained in the copy — must be non-empty: an
+    // empty one would copy nothing and the box's own verify would just fail.
+    keep: z.array(z.string().min(1)).min(1),
+    // Dotted path of the login's expiry inside the raw JSON (epoch s/ms/date).
+    expiresPath: z.string().min(1).optional(),
+    // Home-relative destination inside the box; absent ⇒ derived from the
+    // recipe's own `file` source. Absolute / `..` paths are rejected at copy
+    // time by the bridge, never written.
+    file: z.string().min(1).optional(),
+  })
+  .strict()
+
 const authSubscriptionEntrySchema = z.object({
   setEnv: z.string().min(1).optional(),
   external: z.boolean().optional(),
@@ -231,6 +256,7 @@ const authSubscriptionEntrySchema = z.object({
   // Provider scope for a multi-provider adapter's bearer surface (pi's
   // ANTHROPIC_OAUTH_TOKEN is anthropic-only) — see AgentCliAuthSubscription.
   provider: z.string().min(1).optional(),
+  boxLogin: boxLoginSchema.optional(),
 }).strict().superRefine((v, ctx) => {
   if (v.external) {
     if (v.setEnv !== undefined) {
@@ -249,6 +275,16 @@ const authSubscriptionEntrySchema = z.object({
         "authSubscription requires setEnv unless external: true (the bearer must be " +
         "injected into some env var).",
       path: ["setEnv"],
+    })
+  }
+  if (v.boxLogin && v.external !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "authSubscription.boxLogin requires external: true — only a file-based " +
+        "(external) login has a file to bridge into a box; a bearer surface " +
+        "crosses the boundary as an injected env var instead.",
+      path: ["boxLogin"],
     })
   }
 })

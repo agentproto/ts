@@ -59,6 +59,7 @@ async function pollClient(): Promise<{ client: Client; sessionId: string }> {
     errorClass: "rate-limit",
     attempt: 1,
     maxRetries: 3,
+    maxMigrations: 0,
     delayMs: 5000,
     ts: new Date().toISOString(),
   })

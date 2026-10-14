@@ -18,6 +18,12 @@ import { z } from "zod"
 export const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"] as const
 export type TurnRetryClass = (typeof TURN_RETRY_CLASSES)[number]
 
+/** What a matching failure does. `retry` (the default) re-prompts the same
+ *  live session after backoff; `migrate` moves a SANDBOX session to a fresh
+ *  box (new IP) and re-prompts it there — see `turn-retry.ts`. */
+export const TURN_RETRY_ACTIONS = ["retry", "migrate"] as const
+export type TurnRetryAction = (typeof TURN_RETRY_ACTIONS)[number]
+
 export interface TurnRetryPolicy {
   /** Which transient failure classes trigger a retry:
    *  - `rate-limit` — HTTP 429 / "rate limit" / "too many requests";
@@ -27,8 +33,17 @@ export interface TurnRetryPolicy {
    *    silent-429 loop). That turn is still running, so the retry interrupts
    *    it before re-prompting. */
   on: TurnRetryClass[]
+  /** What a matching failure does: `retry` re-prompts the same live session
+   *  after backoff; `migrate` moves a sandbox session to a fresh box (new IP)
+   *  and re-prompts it there. Default `retry` — fully backward compatible. */
+  action: TurnRetryAction
   /** Consecutive retries allowed without a clean turn in between. */
   maxRetries: number
+  /** Box migrations allowed without a clean turn in between (action `migrate`
+   *  only). Independent of `maxRetries`: once the cap is spent the failure
+   *  falls back to a normal retry / give-up. Default
+   *  {@link TURN_MIGRATE_DEFAULTS}. */
+  maxMigrations: number
   /** First retry's backoff delay (ms), before `factor` compounds it. */
   baseDelayMs: number
   /** Exponential backoff multiplier per consecutive retry. */
@@ -69,6 +84,10 @@ export const TURN_RETRY_DEFAULTS = {
   maxDelayMs: 60_000,
 } as const
 
+export const TURN_MIGRATE_DEFAULTS = {
+  maxMigrations: 2,
+} as const
+
 export const TURN_ROTATE_DEFAULTS = {
   rotateOn: ["rate-limit", "no-output-stall"] as TurnRetryClass[],
   cooldownMs: 10 * 60_000,
@@ -97,13 +116,16 @@ export function validateTurnRetryRotate(
 }
 
 /** Input shape (agent_start / user preset): only `on` is required; the
- *  numeric knobs default to {@link TURN_RETRY_DEFAULTS}. */
+ *  numeric knobs default to {@link TURN_RETRY_DEFAULTS}, `action` to `retry`
+ *  and `maxMigrations` to {@link TURN_MIGRATE_DEFAULTS}. */
 export const turnRetryInputSchema = z.object({
   on: z.array(z.enum(TURN_RETRY_CLASSES)).min(1),
+  action: z.enum(TURN_RETRY_ACTIONS).optional(),
   maxRetries: z.number().int().positive().optional(),
   baseDelayMs: z.number().int().nonnegative().optional(),
   factor: z.number().min(1).optional(),
   maxDelayMs: z.number().int().nonnegative().optional(),
+  maxMigrations: z.number().int().positive().optional(),
   retryAfterToolCalls: z.boolean().optional(),
   rotate: z
     .array(z.object({ model: z.string().min(1), profileRef: z.string().min(1).optional() }))
@@ -121,10 +143,12 @@ export function resolveTurnRetryPolicy(input: TurnRetryInput): TurnRetryPolicy {
   const baseDelayMs = input.baseDelayMs ?? TURN_RETRY_DEFAULTS.baseDelayMs
   return {
     on: [...new Set(input.on)],
+    action: input.action ?? "retry",
     maxRetries: input.maxRetries ?? TURN_RETRY_DEFAULTS.maxRetries,
     baseDelayMs,
     factor: input.factor ?? TURN_RETRY_DEFAULTS.factor,
     maxDelayMs: Math.max(input.maxDelayMs ?? TURN_RETRY_DEFAULTS.maxDelayMs, baseDelayMs),
+    maxMigrations: input.maxMigrations ?? TURN_MIGRATE_DEFAULTS.maxMigrations,
     ...(input.retryAfterToolCalls ? { retryAfterToolCalls: true } : {}),
     ...(input.rotate?.length
       ? {

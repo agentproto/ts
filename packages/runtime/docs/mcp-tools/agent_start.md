@@ -364,6 +364,19 @@ restart up to the `maxDelayMs` ceiling. `resume` is reserved for a future
 explicit resume-vs-fresh-spawn toggle; today's behaviour always revives in
 place.
 
+`"sandbox-gone"` is a third `on` value, for sessions that ran inside a
+sandbox box (`agent_start.sandbox`): when the BOX itself is gone — lifetime
+cap reached, the provider reclaimed it, or it became unreachable past
+recovery — an in-place revival is structurally impossible, so a policy
+listing `"sandbox-gone"` instead moves the session to a FRESH box: the same
+path `session_restart` takes (re-clone the workspace remote, re-check the
+recorded `wt/` work branch out, restore the last checkpoint snapshot) after
+the same backoff and under the same crash-loop cap. The replacement session
+is prompted once to continue the original task from where the pushed work
+stops. When the move is blocked (no workspace remote, no tarball checkpoint,
+provider missing) the session is left dead with a single `[sandbox-gone]`
+notice — never a retry loop.
+
 ## turnRetry
 
 Opt-in retry of a turn that failed for a TRANSIENT provider reason. Off by

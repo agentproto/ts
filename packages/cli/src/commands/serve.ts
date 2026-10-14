@@ -831,6 +831,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // resolution order mirrors idleReapAfterMs's comment above (env >
         // config field > off).
         restartSweepIntervalMs: resolveRestartSweepIntervalMs(cfgDaemon.restartSweepIntervalMs),
+        // Default `restartPolicy` for box sessions with no explicit policy
+        // (`daemon.sandboxGoneRestartDefault`). OFF unless set — an unset /
+        // false value leaves every spawn exactly as it is today.
+        sandboxGoneRestartDefault: cfgDaemon.sandboxGoneRestartDefault === true,
         // Turn-liveness watchdog (turn-liveness-watchdog chantier). DEFAULT
         // ON: resolution order mirrors crashDetectIntervalMs's comment above
         // — an unset value here passes `undefined` through so createGateway
