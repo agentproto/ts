@@ -12,6 +12,11 @@
       "reason": "app-to-app calls: exposes.workflows declares the callable surface other apps may name in requires.apps[].workflows; pending upstream spec PR"
     },
     {
+      "file": "aip-53/draft/APP.schema.json",
+      "field": "properties.ui.properties.toolScope",
+      "reason": "link-token scoping: argument-level refinement of ui.tools, keyed by tool id, enforced only for calls made under a valid AIP-53 scoped link/session token; pending upstream spec PR"
+    },
+    {
       "file": "aip-62/draft/REVIEW.schema.json",
       "field": "$defs.agentCheck.properties.fallbackPresets",
       "reason": "review lane fallback: ordered fallback reviewer presets tried when the primary reviewer is unavailable; pending upstream spec PR"

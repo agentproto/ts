@@ -46,6 +46,48 @@ for the UI-to-daemon bridge (`APP.md`'s `ui: { tools: [...] }`) — two
 different surfaces (a UI panel's fetch calls vs. an agent's tool calls),
 same rule: nothing reaches the daemon that wasn't explicitly declared.
 
+**These two allowlists never merge.** An AGENT.md's `tools:` is what the
+*agent* (the model running inside a spawned session) may call; `ui.tools`
+(and its `ui.toolScope` refinement below) is what the app's *UI* may call
+through the daemon's `app_tool_call` bridge. A UI panel never gets an
+agent's tools just by being bundled in the same app, and an agent never
+gets the UI's bridge. If you need a UI-originated action to be gated as
+tightly as an agent's, that's `ui.toolScope` (below) — not a reason to add
+a new allowlist mechanism.
+
+## `ui.toolScope` — scoping a UI tool call to one link (AIP-53)
+
+`ui.tools` says WHICH tools a UI panel may call; `ui.toolScope` narrows WHAT
+ARGUMENTS it may call them with, but only when the call rides on a scoped
+**app-link token** rather than the UI's normal (trusted) daemon connection:
+
+```yaml
+ui:
+  tools: [conversation_read]
+  toolScope:
+    conversation_read:
+      sessionId: "$link.sessionId"
+```
+
+Normally (the app's UI running in its usual embedded/standalone context) this
+field does nothing — `ui.tools` behaves exactly as before. It only takes
+effect for a request authenticated by a link-SESSION token: every argument
+named here is checked against the token's own claim (absent → injected from
+the claim; present-and-different → refused), and every tool NOT listed in
+`toolScope` is refused outright, even if it's in `ui.tools` — scoped mode
+has no union with the normal allowlist and no automatic discovery-tools
+grant.
+
+The concrete motivating case is a session-chat link sent over Telegram: the
+daemon's `app_link_mint` tool (privileged — never itself placed in
+`ui.tools`) mints a token bound to one `(appId, sessionId, telegramUserId)`;
+opening it requires the holder's Telegram account to pass `POST
+/apps/:appId/link-auth` before anything scoped actually works. See
+`packages/runtime/src/app-link-token.ts`, `app-link-auth.ts` and
+`app-link-gate.ts` for the full mechanism, and `AGENTS.md`/this file's note
+above for why it's a UI-call concern only — it never touches an AGENT.md's
+own `tools:`.
+
 ## `appId` — filled in for you
 
 `app_data_read` / `app_data_write` / `app_data_list` / `app_run` and most

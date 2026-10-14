@@ -145,6 +145,46 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       seen.add(id)
     }
   }
+  // `app_link_mint` is a privileged daemon verb (mints a scoped link token —
+  // see `@agentproto/runtime`'s app-link-token.ts) that must NEVER be
+  // reachable through an app's own UI-tool-call surface: a UI that could
+  // mint its own tokens could mint one scoped to any claim it likes,
+  // defeating the whole point of link-token scoping. Checked on the raw
+  // `tools` list (not just via `dispatchAllowlistedAppTool`'s runtime
+  // defense) so a misdeclared APP.md fails loudly at author time.
+  if (def.ui?.tools?.includes("app_link_mint")) {
+    throw new AppDefinitionError(
+      "`ui.tools` must not include \"app_link_mint\" — minting a link token is a privileged daemon action, never reachable from a UI's own tool-call surface.",
+    )
+  }
+  if (def.ui?.toolScope !== undefined) {
+    const allowedTools = new Set(def.ui.tools ?? [])
+    for (const [toolId, argMap] of Object.entries(def.ui.toolScope)) {
+      if (!allowedTools.has(toolId)) {
+        throw new AppDefinitionError(
+          `\`ui.toolScope\` entry '${toolId}' is not in \`ui.tools\` — a scoped tool must also be in the UI's own allowlist.`,
+        )
+      }
+      if (typeof argMap !== "object" || argMap === null || Array.isArray(argMap)) {
+        throw new AppDefinitionError(`\`ui.toolScope.${toolId}\` must be an object of argName -> "$link.<claim>".`)
+      }
+      // An empty entry (`{}`) would make `toolId` callable with NO argument
+      // constraint at all under a scoped link token — defeating the whole
+      // point of scoping it rather than just leaving it out of `toolScope`.
+      if (Object.keys(argMap).length === 0) {
+        throw new AppDefinitionError(
+          `\`ui.toolScope.${toolId}\` is empty — a scoped tool needs at least one argName -> "$link.<claim>" constraint, or it shouldn't be in \`toolScope\` at all.`,
+        )
+      }
+      for (const [argName, claimRef] of Object.entries(argMap)) {
+        if (typeof claimRef !== "string" || !/^\$link\.[A-Za-z0-9_]+$/.test(claimRef)) {
+          throw new AppDefinitionError(
+            `\`ui.toolScope.${toolId}.${argName}\` must look like "$link.<claim>" (e.g. "$link.sessionId"), got ${JSON.stringify(claimRef)}.`,
+          )
+        }
+      }
+    }
+  }
   const ui = def.ui
     ? Object.freeze({
         ...def.ui,

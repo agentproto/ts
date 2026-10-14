@@ -146,6 +146,14 @@
           "items": { "type": "string", "minLength": 1 },
           "description": "The ui_tool_call / app_tool_call allowlist — every tool a UI-originated call may reach. Enforced server-side on every call."
         },
+        "toolScope": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "pattern": "^\\$link\\.[A-Za-z0-9_]+$" }
+          },
+          "description": "Argument-level refinement of `tools`, keyed by tool id (which MUST also be in `tools`): argName -> \"$link.<claim>\" reference into a scoped app-link token's claims. Enforced only for calls made under a valid link/session token (AIP-53 link-token scoping); unaffected otherwise."
+        },
         "port": {
           "type": "integer",
           "minimum": 1,

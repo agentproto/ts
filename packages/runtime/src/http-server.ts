@@ -130,6 +130,9 @@ import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
+import { appLinkToolCallAuth, appLinkTunnelBypass, logAppLinkAccess } from "./app-link-gate.js"
+import { authorizeAppLink } from "./app-link-auth.js"
+import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 import { handleA2aTaskRequest, type A2aTaskHttpConfig } from "./a2a-task-http.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
 import { resolveAppUiBuildState } from "./app-ui-build.js"
@@ -1305,6 +1308,16 @@ export interface RuntimeHttpServerOptions {
    *  index.ts hands `registerAppTools`; omitted ⇒ tool-call dispatch reports
    *  "not enabled", the UI route still serves. */
   appToolCallDeps?: AppToolCallDeps
+  /** Optional — backs `POST /apps/:appId/link-auth` (AIP-53 link-token
+   *  scoping, app-link-auth.ts): the Telegram bot credential store a
+   *  link's `initData` is verified against. Omitted ⇒ the route reports
+   *  "not enabled" rather than 404ing (mirrors `appToolCallDeps`'s
+   *  posture); every other route is unaffected either way. */
+  telegramCreds?: TelegramBotCredsStore
+  /** Test seam only — overrides the AIP-53 link-token HMAC signing key path
+   *  (default: the daemon's persisted `~/.agentproto/keys/app_link_hmac`).
+   *  A production caller never sets this. */
+  appLinkKeyPath?: string
   /** Optional — A2A task ingress (`POST /a2a/apps/:appId`) ledger dir and
    *  manifest loader; defaults suit a real daemon. Needs `appRegistry` and
    *  `appToolCallDeps.dispatchTool` to be wired. */
@@ -1521,6 +1534,14 @@ export async function startHttpServer(
    *     assets (`GET /apps/:appId/ui/assets/:file`, a validated flat file
    *     name only — `isAppUiShellRequest`) share the exemption: the page's
    *     `<script src>`/`<link href>` loads can't carry the bearer either.
+   *   - `POST /apps/:appId/link-auth` (AIP-53 link-token scoping,
+   *     app-link-auth.ts) — same reasoning as the shell: the opener has
+   *     nothing but a link token at this point, no bearer to present yet.
+   *     This route's own credential is the link token + Telegram `initData`
+   *     in its body, verified inside `handleAppLinkAuth`/`authorizeAppLink`
+   *     — never the daemon bearer. What it RETURNS (a link-SESSION token)
+   *     is itself narrowly scoped by `appLinkTunnelBypass` below, never a
+   *     bearer-equivalent.
    *
    * `?et=` (the widget embed token) deliberately does NOT bypass this gate.
    * It's scoped to a local MCP-Apps host that already has `tools/call` on
@@ -1531,6 +1552,18 @@ export async function startHttpServer(
    * bearer at all. Loopback traffic is untouched either way — this whole
    * function is a no-op there — so the widget path keeps working exactly
    * as before for its real (local) use case.
+   *
+   * A fourth, narrower bypass (AIP-53 link-token scoping, `app-link-gate.ts`'s
+   * `appLinkTunnelBypass`): a valid Telegram-identity-bound link-SESSION
+   * token (minted by `app_link_mint`, exchanged via `POST
+   * /apps/:appId/link-auth`) is accepted ONLY for that token's own `POST
+   * /apps/:appId/tool-call` and its own session's three read routes
+   * (`GET /sessions/:id`, `/events`, `/events/stream`). Unlike `?et=`, this
+   * one IS meant to cross the tunnel boundary — it's the whole point of a
+   * link sent over Telegram — but it carries no more than that single
+   * session's read access plus whatever the app's own `ui.toolScope`
+   * grants, enforced again downstream (`dispatchAllowlistedAppTool`'s
+   * scoped mode for tool-call; the sessionId match itself for reads).
    */
   function tunnelBearerAllowed(
     req: IncomingMessage,
@@ -1544,6 +1577,7 @@ export async function startHttpServer(
     if (opts.eventsMcp && path.startsWith("/mcp/events/")) return true
     if (/^\/inbound\/[^/]+$/.test(path)) return true
     if (isAppUiShellRequest(method, path)) return true
+    if (method === "POST" && /^\/apps\/(.+)\/link-auth$/.test(path)) return true
     const header = req.headers.authorization
     if (header === `Bearer ${auth.token}`) return true
     const urlStr = req.url ?? ""
@@ -1553,6 +1587,7 @@ export async function startHttpServer(
       ).get("token")
       if (qsToken && qsToken === auth.token) return true
     }
+    if (appLinkTunnelBypass(req, path, method, opts.appLinkKeyPath)) return true
     return false
   }
 
@@ -4722,18 +4757,47 @@ export async function startHttpServer(
           }
           const toolCallMatch = path.match(/^\/apps\/(.+)\/tool-call$/)
           if (toolCallMatch && req.method === "POST") {
-            // The blob-frame widget path POSTs here from an opaque origin
-            // (`Origin: null`) with `?et=` — guardBrowserOrigin itself
-            // honours the token (embedTokenTrusted), no scoped bypass needed.
-            if (guardBrowserOrigin(req, res)) return
-            if (!authorize(req, res)) return
+            const routeAppId = decodeURIComponent(toolCallMatch[1]!)
+            // AIP-53 link-token scoping: a valid Telegram-authorized
+            // link-SESSION token for THIS appId (app-link-gate.ts) bypasses
+            // the browser-origin + bearer gates below — it's the whole
+            // point of a link opened from outside this daemon's normal
+            // trust boundary. `dispatchAllowlistedAppTool`'s scoped mode
+            // (app-tools.ts) is the actual enforcement; a bypass here only
+            // decides whether the request reaches it at all.
+            const linkAuth = appLinkToolCallAuth(req, routeAppId, opts.appLinkKeyPath)
+            if (linkAuth) {
+              logAppLinkAccess({ route: "tool-call", auth: linkAuth, ...(req.socket.remoteAddress ? { ip: req.socket.remoteAddress } : {}) })
+            } else {
+              // The blob-frame widget path POSTs here from an opaque origin
+              // (`Origin: null`) with `?et=` — guardBrowserOrigin itself
+              // honours the token (embedTokenTrusted), no scoped bypass needed.
+              if (guardBrowserOrigin(req, res)) return
+              if (!authorize(req, res)) return
+            }
             await handleAppUiToolCall(
               req,
               res,
-              decodeURIComponent(toolCallMatch[1]!),
+              routeAppId,
               opts.appRegistry,
               opts.appToolCallDeps ?? {},
+              linkAuth
+                ? { sessionId: linkAuth.sessionId, ...(linkAuth.telegramUserId ? { telegramUserId: linkAuth.telegramUserId } : {}) }
+                : undefined,
             )
+            return
+          }
+          // AIP-53 link-token scoping: exchange a Telegram-gated link token
+          // for a short-lived session token — see app-link-auth.ts's
+          // `authorizeAppLink` for the whole flow. Same gating as the
+          // `/ui` shell above (not `/tool-call`): the opener has nothing
+          // but the link yet, so this route can't require the bearer
+          // either; it has its own, narrower, single-use credential
+          // instead (the link token itself, verified inside the handler).
+          const linkAuthMatch = path.match(/^\/apps\/(.+)\/link-auth$/)
+          if (linkAuthMatch && req.method === "POST") {
+            if (guardBrowserOrigin(req, res)) return
+            await handleAppLinkAuth(req, res, decodeURIComponent(linkAuthMatch[1]!), opts.telegramCreds, opts.appLinkKeyPath)
             return
           }
           // Binary sibling of the app_external_read MCP tool — streams a
@@ -11736,6 +11800,10 @@ async function handleAppUiToolCall(
   appId: string,
   appRegistry: AppRegistry,
   deps: AppToolCallDeps,
+  /** Claims from a verified AIP-53 link-SESSION token scoped to THIS
+   *  appId (`appLinkToolCallAuth`), when the request carried one. See
+   *  `performAppToolCall`'s same parameter. */
+  linkClaims?: Readonly<Record<string, string>>,
 ): Promise<void> {
   const body = (await readJsonBody(req)) as { tool?: unknown; args?: unknown } | null
   const badRequest = (message: string): void => {
@@ -11771,14 +11839,69 @@ async function handleAppUiToolCall(
   }
   const installed = appRegistry.getApp(appId)
   const result = installed?.ui
-    ? await performAppToolCall(appRegistry, { appId, tool, args }, deps)
+    ? await performAppToolCall(appRegistry, { appId, tool, args }, deps, linkClaims)
     : await performBuiltinPanelToolCall(
         resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))?.tools,
         { appId, tool, args },
         deps,
+        linkClaims,
       )
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify(result))
+}
+
+/** `POST /apps/:appId/link-auth` `{ linkToken, initData }` — exchange an
+ *  AIP-53 Telegram-gated link token for a short-lived link-SESSION token,
+ *  via `app-link-auth.ts`'s `authorizeAppLink`. The opener has nothing but
+ *  the link at this point (no bearer, no prior daemon credential): this
+ *  route's own auth IS the link token + the Telegram Mini App `initData`
+ *  it carries, verified inside `authorizeAppLink` against the daemon's
+ *  stored bot token — never the daemon bearer. Replies 200 with
+ *  `{ ok: true, token, exp, appId, sessionId }` on success; 400/401/403
+ *  with `{ ok: false, error }` otherwise. 501 when no `telegramCreds` store
+ *  was wired (mirrors `appToolCallDeps`'s "not enabled" posture). */
+async function handleAppLinkAuth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appId: string,
+  telegramCreds: TelegramBotCredsStore | undefined,
+  keyPath?: string,
+): Promise<void> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+  if (!telegramCreds) {
+    json(501, { ok: false, error: "link-auth is not enabled on this daemon (no Telegram bot credential store wired)." })
+    return
+  }
+  const body = (await readJsonBody(req)) as { linkToken?: unknown; initData?: unknown } | null
+  if (!body || typeof body.linkToken !== "string" || typeof body.initData !== "string") {
+    json(400, { ok: false, error: 'body must be `{ "linkToken": string, "initData": string }`.' })
+    return
+  }
+  const result = await authorizeAppLink({
+    linkToken: body.linkToken,
+    initData: body.initData,
+    telegramCreds,
+    ...(keyPath ? { keyPath } : {}),
+    ...(req.socket.remoteAddress ? { ip: req.socket.remoteAddress } : {}),
+    ...(typeof req.headers["user-agent"] === "string" ? { userAgent: req.headers["user-agent"] } : {}),
+  })
+  if (!result.ok) {
+    json(result.status, { ok: false, error: result.error })
+    return
+  }
+  // The token the opener now carries forward does NOT need to have come
+  // from `appId` (the token itself is appId-scoped) — but a mismatch here
+  // would mean the link was minted for a DIFFERENT app than the route it
+  // was opened under, which is never a legitimate flow, so it's refused
+  // rather than silently honoured.
+  if (result.appId !== appId) {
+    json(401, { ok: false, error: `this link token is scoped to app "${result.appId}", not "${appId}".` })
+    return
+  }
+  json(200, { ok: true, token: result.sessionToken, exp: result.exp, appId: result.appId, sessionId: result.sessionId })
 }
 
 async function handleApps(

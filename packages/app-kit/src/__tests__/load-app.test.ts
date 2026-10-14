@@ -287,6 +287,7 @@ describe("loadAppHandle — the inverse of emit", () => {
         description: "A panel.",
         tools: ["read_file"],
         renders: ["read_file"],
+        toolScope: { read_file: { sessionId: "$link.sessionId" } },
         port: 8123,
         csp: { connectDomains: ["api.example.com"], resourceDomains: ["cdn.example.com"] },
       },
@@ -299,6 +300,7 @@ describe("loadAppHandle — the inverse of emit", () => {
     expect(loaded.ui?.description).toBe("A panel.")
     expect(loaded.ui?.tools).toEqual(["read_file"])
     expect(loaded.ui?.renders).toEqual(["read_file"])
+    expect(loaded.ui?.toolScope).toEqual({ read_file: { sessionId: "$link.sessionId" } })
     expect(loaded.ui?.port).toBe(8123)
     expect(loaded.ui?.csp).toEqual({
       connectDomains: ["api.example.com"],

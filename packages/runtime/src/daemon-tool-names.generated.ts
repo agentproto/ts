@@ -37,6 +37,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "app_external_list",
   "app_external_read",
   "app_install",
+  "app_link_mint",
   "app_list",
   "app_list_applied",
   "app_resync",

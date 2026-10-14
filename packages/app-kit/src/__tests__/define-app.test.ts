@@ -602,3 +602,58 @@ describe("defineApp — ui.renders", () => {
     ).toThrow(AppDefinitionError)
   })
 })
+
+describe("defineApp — ui.toolScope (AIP-53 link-token scoping)", () => {
+  it("accepts a toolScope entry whose tool id is also in ui.tools and whose claim refs look like $link.<claim>", () => {
+    const app = defineApp({
+      ui: {
+        html: "<html></html>",
+        tools: ["conversation_read"],
+        toolScope: { conversation_read: { sessionId: "$link.sessionId" } },
+      },
+    })
+    expect(app.ui?.toolScope).toEqual({ conversation_read: { sessionId: "$link.sessionId" } })
+  })
+
+  it("throws when a toolScope tool id is not in ui.tools", () => {
+    expect(() =>
+      defineApp({
+        ui: { html: "<html></html>", tools: ["search"], toolScope: { conversation_read: { sessionId: "$link.sessionId" } } },
+      }),
+    ).toThrow(AppDefinitionError)
+  })
+
+  it("throws on a claim ref that doesn't look like $link.<claim>", () => {
+    expect(() =>
+      defineApp({
+        ui: { html: "<html></html>", tools: ["conversation_read"], toolScope: { conversation_read: { sessionId: "sess_abc" } } },
+      }),
+    ).toThrow(AppDefinitionError)
+  })
+
+  it("throws on an empty toolScope entry — it would grant the tool with no argument constraint at all", () => {
+    expect(() =>
+      defineApp({
+        ui: { html: "<html></html>", tools: ["conversation_read"], toolScope: { conversation_read: {} } },
+      }),
+    ).toThrow(AppDefinitionError)
+  })
+
+  it("throws when toolScope's own value isn't an object", () => {
+    expect(() =>
+      defineApp({
+        ui: {
+          html: "<html></html>",
+          tools: ["conversation_read"],
+          toolScope: { conversation_read: "nope" as unknown as Record<string, string> },
+        },
+      }),
+    ).toThrow(AppDefinitionError)
+  })
+
+  it('throws when ui.tools includes "app_link_mint" — a privileged daemon action, never UI-reachable', () => {
+    expect(() =>
+      defineApp({ ui: { html: "<html></html>", tools: ["app_link_mint"] } }),
+    ).toThrow(AppDefinitionError)
+  })
+})

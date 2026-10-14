@@ -85,6 +85,13 @@ export interface InstalledApp {
     readonly title?: string
     readonly description?: string
     readonly tools?: readonly string[]
+    /** AIP-53 link-token scoping (app-link-token.ts): argument-level
+     *  refinement of `tools`, keyed by tool id, enforced only for calls
+     *  made under a valid scoped link/session token. See
+     *  `@agentproto/app-kit`'s `AppUiDefinition.toolScope` for the full
+     *  contract — carried here verbatim from `installed.ui.toolScope` at
+     *  install time. */
+    readonly toolScope?: Readonly<Record<string, Readonly<Record<string, string>>>>
     readonly csp?: {
       readonly connectDomains?: readonly string[]
       readonly resourceDomains?: readonly string[]

@@ -69,6 +69,7 @@ interface AppFrontmatterUi {
   readonly description?: string
   readonly tools?: readonly string[]
   readonly renders?: readonly string[]
+  readonly toolScope?: Readonly<Record<string, Readonly<Record<string, string>>>>
   readonly port?: number
   readonly csp?: {
     readonly connectDomains?: readonly string[]
@@ -426,6 +427,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       ...(fm.ui.description !== undefined ? { description: fm.ui.description } : {}),
       ...(fm.ui.tools !== undefined ? { tools: fm.ui.tools } : {}),
       ...(fm.ui.renders !== undefined ? { renders: fm.ui.renders } : {}),
+      ...(fm.ui.toolScope !== undefined ? { toolScope: fm.ui.toolScope } : {}),
       ...(fm.ui.port !== undefined ? { port: fm.ui.port } : {}),
       ...(fm.ui.csp !== undefined ? { csp: fm.ui.csp } : {}),
       ...(build !== undefined ? { build } : {}),

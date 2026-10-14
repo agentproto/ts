@@ -44,6 +44,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, APP_DATA_ROOT_SUBDIR, defaultRemoteAppDataDir, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
+import { mintAppLinkToken } from "./app-link-token.js"
 import {
   APP_INSTALL_EXCLUSIVE_ERROR,
   appInstallInputSchema,
@@ -654,21 +655,80 @@ export function buildAppInstallPreview(args: Record<string, unknown>): AppInstal
   }
 }
 
+/**
+ * A verified AIP-53 link-SESSION token's claims, paired with the app's own
+ * `ui.toolScope` declaration — everything `dispatchAllowlistedAppTool` needs
+ * to run in SCOPED mode instead of its normal `ui.tools` allowlist check.
+ * Resolved by http-server.ts (`appLinkToolCallAuth`) from the request, never
+ * trusted from anywhere else.
+ */
+export interface AppLinkScope {
+  toolScope: Readonly<Record<string, Readonly<Record<string, string>>>>
+  claims: Readonly<Record<string, string>>
+}
+
+function parseLinkClaimRef(claimRef: string): string | undefined {
+  return claimRef.startsWith("$link.") ? claimRef.slice("$link.".length) : undefined
+}
+
 async function dispatchAllowlistedAppTool(
   declaredAllowlist: readonly string[],
   input: { appId: string; tool: string; args?: Record<string, unknown> },
   deps: AppToolCallDeps,
   appDir?: string,
+  linkScope?: AppLinkScope,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
-  const effectiveAllowlist: readonly string[] = [...declaredAllowlist, ...APP_UI_DISCOVERY_TOOLS]
-  if (!effectiveAllowlist.includes(input.tool)) {
-    return errorResult(
-      `app_tool_call: tool "${input.tool}" is not in app "${input.appId}"'s ui.tools allowlist: ` +
-        `${declaredAllowlist.length > 0 ? declaredAllowlist.join(", ") : "(empty)"}`,
-    )
+  // `app_link_mint` is privileged (mints a scoped token — app-link-token.ts)
+  // and must NEVER be reachable through this gateway at all, scoped or not:
+  // `defineApp` already refuses to let an app put it in `ui.tools`, but a
+  // builtin panel's allowlist isn't app-kit-validated, so this is the
+  // actual fail-closed enforcement.
+  if (input.tool === "app_link_mint") {
+    return errorResult(`app_tool_call: "app_link_mint" is a privileged daemon action, never reachable via app_tool_call.`)
   }
 
-  const args = input.args ?? {}
+  let args: Record<string, unknown>
+  if (linkScope) {
+    // Scoped mode (a Telegram-authorized link-session token): the token's
+    // own `ui.toolScope` entries are the WHOLE allowlist — no
+    // `APP_UI_DISCOVERY_TOOLS` union, no bundled/imported-tool exemption
+    // beyond what's declared. A link proves identity for one session; it
+    // must not become a parallel allowlist shaped differently from the
+    // UI's own.
+    const argMap = linkScope.toolScope[input.tool]
+    if (!argMap) {
+      return errorResult(
+        `app_tool_call: tool "${input.tool}" is not in app "${input.appId}"'s ui.toolScope — refused under a scoped link token.`,
+      )
+    }
+    const scopedArgs: Record<string, unknown> = { ...(input.args ?? {}) }
+    for (const [argName, claimRef] of Object.entries(argMap)) {
+      const claimName = parseLinkClaimRef(claimRef)
+      const claimValue = claimName ? linkScope.claims[claimName] : undefined
+      if (claimValue === undefined) {
+        return errorResult(
+          `app_tool_call: scoped link token carries no claim for "${claimRef}" (required by "${input.tool}"'s "${argName}" argument).`,
+        )
+      }
+      if (scopedArgs[argName] === undefined) {
+        scopedArgs[argName] = claimValue
+      } else if (scopedArgs[argName] !== claimValue) {
+        return errorResult(
+          `app_tool_call: argument "${argName}" does not match this link's "${claimRef}" claim — refused.`,
+        )
+      }
+    }
+    args = scopedArgs
+  } else {
+    const effectiveAllowlist: readonly string[] = [...declaredAllowlist, ...APP_UI_DISCOVERY_TOOLS]
+    if (!effectiveAllowlist.includes(input.tool)) {
+      return errorResult(
+        `app_tool_call: tool "${input.tool}" is not in app "${input.appId}"'s ui.tools allowlist: ` +
+          `${declaredAllowlist.length > 0 ? declaredAllowlist.join(", ") : "(empty)"}`,
+      )
+    }
+    args = input.args ?? {}
+  }
   // App-UI install guard: an `app_install` routed through an app panel's
   // tool-call surface (`window.McpApp` bridge → this dispatcher) needs an
   // EXPLICIT confirmation — first call (no `confirm`) answers a preview
@@ -736,12 +796,20 @@ export async function performAppToolCall(
   appRegistry: AppRegistry,
   input: { appId: string; tool: string; args?: Record<string, unknown> },
   deps: AppToolCallDeps,
+  /** Claims from a verified link-SESSION token (http-server.ts's
+   *  `appLinkToolCallAuth`), when the request carried one. Combined here
+   *  with the installed app's OWN `ui.toolScope` declaration — the caller
+   *  never supplies the scope map itself. */
+  linkClaims?: Readonly<Record<string, string>>,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
   const installed = appRegistry.getApp(input.appId)
   if (!installed || !installed.ui) {
     return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
   }
-  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir)
+  const linkScope: AppLinkScope | undefined = linkClaims
+    ? { toolScope: installed.ui.toolScope ?? {}, claims: linkClaims }
+    : undefined
+  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir, linkScope)
 }
 
 /**
@@ -762,11 +830,17 @@ export async function performBuiltinPanelToolCall(
   tools: readonly string[] | undefined,
   input: { appId: string; tool: string; args?: Record<string, unknown> },
   deps: AppToolCallDeps,
+  /** See `performAppToolCall`'s same parameter. A builtin panel never
+   *  declares a `ui.toolScope` (`resolveBuiltinPanelUi` carries no such
+   *  field), so a scoped call here always fails closed with "not in
+   *  ui.toolScope" — there is no scope map to grant against. */
+  linkClaims?: Readonly<Record<string, string>>,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
   if (tools === undefined) {
     return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
   }
-  return dispatchAllowlistedAppTool(tools, input, deps)
+  const linkScope: AppLinkScope | undefined = linkClaims ? { toolScope: {}, claims: linkClaims } : undefined
+  return dispatchAllowlistedAppTool(tools, input, deps, undefined, linkScope)
 }
 
 /**
@@ -1350,6 +1424,7 @@ export async function performInstall(
         ...(handle.ui?.title !== undefined ? { title: handle.ui.title } : {}),
         ...(handle.ui?.description !== undefined ? { description: handle.ui.description } : {}),
         ...(handle.ui?.tools !== undefined ? { tools: handle.ui.tools } : {}),
+        ...(handle.ui?.toolScope !== undefined ? { toolScope: handle.ui.toolScope } : {}),
         ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
         ...(handle.ui?.build !== undefined && allowUiBuild ? { build: handle.ui.build } : {}),
         // OpenAI MCP-extensions carrier (plan W-B): the normalized,
@@ -2617,6 +2692,52 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       }),
     ],
   })
+
+  const DEFAULT_APP_LINK_TTL_MS = 60 * 60_000
+  const DEFAULT_APP_LINK_SESSION_TTL_MS = 30 * 60_000
+
+  server.tool(
+    "app_link_mint",
+    "PRIVILEGED — mint a Telegram-identity-gated AIP-53 link token for an installed app's UI (e.g. the " +
+      "link a Telegram bot sends for `@agentik/session-chat`). The token ALONE never grants access: " +
+      "whoever opens it must first pass `POST /apps/:appId/link-auth` with their Telegram Mini App " +
+      "`initData`, which the daemon verifies against the stored bot token (telegram_bot_token_set) and " +
+      "the exact telegramUserId claimed here — only a matching account exchanges it for a short-lived " +
+      "session token that can actually call tools (scoped by the app's `ui.toolScope`) or read that one " +
+      "session. Never put \"app_link_mint\" in an app's `ui.tools` — it is refused there and unreachable " +
+      "from any UI's own tool-call surface regardless.",
+    {
+      appId: z.string().describe("Installed app id — must declare a non-empty `ui.toolScope`."),
+      sessionId: z.string().min(1).describe("The session this link is scoped to."),
+      telegramUserId: z.string().min(1).describe("The Telegram numeric user id (as a string) allowed to open this link."),
+      ttlMs: z.number().int().positive().optional().describe("How long the link stays openable before Telegram auth. Default 1 hour."),
+      sessionTtlMs: z.number().int().positive().optional().describe("How long the resulting session token lasts once authorized. Default 30 minutes."),
+      botAlias: z.string().optional().describe('Telegram bot alias to verify against at link-auth time; default "default".'),
+    },
+    async ({ appId, sessionId, telegramUserId, ttlMs, sessionTtlMs, botAlias }) => {
+      const installed = appRegistry.getApp(appId)
+      if (!installed || !installed.ui) {
+        return errorResult(`app_link_mint: app "${appId}" is not installed or has no UI.`)
+      }
+      if (!installed.ui.toolScope || Object.keys(installed.ui.toolScope).length === 0) {
+        return errorResult(
+          `app_link_mint: app "${appId}" declares no \`ui.toolScope\` — a link token would have no scoped tools to call.`,
+        )
+      }
+      const { token, exp } = mintAppLinkToken({
+        appId,
+        claims: {
+          sessionId,
+          telegramUserId,
+          sessionTtlMs: String(sessionTtlMs ?? DEFAULT_APP_LINK_SESSION_TTL_MS),
+          ...(botAlias ? { botAlias } : {}),
+        },
+        ttlMs: ttlMs ?? DEFAULT_APP_LINK_TTL_MS,
+        pendingTelegramAuth: true,
+      })
+      return textResult({ linkToken: token, exp, appId, sessionId, telegramUserId })
+    },
+  )
 
   server.tool(
     "app_tool_call",
