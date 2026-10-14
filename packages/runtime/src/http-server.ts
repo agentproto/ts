@@ -331,11 +331,13 @@ import {
 
 /** HTTP-safe descriptor projection. The registry retains resume env for PTY
  * reattachment; public session responses must not serialize it. Kept local
- * here because session-tools imports this module. */
+ * here because session-tools imports this module.
+ * The AGENT.md system-prompt text (`appendSystemPrompt`) is kept for restart
+ * re-application only and is not echoed either. */
 function sessionDescriptorForHttp(
   session: SessionDescriptor,
-): Omit<SessionDescriptor, "ptyResumeEnv"> {
-  const { ptyResumeEnv: _privateResumeEnv, ...publicDescriptor } = session
+): Omit<SessionDescriptor, "ptyResumeEnv" | "appendSystemPrompt"> {
+  const { ptyResumeEnv: _privateResumeEnv, appendSystemPrompt: _privateSystemPrompt, ...publicDescriptor } = session
   return publicDescriptor
 }
 

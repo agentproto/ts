@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join } from "node:path"
 import { createDoctype } from "@agentproto/define-doctype"
@@ -374,8 +374,11 @@ export function createAgentCliRuntime(
       // itself, "\n\n"-joined after any existing string value (codex
       // `developer_instructions`) and needs no config dir. An unparseable
       // existing value is left untouched (same stance as `small-model.ts`: the
-      // CLI complains about its own broken config).
+      // CLI complains about its own broken config) and the dropped text warned.
       const systemPromptDecl = definition.systemPrompt
+      // A private temp dir holding the file-list text when the host gave no
+      // config dir — removed with the session (see `close()` below).
+      let systemPromptTmpDir: string | undefined
       const systemPromptText = opts?.appendSystemPrompt
       if (systemPromptText && systemPromptDecl?.via === "inline-config") {
         const isFileList = systemPromptDecl.shape === "file-list"
@@ -384,7 +387,9 @@ export function createAgentCliRuntime(
           // The session's config dir when the host gave one; otherwise a
           // private temp dir — the runtime already counted on this channel
           // (no prefix fallback), so the text must land somewhere.
-          const dir = opts?.configDir ?? mkdtempSync(join(tmpdir(), "agentproto-system-prompt-"))
+          const dir =
+            opts?.configDir ??
+            (systemPromptTmpDir = mkdtempSync(join(tmpdir(), "agentproto-system-prompt-")))
           mkdirSync(dir, { recursive: true })
           payload = join(dir, "agentproto-system-prompt.md")
           writeFileSync(payload, systemPromptText)
@@ -404,6 +409,14 @@ export function createAgentCliRuntime(
               }
             } catch {
               // Not JSON — leave the value for the CLI to complain about.
+            }
+            if (!inline) {
+              // The runtime already skipped its prefix fallback for this
+              // channel, so a dropped text must at least be said out loud.
+              console.warn(
+                `[agent-cli] system prompt: ${systemPromptDecl.env} is not a JSON object — ` +
+                  "the AGENT.md system-prompt text is not delivered to this session.",
+              )
             }
           }
           if (inline) {
@@ -1031,6 +1044,7 @@ export function createAgentCliRuntime(
           // wrapper that may ignore SIGTERM, with the real adapter (and its
           // MCP servers / headless Chrome) running underneath it.
           if (child) await terminateChildTree(child)
+          if (systemPromptTmpDir) rmSync(systemPromptTmpDir, { recursive: true, force: true })
         },
       }
     },

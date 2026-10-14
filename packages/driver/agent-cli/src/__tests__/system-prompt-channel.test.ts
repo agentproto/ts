@@ -245,6 +245,18 @@ describe("system-prompt channel at spawn", () => {
         developer_instructions: "AGENT.md text",
       })
     })
+
+    it("warns when the existing value is not a JSON object, leaving it untouched", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
+        await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text", env: { CODEX_CONFIG: "not json" } })
+        expect(spawnCalls[0]!.env.CODEX_CONFIG).toBe("not json")
+        expect(warn.mock.calls.map(c => String(c[0])).join("\n")).toMatch(/CODEX_CONFIG is not a JSON object.*not delivered/)
+      } finally {
+        warn.mockRestore()
+      }
+    })
   })
 
   describe("via argv", () => {
