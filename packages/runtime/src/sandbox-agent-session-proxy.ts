@@ -988,12 +988,11 @@ export function createSandboxAgentSessionProxy(
     },
 
     async cancel(): Promise<void> {
+      if (closed || detached) return
       // Cancel on the box without starting another turn. Re-sending the
       // previous prompt with `interrupt: true` restarts that request before
       // the registry can deliver the replacement, and contaminates its stream.
-      const url = new URL(host.mcpUrl)
-      url.pathname = `/sessions/${encodeURIComponent(remoteSessionId)}/interrupt`
-      url.search = ""
+      const url = boxSessionUrl(host.mcpUrl, remoteSessionId, "/interrupt")
       const res = await fetch(url, {
         method: "POST",
         signal: AbortSignal.timeout(60_000),

@@ -416,7 +416,6 @@ describe("sandbox proxy — onBeforeTeardown", () => {
   })
 })
 
-
 describe("sandbox proxy — interrupt without replay", () => {
   afterEach(() => vi.unstubAllGlobals())
 
@@ -470,6 +469,18 @@ describe("sandbox proxy — interrupt without replay", () => {
     const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
     await proxy.cancel()
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(host.prompt).not.toHaveBeenCalled()
+  })
+
+  it.each(["close", "detach"] as const)("does not interrupt after %s", async action => {
+    const host = makeHost()
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1", detachable: true })
+    if (action === "close") await proxy.close()
+    else proxy.detach!()
+    await proxy.cancel()
+    expect(fetchMock).not.toHaveBeenCalled()
     expect(host.prompt).not.toHaveBeenCalled()
   })
 
