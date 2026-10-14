@@ -65,3 +65,33 @@ with:
 
 Nothing in the daemon primitive is Gemini-specific; it dropped in as a third
 row once the native adapter existed.
+
+## Inside a sandbox box — the box-login bridge (codex, opencode)
+
+A sandbox box boots with a fresh filesystem, so the host's login file is not
+there. For codex and opencode, an adapter's `authSubscription.boxLogin`
+declaration (`recipe`, optional `methodId`, a `keep` allowlist of dotted JSON
+paths, optional `expiresPath`) tells the host to copy a **redacted** login
+file into the box before the agent starts
+(`packages/runtime/src/box-login-bridge.ts`):
+
+- only the `keep` paths survive, and refresh-like keys never carry material
+  into the box (a kept refresh key such as codex's `tokens.refresh_token`
+  is written as an empty string so the CLI's parser still finds the field);
+- the file lands at the same home-relative path as on the host
+  (`~/.codex/auth.json`, `~/.local/share/opencode/auth.json`); an absolute or
+  `..` path, an unparseable file, an empty result or an already-expired login
+  is refused;
+- on a session restart / re-attach the copy is re-uploaded, and while a
+  session is working the host refreshes it in place (at most every 5 minutes),
+  re-uploading only when its digest changed;
+- the `auth` block forwarded to the box carries `loginFile: true`, a marker
+  that the file is in place — never a token — so no credential lands in the
+  session record. The marker is stamped by the host per spawn and is not
+  settable from config (`defaults.adapters.*.auth.loginFile` is accepted and
+  ignored).
+
+When the copy cannot be made (login missing or unreadable on the host, bad
+path, expired), no marker is stamped and the box falls back to verifying its
+own login, which fails loud — the session never starts silently
+unauthenticated.

@@ -377,6 +377,14 @@ stops. When the move is blocked (no workspace remote, no tarball checkpoint,
 provider missing) the session is left dead with a single `[sandbox-gone]`
 notice — never a retry loop.
 
+To opt in once for every box session instead of per spawn, set
+`agentproto config set daemon.sandboxGoneRestartDefault true` (off unless
+set; applies on daemon restart). A box session spawned with no explicit
+`restartPolicy` then gets a policy listing only `"sandbox-gone"` — a session
+that passes its own `restartPolicy` keeps it. Turning it on with
+`daemon.restartSweepIntervalMs` unset also arms the restart sweep at 30s, so
+the scheduled move actually runs.
+
 ## turnRetry
 
 Opt-in retry of a turn that failed for a TRANSIENT provider reason. Off by
