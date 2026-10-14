@@ -55,6 +55,14 @@ describe("the in-box pack command", () => {
     expect(buildAdapterStoreArchiveCommand("sbx_1", "/tmp/other.tar.gz")).toContain("/tmp/other.tar.gz")
   })
 
+  it("does not mask a tar failure behind gzip's exit status (no `tar | gzip` pipe)", () => {
+    const command = buildAdapterStoreArchiveCommand("sbx_dead_1")
+    expect(command).not.toMatch(/tar [^;]*\|\s*gzip/)
+    // tar writes a plain file first; gzip runs only after tar's rc was checked.
+    expect(command).toContain("-cf '/tmp/agentproto-adapter-store.tar.gz.tar'")
+    expect(command).toContain("gzip -n -c")
+  })
+
   it("parses the byte count and rejects output with no archive (store=missing)", () => {
     expect(parseAdapterStoreArchive("bytes=12345\n")).toEqual({ bytes: 12345 })
     expect(parseAdapterStoreArchive("anything\nbytes=7\n")).toEqual({ bytes: 7 })
@@ -214,6 +222,9 @@ describe("restoreAdapterStore", () => {
     expect(commands[0]).toContain("tar --no-same-owner -xzf")
     expect(commands[0]).toContain(`-C "$HOME"`)
     expect(commands[0]).toContain("restored")
+    // Member paths are vetted (absolute / `..`) before anything is extracted.
+    expect(commands[0]).toContain("tar -tzf")
+    expect(commands[0]).toContain("unsafe member path")
   })
 
   it("never throws: every failure resolves to a message the caller notices", async () => {

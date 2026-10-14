@@ -100,12 +100,17 @@ export function buildAdapterStoreArchiveCommand(
 ): string {
   const rel = shellQuote(adapterStoreRelativeDir(adapterSessionId))
   const out = shellQuote(boxPath)
+  const tmp = shellQuote(`${boxPath}.tar`)
+  // tar to a plain file first, THEN gzip it: piping `tar | gzip` would make
+  // `$?` gzip's status (no `pipefail` in POSIX sh), hiding a tar failure.
   return (
     `cfg="$HOME"/${rel}; ` +
     `[ -d "$cfg" ] || { echo "store=missing"; exit 0; }; ` +
-    `rm -f ${out}; ` +
-    `tar --sort=name -C "$HOME" -cf - ${rel} 2>/dev/null | gzip -n > ${out}; rc=$?; ` +
-    `[ $rc -le 1 ] && [ -s ${out} ] || { rm -f ${out}; echo "tar failed (exit $rc)" >&2; exit 2; }; ` +
+    `rm -f ${out} ${tmp}; ` +
+    `tar --sort=name -C "$HOME" -cf ${tmp} ${rel} 2>/dev/null; rc=$?; ` +
+    `if [ $rc -le 1 ] && [ -s ${tmp} ]; then gzip -n -c ${tmp} > ${out}; rc=$?; fi; ` +
+    `rm -f ${tmp}; ` +
+    `[ $rc -eq 0 ] && [ -s ${out} ] || { rm -f ${out}; echo "tar failed (exit $rc)" >&2; exit 2; }; ` +
     `echo "bytes=$(wc -c < ${out} | tr -d ' ')"`
   )
 }
@@ -244,6 +249,9 @@ export async function restoreAdapterStore(input: RestoreAdapterStoreInput): Prom
     // box, without needing root to restore ownership.
     const result = await input.exec({
       command:
+        // Refuse an archive with absolute or `..` member paths before extracting.
+        `if tar -tzf ${shellQuote(BOX_ADAPTER_STORE_RESTORE_PATH)} | grep -qE '(^/|(^|/)\\.\\.(/|$))'; ` +
+        `then echo "unsafe member path in adapter store archive" >&2; exit 3; fi; ` +
         `tar --no-same-owner -xzf ${shellQuote(BOX_ADAPTER_STORE_RESTORE_PATH)} -C "$HOME" && ` +
         `rm -f ${shellQuote(BOX_ADAPTER_STORE_RESTORE_PATH)} && echo restored`,
       timeoutMs,

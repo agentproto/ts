@@ -2599,8 +2599,14 @@ export async function spawnAgentSession(
         sourceSessionId: row.id,
       }
     }
-    const restoredDir = adapterConfigDirFor(id)
-    if (existsSync(restoredDir)) {
+    // `id` is caller-controlled (`agent_start.resumeSessionId`): only treat
+    // it as a restored-store key when it is a plain session-id token, so a
+    // value like `../../.claude` can never point the existence probe,
+    // discovery, or the adapter's `configDir` at an arbitrary directory.
+    const restoredDir = /^[A-Za-z0-9][\w.-]*$/.test(id) && !id.includes("..")
+      ? adapterConfigDirFor(id)
+      : undefined
+    if (restoredDir && existsSync(restoredDir)) {
       const conversationId = await discoverRestoredAdapterConversation({
         adapter: input.adapter,
         configDir: restoredDir,
