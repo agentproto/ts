@@ -140,9 +140,11 @@ agentproto daemon: restarted …
 
 `daemon stop` reports the detached count too. The same counts are on
 `GET /health` and the `daemon_health` MCP tool as
-`sandboxSessions: { attached, reattach: { detachedAtBoot, reattached, gone, failed, pending } }`
+`sandboxSessions: { attached, reattach: { detachedAtBoot, reattached, gone, failed, unserved, pending } }`
 (`attached` = what a restart *now* would detach; `reattach` = how the booted
-daemon's pass went). Details, lifetime bound and failure modes:
+daemon's pass went; `unserved` = detached rows in a workspace bucket this
+daemon does not serve, left untouched for the daemon that does and excluded
+from `pending`). Details, lifetime bound and failure modes:
 [sandbox sessions across a daemon restart](./sessions.md#sandbox-sessions-across-a-daemon-restart).
 Device-paired sandboxes and local (non-sandbox) sessions keep the old
 behaviour: they end as `killed` / `daemon-restart` and are revived by

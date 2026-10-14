@@ -323,6 +323,9 @@ export interface DaemonHealthInfo {
       reattached: number
       gone: number
       failed: number
+      /** Rows detached at boot belonging to a workspace bucket this daemon
+       *  does not serve. Absent on a daemon predating the field. */
+      unserved?: number
       pending: number
     }
   }
@@ -350,10 +353,17 @@ export async function awaitSandboxReattach(
   maxWaitMs = REATTACH_WAIT_DEFAULT_MS,
   pollMs = 500,
 ): Promise<string> {
-  const detached = initial?.sandboxSessions?.reattach.detachedAtBoot || detachedBefore
-  if (detached <= 0) return ""
+  const initialReattach = initial?.sandboxSessions?.reattach
+  const initialUnserved = initialReattach?.unserved ?? 0
+  // Rows this daemon does not serve are not its pass to wait on — the daemon
+  // that owns their bucket resolves them. Excluded from the wait, the tally
+  // denominator, and "still pending"; surfaced as their own note at the end.
+  const detached = initialReattach
+    ? Math.max(0, initialReattach.detachedAtBoot - initialUnserved)
+    : detachedBefore
+  if (detached <= 0 && initialUnserved <= 0) return ""
   // Say what is happening NOW — the old pass sat silent for its whole budget.
-  if (initial?.sandboxSessions?.reattach.pending !== 0) {
+  if (detached > 0 && initialReattach?.pending !== 0) {
     process.stdout.write(
       `  sandbox:   re-attaching ${detached} sandbox session${detached === 1 ? "" : "s"}…\n`,
     )
@@ -371,19 +381,26 @@ export async function awaitSandboxReattach(
   if (!r) {
     return `  sandbox:   ${detached} detached; re-attach status unavailable\n`
   }
-  const total = r.detachedAtBoot
+  const unserved = r.unserved ?? 0
+  const total = Math.max(0, r.detachedAtBoot - unserved)
   const extras = [
     r.gone > 0 ? `${r.gone} gone` : "",
     r.failed > 0 ? `${r.failed} unreachable` : "",
     r.pending > 0 ? `${r.pending} still pending` : "",
   ].filter(Boolean)
-  let out =
-    `  sandbox:   re-attached ${r.reattached}/${total} sandbox session${total === 1 ? "" : "s"}` +
-    `${extras.length > 0 ? ` (${extras.join(", ")})` : ""}\n`
+  let out = ""
+  if (total > 0) {
+    out +=
+      `  sandbox:   re-attached ${r.reattached}/${total} sandbox session${total === 1 ? "" : "s"}` +
+      `${extras.length > 0 ? ` (${extras.join(", ")})` : ""}\n`
+  }
   if (r.pending > 0) {
     // Out of budget: the pass is still running in the daemon — say so and say
     // where to watch it instead of leaving a bare "pending" hanging.
     out += `  sandbox:   re-attach pass continues in the daemon — check \`agentproto daemon status\`\n`
+  }
+  if (unserved > 0) {
+    out += `  sandbox:   ${unserved} detached row${unserved === 1 ? "" : "s"} belong to other workspaces (not served by this daemon)\n`
   }
   return out
 }
@@ -399,18 +416,27 @@ export function renderSandboxTally(
   if (sessions.attached <= 0 && sessions.reattach.detachedAtBoot <= 0) return null
   const parts = [`${sessions.attached} attached`]
   const r = sessions.reattach
-  if (r.detachedAtBoot > 0) {
+  // Rows another daemon owns are not this daemon's to resolve or wait on —
+  // exclude them from the tally denominator and from "still pending" (the
+  // health `pending` already does), and note them on their own line.
+  const unserved = r.unserved ?? 0
+  const total = Math.max(0, r.detachedAtBoot - unserved)
+  if (total > 0) {
     const extras = [
       r.gone > 0 ? `${r.gone} gone` : "",
       r.failed > 0 ? `${r.failed} unreachable` : "",
       r.pending > 0 ? `${r.pending} still pending` : "",
     ].filter(Boolean)
     parts.push(
-      `re-attached ${r.reattached}/${r.detachedAtBoot} sandbox session${r.detachedAtBoot === 1 ? "" : "s"}` +
+      `re-attached ${r.reattached}/${total} sandbox session${total === 1 ? "" : "s"}` +
         `${extras.length > 0 ? ` (${extras.join(", ")})` : ""}`,
     )
   }
-  return `  sandbox:   ${parts.join(" · ")}\n`
+  let out = `  sandbox:   ${parts.join(" · ")}\n`
+  if (unserved > 0) {
+    out += `  sandbox:   ${unserved} detached row${unserved === 1 ? "" : "s"} belong to other workspaces (not served by this daemon)\n`
+  }
+  return out
 }
 
 /** " (workspace abc1234, built …)" — or "" when the daemon predates the

@@ -536,7 +536,7 @@ describe("registry — detach on shutdown, reattach on boot", () => {
     expect(isResumable(registry.get(id)!)).toBe(false)
     expect(registry.sandboxSessionStats()).toEqual({
       attached: 0,
-      reattach: { detachedAtBoot: 1, reattached: 0, gone: 0, failed: 0, pending: 1 },
+      reattach: { detachedAtBoot: 1, reattached: 0, gone: 0, failed: 0, unserved: 0, pending: 1 },
     })
     registry.shutdown()
   })
@@ -742,7 +742,7 @@ describe("runSandboxReattachPass", () => {
     const summary = await runSandboxReattachPass({ registry, resolveSandboxProvider: resolver })
 
     expect(providerMock.create).toHaveBeenCalledWith(expect.objectContaining({ sandboxId: "sbx_1" }))
-    expect(summary).toEqual({ candidates: 1, reattached: 1, gone: 0, ended: 0, failed: 0 })
+    expect(summary).toEqual({ candidates: 1, reattached: 1, gone: 0, ended: 0, failed: 0, unserved: 0 })
     expect(registry.get("s1")).toMatchObject({ id: "s1", status: "running" })
     expect(registry.get("s1")?.hostDetached).toBeUndefined()
     // Reattached ⇒ detachable again for the next restart.
@@ -817,8 +817,46 @@ describe("runSandboxReattachPass", () => {
       gone: 0,
       ended: 0,
       failed: 0,
+      unserved: 0,
     })
     expect(providerMock.create).not.toHaveBeenCalled()
+    registry.shutdown()
+  })
+
+  it("counts rows outside isServed as unserved, leaves hostDetached set, never resolves them, and pending settles to 0", async () => {
+    seedDetached([{ id: "served" }, { id: "foreign" }])
+    providerMock.create.mockResolvedValue(makeHost())
+    stubBox({ session: () => json({ busy: false, status: "running" }) })
+    const registry = newRegistry()
+    const finish = vi.spyOn(registry, "finishSandboxReattach")
+
+    const summary = await runSandboxReattachPass({
+      registry,
+      resolveSandboxProvider: resolver,
+      isServed: d => d.id === "served",
+    })
+
+    expect(summary).toEqual({
+      candidates: 1,
+      reattached: 1,
+      gone: 0,
+      ended: 0,
+      failed: 0,
+      unserved: 1,
+    })
+    // Served row reattached; the foreign row is left for the daemon that owns it.
+    expect(registry.get("served")).toMatchObject({ status: "running" })
+    expect(registry.get("served")?.hostDetached).toBeUndefined()
+    expect(registry.get("foreign")?.hostDetached).toBe(true)
+    expect(registry.get("foreign")?.sandboxReattach).toBeDefined()
+    expect(finish).not.toHaveBeenCalledWith("foreign", expect.anything())
+    // Unserved rows never read as pending forever.
+    expect(registry.sandboxSessionStats().reattach).toMatchObject({
+      detachedAtBoot: 2,
+      reattached: 1,
+      unserved: 1,
+      pending: 0,
+    })
     registry.shutdown()
   })
 
@@ -840,7 +878,7 @@ describe("runSandboxReattachPass", () => {
       timeoutMs: 40,
     })
 
-    expect(summary).toEqual({ candidates: 1, reattached: 0, gone: 0, ended: 0, failed: 1 })
+    expect(summary).toEqual({ candidates: 1, reattached: 0, gone: 0, ended: 0, failed: 1, unserved: 0 })
     expect(finish).toHaveBeenCalledWith("s1", {
       kind: "failed",
       detail: "reattach timed out after 40ms",
