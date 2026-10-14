@@ -299,6 +299,12 @@ export interface AgentHarness {
   tools?: readonly string[]
   /** Skill ids auto-mounted into the spawn. */
   skills?: readonly string[]
+  /** AGENT.md text for an adapter that declared a real system-prompt
+   *  channel — set by the compiler from the agent ref's resolved
+   *  `systemPrompt` (never authored in the manifest) and passed by the host
+   *  to the spawn as `appendSystemPrompt`, so it never lands in the step's
+   *  prompt. Absent ⇒ nothing to deliver this way. */
+  systemPrompt?: string
   /** Working directory override for this step's spawn — takes precedence
    *  over {@link AgentStep.cwd} and the run-level `ctx.cwd`. */
   cwd?: string
@@ -643,8 +649,16 @@ export interface AgentRefResolution {
   /** The AGENT.md rendered as instructions (body + persona + boundaries +
    *  traits) for an adapter that does NOT consume the manifest itself —
    *  prepended to the step's prompt. Absent when `options` already hands
-   *  the adapter the manifest (mastra-agent's `agent` path). */
+   *  the adapter the manifest (mastra-agent's `agent` path) OR when the
+   *  adapter declared a real system-prompt channel (then `systemPrompt`
+   *  carries the text instead — never both). */
   instructions?: string
+  /** The AGENT.md rendered as instructions for an adapter that declared a
+   *  real system-prompt channel (AIP-45 manifest `systemPrompt`) — becomes
+   *  the compiled step's {@link AgentHarness.systemPrompt} and reaches the
+   *  spawn through `startSession({ appendSystemPrompt })` rather than as a
+   *  prompt prefix. Never set together with `instructions`. */
+  systemPrompt?: string
   /** What `adapter` cannot honour of the manifest — becomes the compiled
    *  step's {@link AgentStep.agentWarnings}. */
   warnings?: readonly string[]
