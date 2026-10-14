@@ -268,6 +268,21 @@ export function cloudMetaOf(desc: {
   return decodeCloudSessionMeta(desc?.meta?.["cloud"])
 }
 
+/** The harness label a cloud spawn records for `vendorSlug` on the
+ *  descriptor (AIP-66 §2): the vendor's own harness, never the local relay
+ *  adapter slug — `resolveCloudSpawn`'s `harness` result. `requested` (a
+ *  prior descriptor's own `harness`) is preserved only when the vendor
+ *  actually runs it; anything else (a stale relay-adapter label from before
+ *  the vendor-harness fix, or an absent one) resolves to the vendor's
+ *  canonical harness. Returns `undefined` for an unknown vendor — a restart
+ *  then keeps `prev.harness ?? prev.adapterSlug`, never inventing a label. */
+export function cloudHarnessFor(vendorSlug: string, requested?: string): string | undefined {
+  const vendor = CLOUD_VENDORS[vendorSlug]
+  if (!vendor) return undefined
+  if (requested !== undefined && vendor.harnesses.includes(requested)) return requested
+  return vendor.harnesses[0] ?? vendor.adapter
+}
+
 /** Read `meta.cloud` off a descriptor-shaped object, if it is a well-formed
  *  cloud mapping with a learned vendor session id. */
 export function cloudSessionIdOf(
