@@ -30,6 +30,10 @@ import type { SandboxDeliveryTarget } from "../sandbox-delivery.js"
 import { sessionTranscriptDir, setDefaultSessionsBaseDir } from "../transcript-writer.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import { readTarTarget, tarArchivePath, writePendingTarRecord } from "../sandbox-tar-checkpoint.js"
+import {
+  BOX_ADAPTER_STORE_RESTORE_PATH,
+  adapterStoreArchivePath,
+} from "../sandbox-adapter-store.js"
 
 const wsConfigState = vi.hoisted(() => ({
   value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
@@ -604,11 +608,22 @@ describe("restartAgentSession on a sandboxed session", () => {
                       },
                       async writeFile(path: string, data: Uint8Array) {
                         files.writes.push({ path, bytes: data.byteLength })
+                        // Ordering marker into the SAME array the box
+                        // adapter's `agent_start` args land in — proves the
+                        // conversation store upload happens before the
+                        // adapter starts.
+                        if (path === BOX_ADAPTER_STORE_RESTORE_PATH) {
+                          receivedStarts.push({ __event: "adapter-store-uploaded" })
+                        }
                       },
                     }
                   : {}),
                 async exec(o: SandboxExecOpts) {
                   execCalls.push(o)
+                  if (o.command.includes(BOX_ADAPTER_STORE_RESTORE_PATH)) {
+                    receivedStarts.push({ __event: "adapter-store-extracted" })
+                    return { exitCode: 0, stdout: "restored\n", stderr: "", durationMs: 1 }
+                  }
                   const stdout = o.command.includes("rev-list")
                     ? "ahead=0\nuncommitted=0\n"
                     : o.command.includes("rev-parse --verify")
@@ -675,6 +690,87 @@ describe("restartAgentSession on a sandboxed session", () => {
       // The dead box's row is closed: nothing is shared with the new one.
       expect(prevClosed).toBe(true)
       expect(registry.get(prev.id)?.status).not.toBe("running")
+    })
+
+    // A checkpoint archived the dead box's adapter conversation store
+    // (`adapter-store.tar.gz` next to `checkpoint.json`): the restart uploads
+    // it into the FRESH box and extracts it at the same path after the code
+    // is restored and BEFORE the adapter starts, then hands the restored id
+    // to the box's `agent_start` so the conversation rehydrates natively.
+    it("restores the checkpointed conversation store into the fresh box and resumes it", async () => {
+      wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+      const { resolver, providerResolver } = await setup({
+        deliveryTarget: target,
+        workspaceSlug: "agentproto",
+      })
+      const prevDir = sessionTranscriptDir(prev.id)
+      await mkdir(prevDir, { recursive: true })
+      await writeFile(adapterStoreArchivePath(prevDir), Buffer.from("fake-store-archive"))
+      const execCalls: SandboxExecOpts[] = []
+      const boots = { count: 0 }
+      const files = { writes: [] as Array<{ path: string; bytes: number }> }
+      const notices: string[] = []
+      const recordNotice = registry.recordNotice.bind(registry)
+      vi.spyOn(registry, "recordNotice").mockImplementation((id: string, text: string) => {
+        notices.push(text)
+        return recordNotice(id, text)
+      })
+
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: goneBoxResolver(providerResolver, execCalls, boots, files),
+      })
+
+      expect(boots.count).toBe(1)
+      // The saved archive is uploaded into the box and extracted home-relative…
+      expect(files.writes).toEqual([
+        { path: BOX_ADAPTER_STORE_RESTORE_PATH, bytes: Buffer.byteLength("fake-store-archive") },
+      ])
+      // …and both happen between the workspace restore and the adapter
+      // start: the markers precede the box `agent_start`'s own args.
+      expect(receivedStarts.map(e => e.__event ?? e.resumeSessionId)).toEqual([
+        "adapter-store-uploaded",
+        "adapter-store-extracted",
+        prev.adapterSessionId,
+      ])
+      const commands = execCalls.map(c => c.command)
+      const cloneIdx = commands.findIndex(c => c.includes("git clone"))
+      const extractIdx = commands.findIndex(c => c.includes(BOX_ADAPTER_STORE_RESTORE_PATH))
+      expect(cloneIdx).toBeGreaterThanOrEqual(0)
+      expect(extractIdx).toBeGreaterThan(cloneIdx)
+      expect(notices.join("\n")).toContain("restored the adapter conversation store")
+      // The box accepted the restored conversation: native resume, no
+      // flagged fallback, no digest handoff.
+      expect(result.resumeFallback).toBeUndefined()
+      expect(result.desc.resumeVia).toBe("resumed via ACP")
+      expect(result.desc.cwd).toBe("/home/user/agentproto")
+    })
+
+    // No store ever reached the host (pre-feature session, over-cap skip,
+    // provider cannot download): today's behaviour — the fresh box starts
+    // the adapter blank (never with a doomed resume id) and the restart is
+    // a flagged fallback so the digest handoff still runs.
+    it("with no saved store, a fresh box keeps today's behaviour: blank spawn, no resume id, digest flagged", async () => {
+      wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+      const { resolver, providerResolver } = await setup({
+        deliveryTarget: target,
+        workspaceSlug: "agentproto",
+      })
+      const execCalls: SandboxExecOpts[] = []
+      const boots = { count: 0 }
+      const files = { writes: [] as Array<{ path: string; bytes: number }> }
+
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: goneBoxResolver(providerResolver, execCalls, boots, files),
+      })
+
+      expect(boots.count).toBe(1)
+      expect(files.writes).toEqual([])
+      expect(execCalls.some(c => c.command.includes(BOX_ADAPTER_STORE_RESTORE_PATH))).toBe(false)
+      expect(receivedStarts).toHaveLength(1)
+      expect(receivedStarts[0]?.resumeSessionId).toBeUndefined()
+      // Never a silent claim of continuity: the digest handoff still runs.
+      expect(result.resumeFallback).toBe(true)
+      expect(result.desc.resumeVia).toBe("")
     })
 
     const remoteWorkspace = {
