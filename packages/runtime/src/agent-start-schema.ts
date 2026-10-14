@@ -604,6 +604,24 @@ export const agentStartInputShape = {
         "`workspaceSlug` that the target daemon has not registered fails " +
         "instead of falling back to its active workspace."
     ),
+  // CONTROLLER-INTERNAL — not a tool-caller surface. The host daemon's box
+  // re-attach path (`session_restart` on a session whose sandbox box is
+  // still alive) hands the BOX daemon the prior in-box session id so the
+  // box continues that adapter conversation instead of starting blank; the
+  // HTTP `POST /sessions` route passes a raw adapter conversation id. The
+  // box resolves a session id on ITS OWN registry to that row's adapter
+  // conversation + isolated config dir (the same ACP-level resume a local
+  // restart uses) and reports the outcome on the descriptor's `resumeVia`.
+  resumeSessionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Internal: reattach to a prior adapter conversation — a session id " +
+        "on this daemon (that row's adapter conversation and isolated " +
+        "config dir are reused) or a raw adapter conversation id. Set by a " +
+        "host re-attaching its sandbox box; not for tool callers."
+    ),
 }
 
 export const agentStartInputSchema = z.object(agentStartInputShape)

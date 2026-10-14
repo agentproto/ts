@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
 import { resolveTurnRetryPolicy, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
@@ -1293,8 +1294,11 @@ export interface SpawnAgentSessionInput {
   appBoundary?: AppBoundary
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
-   *  blank. Not exposed on the MCP `agent_start` tool today — only the
-   *  HTTP route (`sessions restart`) passes this. */
+   *  blank. Accepts a raw adapter conversation id (the HTTP
+   *  `sessions restart` / `POST /sessions` route) OR a session id on
+   *  THIS daemon (the box re-attach path passes the prior in-box
+   *  session id — resolved to that row's conversation + isolated
+   *  config dir; see `agent-start-schema.ts` `resumeSessionId`). */
   resumeSessionId?: string
   /** The caller's initial ask — a plain string (the common case, composed
    *  with the role/AGENTS.md/RULES.md preamble below into one string turn),
@@ -2535,21 +2539,52 @@ export async function spawnAgentSession(
   // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
   // this exact id rather than a second, different one (PR 7 / Gap 7).
   const mintedSessionId = mintSessionId()
-  // A direct spawn that reattaches an adapter-native conversation some
-  // existing row already owns (`POST /sessions { resumeSessionId }`) is a
-  // revival of that row — record the lineage rather than forking silently.
-  const resumeSource = input.resumeSessionId
-    ? registry
-        .list()
-        .filter(
-          d => d.adapterSessionId === input.resumeSessionId && d.adapterSlug === input.adapter,
-        )
-        .sort((x, y) => (x.startedAt ?? "").localeCompare(y.startedAt ?? ""))
-        .at(-1)
+  // A direct spawn that reattaches an adapter-native conversation
+  // (`agent_start`/`POST /sessions { resumeSessionId }`) is a revival of
+  // that conversation — record the lineage rather than forking silently.
+  //
+  // The id may name a ROW ON THIS DAEMON (the box re-attach path passes the
+  // prior in-box session id): resume that row's adapter conversation and
+  // reuse its isolated-config dir (the provider's conversation store lives
+  // inside it — a fresh dir is exactly what silently degrades a resume to a
+  // blank spawn). A raw adapter conversation id keeps today's semantics,
+  // picking up the owning row's config dir when one is on file. A row id
+  // with no adapter conversation recorded (or a different adapter) drops
+  // the resume entirely rather than passing a daemon id to the adapter.
+  const resolveResumeTarget = (
+    id: string | undefined,
+  ):
+    | { adapterSessionId: string; configDir?: string; sourceSessionId?: string }
+    | undefined => {
+    if (!id) return undefined
+    const row = registry.get(id)
+    if (row) {
+      if (!row.adapterSessionId || row.adapterSlug !== input.adapter) return undefined
+      return {
+        adapterSessionId: row.adapterSessionId,
+        ...(row.adapterConfigDir ? { configDir: row.adapterConfigDir } : {}),
+        sourceSessionId: row.id,
+      }
+    }
+    const owner = registry
+      .list()
+      .filter(d => d.adapterSessionId === id && d.adapterSlug === input.adapter)
+      .sort((x, y) => (x.startedAt ?? "").localeCompare(y.startedAt ?? ""))
+      .at(-1)
+    return {
+      adapterSessionId: id,
+      ...(owner?.adapterConfigDir ? { configDir: owner.adapterConfigDir } : {}),
+      ...(owner ? { sourceSessionId: owner.id } : {}),
+    }
+  }
+  const resumeTarget = resolveResumeTarget(input.resumeSessionId)
+  const resumeSource = resumeTarget?.sourceSessionId
+    ? registry.get(resumeTarget.sourceSessionId)
     : undefined
-  const resumeLineageFields = resumeSource
-    ? { resumedFrom: resumeSource.id, resumeVia: "resumed via ACP" }
-    : {}
+  // Recorded ONLY once a resume attempt actually succeeds (the local branch
+  // below): a rejected id that fell back to a fresh spawn must never claim
+  // continuity on the descriptor.
+  let resumeLineageFields: { resumedFrom?: string; resumeVia?: string } | undefined
   // Default the daemon's own gateway onto spawns that supplied no
   // `mcpServers` — two distinct rationales, one mechanism (see
   // `shouldInjectDaemonSelfMount` for the per-adapter reasoning):
@@ -4161,14 +4196,17 @@ export async function spawnAgentSession(
         input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
         cwd,
       )
-      agentSession = await resolved!.startSession({
+      const localStartArgs = {
         cwd,
-        ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+        ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
         // Persistent isolated-config dir, keyed by this session's id —
         // recorded on the descriptor below so restart/lazy-resume can hand
         // the respawned adapter the same dir (native-resume store).
-        // Adapters that don't isolate a config dir ignore it.
-        configDir: adapterConfigDirFor(mintedSessionId),
+        // Adapters that don't isolate a config dir ignore it. A RESUME
+        // reuses the target's dir instead (see `resolveResumeTarget`) — the
+        // provider's conversation store lives inside it, so a fresh dir is
+        // exactly what turns a resume into a blank spawn.
+        configDir: resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(launchConfig.options ? { options: launchConfig.options } : {}),
@@ -4212,7 +4250,38 @@ export async function spawnAgentSession(
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
-      })
+      }
+      try {
+        agentSession = await resolved!.startSession(localStartArgs)
+        // The adapter accepted the resume id — the conversation continues.
+        // Claimed only here (not up front) so a fallback fresh spawn never
+        // wears a phantom `resumeVia` (resume-honesty).
+        if (resumeTarget) {
+          resumeLineageFields = {
+            ...(resumeSource ? { resumedFrom: resumeSource.id } : {}),
+            resumeVia: "resumed via ACP",
+          }
+        }
+      } catch (err) {
+        // Same "not found" retry as `session_restart`
+        // (session-restart-core.ts): the adapter rejected the resume id, or
+        // its transport died mid-load — the stored conversation couldn't be
+        // rehydrated, and one fresh-spawn retry is strictly better than
+        // failing the whole start. Never retried without a resume id (that
+        // would just loop the original error).
+        const msg = err instanceof Error ? err.message : String(err)
+        if (
+          !resumeTarget ||
+          !(RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
+        ) {
+          throw err
+        }
+        const { resumeSessionId: _dropped, ...freshStartArgs } = localStartArgs
+        agentSession = await resolved!.startSession({
+          ...freshStartArgs,
+          configDir: adapterConfigDirFor(mintedSessionId),
+        })
+      }
       // A harness that advertises a matching ACP mode gets the canonical
       // posture as a real boundary before the initial prompt is sent. When no
       // native mode exists, the initial prompt carries the advisory preamble;
