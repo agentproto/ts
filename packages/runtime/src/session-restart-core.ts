@@ -2057,8 +2057,13 @@ export async function restartAgentSession(
     // connection closed" with no session at all). Both mean the stored
     // conversation couldn't be rehydrated, and both are better served by one
     // fresh-spawn retry + the transcript digest below than by an error.
+    // A typed SessionRestartError is NEVER retried: it already carries a
+    // classified code/reason/action the client surfaces, and its message may
+    // incidentally match RESUME_ID_REJECTED_RE (e.g. "repository not found"
+    // on a failed clone) without meaning the resume id was rejected.
     if (
       strategy.resumeSessionId &&
+      !(err instanceof SessionRestartError) &&
       (RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
     ) {
       desc = await spawnWithResume(undefined)
