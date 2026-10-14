@@ -669,6 +669,29 @@ describe("turnRetry plumbing", () => {
       on: ["rate-limit"],
     })
     expect(() => userPresetSchema.parse({ id: "x", label: "x", turnRetry: { on: [] } })).toThrow()
+    expect(
+      userPresetSchema.parse({ id: "x", label: "x", turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 4 } })
+        .turnRetry,
+    ).toEqual({ on: ["rate-limit"], action: "migrate", maxMigrations: 4 })
+  })
+
+  it("agent_start accepts action and maxMigrations (object and JSON-string turnRetry)", async () => {
+    const { agentStartInputSchema } = await import("../agent-start-schema.js")
+    const base = { adapter: "claude-code", prompt: "hi" }
+    expect(agentStartInputSchema.parse({ ...base, turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 2 } }).turnRetry).toEqual({
+      on: ["rate-limit"],
+      action: "migrate",
+      maxMigrations: 2,
+    })
+    // `jsonTolerant` also carries the knobs through a JSON-stringified value.
+    expect(
+      agentStartInputSchema.parse({ ...base, turnRetry: '{"on":["rate-limit"],"action":"migrate","maxMigrations":1}' })
+        .turnRetry,
+    ).toEqual({ on: ["rate-limit"], action: "migrate", maxMigrations: 1 })
+    // The default action stays "retry" once the policy is resolved.
+    expect(resolveTurnRetryPolicy({ on: ["rate-limit"] })).toMatchObject({ action: "retry", maxMigrations: 2 })
+    expect(() => agentStartInputSchema.parse({ ...base, turnRetry: { on: ["rate-limit"], action: "rotate" } })).toThrow()
+    expect(() => agentStartInputSchema.parse({ ...base, turnRetry: { on: ["rate-limit"], maxMigrations: -1 } })).toThrow()
   })
 })
 

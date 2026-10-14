@@ -377,7 +377,10 @@ sessions start flags:
                                   (rate-limit,upstream-5xx,no-output-stall), or
                                   a JSON object '{"on":["rate-limit"],
                                   "maxRetries":3,"baseDelayMs":5000,"factor":2,
-                                  "maxDelayMs":60000}'. Never retries an
+                                  "maxDelayMs":60000}'. "action":"migrate"
+                                  moves a SANDBOX session to a fresh box (new
+                                  IP) instead of re-prompting this one, capped
+                                  by "maxMigrations". Never retries an
                                   interrupt, kill, cost stop, 401/402/403, or a
                                   turn that already made a side-effecting tool
                                   call (unless "retryAfterToolCalls":true).
@@ -659,6 +662,7 @@ async function runListStats(
 }
 
 const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
+const TURN_RETRY_ACTIONS = ["retry", "migrate"]
 
 /** Bounds the DAEMON's schema (`turnRetryInputSchema` in
  *  `turn-retry-policy.ts`) enforces. Validated here too: the daemon drops a
@@ -701,6 +705,17 @@ export function parseTurnRetryFlag(raw: string): Record<string, unknown> | strin
   const maxRetries = obj.maxRetries
   if (maxRetries !== undefined && (typeof maxRetries !== "number" || !Number.isInteger(maxRetries) || maxRetries < 1)) {
     return `"maxRetries" must be a positive integer (at least 1)`
+  }
+  const action = obj.action
+  if (action !== undefined && (typeof action !== "string" || !TURN_RETRY_ACTIONS.includes(action))) {
+    return `"action" must be one of ${TURN_RETRY_ACTIONS.join(", ")}`
+  }
+  const maxMigrations = obj.maxMigrations
+  if (
+    maxMigrations !== undefined &&
+    (typeof maxMigrations !== "number" || !Number.isInteger(maxMigrations) || maxMigrations < 1)
+  ) {
+    return `"maxMigrations" must be a positive integer (at least 1)`
   }
   const factor = obj.factor
   if (factor !== undefined && (typeof factor !== "number" || !Number.isFinite(factor) || factor < 1)) {
