@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
-import { canRestart, describeNotATerminal, describeRestart, parseRestartFailure, parseRestartResult, restartFailureActionLabel, restartFailureMessage, restartedSessionView } from "./sessionRestart.logic.js"
+import { canRestart, describeNotATerminal, describeRestart, parseRestartFailure, parseRestartResult, restartFailureActionLabel, restartFailureMessage, restartSpawnOptions, restartedSessionView } from "./sessionRestart.logic.js"
 
 function session(overrides: Partial<SessionDescriptor> = {}): SessionDescriptor {
   return {
@@ -344,5 +344,24 @@ describe("restartFailureMessage / restartFailureActionLabel", () => {
       "Start a fresh session",
     )
     expect(restartFailureActionLabel(withAction(undefined))).toBeUndefined()
+  })
+})
+
+describe("restartSpawnOptions", () => {
+  it("pins the recorded work branch as the spawn's worktree slug", () => {
+    expect(
+      restartSpawnOptions({ kind: "spawn-on-branch", branch: "wt/restart-typed-errors-ui" }),
+    ).toEqual({ worktree: { slug: "restart-typed-errors-ui" } })
+    // The daemon's provisioner cuts branch `wt/<slug>`, so a branch outside
+    // the sandbox prefix is passed through untouched.
+    expect(restartSpawnOptions({ kind: "spawn-on-branch", branch: "feature/x" })).toEqual({
+      worktree: { slug: "feature/x" },
+    })
+  })
+
+  it("leaves a fresh spawn un-pinned and never invents a worktree", () => {
+    expect(restartSpawnOptions({ kind: "spawn-fresh" })).toBeUndefined()
+    expect(restartSpawnOptions({ kind: "fix-config", detail: "set up a provider" })).toBeUndefined()
+    expect(restartSpawnOptions(undefined)).toBeUndefined()
   })
 })

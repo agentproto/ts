@@ -15,7 +15,7 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { resolveSessionArg } from "./sessionActions.js"
 import { describeSession } from "./sessionActions.logic.js"
-import { canRestart, describeRestart, parseRestartFailure, parseRestartResult, restartFailureActionLabel, restartFailureMessage, restartedSessionView } from "./sessionRestart.logic.js"
+import { canRestart, describeRestart, parseRestartFailure, parseRestartResult, restartFailureActionLabel, restartFailureMessage, restartSpawnOptions, restartedSessionView } from "./sessionRestart.logic.js"
 
 export function registerSessionRestart(
   ctx: vscode.ExtensionContext,
@@ -69,7 +69,12 @@ async function restartSessionCommand(
       const label = restartFailureActionLabel(failure)
       if (label) {
         const picked = await vscode.window.showErrorMessage(headline + restartFailureMessage(failure), label)
-        if (picked) await vscode.commands.executeCommand("agentproto.spawnAgent")
+        if (picked) {
+          await vscode.commands.executeCommand(
+            "agentproto.spawnAgent",
+            restartSpawnOptions(failure.action),
+          )
+        }
       } else {
         vscode.window.showErrorMessage(headline + restartFailureMessage(failure))
       }

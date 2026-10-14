@@ -25,6 +25,8 @@
 
 import * as vscode from "vscode"
 
+import type { WorktreeField } from "@agentproto/runtime"
+
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { UserPreset, WorkspacesConfig } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
@@ -73,18 +75,33 @@ export function registerSpawnCommand(
   workspacePin: WorkspacePinStore,
 ): void {
   ctx.subscriptions.push(
-    vscode.commands.registerCommand("agentproto.spawnAgent", (opts?: { adapter?: string }) =>
-      runSpawnWizard(client, store, workspacePin, opts?.adapter),
+    vscode.commands.registerCommand(
+      "agentproto.spawnAgent",
+      (opts?: { adapter?: string; worktree?: WorktreeField }) =>
+        runSpawnWizard(client, store, workspacePin, opts ?? {}),
     ),
   )
+}
+
+/**
+ * Options `agentproto.spawnAgent` accepts beyond "which harness to
+ * pre-select": `worktree` pins the git worktree the spawn lands in
+ * (its slug names the branch `wt/<slug>`), which is how the typed
+ * restart-failure button "Start a new session on <branch>" asks the
+ * daemon for THAT branch instead of a plain in-place spawn.
+ */
+export interface SpawnCommandOptions {
+  adapter?: string
+  worktree?: WorktreeField
 }
 
 async function runSpawnWizard(
   client: DaemonClient,
   store: SessionStore,
   workspacePin: WorkspacePinStore,
-  initialHarnessSlug?: string,
+  opts: SpawnCommandOptions = {},
 ): Promise<void> {
+  const initialHarnessSlug = opts.adapter
   // ── Fetch both adapters (for fallback) and catalog (preferred) ────────────
   let adapters: SpawnAdapterInfo[]
   let catalog: Awaited<ReturnType<DaemonClient["catalogModels"]>> | undefined
@@ -295,7 +312,11 @@ async function runSpawnWizard(
   })
   await vscode.commands.executeCommand("agentproto.sessions.focus")
   try {
-    const session = await client.spawnAgent({ ...assembleSpawnOptions(answers), origin: "vscode" })
+    const session = await client.spawnAgent({
+      ...assembleSpawnOptions(answers),
+      ...(opts.worktree ? { worktree: opts.worktree } : {}),
+      origin: "vscode",
+    })
     void vscode.window
       .showInformationMessage(
         `agentproto: spawned ${session.label ?? session.id}`,

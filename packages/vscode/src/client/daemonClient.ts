@@ -29,6 +29,8 @@ import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+import type { WorktreeField } from "@agentproto/runtime"
+
 import { type DaemonConfig, buildAuthHeaders } from "../config.js"
 import { renestCatalog } from "./daemonCompat.js"
 import type {
@@ -172,6 +174,15 @@ export interface SpawnAgentOptions {
   origin?: string
   /** ID of a saved user preset from ~/.agentproto/presets.json whose axes are expanded server-side. */
   presetId?: string
+  /** Isolate this spawn into its own git worktree instead of spawning in
+   *  `cwd` directly — the daemon's `worktree` body field on POST
+   *  /sessions/agent (`parseWorktreeField`), same `boolean | { slug?, base?,
+   *  async? }` shape. `slug` names BOTH the worktree directory and its
+   *  branch (`wt/<slug>`), which is how a "start a new session on <branch>"
+   *  recovery from a typed restart failure asks for that exact branch.
+   *  Honouring it is the daemon's policy's call (`worktrees.isolation`), and
+   *  it is ignored entirely for a sandbox spawn (the box already isolates). */
+  worktree?: WorktreeField
 }
 
 export interface SpawnTerminalOptions {

@@ -259,3 +259,21 @@ export function restartFailureActionLabel(failure: RestartFailure): string | und
   if (action.kind === "spawn-fresh") return "Start a fresh session"
   return undefined
 }
+
+/**
+ * The `agentproto.spawnAgent` options for a failure's recovery action — what
+ * the caller passes when the button is pressed, so "Start a new session on
+ * `<branch>`" actually spawns ON that branch instead of opening a wizard that
+ * lands anywhere. The daemon's `worktree.slug` names the branch `wt/<slug>`
+ * (the provisioner cuts `wt/<slug>` from `base`), so the recorded branch maps
+ * onto it by dropping the `wt/` prefix — the same slice the runtime's own
+ * fresh-box recovery does. `spawn-fresh` (and a failure with no action) return
+ * `undefined`: a plain spawn, no pinned worktree.
+ */
+export function restartSpawnOptions(
+  action: RestartFailureAction | undefined,
+): { worktree: { slug: string } } | undefined {
+  if (action?.kind !== "spawn-on-branch") return undefined
+  const slug = action.branch.startsWith("wt/") ? action.branch.slice("wt/".length) : action.branch
+  return { worktree: { slug } }
+}

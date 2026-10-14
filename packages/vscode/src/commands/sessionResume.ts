@@ -28,6 +28,7 @@ import {
   parseRestartFailure,
   restartFailureActionLabel,
   restartFailureMessage,
+  restartSpawnOptions,
 } from "./sessionRestart.logic.js"
 
 export function registerSessionResume(
@@ -90,7 +91,12 @@ async function resumeSessionCommand(
       const label = restartFailureActionLabel(failure)
       if (label) {
         const picked = await vscode.window.showErrorMessage(headline + restartFailureMessage(failure), label)
-        if (picked) await vscode.commands.executeCommand("agentproto.spawnAgent")
+        if (picked) {
+          await vscode.commands.executeCommand(
+            "agentproto.spawnAgent",
+            restartSpawnOptions(failure.action),
+          )
+        }
       } else {
         vscode.window.showErrorMessage(headline + restartFailureMessage(failure))
       }
