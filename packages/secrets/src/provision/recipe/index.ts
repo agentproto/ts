@@ -46,5 +46,6 @@ export {
 } from "./registry.js"
 export {
   resolveSourceSpec,
+  readRecipeLoginJson,
   type ResolveSourceOptions,
 } from "./resolve.js"

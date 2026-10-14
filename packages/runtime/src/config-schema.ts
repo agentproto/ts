@@ -116,6 +116,14 @@ const defaultsAdapterAuthConfigSchema: z.ZodType<DefaultsAdapterAuthConfig> = z
     source: z.string().optional(),
     apiKey: z.string().optional(),
     provider: CatalogProviderSchema.optional(),
+    // BOX-LOGIN BRIDGE — declared because the runtime's
+    // `DefaultsAdapterAuthConfig` carries it, but deliberately PER-SPAWN ONLY:
+    // `resolveSpawnDefaults` reads `loginFile` from the call's own auth block
+    // (the host stamps it just before `host.start()`, and the box forwards the
+    // one it received), never from this block. A static
+    // `defaults.adapters.<slug>.auth.loginFile` would outlive the file it
+    // describes, so it is accepted and ignored — see `box-login-bridge.ts`.
+    loginFile: z.boolean().optional(),
   })
   .passthrough()
 
@@ -1245,6 +1253,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "harnesses",
     label: "Adapter auth provider pin",
     help: "Per-adapter provider pin, overriding the adapter's fixed/model-derived provider.",
+  },
+  {
+    path: "defaults.adapters.*.auth.loginFile",
+    schema: z.boolean(),
+    apply: "hot",
+    writable: false,
+    section: "harnesses",
+    label: "Adapter box-login bridge marker",
+    help:
+      "Per-spawn box-login bridge marker (see box-login-bridge.ts): stamped by the host on the auth block it forwards into a sandbox box, never set from config, because a static value would outlive the file it describes. Accepted here so the key is classified and explicitly not writable.",
   },
 
   // ── harnesses: user ACP agents ──

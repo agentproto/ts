@@ -162,6 +162,30 @@ export interface AgentCliAuthSubscription {
    * (claude-code, codex): the descriptor-level `provider` already pins it.
    */
   provider?: string
+  /**
+   * BOX-LOGIN BRIDGE declaration — how a host re-creates a REDACTED copy of
+   * this file-based login inside a sandbox box (a fresh box has neither the
+   * host's `~/.codex/auth.json` nor its keychain, so the box's own fail-loud
+   * login verify would refuse every spawn). Accepted only together with
+   * {@link external}.
+   *
+   * `keep` is the allowlist of dotted JSON paths that survive into the copy;
+   * refresh-like keys (`refresh_token`, …) are dropped UNCONDITIONALLY even
+   * when keep-listed, so the box never holds a long-lived bearer it could
+   * replay. `recipe` names the provision recipe holding the login file (its
+   * `~/…` path is also the box destination unless `file` overrides it
+   * home-relative); `methodId` selects a multi-surface recipe's flavor;
+   * `expiresPath` lets an already-expired login be refused instead of copied.
+   * Mirror of `@agentproto/runtime`'s `BoxLoginDecl` — same shape, each
+   * package owns its copy (the object crosses the boundary structurally).
+   */
+  boxLogin?: {
+    recipe: string
+    methodId?: string
+    keep: string[]
+    expiresPath?: string
+    file?: string
+  }
 }
 
 /**
@@ -1532,6 +1556,13 @@ export interface ResolvedAuthSpec {
    *  a missing `credential` (there deliberately is none). Money-safe: no bearer
    *  ever reaches an env var. Absent/false ⇒ today's inject-a-credential path. */
   externalCredential?: boolean
+  /** BOX-LOGIN BRIDGE marker (see `AgentCliAuthSubscription.boxLogin`): the
+   *  host already uploaded a REDACTED copy of this login's file into the box
+   *  before the spawn, so the missing-credential fail-fast is satisfied by
+   *  that FILE rather than by an injected bearer (an external surface never
+   *  has one). Carries no token — the file is already on the box's own
+   *  filesystem. Absent/false ⇒ today's fail-loud behavior, unchanged. */
+  loginFile?: boolean
   /** Conflicting billing-credential (and, in native mode, gateway-hygiene)
    *  env vars DELETED on engage — unless this spawn's own mode/option patch
    *  explicitly set the key. */

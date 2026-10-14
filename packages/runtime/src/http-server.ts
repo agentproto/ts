@@ -5888,7 +5888,8 @@ function parseOptionsField(
   return out
 }
 
-/** Parse the `auth` body field — `{ mode?, token?, apiKey? }`, tolerant of a
+/** Parse the `auth` body field — `{ mode?, token?, apiKey?, loginFile? }`,
+ *  tolerant of a
  *  JSON-stringified object (see `parseOrchestratorField`). Deliberately
  *  narrow: only the known keys survive, so an unrelated stray field can't
  *  smuggle anything unexpected into the resolved spawn config. */
@@ -5918,6 +5919,12 @@ function parseAuthField(
     ...(credentialEnv !== undefined ? { credentialEnv } : {}),
     ...(extraEnv !== undefined ? { extraEnv } : {}),
     ...(obj.isolateDataHome === false ? { isolateDataHome: false } : {}),
+    // BOX-LOGIN BRIDGE: the host's forward-to-box marker — `true` only when
+    // the redacted login copy was actually uploaded into this box (see
+    // `box-login-bridge.ts`). Deliberately boolean-strict so a stray truthy
+    // value can't convince the box to skip its fail-loud verify for a file
+    // that never landed.
+    ...(obj.loginFile === true ? { loginFile: true } : {}),
   }
 }
 
