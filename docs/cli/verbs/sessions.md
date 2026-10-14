@@ -930,6 +930,13 @@ daemon re-attaches every detached row:
 | Box (or its session) no longer exists | `killed`, `endedReason: "sandbox_gone"`, ledger entry `gone` |
 | Box session had finished while the daemon was down | `error`, `endedReason: "crashed"` |
 | Box unreachable / provider not resolvable (transient) | plain `killed` / `daemon-restart` ghost, so eager resume still applies |
+| Row exceeds its per-row deadline | if the provider's liveness probe (5 s cap) says the box is gone: `killed`, `sandbox_gone`, ledger `gone`; otherwise counted `failed` (detail `reattach timed out after Ns`) with the `killed` / `daemon-restart` ghost |
+
+Each row's whole re-attach (connect, MCP handshake, session probe) runs under a
+**30 s deadline** (override with `AGENTPROTO_REATTACH_TIMEOUT_MS` on the
+daemon), so one wedged box can't hold the pass open: `pending` always drains to
+0. A timed-out row is only detached on the host side; its box is never
+stopped, paused or killed.
 
 Counts are on `GET /health` and `daemon_health` as
 `sandboxSessions: { attached, reattach: { detachedAtBoot, reattached, gone, failed, pending } }`,
