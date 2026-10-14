@@ -401,9 +401,14 @@ export const agentStartInputShape = {
   restartPolicy: jsonTolerant(
     z.object({
       on: z
-        .array(z.enum(["crashed", "error"]))
+        .array(z.enum(["crashed", "error", "sandbox-gone"]))
         .min(1)
-        .describe("Which automatic death reasons trigger a restart. Never a clean exit, kill, idle-reap, or cost-budget kill."),
+        .describe(
+          "Which automatic death reasons trigger a restart: `crashed`, `error`, and/or " +
+            "`sandbox-gone` (a box session whose box is gone is moved to a FRESH box — " +
+            "the `session_restart` fresh-box path — instead of revived in place). " +
+            "Never a clean exit, kill, idle-reap, or cost-budget kill.",
+        ),
       maxRetries: z
         .number()
         .int()
@@ -438,7 +443,9 @@ export const agentStartInputShape = {
     .describe(
       "Opt-in auto-restart policy: an unexpected death (`crashed`/`error`, per " +
         "`on`) is revived IN PLACE after exponential backoff, up to a " +
-        `rolling-window crash-loop cap. Omit for today's stay-dead behaviour. ${help("restartPolicy")}`
+        "rolling-window crash-loop cap — except a box session whose box is gone " +
+        "(`sandbox-gone` in `on`), which moves to a FRESH box instead. " +
+        `Omit for today's stay-dead behaviour. ${help("restartPolicy")}`
     ),
   turnRetry: jsonTolerant(turnRetryInputSchema)
     .optional()

@@ -6002,7 +6002,10 @@ function parseRestartPolicyField(raw: unknown): RestartPolicy | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
   const obj = value as Record<string, unknown>
   const on = Array.isArray(obj.on)
-    ? obj.on.filter((v): v is "crashed" | "error" => v === "crashed" || v === "error")
+    ? obj.on.filter(
+        (v): v is "crashed" | "error" | "sandbox-gone" =>
+          v === "crashed" || v === "error" || v === "sandbox-gone",
+      )
     : undefined
   const maxRetries = typeof obj.maxRetries === "number" ? obj.maxRetries : undefined
   const windowMs = typeof obj.windowMs === "number" ? obj.windowMs : undefined

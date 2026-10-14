@@ -29,17 +29,25 @@
  *
  * NEVER restarts: a clean exit (`status:"exited"`), an operator `kill()`, an
  * `"idle-reaped"` or `"daemon-restart"` teardown, or a cost-budget kill (the
- * `overBudget` path in `sessions.ts`) — none of those set BOTH
+ * `overBudget` path in the `sessions.ts`) — none of those set BOTH
  * `status:"error"` AND an absent/`"crashed"` `endedReason`, which is exactly
  * what `isEligibleForRestart` requires alongside an explicit
  * `restartPolicy`. A `killedMidTurn` row is handled structurally, not by a
  * special case here: `maybeResumeAgent` never replays the dropped prompt
  * regardless of why it's reviving a row (see `session-event-bus.ts`'s
  * `SessionResumedEvent` doc).
+ *
+ * SANDBOX-GONE branch (`restartPolicy.on` listing `"sandbox-gone"`): a box
+ * session whose BOX is gone cannot be revived in place at all, so the
+ * scheduler classifies the death (`sandbox-gone.ts`) and schedules a FRESH-
+ * BOX move instead — executed by the sweep through
+ * `registry.triggerSandboxGoneRestart` (the same `restartAgentSession` path
+ * `session_restart` takes), with the same backoff and crash-loop cap.
  */
 
 import type { RestartPolicy, SessionDescriptor } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
+import { hasSandboxGoneEvidence, isBoxSession } from "./sandbox-gone.js"
 
 /** The slice of the sessions registry the restart-scheduler needs, split
  *  between the event handler (schedule/give-up) and the sweep (execute).
@@ -51,6 +59,10 @@ export interface RestartSchedulerRegistry {
   list(opts?: { includeArchived?: boolean }): readonly SessionDescriptor[]
   isResuming(id: string): boolean
   triggerResume(id: string): Promise<boolean>
+  /** Execute a `nextRestartFreshBox` schedule — the fresh-box move a
+   *  `"sandbox-gone"` policy fires (never an in-place revival). See
+   *  `SessionsRegistry.triggerSandboxGoneRestart`'s doc. */
+  triggerSandboxGoneRestart(id: string): Promise<boolean>
   applyRestartSchedule(
     id: string,
     update: {
@@ -58,6 +70,7 @@ export interface RestartSchedulerRegistry {
       restartAttempts: number
       recentRestartAts: string[]
       lastRestartAt: string
+      freshBox?: boolean
     },
   ): boolean
   giveUpRestart(id: string, message: string): boolean
@@ -66,26 +79,55 @@ export interface RestartSchedulerRegistry {
 /**
  * Restart eligibility for one row's terminal state. True iff it carries an
  * opt-in `restartPolicy` AND died for a reason that policy opted into:
+ *   - `endedReason === "sandbox_gone"` (the boot reattach pass — or any other
+ *     provider-confirmed path — found the box itself gone) when
+ *     `"sandbox-gone"` is in `restartPolicy.on`; revived by moving to a FRESH
+ *     box, never in place;
  *   - `endedReason === "crashed"` (the crash-detect sweep found the adapter
  *     process gone) when `"crashed"` is in `restartPolicy.on`;
  *   - `status === "error"` with NO `endedReason` at all (an unexpected turn
  *     error — `markCrashed` always stamps `endedReason`, so an absent one
  *     here can only be the turn-error path) when `"error"` is in
  *     `restartPolicy.on`.
- * Everything else — a clean exit, an operator kill, `"idle-reaped"`,
- * `"daemon-restart"`, an `overBudget` kill (`status:"killed"`, no reason) —
- * falls through to `false` without needing an explicit exclusion: none of
- * them produce the `(status, endedReason)` pair either branch requires.
+ * A SUSPECTED (not yet confirmed) box death — a box session that died as a
+ * bare crash/turn error while its policy also lists `"sandbox-gone"` — is
+ * classified by the event handler's async box-gone probe
+ * (`createRestartScheduler`'s `isSandboxBoxGone`) BEFORE this gate decides;
+ * once the probe says the box is gone the row is scheduled as a fresh-box
+ * move and the in-place gates below never apply. Everything else — a clean
+ * exit, an operator kill, `"idle-reaped"`, `"daemon-restart"`, an
+ * `overBudget` kill (`status:"killed"`, no reason) — falls through to `false`
+ * without needing an explicit exclusion: none of them produce the `(status,
+ * endedReason)` pair either branch requires.
  */
 export function isEligibleForRestart(desc: SessionDescriptor): boolean {
   const policy = desc.restartPolicy
   if (!policy) return false
   if (desc.kind !== "agent-cli") return false
+  if (desc.endedReason === "sandbox_gone") return policy.on.includes("sandbox-gone")
   if (desc.endedReason === "crashed") return policy.on.includes("crashed")
   if (desc.endedReason === undefined && desc.status === "error") {
     return policy.on.includes("error")
   }
   return false
+}
+
+/**
+ * The death SHAPE a restart may consider, independent of WHICH `on` entry
+ * authorizes it: exactly the three shapes `isEligibleForRestart` recognizes,
+ * with the policy lookup factored out. The sandbox-gone branch consults this
+ * instead of `isEligibleForRestart`, because a `"sandbox-gone"` policy opt-in
+ * authorizes a DIFFERENT entry than the one the shape names — while still
+ * refusing to restart a death the policy was never meant to touch. A clean
+ * exit, an operator `kill()`, `"idle-reaped"`, `"daemon-restart"` and a
+ * cost-budget kill all fall to false, so a box session that died one of those
+ * ways is NEVER routed to the fresh-box move no matter what the box probe
+ * would have said.
+ */
+export function hasRestartableDeathShape(desc: SessionDescriptor): boolean {
+  if (desc.endedReason === "sandbox_gone") return true
+  if (desc.endedReason === "crashed") return true
+  return desc.endedReason === undefined && desc.status === "error"
 }
 
 /** Exponential backoff delay (ms) for the `attempt`-th restart (0-indexed —
@@ -168,17 +210,34 @@ export function evaluateRestartDecision(desc: SessionDescriptor, nowMs: number):
  * sweep's job (`runRestartSweepPass`). Returns a disposer (mirrors
  * `task-ledger.ts`'s `unsubscribeExited` pattern) — call it from the
  * gateway's `stop()`.
+ *
+ * `"sandbox-gone"` branch: a box session whose policy lists it is classified
+ * by the injected `isSandboxBoxGone` probe (defaults to the synchronous
+ * descriptor evidence — `endedReason:"sandbox_gone"` or a recorded box-gone
+ * death message) BEFORE the in-place gates: a gone box schedules a FRESH-BOX
+ * move (`freshBox: true`, executed by the sweep via
+ * `registry.triggerSandboxGoneRestart`) instead of an in-place revival, which
+ * is structurally doomed there. The probe is consulted first because a box
+ * that died at its lifetime cap typically surfaces as a bare turn error /
+ * crash — matching the classic `"error"`/`"crashed"` gates — and reviving in
+ * place would fail against a box that no longer exists. A non-box session's
+ * schedule stays fully synchronous (the probe branch is never entered), so
+ * the classic paths keep their event-time determinism.
  */
 export function createRestartScheduler(opts: {
   registry: RestartSchedulerRegistry
   sessionEvents: SessionEventBus
+  /** Is this DEAD box session's box gone? Consulted only for a box session
+   *  whose policy lists `"sandbox-gone"`. Defaults to the synchronous
+   *  descriptor evidence (`hasSandboxGoneEvidence`); the gateway wires the
+   *  ledger + one-shot provider probe (`sandbox-gone.ts`'s
+   *  `isSandboxBoxGone`). */
+  isSandboxBoxGone?: (desc: SessionDescriptor) => Promise<boolean> | boolean
   /** Injected clock (ms since epoch). Defaults to `Date.now`. */
   now?: () => number
 }): { dispose(): void } {
   const { registry, sessionEvents } = opts
-  const unsubscribe = sessionEvents.on("session:exited", ev => {
-    const desc = registry.get(ev.sessionId)
-    if (!desc || !isEligibleForRestart(desc)) return
+  const applyDecision = (desc: SessionDescriptor, freshBox: boolean): void => {
     const nowMs = opts.now ? opts.now() : Date.now()
     const decision = evaluateRestartDecision(desc, nowMs)
     if (decision.action === "give-up") {
@@ -190,7 +249,38 @@ export function createRestartScheduler(opts: {
       restartAttempts: decision.restartAttempts,
       recentRestartAts: decision.recentRestartAts,
       lastRestartAt: decision.lastRestartAt,
+      ...(freshBox ? { freshBox: true } : {}),
     })
+  }
+  const unsubscribe = sessionEvents.on("session:exited", ev => {
+    // Synchronous fast path (no box-gone policy involvement): evaluated
+    // inline during `emit`, exactly like before, so a classic
+    // crashed/error schedule stamps before this handler returns.
+    const desc = registry.get(ev.sessionId)
+    if (!desc || desc.kind !== "agent-cli" || !desc.restartPolicy) return
+    const policy = desc.restartPolicy
+    if (
+      policy.on.includes("sandbox-gone") &&
+      isBoxSession(desc) &&
+      // Shape gate BEFORE the probe: a clean exit, an operator kill, an
+      // idle-reap or a cost-budget kill is never restartable, so the box
+      // probe must not be the thing that decides otherwise.
+      hasRestartableDeathShape(desc)
+    ) {
+      // Async classification — microtask-deferred, never blocks the emit.
+      void (async () => {
+        const gone = await (opts.isSandboxBoxGone ?? hasSandboxGoneEvidence)(desc)
+        if (gone) {
+          applyDecision(desc, true)
+          return
+        }
+        // The box is alive (or undeterminable): the classic gates apply.
+        if (isEligibleForRestart(desc)) applyDecision(desc, false)
+      })()
+      return
+    }
+    if (!isEligibleForRestart(desc)) return
+    applyDecision(desc, false)
   })
   return { dispose: unsubscribe }
 }
@@ -257,7 +347,13 @@ export async function runRestartSweepPass(opts: {
   }
   for (const d of candidates) {
     summary.ids.push(d.id)
-    if (await registry.triggerResume(d.id)) {
+    // A `nextRestartFreshBox` schedule is a "box-gone" move: dispatch it to
+    // the registry's fresh-box hook, never the in-place resume.
+    const ok =
+      d.nextRestartFreshBox === true
+        ? await registry.triggerSandboxGoneRestart(d.id)
+        : await registry.triggerResume(d.id)
+    if (ok) {
       summary.resumed++
     }
   }
