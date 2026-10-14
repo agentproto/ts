@@ -30,6 +30,7 @@ import {
   isSandboxSession,
   NO_OUTPUT_STALL_MARKER,
   TURN_RETRY_PROMPT_SOURCE,
+  turnRetryGaveUpNotice,
 } from "../turn-retry.js"
 import { parseTurnRetryPolicy, resolveTurnRetryPolicy, type TurnRetryPolicy } from "../turn-retry-policy.js"
 import type { MigrateSandboxSessionResult } from "../session-migrate.js"
@@ -112,10 +113,17 @@ describe("parseTurnRetryPolicy", () => {
       retryAfterToolCalls: true,
     })
   })
+  it("accepts a non-negative maxMigrations (0 = never migrate)", () => {
+    expect(parseTurnRetryPolicy({ on: ["rate-limit"], action: "migrate", maxMigrations: 0 })).toMatchObject({
+      action: "migrate",
+      maxMigrations: 0,
+    })
+  })
   it("rejects invalid input whole", () => {
     expect(parseTurnRetryPolicy("crashed")).toBeUndefined()
     expect(parseTurnRetryPolicy({ on: [] })).toBeUndefined()
     expect(parseTurnRetryPolicy({ on: ["rate-limit"], maxRetries: -1 })).toBeUndefined()
+    expect(parseTurnRetryPolicy({ on: ["rate-limit"], maxMigrations: -1 })).toBeUndefined()
     expect(parseTurnRetryPolicy("{bad")).toBeUndefined()
   })
 })
@@ -753,6 +761,7 @@ describe("decideTurnRetryAction", () => {
     if (result.action === "give-up") {
       expect(result.errorClass).toBe("rate-limit")
       expect(result.attempts).toBe(3)
+      expect(result.migrations).toBe(2)
       expect(result.error).toBe("429 status code")
     }
   })
@@ -762,6 +771,25 @@ describe("decideTurnRetryAction", () => {
     const r2 = decideTurnRetryAction(baseRetry, rule, { kind: "agent-cli", remote: true }, { attempts: 0, migrations: 1 })
     if (r1.action === "migrate") expect(r1.attempt).toBe(1)
     if (r2.action === "migrate") expect(r2.attempt).toBe(2)
+  })
+})
+
+describe("turnRetryGaveUpNotice", () => {
+  it("names the migrations only when the migrate action was in play", () => {
+    // Plain `exhausted` — the wording this notice always had.
+    expect(turnRetryGaveUpNotice({ attempts: 3, errorClass: "rate-limit" })).toBe(
+      "[turn-retry] gave up after 3 consecutive retries (rate-limit) — leaving the session idle",
+    )
+    expect(turnRetryGaveUpNotice({ attempts: 3, errorClass: "rate-limit", migrations: 2 })).toBe(
+      "[turn-retry] gave up after 3 consecutive retries and 2 migrations (rate-limit) — leaving the session idle",
+    )
+    expect(turnRetryGaveUpNotice({ attempts: 1, errorClass: "upstream-5xx", migrations: 1 })).toBe(
+      "[turn-retry] gave up after 1 consecutive retries and 1 migration (upstream-5xx) — leaving the session idle",
+    )
+    // A `maxMigrations: 0` policy that gives up says so rather than hiding it.
+    expect(turnRetryGaveUpNotice({ attempts: 1, errorClass: "rate-limit", migrations: 0 })).toBe(
+      "[turn-retry] gave up after 1 consecutive retries and 0 migrations (rate-limit) — leaving the session idle",
+    )
   })
 })
 
@@ -1013,6 +1041,40 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     expect(h.notices).toContain("[turn-retry] gave up after 1 consecutive retries (rate-limit) — leaving the session idle")
     expect(h.enqueued.map(e => e.sessionId)).toEqual(["s2", "s2"])
     expect(h.rows.get("s2")?.turnMigrations).toBe(1)
+    h.controller.dispose()
+  })
+
+  it("a failed migration with the retry budget spent gives up instead of booking a retry", async () => {
+    // The migration is held on its backoff timer so the retry budget can be
+    // spent while it is in flight — `fireMigration` must then report
+    // exhaustion rather than book an over-budget retry on the current box.
+    let land: (() => void) | undefined
+    const h = migrateHarness({
+      migrateSession: async () => {
+        throw new Error("box boot failed")
+      },
+      turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 2, maxRetries: 1, ...FAST },
+      setTimer: fn => {
+        land = fn
+        return 0 as unknown as ReturnType<typeof setTimeout>
+      },
+    })
+    h.turnEnd("429 status code")
+    expect(h.phases()).toEqual(["scheduled"])
+
+    h.row.turnRetryAttempts = 1
+    land!()
+    await until(() => h.phases().includes("exhausted"), "give up after a failed migration")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed", "exhausted"])
+    expect(h.enqueued).toHaveLength(0)
+    expect(h.row.turnRetryAttempts).toBe(1)
+    expect(h.notices).toContain(
+      "[turn-retry] did not migrate 1/2 (migration failed: box boot failed) — the retry budget is spent",
+    )
+    expect(h.notices).toContain(
+      "[turn-retry] gave up after 1 consecutive retries and 1 migration (rate-limit) — leaving the session idle",
+    )
     h.controller.dispose()
   })
 })
