@@ -590,7 +590,6 @@ export function createSandboxAgentSessionProxy(
   opts: SandboxAgentSessionProxyOpts,
 ): AgentSessionLike {
   const { host, remoteSessionId, lifecyclePolicy } = opts
-  let lastPrompt: string | undefined
   let closed = false
   // Set by `detach()` at host-daemon shutdown. Once true the proxy never
   // touches the box session again: the open stream is aborted and every
@@ -925,7 +924,6 @@ export function createSandboxAgentSessionProxy(
 
   async function* sendTurn(message: unknown): AsyncGenerator<AgentStreamEvent> {
     const prompt = extractPromptText(message)
-    lastPrompt = prompt
     const isFirstTurn = turnsSent === 0
     turnsSent++
 
@@ -990,14 +988,19 @@ export function createSandboxAgentSessionProxy(
     },
 
     async cancel(): Promise<void> {
-      // There is no bare "interrupt, no next prompt" primitive on the wire
-      // — `agent_prompt` always carries a prompt. Re-deliver the last
-      // prompt with `interrupt: true`, cancelling the in-flight turn and
-      // restarting it on the same session (a documented limitation: a
-      // cancel before any prompt was sent, or a race with a fresh prompt,
-      // has nothing/the wrong thing to redeliver).
-      if (lastPrompt === undefined) return
-      await host.prompt(remoteSessionId, lastPrompt, { interrupt: true })
+      if (closed || detached) return
+      // Cancel on the box without starting another turn. Re-sending the
+      // previous prompt with `interrupt: true` restarts that request before
+      // the registry can deliver the replacement, and contaminates its stream.
+      const url = boxSessionUrl(host.mcpUrl, remoteSessionId, "/interrupt")
+      const res = await fetch(url, {
+        method: "POST",
+        signal: AbortSignal.timeout(60_000),
+      })
+      await res.body?.cancel().catch(() => undefined)
+      if (!res.ok) {
+        throw new Error(`sandbox proxy: remote interrupt failed (HTTP ${res.status})`)
+      }
     },
 
     async close(closeOpts?: { daemonShutdown?: boolean }): Promise<void> {
