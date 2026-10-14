@@ -39,6 +39,18 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "claude-code-cloud",
+    name: "Claude Code (cloud)",
+    description:
+      "AIP-66 managed cloud agent: Anthropic hosts the machine and the " +
+      "harness; this adapter relays `claude --cloud` / `claude -p --cloud` " +
+      "and the Claude Code sessions API behind ACP. Refuses the AIP-66 §4 " +
+      "spawn fields; re-attaches via the persisted vendor session id.",
+    packageName: "@agentproto/adapter-claude-code-cloud",
+    hint: "anthropic · AIP-66 cloud · resumable",
+  },
+  {
+    type: "agent-cli",
     slug: "opencode",
     name: "OpenCode",
     description:

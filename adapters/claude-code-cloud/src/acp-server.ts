@@ -8,6 +8,13 @@
  *     (AIP-66 §3) BEFORE any vendor side effect.
  *   - first `session/prompt` → `claude --cloud "<prompt>"` (start), later
  *     ones → `claude -p … --cloud <id>` (send-only).
+ *   - `session/load` RE-ATTACHES to the vendor session id the host
+ *     persisted on `meta.cloud.sessionId` (AIP-66 §5): the adopted id makes
+ *     the next prompt a `sendPrompt` — the relay never starts a replacement
+ *     vendor session.
+ *   - the learned identity (`{ vendor, sessionId, url }`) is reported to
+ *     the host through the meta file named by `AGENTPROTO_CLOUD_SESSION_META_FILE`
+ *     (meta-file.ts) — never a credential (AIP-66 §8).
  *   - the turn is then observed via the sessions API: events are mapped
  *     with @agentproto/adapter-claude-sdk's stream-json → ACP mappers
  *     (the payloads ARE Claude Code stream-json SDK messages — reused, not
@@ -30,6 +37,8 @@ import {
   type CancelNotification,
   type InitializeRequest,
   type InitializeResponse,
+  type LoadSessionRequest,
+  type LoadSessionResponse,
   type NewSessionRequest,
   type NewSessionResponse,
   type PromptRequest,
@@ -52,9 +61,11 @@ import {
 import {
   SessionsApi,
   keychainCredentialSource,
+  toCliSessionId,
   type CloudEventsPage,
   type CredentialSource,
 } from "./sessions-api.js"
+import { CLOUD_VENDOR_SLUG, writeCloudSessionMeta } from "./meta-file.js"
 import { validateRepoSource } from "./repo-source.js"
 
 /**
@@ -274,9 +285,10 @@ export class ClaudeCloudAcpAgent implements Agent {
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
-        // Sessions live in the vendor's cloud; re-attach is via the vendor
-        // id, not an ACP session/load replay (AIP-66 §5).
-        loadSession: false,
+        // Re-attach rides ACP `session/load` with the vendor session id the
+        // host persisted on `meta.cloud.sessionId` (AIP-66 §5) — that call
+        // ADOPTS the existing cloud session, it never starts a new one.
+        loadSession: true,
       },
     }
   }
@@ -311,6 +323,90 @@ export class ClaudeCloudAcpAgent implements Agent {
     return { sessionId: id }
   }
 
+  /**
+   * AIP-66 §5 re-attach: ADOPT the vendor session id the host persisted on
+   * `meta.cloud.sessionId` as this ACP session's vendor session. No vendor
+   * side effect happens here — the next `session/prompt` goes through
+   * `sendPrompt` (`claude -p … --cloud <id>`), never `startCloudSession`,
+   * so a resumed relay can never replace the vendor's session with a new
+   * one. The adopted id is also reported back to the host's meta file so a
+   * re-attach against a fresh config dir still carries the §5 mapping.
+   *
+   * Fails closed on an id the vendor could never own (e.g. the ACP uuid of
+   * a spawn whose vendor id was never learned): no session is started in
+   * its place.
+   */
+  async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    // Same §4 backstop as session/new — resume passes the host's persisted
+    // mcpServers (empty for a cloud spawn; a non-empty list still means
+    // "silently drop the field", which §4 forbids).
+    if (params.mcpServers && params.mcpServers.length > 0) {
+      throw new Error(
+        "claude code cloud: mcpServers is not supported for managed cloud " +
+          "agents (AIP-66 §4) — the vendor owns the harness",
+      )
+    }
+    // AIP-66 §3 — refuse BEFORE any vendor side effect: a re-attach runs
+    // code from this cwd on the vendor's machine too.
+    await this.#validateRepo(params.cwd)
+    let vendorSessionId: string
+    try {
+      // Accepts the vendor's own spellings (`session_<id>` / `cse_<id>`)
+      // and normalizes to the CLI's; anything else (an unlearned ACP uuid)
+      // is rejected here rather than handed to the vendor below.
+      vendorSessionId = toCliSessionId(params.sessionId)
+    } catch {
+      throw new Error(
+        `claude code cloud: session/load needs the vendor session id, got ` +
+          `${JSON.stringify(params.sessionId)} — expected session_<id> or ` +
+          `cse_<id> (AIP-66 §5). That id was never learned onto ` +
+          "meta.cloud.sessionId, so there is no vendor session to re-attach " +
+          "to — and this relay will not start a replacement.",
+      )
+    }
+    // Keyed BY THE VENDOR ID: the ACP client registers the loaded session
+    // under the id it passed in, so `session/prompt` (and our own
+    // `session/update` notifications) address this state by that id.
+    const session: CloudSessionState = {
+      id: vendorSessionId,
+      cwd: params.cwd,
+      vendorSessionId,
+      vendorUrl: null,
+      pollCursor: null,
+      seenEventIds: new Set(),
+      promptInFlight: false,
+    }
+    this.#sessions.set(vendorSessionId, session)
+    // The vendor's history is already there: pre-mark every existing event
+    // id so the first post-attach prompt is ended ONLY by ITS own `result`
+    // (AIP-66 §6) — without this, the previous turn's `result`, still in
+    // the newest events page, would end the new turn on arrival.
+    await this.#seedSeenEvents(session, vendorSessionId)
+    // Report the adopted identity (meta-file.ts) — the host re-persists
+    // `meta.cloud = { vendor, sessionId, url? }` from it.
+    await writeCloudSessionMeta({ vendor: CLOUD_VENDOR_SLUG, sessionId: vendorSessionId })
+    // The ACP client keys the loaded session on the id IT sent (the vendor
+    // id) — `LoadSessionResponse` carries no id of its own.
+    return {}
+  }
+
+  /** Mark the vendor's pre-existing events as already projected. Best
+   *  effort: a failed seed degrades to (at worst) an early end on an older
+   *  `result` — it must never turn a re-attach into a failed load, which
+   *  AIP-66 §5 forbids replacing with a fresh start anyway. */
+  async #seedSeenEvents(session: CloudSessionState, vendorSessionId: string): Promise<void> {
+    try {
+      const page = await this.#api.listEvents(vendorSessionId, {})
+      if (page.resume_cursor) session.pollCursor = page.resume_cursor
+      for (const event of page.data ?? []) rememberSeenEventId(session, event.event_id)
+    } catch (err) {
+      process.stderr.write(
+        `[claude-code-cloud] session/load: could not pre-mark the vendor's ` +
+          `existing events (${err instanceof Error ? err.message : String(err)})\n`,
+      )
+    }
+  }
+
   async prompt(params: PromptRequest): Promise<PromptResponse> {
     const session = this.#sessions.get(params.sessionId)
     if (!session) throw new Error(`unknown session ${params.sessionId}`)
@@ -331,6 +427,14 @@ export class ClaudeCloudAcpAgent implements Agent {
         })
         session.vendorSessionId = started.sessionId
         session.vendorUrl = started.url
+        // Report the learned §5 identity to the host (meta-file.ts) — the
+        // ONLY three fields written are vendor/sessionId/url; the vendor's
+        // OAuth credential never enters this file (AIP-66 §8).
+        await writeCloudSessionMeta({
+          vendor: CLOUD_VENDOR_SLUG,
+          sessionId: started.sessionId,
+          url: started.url,
+        })
         // Surface the session URL (AIP-66 security considerations: the user
         // must be able to inspect what the vendor is running).
         await this.#conn.sessionUpdate({

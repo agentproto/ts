@@ -115,8 +115,9 @@ export const claudeCodeCloud: AgentCliHandle = defineAgentCli({
     sub_agents: false,
     file_io: true,
     multimodal: false,
-    // Re-attach is via the persisted vendor session id (AIP-66 §5), not an
-    // ACP session/load replay.
+    // Re-attach is via the persisted vendor session id (AIP-66 §5): the
+    // host hands it back as ACP `session/load`, which ADOPTS it — the next
+    // prompt is a send to that same vendor session, never a new start.
     resumable: true,
     // Send-only prompting: the CLI never returns the reply on the prompt
     // path; the reply is observed via the sessions API.
@@ -158,6 +159,12 @@ export {
   type CloudCliDeps,
   type CloudEventsClient,
 } from "./acp-server.js"
+export {
+  CLOUD_SESSION_META_FILE_ENV,
+  CLOUD_VENDOR_SLUG,
+  writeCloudSessionMeta,
+  type CloudSessionMetaReport,
+} from "./meta-file.js"
 export {
   cloudChildEnv,
   defaultCloudCliRunner,
