@@ -1,6 +1,6 @@
 ---
-"@agentproto/runtime": patch
-"@agentproto/cli": patch
+"@agentproto/runtime": minor
+"@agentproto/cli": minor
 ---
 
 feat(runtime): restartPolicy can move a box session to a fresh box when its box is gone

@@ -47,16 +47,18 @@ const BOX_GONE_MESSAGE_RE = [
   // e2b SDK / provider control plane, typically at the box's lifetime cap.
   /sandbox is probably not running anymore/i,
   // The proxy watchdog's give-up after repeated failed box-daemon health
-  // probes ("… failed its health check N times in a row (crash, OOM, or the
-  // box is gone)" / "… did not answer its health check N times in a row …").
-  /sandbox proxy:.*health check/i,
+  // probes — anchored to the "N times in a row" give-up wording so an
+  // ordinary single health-check blip never counts as box-gone ("… failed
+  // its health check N times in a row (crash, OOM, or the box is gone)" /
+  // "… did not answer its health check N times in a row …").
+  /sandbox proxy:.*health check.*\d+ times in a row/i,
   // The proxy's long-poll fallback giving up against an unreachable box daemon.
   /sandbox proxy:.*consecutive poll failures against the box daemon/i,
   // A host-connect/reattach attempt that hit `SandboxBoxGoneError` (or the
   // provider's own "sandbox not found" wording) and got recorded as the death.
   /SandboxBoxGoneError/i,
   /sandbox ["']?[\w:-]+["']? (?:is )?not found/i,
-].map(re => re)
+]
 
 /** True when `text` carries one of the recorded box-gone death messages. */
 export function isBoxGoneMessage(text: string | undefined): boolean {

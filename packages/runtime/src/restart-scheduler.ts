@@ -29,7 +29,7 @@
  *
  * NEVER restarts: a clean exit (`status:"exited"`), an operator `kill()`, an
  * `"idle-reaped"` or `"daemon-restart"` teardown, or a cost-budget kill (the
- * `overBudget` path in the `sessions.ts`) — none of those set BOTH
+ * `overBudget` path in `sessions.ts`) — none of those set BOTH
  * `status:"error"` AND an absent/`"crashed"` `endedReason`, which is exactly
  * what `isEligibleForRestart` requires alongside an explicit
  * `restartPolicy`. A `killedMidTurn` row is handled structurally, not by a
