@@ -1,9 +1,11 @@
 /**
  * `spawnAgentSession({ appendSystemPrompt })`: the AGENT.md text rides the
  * adapter's declared system-prompt channel (`supportsSystemPrompt`), and an
- * adapter without one gets it as the first prompt's prefix + a warning —
- * never a silent drop. The text is recorded on the descriptor either way so
- * restart / fresh-continuation can re-apply it.
+ * adapter without a usable one — no channel at all, a channel that is
+ * currently unavailable (`systemPromptUnavailable`), or a text over the
+ * channel's char budget (`systemPromptMaxChars`) — gets it as the first
+ * prompt's prefix + a warning, never a silent drop. The text is recorded on
+ * the descriptor either way so restart / fresh-continuation can re-apply it.
  */
 
 import { describe, it, expect, vi } from "vitest"
@@ -22,7 +24,13 @@ import type { AgentAdapterResolver } from "../http-server.js"
 
 const TEXT = "You are a trip scout.\n\nHard rules — these MUST be followed:\n- Never invent a sourceUrl"
 
-function setup(supportsSystemPrompt: boolean) {
+type Resolved = NonNullable<Awaited<ReturnType<AgentAdapterResolver>>>
+type Caps = Pick<
+  Resolved,
+  "supportsSystemPrompt" | "systemPromptMaxChars" | "systemPromptUnavailable"
+>
+
+function setup(caps: Caps) {
   const prompts: string[] = []
   const session: AgentSessionLike = {
     sessionId: "acp_test",
@@ -37,7 +45,7 @@ function setup(supportsSystemPrompt: boolean) {
   const resolveAgentAdapter: AgentAdapterResolver = async () => ({
     startSession,
     commandPreview: "mock-adapter (agent)",
-    ...(supportsSystemPrompt ? { supportsSystemPrompt: true } : {}),
+    ...caps,
   })
   const registry = createSessionsRegistry({ persist: false })
   return { prompts, startSession, deps: { registry, resolveAgentAdapter } }
@@ -45,7 +53,7 @@ function setup(supportsSystemPrompt: boolean) {
 
 describe("spawnAgentSession — appendSystemPrompt", () => {
   it("a channel adapter gets the text on startSession, not in the prompt", async () => {
-    const { prompts, startSession, deps } = setup(true)
+    const { prompts, startSession, deps } = setup({ supportsSystemPrompt: true })
     const result = await spawnAgentSession(deps, {
       adapter: "mock",
       cwd: "/tmp",
@@ -62,8 +70,25 @@ describe("spawnAgentSession — appendSystemPrompt", () => {
     expect(result.descriptor.appendSystemPrompt).toBe(TEXT)
   })
 
+  it("a fitting text on a limited channel still rides the channel", async () => {
+    const { startSession, deps } = setup({
+      supportsSystemPrompt: true,
+      systemPromptMaxChars: 10_000,
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: "Zone: Luberon.",
+      appendSystemPrompt: TEXT,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(startSession.mock.calls[0]![0].appendSystemPrompt).toBe(TEXT)
+    expect((result.warnings ?? []).join("\n")).not.toMatch(/char system-prompt limit/)
+  })
+
   it("an adapter without a channel gets it as the first prompt's prefix, with a warning", async () => {
-    const { prompts, startSession, deps } = setup(false)
+    const { prompts, startSession, deps } = setup({})
     const result = await spawnAgentSession(deps, {
       adapter: "mock",
       cwd: "/tmp",
@@ -80,5 +105,52 @@ describe("spawnAgentSession — appendSystemPrompt", () => {
       /system-prompt text not delivered.*declares no manifest systemPrompt channel.*first prompt's prefix/,
     )
     expect(result.descriptor.appendSystemPrompt).toBe(TEXT)
+  })
+
+  it("text over the channel's char limit falls back to the prefix, warning names the limit", async () => {
+    const { prompts, startSession, deps } = setup({
+      supportsSystemPrompt: true,
+      systemPromptMaxChars: 50,
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: "Zone: Luberon.",
+      appendSystemPrompt: TEXT,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(startSession.mock.calls[0]![0].appendSystemPrompt).toBeUndefined()
+    await vi.waitFor(() => expect(prompts.length).toBeGreaterThan(0))
+    expect(prompts[0]!.indexOf("You are a trip scout.")).toBeGreaterThanOrEqual(0)
+    expect(prompts[0]!.indexOf("You are a trip scout.")).toBeLessThan(prompts[0]!.indexOf("Zone: Luberon."))
+    expect((result.warnings ?? []).join("\n")).toMatch(
+      new RegExp(
+        `system-prompt text not delivered.*the text is ${TEXT.length} chars, ` +
+          "over this harness's 50-char system-prompt limit",
+      ),
+    )
+    expect(result.descriptor.appendSystemPrompt).toBe(TEXT)
+  })
+
+  it("an unavailable channel appends its reason to the warning", async () => {
+    const { startSession, deps } = setup({
+      supportsSystemPrompt: false,
+      systemPromptUnavailable:
+        "the agentproto hermes plugin is not installed/enabled — " +
+        "run `agentproto adapters hermes-plugin install --enable`",
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: "Zone: Luberon.",
+      appendSystemPrompt: TEXT,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(startSession.mock.calls[0]![0].appendSystemPrompt).toBeUndefined()
+    expect((result.warnings ?? []).join("\n")).toMatch(
+      /declares no manifest systemPrompt channel.*the agentproto hermes plugin is not installed\/enabled/,
+    )
   })
 })

@@ -174,15 +174,27 @@ agentproto adapters hermes-plugin status   # installed / enabled state
 `--enable` runs `hermes plugins enable agentproto-system-prompt` (argv,
 never a shell); `~/.hermes/config.yaml` is never edited by hand.
 
+The manifest declares the channel as
+`systemPrompt: { via: "env-file", env: "AGENTPROTO_SYSTEM_PROMPT_FILE", maxChars: 7500 }`:
+at spawn the driver writes the text to
+`<session config dir>/agentproto-system-prompt.md` (a private temp dir
+when there is no config dir, removed with the session) and points that
+env var at the file. The runtime only routes through the channel while
+`hermesSystemPromptPluginStatus` reports the plugin installed AND
+enabled — cheap file reads under `$HERMES_HOME`, re-evaluated on every
+spawn, so installing the plugin takes effect without a daemon restart.
+
 **Limit: 7500 chars** (`MAX_HERMES_SYSTEM_PROMPT_CHARS`). Hermes caps all
 plugin system-prompt sections — including the audit headings it prepends —
 at 8000 chars and 32 sections; 7500 leaves headroom for the headings.
 Longer text is not delivered through the plugin.
 
 Without the plugin (not installed, or not listed in `plugins.enabled` of
-`~/.hermes/config.yaml`), hermes has no system-prompt channel and projected
-AGENT.md text rides the first prompt as a prefix with a
-`session:harness-warning`.
+`~/.hermes/config.yaml`), or with text over the 7500-char limit, hermes
+has no usable system-prompt channel for that spawn and projected AGENT.md
+text rides the first prompt as a prefix with a `session:harness-warning`
+— the no-plugin warning names the `agentproto adapters hermes-plugin
+install --enable` fix, the over-limit warning names the limit.
 
 ## Protocol
 

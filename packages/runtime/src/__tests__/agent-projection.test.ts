@@ -68,6 +68,32 @@ describe("projectAgentToSpawn", () => {
     expect(p.skills).toEqual(["trip-research"])
   })
 
+  it("a limited channel that fits the text still takes `systemPrompt`", () => {
+    const p = projectAgentToSpawn(input(scout()), {
+      supportsSystemPrompt: true,
+      systemPromptMaxChars: 100_000,
+      deliversSessionSkills: true,
+    })
+    expect(p.systemPrompt).toContain("You are a trip scout.")
+    expect(joined(p.warnings)).not.toMatch(/char system-prompt limit/)
+  })
+
+  it("a channel over its char limit degrades to instructions + a warning naming the limit", () => {
+    const p = projectAgentToSpawn(input(scout()), {
+      supportsSystemPrompt: true,
+      systemPromptMaxChars: 10,
+      deliversSessionSkills: true,
+    })
+    expect(p.systemPrompt).toBeUndefined()
+    expect(p.instructions).toContain("You are a trip scout.")
+    expect(joined(p.warnings)).toMatch(
+      /the AGENT\.md text is \d+ chars, over this harness's 10-char system-prompt limit — delivered as the first prompt's prefix instead/,
+    )
+    // The rest of the projection is unaffected by the degraded channel.
+    expect(p.tools).toEqual(["file_write", "file_read"])
+    expect(p.skills).toEqual(["trip-research"])
+  })
+
   it("declared string tools scope the gateway; native tools and structured refs are warned about", () => {
     const p = projectAgentToSpawn(input(scout()), {})
     expect(p.tools).toEqual(["file_write", "file_read"])

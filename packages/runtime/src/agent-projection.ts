@@ -12,9 +12,11 @@
  *    (`composeInstructions`, the same rendering mastra-agent uses). An
  *    adapter that declares a real system-prompt channel
  *    (`caps.supportsSystemPrompt`, from its manifest's `systemPrompt`)
- *    receives the text there (projected as `systemPrompt`, no warning);
- *    every other adapter rides it as the first prompt's prefix — said out
- *    loud as a warning, never silently.
+ *    receives the text there (projected as `systemPrompt`, no warning) —
+ *    unless the text overflows the channel's char budget
+ *    (`caps.systemPromptMaxChars`), which degrades to prefix + a warning
+ *    naming the limit; every other adapter rides it as the first prompt's
+ *    prefix — said out loud as a warning, never silently.
  *  - `tools` (string ids) → the daemon gateway's `allowTools` scope, for
  *    every adapter (manifest-native included). The harness's OWN native
  *    tools are not filtered by that; warned.
@@ -44,6 +46,11 @@ export interface AgentProjectionCaps {
    *  the instructions ride `AgentSpawnProjection.systemPrompt` and NO
    *  "no system-prompt channel" warning is raised; unset ⇒ prefix + warn. */
   supportsSystemPrompt?: boolean
+  /** The channel's character budget (manifest `systemPrompt.maxChars`, from
+   *  `ResolvedAgentAdapter.systemPromptMaxChars`). A channel that would
+   *  overflow it is treated as no channel for this text: projected as
+   *  `instructions` (first-prompt prefix) with a warning naming the limit. */
+  systemPromptMaxChars?: number
   /** The adapter's declared option ids (a `skills` option counts as skill
    *  delivery too — hermes' comma-joined `--skills`). */
   declaredOptions?: readonly { id: string }[]
@@ -121,14 +128,21 @@ export function projectAgentToSpawn(
   const warnings: string[] = []
   const instructions = composeInstructions(agent.handle, agent.body)
   // A declared channel takes the composed text as `systemPrompt` (delivered
-  // through `startSession({ appendSystemPrompt })`, no prefix, no warning);
-  // everything else prefixes + warns below.
-  const hasChannel = instructions.length > 0 && caps.supportsSystemPrompt === true
+  // through `startSession({ appendSystemPrompt })`, no prefix, no warning)
+  // — when the text fits the channel's char budget. Over the budget (or
+  // with no channel at all) the text prefixes the first prompt + warns.
+  const overChannelLimit =
+    caps.systemPromptMaxChars !== undefined && instructions.length > caps.systemPromptMaxChars
+  const hasChannel =
+    instructions.length > 0 && caps.supportsSystemPrompt === true && !overChannelLimit
   if (instructions.length > 0 && !hasChannel) {
     warnings.push(
-      `agent "${id}": this harness has no system-prompt channel — the AGENT.md body` +
-        `${agent.handle.boundaries?.length ? ", boundaries" : ""}${agent.handle.persona ? ", persona" : ""}` +
-        " are delivered as the first prompt's prefix, so a later turn can push them out of view.",
+      caps.supportsSystemPrompt === true && overChannelLimit
+        ? `agent "${id}": the AGENT.md text is ${instructions.length} chars, over this harness's ` +
+            `${caps.systemPromptMaxChars}-char system-prompt limit — delivered as the first prompt's prefix instead.`
+        : `agent "${id}": this harness has no system-prompt channel — the AGENT.md body` +
+            `${agent.handle.boundaries?.length ? ", boundaries" : ""}${agent.handle.persona ? ", persona" : ""}` +
+            " are delivered as the first prompt's prefix, so a later turn can push them out of view.",
     )
   }
 
