@@ -1,5 +1,32 @@
 # @agentproto/secrets
 
+## 2.1.0
+
+### Minor Changes
+
+- bb711b8: Full-shape OAuth capture: teach the provision recipes (claude-code-oauth,
+  codex/`oauth-subscription`) an optional `oauth` field map so a method resolves
+  the ENTIRE AIP-19 `oauth` value shape ({accessToken, refreshToken, expiresAt}),
+  not just a single access-token string — epoch-ms expiries normalize to ISO.
+  New `agentproto-secrets capture` verb: resolves that shape from the CLI's own
+  local login (never spawns a second login client — if none exists it exits 1
+  and points at `claude login` / `codex login`), seals it to the vault's local
+  keypair (0600, minted once), writes a 0600 `entries/<provider>.json`, and
+  prints a capability pointer (`agentproto-secrets://vault/<provider>?method=…&key=…`)
+  with no token value ever printed or logged.
+- bb711b8: Add a `capture` CLI verb plus an optional `oauth` field map on provision
+  recipes. A method can now declare dot-paths into its login document for the
+  full AIP-19 `oauth` value shape (`{accessToken, refreshToken, expiresAt}`),
+  and `capture` resolves that shape from the CLI's own local login, seals it to
+  the vault's local keypair, writes a `0600` `entries/<provider>.json`, and
+  prints a token-free capability pointer. Epoch-ms expiries normalize to ISO.
+
+### Patch Changes
+
+- Updated dependencies [98cce09]
+- Updated dependencies [98cce09]
+  - @agentproto/auth@1.3.0
+
 ## 2.0.2
 
 ### Patch Changes

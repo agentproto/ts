@@ -1,5 +1,134 @@
 # @agentproto/runtime
 
+## 5.23.0
+
+### Minor Changes
+
+- 3c94e79: An app's WORKSPACE.md can now back its workspace with git: an inline `storage: github` with `sync.mode: pull-push`, a `config.repo_url` on github.com and an absolute `config.mount_path` is cloned there (through `@agentproto/storage-github`'s `createGithubWorkspaceSync`) when the app's workspace is registered, and the clone becomes the app workspace path. The token comes from the env var(s) named in `auth.state.env` (default `GITHUB_TOKEN`, `GH_TOKEN`). The clone only happens into an empty or missing directory; an existing git checkout is accepted untouched, any other non-empty directory is refused, and every failure falls back to the app dir. After a seed clone the token header storage-github writes into `.git/config` is removed — later pulls/pushes re-inject auth per invocation — so no credential is left at rest in the workspace. `branch_policy`/`pr_policy` are validated against the AIP-35 enums and dropped when unknown. A repo whose default branch is not `main` fails the clone unless `base_branch` is declared (the failure is warned and falls back to the app dir).
+- ebfd261: Add `agentproto tunnel login`, `POST|GET /tunnels/login` and `PUT /tunnels/providers/:slug`; refuse a public tunnel to the daemon's own port while it does not authenticate remote requests
+- 2b6189d: Carry review body and URL in sentinel pull_request_review events
+- d6ccf1f: Add chrome-live screencast for live view and recording of agent's tab
+- 28b35b3: Add Cloudflare provisioned tunnel provider with OIDC device login
+- 28b35b3: Export the Cloudflare tunnel engine as `@agentproto/runtime/cloudflare-tunnel-engine`.
+- 84d3993: Mint a unique human `slug` on every session: `spawnAgent`/`spawnPty` derive one via the shared `mintSlug` (slugified `title || label || adapterSlug || kind`, de-duplicated with `-2`, `-3`, … against held sessions), restored legacy rows are lazily backfilled idempotently on boot, and `renameSession` accepts an optional `slug` override that stays unique instead of throwing. The deprecated `name` becomes a read-only alias resolved through the new `getSlug` (`slug ?? name`); `spawnPty` no longer throws on a colliding `name` and no longer writes `name` at all.
+- 2b6189d: Carry the PR review body (capped at 4096 chars as `data.body`) and the review's `html_url` (`data.reviewUrl`) on normalized `pull_request_review` webhook events, and append a whitespace-collapsed one-line snippet of the body (≤200 chars) to the event `summary` so watchers see why a verdict was given. An empty or absent review body keeps the previous `data`/`summary` shape exactly.
+- 98cce09: Route/account selection moves into the auth model instead of CI glue. An auth profile can now declare extra billing `routes` it serves beyond its primary `endpoint` (e.g. one OpenCode key billed on both the `opencode-go` Go route and the `opencode` Zen route); the eligibility predicate admits the profile on any declared route. `agent_start` / `SpawnAgentSessionInput.access` accepts an ordered `profileRefs: string[]` (superseding `profileRef`), and the runtime bills the FIRST profile eligible for the model's route, failing closed with the candidate list when none are. `auth profile create` gains a repeatable `--route <route>` flag. Absent `routes`/`profileRefs` behaves exactly as before.
+- 0bc2def: A2 — git workspace lifecycle in the sandbox:
+
+  - `@agentproto/runtime`: `appServe` pulls the app's declared `storage: github` `pull-push` workspace inside the box after `app_install` (new exports `readAppGithubWorkspaceSync`, `pullAppGithubWorkspace`, `boxGitRunner`, `boxSyncTree`), an opt-in close-time push rides `onBeforeTeardown` (`createGithubWorkspacePushAtClose`, `composeTeardownHooks`), token lookup via `resolveGithubWorkspaceToken`, and a failed seed clone in `app-workspace` now removes the just-created empty mount dir and warns on a failed auth scrub. New optional `exec` on `SandboxServeHost`.
+  - `@agentproto/app-kit`: new `workspaceFromMarkdownText` parses `WORKSPACE.md` text without touching the filesystem (same manifest parse `loadAppHandle` runs), returning `undefined` for anything unparsable or schema-invalid.
+  - `@agentproto/storage-github`: `GithubWorkspaceSyncOpts.gitRunner` now also accepts an `AsyncGitRunner`, so the sync contract can be driven over remote exec seams; `writeAuthConfig` is now async and accepts either runner shape.
+
+- 84cd47a: Restart-with-override: add `mcpServers` as a restartable axis (`POST /sessions/:id/restart` body, the `session_restart` MCP overrides, and `RestartOverrides` via `SessionConfig.mcpServers`). A restarted session now lets the caller fully REPLACE the mounted MCP server list instead of always cloning the ORIGINAL one verbatim — the only way to change an HTTP-mounted server's baked-in config (e.g. a `?allowTools=` query string on the daemon self-mount). Full replacement, not a merge; the daemon self-mount's `callerSessionId` is re-stamped with the restarted session's id on the new list.
+- 98cce09: Route/account selection moves into the auth model instead of CI glue. An auth
+  profile can now declare extra billing `routes` it serves beyond its primary
+  `endpoint` (e.g. one OpenCode key billed on both the `opencode-go` Go route and
+  the `opencode` Zen route); the eligibility predicate admits the profile on any
+  declared route. `agent_start` / `SpawnAgentSessionInput.access` accepts an
+  ordered `profileRefs: string[]` (superseding `profileRef`), and the runtime bills
+  the FIRST profile eligible for the model's route, failing closed with the
+  candidate list when none are. `auth profile create` gains a repeatable
+  `--route <route>` flag. Absent `routes`/`profileRefs` behaves exactly as before.
+- b0224c7: Add cloudflare-managed tunnel provider and hostname/purge commands
+- 0bc2def: A2 — git workspace lifecycle in the sandbox:
+
+  - `app_install`'s seed-clone follow-ups in `app-workspace`: a failed seed clone now removes the just-created empty mount dir again (nothing of the user's is ever deleted — `rmdir` only succeeds when the dir is empty), and a failed persisted-auth scrub (`git config --remove-section` after a clone) is warned about instead of silently dropped, so the "no credential at rest" guarantee is self-checking.
+  - `appServe` pulls the app's declared `storage: github` `pull-push` workspace INSIDE the box after `app_install` and before the UI server launches: empty/missing mount path is cloned, an existing checkout is fetched and merged `--ff-only` (a diverged local branch fails the pull, never clobbered). Git runs through the box's per-command exec seam (`boxGitRunner` is passed to `createGithubWorkspaceSync`), never the host's `spawnSync` against an in-box path. The GitHub token is resolved through the daemon's secrets broker (`resolveGithubWorkspaceTokenFromBroker`) — never ambient `process.env` — and `persistAuth: false` keeps it off the box's command line and out of `.git/config` (every git call injects it via `SandboxExecOpts.env`). `pull`'s outcome is read from a real discriminant (`PullResult.ok`), not a message substring. An invalid declaration, a missing token, or a failed pull is warned about and never breaks the serve.
+  - Opt-in push at session close: a declaration carrying BOTH a non-`main` `sync.push.branch_policy` AND a non-`none` `pr_policy` opts in; the hook runs on the box proxy's `onBeforeTeardown` (the last moment the box filesystem is reachable), pushing the working tree as `agentproto/<session>` / `agentproto/turn-<id>` per the branch policy, never the base branch. It is wired on the spawn path AND on the restart/re-attach paths, so a resumed session pushes like a fresh one. Without the declaration (or with `main`), nothing pushes. Failures are warned, never block the teardown.
+  - `@agentproto/app-kit` gains `workspaceFromMarkdownText`: parse WORKSPACE.md text without touching the filesystem — the same manifest parse `loadAppHandle` runs on the file, lifted to a string so a caller holding text read from a box gets the identical validated handle (returns `undefined` for anything unparsable).
+  - `@agentproto/storage-github`: `GithubWorkspaceSyncOpts.gitRunner` now also accepts an async runner (per-call `await`; sync runners unchanged), a new `persistAuth` opt (default `true`) can skip persisting the auth header for remote-seam runs, and `pull` now reports `PullResult.ok` on every path. `@agentproto/storage`'s `PullResult` gains that optional `ok` discriminant (a healthy refresh is `seeded: false, ok: true`; a failed clone/fetch/merge is `ok: false`).
+
+- b83773b: session-follow: a follow can now subscribe to a task board with
+  `selector.boardId` and the new `task-changed` event. The daemon wakes the
+  follower (one coalesced digest, no polling) when a task on that board is
+  created, claimed, changes status, or is released by another actor — a pure
+  field edit is ignored, and the follower's own writes never wake it.
+
+### Patch Changes
+
+- d40020f: Keep `meta.cloud` (vendor/sessionId/url) and the vendor harness label (`claude-code`) on the descriptor of a restarted AIP-66 cloud session, instead of dropping the cloud binding and falling back to the relay adapter slug (`claude-code-cloud`).
+- 855a9de: Keep chrome-live browser instances alive across /mcp requests
+- 6796022: Enforce the canonical posture on opencode sessions instead of only announcing
+  it. opencode advertises no native `bypass`/`accept-edits`/`read-only` mode, so
+  those postures reached an opencode session as an advisory system-prompt
+  preamble only, and `posture: "bypass"` still showed opencode's own permission
+  prompts. The driver now layers a `permission` block into the session's own
+  `OPENCODE_CONFIG_CONTENT` at spawn/restart (the user's opencode config files are
+  never touched): `bypass` allows every permission, `accept-edits` sets
+  `edit: "allow"`, `read-only` sets `edit: "deny"` and `bash: "deny"`. `plan` keeps
+  opencode's native `plan` agent, and the preamble fallback for harnesses with no
+  mapping is unchanged. An inline config that is not a JSON object now refuses the
+  spawn rather than silently dropping the boundary.
+- c6ac536: Report how a posture is actually enforced instead of calling every
+  non-native posture advisory. The driver now exposes `spawnEnforcedPostures`
+  (exported helper, and stamped on each started session) — the canonical
+  postures an adapter enforces through its isolated spawn config: claude-code's
+  `permissions.defaultMode` and opencode's per-session `permission` block. The
+  runtime classifies a posture with the new pure `postureEnforcement` helper as
+  `native`, `spawn-config`, `prompt-advisory`, `none` or `unavailable`, and
+  surfaces it additively: a read-time `spawnEnforcedPostures` echo on the session
+  descriptor (never persisted), `postureEnforcement` and
+  `canonicalPostureEnforcement` on `session_capabilities` /
+  `GET /sessions/:id/capabilities`, an `enforcement` field on `setPosture` /
+  `agent_set_posture` results (so a `requires-restart` for opencode `bypass` says
+  the restart lands a real boundary), and `spawn-config` in a read-only decision
+  escalation's `toolControls.enforced.posture` where it used to say
+  `prompt-advisory`.
+- 58c4eed: Forward posture to the box's agent_start for sandbox spawns and restarts, surface the box's spawnEnforcedPostures, expose spawnEnforcedPostures on adapter listings, and label spawn-enforced postures "(enforced)" in the VS Code posture picker and Configuration Lab.
+- 6e9b912: Route every session-addressing MCP tool through the shared `resolveSessionRef` + `sessionRefSchema` so `sessionId`, `idOrName`, and `slug` are all accepted uniformly across the session surface (previously each tool declared only one of the spellings), with a transport-level regression test in `session-ref-keys.test.ts`.
+- e584cb3: Report detached sandbox rows from workspace buckets a daemon does not serve as `unserved` instead of pending forever
+- 58c4eed: Carry posture through sandbox sessions and label spawn-enforced postures in
+  pickers. A sandbox (box-proxied) spawn or restart now forwards `posture` to the
+  box's own `agent_start`, so the box daemon applies it like a local spawn
+  (native mode, isolated spawn config, or the advisory preamble). Before, the
+  host dropped it outright. The box's `agent_start` response carries
+  `spawnEnforcedPostures`, and the host proxy surfaces it, so a box session reports
+  `spawn-config` instead of advisory. An older box that reports nothing stays
+  advisory. `GET /adapters` entries carry `spawnEnforcedPostures` (claude-code,
+  opencode). The VS Code posture picker and Configuration Lab label those postures
+  "(enforced)", applied on restart, instead of "(advisory)".
+- 6e9b912: Every session-addressing tool accepts `sessionId` / `idOrName` / `slug`. The MCP session surface (`session_capabilities`, `session_restart`, `session_unarchive`, `session_tree`, …) now routes lookups through the shared `resolveSessionRef` + `sessionRefSchema` instead of `findByIdOrName` alone, and the same three-key addressing is extended to `command_log_tail` / command tool-call reads, `conversation_read`, `conversation_export`, `workspace_brain_ingest`, and `app_session_events`. Resolution is archived-inclusive (via `archivedInclusiveRegistry`), so a legacy `name`/`slug` still resolves for an archived session — e.g. `session_unarchive` — and `ambiguous`/`conflict` outcomes surface as errors rather than silently degrading to the raw query.
+- 96e5008: `task_list`'s description now names the write verbs and how to reach them when a mount lists `task_list` but not `task_create`/`task_claim`/`task_update` (a custom `deferredTools.alwaysOn` set defers them: `tool_search` `select:task_create,task_claim,task_update`). Every default mount still lists all four.
+- 50dffe6: Summarize a command tool's result from its real stdout/stderr instead of the
+  raw JSON blob. `command_execute` returns its result as one JSON string
+  (`{exitCode,stdout,stderr}`), whose newlines are escaped — so the one-line
+  renderer saw a single "line" and truncated it to the first ~160 chars, showing
+  the JSON preamble plus the first thing the command printed (often the cwd).
+  The presenter now detects that shape, parses it, and reports the exit code and
+  the real line/byte count of the output.
+- 87dfdfd: Route session lookup through a single id/slug/legacy-name resolver
+
+  `findByIdOrName` now delegates to the shared resolver: a query is trimmed, exact `slug` matches are honored, and a query matching more than one session (duplicate legacy `name`s) resolves to not-found instead of the previous silent first match. A multi-key `SessionRef` whose keys disagree now returns the new `{ code: "conflict", query, keys }` error instead of `not_found`. The returned type is unchanged.
+
+- Updated dependencies [989828b]
+- Updated dependencies [d6ccf1f]
+- Updated dependencies [bb711b8]
+- Updated dependencies [a21b38b]
+- Updated dependencies [6796022]
+- Updated dependencies [179ea46]
+- Updated dependencies [c6ac536]
+- Updated dependencies [98cce09]
+- Updated dependencies [efd7192]
+- Updated dependencies [0bc2def]
+- Updated dependencies [bb711b8]
+- Updated dependencies [98cce09]
+- Updated dependencies [0bc2def]
+- Updated dependencies [50dffe6]
+- Updated dependencies [efd7192]
+  - @agentproto/model-catalog@0.12.6
+  - @agentproto/adapter-browser@0.6.0
+  - @agentproto/secrets@2.1.0
+  - @agentproto/acp@0.11.1
+  - @agentproto/driver-agent-cli@2.13.1
+  - @agentproto/pairing-host@0.2.8
+  - @agentproto/auth@1.3.0
+  - @agentproto/storage-github@0.2.0
+  - @agentproto/app-kit@1.9.0
+  - @agentproto/apps@0.23.3
+  - @agentproto/providers-store@0.3.29
+  - @agentproto/sandbox@0.11.2
+  - @agentproto/llm-endpoint@0.11.11
+
 ## 5.22.0
 
 ### Minor Changes

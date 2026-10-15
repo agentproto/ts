@@ -1,5 +1,49 @@
 # @agentproto/driver-agent-cli
 
+## 2.13.1
+
+### Patch Changes
+
+- a21b38b: Read opencode's native session modes from the `category:"mode"` config option
+  it actually advertises (opencode 1.19 leaves the ACP `modes` field undefined), so
+  `availableModes` is no longer empty: canonical postures now resolve to a real
+  native mode (`default`→`build`, `plan`→`plan`) and switch live via
+  `session/set_mode`, instead of silently degrading to an advisory
+  prompt-injection preamble. Also re-assert the requested model/effort/mode on
+  `loadSession` (native-resume): a restarted opencode session used to drop the
+  requested model and run its own default `opencode/big-pickle` (a per-IP
+  rate-limited free id) while agentproto still reported the requested model and
+  route. The existing derived-from-model spawn guard now covers resumes too, since
+  `loadSession` records `modelApplyRejection`.
+- 6796022: Enforce the canonical posture on opencode sessions instead of only announcing
+  it. opencode advertises no native `bypass`/`accept-edits`/`read-only` mode, so
+  those postures reached an opencode session as an advisory system-prompt
+  preamble only, and `posture: "bypass"` still showed opencode's own permission
+  prompts. The driver now layers a `permission` block into the session's own
+  `OPENCODE_CONFIG_CONTENT` at spawn/restart (the user's opencode config files are
+  never touched): `bypass` allows every permission, `accept-edits` sets
+  `edit: "allow"`, `read-only` sets `edit: "deny"` and `bash: "deny"`. `plan` keeps
+  opencode's native `plan` agent, and the preamble fallback for harnesses with no
+  mapping is unchanged. An inline config that is not a JSON object now refuses the
+  spawn rather than silently dropping the boundary.
+- c6ac536: Report how a posture is actually enforced instead of calling every
+  non-native posture advisory. The driver now exposes `spawnEnforcedPostures`
+  (exported helper, and stamped on each started session) — the canonical
+  postures an adapter enforces through its isolated spawn config: claude-code's
+  `permissions.defaultMode` and opencode's per-session `permission` block. The
+  runtime classifies a posture with the new pure `postureEnforcement` helper as
+  `native`, `spawn-config`, `prompt-advisory`, `none` or `unavailable`, and
+  surfaces it additively: a read-time `spawnEnforcedPostures` echo on the session
+  descriptor (never persisted), `postureEnforcement` and
+  `canonicalPostureEnforcement` on `session_capabilities` /
+  `GET /sessions/:id/capabilities`, an `enforcement` field on `setPosture` /
+  `agent_set_posture` results (so a `requires-restart` for opencode `bypass` says
+  the restart lands a real boundary), and `spawn-config` in a read-only decision
+  escalation's `toolControls.enforced.posture` where it used to say
+  `prompt-advisory`.
+- Updated dependencies [a21b38b]
+  - @agentproto/acp@0.11.1
+
 ## 2.13.0
 
 ### Minor Changes

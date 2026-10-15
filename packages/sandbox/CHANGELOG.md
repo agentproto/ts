@@ -1,5 +1,14 @@
 # @agentproto/sandbox
 
+## 0.11.2
+
+### Patch Changes
+
+- Updated dependencies [bb711b8]
+- Updated dependencies [bb711b8]
+  - @agentproto/secrets@2.1.0
+  - @agentproto/worktree@0.15.2
+
 ## 0.11.1
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @agentproto/apps
 
+## 0.23.3
+
+### Patch Changes
+
+- 50dffe6: Port the command-result summary to the session-story panel: a command tool's
+  result is a JSON string with escaped newlines, which the panel's one-line
+  renderer truncated to the JSON preamble plus the first output line (usually
+  the cwd). Summarize the parsed stdout/stderr with the exit code instead, so
+  the panel matches `@agentproto/runtime`'s fixed presenter.
+- Updated dependencies [0bc2def]
+- Updated dependencies [0bc2def]
+  - @agentproto/app-kit@1.9.0
+
 ## 0.23.2
 
 ### Patch Changes

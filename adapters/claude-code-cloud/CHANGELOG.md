@@ -1,5 +1,18 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.2.1
+
+### Patch Changes
+
+- 14018fe: Document that Claude Code Cloud supports `session/load` to re-attach persisted vendor sessions.
+- 691ff00: Refresh an expired claude.ai OAuth login (via `claude -p`) and drop the stale keychain credential cache before retrying, so a re-attach after the token expired no longer 401s
+- f316183: Detect the first-run folder-trust prompt through the cursor-column escapes the claude TUI draws it with — normalize PTY output (CSI/OSC/lone-ESC → spaces) before every TUI regex, so `claude --cloud` no longer stalls to its 120s timeout in a never-trusted folder. The PTY timeout error now carries a short ANSI-stripped tail of the stalled screen.
+- Updated dependencies [a21b38b]
+- Updated dependencies [6796022]
+- Updated dependencies [c6ac536]
+  - @agentproto/driver-agent-cli@2.13.1
+  - @agentproto/adapter-claude-sdk@0.7.25
+
 ## 0.2.0
 
 ### Minor Changes

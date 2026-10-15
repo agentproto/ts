@@ -1,5 +1,64 @@
 # @agentproto/cli
 
+## 1.24.0
+
+### Minor Changes
+
+- ebfd261: Add `agentproto tunnel login`, `POST|GET /tunnels/login` and `PUT /tunnels/providers/:slug`; refuse a public tunnel to the daemon's own port while it does not authenticate remote requests
+- 98cce09: Route/account selection moves into the auth model instead of CI glue. An auth profile can now declare extra billing `routes` it serves beyond its primary `endpoint` (e.g. one OpenCode key billed on both the `opencode-go` Go route and the `opencode` Zen route); the eligibility predicate admits the profile on any declared route. `agent_start` / `SpawnAgentSessionInput.access` accepts an ordered `profileRefs: string[]` (superseding `profileRef`), and the runtime bills the FIRST profile eligible for the model's route, failing closed with the candidate list when none are. `auth profile create` gains a repeatable `--route <route>` flag. Absent `routes`/`profileRefs` behaves exactly as before.
+- 98cce09: Route/account selection moves into the auth model instead of CI glue. An auth
+  profile can now declare extra billing `routes` it serves beyond its primary
+  `endpoint` (e.g. one OpenCode key billed on both the `opencode-go` Go route and
+  the `opencode` Zen route); the eligibility predicate admits the profile on any
+  declared route. `agent_start` / `SpawnAgentSessionInput.access` accepts an
+  ordered `profileRefs: string[]` (superseding `profileRef`), and the runtime bills
+  the FIRST profile eligible for the model's route, failing closed with the
+  candidate list when none are. `auth profile create` gains a repeatable
+  `--route <route>` flag. Absent `routes`/`profileRefs` behaves exactly as before.
+- b0224c7: Add cloudflare-managed tunnel provider and hostname/purge commands
+
+### Patch Changes
+
+- 58c4eed: Forward posture to the box's agent_start for sandbox spawns and restarts, surface the box's spawnEnforcedPostures, expose spawnEnforcedPostures on adapter listings, and label spawn-enforced postures "(enforced)" in the VS Code posture picker and Configuration Lab.
+- 84d3993: Preserve a session's addressable `slug` across `agentproto sessions restart`: the CLI restart body now forwards `slug ?? name` (a post-slug row never writes `name`, so forwarding only `name` silently lost the `--name <handle>`), matching the runtime's `session_restart` pty branch.
+- e584cb3: Report detached sandbox rows from workspace buckets a daemon does not serve as `unserved` instead of pending forever
+- 58c4eed: Carry posture through sandbox sessions and label spawn-enforced postures in
+  pickers. A sandbox (box-proxied) spawn or restart now forwards `posture` to the
+  box's own `agent_start`, so the box daemon applies it like a local spawn
+  (native mode, isolated spawn config, or the advisory preamble). Before, the
+  host dropped it outright. The box's `agent_start` response carries
+  `spawnEnforcedPostures`, and the host proxy surfaces it, so a box session reports
+  `spawn-config` instead of advisory. An older box that reports nothing stays
+  advisory. `GET /adapters` entries carry `spawnEnforcedPostures` (claude-code,
+  opencode). The VS Code posture picker and Configuration Lab label those postures
+  "(enforced)", applied on restart, instead of "(advisory)".
+- Updated dependencies [989828b]
+- Updated dependencies [d6ccf1f]
+- Updated dependencies [bb711b8]
+- Updated dependencies [a21b38b]
+- Updated dependencies [6796022]
+- Updated dependencies [179ea46]
+- Updated dependencies [c6ac536]
+- Updated dependencies [98cce09]
+- Updated dependencies [0bc2def]
+- Updated dependencies [bb711b8]
+- Updated dependencies [98cce09]
+- Updated dependencies [0bc2def]
+- Updated dependencies [50dffe6]
+  - @agentproto/model-catalog@0.12.6
+  - @agentproto/adapter-browser@0.6.0
+  - @agentproto/secrets@2.1.0
+  - @agentproto/acp@0.11.1
+  - @agentproto/driver-agent-cli@2.13.1
+  - @agentproto/pairing-host@0.2.8
+  - @agentproto/auth@1.3.0
+  - @agentproto/app-kit@1.9.0
+  - @agentproto/apps@0.23.3
+  - @agentproto/worktree@0.15.2
+  - @agentproto/llm-endpoint@0.11.11
+  - @agentproto/sandbox-box@0.2.32
+  - @agentproto/sandbox-e2b@0.8.2
+
 ## 1.23.0
 
 ### Minor Changes

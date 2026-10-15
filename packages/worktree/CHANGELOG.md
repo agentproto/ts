@@ -1,5 +1,13 @@
 # @agentproto/worktree
 
+## 0.15.2
+
+### Patch Changes
+
+- Updated dependencies [58c4eed]
+- Updated dependencies [58c4eed]
+  - @agentproto/harness@0.5.2
+
 ## 0.15.1
 
 ### Patch Changes
