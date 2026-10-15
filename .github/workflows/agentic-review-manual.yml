@@ -66,8 +66,12 @@ jobs:
         with:
           adapter: ${{ steps.review.outputs.adapter }}
           auth-mode: ${{ steps.review.outputs.auth-mode }}
-          api-key: ${{ secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ secrets.OPENCODE_API_KEY }}
+          # Credential chosen by the resolved model's route, same rule as ci.yml.
+          # NB this dispatch path does NOT run the metered-model guard (it is an
+          # owner-only manual trigger); it resolves whatever AGENT_REVIEW_PRESETS
+          # names, so a metered preset here relies on the owner's own dispatch.
+          api-key: ${{ (startsWith(steps.review.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.review.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.review.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
