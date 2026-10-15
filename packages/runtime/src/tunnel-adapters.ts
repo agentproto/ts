@@ -41,6 +41,8 @@ import { CLOUDFLARE_QUICK_SLUG } from "./remote-providers/quick.js"
 import { CLOUDFLARE_NAMED_SLUG } from "./remote-providers/named.js"
 import { NGROK_SLUG, type TunnelNgrokCreds } from "./remote-providers/ngrok.js"
 import { CLOUDFLARE_MANAGED_SLUG } from "./remote-providers/cloudflare-managed.js"
+import { CLOUDFLARE_PROVISIONED_SLUG } from "./remote-providers/cloudflare-provisioned.js"
+import { z } from "zod"
 import {
   resolveTunnelProvider,
   discoverTunnelHandles,
@@ -113,6 +115,14 @@ export const TUNNEL_CATALOG: AdapterCatalog = [
       "Cloudflare tunnel created, routed (DNS) and deleted through the Cloudflare API — stable hostname on your zones.",
     packageName: "@agentproto/runtime",
     hint: "cloudflare · stable · api",
+  },
+  {
+    slug: CLOUDFLARE_PROVISIONED_SLUG,
+    name: "Cloudflare Provisioned Tunnel",
+    description:
+      "Cloudflare tunnel provisioned for you by a remote service after OIDC device login — no Cloudflare token on this machine.",
+    packageName: "@agentproto/runtime",
+    hint: "cloudflare · stable · login",
   },
   {
     slug: NGROK_SLUG,
@@ -255,7 +265,9 @@ export async function registerTunnelAdapterTools(
       "declares are stored. cloudflare-managed takes `zones` (JSON array of " +
       "{zone, accountId, tokenRef, zoneId?, maxLabels?}; tokenRef = env:<VAR> | " +
       "file:<path> | keychain:<path> | stored:<key>) and optionally " +
-      "`zoneTokens` (JSON {key: token}, for stored:<key> refs).",
+      "`zoneTokens` (JSON {key: token}, for stored:<key> refs). " +
+      "cloudflare-provisioned takes `provisionerUrl`, `oidcIssuer`, " +
+      "`oidcClientId` (+ optional `oidcScopes`), then `tunnel_login`.",
     validSlugs,
     fields,
     onSetup: async (slug: string, fields: Record<string, string>) => {
@@ -306,4 +318,47 @@ export async function registerTunnelAdapterTools(
       return { ok: true, hint: `${slug} configured — status is now ready` }
     },
   })
+
+  // ── tunnel_login ─────────────────────────────────────────────────
+  // Providers that act on behalf of a user against a remote service (e.g.
+  // cloudflare-provisioned) log in with the OIDC device flow: this returns a
+  // short code + URL for the human, and the daemon keeps polling in the
+  // background. Call again to read the state. Tokens are never returned.
+  server.tool(
+    "tunnel_login",
+    "Log this daemon in to a tunnel provider that acts on your behalf " +
+      "(e.g. `cloudflare-provisioned`) using the OIDC device flow. Returns " +
+      "`{status:\"pending\", userCode, verificationUri, verificationUriComplete?, " +
+      "expiresAt}` — show the human the URL and code; approval happens in " +
+      "their browser and the daemon picks it up in the background. Call again " +
+      "to read the state (`pending` | `logged_in` | `logged_out` | `failed`). " +
+      "`logout:true` forgets the stored session. Tokens are never returned.",
+    {
+      slug: z.string().describe("Tunnel provider slug, e.g. cloudflare-provisioned"),
+      logout: z.boolean().optional().describe("Forget the stored session instead of logging in."),
+    },
+    async (input: { slug: string; logout?: boolean }) => {
+      const reply = (value: unknown, isError = false) => ({
+        content: [{ type: "text" as const, text: JSON.stringify(value) }],
+        ...(isError ? { isError: true } : {}),
+      })
+      try {
+        const creds = await credsStore.read(input.slug)
+        const handle = await resolveTunnelProvider(input.slug, { creds })
+        if (!handle?.auth) {
+          return reply({ error: `provider '${input.slug}' has no login` }, true)
+        }
+        if (input.logout) {
+          await handle.auth.logout()
+          return reply({ status: "logged_out" })
+        }
+        const state = await handle.auth.state()
+        if (state.status === "logged_in" || state.status === "pending") return reply(state)
+        const prompt = await handle.auth.begin()
+        return reply({ status: "pending", ...prompt })
+      } catch (err) {
+        return reply({ error: err instanceof Error ? err.message : String(err) }, true)
+      }
+    },
+  )
 }

@@ -27,6 +27,10 @@ import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { CLOUDFLARE_NAMED_SLUG } from "./remote-providers/named.js"
 import { CLOUDFLARE_MANAGED_SLUG } from "./remote-providers/cloudflare-managed.js"
+import { CLOUDFLARE_PROVISIONED_SLUG } from "./remote-providers/cloudflare-provisioned.js"
+
+/** Providers whose descriptor tracks a `hostnames` list (swap-capable). */
+const HOSTNAME_LIST_SLUGS = new Set([CLOUDFLARE_MANAGED_SLUG, CLOUDFLARE_PROVISIONED_SLUG])
 import {
   resolveTunnelProvider,
   normalizeProviderSlug,
@@ -236,6 +240,11 @@ export class TunnelRegistry {
     }
 
     let hostname = input.hostname
+    // Provisioned: the hostname is an optional request — the provisioner
+    // assigns one when it's omitted.
+    if (hostname && normalizeProviderSlug(provider) === CLOUDFLARE_PROVISIONED_SLUG) {
+      hostname = normalizeHostname(hostname)
+    }
     if (normalizeProviderSlug(provider) === CLOUDFLARE_MANAGED_SLUG) {
       if (!hostname) {
         throw new Error(
@@ -268,7 +277,7 @@ export class TunnelRegistry {
       ...(input.label ? { label: input.label } : {}),
       ...(input.autostart ? { autostart: true } : {}),
       ...(hostname ? { hostname } : {}),
-      ...(hostname && normalizeProviderSlug(provider) === CLOUDFLARE_MANAGED_SLUG
+      ...(hostname && HOSTNAME_LIST_SLUGS.has(normalizeProviderSlug(provider))
         ? { hostnames: [hostname] }
         : {}),
       ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
@@ -328,7 +337,7 @@ export class TunnelRegistry {
       desc.expiresAt = handle.expiresAt
     }
 
-    let result: { publicUrl: string; pid: number | null; tunnelId?: string }
+    let result: { publicUrl: string; pid: number | null; tunnelId?: string; hostnames?: string[] }
     try {
       result = await provider.start({
         target,
@@ -356,6 +365,10 @@ export class TunnelRegistry {
     desc.publicUrl = result.publicUrl
     desc.pid = result.pid
     if (result.tunnelId) desc.tunnelId = result.tunnelId
+    if (result.hostnames && result.hostnames.length > 0) {
+      desc.hostnames = [...result.hostnames]
+      desc.hostname = result.hostnames[0]
+    }
     desc.status = "active"
     desc.url = guardToken ? appendToken(result.publicUrl, guardToken) : result.publicUrl
     delete desc.stoppedAt
@@ -461,14 +474,14 @@ export class TunnelRegistry {
     const entry = this.findEntryByIdOrName(idOrName)
     if (!entry) return false
     await this.stop(idOrName)
-    const managed = normalizeProviderSlug(entry.desc.provider) === CLOUDFLARE_MANAGED_SLUG
+    const ownsRemoteState = HOSTNAME_LIST_SLUGS.has(normalizeProviderSlug(entry.desc.provider))
     let prov: RemoteProvider | null = entry.provider.destroy ? entry.provider : null
     if (!prov) {
       try {
         prov = await this.pickProviderForTest(entry.desc.provider, entry.desc)
       } catch (err) {
         // Can't build the provider: only a problem if it owns remote state.
-        if (managed) throw err
+        if (ownsRemoteState) throw err
         prov = null
       }
     }
@@ -671,7 +684,7 @@ export class TunnelRegistry {
     const built = await this.pickProviderForTest(entry.desc.provider, entry.desc)
     if (!built[op]) {
       throw new Error(
-        `provider "${entry.desc.provider}" does not support hostname swap (use cloudflare-managed)`,
+        `provider "${entry.desc.provider}" does not support hostname swap (use cloudflare-managed or cloudflare-provisioned)`,
       )
     }
     return built

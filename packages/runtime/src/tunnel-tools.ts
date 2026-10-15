@@ -100,7 +100,10 @@ export function registerTunnelTools(
       "and usually `autostart:true`; `tunnel_status` then reports `health` " +
       "(active | degraded | error + reason), `tunnel_add_hostname` / " +
       "`tunnel_remove_hostname` swap hostnames with overlap, `tunnel_delete` " +
-      "removes the tunnel and its DNS. Any installed third-party provider " +
+      "removes the tunnel and its DNS; `cloudflare-provisioned` = a remote " +
+      "provisioning service creates the tunnel for you after `tunnel_login` " +
+      "(OIDC device flow) — no Cloudflare token on this machine, `hostname` " +
+      "optional (the service assigns one). Any installed third-party provider " +
       "(`@scope/agentproto-adapter-<slug>`) also works — see " +
       "`list_tunnel_adapters` for the full set. Returns the TunnelDescriptor " +
       "once ready (typically <10s). Use `tunnel_list` before opening a " +

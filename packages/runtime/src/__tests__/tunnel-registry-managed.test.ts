@@ -163,6 +163,34 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     expect(reg.get(desc.id)).toMatchObject({ status: "stopped", lastError: /DELETE failed/ })
   })
 
+  it("cloudflare-provisioned: no hostname needed, the provider's assigned one is recorded", async () => {
+    const rec: Recorder = { calls: [], starts: [] }
+    const reg = new (class extends TunnelRegistry {
+      protected override async pickProviderForTest(): Promise<RemoteProvider> {
+        const base = managedMock(rec)
+        return {
+          ...base,
+          async start(opts) {
+            rec.starts.push(opts)
+            return {
+              publicUrl: "https://user-42.pygmalion.sh",
+              pid: 7,
+              tunnelId: "tun-1",
+              hostnames: ["user-42.pygmalion.sh"],
+            }
+          },
+        }
+      }
+    })({ persistPath: join(tmp, "tunnels.json"), workspace: tmp })
+    live.push(reg)
+    const desc = await reg.create({ provider: "cloudflare-provisioned", targetPort: 4870, public: true })
+    expect(rec.starts[0]!.tunnel?.hostnames).toEqual([])
+    expect(desc.hostname).toBe("user-42.pygmalion.sh")
+    expect(desc.hostnames).toEqual(["user-42.pygmalion.sh"])
+    expect(await reg.delete(desc.id)).toBe(true)
+    expect(rec.calls.at(-1)).toBe(`destroy ${desc.id} user-42.pygmalion.sh`)
+  })
+
   it("restored (stopped) entries can still be swapped and deleted", async () => {
     const rec: Recorder = { calls: [], starts: [] }
     const reg = makeRegistry(rec)

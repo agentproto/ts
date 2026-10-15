@@ -12,6 +12,7 @@
  */
 
 import type { AdapterHandle, SetupField } from "@agentproto/provider-kit"
+import type { DeviceLoginPrompt, DeviceLoginState } from "./oidc-device.js"
 
 export interface ProviderStartOptions {
   /** Local target the tunnel forwards to. */
@@ -53,6 +54,11 @@ export interface ProviderStartResult {
   pid: number | null
   /** Provider-side tunnel id, when the provider created/looked one up. */
   tunnelId?: string
+  /**
+   * Hostnames actually routed, primary first — set when the provider (or a
+   * remote provisioner) decides them rather than the caller.
+   */
+  hostnames?: string[]
 }
 
 /**
@@ -118,4 +124,13 @@ export interface TunnelProviderHandle extends AdapterHandle {
    * persisted (throw with a message naming the bad field, never a value).
    */
   validateSetup?(fields: Record<string, string>): void
+  /**
+   * Optional: interactive user login (OIDC device flow) for providers that
+   * act on behalf of a user against a remote service (`tunnel_login`).
+   */
+  readonly auth?: {
+    begin(): Promise<DeviceLoginPrompt>
+    state(): Promise<DeviceLoginState>
+    logout(): Promise<void>
+  }
 }
