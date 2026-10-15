@@ -607,6 +607,10 @@ export interface SessionRenamedEvent {
   sessionId: string
   title?: string
   label?: string
+  /** The session's addressable handle after this rename (absent when the
+   *  slug was cleared). Carried so a live UI can repaint a slug-only rename
+   *  — one that touches neither `title` nor `label` — without a re-poll. */
+  slug?: string
   /** Always `true` — this event only fires from the human-driven rename
    *  write-path. Lets a live client update `renamedByUser` on its cached
    *  descriptor so the label wins the display chain without a full re-poll. */

@@ -12880,6 +12880,9 @@ export function createSessionsRegistry(opts?: {
         sessionId: id,
         ...(rt.desc.title !== undefined ? { title: rt.desc.title } : {}),
         ...(rt.desc.label !== undefined ? { label: rt.desc.label } : {}),
+        // The addressable handle, so a slug-only rename repaints live (a
+        // cleared slug reads as absent, mirroring the descriptor).
+        ...(rt.desc.slug !== undefined ? { slug: rt.desc.slug } : {}),
         renamedByUser: rt.desc.renamedByUser === true,
         ts: new Date().toISOString(),
       })

@@ -17,6 +17,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { registerSessionTools, compactSessionItem } from "../session-tools.js"
+import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 
 function fakeHarness(): AgentSessionLike {
   return {
@@ -116,5 +117,32 @@ describe("session_rename accepts a slug override", () => {
     reg.renameSession(id, { slug: "compact-visible" })
     const item = compactSessionItem(reg.get(id)!)
     expect(item.slug).toBe("compact-visible")
+  })
+
+  it("carries the slug on the session:renamed event so a slug-only rename repaints live", () => {
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(ev => events.push(ev))
+    const local = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      sessionEvents: bus,
+    })
+    const id = local.spawnAgent({
+      workspaceSlug: "default",
+      cwd: tmp,
+      agentSession: fakeHarness(),
+      adapterSlug: "fake",
+      label: "before",
+    }).id
+    local.renameSession(id, { slug: "live-handle" })
+    const renamed = events.find(e => e.type === "session:renamed")
+    expect(renamed).toMatchObject({ type: "session:renamed", sessionId: id, slug: "live-handle" })
+    // A cleared slug reads as absent, mirroring the descriptor.
+    events.length = 0
+    local.renameSession(id, { slug: "" })
+    const cleared = events.find(e => e.type === "session:renamed")
+    expect((cleared as { slug?: string } | undefined)?.slug).toBeUndefined()
+    local.shutdown()
   })
 })

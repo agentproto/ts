@@ -4959,6 +4959,12 @@ export function registerSessionTools(
           // Persist the resume lineage onto the STORED descriptor (not just
           // grafted onto this response's JSON, as it used to be) — see
           // `SessionDescriptor.resumedFrom`'s doc for why that matters.
+          // Carry the addressable handle forward — the explicit `slug` when the
+          // prior row has one, else the `getSlug()` accessor's `slug ?? legacy
+          // name`. `spawnPty`'s `name` is the desired-slug base it feeds to
+          // `mintSlug`, so the respawned PTY stays addressable by the SAME
+          // handle the caller used.
+          const carriedSlug = prev.slug ?? getSlug(prev)
           const desc = registry.spawnPty({
             argv,
             cwd,
@@ -4967,11 +4973,7 @@ export function registerSessionTools(
             rows: input.rows ?? 24,
             ...(combinedPtyEnv ? { env: combinedPtyEnv } : {}),
             ...(authUnsetEnv && authUnsetEnv.length > 0 ? { unsetEnv: authUnsetEnv } : {}),
-            // Carry the addressable handle forward (slug, or the legacy name
-            // alias) — `spawnPty`'s `name` is the desired-slug base it feeds
-            // to `mintSlug`, so the respawned PTY stays addressable by the
-            // SAME handle the caller used.
-            ...(getSlug(prev) ? { name: getSlug(prev) } : {}),
+            ...(carriedSlug ? { name: carriedSlug } : {}),
             ...(prev.label ? { label: prev.label } : {}),
             // Lineage carry-forward (#session-visibility) — same reasoning as
             // the agent branch in session-restart-core.ts: a restart keeps the

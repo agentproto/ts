@@ -4725,6 +4725,9 @@ interface RestartBody {
  */
 function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false): RestartBody {
   const strategy = decideRestartStrategy(prev, { preferNativeTerminal })
+  // The addressable handle to carry onto the respawned session — the explicit
+  // slug when the prior row has one, else `getSlug()`'s `slug ?? legacy name`.
+  const carriedSlug = prev.slug ?? getSlug(prev)
   if (strategy.kind === "unsupported") {
     throw new Error(`${prev.id} is a ${strategy.reason}`)
   }
@@ -4740,7 +4743,7 @@ function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false)
           : {}),
         // Carry the addressable handle forward so the respawned session is
         // addressable by the SAME slug (`/sessions/agent` applies it at spawn).
-        ...(getSlug(prev) ? { slug: getSlug(prev) } : {}),
+        ...(carriedSlug ? { slug: carriedSlug } : {}),
         ...(prev.label ? { label: prev.label } : {}),
       },
     }
@@ -4760,8 +4763,8 @@ function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false)
       cols: process.stdout.columns ?? 80,
       rows: process.stdout.rows ?? 24,
       // `POST /sessions/terminal` reads `name` as the desired-slug base, so the
-      // respawned PTY keeps the same addressable handle (slug, or legacy name).
-      ...(getSlug(prev) ? { name: getSlug(prev) } : {}),
+      // respawned PTY keeps the same addressable handle.
+      ...(carriedSlug ? { name: carriedSlug } : {}),
       ...(prev.label ? { label: prev.label } : {}),
     },
   }
