@@ -13,6 +13,9 @@ export type AdapterLogo =
 
 const ICON_FILES: Readonly<Record<string, string>> = {
   "claude-code": "claude.svg",
+  // AIP-66 managed cloud sessions (Claude Code tool on the vendor's machine):
+  // the Claude mark with a cloud badge, so the row reads as cloud, not "CC".
+  "claude-code-cloud": "claude-cloud.svg",
   "claude-sdk": "anthropic.svg",
   anthropic: "anthropic.svg",
   codex: "openai.svg",
