@@ -58,6 +58,14 @@ const adapter = requireEnv("ADAPTER")
 const workflowPathInput = requireEnv("WORKFLOW_PATH")
 const cwd = resolve(process.env.RUN_CWD || process.cwd())
 const timeoutMinutes = Number(process.env.TIMEOUT_MINUTES ?? "360")
+// Idle ceiling: cancel only after this long with NO observed progress. A run
+// that keeps advancing (stage/step status, or the reviewer session's turn /
+// tool-call / token counters) is never idle-cancelled — only the hard
+// `timeoutMinutes` ceiling bounds it. Falls back to min(timeout, 15) so an
+// unset value can never make the idle window exceed the hard ceiling.
+const idleTimeoutMinutes = Number(
+  process.env.IDLE_TIMEOUT_MINUTES ?? String(Math.min(timeoutMinutes, 15)),
+)
 const port = Number(process.env.PORT ?? "18790")
 
 let workflowInput
@@ -282,6 +290,30 @@ async function buildProgressContext(client, run) {
   return context
 }
 
+/**
+ * Coarse "is anything actually happening?" fingerprint, used ONLY to reset the
+ * idle watchdog — never to decide termination on its own. Combines the
+ * reviewer session's turn/tool-call/token counters, so a run that is slowly
+ * thinking (one long turn, many tool calls) keeps reading as active even when
+ * the stage/step status text hasn't changed for a while. Returns "" when no
+ * session detail is available yet, which the caller treats as "not
+ * observable" and never idle-cancels on.
+ */
+function activitySignature(context) {
+  const sessions = context?.sessions
+  if (!sessions || Object.keys(sessions).length === 0) return ""
+  return Object.values(sessions)
+    .map((s) =>
+      [
+        s.turnsCompleted ?? "",
+        s.toolCallsThisTurn ?? "",
+        s.tokensIn ?? "",
+        s.tokensOut ?? "",
+      ].join(":"),
+    )
+    .join("|")
+}
+
 async function main() {
   await waitForDaemonHealthy(Date.now() + 120_000)
   const token = await readRuntimeToken()
@@ -313,6 +345,12 @@ async function main() {
   const HEARTBEAT_MS = 60_000
   let lastProgress = ""
   let lastHeartbeatAt = 0
+  // Idle watchdog: reset whenever progress or the session activity signature
+  // changes. `lastActivityAt` also seeds the "no observable activity yet"
+  // window, but idle cancellation only arms once we HAVE a signature.
+  let lastActivityAt = pollStartedAt
+  let lastActivitySig = ""
+  let observedActivity = false
   let timedOut = false
   let run
   for (;;) {
@@ -336,18 +374,40 @@ async function main() {
     if (progress !== lastProgress || Date.now() - lastHeartbeatAt >= HEARTBEAT_MS) {
       const context = await buildProgressContext(client, run)
       console.log(`driver: [+${Math.round((Date.now() - pollStartedAt) / 1000)}s] ${describeRunProgress(run, context)}`)
+      const progressChanged = progress !== lastProgress
       lastProgress = progress
       lastHeartbeatAt = Date.now()
+      // Treat EITHER a stage/step change OR a session-counter advance as
+      // activity: the reviewer can grind through one long step (constant
+      // status text) while its turn/tool/token counters climb, and a run can
+      // also advance stages with its session counters momentarily static.
+      // Both must keep the idle watchdog from firing on a run that is plainly
+      // working.
+      const activitySig = activitySignature(context)
+      const countersAdvanced = activitySig !== "" && activitySig !== lastActivitySig
+      if (activitySig !== "") lastActivitySig = activitySig
+      if (progressChanged || countersAdvanced) {
+        lastActivityAt = Date.now()
+        observedActivity = true
+      }
     }
 
     if (TERMINAL_STATUSES.has(run.status)) break
 
     // Deadline checked AFTER the status read so a run that lands terminal right
     // on the boundary is still harvested as terminal rather than cancelled.
-    if (Date.now() > pollDeadline) {
+    // Two independent ceilings: the hard wall-clock cap, and an idle cap that
+    // only applies once we can actually observe progress (a stage/step change
+    // or a session-counter advance).
+    const idleDeadline = lastActivityAt + idleTimeoutMinutes * 60_000
+    const idleExpired = observedActivity && Date.now() > idleDeadline
+    if (Date.now() > pollDeadline || idleExpired) {
       timedOut = true
+      const reason = Date.now() > pollDeadline
+        ? `hard ceiling ${timeoutMinutes}m`
+        : `no progress for ${idleTimeoutMinutes}m`
       console.error(
-        `driver: timed out after ${timeoutMinutes}m waiting for run ${runId} — cancelling. ` +
+        `driver: timed out (${reason}) waiting for run ${runId} — cancelling. ` +
           `Last progress: ${progress}`,
       )
       try {

@@ -57,6 +57,7 @@
     "@modelcontextprotocol/sdk": "^1.30.1"
   },
   "devDependencies": {
+    "@agentproto/app-client": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.5",
     "jsdom": "^29.1.1",

@@ -2893,6 +2893,9 @@ importers:
         specifier: '>=1.31.0'
         version: 1.32.1(zod@4.6.5)
     devDependencies:
+      '@agentproto/app-client':
+        specifier: workspace:*
+        version: link:../app-client
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling

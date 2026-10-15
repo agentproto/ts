@@ -109,7 +109,7 @@ const { defs, impls } = buildToolset(toolNames, { prNumber: PR_NUMBER, dryRun: f
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-console.log(`\n🔧 Review fixer starting — PR #${PR_NUMBER}  delivery=${DELIVERY}  model=${cmd.model}`)
+console.log(`\n🔧 Review fixer starting — PR #${PR_NUMBER}  delivery=${DELIVERY}  model=${cmd.fixModel}`)
 
 const pastIter = countPastIterations()
 console.log(`   Fix iterations already on branch: ${pastIter}`)
@@ -122,7 +122,7 @@ if (DELIVERY === 'commit' && pastIter >= MAX_ITER) {
 
 const result = await runAgentLoop({
   apiKey,
-  model: cmd.model,
+  model: cmd.fixModel,
   system: SYSTEM_PROMPT,
   tools: defs,
   toolImpls: impls,
