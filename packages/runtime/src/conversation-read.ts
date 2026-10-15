@@ -13,6 +13,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { sessionRefSchema } from "./session-ref.js"
 import { CONVERSATION_STORES, type ConversationCandidate } from "./conversation-store.js"
 import { coldSessionDescriptor } from "./session-cold-list.js"
 import { locateConversationBySessionId } from "./conversation-index.js"
@@ -366,7 +367,7 @@ export function registerConversationReadTool(server: McpServer, ops: Conversatio
       "— that is a normal, expected outcome, not an error. When discovery finds more than one " +
       "candidate conversation it returns the candidate list instead of guessing.",
     {
-      idOrName: z.string().describe("agentproto session id (sess_xxx) or session name."),
+      ...sessionRefSchema(z),
       format: z
         .enum(["markdown", "json"])
         .optional()
@@ -393,7 +394,7 @@ export function registerConversationReadTool(server: McpServer, ops: Conversatio
     },
     async input => {
       const result = await readConversation(ops.registry, {
-        idOrName: input.idOrName,
+        idOrName: input.idOrName ?? input.sessionId ?? input.slug ?? "",
         ...(input.format ? { format: input.format } : {}),
         ...(input.lastN !== undefined ? { lastN: input.lastN } : {}),
         ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
