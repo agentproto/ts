@@ -204,9 +204,60 @@ import {
   loadAllowlistEntries,
   loadTerminalGateMode,
 } from "./command-allowlist.js"
+import { resolveSessionRef, sessionRefSchema } from "./session-ref.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
+
+/**
+ * A session-addressing input: any of the three frozen keys
+ * (`sessionId`/`idOrName`/`slug`), plus the legacy `id` alias some tools
+ * carry. Values are `unknown` because a `...sessionRefSchema(z)` spread
+ * infers them loosely in some `z.infer` paths; the helpers below coerce.
+ */
+type SessionRefInput = {
+  sessionId?: unknown
+  idOrName?: unknown
+  slug?: unknown
+  id?: unknown
+}
+
+/** Narrow one addressing key to a string, if it is one. */
+function refString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined
+}
+
+/** The caller-supplied handle, for error text — whichever spelled key it used. */
+function sessionRefQuery(input: SessionRefInput): string {
+  return (
+    refString(input.sessionId) ??
+    refString(input.idOrName) ??
+    refString(input.slug) ??
+    refString(input.id) ??
+    ""
+  )
+}
+
+/**
+ * Resolve any of `sessionId`/`idOrName`/`slug` (and the legacy `id` alias) to
+ * a session descriptor via the ONE shared resolver, or `undefined` when the
+ * ref is absent/unknown. Replaces the old `registry.findByIdOrName(...)`
+ * call sites so every session-addressing tool accepts all three keys.
+ */
+function resolveSessionDesc(
+  registry: Pick<SessionsRegistry, "get" | "list">,
+  input: SessionRefInput,
+): SessionDescriptor | undefined {
+  const sessionId = refString(input.sessionId) ?? refString(input.id)
+  const idOrName = refString(input.idOrName)
+  const slug = refString(input.slug)
+  const resolved = resolveSessionRef(registry, {
+    ...(sessionId ? { sessionId } : {}),
+    ...(idOrName ? { idOrName } : {}),
+    ...(slug ? { slug } : {}),
+  })
+  return resolved.ok ? registry.get(resolved.id) : undefined
+}
 
 /**
  * One node in the session-tree output (WP5). Mirrors the descriptor
@@ -1770,10 +1821,7 @@ export function registerSessionTools(
       "`children` lists the direct children with their own cost/tokens. Same " +
       "lookup as `session_list` / `session_restart` (by id or name).",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`, alive or historical."),
+      ...sessionRefSchema(z),
       includeSubtree: z
         .boolean()
         .optional()
@@ -1784,13 +1832,13 @@ export function registerSessionTools(
         ),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.idOrName)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -1847,19 +1895,16 @@ export function registerSessionTools(
       "percentage, resolved policy thresholds, and the next automatic action " +
       "(warn / compact / continue-fresh / hard-stop).",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.idOrName)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -1929,11 +1974,7 @@ export function registerSessionTools(
       "/ `session_restart` (by id or name); the REST twin is " +
       "`GET /sessions/:id/capabilities`.",
     {
-      sessionId: z
-        .string()
-        .min(1)
-        .optional()
-        .describe("Session id or name — from `session_list`. Alias: `id`."),
+      ...sessionRefSchema(z),
       id: z
         .string()
         .min(1)
@@ -1941,8 +1982,7 @@ export function registerSessionTools(
         .describe("Alias for `sessionId`."),
     },
     async input => {
-      const idOrName = input.sessionId ?? input.id
-      if (!idOrName) {
+      if (!input.sessionId && !input.idOrName && !input.slug && !input.id) {
         return {
           content: [
             { type: "text", text: JSON.stringify({ error: "missing sessionId (or id)" }) },
@@ -1950,11 +1990,11 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      const desc = registry.findByIdOrName(idOrName)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
-            { type: "text", text: JSON.stringify({ error: `no session "${idOrName}" found` }) },
+            { type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) },
           ],
           isError: true,
         }
@@ -2000,10 +2040,7 @@ export function registerSessionTools(
       "session. The checkpoint is a bounded handoff document saved next to " +
       "the session's events.jsonl; the original transcript is never discarded.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       notes: z
         .string()
         .max(4000)
@@ -2024,13 +2061,13 @@ export function registerSessionTools(
         ),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.idOrName)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -2112,10 +2149,7 @@ export function registerSessionTools(
       "is preserved, and the new descriptor carries `handoff: { fromHarness, " +
       "toHarness, at }` recording which harness the checkpoint moved from/to.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       harness: z
         .string()
         .min(1)
@@ -2185,13 +2219,13 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      const desc = registry.findByIdOrName(input.idOrName)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -2283,7 +2317,7 @@ export function registerSessionTools(
       "work branch / workspace git remote, or has no checkpoint that reached " +
       "the remote; the old session is untouched on any failure.",
     {
-      sessionId: z.string().min(1).describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       sandbox: z
         .string()
         .min(1)
@@ -2306,8 +2340,8 @@ export function registerSessionTools(
         isError: true,
       })
       if (!resolveAgentAdapter) return fail("session_migrate requires an adapter resolver; none is configured.")
-      const desc = registry.findByIdOrName(input.sessionId)
-      if (!desc) return fail(`no session "${input.sessionId}" found`, "no_such_session")
+      const desc = resolveSessionDesc(registry, input)
+      if (!desc) return fail(`no session "${sessionRefQuery(input)}" found`, "no_such_session")
       const spawnDeps: SpawnAgentSessionDeps = {
         registry,
         resolveAgentAdapter,
@@ -2347,19 +2381,16 @@ export function registerSessionTools(
       "not support compaction will report an error or ignore it. Use this " +
       "opportunistically before continuing fresh.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.idOrName)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -3603,10 +3634,7 @@ export function registerSessionTools(
   // (session_list's pattern): entries are COMPACT by default (id/origin/
   // preview/position; `queuedAt` stays behind `full: true`).
   const sessionQueueListSchema = z.object({
-    sessionId: z
-      .string()
-      .min(1)
-      .describe("Session id or name — from `session_list`, alive or historical."),
+    ...sessionRefSchema(z),
   })
   registerPaginatedListTool<z.infer<typeof sessionQueueListSchema>, QueuedPromptView>({
     id: "session_queue_list",
@@ -3623,9 +3651,9 @@ export function registerSessionTools(
       "item NOW), and `session_queue_drop` (remove without delivering).",
     schema: sessionQueueListSchema,
     body: async input => {
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
-        throw new Error(`no session "${input.sessionId}" found`)
+        throw new Error(`no session "${sessionRefQuery(input)}" found`)
       }
       // Subtree scoping (WP4/WP5): same gate as session_list/session_tree —
       // a scoped orchestrator only sees its own subtree's queues.
@@ -3633,7 +3661,7 @@ export function registerSessionTools(
         const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
         if (!subtree.has(desc.id)) {
           throw new Error(
-            `session "${input.sessionId}" is outside the caller's subtree`,
+            `session "${desc.id}" is outside the caller's subtree`,
           )
         }
       }
@@ -3657,21 +3685,18 @@ export function registerSessionTools(
       "(which interrupts and dispatches immediately). The queueId comes from " +
       "`session_queue_list`.",
     {
-      sessionId: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       queueId: z
         .string()
         .min(1)
         .describe("The queued item's id, from `session_queue_list`."),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
-            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+            { type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) },
           ],
           isError: true,
         }
@@ -3715,21 +3740,18 @@ export function registerSessionTools(
       "ends on its own. No-op (error) if the item is not in the queue. " +
       "The queueId comes from `session_queue_list`.",
     {
-      sessionId: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       queueId: z
         .string()
         .min(1)
         .describe("The queued item's id, from `session_queue_list`."),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
-            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+            { type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) },
           ],
           isError: true,
         }
@@ -3779,21 +3801,18 @@ export function registerSessionTools(
       "rather than erroring, matching the no-op-is-not-an-error shape of " +
       "`POST /sessions/:id/interrupt`. The queueId comes from `session_queue_list`.",
     {
-      sessionId: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       queueId: z
         .string()
         .min(1)
         .describe("The queued item's id, from `session_queue_list`."),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
-            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+            { type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) },
           ],
           isError: true,
         }
@@ -3833,21 +3852,18 @@ export function registerSessionTools(
       "own `summary` for that instead. `taskId` comes from " +
       "`backgroundTasks` on `session_list` / `session_get`.",
     {
-      sessionId: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       taskId: z
         .string()
         .min(1)
         .describe("The running task's id, from `SessionDescriptor.backgroundTasks`."),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
-            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+            { type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) },
           ],
           isError: true,
         }
@@ -3903,15 +3919,7 @@ export function registerSessionTools(
         "When true, only return worktrees whose `pr.state` is `open`. " +
           "Default false."
       ),
-    sessionId: z
-      .string()
-      .optional()
-      .describe(
-        "Session id or name: return ONLY the worktree that session runs in " +
-          "(its `worktreePath`), computed alone instead of scanning every " +
-          "worktree of the repo. Wins over `repoRoot`/`workspaceSlug`. An " +
-          "empty list means the session isn't in a linked worktree."
-      ),
+    ...sessionRefSchema(z),
   })
   registerPaginatedListTool<z.infer<typeof worktreeStatusSchema>, WorktreeStatusView>({
     id: "worktree_status",
@@ -3922,7 +3930,8 @@ export function registerSessionTools(
       "the sessions whose cwd sits in the worktree, and liveness. Use this " +
       "to power a 'PRs in progress + linked sub-agents' panel. Pass " +
       "`openOnly: true` to surface only worktrees whose PR is still open, " +
-      "or `sessionId` to read just the one worktree a session runs in. " +
+      "or `sessionId`/`idOrName`/`slug` to read just the one worktree a " +
+      "session runs in. " +
       "COMPACT BY DEFAULT: each entry carries path/branch/class/reclaimable/" +
       "dirty/changes/base/pr/liveness; pass `full: true` to also get the " +
       "per-session roster (`sessions[]`).",
@@ -3936,9 +3945,9 @@ export function registerSessionTools(
         )
       }
 
-      if (input.sessionId !== undefined) {
-        const desc = registry.findByIdOrName(input.sessionId)
-        if (!desc) throw new Error(`worktree_status: no session "${input.sessionId}"`)
+      if (input.sessionId !== undefined || input.idOrName !== undefined || input.slug !== undefined) {
+        const desc = resolveSessionDesc(registry, input)
+        if (!desc) throw new Error(`worktree_status: no session "${sessionRefQuery(input)}"`)
         const scope = sessionWorktreeScope(desc)
         if (!scope) return []
         return listWorktreeStatuses(scope.repoRoot, { paths: [scope.worktreePath] })
@@ -4562,13 +4571,7 @@ export function registerSessionTools(
       "Returns the NEW session's descriptor plus `resumedFrom` (the prior id) " +
       "and `resumeVia` (which path was used, empty string for a fresh respawn).",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe(
-          "Session id or name to restart — from `session_list`, alive or " +
-            "historical (killed/exited/error)."
-        ),
+      ...sessionRefSchema(z),
       cols: z
         .number()
         .int()
@@ -4663,13 +4666,13 @@ export function registerSessionTools(
         ),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -5097,21 +5100,16 @@ export function registerSessionTools(
       "would hide it from view while it keeps working unattended. Use " +
       "`session_unarchive` to restore visibility.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe(
-          "Session id or name to archive — from `session_list`, must be terminal-status."
-        ),
+      ...sessionRefSchema(z),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -5629,7 +5627,7 @@ export function registerSessionTools(
       "(result ok:false) when the session is missing, not agent-cli, " +
       "mid-turn/awaiting input/permission, or has a background task in flight.",
     {
-      sessionId: z.string().min(1).describe("Session id or name — from `session_list`; a live agent-cli session, or one that has already ended."),
+      ...sessionRefSchema(z),
       verdict: z
         .enum(["done", "abandoned", "partial", "failed", "blocked", "needs-input"])
         .optional()
@@ -5653,9 +5651,9 @@ export function registerSessionTools(
       ...outcomeDetailShape,
     },
     async input => {
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "not_found", sessionId: input.sessionId }) }] }
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "not_found", sessionId: sessionRefQuery(input) }) }] }
       }
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
@@ -5728,13 +5726,13 @@ export function registerSessionTools(
       "linked worktree — branch, dirty counts, ahead/behind and PR state/number. " +
       "Mutates nothing.",
     {
-      sessionId: z.string().min(1).describe("Session id or name."),
+      ...sessionRefSchema(z),
     },
     async input => {
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
-          content: [{ type: "text", text: `session_evidence: no session "${input.sessionId}"` }],
+          content: [{ type: "text", text: `session_evidence: no session "${sessionRefQuery(input)}"` }],
           isError: true,
         }
       }
@@ -5808,14 +5806,15 @@ export function registerSessionTools(
       "model }` or `{ ok:false, error, noKey? }` — never an error result, " +
       "never a mutation.",
     {
-      sessionId: z.string().min(1).describe("The judged session's id (echoed back)."),
+      ...sessionRefSchema(z),
       evidence: z.record(z.string(), z.unknown()).describe("The `session_evidence` object, sent as Jev's `state`."),
       model: z.string().optional().describe("Jev model. Default `jev-latest`."),
     },
     async input => {
+      const judgedSessionId = resolveSessionDesc(registry, input)?.id ?? sessionRefQuery(input)
       const jevCfg = await resolveJevConfig()
       const judgement = await judgeSessionWithJev({
-        sessionId: input.sessionId,
+        sessionId: judgedSessionId,
         evidence: input.evidence,
         apiKey: await resolveJevApiKey(),
         ...(input.model ? { model: input.model } : jevCfg.model ? { model: jevCfg.model } : {}),
@@ -5832,22 +5831,16 @@ export function registerSessionTools(
       "touches daemon state, so there is nothing to re-validate — any " +
       "archived session can be unarchived at any time.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe(
-          "Session id or name to unarchive — find it via " +
-            "`session_list({ includeArchived: true })`."
-        ),
+      ...sessionRefSchema(z),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -5926,10 +5919,7 @@ export function registerSessionTools(
       "automatically like any other awaiting-input signal on the session's " +
       "next prompt/turn start.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name to flag — from `session_list`, must be live."),
+      ...sessionRefSchema(z),
       awaitingInput: z
         .boolean()
         .describe(
@@ -5972,13 +5962,13 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -6049,10 +6039,7 @@ export function registerSessionTools(
       "leaves that field untouched. Persists across daemon restarts. Does NOT " +
       "rename the adapter-native session or touch the running agent.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name to rename — from `session_list`."),
+      ...sessionRefSchema(z),
       label: z
         .string()
         .optional()
@@ -6069,13 +6056,13 @@ export function registerSessionTools(
         ),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -6161,23 +6148,20 @@ export function registerSessionTools(
       "identical to a finished session. Set false to clear the exemption. " +
       "Persists across daemon restarts. Does NOT touch the running agent.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name to update — from `session_list`."),
+      ...sessionRefSchema(z),
       keepAlive: mcpBool.describe(
         "true to exempt this session from the idle-reaper, false to clear " +
           "the exemption.",
       ),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -6245,22 +6229,19 @@ export function registerSessionTools(
       "NOT touch the idle-reaper, keepAlive, or emit any notification, and " +
       "does NOT touch the running agent.",
     {
-      idOrName: z
-        .string()
-        .min(1)
-        .describe("Session id or name to update — from `session_list`."),
+      ...sessionRefSchema(z),
       pinned: mcpBool.describe(
         "true to pin this session to the top of the list, false to unpin it.",
       ),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
             },
           ],
           isError: true,
@@ -6407,7 +6388,7 @@ export function registerSessionTools(
       "Re-adding the same `key` with different content records a new version; " +
       "re-adding identical bytes is a no-op (content-addressed dedup).",
     {
-      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       key: z
         .string()
         .optional()
@@ -6437,10 +6418,10 @@ export function registerSessionTools(
         ),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) }],
           isError: true,
         }
       }
@@ -6491,13 +6472,13 @@ export function registerSessionTools(
       "kind/pin plus its full version history. Empty array for a session with " +
       "none yet.",
     {
-      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) }],
           isError: true,
         }
       }
@@ -6533,16 +6514,16 @@ export function registerSessionTools(
       "`content`); browse it via `GET /sessions/:id/artifacts/:key/raw/...` " +
       "instead.",
     {
-      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       key: z.string().min(1).describe("Artifact key, from `session_artifact_list`."),
       version: z.number().int().positive().optional().describe("Defaults to the latest version."),
       maxBytes: z.number().int().positive().optional().describe("Content cap in bytes. Defaults to 512 KiB."),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) }],
           isError: true,
         }
       }
@@ -6605,15 +6586,15 @@ export function registerSessionTools(
       "session's derived outcome (the ended block) as a `type: \"file\"` ref, " +
       "in addition to always listing in `session_artifact_list`.",
     {
-      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+      ...sessionRefSchema(z),
       key: z.string().min(1).describe("Artifact key, from `session_artifact_list`."),
       pinned: mcpBool.describe("true to pin, false to unpin."),
     },
     async input => {
-      const prev = registry.findByIdOrName(input.idOrName)
+      const prev = resolveSessionDesc(registry, input)
       if (!prev) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }) }],
           isError: true,
         }
       }
@@ -6836,9 +6817,7 @@ export function registerSessionTools(
       "`b64` to send exact control bytes (CR, arrows, Esc, Ctrl-*) that JSON " +
       "can't carry cleanly.",
     {
-      sessionId: z
-        .string()
-        .describe("Session id OR name from terminal_start."),
+      ...sessionRefSchema(z),
       text: z
         .string()
         .optional()
@@ -6867,13 +6846,13 @@ export function registerSessionTools(
     },
     async input => {
       if (!ptyEnabled) return ptyNotConfigured("terminal_input")
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: `terminal_input: no session "${input.sessionId}"`,
+              text: `terminal_input: no session "${sessionRefQuery(input)}"`,
             },
           ],
           isError: true,
@@ -6937,9 +6916,7 @@ export function registerSessionTools(
       "result carries a `truncated` flag (true when the window was filled to " +
       "capacity).",
     {
-      sessionId: z
-        .string()
-        .describe("Session id OR name from terminal_start."),
+      ...sessionRefSchema(z),
       lastBytes: z
         .number()
         .int()
@@ -6959,13 +6936,13 @@ export function registerSessionTools(
     },
     async input => {
       if (!ptyEnabled) return ptyNotConfigured("terminal_output")
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: `terminal_output: no session "${input.sessionId}"`,
+              text: `terminal_output: no session "${sessionRefQuery(input)}"`,
             },
           ],
           isError: true,
@@ -7024,19 +7001,17 @@ export function registerSessionTools(
       "`agent_kill` for the PTY family — separate name so it's obvious " +
       "what's being stopped.",
     {
-      sessionId: z
-        .string()
-        .describe("Session id OR name from terminal_start."),
+      ...sessionRefSchema(z),
     },
     async input => {
       if (!ptyEnabled) return ptyNotConfigured("terminal_kill")
-      const desc = registry.findByIdOrName(input.sessionId)
+      const desc = resolveSessionDesc(registry, input)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: `terminal_kill: no session "${input.sessionId}"`,
+              text: `terminal_kill: no session "${sessionRefQuery(input)}"`,
             },
           ],
           isError: true,

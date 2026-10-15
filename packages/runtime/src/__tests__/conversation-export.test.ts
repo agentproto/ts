@@ -59,6 +59,8 @@ function makeDescriptor(overrides: Partial<SessionDescriptor>): SessionDescripto
 function stubRegistry(desc: SessionDescriptor | undefined): SessionsRegistry {
   return {
     findByIdOrName: () => desc,
+    get: (id: string) => (desc && desc.id === id ? desc : undefined),
+    list: () => (desc ? [desc] : []),
   } as unknown as SessionsRegistry
 }
 

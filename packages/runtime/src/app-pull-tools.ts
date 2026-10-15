@@ -11,6 +11,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { readFileSync } from "node:fs"
 import type { SessionsRegistry } from "./sessions.js"
+import { sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import { buildSessionTree, groupNoiseRoots } from "./session-tools.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 
@@ -113,7 +114,7 @@ export function registerAppPullTools(
         "cursor, for the live-session widget's right pane. Not for agent " +
         "use — see `GET /sessions/:id/events`.",
       inputSchema: {
-        sessionId: z.string().describe("Session id or name — resolved the same way session_list does."),
+        ...sessionRefSchema(z),
         since: z
           .number()
           .int()
@@ -139,7 +140,8 @@ export function registerAppPullTools(
       },
     },
     async input => {
-      const id = registry.findByIdOrName(input.sessionId)?.id ?? input.sessionId
+      const ref = resolveSessionRef(registry, input)
+      const id = ref.ok ? ref.id : (input.sessionId ?? input.idOrName ?? input.slug ?? "")
       const since = input.since ?? 0
       const limit = input.limit ?? 500
       const filePath = sessionEventsPath(id)

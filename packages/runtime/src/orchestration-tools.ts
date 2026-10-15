@@ -12,6 +12,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { isCompilableJsonSchema } from "@agentproto/workflow-runtime"
 import type { SessionsRegistry, SessionWatcherInfo } from "./sessions.js"
+import { sessionRefSchema } from "./session-ref.js"
 import type {
   SessionEventBus,
   SessionEventType,
@@ -2110,10 +2111,7 @@ export function registerOrchestrationTools(
           "Session ids (or names) to watch — an array for fan-in, or a single " +
             "id. Returns on the first hit. Provide this OR `sessionId`/`id`.",
         ),
-      sessionId: z
-        .string()
-        .optional()
-        .describe("Single session id/name — singular alias for `sessionIds`."),
+      ...sessionRefSchema(z),
       id: z
         .string()
         .optional()
@@ -2152,7 +2150,7 @@ export function registerOrchestrationTools(
           : Array.isArray(input.sessionIds)
             ? input.sessionIds
             : [input.sessionIds]
-      const singular = input.sessionId ?? input.id
+      const singular = input.sessionId ?? input.idOrName ?? input.slug ?? input.id
       const sessionIds = [...fromSessionIds, ...(singular ? [singular] : [])]
       if (sessionIds.length === 0) {
         return {
