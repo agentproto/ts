@@ -1362,7 +1362,9 @@ export interface AgentCliStartOptions {
    * agentproto-canonical vocabulary (`"plan"`, `"accept-edits"`, `"bypass"`,
    * `"read-only"`, `"default"`). Applied at spawn-time via the adapter's
    * existing mechanism (e.g. claude-code's CLAUDE_CONFIG_DIR permission
-   * settings), independently of a legacy `config.mode`. When undefined, the
+   * settings, opencode's per-session OPENCODE_CONFIG_CONTENT `permission`
+   * block — `opencode-permission.ts`), independently of a legacy
+   * `config.mode`. When undefined, the
    * adapter spawns in its own default posture.
    */
   posture?: string
