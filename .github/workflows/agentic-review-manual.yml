@@ -89,7 +89,7 @@ jobs:
     name: Read-only review with Claude Code cloud
     if: inputs.backend == 'claude-cloud'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
@@ -161,7 +161,12 @@ jobs:
           node packages/cli/dist/cli.mjs sessions wait "$SESSION_ID" --until turn-end --timeout 40m --json
           WAIT_RC=$?
           node packages/cli/dist/cli.mjs sessions export "$SESSION_ID" --source daemon -o "$RUNNER_TEMP/claude-cloud-review.md"
+          EXPORT_RC=$?
           set -e
+          # A successful turn whose transcript export failed must not pass silently.
+          if [ "$WAIT_RC" -eq 0 ] && [ "$EXPORT_RC" -ne 0 ]; then
+            echo "::warning::sessions export failed (rc=$EXPORT_RC) after a successful turn — the transcript is missing from the summary."
+          fi
           # Always surface BOTH the daemon relay log and the exported transcript,
           # on success AND failure. The daemon log is where the cloud relay's own
           # error lands (a bare `empty turn / Internal error` from `sessions wait`
