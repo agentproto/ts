@@ -9,6 +9,7 @@ agentproto tunnel create --port <n> [--provider <slug>] [--name <slug>]
 agentproto tunnel list   [--active] [--json]
 agentproto tunnel stop   <id-or-name> [--json]        (alias: delete, rm)
 agentproto tunnel purge  <id-or-name> [--json]
+agentproto tunnel login  <provider> [--logout] [--no-wait] [--json]
 agentproto tunnel add-hostname    <id-or-name> <fqdn> [--json]
 agentproto tunnel remove-hostname <id-or-name> <fqdn> [--json]
 agentproto tunnel revoke <id-or-name> [--json]
@@ -224,6 +225,21 @@ Stops the tunnel and deletes what its provider created remotely, via
 `DELETE /tunnels/:id?purge=true`. For `cloudflare-managed` that's the CNAME(s)
 and the Cloudflare tunnel; for the other providers it is the same as `stop`,
 and the descriptor is also forgotten. This cannot be undone.
+
+### `login <provider>`
+
+Logs the daemon in to a provider that acts on your behalf (`cloudflare-provisioned`)
+with the OIDC device flow, via `POST /tunnels/login`. It's the same thing as
+the `tunnel_login` MCP tool.
+
+It prints a URL and a short code. Open the URL, confirm the code, and the
+command waits until you've approved. No token is ever printed.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--logout` | `false` | Forget the stored session. |
+| `--no-wait` | `false` | Print the URL and code, then return; the daemon keeps polling in the background. |
+| `--json` | `false` | Emit the login state as JSON. |
 
 ### `add-hostname <id-or-name> <fqdn>` / `remove-hostname <id-or-name> <fqdn>`
 

@@ -54,6 +54,7 @@ import type {
   TunnelProviderHandle,
   TunnelProviderCapabilities,
 } from "./remote-providers/types.js"
+import type { DeviceLoginState } from "./remote-providers/oidc-device.js"
 
 /** Creds-store / ledger family key → `~/.agentproto/tunnel-creds/`. */
 export const TUNNEL_FAMILY = "tunnel"
@@ -338,27 +339,43 @@ export async function registerTunnelAdapterTools(
       logout: z.boolean().optional().describe("Forget the stored session instead of logging in."),
     },
     async (input: { slug: string; logout?: boolean }) => {
-      const reply = (value: unknown, isError = false) => ({
-        content: [{ type: "text" as const, text: JSON.stringify(value) }],
-        ...(isError ? { isError: true } : {}),
+      const result = await tunnelLogin(input.slug, {
+        credsStore,
+        ...(input.logout ? { logout: true } : {}),
       })
-      try {
-        const creds = await credsStore.read(input.slug)
-        const handle = await resolveTunnelProvider(input.slug, { creds })
-        if (!handle?.auth) {
-          return reply({ error: `provider '${input.slug}' has no login` }, true)
-        }
-        if (input.logout) {
-          await handle.auth.logout()
-          return reply({ status: "logged_out" })
-        }
-        const state = await handle.auth.state()
-        if (state.status === "logged_in" || state.status === "pending") return reply(state)
-        const prompt = await handle.auth.begin()
-        return reply({ status: "pending", ...prompt })
-      } catch (err) {
-        return reply({ error: err instanceof Error ? err.message : String(err) }, true)
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        ...("error" in result ? { isError: true } : {}),
       }
     },
   )
+}
+
+export type TunnelLoginResult = DeviceLoginState | { error: string }
+
+/**
+ * Shared by the `tunnel_login` MCP tool, `POST /tunnels/login` and
+ * `agentproto tunnel login`: begin a device login (or return the pending /
+ * logged-in state), or log out. Never returns a token.
+ */
+export async function tunnelLogin(
+  slug: string,
+  opts: { logout?: boolean; credsStore?: CredsStore<TunnelCreds>; home?: string } = {},
+): Promise<TunnelLoginResult> {
+  try {
+    const credsStore = opts.credsStore ?? makeTunnelCredsStore(opts.home)
+    const creds = await credsStore.read(slug)
+    const handle = await resolveTunnelProvider(slug, { creds })
+    if (!handle?.auth) return { error: `provider '${slug}' has no login` }
+    if (opts.logout) {
+      await handle.auth.logout()
+      return { status: "logged_out" }
+    }
+    const state = await handle.auth.state()
+    if (state.status === "logged_in" || state.status === "pending") return state
+    const prompt = await handle.auth.begin()
+    return { status: "pending", ...prompt }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
 }

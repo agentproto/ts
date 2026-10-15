@@ -72,6 +72,7 @@ import {
 } from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import { tunnelLogin } from "./tunnel-adapters.js"
 import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
 import {
   deliveryPreferenceFor,
@@ -8949,6 +8950,7 @@ async function handlePresets(
  *   DELETE /tunnels/:id          → { ok, tunnelId }  (stop)
  *   DELETE /tunnels/:id?purge=true → { ok, tunnelId, deleted } (stop + delete remote state)
  *   POST   /tunnels/:id/revoke   → TunnelDescriptor (fresh signed link, tunnel stays up)
+ *   POST   /tunnels/login        { slug, logout? } → device-login prompt / state (no token)
  *   POST   /tunnels/:id/hostnames            → TunnelDescriptor (swap: add `hostname`)
  *   DELETE /tunnels/:id/hostnames/:hostname  → TunnelDescriptor (swap: retire it)
  */
@@ -9023,6 +9025,21 @@ async function handleTunnels(
         message: err instanceof Error ? err.message : String(err),
       })
     }
+    return true
+  }
+
+  // Device login for providers that act on the user's behalf
+  // (cloudflare-provisioned). Same logic as the `tunnel_login` MCP tool;
+  // returns the prompt / state, never a token.
+  if (path === "/tunnels/login" && req.method === "POST") {
+    const body = (await readJsonBody(req)) as Record<string, unknown> | null
+    const slug = typeof body?.slug === "string" ? body.slug : ""
+    if (!slug) {
+      json(400, { error: "missing_slug", message: "body must include `slug`" })
+      return true
+    }
+    const result = await tunnelLogin(slug, { ...(body?.logout === true ? { logout: true } : {}) })
+    json("error" in result ? 400 : 200, result)
     return true
   }
 

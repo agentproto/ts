@@ -637,3 +637,59 @@ describe("tunnel_login tool", () => {
     })
   })
 })
+
+// ── tunnelLogin (shared by MCP / HTTP / CLI) ────────────────────────────────────
+
+describe("tunnelLogin", () => {
+  it("errors for providers without a login, and when unconfigured", async () => {
+    const { tunnelLogin } = await import("../tunnel-adapters.js")
+    expect(await tunnelLogin("cloudflare-named", { home })).toEqual({ error: "provider 'cloudflare-named' has no login" })
+    expect(await tunnelLogin("cloudflare-provisioned", { home })).toMatchObject({ error: /not configured/ })
+  })
+
+  it("begin → same pending prompt on repeat → logout", async () => {
+    const { createServer } = await import("node:http")
+    let deviceCalls = 0
+    const idp = createServer((req, res) => {
+      const base = `http://127.0.0.1:${(idp.address() as { port: number }).port}`
+      res.setHeader("content-type", "application/json")
+      if (req.url === "/.well-known/openid-configuration") {
+        res.end(JSON.stringify({
+          token_endpoint: `${base}/token`,
+          device_authorization_endpoint: `${base}/device_authorization`,
+        }))
+      } else if (req.url === "/device_authorization") {
+        deviceCalls++
+        res.end(JSON.stringify({
+          device_code: "dc",
+          user_code: "WXYZ-1234",
+          verification_uri: `${base}/device`,
+          expires_in: 600,
+          interval: 3600,
+        }))
+      } else {
+        res.statusCode = 400
+        res.end(JSON.stringify({ error: "authorization_pending" }))
+      }
+    })
+    await new Promise<void>(r => idp.listen(0, "127.0.0.1", () => r()))
+    try {
+      const base = `http://127.0.0.1:${(idp.address() as { port: number }).port}`
+      const { tunnelLogin } = await import("../tunnel-adapters.js")
+      await makeTunnelCredsStore(home).write("cloudflare-provisioned", {
+        provisionerUrl: "http://127.0.0.1:1",
+        oidcIssuer: base,
+        oidcClientId: "client-1",
+      })
+      const first = await tunnelLogin("cloudflare-provisioned", { home })
+      expect(first).toMatchObject({ status: "pending", userCode: "WXYZ-1234" })
+      const again = await tunnelLogin("cloudflare-provisioned", { home })
+      expect(again).toMatchObject({ status: "pending", userCode: "WXYZ-1234" })
+      expect(deviceCalls).toBe(1)
+      expect(JSON.stringify(again)).not.toMatch(/dc|token/i)
+      expect(await tunnelLogin("cloudflare-provisioned", { home, logout: true })).toEqual({ status: "logged_out" })
+    } finally {
+      idp.close()
+    }
+  })
+})
