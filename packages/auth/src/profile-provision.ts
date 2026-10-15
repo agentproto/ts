@@ -70,6 +70,10 @@ export interface CreateAuthProfileInput {
    *  discovery origin). Stamped verbatim on the created profile; purely
    *  informational. */
   origin?: string
+  /** Additional billing routes this ONE credential also serves, beyond
+   *  `endpoint` (e.g. `["opencode-go"]` for a key billed on both the
+   *  `opencode-go` and `opencode` routes). See `AuthProfile.routes`. */
+  routes?: string[]
 }
 
 /** The non-secret result of a create — safe to log, return over the wire, or
@@ -87,6 +91,8 @@ export interface CreatedAuthProfile {
   label?: string
   /** Provenance stamped at import time, when given. */
   origin?: string
+  /** Additional billing routes the created profile serves beyond `endpoint`. */
+  routes?: string[]
   /** One-way fingerprint of the stored credential (sha256, truncated) — lets
    *  a caller confirm *which* secret was stored without exposing it. Absent
    *  for a source-backed profile — there is no stored secret to fingerprint. */
@@ -140,6 +146,7 @@ export interface ValidatedCreateInput {
   label?: string
   credentialRef?: string
   origin?: string
+  routes?: string[]
 }
 
 /**
@@ -243,6 +250,20 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
   }
 
   const origin = input.origin?.trim()
+  // Extra billing routes: trim, drop blanks, de-dupe, and check each against
+  // the same SLUG_RE as `endpoint` (routes are endpoint-shaped names). The
+  // auth package is decoupled from the route VOCABULARY (an unknown-but-valid
+  // route simply never matches), but a malformed one is rejected up front.
+  const routes = input.routes
+    ? [...new Set(input.routes.map(r => r.trim()).filter(Boolean))]
+    : []
+  for (const route of routes) {
+    if (!SLUG_RE.test(route)) {
+      throw new AuthProfileValidationError(
+        `route "${route}" is invalid — use letters, digits, ".", "_" or "-"`,
+      )
+    }
+  }
 
   return {
     id,
@@ -254,6 +275,7 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
     ...(label ? { label } : {}),
     ...(credentialRef ? { credentialRef } : {}),
     ...(origin ? { origin } : {}),
+    ...(routes.length ? { routes } : {}),
   }
 }
 
@@ -345,6 +367,7 @@ export async function createAuthProfile(
       ...(v.subaccount ? { subaccount: v.subaccount } : {}),
       ...(v.label ? { label: v.label } : {}),
       ...(v.origin ? { origin: v.origin } : {}),
+      ...(v.routes ? { routes: v.routes } : {}),
     })
     await deps.addProfile(profile)
     return {
@@ -355,6 +378,7 @@ export async function createAuthProfile(
       ...(profile.subaccount ? { subaccount: profile.subaccount } : {}),
       ...(profile.label ? { label: profile.label } : {}),
       ...(profile.origin ? { origin: profile.origin } : {}),
+      ...(profile.routes ? { routes: profile.routes } : {}),
     }
   }
 
@@ -384,6 +408,7 @@ export async function createAuthProfile(
     ...(v.subaccount ? { subaccount: v.subaccount } : {}),
     ...(v.label ? { label: v.label } : {}),
     ...(v.origin ? { origin: v.origin } : {}),
+    ...(v.routes ? { routes: v.routes } : {}),
   }
   await deps.addProfile(profile)
 
@@ -395,6 +420,7 @@ export async function createAuthProfile(
     ...(v.subaccount ? { subaccount: v.subaccount } : {}),
     ...(profile.label ? { label: profile.label } : {}),
     ...(profile.origin ? { origin: profile.origin } : {}),
+    ...(profile.routes ? { routes: profile.routes } : {}),
     fingerprint: fingerprintCredential(credential),
   }
 }

@@ -317,7 +317,15 @@ export const agentStartInputShape = {
         'Defaults `adapter`/`harness` to "pi" when neither is set. Mutually exclusive with ' +
         `\`model\`/\`route\`/\`access\` — set those directly instead of \`inference\`, never both. ${help("inference")}`
     ),
-  access: jsonTolerant(z.object({ profileRef: z.string().min(1).optional() }))
+  access: jsonTolerant(
+    z.object({
+      // When both are given, `profileRefs` wins and `profileRef` is ignored.
+      profileRef: z.string().min(1).optional(),
+      // Ordered candidates — the runtime bills the first eligible one. A
+      // min(1) list; a named-but-missing profile anywhere is a hard error.
+      profileRefs: z.array(z.string().min(1)).min(1).optional(),
+    }),
+  )
     .optional()
     .describe("Named auth profile to bill at initial spawn; resolved from the local keychain."),
   posture: z

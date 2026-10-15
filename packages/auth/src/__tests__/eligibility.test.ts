@@ -148,3 +148,49 @@ describe("eligibleProfiles — the (vendor × method) predicate", () => {
     expect(eligible.map(p => p.id)).toEqual(["work-anthropic-key"])
   })
 })
+
+describe("eligibleProfiles — the `routes` cross-route rule", () => {
+  // The opencode shape: one credential billed on BOTH the Go (`opencode-go`)
+  // and Zen (`opencode`) routes, declared as endpoint "opencode" + routes
+  // ["opencode-go"]. The portable-key twin of the console-org rule.
+  const opencodeManifest = (endpoint: string): AdapterAuthManifest => ({
+    id: "opencode",
+    endpointByRoute: { direct: endpoint },
+    methodsByRoute: { direct: ["api-key"] },
+  })
+
+  const multiRouteKey: AuthProfile = {
+    id: "ws03",
+    endpoint: "opencode",
+    routes: ["opencode-go"],
+    method: "api-key",
+    credentialRef: "ref-ws03",
+  }
+
+  it("admits the profile on a declared secondary route AND on its primary endpoint", () => {
+    expect(
+      eligibleProfiles([multiRouteKey], opencodeManifest("opencode-go"), "direct").map(p => p.id),
+    ).toEqual(["ws03"])
+    expect(
+      eligibleProfiles([multiRouteKey], opencodeManifest("opencode"), "direct").map(p => p.id),
+    ).toEqual(["ws03"])
+  })
+
+  it("without `routes`, the same key stays single-route (unchanged behavior)", () => {
+    const zenOnly: AuthProfile = { ...multiRouteKey, routes: undefined }
+    expect(eligibleProfiles([zenOnly], opencodeManifest("opencode-go"), "direct")).toEqual([])
+    expect(
+      eligibleProfiles([zenOnly], opencodeManifest("opencode"), "direct").map(p => p.id),
+    ).toEqual(["ws03"])
+  })
+
+  it("an empty `routes` list does not widen eligibility", () => {
+    const empty: AuthProfile = { ...multiRouteKey, routes: [] }
+    expect(eligibleProfiles([empty], opencodeManifest("opencode-go"), "direct")).toEqual([])
+  })
+
+  it("a disabled profile is still skipped even with `routes`", () => {
+    const disabled: AuthProfile = { ...multiRouteKey, disabled: true }
+    expect(eligibleProfiles([disabled], opencodeManifest("opencode-go"), "direct")).toEqual([])
+  })
+})

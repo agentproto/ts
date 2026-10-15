@@ -4514,6 +4514,74 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     expect(result.code).toBe("access_profile_ineligible")
     expect(registry.list()).toHaveLength(0)
   })
+
+  it("access.profileRefs bills the FIRST candidate eligible for the model's route", async () => {
+    // First candidate bills a DIFFERENT endpoint (ineligible for this route);
+    // the runtime must skip to the second.
+    authProfileState.profiles["wrong-endpoint"] = {
+      id: "wrong-endpoint",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-w",
+    }
+    authProfileState.keychain["ref-w"] = "or-key"
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      access: { profileRefs: ["wrong-endpoint", "anthropic-sub"] },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.accessProfile?.profileRef).toBe("anthropic-sub")
+  })
+
+  it("access.profileRefs fails closed (naming the candidate list) when none are eligible", async () => {
+    for (const id of ["a", "b"]) {
+      authProfileState.profiles[id] = {
+        id,
+        endpoint: "openrouter",
+        method: "api-key",
+        credentialRef: `ref-${id}`,
+      }
+      authProfileState.keychain[`ref-${id}`] = "k"
+    }
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      access: { profileRefs: ["a", "b"] },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(result.message).toContain("None of the 2 candidate profiles [a, b] are eligible")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("access.profileRefs treats a missing candidate as a hard error, not a skip", async () => {
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      access: { profileRefs: ["does-not-exist", "anthropic-sub"] },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("access_profile_not_found")
+  })
 })
 
 // Regression coverage for the profile-aware route fallback: a

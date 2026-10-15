@@ -49,6 +49,11 @@ const authProfileSchema = z.object({
   credentialRef: z.string().optional(),
   source: z.string().optional(),
   subaccount: subaccountPinSchema.optional(),
+  // Additional billing routes this one credential also serves (beyond
+  // `vendor`/endpoint). Validated syntactically only — the auth package is
+  // deliberately decoupled from the route vocabulary, so an unknown route
+  // simply never matches at the eligibility predicate.
+  routes: z.array(z.string()).optional(),
   label: z.string().optional(),
   // Additive, back-compat fields — an entry that predates them parses
   // unchanged (both optional), and `endpoint` still shadows the on-disk

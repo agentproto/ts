@@ -89,6 +89,9 @@ export function eligibleProfiles(
   const { endpoint } = resolveEndpoint(manifest, route)
   const methods = methodsPresentable(manifest, route)
   return profiles.filter(
-    p => !p.disabled && p.endpoint === endpoint && methods.includes(p.method),
+    p =>
+      !p.disabled &&
+      (p.endpoint === endpoint || (p.routes?.includes(endpoint) ?? false)) &&
+      methods.includes(p.method),
   )
 }

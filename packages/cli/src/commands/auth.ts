@@ -145,7 +145,7 @@ Usage:
                           create <id> <endpoint> --method <oauth-bearer|api-key>
                                  [--label <text>] [--source <name>]
                                  [--credential-file <path>] [--credential-env <VAR>]
-                                 [--subaccount <kind>:<id>]
+                                 [--subaccount <kind>:<id>] [--route <route>]...
                                  [--credential-ref <slot>] [--json]
                           list [--endpoint <e>] [--json]
                           rm <id>
@@ -573,7 +573,7 @@ Usage:
   agentproto auth profile create <id> <endpoint> --method <oauth-bearer|api-key>
                                  [--label <text>] [--source <name>]
                                  [--credential-file <path>] [--credential-env <VAR>]
-                                 [--subaccount <kind>:<id>]
+                                 [--subaccount <kind>:<id>] [--route <route>]...
                                  [--credential-ref <slot>] [--json]
   agentproto auth profile list|ls [--endpoint <e>] [--json]
   agentproto auth profile rm|remove|delete <id>
@@ -602,6 +602,10 @@ create:
 
   --credential-ref       explicit keychain slot; omitted ⇒ derived from
                          endpoint + method (qualified with <id> on collision).
+  --route <route>        repeatable: an ADDITIONAL billing route this one
+                         credential also serves, beyond <endpoint> — e.g.
+                         --route opencode-go for a key billed on both the
+                         opencode-go Go route and the opencode Zen route.
 
 list shows non-secret metadata only — plus, like auth_profile_list, a read-only
 key identity per profile: keyStatus (stored / self-refreshing / unavailable)
@@ -820,7 +824,7 @@ async function readCreateCredential(
 const CREATE_USAGE_LINE =
   `agentproto auth profile create: usage: create <id> <endpoint> ` +
   `--method <oauth-bearer|api-key> [--label <text>] [--source <name>] ` +
-  `[--subaccount <kind>:<id>] [--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
+  `[--subaccount <kind>:<id>] [--route <route>]... [--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
 
 async function runProfileCreate(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -832,6 +836,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
       label: { type: "string" },
       source: { type: "string" },
       subaccount: { type: "string" },
+      route: { type: "string", multiple: true },
       "credential-file": { type: "string" },
       "credential-env": { type: "string" },
       "credential-ref": { type: "string" },
@@ -892,6 +897,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
         ...(source !== undefined ? { source } : {}),
         ...(subaccount !== undefined ? { subaccount } : {}),
         ...(values.label ? { label: values.label } : {}),
+        ...(values.route && values.route.length ? { routes: values.route } : {}),
         ...(values["credential-ref"]
           ? { credentialRef: values["credential-ref"] }
           : {}),
