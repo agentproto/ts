@@ -13,6 +13,8 @@
  *   node scripts/release-notes.mjs --check       # exit 0 iff a consolidated release
  *                                                #   already carries this batch's marker
  *                                                #   (3 otherwise) — the CI ladder's gate
+ *   node scripts/release-notes.mjs --print-cloud-prompt # print the remote generation prompt
+ *   node scripts/release-notes.mjs --body-file <path>   # publish a pre-generated body
  *
  * Streams:
  *   stdout — the rendered release body, and nothing else (only under --dry-run).
@@ -49,7 +51,7 @@
  *   3 — --check: no consolidated release carries this batch's marker
  */
 
-import { execSync, execFileSync } from 'node:child_process'
+import { execSync, execFileSync, spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -60,21 +62,26 @@ import { makeConfineToRepoRoot } from './lib/path-confine.mjs'
 
 function findGitRoot(start) {
   try {
-    return execSync('git rev-parse --show-toplevel', { cwd: start, encoding: 'utf8', stdio: 'pipe' }).trim()
+    return execSync('git rev-parse --show-toplevel', {
+      cwd: start,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    }).trim()
   } catch {
     return null
   }
 }
-const ROOT =
-  findGitRoot(process.cwd()) ??
-  findGitRoot(new URL('..', import.meta.url).pathname) ??
-  new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+const ROOT = findGitRoot(process.cwd()) ?? findGitRoot(new URL('..', import.meta.url).pathname) ?? new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
 const DRY_RUN = args.includes('--dry-run')
 const CHECK = args.includes('--check')
+const PRINT_CLOUD_PROMPT = args.includes('--print-cloud-prompt')
+const BODY_FILE_INDEX = args.indexOf('--body-file')
+const BODY_FILE = BODY_FILE_INDEX >= 0 ? args[BODY_FILE_INDEX + 1] : null
+if (BODY_FILE_INDEX >= 0 && !BODY_FILE) throw new Error('--body-file requires a path')
 
 // ── the date ──────────────────────────────────────────────────────────────────
 //
@@ -94,7 +101,12 @@ const CHECK = args.includes('--check')
 const NOW = new Date()
 const TODAY = NOW.toISOString().slice(0, 10) // YYYY-MM-DD
 const THIS_YEAR = String(NOW.getUTCFullYear())
-const RELEASE_DATE_LONG = NOW.toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+const RELEASE_DATE_LONG = NOW.toLocaleString('en-US', {
+  month: 'long',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+})
 const CONSOLIDATED_TAG = `release/${TODAY}`
 
 // ── logging ───────────────────────────────────────────────────────────────────
@@ -249,9 +261,7 @@ function selectReleaseTarget({ baseTag, batchSha, fetchBody, maxAttempts = 20 })
     if (batchSha && bodyBatchSha(existing) === batchSha) return { tag, attempt, mode: 'edit' }
   }
   // Cap the walk: a pathological state must fail loudly, not spin.
-  throw new Error(
-    `refusing to publish: ${maxAttempts} same-day tags from ${baseTag} are all held by other batches`,
-  )
+  throw new Error(`refusing to publish: ${maxAttempts} same-day tags from ${baseTag} are all held by other batches`)
 }
 
 /** The model writes the title; it doesn't get to number it. Same rule as the tag. */
@@ -305,9 +315,13 @@ function listPublishedPackages(commitHash) {
       const { name, version, private: priv } = JSON.parse(raw)
       if (!name?.startsWith('@agentproto/') || priv) continue
       const abs = resolve(ROOT, changelogPath)
-      const changelog =
-        readAtCommit(commitHash, changelogPath) ?? (existsSync(abs) ? readFileSync(abs, 'utf8') : '')
-      published.push({ name, version, changelogPath, entry: changelogSection(changelog, version) })
+      const changelog = readAtCommit(commitHash, changelogPath) ?? (existsSync(abs) ? readFileSync(abs, 'utf8') : '')
+      published.push({
+        name,
+        version,
+        changelogPath,
+        entry: changelogSection(changelog, version),
+      })
     } catch {}
   }
   return published.sort((a, b) => a.name.localeCompare(b.name))
@@ -321,17 +335,16 @@ const clip = (text, max) => (text.length > max ? `${text.slice(0, max)}\n… (tr
 
 function buildContext() {
   const commitHash = releaseCommitHash()
-  return { commitHash, packages: listPublishedPackages(commitHash), tags: listGitTags() }
+  return {
+    commitHash,
+    packages: listPublishedPackages(commitHash),
+    tags: listGitTags(),
+  }
 }
 
 /** The user message: the batch, verbatim, so the model never has to guess. */
 function renderContext({ commitHash, packages, tags }) {
-  const blocks = packages.map(
-    (p) =>
-      `### ${p.name}@${p.version}\n\n` +
-      `CHANGELOG: \`${p.changelogPath}\`\n\n` +
-      clip(p.entry || '_(no entry — bumped by dependency only)_', 6_000),
-  )
+  const blocks = packages.map((p) => `### ${p.name}@${p.version}\n\n` + `CHANGELOG: \`${p.changelogPath}\`\n\n` + clip(p.entry || '_(no entry — bumped by dependency only)_', 6_000))
   return [
     '## Batch',
     '',
@@ -355,7 +368,9 @@ function renderContext({ commitHash, packages, tags }) {
 function fetchReleaseBody(tag) {
   try {
     return execFileSync('gh', ['release', 'view', tag, '--json', 'body', '--jq', '.body'], {
-      cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: 'pipe',
     })
   } catch {
     return null
@@ -384,12 +399,18 @@ function publishConsolidated(body) {
     process.stdout.write(markedBody)
     return { tag: CONSOLIDATED_TAG, attempt: 1, mode: 'dry-run' }
   }
-  const target = selectReleaseTarget({ baseTag: CONSOLIDATED_TAG, batchSha, fetchBody: fetchReleaseBody })
+  const target = selectReleaseTarget({
+    baseTag: CONSOLIDATED_TAG,
+    batchSha,
+    fetchBody: fetchReleaseBody,
+  })
   const finalTitle = suffixTitle(title, target.attempt)
   if (target.attempt > 1) log(`   ⚠️  ${CONSOLIDATED_TAG} holds another batch's release — publishing to ${target.tag}`)
   const verb = target.mode === 'create' ? 'create' : 'edit'
   execFileSync('gh', ['release', verb, target.tag, '--title', finalTitle, '--notes', markedBody, '--latest=true'], {
-    cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
+    cwd: ROOT,
+    encoding: 'utf8',
+    stdio: 'pipe',
   })
   return target
 }
@@ -427,7 +448,10 @@ Use those values verbatim wherever the announcement needs a date. Do not infer
 the date from your own training, from version numbers, or from anything you read
 in the repo — you will get it wrong. This project ships release batches far
 more often than monthly, sometimes more than once in the same week — never
-describe this as "the ${NOW.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })} release"
+describe this as "the ${NOW.toLocaleString('en-US', {
+  month: 'long',
+  timeZone: 'UTC',
+})} release"
 or imply it is the only release of its month; it is one dated batch among
 several. The title must read exactly:
 \`agentproto — ${RELEASE_DATE_LONG} release\`.
@@ -487,9 +511,46 @@ npm install @agentproto/agent@latest @agentproto/mcp-server@latest ...
 - Use the imperative for feature names: "Add extends-chain validation", not "Extends-chain validation was added".
 `
 
-// ── generation (Claude Agent SDK, one lane) ───────────────────────────────────
+// ── generation (selected harness, one lane) ──────────────────────────────────
+
+function generateWithOpenCode(resolved, context) {
+  const prompt =
+    `${SYSTEM_PROMPT}\n\n` +
+    'Please generate the consolidated release notes for this batch of @agentproto package publishes. ' +
+    'Read the code behind the changes, then reply with the announcement only.\n\n' +
+    renderContext(context)
+
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn('opencode', ['run', '--pure', '--model', resolved.model], {
+      cwd: ROOT,
+      env: resolved.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`OpenCode exited ${code}: ${stderr.slice(-500)}`))
+        return
+      }
+      const body = unwrapFence(stdout.trim())
+      if (!body) {
+        reject(new Error(`OpenCode produced no release-note body: ${stderr.slice(-500)}`))
+        return
+      }
+      resolvePromise(body)
+    })
+    child.stdin.end(prompt)
+  })
+}
 
 async function generateBody(resolved, context) {
+  if (resolved.lane === 'opencode-free') return generateWithOpenCode(resolved, context)
   // Lazy: --check and the unit tests must not need the SDK installed.
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
   const confineToRepoRoot = makeConfineToRepoRoot(ROOT)
@@ -549,31 +610,42 @@ async function main() {
     return 3
   }
 
-  const laneName = pickLane()
-  if (!laneName) {
-    log(
-      'Error: no agent lane credential set — need one of CLAUDE_CODE_OAUTH_TOKEN, ' +
-        'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.',
-    )
-    return 1
-  }
-  const resolved = resolveLane(laneName)
-  if (resolved.missing) {
-    log(`Error: lane ${describeLane(resolved)}`)
-    return 1
-  }
-
   const context = buildContext()
-  log(
-    `\n📦 Release notes generator starting${DRY_RUN ? ' (dry-run)' : ''} — lane ${describeLane(resolved)} · ` +
-      `batch ${context.commitHash ?? '(none)'} · ${context.packages.length} package(s)…`,
-  )
   if (context.packages.length === 0) {
     log('Error: no published packages found in the batch commit — nothing to announce.')
     return 1
   }
 
-  const body = await generateBody(resolved, context)
+  if (PRINT_CLOUD_PROMPT) {
+    process.stdout.write(
+      `${SYSTEM_PROMPT}\n\nPlease generate the consolidated release notes for this batch of @agentproto package publishes. ` +
+        `Read the code behind the changes, then reply with the announcement only. Never edit, commit, push, ` +
+        `open a pull request, or call an external service.\n\n${renderContext(context)}\n`,
+    )
+    return 0
+  }
+
+  let resolved = null
+  if (!BODY_FILE) {
+    const laneName = pickLane()
+    if (!laneName) {
+      log('Error: no agent lane credential set — need one of OPENCODE_API_KEY, ' + 'CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.')
+      return 1
+    }
+    resolved = resolveLane(laneName)
+    if (resolved.missing) {
+      log(`Error: lane ${describeLane(resolved)}`)
+      return 1
+    }
+  }
+
+  log(
+    `\n📦 Release notes generator starting${DRY_RUN ? ' (dry-run)' : ''} — ` +
+      `${BODY_FILE ? 'pre-generated body' : `lane ${describeLane(resolved)}`} · ` +
+      `batch ${context.commitHash ?? '(none)'} · ${context.packages.length} package(s)…`,
+  )
+
+  const body = BODY_FILE ? readFileSync(resolve(ROOT, BODY_FILE), 'utf8') : await generateBody(resolved, context)
   const target = publishConsolidated(body)
   if (target.mode === 'dry-run') log(`\n✅ Release notes rendered (dry-run, tag would be ${target.tag}).`)
   else log(`\n✅ ${target.mode === 'create' ? 'Created' : 'Updated'} consolidated GitHub Release: ${target.tag}`)

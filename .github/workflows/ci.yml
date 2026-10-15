@@ -970,9 +970,12 @@ jobs:
       - name: Load agentic-review config
         id: config
         if: steps.prstate.outputs.skip != 'true'
+        env:
+          AGENT_REVIEW_PRESETS: ${{ vars.AGENT_REVIEW_PRESETS }}
         run: |
           if [ -f .github/agentic-review.json ]; then
-            echo "json=$(jq -c . .github/agentic-review.json)" >> "$GITHUB_OUTPUT"
+            CONFIG=$(node scripts/resolve-agent-action.mjs review --review-config)
+            echo "json=$CONFIG" >> "$GITHUB_OUTPUT"
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "json={}" >> "$GITHUB_OUTPUT"
@@ -985,18 +988,15 @@ jobs:
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
         run: |
-          # The reviewer bills the Claude SUBSCRIPTION only (flat rate):
-          # CLAUDE_CODE_OAUTH_TOKEN, with CLAUDE_CODE_OAUTH_TOKEN_FALLBACK as
-          # the second account (below). Neither pay-per-token ANTHROPIC_API_KEY
-          # nor OPENROUTER_API_KEY may fund a review — with no subscription
-          # token the mode is `none` and the gate goes honestly red instead of
-          # silently spending on a metered key.
-          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ] || [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}" ]; then
+          # The default preset uses OpenCode's hosted free routes. The preset
+          # remains configurable; this step only checks the credential needed
+          # by the currently selected automatic lane.
+          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
-            echo "Using agentproto lane (Claude subscription)"
+            echo "Using agentproto lane (OpenCode free model)"
           else
             echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "::error::No Claude subscription token (CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN_FALLBACK) — reviews never fall back to ANTHROPIC_API_KEY or OPENROUTER_API_KEY."
+            echo "::error::No OpenCode free-model credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_API_KEY) — the reviewer cannot authenticate."
           fi
 
           # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
@@ -1019,76 +1019,131 @@ jobs:
             echo "No CLAUDE_CODE_OAUTH_TOKEN_FALLBACK secret configured — the cross-account retry step will no-op if the primary account fails."
           fi
 
-          # Cross-ACCOUNT tier 3: an OpenCode Go subscription's API key
-          # (secrets.OPENCODE_API_KEY) driving the `opencode` adapter with the
-          # glm-5.3-flash model. Unlike the fallback-account tier (which
-          # re-runs the SAME claude adapter against a second Claude account and
-          # dies with it when the lane's underlying subscription family is
-          # broken), this tier changes BOTH the adapter AND the billing
-          # provider, so a primary that is rate-limited (429) or has its
-          # org-level subscription access disabled still reviews. The
-          # fail-closed rule is preserved: this is still flat/subscription-tier
-          # billing through OpenCode's own Go plan — never a metered
-          # ANTHROPIC_API_KEY or OPENROUTER_API_KEY.
-          if [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+          # A second free OpenCode model is retained as a provider-side
+          # fallback when the primary free route is rate-limited. Prefer the
+          # independent ws03/ws02 accounts when configured, otherwise retry on
+          # the primary credential so model rotation still works.
+          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "has-opencode-fallback=true" >> "$GITHUB_OUTPUT"
           else
             echo "has-opencode-fallback=false" >> "$GITHUB_OUTPUT"
-            echo "No OPENCODE_API_KEY secret configured — the opencode-go retry step will no-op if both Claude accounts fail."
+            echo "No OPENCODE_API_KEY secret configured — the OpenCode free fallback will no-op."
           fi
 
       - name: Resolve agentproto CLI source/version
         id: cliver
         if: steps.prstate.outputs.skip != 'true'
+        env:
+          REVIEW_CONFIG: ${{ steps.config.outputs.json }}
+          # Owner-controlled allow-list of metered model ids (repo VARIABLE, not
+          # the PR-editable config file) — the escape hatch that lets an
+          # explicitly-sanctioned paid model through while still failing closed
+          # on a model a PR slipped into the config.
+          ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
         run: |
-          CLI_SOURCE=$(node -p "String((require('./.github/agentic-review.json').cliSource) || 'npm')" 2>/dev/null || echo "npm")
-          CLI_VERSION=$(node -p "String((require('./.github/agentic-review.json').cliVersion) || '0.8.0')" 2>/dev/null || echo "0.8.0")
-          # Billing-auth mode for the reviewer's adapter. subscription/OAuth
-          # needs an interactive ~/.claude login the CI runner doesn't have and
-          # no-ops with "Authentication required"; api-key authenticates headless.
-          AUTH_MODE=$(node -p "String((require('./.github/agentic-review.json').reviewerAuthMode) || 'subscription')" 2>/dev/null || echo "subscription")
-          # Reviewer adapter. claude-code drives the Claude Code CLI, which
-          # no-ops headless in CI; claude-sdk is SDK-based and authenticates
-          # headless (and can front Moonshot/Kimi via ANTHROPIC_BASE_URL).
-          ADAPTER=$(node -p "String((require('./.github/agentic-review.json').reviewerAdapter) || 'claude-code')" 2>/dev/null || echo "claude-code")
+          CONFIG="$REVIEW_CONFIG"
+          CLI_SOURCE=$(printf '%s' "$CONFIG" | jq -r '.cliSource // "npm"')
+          CLI_VERSION=$(printf '%s' "$CONFIG" | jq -r '.cliVersion // "0.8.0"')
+          # OpenCode's hosted free routes authenticate headlessly with an API
+          # key, while the selected model remains zero-priced.
+          AUTH_MODE=$(printf '%s' "$CONFIG" | jq -r '.reviewerAuthMode // "subscription"')
+          # Reviewer adapter. The free routes are available only through the
+          # OpenCode harness, not through a direct provider API.
+          ADAPTER=$(printf '%s' "$CONFIG" | jq -r '.reviewerAdapter // "claude-code"')
           # Model id override for the reviewer (reviewerModel) — forwarded to
           # the workflow step's `model` selector and (for opencode-style
           # adapters that route by model id) the provider key env.
-          REVIEWER_MODEL=$(node -p "String((require('./.github/agentic-review.json').reviewerModel) || '')" 2>/dev/null || echo "")
-          # Fail closed: reviews bill the Claude subscription, never a metered
-          # key. Refuse a config that would route to OpenRouter or to
-          # api-key billing, rather than silently honouring it.
-          REVIEWER_SANDBOX_ENV=$(node -p "JSON.stringify((require('./.github/agentic-review.json').reviewerSandboxEnv) || [])" 2>/dev/null || echo "[]")
-          if [ "$AUTH_MODE" != "subscription" ] || echo "$REVIEWER_MODEL $REVIEWER_SANDBOX_ENV" | grep -qiE 'openrouter'; then
-            echo "::error::.github/agentic-review.json routes the reviewer to a metered provider (reviewerAuthMode=$AUTH_MODE, reviewerModel=$REVIEWER_MODEL, reviewerSandboxEnv=$REVIEWER_SANDBOX_ENV). Reviews must use reviewerAuthMode=subscription on the Claude subscription — OpenRouter and api-key billing are disabled for reviews."
-            exit 1
+          REVIEWER_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
+          FALLBACK_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerFallbackModels[0] // ""')
+          HAS_CLOUD=$(printf '%s' "$CONFIG" | jq -r '(.resolvedAgentAction.presets // []) | index("claude-cloud") != null')
+          # Fail closed on a metered route UNLESS it is owner-sanctioned.
+          # `.github/agentic-review.json` is PR-editable and its `reviewerModel`
+          # flows straight into the `model:`/`provider-key` of the
+          # OPENCODE_API_KEY-funded lane, so a PR could otherwise silently
+          # route reviews to a paid model and spend on that key. On the
+          # opencode adapter a model is allowed only if it is a zero-priced
+          # free id (suffix `-free`, or `big-pickle`) OR appears in the
+          # owner-controlled `AGENT_ALLOWED_METERED_MODELS` repo variable — a
+          # PR cannot set that variable, so the metered escape hatch stays
+          # owner-only. The claude-cloud preset (subscription-billed) is
+          # exempt. This replaces the guard from origin/main that refused any
+          # non-subscription auth-mode, which the free-route migration retired.
+          allowed_metered() {
+            [ -n "$ALLOWED_METERED_MODELS" ] || return 1
+            printf '%s' "$ALLOWED_METERED_MODELS" | tr ', ' '\n\n' | grep -qxF "$1"
+          }
+          if [ "$ADAPTER" = "opencode" ] || [ "$ADAPTER" = "opencode-go" ]; then
+            for m in "$REVIEWER_MODEL" "$FALLBACK_MODEL"; do
+              [ -z "$m" ] && continue
+              case "$m" in
+                */big-pickle|*-free) ;;
+                *)
+                  if allowed_metered "$m"; then
+                    echo "::warning::Reviewer model '$m' is metered but owner-sanctioned via AGENT_ALLOWED_METERED_MODELS."
+                  else
+                    echo "::error::.github/agentic-review.json routes the opencode reviewer to a metered model '$m' (adapter=$ADAPTER). Reviews must use a zero-priced free id (suffix '-free' or 'big-pickle'), or the id must be listed in the AGENT_ALLOWED_METERED_MODELS repo variable."
+                    exit 1
+                  fi
+                  ;;
+              esac
+            done
           fi
           echo "cli-source=$CLI_SOURCE" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$AUTH_MODE" >> "$GITHUB_OUTPUT"
           echo "adapter=$ADAPTER" >> "$GITHUB_OUTPUT"
           echo "model=$REVIEWER_MODEL" >> "$GITHUB_OUTPUT"
-          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) adapter=$ADAPTER auth-mode=$AUTH_MODE model=$REVIEWER_MODEL"
+          echo "fallback-model=$FALLBACK_MODEL" >> "$GITHUB_OUTPUT"
+          echo "has-cloud=$HAS_CLOUD" >> "$GITHUB_OUTPUT"
+          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) adapter=$ADAPTER auth-mode=$AUTH_MODE model=$REVIEWER_MODEL fallback=$FALLBACK_MODEL cloud-fallback=$HAS_CLOUD"
 
       - name: Build local agentproto CLI
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.cliver.outputs.cli-source == 'workspace'
-        run: |
-          pnpm install --frozen-lockfile
-          FILTERS="--filter @agentproto/cli... --filter @agentproto/adapter-${{ steps.cliver.outputs.adapter }}..."
-          # The opencode-go fallback tier spawns a DIFFERENT adapter than this
-          # job's primary lane — build its package too when the secret is set,
-          # or the tier's box daemon can't resolve `@agentproto/adapter-opencode`.
-          if [ "${{ steps.mode.outputs.has-opencode-fallback }}" = "true" ]; then
-            FILTERS="$FILTERS --filter @agentproto/adapter-opencode..."
-          fi
-          pnpm build $FILTERS
         env:
+          ADAPTER: ${{ steps.cliver.outputs.adapter }}
+          HAS_OPENCODE_FALLBACK: ${{ steps.mode.outputs.has-opencode-fallback }}
+          HAS_CLOUD: ${{ steps.cliver.outputs.has-cloud }}
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
+        run: |
+          pnpm install --frozen-lockfile
+          FILTERS="--filter @agentproto/cli... --filter @agentproto/adapter-${ADAPTER}..."
+          # The opencode-go fallback tier spawns a DIFFERENT adapter than this
+          # job's primary lane — build its package too when the secret is set,
+          # or the tier's box daemon can't resolve `@agentproto/adapter-opencode`.
+          if [ "$HAS_OPENCODE_FALLBACK" = "true" ]; then
+            FILTERS="$FILTERS --filter @agentproto/adapter-opencode..."
+          fi
+          if [ "$HAS_CLOUD" = "true" ]; then
+            FILTERS="$FILTERS --filter @agentproto/adapter-claude-code-cloud..."
+          fi
+          pnpm build $FILTERS
+
+      - name: Install Claude Code Cloud runtime
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.cliver.outputs.has-cloud == 'true'
+        run: npm install --global @anthropic-ai/claude-code@2.1.300
+
+      - name: Trust this disposable checkout for Claude Cloud
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.cliver.outputs.has-cloud == 'true'
+        run: |
+          node -e '
+            const fs=require("fs"),os=require("os"),path=require("path");
+            const p=path.join(os.homedir(),".claude.json");
+            let c={}; try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}
+            c.projects ||= {};
+            c.projects[fs.realpathSync(process.env.GITHUB_WORKSPACE)]={hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
+            fs.writeFileSync(p,JSON.stringify(c));
+          '
 
       # Seed claude-code's trust/onboarding state so it doesn't hit an
       # interactive trust dialog headless (a clean runner has no ~/.claude.json,
@@ -1112,9 +1167,8 @@ jobs:
             console.log("seeded "+p+" (onboarding + trust) for "+cwd);
           '
 
-      # OAuth path: agentproto-run lane (subscription billing, flat rate).
-      # A dead primary token falls through to the fallback-account tier below;
-      # there is no metered-key tier — if both subscriptions fail the gate is red.
+      # Primary OpenCode free-model lane. A provider failure falls through to a
+      # second explicit free route below; no metered route is armed.
       - name: Run agentic PR reviewer (agentproto lane)
         id: reviewer-agentproto
         if: |
@@ -1147,12 +1201,13 @@ jobs:
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
-          # auth-mode is pinned to `subscription` (the "Resolve agentproto CLI
-          # source/version" step refuses anything else): the reviewer rides
-          # CLAUDE_CODE_OAUTH_TOKEN only. No api-key / provider-key is passed,
-          # so neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY can fund it.
+          # The key authenticates OpenCode; the resolver step above fails closed
+          # unless the resolved model is a zero-priced free id before this
+          # action can run.
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
-          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          api-key: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
           # e2b microVM sandbox for the reviewer session (reviewerSandbox in
           # .github/agentic-review.json) — the daemon-internal spawn failure on
@@ -1179,7 +1234,7 @@ jobs:
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
             }
-          timeout-minutes: 15
+          timeout-minutes: 50
 
       # The native lane can POST its review and STILL report failure — the
       # box session erroring during post-review wind-down (changeset delivery)
@@ -1391,7 +1446,7 @@ jobs:
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
             }
-          timeout-minutes: 15
+          timeout-minutes: 50
 
       # Second tier of the same "review already posted?" guard as the
       # postcheck step above — the fallback account's session can ALSO post
@@ -1508,27 +1563,23 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Build the reviewConfig override the opencode-go fallback tier runs on:
-      # the global agentic-review.json is written for the Claude lane, so the
-      # tier needs `reviewerAdapter`/`reviewerModel`/`reviewerSandboxEnv`
-      # overridden (adapter=opencode, model=opencode-go/glm-5.3-flash, and the
-      # sandbox passthrough list carries the OPENCODE_API_KEY NAME the box
-      # daemon must see — see the opencode adapter's `models.env` map in
-      # adapters/opencode/src/index.ts). Everything else in the config —
-      # blocking, botMention, skills, merge escalation — stays identical so a
-      # review posted here is in-substance the same as the primary's.
-      - name: Build opencode-go fallback review config
+      # Switch only the model for the second free-model attempt. Everything
+      # else stays identical to the primary review configuration.
+      - name: Build OpenCode free fallback review config
         id: opencode-config
         if: |
           steps.prstate.outputs.skip != 'true' &&
-          steps.mode.outputs.has-opencode-fallback == 'true'
+          steps.mode.outputs.has-opencode-fallback == 'true' &&
+          steps.cliver.outputs.fallback-model != ''
         env:
           BASE_CONFIG: ${{ steps.config.outputs.json }}
+          FALLBACK_MODEL: ${{ steps.cliver.outputs.fallback-model }}
         run: |
           OVERRIDE=$(printf '%s' "$BASE_CONFIG" \
-            | jq -c '. + {
+            | jq -c --arg model "$FALLBACK_MODEL" '. + {
                 reviewerAdapter: "opencode",
-                reviewerModel: "opencode-go/glm-5.3-flash",
+                model: $model,
+                reviewerModel: $model,
                 reviewerSandboxEnv: ["OPENCODE_API_KEY", "GITHUB_TOKEN"]
               }')
           {
@@ -1538,16 +1589,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "$OVERRIDE" | jq -r '"adapter=\(.reviewerAdapter) model=\(.reviewerModel)"'
 
-      # opencode-go tier — runs only when BOTH Claude tiers failed to post.
-      # adapter=opencode, billing=OpenCode Go subscription key. The provider
-      # key is injected BOTH ways on purpose: `api-key` writes it into
-      # defaults.adapters.opencode.auth (the config surface the runtime's
-      # model-derived auth presents to opencode), and provider-key-env puts
-      # the same value onto the runner daemon's process env as
-      # OPENCODE_API_KEY — which is what makes the tier's own reviewerSandboxEnv
-      # passthrough resolvable when the e2b box daemon boots (a strict
-      # passthrough slug whose env var is absent fails the boot loudly).
-      - name: Run agentic PR reviewer (agentproto lane, opencode-go fallback)
+      # Second explicit free route, run only when earlier tiers posted nothing.
+      - name: Run agentic PR reviewer (agentproto lane, OpenCode free fallback)
         id: reviewer-agentproto-opencode
         # Same "posted != 'unknown'" blindness rule as the fallback-account
         # tier: if the LAST postcheck couldn't reach the API it can't prove
@@ -1561,7 +1604,8 @@ jobs:
           steps.postcheck.outputs.posted != 'unknown' &&
           steps.postcheck-fallback.outputs.posted != 'true' &&
           steps.postcheck-fallback.outputs.posted != 'unknown' &&
-          steps.mode.outputs.has-opencode-fallback == 'true'
+          steps.mode.outputs.has-opencode-fallback == 'true' &&
+          steps.cliver.outputs.fallback-model != ''
         continue-on-error: true
         uses: ./.github/actions/agentproto-run
         env:
@@ -1572,10 +1616,10 @@ jobs:
         with:
           adapter: opencode
           auth-mode: api-key
-          api-key: ${{ secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ secrets.OPENCODE_API_KEY }}
+          api-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
-          model: opencode-go/glm-5.3-flash
+          model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -1594,7 +1638,7 @@ jobs:
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.opencode-config.outputs.json || '{}')) }}
             }
-          timeout-minutes: 15
+          timeout-minutes: 50
 
       # Third tier of the same guard as postcheck / postcheck-fallback: the
       # opencode-go tier's session can also post successfully and then fail
@@ -1677,6 +1721,38 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Run agentic PR reviewer (Claude Cloud fallback)
+        id: reviewer-claude-cloud
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.cliver.outputs.has-cloud == 'true' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.postcheck-fallback.outputs.posted != 'true' &&
+          steps.postcheck-fallback.outputs.posted != 'unknown' &&
+          steps.postcheck-opencode.outputs.posted != 'true' &&
+          steps.postcheck-opencode.outputs.posted != 'unknown'
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          node scripts/cloud-review-prompt.mjs > "$RUNNER_TEMP/cloud-review.prompt"
+          node scripts/claude-cloud-ci.mjs \
+            --prompt-file "$RUNNER_TEMP/cloud-review.prompt" \
+            --output "$RUNNER_TEMP/cloud-review.json" \
+            --label ci-pr-review-fallback
+          node scripts/post-cloud-review.mjs "$RUNNER_TEMP/cloud-review.json"
+
       - name: Propagate reviewer outcome for gate
         id: reviewer
         if: |
@@ -1691,6 +1767,7 @@ jobs:
           PRIMARY_PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
           FALLBACK_PROVENANCE: ${{ steps.reviewer-agentproto-fallback.outputs.provenance }}
           OPENCODE_PROVENANCE: ${{ steps.reviewer-agentproto-opencode.outputs.provenance }}
+          CLOUD_PROVENANCE: ${{ steps.reviewer-claude-cloud.outputs.provenance }}
           # The artifact ledger (review id recorded at creation time) travels the
           # same tier-selection path as provenance below, so the review-footer
           # stamp keys off the id the winning account actually posted under.
@@ -1710,9 +1787,15 @@ jobs:
             || [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ] \
             || [ "${{ steps.postcheck-fallback.outputs.posted }}" = "true" ] \
             || [ "${{ steps.reviewer-agentproto-opencode.outputs.status }}" = "done" ] \
-            || [ "${{ steps.postcheck-opencode.outputs.posted }}" = "true" ]; then
+            || [ "${{ steps.postcheck-opencode.outputs.posted }}" = "true" ] \
+            || [ "${{ steps.reviewer-claude-cloud.outputs.posted }}" = "true" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
+            if [ "${{ steps.reviewer-claude-cloud.outputs.posted }}" = "true" ]; then
+              echo "auth-mode=cloud" >> "$GITHUB_OUTPUT"
+            else
+              echo "auth-mode=${{ steps.cliver.outputs.auth-mode }}" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "outcome=failure" >> "$GITHUB_OUTPUT"
             echo "mode=none" >> "$GITHUB_OUTPUT"
@@ -1723,7 +1806,10 @@ jobs:
           # account/session that posted, not the failed primary attempt's
           # (possibly empty) provenance when the fallback account is the one
           # that succeeded.
-          if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
+          if [ "${{ steps.reviewer-claude-cloud.outputs.posted }}" = "true" ]; then
+            PROVENANCE="$CLOUD_PROVENANCE"
+            ARTIFACTS=""
+          elif [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
             PROVENANCE="$PRIMARY_PROVENANCE"
             ARTIFACTS="$PRIMARY_ARTIFACTS"
           elif [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ]; then
@@ -2024,7 +2110,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          AUTH_MODE: ${{ steps.cliver.outputs.auth-mode }}
+          AUTH_MODE: ${{ steps.reviewer.outputs.auth-mode || steps.cliver.outputs.auth-mode }}
           RUN_ID: ${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
           # Resolved by "Propagate reviewer outcome for gate" to whichever
@@ -2217,8 +2303,59 @@ jobs:
       # The auto-fix loop is pinned to commit-mode (push onto the PR branch) so
       # the review→fix→re-review cycle stays tight. Stacked-PR delivery is an
       # on-demand choice via `/fix --pr` (config.fixDelivery sets that default).
-      - name: Apply review fixes
+      #
+      # Two backends. Preferred is a managed Claude Code Cloud session (runs on
+      # the Claude subscription, not the metered ANTHROPIC_API_KEY) — the cloud
+      # box cannot write our tree, so it returns the fixes as a unified diff
+      # (scripts/apply-review-cloud.mjs) which is validated and applied locally.
+      # Fallback is the direct Anthropic Messages API tool-loop
+      # (scripts/apply-review.mjs), which needs a real Anthropic `fixModel` —
+      # never the reviewer's preset-driven OpenCode model.
+      - name: Choose review fixer backend
+        id: fixer
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        run: |
+          if [ -n "${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}" ] && [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]; then
+            echo "has-cloud=true" >> "$GITHUB_OUTPUT"
+            echo "Cloud fixer backend selected (Claude Code Cloud)."
+          else
+            echo "has-cloud=false" >> "$GITHUB_OUTPUT"
+            echo "No Claude Cloud credentials — using the Anthropic API fixer."
+          fi
+
+      - name: Build the agentproto CLI for the cloud fixer
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.fixer.outputs.has-cloud == 'true'
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-claude-code-cloud...
+          npm install --global @anthropic-ai/claude-code@2.1.300
+
+      - name: Apply review fixes (Claude Cloud)
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.fixer.outputs.has-cloud == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
+          # App token so the fixer can read the review + diff via the GitHub API.
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/apply-review-cloud.mjs --delivery commit
+
+      - name: Apply review fixes (Anthropic API)
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.fixer.outputs.has-cloud != 'true'
         run: node scripts/apply-review.mjs --delivery commit
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

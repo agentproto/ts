@@ -145,7 +145,7 @@ test('reviewViaDaemon: placement/baseRef/prNumber are set and reviewerSandbox is
   assert.equal(seenInputs[0].reviewConfig.reviewerSandbox, undefined)
   // .github/agentic-review.json really does set reviewerSandbox — assert the
   // strip actually removed a real key, not just "was already absent."
-  assert.equal(seenInputs[0].reviewConfig.reviewerAdapter, 'claude-sdk')
+  assert.equal(seenInputs[0].reviewConfig.reviewerAdapter, 'opencode')
 })
 
 test('reviewViaDaemon: an "adapter" override replaces reviewConfig.reviewerAdapter', async () => {

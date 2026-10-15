@@ -1,20 +1,101 @@
 {
   "blocking": true,
-  "model": "claude-sonnet-5-5",
+  "model": "opencode/mimo-v2.6-flash-free",
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
   "maxReviewTurns": 50,
   "cliSource": "workspace",
   "cliVersion": "0.8.0",
-  "reviewerAdapter": "claude-sdk",
-  "reviewerAuthMode": "subscription",
-  "reviewerModel": "claude-sonnet-5-5",
+  "agentPresets": {
+    "opencode-mimo-free": {
+      "reviewerAdapter": "opencode",
+      "reviewerAuthMode": "api-key",
+      "reviewerModel": "opencode/mimo-v2.6-flash-free",
+      "reviewerSandbox": {
+        "provider": "e2b",
+        "lifecycle": {
+          "destroy_on": "workspace-close"
+        }
+      },
+      "reviewerSandboxEnv": [
+        "OPENCODE_API_KEY",
+        "GITHUB_TOKEN"
+      ]
+    },
+    "opencode-step5-free": {
+      "reviewerAdapter": "opencode",
+      "reviewerAuthMode": "api-key",
+      "reviewerModel": "opencode/step-5-preview-free",
+      "reviewerSandbox": {
+        "provider": "e2b",
+        "lifecycle": {
+          "destroy_on": "workspace-close"
+        }
+      },
+      "reviewerSandboxEnv": [
+        "OPENCODE_API_KEY",
+        "GITHUB_TOKEN"
+      ]
+    },
+    "claude-cloud": {
+      "cloud": "anthropic",
+      "reviewerAdapter": "claude-code-cloud"
+    },
+    "opencode-deepseek-free": {
+      "reviewerAdapter": "opencode",
+      "reviewerAuthMode": "api-key",
+      "reviewerModel": "opencode/deepseek-v4.1-flash-free",
+      "reviewerSandbox": {
+        "provider": "e2b",
+        "lifecycle": {
+          "destroy_on": "workspace-close"
+        }
+      },
+      "reviewerSandboxEnv": [
+        "OPENCODE_API_KEY",
+        "GITHUB_TOKEN"
+      ]
+    }
+  },
+  "agentActions": {
+    "review": {
+      "env": "AGENT_REVIEW_PRESETS",
+      "presets": [
+        "opencode-deepseek-free",
+        "opencode-mimo-free",
+        "opencode-step5-free",
+        "claude-cloud"
+      ]
+    },
+    "release-notes": {
+      "env": "AGENT_RELEASE_NOTES_PRESETS",
+      "presets": [
+        "opencode-mimo-free",
+        "opencode-step5-free"
+      ]
+    },
+    "docs-check": {
+      "env": "AGENT_DOCS_CHECK_PRESETS",
+      "presets": [
+        "opencode-mimo-free",
+        "opencode-step5-free"
+      ]
+    }
+  },
+  "reviewerAdapter": "opencode",
+  "reviewerAuthMode": "api-key",
+  "reviewerModel": "opencode/mimo-v2.6-flash-free",
   "reviewerSandbox": {
     "provider": "e2b",
-    "lifecycle": { "destroy_on": "workspace-close" }
+    "lifecycle": {
+      "destroy_on": "workspace-close"
+    }
   },
-  "reviewerSandboxEnv": ["ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"],
+  "reviewerSandboxEnv": [
+    "OPENCODE_API_KEY",
+    "GITHUB_TOKEN"
+  ],
   "describe": {
     "auto": true,
     "minBodyChars": 80

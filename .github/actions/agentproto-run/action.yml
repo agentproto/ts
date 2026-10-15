@@ -153,6 +153,15 @@ inputs:
     description: Hard ceiling on the driver's OWN poll loop. The calling job's `timeout-minutes` must independently cover this.
     required: false
     default: '360'
+  idle-timeout-minutes:
+    description: >
+      Cancel the run after this many minutes with NO observed progress (no
+      stage/step status change and no session turn/tool-call/token advance),
+      even if the hard `timeout-minutes` ceiling has not been reached. A run
+      that keeps making observable progress is never idle-cancelled — only the
+      hard ceiling bounds it. Defaults to 15.
+    required: false
+    default: '15'
 
 outputs:
   run-id:
@@ -254,6 +263,7 @@ runs:
         WORKFLOW_INPUT: ${{ inputs.workflow-input }}
         RUN_CWD: ${{ inputs.cwd }}
         TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        IDLE_TIMEOUT_MINUTES: ${{ inputs.idle-timeout-minutes }}
         PORT: '18790'
         ACTION_PATH: ${{ github.action_path }}
         CLI_SOURCE: ${{ inputs.cli-source }}

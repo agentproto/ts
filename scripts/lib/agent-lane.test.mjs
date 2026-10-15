@@ -23,6 +23,7 @@ const EVERYTHING = {
   CLAUDE_CODE_OAUTH_TOKEN: 'oauth-main',
   CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: 'oauth-fallback',
   OPENROUTER_API_KEY: 'or-key',
+  OPENCODE_API_KEY: 'oc-key',
   ANTHROPIC_BASE_URL: 'https://stale.example',
   CLAUDE_CODE_USE_BEDROCK: '1',
   PATH: '/usr/bin',
@@ -35,9 +36,22 @@ test('subscription lane keeps only its OAuth token and scrubs the API key + gate
   assert.equal(r.env.ANTHROPIC_API_KEY, undefined)
   assert.equal(r.env.ANTHROPIC_BASE_URL, undefined)
   assert.equal(r.env.ANTHROPIC_AUTH_TOKEN, undefined)
+  assert.equal(r.env.OPENCODE_API_KEY, undefined)
   assert.equal(r.env.CLAUDE_CODE_USE_BEDROCK, undefined)
   assert.equal(r.env.PATH, '/usr/bin') // unrelated env passes through
   assert.equal(r.model, 'claude-sonnet-5-5')
+})
+
+test('opencode-free lane keeps only the OpenCode key and permits an explicit model override', () => {
+  const r = resolveLane('opencode-free', EVERYTHING)
+  assert.equal(r.env.OPENCODE_API_KEY, 'oc-key')
+  assert.equal(r.env.ANTHROPIC_API_KEY, undefined)
+  assert.equal(r.env.CLAUDE_CODE_OAUTH_TOKEN, undefined)
+  assert.equal(r.model, 'opencode/mimo-v2.6-flash-free')
+  assert.equal(
+    resolveLane('opencode-free', EVERYTHING, { model: 'opencode/claude-sonnet-5-5' }).model,
+    'opencode/claude-sonnet-5-5',
+  )
 })
 
 test('subscription-fallback maps the FALLBACK secret onto CLAUDE_CODE_OAUTH_TOKEN', () => {
@@ -85,7 +99,8 @@ test('resolveLane never mutates the base env', () => {
 
 test('pickLane honours AGENT_LANE, else walks AUTO_ORDER by credential presence', () => {
   assert.equal(pickLane({ ...EVERYTHING, AGENT_LANE: 'api-key' }), 'api-key')
-  assert.equal(pickLane(EVERYTHING), 'subscription')
+  assert.equal(pickLane(EVERYTHING), 'opencode-free')
+  assert.equal(pickLane({ CLAUDE_CODE_OAUTH_TOKEN: 'x' }), 'subscription')
   assert.equal(pickLane({ OPENROUTER_API_KEY: 'x', ANTHROPIC_API_KEY: 'y' }), 'openrouter')
   assert.equal(pickLane({ ANTHROPIC_API_KEY: 'y' }), 'api-key')
   assert.equal(pickLane({}), null)

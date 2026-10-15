@@ -455,6 +455,14 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
   // forwarded exchange).
   const handshakeCloseGate = createReconnectLogGate({ now })
 
+  // Same gate shape for the channel up/closed PAIR. The observed E2E flap is a
+  // reconnect loop that pairs, the remote hangs up, and it re-pairs on backoff
+  // — each cycle logging two lines (up + closed). Ungated that is the loudest
+  // line source in a fapping sandbox-join run; this logs the first cycle
+  // immediately, then at most one line per window per direction (suffix reads
+  // "flap(s) suppressed"), while a non-reconnect (offer) channel always logs.
+  const channelFlapGate = createReconnectLogGate({ now, noun: "flap" })
+
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const pairings = new Map<string, PairingRecord>()
   /** fingerprint → count of channels currently served (offer or reconnect).
@@ -806,7 +814,11 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
         const handle = deps.serve(wrapped, ctx)
         channels.add(handle)
         onlineCounts.set(ctx.fingerprint, (onlineCounts.get(ctx.fingerprint) ?? 0) + 1)
-        log(`[pairing] channel up (${ctx.mode}) for ${ctx.fingerprint} via ${spec.key}`)
+        const upLine =
+          ctx.mode === "reconnect"
+            ? channelFlapGate.onFailure(`${spec.key}:up`, `[pairing] channel up (${ctx.mode}) for ${ctx.fingerprint} via ${spec.key}`)
+            : `[pairing] channel up (${ctx.mode}) for ${ctx.fingerprint} via ${spec.key}`
+        if (upLine) log(upLine)
 
         const closeReason = await waitClosed(wrapped, signal)
         channels.delete(handle)
@@ -818,11 +830,12 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
         // coming up (the observed E2E flap: Noise OK, then the connection
         // breaks before/at the first forwarded request) — name it when the
         // remote told us why, "remote closed without a reason" otherwise.
-        log(
-          `[pairing] channel closed (${ctx.mode}) for ${ctx.fingerprint}${
-            closeReason !== undefined ? `: ${closeReason}` : " (remote closed without a reason)"
-          }`,
-        )
+        const closeMsg = `[pairing] channel closed (${ctx.mode}) for ${ctx.fingerprint}${
+          closeReason !== undefined ? `: ${closeReason}` : " (remote closed without a reason)"
+        }`
+        const closeLine =
+          ctx.mode === "reconnect" ? channelFlapGate.onFailure(`${spec.key}:closed`, closeMsg) : closeMsg
+        if (closeLine) log(closeLine)
 
         if (spec.singleUse) break
       } finally {

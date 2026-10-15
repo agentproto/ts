@@ -50,6 +50,13 @@ export const CONFIG_DEFAULTS = {
   blocking: true,
   /** Anthropic model id for all agent flows. */
   model: 'claude-sonnet-5-5',
+  /** Anthropic model id for the API-tool-loop fixer (apply-review.mjs).
+   *  Deliberately SEPARATE from `model`: the top-level `model` is the
+   *  reviewer's preset-driven id (now an OpenCode free id like
+   *  `opencode/mimo-v2.6-flash-free`), which the direct Anthropic Messages
+   *  API rejects with a 404. The API fixer only ever talks to Anthropic, so
+   *  it needs a real Anthropic model here regardless of the review preset. */
+  fixModel: 'claude-sonnet-5-5',
   /** How the auto-fixer delivers changes: "commit" (push to PR branch) or
    *  "pr" (push to bot/fix-<pr> and open a stacked PR against the PR branch). */
   fixDelivery: 'commit',

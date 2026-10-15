@@ -1,0 +1,162 @@
+name: Agentic review (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review.
+        required: true
+        type: number
+      backend:
+        description: Review backend to exercise.
+        required: true
+        type: choice
+        default: opencode-free
+        options:
+          - opencode-free
+          - claude-cloud
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  free-review:
+    name: Review with OpenCode free model
+    if: inputs.backend == 'opencode-free'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Build the workspace CLI and OpenCode adapter
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-opencode...
+
+      - name: Resolve review inputs
+        id: review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          AGENT_REVIEW_PRESETS: ${{ vars.AGENT_REVIEW_PRESETS }}
+          AGENT_BACKEND: opencode-free
+        run: |
+          echo "base-ref=$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)" >> "$GITHUB_OUTPUT"
+          CONFIG=$(node scripts/resolve-agent-action.mjs review --review-config)
+          echo "config=$CONFIG" >> "$GITHUB_OUTPUT"
+          echo "adapter=$(printf '%s' "$CONFIG" | jq -r .reviewerAdapter)" >> "$GITHUB_OUTPUT"
+          echo "auth-mode=$(printf '%s' "$CONFIG" | jq -r .reviewerAuthMode)" >> "$GITHUB_OUTPUT"
+          echo "model=$(printf '%s' "$CONFIG" | jq -r .reviewerModel)" >> "$GITHUB_OUTPUT"
+
+      - name: Run the normal PR workflow with MiMo free
+        uses: ./.github/actions/agentproto-run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          adapter: ${{ steps.review.outputs.adapter }}
+          auth-mode: ${{ steps.review.outputs.auth-mode }}
+          api-key: ${{ secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ secrets.OPENCODE_API_KEY }}
+          provider-key-env: OPENCODE_API_KEY
+          model: ${{ steps.review.outputs.model }}
+          e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          cli-source: workspace
+          workflow-input: |
+            {
+              "prNumber": ${{ inputs.pr_number }},
+              "baseRef": "${{ steps.review.outputs.base-ref }}",
+              "repo": "${{ github.repository }}",
+              "lastReviewedSha": "",
+              "priorReviewBody": "",
+              "githubToken": "${{ secrets.GITHUB_TOKEN }}",
+              "reviewConfig": ${{ toJSON(fromJSON(steps.review.outputs.config || '{}')) }}
+            }
+          timeout-minutes: '50'
+
+  claude-cloud-smoke:
+    name: Read-only review with Claude Code cloud
+    if: inputs.backend == 'claude-cloud'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
+      CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Build the workspace CLI and Claude cloud relay
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-claude-code-cloud...
+          npm install --global @anthropic-ai/claude-code@2.1.300
+
+      - name: Verify cloud credentials are configured
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] || [ -z "$CLAUDE_CLOUD_OAUTH_TOKEN" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN and CLAUDE_CLOUD_OAUTH_TOKEN are required for the Claude cloud relay."
+            exit 1
+          fi
+
+      - name: Trust this disposable checkout for the Claude CLI
+        run: |
+          node -e '
+            const fs=require("fs"), os=require("os"), path=require("path");
+            const p=path.join(os.homedir(), ".claude.json");
+            let c={}; try { c=JSON.parse(fs.readFileSync(p,"utf8")) } catch {}
+            c.projects ||= {};
+            c.projects[fs.realpathSync(process.env.GITHUB_WORKSPACE)] = {hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
+            fs.writeFileSync(p, JSON.stringify(c));
+          '
+
+      - name: Start a Claude cloud review through agentproto
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node packages/cli/dist/cli.mjs serve --workspace "$GITHUB_WORKSPACE" --port 18790 >"$RUNNER_TEMP/agentproto-cloud.log" 2>&1 &
+          DAEMON_PID=$!
+          trap 'kill "$DAEMON_PID" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 60); do
+            [ -s .agentproto/runtime.json ] && curl --fail --silent http://127.0.0.1:18790/health >/dev/null && break
+            sleep 1
+          done
+          TOKEN=$(jq -r .token .agentproto/runtime.json)
+          BASE_REF=$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)
+          PROMPT="Review pull request #$PR_NUMBER against origin/$BASE_REF. This is a read-only Claude Code cloud smoke test: inspect the full diff and relevant code, do not edit, commit, push, post a GitHub review, or call external services. End with a concise verdict and actionable findings."
+          RESPONSE=$(jq -n --arg cwd "$GITHUB_WORKSPACE" --arg prompt "$PROMPT" '{cloud:"anthropic",cwd:$cwd,prompt:$prompt,label:"ci-claude-cloud-review",keepAlive:false}' \
+            | curl --fail --silent --show-error -X POST http://127.0.0.1:18790/sessions/agent \
+                -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' --data-binary @-)
+          SESSION_ID=$(printf '%s' "$RESPONSE" | jq -er '.id')
+          ADAPTER=$(printf '%s' "$RESPONSE" | jq -er '.adapterSlug')
+          if [ "$ADAPTER" != "claude-code-cloud" ]; then
+            echo "::error::Expected claude-code-cloud, got $ADAPTER"
+            exit 1
+          fi
+          node packages/cli/dist/cli.mjs sessions wait "$SESSION_ID" --until turn-end --timeout 40m --json
+          node packages/cli/dist/cli.mjs sessions export "$SESSION_ID" --source daemon -o "$RUNNER_TEMP/claude-cloud-review.md"
+          cat "$RUNNER_TEMP/claude-cloud-review.md" >> "$GITHUB_STEP_SUMMARY"
