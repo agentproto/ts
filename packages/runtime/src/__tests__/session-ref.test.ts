@@ -93,15 +93,34 @@ describe("resolveSessionRef", () => {
     })
   })
 
-  it("accepts an agreeing multi-key ref and rejects a disagreeing one", () => {
-    const registry = fakeRegistry([{ id: "sess_aaaa1111", name: "claude-main", slug: "main" }])
+  it("accepts an agreeing multi-key ref and reports a conflict for a disagreeing one", () => {
+    const registry = fakeRegistry([
+      { id: "sess_aaaa1111", name: "claude-main", slug: "main" },
+      { id: "sess_bbbb2222", name: "claude-side", slug: "side" },
+    ])
     const agreeing: SessionRef = { sessionId: "sess_aaaa1111", idOrName: "claude-main", slug: "main" }
     expect(resolveSessionRef(registry, agreeing)).toEqual({ ok: true, id: "sess_aaaa1111" })
 
-    const disagreeing: SessionRef = { sessionId: "sess_aaaa1111", slug: "other" }
+    // Two keys, both resolve, but to different sessions → conflict listing both keys.
+    const disagreeing: SessionRef = { sessionId: "sess_aaaa1111", idOrName: "claude-side" }
     expect(resolveSessionRef(registry, disagreeing)).toEqual({
       ok: false,
-      error: { code: "not_found", query: "other" },
+      error: { code: "conflict", query: "sess_aaaa1111", keys: ["sessionId", "idOrName"] },
+    })
+
+    // One resolves, the other does not → still a conflict, not a not_found.
+    const halfMissing: SessionRef = { sessionId: "sess_aaaa1111", slug: "nope" }
+    expect(resolveSessionRef(registry, halfMissing)).toEqual({
+      ok: false,
+      error: { code: "conflict", query: "sess_aaaa1111", keys: ["sessionId", "slug"] },
+    })
+  })
+
+  it("keeps single-key not_found/ambiguous unchanged", () => {
+    const registry = fakeRegistry([{ id: "sess_aaaa1111", name: "claude-main" }])
+    expect(resolveSessionRef(registry, { slug: "nope" })).toEqual({
+      ok: false,
+      error: { code: "not_found", query: "nope" },
     })
   })
 })

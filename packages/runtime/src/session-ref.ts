@@ -29,6 +29,7 @@ export type SessionRefError =
   | { code: "required" }
   | { code: "not_found"; query: string }
   | { code: "ambiguous"; query: string; ids: string[] }
+  | { code: "conflict"; query: string; keys: string[] }
 
 /** The outcome of {@link resolveSessionRef}. */
 export type SessionRefResult =
@@ -74,36 +75,41 @@ function resolveOne(
  * Resolve an addressing request to a session id.
  *
  * `{ code: "required" }` when none of `sessionId`/`idOrName`/`slug` is
- * supplied; `{ code: "not_found", query }` when nothing matches;
- * `{ code: "ambiguous", query, ids }` (ids sorted) when more than one
- * session matches — legacy `name` duplicates are the only way to reach it.
+ * supplied; `{ code: "not_found", query }` when a single key matches
+ * nothing; `{ code: "ambiguous", query, ids }` (ids sorted) when a single
+ * key matches more than one session — legacy `name` duplicates are the only
+ * way to reach it; `{ code: "conflict", query, keys }` when more than one
+ * key is supplied and they do not all name the same session.
  */
 export function resolveSessionRef(
   registry: Pick<SessionsRegistry, "get" | "list">,
   ref: SessionRef,
 ): SessionRefResult {
-  const supplied: string[] = []
-  if (ref.sessionId !== undefined) supplied.push(ref.sessionId.trim())
-  if (ref.idOrName !== undefined) supplied.push(ref.idOrName.trim())
-  if (ref.slug !== undefined) supplied.push(ref.slug.trim())
+  const supplied: Array<{ key: keyof SessionRef; query: string }> = []
+  if (ref.sessionId !== undefined) supplied.push({ key: "sessionId", query: ref.sessionId.trim() })
+  if (ref.idOrName !== undefined) supplied.push({ key: "idOrName", query: ref.idOrName.trim() })
+  if (ref.slug !== undefined) supplied.push({ key: "slug", query: ref.slug.trim() })
 
-  if (supplied.length === 0) return { ok: false, error: { code: "required" } }
+  const first = supplied[0]
+  if (first === undefined) return { ok: false, error: { code: "required" } }
 
-  const resolved: string[] = []
-  for (const query of supplied) {
-    const result = resolveOne(registry, query)
-    if (!result.ok) return result
-    resolved.push(result.id)
-  }
+  // A single key speaks for itself: its own not_found/ambiguous is the answer.
+  if (supplied.length === 1) return resolveOne(registry, first.query)
 
   // More than one key supplied (defensive; clients send one): they must all
-  // name the same session, else this is a `not_found` on the disagreement.
-  const [first, ...others] = resolved
-  if (first === undefined) return { ok: false, error: { code: "required" } }
-  if (others.some(id => id !== first)) {
-    return { ok: false, error: { code: "not_found", query: supplied[0] ?? "" } }
+  // name the same session. Any disagreement — including one key resolving
+  // while another does not — is a `conflict`, never a `not_found` that blames
+  // a single key.
+  const results = supplied.map(entry => resolveOne(registry, entry.query))
+  const okIds = results.filter((r): r is { ok: true; id: string } => r.ok).map(r => r.id)
+  const target = okIds[0]
+  const agreed =
+    okIds.length === results.length && target !== undefined && okIds.every(id => id === target)
+  if (agreed) return { ok: true, id: target }
+  return {
+    ok: false,
+    error: { code: "conflict", query: first.query, keys: supplied.map(entry => entry.key) },
   }
-  return { ok: true, id: first }
 }
 
 /**
