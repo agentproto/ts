@@ -100,6 +100,12 @@ interface Signal {
   detail?: string
   /** Distinguishes collapse groups (a PR activity id). */
   key?: string
+  /** Set on `task-changed` signals: the board whose task moved. Its presence
+   *  is what routes a signal through board matching instead of session
+   *  matching. */
+  boardId?: string
+  /** Set on `task-changed` signals: the task that moved. */
+  taskId?: string
 }
 
 function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
@@ -143,6 +149,22 @@ function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
     }
     case "activity:changed":
       return prSignalOf(ev.activity, ev.ts, seenPrs)
+    case "task:changed": {
+      // A pure field edit (title/meta/…) is not something to wake anyone for;
+      // created / claimed / status / released are.
+      if (ev.change === "edited") return undefined
+      return {
+        sessionId: ev.sessionId ?? "",
+        event: "task-changed",
+        awaitingInput: false,
+        empty: false,
+        ts: ev.ts,
+        boardId: ev.boardId,
+        taskId: ev.taskId,
+        detail: `${ev.change} → ${ev.status}`,
+        key: `${ev.boardId}:${ev.taskId}`,
+      }
+    }
     default:
       return undefined
   }
@@ -238,6 +260,15 @@ function followWants(follow: SessionFollow, signal: Signal): FollowEvent | undef
   return wants(signal.event) ? signal.event : undefined
 }
 
+/** Does `follow` cover a `task-changed` signal for `boardId`? Board follows
+ *  match purely on the board id — the session selector (`sessionIds`/`all`/
+ *  `cwdPrefix`) does not apply. The follower's own writes are filtered earlier
+ *  (the actor session id never equals the follower), so a board the brain
+ *  itself edited never wakes it. */
+function followMatchesBoard(follow: SessionFollow, boardId: string): boolean {
+  return follow.selector.boardId !== undefined && follow.selector.boardId === boardId
+}
+
 // ── Digest ───────────────────────────────────────────────────────────
 
 interface BatchEntry {
@@ -248,6 +279,10 @@ interface BatchEntry {
   cwd?: string
   detail?: string
   key?: string
+  /** Task-board entries (`task-changed`): the board and task that moved. When
+   *  `boardId` is set the digest renders a board line, not a session line. */
+  boardId?: string
+  taskId?: string
 }
 
 const TURN_FAMILY: ReadonlySet<FollowEvent> = new Set(["turn-end", "awaiting-input"])
@@ -278,6 +313,12 @@ export function formatFollowDigest(
     `from sessions you follow. Decide whether anything needs the human's attention; ` +
     `if not, no reply is needed.`
   const lines = entries.slice(0, FOLLOW_DIGEST_MAX_LINES).map(entry => {
+    if (entry.boardId !== undefined) {
+      const parts = [`[session-follow] board ${entry.boardId} task ${entry.taskId ?? "?"} ${entry.event}`]
+      const text = excerptOf(entry.detail)
+      if (text) parts.push(text)
+      return parts.join(" — ")
+    }
     const d = desc(entry.sessionId)
     const label = d?.label ?? entry.label
     const who = `${label ?? entry.sessionId} (${entry.sessionId})`
@@ -543,7 +584,17 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         if (alreadyClaimed && follow.urgency === "fyi") continue
         const event = followWants(follow, signal)
         if (!event) continue
-        if (!followCoversSession(follow, signal.sessionId, desc, registry, signal.label)) continue
+        if (signal.boardId !== undefined) {
+          // Board follow: match the board, never wake the actor's own session
+          // (anti-loop — the brain/secretary's own writes come back attributed
+          // to it).
+          if (!followMatchesBoard(follow, signal.boardId)) continue
+          if (signal.sessionId !== "" && signal.sessionId === follow.follower) continue
+        } else if (
+          !followCoversSession(follow, signal.sessionId, desc, registry, signal.label)
+        ) {
+          continue
+        }
         if (alreadyClaimed) {
           const batch = batches.get(follow.follower)
           if (batch) batch.urgency = "next-turn"
@@ -558,6 +609,8 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           ...(desc?.cwd ? { cwd: desc.cwd } : {}),
           ...(signal.detail ? { detail: signal.detail } : {}),
           ...(signal.key ? { key: signal.key } : {}),
+          ...(signal.boardId ? { boardId: signal.boardId } : {}),
+          ...(signal.taskId ? { taskId: signal.taskId } : {}),
         })
       }
     } catch (err) {

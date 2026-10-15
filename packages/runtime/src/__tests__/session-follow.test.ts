@@ -312,6 +312,105 @@ describe("session-follow", () => {
     })
   })
 
+  describe("task board follow (task-changed)", () => {
+    function emitTaskChanged(
+      boardId: string,
+      over: Record<string, unknown> = {},
+    ): void {
+      bus.emit({
+        type: "task:changed",
+        taskId: "t1",
+        boardId,
+        change: "status",
+        status: "done",
+        rev: 1,
+        ts: NOW,
+        ...over,
+      } as never)
+    }
+
+    it("a change by ANOTHER actor on the followed board wakes the follower", async () => {
+      const { sent } = setup([running("chief"), running("other")], {
+        follower: "chief",
+        selector: { boardId: "ws:pygmalion" },
+        events: ["task-changed"],
+      })
+      emitTaskChanged("ws:pygmalion", { sessionId: "other", change: "created", status: "pending" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("board ws:pygmalion task t1 task-changed")
+      expect(sent[0]!.text).toContain("created → pending")
+    })
+
+    it("the follower's OWN task write never wakes it (anti-loop on the actor)", async () => {
+      const { sent } = setup([running("chief")], {
+        follower: "chief",
+        selector: { boardId: "ws:pygmalion" },
+        events: ["task-changed"],
+      })
+      emitTaskChanged("ws:pygmalion", { sessionId: "chief" })
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+    })
+
+    it("a change on ANOTHER space's board is ignored", async () => {
+      const { sent } = setup([running("chief"), running("other")], {
+        follower: "chief",
+        selector: { boardId: "ws:pygmalion" },
+        events: ["task-changed"],
+      })
+      emitTaskChanged("ws:someone-else", { sessionId: "other" })
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+    })
+
+    it("a pure field edit never wakes", async () => {
+      const { sent } = setup([running("chief"), running("other")], {
+        follower: "chief",
+        selector: { boardId: "ws:pygmalion" },
+        events: ["task-changed"],
+      })
+      emitTaskChanged("ws:pygmalion", { sessionId: "other", change: "edited" })
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+    })
+
+    it("coalesces a BURST of task changes into ONE wake", async () => {
+      vi.useFakeTimers()
+      const { sent, sendMessage } = setup([running("chief"), running("other")], {
+        follower: "chief",
+        selector: { boardId: "ws:pygmalion" },
+        events: ["task-changed"],
+        batchMs: 15_000,
+      })
+      emitTaskChanged("ws:pygmalion", { sessionId: "other", taskId: "t1" })
+      emitTaskChanged("ws:pygmalion", { sessionId: "other", taskId: "t2", change: "claimed", status: "in_progress" })
+      emitTaskChanged("ws:pygmalion", { sessionId: "other", taskId: "t3", change: "created", status: "pending" })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(sendMessage).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(sendMessage).toHaveBeenCalledTimes(1)
+      const text = sent[0]!.text
+      expect(text).toContain("task t1 task-changed")
+      expect(text).toContain("task t2 task-changed")
+      expect(text).toContain("task t3 task-changed")
+    })
+
+    it("collapses repeat changes to the SAME task within a batch to one line", async () => {
+      const { sent } = setup([running("chief"), running("other")], {
+        follower: "chief",
+        selector: { boardId: "ws:pygmalion" },
+        events: ["task-changed"],
+      })
+      emitTaskChanged("ws:pygmalion", { sessionId: "other", taskId: "t1", change: "created", status: "pending", rev: 1 })
+      emitTaskChanged("ws:pygmalion", { sessionId: "other", taskId: "t1", change: "status", status: "done", rev: 2 })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text.match(/task t1 task-changed/g)).toHaveLength(1)
+      expect(sent[0]!.text).toContain("done") // latest wins
+    })
+  })
+
   describe("delivery", () => {
     it("an fyi follow delivers its digest with urgency fyi", async () => {
       const { sent } = setup([running("chief"), running("a")], { selector: { all: true }, urgency: "fyi" })

@@ -33,6 +33,16 @@ export const followSelectorSchema = z.object({
     .optional()
     .describe("Follow every session that exists at event time (covers sessions spawned later)."),
   cwdPrefix: z.string().min(1).optional().describe("Follow sessions whose cwd is this path or below."),
+  boardId: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe(
+      "Follow task-board changes: wake on a `task-changed` for a task on THIS board " +
+        "(created/claimed/status/released by another actor; pure edits ignored). " +
+        "Independent of the session selector.",
+    ),
   rootOnly: z
     .boolean()
     .optional()
@@ -90,12 +100,17 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
     }
   }
   const sel = body.selector
-  if (!(sel.sessionIds && sel.sessionIds.length > 0) && sel.all !== true && !sel.cwdPrefix) {
+  if (
+    !(sel.sessionIds && sel.sessionIds.length > 0) &&
+    sel.all !== true &&
+    !sel.cwdPrefix &&
+    !sel.boardId
+  ) {
     return {
       ok: false,
       status: 400,
       error: "invalid_selector",
-      message: "selector needs at least one of: sessionIds (non-empty), all: true, cwdPrefix",
+      message: "selector needs at least one of: sessionIds (non-empty), all: true, cwdPrefix, boardId",
     }
   }
   if (!deps.hasSession(follower)) {
@@ -107,6 +122,7 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
       ...(sel.sessionIds ? { sessionIds: sel.sessionIds } : {}),
       ...(sel.all !== undefined ? { all: sel.all } : {}),
       ...(sel.cwdPrefix ? { cwdPrefix: sel.cwdPrefix } : {}),
+      ...(sel.boardId ? { boardId: sel.boardId } : {}),
       ...(sel.rootOnly !== undefined ? { rootOnly: sel.rootOnly } : {}),
     },
     ...(body.key ? { key: body.key } : {}),
@@ -167,7 +183,8 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       "turn, await input, exit/crash, or get a PR opened/merged — no polling. " +
       "`selector` picks sessions: `sessionIds`, `all: true` (evaluated at event " +
       "time, so sessions spawned later are covered; root sessions only unless " +
-      "`rootOnly: false`), or `cwdPrefix`. `exclude` removes ids/labels. Events " +
+      "`rootOnly: false`), or `cwdPrefix`; or a task board with `boardId` (wake " +
+      "on that board's `task-changed`). `exclude` removes ids/labels. Events " +
       "are coalesced within `batchMs` into one automatic digest message that " +
       "never interrupts a busy follower. `urgency` (default \"next-turn\") sets how a " +
       "digest lands: \"next-turn\" wakes you for a turn; \"fyi\" parks it in your inbox " +
@@ -178,12 +195,12 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
     {
       follower: z.string().optional().describe("Session to wake. Defaults to the calling session."),
       key: z.string().optional().describe("Stable key: re-posting the same key updates that follow in place."),
-      selector: followSelectorSchema.describe("Which sessions to follow (need one of sessionIds / all / cwdPrefix)."),
+      selector: followSelectorSchema.describe("Which sessions (or task board) to follow (need one of sessionIds / all / cwdPrefix / boardId)."),
       exclude: followExcludeSchema.optional().describe("Sessions to ignore, by id or label."),
       events: z
         .array(z.enum(FOLLOW_EVENTS))
         .optional()
-        .describe("Event kinds to deliver. Default: all of turn-end, awaiting-input, exited, crashed, pr-opened, pr-merged."),
+        .describe("Event kinds to deliver. Default: all of turn-end, awaiting-input, exited, crashed, pr-opened, pr-merged, task-changed."),
       batchMs: z.number().int().optional().describe("Coalescing window in ms. Default 15000."),
       skipEmptyTurns: z.boolean().optional().describe("Drop silent no-op turns. Default true."),
       urgency: z

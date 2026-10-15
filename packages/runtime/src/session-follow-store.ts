@@ -27,6 +27,7 @@ export const FOLLOW_EVENTS = [
   "crashed",
   "pr-opened",
   "pr-merged",
+  "task-changed",
 ] as const
 export type FollowEvent = (typeof FOLLOW_EVENTS)[number]
 
@@ -47,6 +48,11 @@ export interface FollowSelector {
   all?: boolean
   /** Match sessions whose cwd is this path or below it. */
   cwdPrefix?: string
+  /** Follow task-board changes: deliver a `task-changed` whenever a task on
+   *  THIS board changes (created, claimed, a status transition, or a release)
+   *  by another actor — never a pure field edit. Independent of the session
+   *  selector (`sessionIds`/`all`/`cwdPrefix` are ignored for these events). */
+  boardId?: string
   /** Only sessions with no `parentSessionId`. Effective default: `true` when
    *  `all`, otherwise `false`. Stored resolved. */
   rootOnly?: boolean
