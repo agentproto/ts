@@ -113,6 +113,38 @@ describe("formatToolResult", () => {
       formatToolResult("bash", { output: "line 1\nline 2\nline 3", metadata: {} }, false),
     ).toBe("3 lines, 20B")
   })
+
+  // command_execute returns its whole result as ONE JSON string whose
+  // newlines are escaped, so it has no literal `\n`. The generic path used to
+  // truncate that JSON preamble to ~160 chars — the "I only see the cwd" bug.
+  it("summarizes a command_execute JSON result from its real stdout, not the JSON preamble", () => {
+    const json = JSON.stringify({ exitCode: 0, signal: null, stdout: "/Users/x/repo\n", stderr: "" })
+    expect(formatToolResult("command_execute", json, false)).toBe("exit 0 · /Users/x/repo")
+    expect(
+      formatToolResult("command_execute", { content: [{ type: "text", text: json }] }, false),
+    ).toBe("exit 0 · /Users/x/repo")
+  })
+
+  it("counts the real lines of a multi-line command_execute stdout", () => {
+    const json = JSON.stringify({ exitCode: 0, signal: null, stdout: "a\nb\nc", stderr: "" })
+    expect(formatToolResult("command_execute", json, false)).toBe("exit 0 · 3 lines, 5B")
+  })
+
+  it("prefers stderr and carries a non-zero exit code for a failed command", () => {
+    const json = JSON.stringify({ exitCode: 1, signal: null, stdout: "", stderr: "boom: bad\nmore" })
+    expect(formatToolResult("command_execute", json, false)).toBe("exit 1 · 2 lines, 14B")
+    expect(formatToolResult("command_execute", json, true)).toBe("exit 1 · 2 lines, 14B")
+  })
+
+  it("leaves a non-command JSON (no stdout/stderr) on the plain-text path", () => {
+    expect(formatToolResult("mystery", '{"a":1}', false)).toBe('{"a":1}')
+  })
+
+  it("reads a snake_case exit_code and reports an empty command as no output", () => {
+    expect(
+      formatToolResult("command_execute", JSON.stringify({ exit_code: 2, stdout: "", stderr: "" }), false),
+    ).toBe("exit 2 · no output")
+  })
 })
 
 describe("artifactMarkerLines", () => {

@@ -3761,6 +3761,9 @@ importers:
       '@agentproto/secrets':
         specifier: workspace:*
         version: link:../secrets
+      '@agentproto/storage-github':
+        specifier: workspace:*
+        version: link:../storage-github
       '@agentproto/telemetry-langfuse':
         specifier: workspace:*
         version: link:../telemetry-langfuse
