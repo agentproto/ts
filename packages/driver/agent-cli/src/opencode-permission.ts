@@ -69,6 +69,11 @@ const OPENCODE_POSTURE_PERMISSIONS: Readonly<Record<string, OpencodePermissionBl
   "read-only": { edit: "deny", bash: "deny" },
 }
 
+/** The canonical postures this module turns into a real opencode boundary. */
+export const OPENCODE_SPAWN_ENFORCED_POSTURES: readonly string[] = Object.keys(
+  OPENCODE_POSTURE_PERMISSIONS,
+)
+
 /**
  * The opencode `permission` block a canonical posture enforces, or `undefined`
  * when the posture has no config mapping (`default`, `plan` — see the module

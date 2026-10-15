@@ -231,3 +231,42 @@ export function resolvePosture(
   if (posture === "default") return { kind: "noop", posture: "default" }
   return { kind: "prompt", posture, preamble: POSTURE_PREAMBLES[posture] }
 }
+
+/**
+ * How a posture is actually ENFORCED on a session — the user-facing
+ * distinction SPEC risk Rw asks every surface to keep honest:
+ *
+ * - `native` — an advertised harness mode enforces it (switchable live).
+ * - `spawn-config` — no advertised mode, but the adapter enforces it as a real
+ *   boundary through its own isolated spawn config (claude-code's
+ *   `permissions.defaultMode`, opencode's per-session `permission` block —
+ *   `AgentCliRuntimeSession.spawnEnforcedPostures`). Applies at
+ *   spawn/restart, never live.
+ * - `prompt-advisory` — only the injected preamble; the model can ignore it.
+ * - `none` — the neutral `default` posture with nothing to enforce.
+ * - `unavailable` — a raw harness mode id the session no longer advertises.
+ */
+export type PostureEnforcement = "native" | "spawn-config" | "prompt-advisory" | "none" | "unavailable"
+
+/**
+ * Classify a posture's enforcement from the session's advertised modes and the
+ * canonical postures its adapter enforces at spawn. Pure; native wins, then
+ * spawn config, and only then the advisory preamble.
+ */
+export function postureEnforcement(
+  posture: Posture,
+  availableModes: readonly SessionMode[],
+  spawnEnforcedPostures: readonly string[] = [],
+): PostureEnforcement {
+  const resolution = resolvePosture(posture, availableModes)
+  switch (resolution.kind) {
+    case "native":
+      return "native"
+    case "prompt":
+      return spawnEnforcedPostures.includes(resolution.posture) ? "spawn-config" : "prompt-advisory"
+    case "noop":
+      return "none"
+    case "unavailable":
+      return "unavailable"
+  }
+}

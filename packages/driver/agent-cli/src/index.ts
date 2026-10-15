@@ -24,6 +24,9 @@ export {
   // exported so a host that spawns a harness outside the runtime (the CLI's
   // ACP smoke probe) resolves argv identically instead of PATH-guessing.
   resolveSpawnBin,
+  // Which canonical postures an adapter enforces through its isolated spawn
+  // config (claude-code / opencode) — also stamped on each started session.
+  spawnEnforcedPostures,
 } from "./define-agent-cli.js"
 // The live-session control surface (setModel/setSessionMode/setEffort +
 // the availableConfigOptions/availableModes/currentModeId read-surface),

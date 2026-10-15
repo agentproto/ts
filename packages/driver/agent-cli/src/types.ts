@@ -1771,6 +1771,14 @@ export interface AgentCliRuntimeSession {
    */
   readonly availableModes: SessionMode[]
   /**
+   * Canonical postures this adapter enforces as a real boundary at
+   * spawn/restart through its own isolated config, even when no advertised
+   * mode matches (claude-code: `permissions.defaultMode`; opencode: a
+   * per-session `permission` block) — see `spawnEnforcedPostures` in
+   * `define-agent-cli.ts`. Absent when the adapter has none.
+   */
+  readonly spawnEnforcedPostures?: readonly string[]
+  /**
    * The mode id the wrapper reported as active at connect time. Undefined
    * when the wrapper advertised no mode state.
    */

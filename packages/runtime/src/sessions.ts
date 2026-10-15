@@ -70,7 +70,7 @@ import type {
   SessionConfigChangedEvent,
   ContextRescueOutcome,
 } from "./session-event-bus.js"
-import { resolvePosture } from "./canonical-posture.js"
+import { postureEnforcement, resolvePosture, type PostureEnforcement } from "./canonical-posture.js"
 import {
   buildBackgroundTaskWakePrompt,
   DEFAULT_BG_TASK_WAKE_GRACE_MS,
@@ -307,6 +307,11 @@ export interface AgentSessionLike {
    * routes to restart.
    */
   readonly availableModes?: readonly SessionMode[]
+  /** Canonical postures the adapter enforces through its own isolated spawn
+   *  config even with no advertised mode — mirrors
+   *  `AgentCliRuntimeSession.spawnEnforcedPostures` (claude-code, opencode).
+   *  Lets posture surfaces report `spawn-config` instead of advisory. */
+  readonly spawnEnforcedPostures?: readonly string[]
   /** Whether the agent accepts steering — mirrors
    *  `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.steeringSupported`
    *  (ACP `_session/steering`, advertised at initialize). */
@@ -438,6 +443,11 @@ export interface SetSessionPostureResult {
    *  lets the caller distinguish "needs restart because prompt-injected" from a
    *  genuine native-switch rejection. */
   resolution?: "native" | "prompt" | "noop" | "unavailable"
+  /** How the requested posture is ENFORCED once applied (`postureEnforcement`,
+   *  canonical-posture.ts) — on a `requires-restart` result this says whether
+   *  the restart lands a real boundary (`spawn-config`, e.g. opencode
+   *  `bypass`) or only the advisory preamble (`prompt-advisory`). */
+  enforcement?: PostureEnforcement
 }
 
 /**
@@ -2058,6 +2068,15 @@ export interface SessionDescriptor {
    * session whose live runtime handle is gone.
    */
   availableModes?: SessionMode[]
+  /**
+   * Read-surface echo of the canonical postures the live session's adapter
+   * enforces through its isolated spawn config (`spawnEnforcedPostures` on
+   * the agent session) — stamped at READ TIME alongside `availableModes`,
+   * never persisted. With `availableModes` it is what `postureEnforcement`
+   * (canonical-posture.ts) classifies a posture as native / spawn-config /
+   * prompt-advisory from.
+   */
+  spawnEnforcedPostures?: string[]
   /** Endpoint / gateway rail (SPEC §3.1 axis 4). `baseUrl` is carried only
    *  for a custom gateway the catalog can't resolve; `access` is downstream
    *  of this axis (SPEC §1c). */
@@ -3419,6 +3438,12 @@ function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
     desc.availableModes = [...modes]
   } else {
     delete desc.availableModes
+  }
+  const spawnEnforced = rt.agentSession?.spawnEnforcedPostures
+  if (spawnEnforced && spawnEnforced.length > 0) {
+    desc.spawnEnforcedPostures = [...spawnEnforced]
+  } else {
+    delete desc.spawnEnforcedPostures
   }
 }
 
@@ -6628,6 +6653,7 @@ export function createSessionsRegistry(opts?: {
         toolCallsThisTurn: _toolCallsThisTurn,
         eventsPath: _eventsPath,
         availableModes: _availableModes,
+        spawnEnforcedPostures: _spawnEnforcedPostures,
         ...rest
       } = s.desc
       // A live provider-box session keeps its re-attach record on disk, so a
@@ -11838,6 +11864,11 @@ export function createSessionsRegistry(opts?: {
           applied: false,
           reason: "requires-restart",
           resolution: resolution.kind,
+          enforcement: postureEnforcement(
+            posture,
+            rt.agentSession.availableModes ?? [],
+            rt.agentSession.spawnEnforcedPostures ?? [],
+          ),
         }
       }
       if (!rt.agentSession.setSessionMode) {
@@ -11863,7 +11894,13 @@ export function createSessionsRegistry(opts?: {
           ts: new Date().toISOString(),
         })
       }
-      return { applied: true, posture, modeId: resolution.mode.id, resolution: "native" }
+      return {
+        applied: true,
+        posture,
+        modeId: resolution.mode.id,
+        resolution: "native",
+        enforcement: "native",
+      }
     },
     pulseActivity(id) {
       const rt = sessions.get(id)

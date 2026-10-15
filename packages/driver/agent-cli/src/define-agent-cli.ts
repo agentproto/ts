@@ -13,7 +13,11 @@ import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-w
 import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
 import { resolveSmallModelEnv } from "./small-model.js"
-import { mergeOpencodePermission, opencodePermissionForPosture } from "./opencode-permission.js"
+import {
+  mergeOpencodePermission,
+  OPENCODE_SPAWN_ENFORCED_POSTURES,
+  opencodePermissionForPosture,
+} from "./opencode-permission.js"
 import { applySessionSkills, readSessionSkillsMetadata } from "./session-skills.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
@@ -1020,6 +1024,9 @@ export function createAgentCliRuntime(
         // its own session over another transport. See session-controls.ts.
         // Snapshotted after `arm.connect()` above resolved.
         ...createArmSessionControls(arm, definition),
+        ...(spawnEnforcedPostures(definition).length > 0
+          ? { spawnEnforcedPostures: spawnEnforcedPostures(definition) }
+          : {}),
         send(message): AsyncIterable<StreamEvent> {
           const turnId = randomUUID()
           currentTurnId = turnId
@@ -1161,6 +1168,33 @@ async function buildProtocolArm(
  * (`~/.claude.json`, including registered `mcpServers`) never leaks into a
  * spawn that never requested a posture.
  */
+// Canonical posture is a first-class axis. It deliberately does not depend
+// on the retired claude-code posture entries in `modes[]`: context profiles
+// can therefore select `lean` at the same time as a permission posture.
+// `read-only` maps to Claude Code's plan permission boundary; Claude Code
+// does not expose a stricter read-only native mode.
+const CLAUDE_CODE_POSTURE_PERMISSION_MODES: Readonly<Record<string, string | undefined>> = {
+  plan: "plan",
+  "read-only": "plan",
+  "accept-edits": "acceptEdits",
+  bypass: "bypassPermissions",
+}
+
+/**
+ * The canonical postures this driver enforces as a real boundary at
+ * spawn/restart through the adapter's own isolated config — claude-code's
+ * `permissions.defaultMode`, opencode's per-session `permission` block —
+ * independently of any advertised ACP mode. Empty for every other adapter.
+ * Surfaced on the session (`AgentCliRuntimeSession.spawnEnforcedPostures`) so
+ * the runtime can report such a posture as enforced rather than as the
+ * advisory preamble its mode registry alone would suggest.
+ */
+export function spawnEnforcedPostures(definition: Pick<AgentCliDefinition, "id">): readonly string[] {
+  if (definition.id === "claude-code") return Object.keys(CLAUDE_CODE_POSTURE_PERMISSION_MODES)
+  if (definition.id === "opencode") return OPENCODE_SPAWN_ENFORCED_POSTURES
+  return []
+}
+
 function resolveClaudeCodePermissionMode(
   definition: AgentCliHandle,
   posture: string | undefined,
@@ -1168,19 +1202,8 @@ function resolveClaudeCodePermissionMode(
 ): string | undefined {
   if (definition.id !== "claude-code") return undefined
 
-  // Canonical posture is a first-class axis. It deliberately does not depend
-  // on the retired claude-code posture entries in `modes[]`: context profiles
-  // can therefore select `lean` at the same time as a permission posture.
-  // `read-only` maps to Claude Code's plan permission boundary; Claude Code
-  // does not expose a stricter read-only native mode.
-  const canonicalPermissionMode: Record<string, string | undefined> = {
-    plan: "plan",
-    "read-only": "plan",
-    "accept-edits": "acceptEdits",
-    bypass: "bypassPermissions",
-  }
-  if (posture && canonicalPermissionMode[posture]) {
-    return canonicalPermissionMode[posture]
+  if (posture && CLAUDE_CODE_POSTURE_PERMISSION_MODES[posture]) {
+    return CLAUDE_CODE_POSTURE_PERMISSION_MODES[posture]
   }
 
   // Legacy callers that still send a single AIP-45 mode remain supported.

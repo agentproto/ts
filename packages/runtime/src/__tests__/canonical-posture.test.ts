@@ -9,6 +9,7 @@ import {
   parsePostureInput,
   POSTURE_NATIVE_ALIASES,
   POSTURE_PREAMBLES,
+  postureEnforcement,
   resolvePosture,
 } from "../canonical-posture.js"
 import type { CanonicalPosture, Posture } from "../session-config.js"
@@ -208,6 +209,36 @@ describe("parsePostureInput — wire string → Posture", () => {
   it("CANONICAL_POSTURES is exactly the canonical vocabulary (alias-map keys)", () => {
     expect([...CANONICAL_POSTURES].sort()).toEqual(
       Object.keys(POSTURE_NATIVE_ALIASES).sort(),
+    )
+  })
+})
+
+describe("postureEnforcement", () => {
+  // opencode advertises only its build/plan agents; its driver enforces
+  // bypass/accept-edits/read-only through the per-session permission config.
+  const OPENCODE_MODES: SessionMode[] = [mode("build", "Build"), mode("plan", "Plan")]
+  const OPENCODE_SPAWN_ENFORCED = ["bypass", "accept-edits", "read-only"]
+
+  it("reports an opencode posture with no advertised mode as spawn-config, not advisory", () => {
+    for (const posture of OPENCODE_SPAWN_ENFORCED as CanonicalPosture[]) {
+      expect(postureEnforcement(posture, OPENCODE_MODES, OPENCODE_SPAWN_ENFORCED)).toBe("spawn-config")
+    }
+  })
+
+  it("prefers native over spawn-config when an advertised mode matches", () => {
+    expect(postureEnforcement("plan", OPENCODE_MODES, OPENCODE_SPAWN_ENFORCED)).toBe("native")
+    expect(postureEnforcement("bypass", CLAUDE_CODE_MODES, ["bypass"])).toBe("native")
+  })
+
+  it("stays prompt-advisory when the adapter enforces nothing at spawn", () => {
+    expect(postureEnforcement("bypass", OPENCODE_MODES)).toBe("prompt-advisory")
+    expect(postureEnforcement("read-only", [], [])).toBe("prompt-advisory")
+  })
+
+  it("maps default and a vanished raw harness mode to none / unavailable", () => {
+    expect(postureEnforcement("default", [], OPENCODE_SPAWN_ENFORCED)).toBe("none")
+    expect(postureEnforcement({ harnessModeId: "architect" }, OPENCODE_MODES, OPENCODE_SPAWN_ENFORCED)).toBe(
+      "unavailable",
     )
   })
 })

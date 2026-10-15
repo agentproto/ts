@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest"
 
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import { compactSessionItem } from "../session-tools.js"
+import { buildSessionCapabilities } from "../session-capabilities.js"
 
 function agent(extra: Partial<AgentSessionLike>): AgentSessionLike {
   return {
@@ -45,6 +46,49 @@ describe("capabilities.steering", () => {
     })
     expect(compactSessionItem(registry.get(yes.id)!).steering).toBe(true)
     expect(compactSessionItem(registry.get(noMethod.id)!)).not.toHaveProperty("steering")
+    registry.shutdown()
+  })
+})
+
+describe("posture enforcement in session_capabilities", () => {
+  const modes = [
+    { id: "build", name: "Build" },
+    { id: "plan", name: "Plan" },
+  ]
+
+  it("labels opencode-style spawn-enforced postures spawn-config, native ones native, the rest advisory", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const enforced = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: "/tmp",
+      agentSession: agent({
+        availableModes: modes,
+        spawnEnforcedPostures: ["bypass", "accept-edits", "read-only"],
+      }),
+      adapterSlug: "opencode",
+      posture: "bypass",
+    })
+    const advisory = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: "/tmp",
+      agentSession: agent({ availableModes: modes }),
+      adapterSlug: "hermes",
+      posture: "bypass",
+    })
+
+    const body = buildSessionCapabilities(registry.get(enforced.id)!, 0)
+    expect(body.postureEnforcement).toBe("spawn-config")
+    expect(body.canonicalPostureEnforcement).toEqual({
+      default: "native",
+      plan: "native",
+      "accept-edits": "spawn-config",
+      bypass: "spawn-config",
+      "read-only": "spawn-config",
+    })
+
+    const advisoryBody = buildSessionCapabilities(registry.get(advisory.id)!, 0)
+    expect(advisoryBody.postureEnforcement).toBe("prompt-advisory")
+    expect(advisoryBody.canonicalPostureEnforcement?.bypass).toBe("prompt-advisory")
     registry.shutdown()
   })
 })

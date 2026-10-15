@@ -13,7 +13,7 @@
  */
 
 import type { SessionDescriptor } from "./sessions.js"
-import { CANONICAL_POSTURES } from "./canonical-posture.js"
+import { CANONICAL_POSTURES, postureEnforcement, type PostureEnforcement } from "./canonical-posture.js"
 import type { CanonicalPosture } from "./session-config.js"
 import { conversationTerminalSlugFor } from "./conversation-store.js"
 import {
@@ -75,6 +75,17 @@ export interface SessionCapabilities {
   availableModes: SessionCapabilityMode[]
   currentModeId?: string
   canonicalPostures: readonly CanonicalPosture[]
+  /**
+   * How the session's current `posture` is enforced — `native` (advertised
+   * mode), `spawn-config` (the adapter's isolated config, e.g. opencode
+   * `bypass`), `prompt-advisory` (preamble only), `none`, `unavailable`. Absent
+   * when no posture is set. Optional for older readers.
+   */
+  postureEnforcement?: PostureEnforcement
+  /** Per canonical posture, how picking it on this session would be enforced
+   *  — lets a picker label advisory-only rows honestly. Optional for older
+   *  readers. */
+  canonicalPostureEnforcement?: Readonly<Record<CanonicalPosture, PostureEnforcement>>
   commands: SessionCapabilityCommand[]
   commandsSupported: boolean
   mcpServers: SessionCapabilityMcpServer[]
@@ -125,6 +136,8 @@ export function buildSessionCapabilities(
   pendingPermissions: number,
   mcpObservation?: McpSessionObservation,
 ): SessionCapabilities {
+  const modes = desc.availableModes ?? []
+  const spawnEnforced = desc.spawnEnforcedPostures ?? []
   return {
     sessionId: desc.id,
     adapter: desc.adapterSlug ?? conversationTerminalSlugFor(desc) ?? "unknown",
@@ -138,6 +151,12 @@ export function buildSessionCapabilities(
       ...(m.description ? { description: m.description } : {}),
     })),
     canonicalPostures: CANONICAL_POSTURES,
+    ...(desc.posture !== undefined
+      ? { postureEnforcement: postureEnforcement(desc.posture, modes, spawnEnforced) }
+      : {}),
+    canonicalPostureEnforcement: Object.fromEntries(
+      CANONICAL_POSTURES.map(p => [p, postureEnforcement(p, modes, spawnEnforced)]),
+    ) as Record<CanonicalPosture, PostureEnforcement>,
     commands: (desc.availableCommands ?? []).map(c => ({
       name: c.name,
       ...(c.description ? { description: c.description } : {}),
