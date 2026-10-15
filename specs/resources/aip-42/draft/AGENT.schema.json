@@ -244,6 +244,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "When false, the agent MUST NOT write anything to MEMORY.md files (no item is created, updated, or tombstoned)."
+        },
         "scope": {
           "enum": ["per-conversation", "per-thread", "per-workspace", "none"],
           "default": "per-conversation"

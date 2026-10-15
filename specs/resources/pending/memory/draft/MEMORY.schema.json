@@ -1,0 +1,341 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/pending/memory/MEMORY.schema.json",
+  "title": "MEMORY.md frontmatter — memory/v1",
+  "description": "Validates the YAML frontmatter of a memory/v1 MEMORY.md file — the individual agent's own memory. This is a THIRD doctype: it neither absorbs nor replaces AIP-10 agentknowledge/v1 (curated, shareable wiki entries) nor AIP-11 learning/v1 (lessons). A memory/v1 document carries the AIP-10 base fields (schema, slug, kind, title, updated_at); the remaining fields codify the item shape Pygmalion already writes, and are OPTIONAL so an AIP-10-aligned writer and the current Pygmalion writer both round-trip through the same schema. The markdown body (the `body` property) is unrestricted text.",
+  "type": "object",
+  "additionalProperties": false,
+  "anyOf": [
+    { "required": ["schema", "slug", "kind", "title", "updated_at"] },
+    { "required": ["id", "name", "type"] }
+  ],
+  "properties": {
+    "schema": {
+      "const": "memory/v1",
+      "description": "Discriminator for a memory/v1 document. Optional only to tolerate legacy Pygmalion items written before this doctype existed; a canonical memory/v1 document MUST set it, and when present it MUST equal 'memory/v1'."
+    },
+    "slug": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Stable kebab-case identifier (AIP-10 convention). Used as the item's path stem and cross-reference target."
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Item kind (AIP-10 convention). Common values mirror Pygmalion's memory types: 'user', 'feedback', 'project', 'reference'."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Human-readable title (AIP-10 convention)."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the last write (AIP-10 convention). MUST be set on every write."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Pygmalion item identifier (e.g. 'mem_qc8f407g'). Legacy alias for the AIP-10 path stem; when the base fields are omitted it takes part in identifying the item."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "description": "Pygmalion slugified name, distinct from `title`. Kept as a separate field so a Pygmalion write round-trips without loss."
+    },
+    "type": {
+      "enum": ["user", "feedback", "project", "reference"],
+      "description": "Pygmalion memory type. The closed type set from the memory contract; `kind` is the AIP-10-aligned spelling of the same notion."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4000,
+      "description": "Pygmalion one-line human-readable summary, independent of the body."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": [],
+      "description": "Free-form labels. Pygmalion writes formatted anchor labels here (e.g. 'global', 'project:fhcm', 'pr:agentproto/ts#1858')."
+    },
+    "polarity": {
+      "enum": ["do", "dont"],
+      "description": "Pygmalion feedback polarity. Present only on items of type 'feedback'."
+    },
+    "lifetime": {
+      "$ref": "#/$defs/lifetime",
+      "description": "How long the item stays valid. Pygmalion writes { kind: 'durable' } or { kind: 'while', anchor: { … } }."
+    },
+    "status": {
+      "enum": [
+        "active",
+        "proposed",
+        "confirmed",
+        "rejected",
+        "expired",
+        "stale",
+        "superseded"
+      ],
+      "description": "Lifecycle status. Pygmalion currently writes 'active'; the other values come from the memory-proposal contract."
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Pygmalion creation timestamp."
+    },
+    "written": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Pygmalion last-write timestamp. Mirrors the AIP-10 `updated_at`."
+    },
+    "decidedBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rule": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Classifier rule that produced the item (e.g. 'lens-confident', 'brain-memory-file')."
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where the deciding rule came from (e.g. 'builtin')."
+        }
+      },
+      "description": "Which classifier/rule decided the item's shape and status."
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance",
+      "description": "Origin of the item's claims."
+    },
+    "evidence": {
+      "$ref": "#/$defs/evidence",
+      "description": "Trust/impact accounting captured at write time."
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Capture source label (e.g. a transcript or memory-file source)."
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of the capture."
+        },
+        "hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash of the captured/normalized body, used for dedup and evidence."
+        },
+        "mode": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Capture mode label (e.g. 'batch' — Pygmalion writer default)."
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Producing component label (Pygmalion writer default 'unknown' when unset upstream)."
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 capture timestamp (mirrors `ts`; Pygmalion writer derives it from provenance.at when absent)."
+        }
+      },
+      "description": "Capture source/ts/hash trio for the item's source material."
+    },
+    "anchors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/anchor"
+      },
+      "default": [],
+      "description": "Structured anchors scoping the item. Per-agent anchoring uses kind 'agent' with slug '<agent-slug>' (the 'agent:<slug>' form); other kinds are 'project', 'task', 'session', 'pr', 'contact', and the unscoped 'global'."
+    },
+    "body": {
+      "type": "string",
+      "description": "Unrestricted markdown body of the MEMORY.md file. Not constrained by this schema."
+    }
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "global",
+            "project",
+            "task",
+            "session",
+            "pr",
+            "contact",
+            "agent"
+          ],
+          "description": "Anchor kind. 'agent' extends the conversation-contract set for per-agent anchoring."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Anchor target slug (project, contact, agent)."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Anchor target id (task, session)."
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository 'owner/name' for a pr anchor."
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Pull-request number for a pr anchor."
+        }
+      },
+      "description": "A scope anchor. Loose-but-typed: enough keys to carry the conversation contract's forms — { kind: 'project'|'contact'|'agent', slug }, { kind: 'task'|'session', id }, { kind: 'pr', repo, number }, { kind: 'global' } — while accepting the uniform { kind, slug } shape for the slug-bearing kinds."
+    },
+    "lifetime": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["durable", "until", "while", "session"],
+          "description": "Lifetime kind. 'durable' never expires; 'until' expires at `at`; 'while' lasts as long as `anchor` holds; 'session' lasts for the session."
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Expiry timestamp for kind 'until'."
+        },
+        "anchor": {
+          "$ref": "#/$defs/anchor",
+          "description": "Governing anchor for kind 'while'."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provenance source class (e.g. 'brain-transcript', 'brain-memory-file', 'converse', 'task-close', 'recall-gap')."
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Session the claim was observed in."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque reference into the source (message uuid, file path, …)."
+        },
+        "quote": {
+          "type": "string",
+          "description": "Verbatim quote backing the claim."
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the claim was observed."
+        },
+        "origin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Origin-style provenance label, matching the runtime's SessionDescriptor.origin (e.g. 'cron:<id>', 'gate', 'chat-starter', 'vscode')."
+        },
+        "extractorVersion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Version of the extractor/classifier that derived the item (Pygmalion writer emits it in provenance)."
+        }
+      },
+      "description": "Provenance record for a claim (Pygmalion names, plus the runtime origin label)."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sourceKind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Kind of source the evidence came from (e.g. 'brain-transcript', 'brain-memory-file')."
+        },
+        "trust": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Trust class of the source (e.g. 'jeremy', 'internal')."
+        },
+        "explicitness": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Whether the claim was stated outright or inferred (e.g. 'implicit', 'explicit')."
+        },
+        "corroborations": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of independent corroborating observations."
+        },
+        "contradictsActive": {
+          "type": "boolean",
+          "description": "True when this item contradicts an active item."
+        },
+        "impact": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Impact class of the item (e.g. 'low', 'high')."
+        },
+        "lifetime": {
+          "$ref": "#/$defs/lifetime",
+          "description": "Lifetime as computed for the evidence pass."
+        },
+        "anchorsResolved": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [],
+          "description": "Resolved anchor labels in Pygmalion's formatted form (e.g. 'global', 'project:fhcm', 'pr:agentproto/ts#1858', 'session:sess_…')."
+        },
+        "ageHours": {
+          "type": "number",
+          "description": "Age of the evidence in hours (may be fractional or negative relative to the write clock)."
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [],
+          "description": "Machine-stable flags raised during the evidence pass."
+        }
+      },
+      "description": "Evidence/trust accounting captured when the item was written."
+    }
+  }
+}
