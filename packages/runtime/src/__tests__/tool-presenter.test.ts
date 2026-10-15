@@ -139,6 +139,12 @@ describe("formatToolResult", () => {
   it("leaves a non-command JSON (no stdout/stderr) on the plain-text path", () => {
     expect(formatToolResult("mystery", '{"a":1}', false)).toBe('{"a":1}')
   })
+
+  it("reads a snake_case exit_code and reports an empty command as no output", () => {
+    expect(
+      formatToolResult("command_execute", JSON.stringify({ exit_code: 2, stdout: "", stderr: "" }), false),
+    ).toBe("exit 2 · no output")
+  })
 })
 
 describe("artifactMarkerLines", () => {
