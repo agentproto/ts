@@ -20,11 +20,39 @@ export interface ProviderStartOptions {
   workspace: string
   /** Called whenever the provider has a status update worth logging. */
   onLog?: (line: string) => void
+  /**
+   * The tunnel's stable identity + desired hostnames, for providers that
+   * own remote state (e.g. `cloudflare-managed`). Ignored by the others.
+   */
+  tunnel?: TunnelIdentity
+  /** Health updates from providers that monitor themselves. */
+  onHealth?: (health: TunnelHealth) => void
+}
+
+/** Stable identity of a registry tunnel, as seen by a stateful provider. */
+export interface TunnelIdentity {
+  /** Survives daemon restarts — the registry passes `name ?? id`. */
+  key: string
+  /** Hostnames routed to the tunnel, primary first. */
+  hostnames: string[]
+}
+
+export type TunnelHealthState = "active" | "degraded" | "error"
+
+/** Live health of a self-monitoring tunnel (surfaced in `tunnel_status`). */
+export interface TunnelHealth {
+  state: TunnelHealthState
+  reason?: string
+  checkedAt: string
+  /** Per-hostname probe result (all hostnames during a swap overlap). */
+  hostnames?: Array<{ hostname: string; ok: boolean; reason?: string }>
 }
 
 export interface ProviderStartResult {
   publicUrl: string
   pid: number | null
+  /** Provider-side tunnel id, when the provider created/looked one up. */
+  tunnelId?: string
 }
 
 /**
@@ -33,11 +61,19 @@ export interface ProviderStartResult {
  * `start` returns the public URL once the upstream tunnel is ready.
  * `stop` is idempotent — calling it twice or on an already-dead child
  * must not throw.
+ *
+ * Providers that own remote state may also implement the optional
+ * `destroy` (delete everything they created) and `addHostname` /
+ * `removeHostname` (hostname swap with overlap). All three work whether or
+ * not the tunnel is currently running.
  */
 export interface RemoteProvider {
   readonly id: string
   start(opts: ProviderStartOptions): Promise<ProviderStartResult>
   stop(): Promise<void>
+  destroy?(tunnel: TunnelIdentity): Promise<void>
+  addHostname?(tunnel: TunnelIdentity, hostname: string): Promise<void>
+  removeHostname?(tunnel: TunnelIdentity, hostname: string): Promise<void>
 }
 
 /**
@@ -77,4 +113,9 @@ export interface TunnelProviderHandle extends AdapterHandle {
   readonly setupFields?: readonly SetupField[]
   start(opts: ProviderStartOptions): Promise<ProviderStartResult>
   stop(): Promise<void>
+  /**
+   * Optional: validate this provider's stored setup fields before they are
+   * persisted (throw with a message naming the bad field, never a value).
+   */
+  validateSetup?(fields: Record<string, string>): void
 }

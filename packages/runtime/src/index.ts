@@ -917,6 +917,7 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export type { TunnelHealth, TunnelHealthState } from "./remote-providers/types.js"
 export type { SentinelStatus } from "./sentinel-store.js"
 export type {
   SentinelSpec,

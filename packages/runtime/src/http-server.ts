@@ -8819,8 +8819,11 @@ async function handlePresets(
  *   GET    /tunnels              → { tunnels: TunnelDescriptor[] }
  *   POST   /tunnels              → TunnelDescriptor (creates a new tunnel)
  *   GET    /tunnels/:id          → TunnelDescriptor
- *   DELETE /tunnels/:id          → { ok, tunnelId }
+ *   DELETE /tunnels/:id          → { ok, tunnelId }  (stop)
+ *   DELETE /tunnels/:id?purge=true → { ok, tunnelId, deleted } (stop + delete remote state)
  *   POST   /tunnels/:id/revoke   → TunnelDescriptor (fresh signed link, tunnel stays up)
+ *   POST   /tunnels/:id/hostnames            → TunnelDescriptor (swap: add `hostname`)
+ *   DELETE /tunnels/:id/hostnames/:hostname  → TunnelDescriptor (swap: retire it)
  */
 async function handleTunnels(
   req: IncomingMessage,
@@ -8911,6 +8914,37 @@ async function handleTunnels(
     return true
   }
 
+  const hostnamesMatch = path.match(/^\/tunnels\/([^/]+)\/hostnames(?:\/([^/]+))?$/)
+  if (hostnamesMatch) {
+    const idOrName = decodeURIComponent(hostnamesMatch[1] ?? "")
+    try {
+      if (req.method === "POST" && !hostnamesMatch[2]) {
+        const body = (await readJsonBody(req)) as Record<string, unknown> | null
+        const hostname = typeof body?.hostname === "string" ? body.hostname : ""
+        if (!hostname) {
+          json(400, { error: "missing_hostname", message: "body must include `hostname`" })
+          return true
+        }
+        json(200, await registry.addHostname(idOrName, hostname))
+        return true
+      }
+      if (req.method === "DELETE" && hostnamesMatch[2]) {
+        json(
+          200,
+          await registry.removeHostname(idOrName, decodeURIComponent(hostnamesMatch[2])),
+        )
+        return true
+      }
+    } catch (err) {
+      json(400, {
+        error: "hostname_change_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return true
+    }
+    return false
+  }
+
   const tunnelMatch = path.match(/^\/tunnels\/([^/]+)$/)
   if (!tunnelMatch) return false
   const rawIdOrName = decodeURIComponent(tunnelMatch[1] ?? "")
@@ -8926,6 +8960,26 @@ async function handleTunnels(
   }
 
   if (req.method === "DELETE") {
+    const urlStr = req.url ?? ""
+    const purge =
+      urlStr.includes("?") &&
+      new URLSearchParams(urlStr.slice(urlStr.indexOf("?") + 1)).get("purge") === "true"
+    if (purge) {
+      try {
+        const deleted = await registry.delete(rawIdOrName)
+        if (!deleted) {
+          json(404, { error: "tunnel_not_found", id: rawIdOrName })
+          return true
+        }
+        json(200, { ok: true, tunnelId: rawIdOrName, deleted: true })
+      } catch (err) {
+        json(500, {
+          error: "delete_failed",
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+      return true
+    }
     const ok = await registry.stop(rawIdOrName)
     if (!ok) {
       json(404, { error: "tunnel_not_found", id: rawIdOrName })

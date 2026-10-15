@@ -4,6 +4,9 @@
  *                            [--public] [--json]`
  * `agentproto tunnel list [--active] [--json]`
  * `agentproto tunnel stop <id-or-name> [--json]`     (alias: delete, rm)
+ * `agentproto tunnel purge <id-or-name> [--json]`
+ * `agentproto tunnel add-hostname <id-or-name> <fqdn> [--json]`
+ * `agentproto tunnel remove-hostname <id-or-name> <fqdn> [--json]`
  * `agentproto tunnel revoke <id-or-name> [--json]`
  * `agentproto tunnel status <id-or-name> [--json]`
  *
@@ -34,6 +37,9 @@ Usage:
                            [--public] [--json]
   agentproto tunnel list   [--active] [--json]
   agentproto tunnel stop   <id-or-name> [--json]       (alias: delete, rm)
+  agentproto tunnel purge  <id-or-name> [--json]
+  agentproto tunnel add-hostname    <id-or-name> <fqdn> [--json]
+  agentproto tunnel remove-hostname <id-or-name> <fqdn> [--json]
   agentproto tunnel revoke <id-or-name> [--json]
   agentproto tunnel status <id-or-name> [--json]
 
@@ -53,6 +59,13 @@ Providers (built-in; legacy aliases quick/named accepted):
                    bound to a STABLE hostname that survives restarts. Needs
                    --hostname and --tunnel-id. Add --autostart to relaunch
                    it automatically when the daemon boots.
+  cloudflare-managed
+                   The daemon creates the Cloudflare tunnel, its ingress and
+                   a proxied CNAME through the Cloudflare API, and deletes
+                   them on \`tunnel purge\`. Needs --hostname on a zone
+                   configured once via the setup_tunnel_provider MCP tool.
+                   \`add-hostname\` / \`remove-hostname\` swap hostnames with
+                   an overlap window.
   ngrok            Ngrok tunnel — configure its authtoken first via the
                    setup_tunnel_provider MCP tool.
   Any installed third-party provider (@scope/agentproto-adapter-<slug>) also
@@ -82,6 +95,9 @@ export async function runTunnel(args: readonly string[]): Promise<number> {
   if (sub === "create") return runCreate(args.slice(1))
   if (sub === "list") return runList(args.slice(1))
   if (sub === "stop" || sub === "delete" || sub === "rm") return runStop(args.slice(1))
+  if (sub === "purge") return runPurge(args.slice(1))
+  if (sub === "add-hostname") return runHostname("add", args.slice(1))
+  if (sub === "remove-hostname") return runHostname("remove", args.slice(1))
   if (sub === "revoke") return runRevoke(args.slice(1))
   if (sub === "status") return runStatus(args.slice(1))
 
@@ -91,7 +107,7 @@ export async function runTunnel(args: readonly string[]): Promise<number> {
   }
   process.stderr.write(
     `agentproto tunnel: unknown subcommand "${sub}"\n` +
-      `  Known: create | list | stop | revoke | status\n`,
+      `  Known: create | list | stop | purge | add-hostname | remove-hostname | revoke | status\n`,
   )
   return 2
 }
@@ -148,6 +164,13 @@ async function runCreate(args: readonly string[]): Promise<number> {
     process.stderr.write(
       "agentproto tunnel create: --provider cloudflare-named requires --hostname and --tunnel-id.\n" +
         "  Provision once: cloudflared tunnel create <name> && cloudflared tunnel route dns <name> <hostname>\n",
+    )
+    return 2
+  }
+
+  if (values.provider === "cloudflare-managed" && !values.hostname) {
+    process.stderr.write(
+      "agentproto tunnel create: --provider cloudflare-managed requires --hostname.\n",
     )
     return 2
   }
@@ -300,6 +323,112 @@ async function runStop(args: readonly string[]): Promise<number> {
   }
 }
 
+// ── purge ─────────────────────────────────────────────────────────────
+
+async function runPurge(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+    },
+  })
+
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      "agentproto tunnel purge: missing id or name.\n" +
+        "  Try: agentproto tunnel purge <id-or-name>\n",
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto tunnel purge")
+    return 2
+  }
+  const endpoint = report.found
+
+  try {
+    const result = await httpDelete<{ ok: boolean; tunnelId: string }>(
+      `${endpoint.url}/tunnels/${encodeURIComponent(id)}?purge=true`,
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else {
+      process.stdout.write(`tunnel deleted  ${id}\n`)
+    }
+    return 0
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(`agentproto tunnel purge: no tunnel "${id}" — try \`agentproto tunnel list\`\n`)
+      return 2
+    }
+    process.stderr.write(`agentproto tunnel purge: ${msg}\n`)
+    return 1
+  }
+}
+
+// ── add-hostname / remove-hostname ───────────────────────────────────
+
+async function runHostname(
+  mode: "add" | "remove",
+  args: readonly string[],
+): Promise<number> {
+  const verb = `agentproto tunnel ${mode}-hostname`
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+    },
+  })
+
+  const [id, hostname] = positionals
+  if (!id || !hostname) {
+    process.stderr.write(
+      `${verb}: missing id-or-name and hostname.\n` +
+        `  Try: ${verb} <id-or-name> <fqdn>\n`,
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, verb)
+    return 2
+  }
+  const endpoint = report.found
+
+  try {
+    const base = `${endpoint.url}/tunnels/${encodeURIComponent(id)}/hostnames`
+    const desc =
+      mode === "add"
+        ? await httpPostJson<TunnelDescriptor>(base, { hostname }, endpoint.token)
+        : await httpDelete<TunnelDescriptor>(
+            `${base}/${encodeURIComponent(hostname)}`,
+            endpoint.token,
+          )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(desc, null, 2) + "\n")
+    } else {
+      process.stdout.write(
+        `tunnel ${id}: ${mode === "add" ? "added" : "removed"} ${hostname}\n` +
+          `  hostnames ${(desc.hostnames ?? [desc.hostname ?? "—"]).join(", ")}\n`,
+      )
+    }
+    return 0
+  } catch (err) {
+    process.stderr.write(`${verb}: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+}
+
 // ── revoke ────────────────────────────────────────────────────────────
 
 async function runRevoke(args: readonly string[]): Promise<number> {
@@ -405,6 +534,9 @@ async function runStatus(args: readonly string[]): Promise<number> {
         (desc.label ? `label    ${desc.label}\n` : "") +
         `provider ${desc.provider}\n` +
         (desc.hostname ? `hostname ${desc.hostname}\n` : "") +
+        (desc.hostnames && desc.hostnames.length > 1
+          ? `hostnames ${desc.hostnames.join(", ")}\n`
+          : "") +
         (desc.tunnelId ? `tunnelId ${desc.tunnelId}\n` : "") +
         (desc.autostart ? `autostart yes\n` : "") +
         `target   ${desc.targetHost}:${desc.targetPort}\n` +
@@ -412,6 +544,9 @@ async function runStatus(args: readonly string[]): Promise<number> {
         `access   ${desc.access ?? "private"}\n` +
         (desc.expiresAt ? `expires  ${desc.expiresAt}\n` : "") +
         `status   ${desc.status}\n` +
+        (desc.health
+          ? `health   ${desc.health.state}${desc.health.reason ? ` (${desc.health.reason})` : ""}\n`
+          : "") +
         `pid      ${desc.pid ?? "—"}\n` +
         `created  ${desc.createdAt} (${age} ago)\n` +
         (desc.stoppedAt ? `stopped  ${desc.stoppedAt}\n` : "") +

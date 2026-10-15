@@ -3,11 +3,15 @@
  * daemon. Lets a remote operator create, list, stop, and inspect
  * public tunnels for any local port without touching the terminal.
  *
- * Five tools:
+ * Tools:
  *   tunnel_create    spawn a public URL for a local port (private by
  *                    default — see link-guard.ts — public:true opts out)
  *   tunnel_list      browse active + historical tunnels
  *   tunnel_stop      SIGTERM the tunnel provider, tear down its guard, mark stopped
+ *   tunnel_delete    stop + delete the provider's remote state (managed
+ *                    tunnel, DNS) + forget the descriptor
+ *   tunnel_add_hostname / tunnel_remove_hostname
+ *                    hostname swap with overlap (cloudflare-managed)
  *   tunnel_revoke    instantly invalidate a private tunnel's link without stopping it
  *   tunnel_status    read-only descriptor for one tunnel
  *
@@ -72,7 +76,9 @@ export function registerTunnelTools(
     expiresAt: t.expiresAt,
     warning: t.warning,
     status: t.status,
+    health: t.health?.state,
     hostname: t.hostname,
+    hostnames: t.hostnames,
     createdAt: t.createdAt,
   })
 
@@ -86,7 +92,15 @@ export function registerTunnelTools(
       "(`cloudflared tunnel create` + `route dns`), bound to a STABLE " +
       "hostname — pass `hostname` + `tunnelId`, set `autostart:true` to " +
       "relaunch on boot; `ngrok` = ngrok tunnel (configure its authtoken via " +
-      "`setup_tunnel_provider` first). Any installed third-party provider " +
+      "`setup_tunnel_provider` first); `cloudflare-managed` = the daemon " +
+      "CREATES the Cloudflare tunnel, its ingress and a proxied CNAME through " +
+      "the Cloudflare API (zones + token refs configured once via " +
+      "`setup_tunnel_provider`) — pass `hostname` (e.g. relay.example.com, " +
+      "one label under a configured zone unless its maxLabels allows more) " +
+      "and usually `autostart:true`; `tunnel_status` then reports `health` " +
+      "(active | degraded | error + reason), `tunnel_add_hostname` / " +
+      "`tunnel_remove_hostname` swap hostnames with overlap, `tunnel_delete` " +
+      "removes the tunnel and its DNS. Any installed third-party provider " +
       "(`@scope/agentproto-adapter-<slug>`) also works — see " +
       "`list_tunnel_adapters` for the full set. Returns the TunnelDescriptor " +
       "once ready (typically <10s). Use `tunnel_list` before opening a " +
@@ -119,7 +133,7 @@ export function registerTunnelTools(
             "`cloudflare-named`, `ngrok` (legacy aliases `quick`/`named` " +
             "accepted). Or any installed third-party provider slug — list via " +
             "`list_tunnel_adapters`. `cloudflare-named` requires `hostname` + " +
-            "`tunnelId`.",
+            "`tunnelId`; `cloudflare-managed` requires `hostname`.",
         ),
       name: z
         .string()
@@ -150,8 +164,8 @@ export function registerTunnelTools(
         .string()
         .optional()
         .describe(
-          "REQUIRED for `named`: the stable public hostname routed to the " +
-            "tunnel (e.g. app.example.com).",
+          "REQUIRED for `named` and `cloudflare-managed`: the stable public " +
+            "hostname routed to the tunnel (e.g. app.example.com).",
         ),
       tunnelId: z
         .string()
@@ -290,6 +304,87 @@ export function registerTunnelTools(
     },
   )
 
+  // ── tunnel_delete ──────────────────────────────────────────────
+  server.tool(
+    "tunnel_delete",
+    "Stop a tunnel AND delete everything its provider created remotely, " +
+      "then forget it. For `cloudflare-managed`: stops cloudflared, deletes " +
+      "the engine's own CNAME(s), cleans the tunnel's connections and " +
+      "deletes the Cloudflare tunnel — tolerating pieces already gone, and " +
+      "never touching a record or tunnel the engine did not create. For " +
+      "other providers it is `tunnel_stop` + forget. Irreversible: the " +
+      "hostname stops resolving. Use `tunnel_stop` to merely pause.",
+    {
+      tunnelId: z
+        .string()
+        .min(1)
+        .describe("Tunnel id (UUID from `tunnel_create`) or the name slug."),
+    },
+    async input => {
+      try {
+        const ok = await registry.delete(input.tunnelId)
+        if (!ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `tunnel_delete: no tunnel "${input.tunnelId}" — use tunnel_list to see current ids`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        return text({ ok, tunnelId: input.tunnelId, deleted: true })
+      } catch (err) {
+        return errText("tunnel_delete", err)
+      }
+    },
+  )
+
+  // ── tunnel_add_hostname / tunnel_remove_hostname ───────────────
+  const hostnameShape = {
+    tunnelId: z
+      .string()
+      .min(1)
+      .describe("Tunnel id (UUID from `tunnel_create`) or the name slug."),
+    hostname: z
+      .string()
+      .min(1)
+      .describe("Fully-qualified hostname (e.g. relay.example.com)."),
+  }
+  server.tool(
+    "tunnel_add_hostname",
+    "Hostname swap, step 1 (`cloudflare-managed`): route an additional " +
+      "hostname — possibly on another configured zone of the same Cloudflare " +
+      "account — to the SAME tunnel (ingress rule + proxied CNAME) and make " +
+      "it the primary `hostname`/`publicUrl`. Every hostname already routed " +
+      "stays live, so consumers can move over without a cut; `tunnel_status` " +
+      "lists all of them in `hostnames` with per-hostname health. Retire the " +
+      "old one with `tunnel_remove_hostname` once nothing uses it.",
+    hostnameShape,
+    async input => {
+      try {
+        return text(await registry.addHostname(input.tunnelId, input.hostname))
+      } catch (err) {
+        return errText("tunnel_add_hostname", err)
+      }
+    },
+  )
+  server.tool(
+    "tunnel_remove_hostname",
+    "Hostname swap, step 2 (`cloudflare-managed`): stop routing a hostname " +
+      "— drops its ingress rule and deletes the engine's own CNAME for it. " +
+      "Refuses to remove the tunnel's last hostname (use `tunnel_delete`).",
+    hostnameShape,
+    async input => {
+      try {
+        return text(await registry.removeHostname(input.tunnelId, input.hostname))
+      } catch (err) {
+        return errText("tunnel_remove_hostname", err)
+      }
+    },
+  )
+
   // ── tunnel_revoke ──────────────────────────────────────────────
   server.tool(
     "tunnel_revoke",
@@ -322,7 +417,10 @@ export function registerTunnelTools(
   server.tool(
     "tunnel_status",
     "Return the current descriptor for one tunnel. Accepts either the " +
-      "tunnel id or the friendly name set at create time.",
+      "tunnel id or the friendly name set at create time. Self-monitoring " +
+      "providers (`cloudflare-managed`) add `health` ({ state: active | " +
+      "degraded | error, reason?, checkedAt, hostnames[] }) and, during a " +
+      "hostname swap, every routed hostname in `hostnames`.",
     {
       tunnelId: z
         .string()

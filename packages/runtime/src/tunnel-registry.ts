@@ -26,13 +26,18 @@ import { mkdir } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { CLOUDFLARE_NAMED_SLUG } from "./remote-providers/named.js"
+import { CLOUDFLARE_MANAGED_SLUG } from "./remote-providers/cloudflare-managed.js"
 import {
   resolveTunnelProvider,
   normalizeProviderSlug,
   builtinProviderCapabilities,
   type TunnelCreds,
 } from "./remote-providers/registry.js"
-import type { RemoteProvider } from "./remote-providers/types.js"
+import type {
+  RemoteProvider,
+  TunnelHealth,
+  TunnelIdentity,
+} from "./remote-providers/types.js"
 import { createLinkGuard, parseTtlMs, type LinkGuard } from "./remote-providers/link-guard.js"
 
 export type TunnelStatus = "starting" | "active" | "stopped" | "error"
@@ -75,6 +80,20 @@ export interface TunnelDescriptor {
   tunnelId?: string
   /** Path to the tunnel credentials JSON (defaults under ~/.cloudflared). */
   credentialsFile?: string
+  // ── managed-provider fields (cloudflare-managed) ─────────────────
+  /**
+   * Every hostname routed to the tunnel, primary (`hostname`) first. More
+   * than one only during a hostname swap's overlap window — the old one
+   * stays live until `removeHostname` retires it.
+   */
+  hostnames?: string[]
+  /**
+   * Live health from a self-monitoring provider: `active` (public hostname
+   * answers from the app), `degraded` (edge 5xx / unreachable / cloudflared
+   * restarting) or `error` (cloudflared crash-looping), with a `reason`.
+   * Unset while stopped and for providers that don't monitor themselves.
+   */
+  health?: TunnelHealth
   // ── access guard fields (see link-guard.ts) ──────────────────────
   /**
    * `"private"` (default, including on descriptors persisted before this
@@ -216,6 +235,17 @@ export class TunnelRegistry {
       }
     }
 
+    let hostname = input.hostname
+    if (normalizeProviderSlug(provider) === CLOUDFLARE_MANAGED_SLUG) {
+      if (!hostname) {
+        throw new Error(
+          'cloudflare-managed tunnel requires "hostname" (e.g. app.example.com on a zone ' +
+            "configured via setup_tunnel_provider).",
+        )
+      }
+      hostname = normalizeHostname(hostname)
+    }
+
     if (input.name) {
       const conflict = this.findByIdOrName(input.name)
       if (conflict && (conflict.status === "starting" || conflict.status === "active")) {
@@ -237,7 +267,10 @@ export class TunnelRegistry {
       ...(input.name ? { name: input.name } : {}),
       ...(input.label ? { label: input.label } : {}),
       ...(input.autostart ? { autostart: true } : {}),
-      ...(input.hostname ? { hostname: input.hostname } : {}),
+      ...(hostname ? { hostname } : {}),
+      ...(hostname && normalizeProviderSlug(provider) === CLOUDFLARE_MANAGED_SLUG
+        ? { hostnames: [hostname] }
+        : {}),
       ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
       ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
       access: input.public ? "public" : "private",
@@ -266,6 +299,7 @@ export class TunnelRegistry {
     const { desc, provider } = entry
     desc.status = "starting"
     delete desc.lastError
+    delete desc.health
     this.schedulePersist()
 
     const workspaceDir = this.workspace
@@ -294,12 +328,19 @@ export class TunnelRegistry {
       desc.expiresAt = handle.expiresAt
     }
 
-    let result: { publicUrl: string; pid: number | null }
+    let result: { publicUrl: string; pid: number | null; tunnelId?: string }
     try {
       result = await provider.start({
         target,
         workspace: workspaceDir,
         onLog: line => this.onLog?.(line),
+        tunnel: identityOf(desc),
+        onHealth: health => {
+          // Ignore late probes landing after a stop.
+          if (desc.status !== "active" && desc.status !== "starting") return
+          desc.health = health
+          this.schedulePersist()
+        },
       })
     } catch (err) {
       await guard?.stop().catch(() => {
@@ -314,6 +355,7 @@ export class TunnelRegistry {
     entry.guard = guard
     desc.publicUrl = result.publicUrl
     desc.pid = result.pid
+    if (result.tunnelId) desc.tunnelId = result.tunnelId
     desc.status = "active"
     desc.url = guardToken ? appendToken(result.publicUrl, guardToken) : result.publicUrl
     delete desc.stoppedAt
@@ -402,8 +444,100 @@ export class TunnelRegistry {
 
     entry.desc.status = "stopped"
     entry.desc.stoppedAt = new Date().toISOString()
+    delete entry.desc.health
     this.schedulePersist()
     return true
+  }
+
+  /**
+   * Stop the tunnel AND delete what its provider created remotely (for
+   * `cloudflare-managed`: the CNAMEs, then the tunnel itself), then forget
+   * the descriptor. Providers without remote state are just stopped and
+   * forgotten. Returns false when no such tunnel exists. If the remote
+   * delete fails the descriptor is kept (`lastError` set) so it can be
+   * retried — nothing is orphaned silently.
+   */
+  async delete(idOrName: string): Promise<boolean> {
+    const entry = this.findEntryByIdOrName(idOrName)
+    if (!entry) return false
+    await this.stop(idOrName)
+    const managed = normalizeProviderSlug(entry.desc.provider) === CLOUDFLARE_MANAGED_SLUG
+    let prov: RemoteProvider | null = entry.provider.destroy ? entry.provider : null
+    if (!prov) {
+      try {
+        prov = await this.pickProviderForTest(entry.desc.provider, entry.desc)
+      } catch (err) {
+        // Can't build the provider: only a problem if it owns remote state.
+        if (managed) throw err
+        prov = null
+      }
+    }
+    if (prov?.destroy) {
+      try {
+        await prov.destroy(identityOf(entry.desc))
+      } catch (err) {
+        entry.desc.lastError = err instanceof Error ? err.message : String(err)
+        this.schedulePersist()
+        throw err
+      }
+    }
+    this.tunnels.delete(entry.desc.id)
+    this.schedulePersist()
+    return true
+  }
+
+  /**
+   * Hostname swap, step 1: route `hostname` to the same tunnel (ingress +
+   * DNS) and make it the primary, while every hostname already routed keeps
+   * working. Consumers move over at their own pace; retire the old one with
+   * {@link removeHostname}. Works whether the tunnel is running or stopped.
+   */
+  async addHostname(idOrName: string, hostnameRaw: string): Promise<TunnelDescriptor> {
+    const entry = this.requireEntry(idOrName)
+    const hostname = normalizeHostname(hostnameRaw)
+    const current = hostnamesOf(entry.desc)
+    if (current.includes(hostname)) {
+      throw new Error(`tunnel "${idOrName}" already routes ${hostname}`)
+    }
+    const prov = await this.providerFor(entry, "addHostname")
+    await prov.addHostname!(identityOf(entry.desc), hostname)
+    const desc = entry.desc
+    desc.hostnames = [hostname, ...current]
+    desc.hostname = hostname
+    if (desc.publicUrl) desc.publicUrl = `https://${hostname}`
+    if (desc.url) desc.url = withHost(desc.url, hostname)
+    this.schedulePersist()
+    return { ...desc }
+  }
+
+  /**
+   * Hostname swap, step 2: stop routing `hostname` (ingress + the engine's
+   * own CNAME). Refuses to remove the last hostname — use `delete`.
+   */
+  async removeHostname(idOrName: string, hostnameRaw: string): Promise<TunnelDescriptor> {
+    const entry = this.requireEntry(idOrName)
+    const hostname = normalizeHostname(hostnameRaw)
+    const current = hostnamesOf(entry.desc)
+    if (!current.includes(hostname)) {
+      throw new Error(`tunnel "${idOrName}" does not route ${hostname}`)
+    }
+    if (current.length === 1) {
+      throw new Error(
+        `${hostname} is the last hostname of tunnel "${idOrName}" — delete the tunnel instead`,
+      )
+    }
+    const prov = await this.providerFor(entry, "removeHostname")
+    await prov.removeHostname!(identityOf(entry.desc), hostname)
+    const desc = entry.desc
+    desc.hostnames = current.filter(h => h !== hostname)
+    if (desc.hostname === hostname) {
+      const next = desc.hostnames[0]!
+      desc.hostname = next
+      if (desc.publicUrl) desc.publicUrl = `https://${next}`
+      if (desc.url) desc.url = withHost(desc.url, next)
+    }
+    this.schedulePersist()
+    return { ...desc }
   }
 
   /**
@@ -519,6 +653,30 @@ export class TunnelRegistry {
 
   // ── private ──────────────────────────────────────────────────────
 
+  private requireEntry(idOrName: string): TunnelEntry {
+    const entry = this.findEntryByIdOrName(idOrName)
+    if (!entry) {
+      throw new Error(`no tunnel "${idOrName}" — use tunnel_list to see current ids`)
+    }
+    return entry
+  }
+
+  /** The live provider when it supports `op`, else a freshly-built one
+   *  (stopped/restored entries carry a stub). */
+  private async providerFor(
+    entry: TunnelEntry,
+    op: "addHostname" | "removeHostname",
+  ): Promise<RemoteProvider> {
+    if (entry.provider[op]) return entry.provider
+    const built = await this.pickProviderForTest(entry.desc.provider, entry.desc)
+    if (!built[op]) {
+      throw new Error(
+        `provider "${entry.desc.provider}" does not support hostname swap (use cloudflare-managed)`,
+      )
+    }
+    return built
+  }
+
   private findEntryByIdOrName(idOrName: string): TunnelEntry | undefined {
     const byId = this.tunnels.get(idOrName)
     if (byId) return byId
@@ -588,8 +746,10 @@ export class TunnelRegistry {
       if (!desc.id) continue
       // Tunnels that were "starting" or "active" at last save are dead
       // now — the child process is gone. Mark them stopped (GHOST pattern).
+      // Health is live state — never restore a stale probe result.
+      const { health: _health, ...persisted } = desc
       const ghosted: TunnelDescriptor = {
-        ...desc,
+        ...persisted,
         status:
           desc.status === "starting" || desc.status === "active"
             ? "stopped"
@@ -609,6 +769,37 @@ export class TunnelRegistry {
 }
 
 // ── module-level helpers ───────────────────────────────────────────
+
+function normalizeHostname(h: string): string {
+  return h.trim().toLowerCase().replace(/\.$/, "")
+}
+
+function hostnamesOf(desc: TunnelDescriptor): string[] {
+  if (desc.hostnames && desc.hostnames.length > 0) return [...desc.hostnames]
+  return desc.hostname ? [desc.hostname] : []
+}
+
+/**
+ * Identity handed to stateful providers. The key must be stable across
+ * restarts AND unique per descriptor (two descriptors may share a name
+ * over time), hence `name-<id prefix>` rather than the bare name.
+ */
+function identityOf(desc: TunnelDescriptor): TunnelIdentity {
+  return {
+    key: desc.name ? `${desc.name}-${desc.id.slice(0, 8)}` : desc.id,
+    hostnames: hostnamesOf(desc),
+  }
+}
+
+function withHost(url: string, hostname: string): string {
+  try {
+    const u = new URL(url)
+    u.hostname = hostname
+    return u.toString()
+  } catch {
+    return url
+  }
+}
 
 function makeStubProvider(): RemoteProvider {
   return {
