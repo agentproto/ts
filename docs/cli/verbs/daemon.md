@@ -135,8 +135,16 @@ new daemon's reattach pass and prints the tally:
 ```
 agentproto daemon: 2 sandbox sessions will be detached (box + agent keep running — not killed) and re-attached after boot
 agentproto daemon: restarted …
+  sandbox:   re-attaching 2 sandbox sessions…
   sandbox:   re-attached 2/2 sandbox sessions
 ```
+
+The `re-attaching N sandbox sessions…` progress line prints as soon as the new
+daemon is up. `restart` waits at most 60 s for the pass; each row is itself
+capped at 30 s inside the daemon (`AGENTPROTO_REATTACH_TIMEOUT_MS`). If the pass
+hasn't settled by then, `restart` prints the tally so far, notes that the
+re-attach pass continues in the daemon, and points at `agentproto daemon status`
+(which also shows the re-attach tally next to the sandbox line).
 
 `daemon stop` reports the detached count too. The same counts are on
 `GET /health` and the `daemon_health` MCP tool as

@@ -12,7 +12,7 @@ relays the vendor's own client + sessions API onto ACP.
 
 | Method                 | Behaviour                                                                                                                                                                     |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `initialize`           | Returns `PROTOCOL_VERSION` + `agentCapabilities.loadSession=false` (re-attach is via the persisted vendor session id, AIP-66 §5).                                                |
+| `initialize`           | Returns `PROTOCOL_VERSION` + `agentCapabilities.loadSession=true` (`session/load` adopts the persisted vendor session id, AIP-66 §5).                                           |
 | `authenticate`         | No-op. Auth is the user's claude.ai login inside the claude CLI (keychain); preflighted per turn (`claude auth status` — api_key auth and not-logged-in are refused).          |
 | `session/new`          | Validates `cwd` per AIP-66 §3 BEFORE any vendor side effect: a git checkout, clean working tree, an `origin` remote, and a HEAD contained in some `origin/*` ref. Refuses `mcpServers` (AIP-66 §4). |
 | `session/prompt`       | First prompt → `claude --cloud "<prompt>"` under a PTY (start; answers the first-run folder-trust prompt), later prompts → `claude -p "<text>" --cloud <session id>` (send-only). Then polls `GET /v1/code/sessions/{id}/events` (2s, backing off to 10s) until a NEW `result` event arrives. |
