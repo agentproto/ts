@@ -1,5 +1,6 @@
 {
   "opencode/big-pickle": "2025-10-17",
+  "opencode/cat-jam-free": "2026-10-12",
   "opencode/claude-3-5-haiku": "2024-10-22",
   "opencode/claude-fable-5": "2026-06-09",
   "opencode/claude-fable-5-1": "2026-09-01",
@@ -22,6 +23,7 @@
   "opencode/deepseek-v4-flash-vision-exp": "2026-08-21",
   "opencode/deepseek-v4-pro": "2026-04-24",
   "opencode/deepseek-v4.1-flash": "2026-09-10",
+  "opencode/deepseek-v4.1-flash-free": "2026-09-10",
   "opencode/exo-free": "2026-10-06",
   "opencode/fledge-alpha-free": "2026-10-01",
   "opencode/gemini-3-flash": "2025-12-17",
@@ -32,6 +34,7 @@
   "opencode/gemini-3.6-flash": "2026-07-21",
   "opencode/gemini-3.7-flash": "2026-08-13",
   "opencode/gemini-3.8-flash": "2026-09-02",
+  "opencode/gemini-4-argon": "2026-10-13",
   "opencode/glm-4.6": "2025-09-30",
   "opencode/glm-4.7": "2025-12-22",
   "opencode/glm-4.7-free": "2025-12-22",

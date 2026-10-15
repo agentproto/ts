@@ -339,3 +339,25 @@ for that.
 
 ### llm:huggingface
 - Removed: aisingapore/Qwen-SEA-LION-v4-32B-IT, deepseek-ai/DeepSeek-V3.2, deepseek-ai/DeepSeek-V4-Flash
+
+## 2026-10-15
+
+### llm:openrouter
+- Added: google/gemini-4-argon, google/gemini-4-argon:batch, inclusionai/ling-3.1-flash, liquid/lfm-2.5-24b-a2b, meta/muse-wonder, scaledown/extract, scaledown/summarize, unbiased/pareto-26.9, ~unbiased/pareto-latest
+- Removed: inclusionai/ling-3.0-flash-fin, inclusionai/ling-3.0-flash-sante, unbiased/pareto
+
+### llm:requesty
+- Added: meta/muse-spark-1.3, meta/muse-wonder-1.0, mistral/glm-5-3, together/deepseek-v4-pro-0813, together/deepseek-v4.1-flash, together/glm-5.3, together/glm-5.3-flash, typesafe/jev-1.14.0, vertex/gemini-4-argon, vertex/gemini-4-argon@eu
+- Removed: azure/gpt-4.1-mini@uksouth, azure/gpt-4.1-nano@uksouth, azure/gpt-4.1@uksouth, azure/gpt-5-mini@uksouth, azure/gpt-5@uksouth
+
+### llm:opencode-go
+- Added: opencode-go/cat-jam-free, opencode-go/gemini-4-argon-contributor
+- Removed: opencode-go/deepseek-v4-flash, opencode-go/deepseek-v4-flash-vision-exp
+
+### llm:opencode-zen
+- Added: opencode/cat-jam-free, opencode/deepseek-v4.1-flash-free, opencode/gemini-4-argon
+- Removed: opencode/exo-free, opencode/ling-3.0-flash-fin-free, opencode/ling-3.1-flash-free
+
+### llm:huggingface
+- Added: CohereLabs/command-a-plus-05-2026-bf16, CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, CohereLabs/command-a-vision-07-2025, aisingapore/Qwen-SEA-LION-v4-32B-IT, deepseek-ai/DeepSeek-V4-Flash, inclusionAI/Ling-3.1-flash, zai-org/GLM-5.1-FP8
+- Removed: zai-org/GLM-4.5, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8
