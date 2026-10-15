@@ -215,6 +215,32 @@ describe("validateCreateInput", () => {
       expect(out.subaccount).toEqual({ kind: "workspace", id: "ws_7" })
       expect(profiles.get("legacy")?.source).toBe("fake-login")
     })
+
+    it("persists extra billing `routes`, trimmed and de-duped, on a created profile", async () => {
+      const { deps, profiles } = makeDeps()
+      const out = await createAuthProfile(
+        {
+          id: "ws03",
+          endpoint: "opencode",
+          method: "api-key",
+          credential: "oc_sk_fake_123456",
+          routes: ["opencode-go", "  opencode-go  ", ""],
+        },
+        deps,
+      )
+      expect(out.routes).toEqual(["opencode-go"])
+      expect(profiles.get("ws03")?.routes).toEqual(["opencode-go"])
+    })
+
+    it("omits `routes` entirely when none are given (back-compat)", () => {
+      const v = validateCreateInput({
+        id: "plain",
+        endpoint: "opencode",
+        method: "api-key",
+        credential: "k",
+      })
+      expect(v.routes).toBeUndefined()
+    })
   })
 })
 

@@ -820,7 +820,7 @@ async function readCreateCredential(
 const CREATE_USAGE_LINE =
   `agentproto auth profile create: usage: create <id> <endpoint> ` +
   `--method <oauth-bearer|api-key> [--label <text>] [--source <name>] ` +
-  `[--subaccount <kind>:<id>] [--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
+  `[--subaccount <kind>:<id>] [--route <route>]... [--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
 
 async function runProfileCreate(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -832,6 +832,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
       label: { type: "string" },
       source: { type: "string" },
       subaccount: { type: "string" },
+      route: { type: "string", multiple: true },
       "credential-file": { type: "string" },
       "credential-env": { type: "string" },
       "credential-ref": { type: "string" },
@@ -892,6 +893,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
         ...(source !== undefined ? { source } : {}),
         ...(subaccount !== undefined ? { subaccount } : {}),
         ...(values.label ? { label: values.label } : {}),
+        ...(values.route && values.route.length ? { routes: values.route } : {}),
         ...(values["credential-ref"]
           ? { credentialRef: values["credential-ref"] }
           : {}),
