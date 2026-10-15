@@ -330,8 +330,11 @@ jobs:
       #
       # BACKEND SELECTOR. Automated runs use the free-model preset shared with
       # PR review; workflow_dispatch can instead select Claude Code Cloud:
-      #   1. MiMo v2.6 Flash (primary OpenCode account)
-      #   2. Step 5 Preview (ws02 when configured, otherwise the primary key)
+      # Each free lane's OpenCode credential is chosen by the resolved model's
+      # route: opencode-go/* uses a Go-subscription key (OPENCODE_GO_API_KEY,
+      # falling back to WS03 which holds Go credit), opencode/* uses a Zen key
+      # (WS02/WS03/base). The default chain is MiMo v2.6 Flash then Step 5
+      # Preview, but it is the ordered preset list that decides.
       # Each lane is followed by `release-notes.mjs --check`, which asks GitHub
       # whether a consolidated release already carries THIS batch's marker; the
       # next lane only runs when it doesn't. Every lane is continue-on-error;
@@ -410,7 +413,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.release-agent.outputs.free_primary_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ (startsWith(steps.release-agent.outputs.free_primary_model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release notes posted? (after OpenCode free)
@@ -438,7 +441,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.release-agent.outputs.free_fallback_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ (startsWith(steps.release-agent.outputs.free_fallback_model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release notes posted? (after OpenCode free fallback)
@@ -523,7 +526,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.docs-agent.outputs.free_primary_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ (startsWith(steps.docs-agent.outputs.free_primary_model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
       - name: Check docs for release drift (OpenCode free fallback)
         id: docs-2
         if:
@@ -536,7 +539,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.docs-agent.outputs.free_fallback_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ (startsWith(steps.docs-agent.outputs.free_fallback_model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
 
       - name: Check docs for release drift (Claude Cloud fallback)
         id: docs-cloud-fallback

@@ -991,12 +991,12 @@ jobs:
           # The default preset uses OpenCode's hosted free routes. The preset
           # remains configurable; this step only checks the credential needed
           # by the currently selected automatic lane.
-          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_GO_API_KEY }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
             echo "Using agentproto lane (OpenCode free model)"
           else
             echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "::error::No OpenCode free-model credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_API_KEY) — the reviewer cannot authenticate."
+            echo "::error::No OpenCode credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_GO_API_KEY/OPENCODE_API_KEY) — the reviewer cannot authenticate."
           fi
 
           # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
@@ -1023,6 +1023,12 @@ jobs:
           # fallback when the primary free route is rate-limited. Prefer the
           # independent ws03/ws02 accounts when configured, otherwise retry on
           # the primary credential so model rotation still works.
+          #
+          # Deliberately NOT widened with OPENCODE_GO_API_KEY: the fallback
+          # preset is a ZEN model, and a Go-route key cannot fund it. A
+          # Go-ONLY configuration therefore arms the primary tier and silently
+          # disarms this one — which is fine (the Zen fallback would fail
+          # anyway), but worth knowing when reading a run's tier ladder.
           if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "has-opencode-fallback=true" >> "$GITHUB_OUTPUT"
           else
@@ -1167,8 +1173,11 @@ jobs:
             console.log("seeded "+p+" (onboarding + trust) for "+cwd);
           '
 
-      # Primary OpenCode free-model lane. A provider failure falls through to a
-      # second explicit free route below; no metered route is armed.
+      # Primary OpenCode lane. A provider failure falls through to a second
+      # explicit OPENCODE_API_KEY-funded route below. The default model is a
+      # zero-priced free id, but a paid id can be selected when it is listed in
+      # the owner-only AGENT_ALLOWED_METERED_MODELS variable (the resolver
+      # fails closed otherwise) — so "no metered route" is not guaranteed.
       - name: Run agentic PR reviewer (agentproto lane)
         id: reviewer-agentproto
         if: |
@@ -1201,12 +1210,13 @@ jobs:
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
-          # The key authenticates OpenCode; the resolver step above fails closed
-          # unless the resolved model is a zero-priced free id before this
-          # action can run.
+          # The key authenticates OpenCode. It is selected by the resolved
+          # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a Zen
+          # key). The resolver step above fails closed unless the model is a
+          # zero-priced free id OR an owner-sanctioned metered id.
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
-          api-key: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
           # e2b microVM sandbox for the reviewer session (reviewerSandbox in
@@ -1616,8 +1626,8 @@ jobs:
         with:
           adapter: opencode
           auth-mode: api-key
-          api-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
