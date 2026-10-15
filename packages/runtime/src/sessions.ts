@@ -5376,7 +5376,14 @@ export interface SpawnPtyInput {
   /** Desired human handle. Fed to `mintSlug` as the preferred base for the
    *  new session's {@link SessionDescriptor.slug} (ahead of `label`); the
    *  result is de-duplicated against every held session with `-2`, `-3`, …,
-   *  so a collision never throws. Used by `findByIdOrName(query)`. */
+   *  so a collision never throws. Used by `findByIdOrName(query)`.
+   *
+   *  `slug` is the stronger form of the same preference: when set it is the
+   *  handle to carry over (a restart forwards `getSlug(prev)` so the new row
+   *  keeps the same addressable handle instead of re-minting from the
+   *  no-longer-written `name`/`label`). Still normalized + de-duplicated by
+   *  `mintSlug`, so it can never collide or throw. */
+  slug?: string
   name?: string
   label?: string
   /** Parent attribution + depth — same semantics as `SpawnAgentInput`
@@ -10923,7 +10930,7 @@ export function createSessionsRegistry(opts?: {
       // only LIVE holders count as taken. `mintSlug` with an always-false
       // predicate yields the bare slugified base (no de-dup), which is what
       // we compare a holder against. Live collisions still append `-2`, `-3`.
-      const rawSlug = input.name || input.label || conversationSlug || "terminal"
+      const rawSlug = input.slug || input.name || input.label || conversationSlug || "terminal"
       const baseSlug = mintSlug(rawSlug, () => false, id)
       for (const rt of sessions.values()) {
         if (getSlug(rt.desc) !== baseSlug) continue
@@ -12901,6 +12908,7 @@ export function createSessionsRegistry(opts?: {
       sessionEvents?.emit({
         type: "session:renamed",
         sessionId: id,
+        ...(rt.desc.slug !== undefined ? { slug: rt.desc.slug } : {}),
         ...(rt.desc.title !== undefined ? { title: rt.desc.title } : {}),
         ...(rt.desc.label !== undefined ? { label: rt.desc.label } : {}),
         renamedByUser: rt.desc.renamedByUser === true,

@@ -4734,7 +4734,10 @@ function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false)
       workspaceSlug: prev.workspaceSlug,
       cols: process.stdout.columns ?? 80,
       rows: process.stdout.rows ?? 24,
-      ...(prev.name ? { name: prev.name } : {}),
+      // Carry the addressable handle across the restart (`slug ?? name`); a
+      // post-slug row never writes `name`, so forwarding only `name` would
+      // lose the `--name <handle>` on every restart.
+      ...((prev.slug ?? prev.name) ? { slug: prev.slug ?? prev.name } : {}),
       ...(prev.label ? { label: prev.label } : {}),
     },
   }
