@@ -7,6 +7,7 @@ import {
   type SessionRef,
 } from "../session-ref.js"
 import type { SessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry } from "../sessions.js"
 
 type Row = { id: string; name?: string; slug?: string }
 
@@ -114,6 +115,36 @@ describe("sessionRefSchema", () => {
       idOrName: "y",
       slug: "z",
     })
+  })
+})
+
+describe("findByIdOrName (delegates to resolveSessionRef)", () => {
+  function twoSessions() {
+    const registry = createSessionsRegistry({ persist: false })
+    const spawn = () =>
+      registry.spawn({
+        kind: "command",
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        argv: [process.execPath, "-e", "0"],
+      })
+    return { registry, a: spawn(), b: spawn() }
+  }
+
+  it("resolves by exact id, by name, and returns undefined for an unknown query", () => {
+    const { registry, a, b } = twoSessions()
+    a.name = "solo"
+    b.name = "other"
+    expect(registry.findByIdOrName(a.id)?.id).toBe(a.id)
+    expect(registry.findByIdOrName("solo")?.id).toBe(a.id)
+    expect(registry.findByIdOrName("nope")).toBeUndefined()
+  })
+
+  it("returns undefined for a duplicate name (ambiguous), never a first-match", () => {
+    const { registry, a, b } = twoSessions()
+    a.name = "dupe"
+    b.name = "dupe"
+    expect(registry.findByIdOrName("dupe")).toBeUndefined()
   })
 })
 

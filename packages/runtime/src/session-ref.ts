@@ -12,7 +12,7 @@
  * first-match — the caller must say which session it meant.
  */
 
-import { z } from "zod"
+import type { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
 import { shortSessionId } from "./session-title.js"
 
@@ -58,9 +58,9 @@ function resolveOne(
   const byId = registry.get(query) as AddressableRow | undefined
   if (byId) return { ok: true, id: byId.id }
 
-  // 2. exact slug, then 3. legacy name — both drawn from the same row set.
-  //    `list()` is the default (non-archived) view; callers that need the
-  //    archived set (findByIdOrName) supply an adapter over it.
+  // 2. exact slug, then 3. legacy name — both drawn from the same row set
+  //    (`list()`). Callers that need archived rows supply an adapter whose
+  //    `list()` returns them (findByIdOrName does).
   const matches = matchIds(registry.list() as readonly AddressableRow[], query)
   const [only, ...rest] = matches
   if (only === undefined) return { ok: false, error: { code: "not_found", query } }
