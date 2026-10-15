@@ -3,8 +3,9 @@
  * real `git` invocations (host-side) + `@octokit/rest` for PR creation.
  *
  * # Token handling
- * The token reaches git via the `GIT_HTTP_EXTRAHEADER` env var (see
- * `git.ts:buildGitEnv`) — never on the command line, never in the repo
+ * The token reaches git as an `http.https://github.com/.extraheader` config
+ * entry via `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`
+ * (see `git.ts:buildGitEnv`) — never on the command line, never in the repo
  * URL, never logged. `GIT_TERMINAL_PROMPT=0` makes a missing token fail
  * fast instead of hanging.
  *

@@ -3,8 +3,10 @@
  *
  * The token is NEVER passed on the command line (git would log it in
  * process listings and the auto-classifier blocks plaintext secrets). It
- * reaches git through the environment as `GIT_HTTP_EXTRAHEADER` via a
- * `.git/config` http.https.<host>.extraheader entry — the standard
+ * reaches git through the environment via git's own `GIT_CONFIG_COUNT` /
+ * `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` mechanism, which sets an
+ * `http.https://github.com/.extraheader` config entry for the spawned
+ * command — the same pattern used by `actions/checkout` and the standard
  * non-interactive credential pattern for `git clone`/`push` against
  * GitHub HTTPS URLs.
  *
@@ -36,8 +38,11 @@ export interface GitRunOpts {
 
 /**
  * Build the env block that injects the GitHub token into git's HTTPS auth.
- * We set `GIT_HTTP_EXTRAHEADER` (a git-credential-env helper convention)
- * AND `GIT_TERMINAL_PROMPT=0` so a missing token fails fast rather than
+ * The token is carried as a `http.https://github.com/.extraheader` git
+ * config entry via `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` /
+ * `GIT_CONFIG_VALUE_0` — env-based config git reads natively — so it is
+ * never on the command line and never written to disk. We also set
+ * `GIT_TERMINAL_PROMPT=0` so a missing token fails fast rather than
  * hanging on a TTY prompt.
  */
 export function buildGitEnv(
@@ -53,11 +58,14 @@ export function buildGitEnv(
   return {
     ...baseEnv,
     GIT_TERMINAL_PROMPT: "0",
-    // `extraheader` is read by git's HTTP transport; the leading `AUTHORIZATION: basic <b64>`
-    // is what GitHub expects. base64(`${x-access-token}:${token}`) — the
-    // `x-access-token` user is GitHub's documented convention for PAT auth
-    // over HTTPS without a username.
-    GIT_HTTP_EXTRAHEADER: `Authorization: Basic ${btoa(`x-access-token:${token}`)}`,
+    // The `extraheader` value is read by git's HTTP transport; the
+    // `Authorization: Basic <b64>` form is what GitHub expects.
+    // base64(`${x-access-token}:${token}`) — the `x-access-token` user is
+    // GitHub's documented convention for PAT auth over HTTPS without a
+    // username.
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${btoa(`x-access-token:${token}`)}`,
   } satisfies Record<string, string>
 }
 
