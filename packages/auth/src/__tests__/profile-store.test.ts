@@ -157,6 +157,28 @@ describe("auth profile store", () => {
     })
   })
 
+  it("round-trips the additive `routes` cross-route field", async () => {
+    await addAuthProfile({
+      id: "ws03",
+      endpoint: "opencode",
+      method: "api-key",
+      credentialRef: "ref-ws03",
+      routes: ["opencode-go"],
+    })
+    await expect(getAuthProfile("ws03")).resolves.toEqual({
+      id: "ws03",
+      endpoint: "opencode",
+      method: "api-key",
+      credentialRef: "ref-ws03",
+      routes: ["opencode-go"],
+    })
+    const disk = JSON.parse(await readFile(authProfilesPath(), "utf8"))
+    expect(disk.profiles["ws03"]).toMatchObject({
+      vendor: "opencode",
+      routes: ["opencode-go"],
+    })
+  })
+
   it("round-trips the additive `origin` provenance field (WS6)", async () => {
     await addAuthProfile({
       id: "imported",

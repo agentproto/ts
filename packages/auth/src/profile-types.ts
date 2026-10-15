@@ -84,6 +84,17 @@ export interface AuthProfile {
    *  `@agentproto/model-catalog`, same rationale as the driver's
    *  `AgentCliDefinition.provider`. */
   endpoint: string
+  /** Additional billing routes this ONE credential is provisioned to serve,
+   *  beyond its primary {@link endpoint}. The eligibility predicate
+   *  ({@link eligibleProfiles}) admits the profile on a route whose resolved
+   *  endpoint is EITHER `endpoint` OR a member of this list. This exists
+   *  because a single account can be enrolled on more than one upstream route
+   *  — e.g. an OpenCode key billed on BOTH the `opencode-go` (Go subscription)
+   *  and `opencode` (Zen) routes — but can only declare one `endpoint`. ABSENT
+   *  ⇒ `[endpoint]`, byte-identical to a profile that predates this field. The
+   *  `opencode-console` org-login rule (`eligibility-manifest.ts`) is the
+   *  source-backed equivalent; this is its portable-key twin. */
+  routes?: string[]
   /** How this profile authenticates. */
   method: AuthMethod
   /** Opaque handle into this package's credential storage — NEVER the secret
