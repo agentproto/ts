@@ -319,6 +319,7 @@ export const agentStartInputShape = {
     ),
   access: jsonTolerant(
     z.object({
+      // When both are given, `profileRefs` wins and `profileRef` is ignored.
       profileRef: z.string().min(1).optional(),
       // Ordered candidates — the runtime bills the first eligible one. A
       // min(1) list; a named-but-missing profile anywhere is a hard error.

@@ -241,6 +241,18 @@ describe("validateCreateInput", () => {
       })
       expect(v.routes).toBeUndefined()
     })
+
+    it("rejects a malformed route (same SLUG_RE as endpoint)", () => {
+      expect(() =>
+        validateCreateInput({
+          id: "x",
+          endpoint: "opencode",
+          method: "api-key",
+          credential: "k",
+          routes: ["bad route!"],
+        }),
+      ).toThrow(/route "bad route!" is invalid/)
+    })
   })
 })
 

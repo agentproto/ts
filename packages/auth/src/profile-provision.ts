@@ -250,11 +250,20 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
   }
 
   const origin = input.origin?.trim()
-  // Extra billing routes: trim, drop blanks, de-dupe. Syntactic only — the
-  // auth package is decoupled from the route vocabulary (see AuthProfile.routes).
+  // Extra billing routes: trim, drop blanks, de-dupe, and check each against
+  // the same SLUG_RE as `endpoint` (routes are endpoint-shaped names). The
+  // auth package is decoupled from the route VOCABULARY (an unknown-but-valid
+  // route simply never matches), but a malformed one is rejected up front.
   const routes = input.routes
     ? [...new Set(input.routes.map(r => r.trim()).filter(Boolean))]
     : []
+  for (const route of routes) {
+    if (!SLUG_RE.test(route)) {
+      throw new AuthProfileValidationError(
+        `route "${route}" is invalid — use letters, digits, ".", "_" or "-"`,
+      )
+    }
+  }
 
   return {
     id,
