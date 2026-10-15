@@ -9,6 +9,17 @@
  * on the server hangs the MCP handshake — empirically verified); when no
  * ledger is wired the handlers answer a structured error instead.
  *
+ * All four go through the same (possibly wrapped) server, so every default
+ * mount lists all four or none — `DEFAULT_ALWAYS_ON_TOOLS` (index.ts) keeps
+ * them together under deferred loading. A session that sees `task_list` but
+ * not the write verbs is on a mount configured to split them: a custom
+ * `defaults.mcp.deferredTools.alwaysOn` (it REPLACES the default set) that
+ * names only `task_list` ⇒ the other three are deferred, reachable through
+ * `tool_search`; or an `allowTools` scope (AGENT.md `tools:`) that names only
+ * `task_list` ⇒ they are not registered at all. `session_capabilities`
+ * shows which list the harness actually loaded. Pinned by
+ * `__tests__/task-tools-visibility.test.ts`.
+ *
  * Caller identity drives ACL + the default board: a scoped child arrives
  * with `callerScope.ownerSessionId` (the same identity the policy tools
  * scope on) → a `{kind:"session"}` caller whose default board is its
@@ -236,7 +247,9 @@ export function registerTaskTools(
       "COMPACT BY DEFAULT: each task is a slim projection (taskId/rev/title/" +
       "status/owner/boardId/blockedBy/hasVerify/createdAt/updatedAt/closedAt); " +
       "pass `full: true` (or `compact: false`) for the complete record " +
-      "(description, verify spec, meta, sessions, verification, …).",
+      "(description, verify spec, meta, sessions, verification, …). " +
+      "Writes: task_create/task_claim/task_update — if unlisted, " +
+      "`tool_search` `select:task_create,task_claim,task_update`.",
     inputSchema: taskListSchema,
     handler: async (input) => {
       if (!ledger) return notAvailable
