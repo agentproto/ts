@@ -245,6 +245,24 @@ describe("OidcDeviceClient", () => {
     expect(store.value).toBeNull()
   })
 
+  it("concurrent callers share one refresh (rotating refresh tokens)", async () => {
+    const world = new FakeWorld()
+    const store = memoryStore()
+    store.value = { accessToken: "old", refreshToken: "refresh-0", expiresAt: 0 }
+    const client = new OidcDeviceClient({
+      config: { issuer: ISSUER, clientId: "client-1" },
+      store,
+      fetch: world.fetch,
+    })
+    const [a, b, c] = await Promise.all([
+      client.accessToken({ forceRefresh: true }),
+      client.accessToken({ forceRefresh: true }),
+      client.accessToken(),
+    ])
+    expect(world.refreshes).toBe(1)
+    expect(new Set([a, b, c]).size).toBe(1)
+  })
+
   it("fails clearly when the issuer has no device endpoint", async () => {
     const fetchImpl: FetchLike = async () => respond(200, { token_endpoint: `${ISSUER}/t` })
     const client = new OidcDeviceClient({

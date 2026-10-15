@@ -149,7 +149,7 @@ export function fileSessionStore(path: string): OidcSessionStore {
       }
     },
     async write(session) {
-      await mkdir(dirname(path), { recursive: true })
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 })
       await writeFile(path, JSON.stringify(session), { mode: 0o600 })
       await chmod(path, 0o600).catch(() => {})
     },

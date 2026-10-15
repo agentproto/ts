@@ -100,6 +100,9 @@ export class OidcDeviceClient {
   private discovery: Discovery | null = null
   private pending: (DeviceLoginPrompt & { done: Promise<void> }) | null = null
   private lastFailure: string | null = null
+  /** One refresh at a time: IdPs that rotate refresh tokens (Zitadel does)
+   *  reject the second concurrent use with invalid_grant. */
+  private refreshing: Promise<string> | null = null
 
   constructor(opts: OidcDeviceClientOptions) {
     this.cfg = opts.config
@@ -192,10 +195,17 @@ export class OidcDeviceClient {
     if (!s.refreshToken) {
       throw new OidcError("login_required", "session expired and has no refresh token — run tunnel_login again")
     }
+    this.refreshing ??= this.refresh(s.refreshToken).finally(() => {
+      this.refreshing = null
+    })
+    return this.refreshing
+  }
+
+  private async refresh(refreshToken: string): Promise<string> {
     const d = await this.discover()
     const res = await this.post(d.token_endpoint, {
       grant_type: "refresh_token",
-      refresh_token: s.refreshToken,
+      refresh_token: refreshToken,
       client_id: this.cfg.clientId,
     })
     const body = (await res.json()) as TokenResponse
@@ -206,7 +216,7 @@ export class OidcDeviceClient {
       }
       throw new OidcError(body.error ?? "refresh_failed", `token refresh failed (${res.status})`)
     }
-    const next = this.toSession(body, s.refreshToken)
+    const next = this.toSession(body, refreshToken)
     await this.store.write(next)
     return next.accessToken
   }
