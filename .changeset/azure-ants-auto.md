@@ -3,4 +3,4 @@
 "@agentproto/runtime": minor
 ---
 
-Add `tunnel login` command and POST /tunnels/login endpoint
+Add `agentproto tunnel login`, `POST|GET /tunnels/login` and `PUT /tunnels/providers/:slug` (provider setup over HTTP)
