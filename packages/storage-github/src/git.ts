@@ -29,6 +29,15 @@ export type GitRunner = (
   opts: GitRunOpts,
 ) => GitResult
 
+/** Runner whose result arrives later — the shape when the git invocation is
+ *  executed over a remote seam (e.g. a sandbox box's per-command exec) rather
+ *  than spawned locally. Sync runners satisfy it too (`GitResult` awaits as
+ *  itself). */
+export type AsyncGitRunner = (
+  args: readonly string[],
+  opts: GitRunOpts,
+) => Promise<GitResult>
+
 export interface GitRunOpts {
   /** Working directory for `git -C`. */
   cwd: string
@@ -76,14 +85,16 @@ export function buildGitEnv(
  * token never appears on the command line of `clone`/`push`/`fetch`.
  *
  * This is idempotent — `git config --replace-all` overwrites a prior entry.
+ * The runner may be async (see {@link AsyncGitRunner}); the result is not
+ * checked here — the caller scrubs/verifies what it cares about.
  */
-export function writeAuthConfig(
-  runner: GitRunner,
+export async function writeAuthConfig(
+  runner: GitRunner | AsyncGitRunner,
   cwd: string,
   token: string,
-): void {
+): Promise<void> {
   const header = `Authorization: Basic ${btoa(`x-access-token:${token}`)}`
-  runner(
+  await runner(
     [
       "config",
       "--replace-all",

@@ -44,6 +44,16 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import type { SandboxExecOpts } from "@agentproto/sandbox"
+import type { SandboxExec } from "./sandbox-workspace-remote.js"
+import { workspaceFromMarkdownText } from "@agentproto/app-kit"
+import {
+  createGithubWorkspaceSync,
+  type AsyncGitRunner,
+  type GithubStorageConfig,
+} from "@agentproto/storage-github"
+import { declaredGithubWorkspace } from "./app-workspace.js"
+import type { SyncTree } from "@agentproto/storage-github"
 
 /** Default port `appServe` serves on when the caller doesn't pin one. */
 export const DEFAULT_APP_SERVE_PORT = 3210
@@ -235,6 +245,260 @@ export function mergeAllowlistForAppServe(existing: string | null): string {
   return `${JSON.stringify({ version: 1, commands }, null, 2)}\n`
 }
 
+// ── github workspace sync (A2) ─────────────────────────────────────────────
+
+/** The app's declared `storage: github` `pull-push` workspace, validated —
+ *  read from the app's in-box WORKSPACE.md and shaped for `SyncTree` /
+ *  `WorkspaceSync` reuse (never re-implemented git). */
+export interface AppGithubWorkspaceSync {
+  /** Absolute path INSIDE the box of the workspace clone (mount_path). */
+  dir: string
+  config: GithubStorageConfig
+  /** Env var names that may hold the GitHub token, in priority order. */
+  tokenEnv: readonly string[]
+}
+
+/** The serve-time github workspace outcome, returned to the spawn path so
+ *  the close hook can re-attach. Non-secret: named env vars, no values. */
+export interface AppGithubWorkspaceAtServe {
+  sync: AppGithubWorkspaceSync
+  ok: boolean
+  reason?: string
+}
+
+/** Token lookup for the sync — mirrors `app-workspace`'s default: the first
+ *  set env var among the declared names, on the HOST. */
+export function resolveGithubWorkspaceToken(
+  envNames: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  for (const name of envNames) {
+    const v = env[name]
+    if (v) return v
+  }
+  return undefined
+}
+
+/** Shell-quote one argument for an in-box `SandboxExec` command string. */
+function shQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`
+}
+
+/** An `AsyncGitRunner` over one in-box exec round-trip per git call. The
+ *  token rides `opts.env` (→ `SandboxExecOpts.env`, the provider SDK's
+ *  per-command merge) — never the command line; transport/timeout failures
+ *  collapse to a failed `GitResult` so the sync's own surfaces them. */
+export function boxGitRunner(exec: SandboxExec, timeoutMs = 120_000): AsyncGitRunner {
+  return async (args, opts) => {
+    const command = `git ${args.map(shQuote).join(" ")}`
+    try {
+      const res = await exec({
+        command,
+        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+        ...(opts.env ? { env: opts.env } : {}),
+        timeoutMs,
+      })
+      return { ok: res.exitCode === 0, stdout: res.stdout, stderr: res.stderr, status: res.exitCode }
+    } catch (err) {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: `box exec failed: ${err instanceof Error ? err.message : String(err)}`,
+        status: null,
+      }
+    }
+  }
+}
+
+/** A `SyncTree` over the box's filesystem through the same exec seam. Only
+ *  `walk` is meaningful to the sync (`pull`/`push` use it to detect an
+ *  empty/populated tree and count files); the read methods exist so the
+ *  tree satisfies the surface. `.git` collapses to a `.git/HEAD` entry —
+ *  what the github sync's populated check looks for. */
+export function boxSyncTree(exec: SandboxExec, dir: string): SyncTree {
+  return {
+    async exists(path) {
+      const res = await exec({ command: `test -e ${shQuote(`${dir}/${path}`)}` })
+      return res.exitCode === 0
+    },
+    async readFile(path) {
+      const res = await exec({ command: `cat ${shQuote(`${dir}/${path}`)}` })
+      if (res.exitCode !== 0) throw new Error(`cannot read "${path}" in the box: ${res.stderr.trim()}`)
+      return res.stdout
+    },
+    async writeFile() {
+      throw new Error("boxSyncTree does not write files — git does the writing")
+    },
+    async walk() {
+      const res = await exec({
+        command: `cd ${shQuote(dir)} && find . -mindepth 1 | grep -v '^\\./\\.git/' | head -1000`,
+      })
+      if (res.exitCode !== 0) return []
+      return res.stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((entry: string) => entry.replace(/^\.\//, ""))
+        .map((entry: string) => (entry === ".git" ? ".git/HEAD" : entry))
+    },
+  }
+}
+
+/** Read the app's WORKSPACE.md from the box and resolve its github sync
+ *  declaration. `undefined` (no declaration / unparsable / unreadable /
+ *  `dir` unusable) means no sync — the serve keeps going, exactly like a
+ *  non-github app. */
+export async function readAppGithubWorkspaceSync(
+  exec: SandboxExec,
+  dir: string,
+): Promise<AppGithubWorkspaceSync | undefined> {
+  if (dir.includes("'")) return undefined
+  const res = await exec({
+    command: `cat ${shQuote(`${dir.endsWith("/") ? dir.slice(0, -1) : dir}/WORKSPACE.md`)}`,
+  }).catch(() => undefined)
+  if (res === undefined || res.exitCode !== 0) return undefined
+  const decl = declaredGithubWorkspace(workspaceFromMarkdownText(res.stdout))
+  if (!decl || decl.dir.includes("'")) return undefined
+  return { dir: decl.dir, config: decl.config, tokenEnv: decl.tokenEnv }
+}
+
+export interface AppGithubWorkspacePullOpts {
+  /** Host-side token lookup over the declared env names. Defaults to the
+   *  spawn daemon's own process env. */
+  resolveToken?: (envNames: readonly string[]) => string | undefined
+  /** Overrides the clone/fetch URL (local origin in tests). Never read
+   *  from the manifest: the token must only ever reach the validated
+   *  github.com `repoUrl`. */
+  cloneUrl?: string
+}
+
+export type AppGithubWorkspacePullResult =
+  | { ok: true; dir: string; message: string }
+  | { ok: false; reason: string }
+
+/**
+ * Pull the app's github workspace inside the box through
+ * `createGithubWorkspaceSync`'s pull contract: an empty/missing mount dir is
+ * cloned, an existing checkout is fetched + merged (`--ff-only` — a diverged
+ * local branch fails the pull rather than being clobbered). Never throws:
+ * a failed pull is reported and the serve continues. After a seed clone the
+ * token header storage-github stamps into `.git/config` is scrubbed — no
+ * credential at rest in the box, same guarantee as A1's host-side clone.
+ */
+export async function pullAppGithubWorkspace(
+  exec: SandboxExec,
+  sync: AppGithubWorkspaceSync,
+  opts: AppGithubWorkspacePullOpts = {},
+): Promise<AppGithubWorkspacePullResult> {
+  const token = (opts.resolveToken ?? resolveGithubWorkspaceToken)(sync.tokenEnv)
+  if (!token) {
+    return { ok: false, reason: `no GitHub token (set one of ${sync.tokenEnv.join(", ")})` }
+  }
+  const runner = boxGitRunner(exec)
+  const config: GithubStorageConfig = {
+    ...sync.config,
+    ...(opts.cloneUrl !== undefined ? { cloneUrl: opts.cloneUrl } : {}),
+  }
+  const syncer = createGithubWorkspaceSync(config, { workspaceDir: sync.dir, token }, {})
+  try {
+    await exec({ command: `mkdir -p ${shQuote(sync.dir)}` })
+    const res = await syncer.pull(boxSyncTree(exec, sync.dir))
+    const failed = !res.seeded && res.message.includes("failed")
+    if (failed) return { ok: false, reason: res.message }
+    if (res.seeded) {
+      // Same at-rest scrub as A1's host-side clone.
+      await runner(["config", "--remove-section", "http.https://github.com/"], { cwd: sync.dir })
+    }
+    return { ok: true, dir: sync.dir, message: res.message }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `github workspace pull failed: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+}
+
+/**
+ * The opt-in push hook for session close. Returns `undefined` unless the
+ * declaration explicitly opts in: a `sync.push` with BOTH a non-`main`
+ * `branch_policy` and a non-`none` `pr_policy` — a declaration that stays
+ * silent (or asks for `main`) never pushes, and the base branch is never
+ * pushed directly (branch + PR only, per the plan). The hook itself swallows
+ * everything: a push that can't run (no token, box gone) is warned about in
+ * the serve log, never blocks the teardown it precedes.
+ */
+export function createGithubWorkspacePushAtClose(input: {
+  sync: AppGithubWorkspaceSync
+  exec?: SandboxExec
+  /** Conversation id for a `per-conversation` branch policy — the spawning
+   *  session's id when known; `agentproto/<now>` when not. */
+  sessionId?: string
+  resolveToken?: (envNames: readonly string[]) => string | undefined
+  cloneUrl?: string
+}): (() => Promise<void>) | undefined {
+  const { sync } = input
+  const { branchPolicy, prPolicy } = sync.config
+  // No exec seam → nothing can push, so don't return a hook that always
+  // silently no-ops: `undefined` reads as "not opted in".
+  if (!input.exec) return undefined
+  const optsOut =
+    branchPolicy === undefined ||
+    prPolicy === undefined ||
+    branchPolicy === "main" ||
+    prPolicy === "none"
+  if (optsOut) return undefined
+  return async () => {
+    const exec = input.exec
+    if (!exec) return
+    try {
+      const token = (input.resolveToken ?? resolveGithubWorkspaceToken)(sync.tokenEnv)
+      if (!token) {
+        console.warn(
+          `[app-serve] github workspace push skipped: no GitHub token ` +
+            `(set one of ${sync.tokenEnv.join(", ")})`,
+        )
+        return
+      }
+      const syncer = createGithubWorkspaceSync(
+        {
+          ...sync.config,
+          ...(input.cloneUrl !== undefined ? { cloneUrl: input.cloneUrl } : {}),
+        },
+        {
+          workspaceDir: sync.dir,
+          token,
+          ...(input.sessionId !== undefined ? { conversationId: input.sessionId } : {}),
+        },
+        {},
+      )
+      const res = await syncer.push(boxSyncTree(exec, sync.dir), {
+        summary: `agentproto app-workspace sync (session ${input.sessionId ?? "close"})`,
+      })
+      if (res.kind !== "pushed" && res.kind !== "no_changes") {
+        console.warn(`[app-serve] github workspace push failed: ${res.message}`)
+      }
+    } catch (err) {
+      console.warn(
+        `[app-serve] github workspace push failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+}
+
+/** Compose the proxy's single `onBeforeTeardown` slot from up to two
+ *  hooks: the delivery hook first (deadline-budgeted, box-critical), then
+ *  the github workspace push. Each swallows its own failures; `undefined`
+ *  slices drop out. */
+export function composeTeardownHooks(
+  ...hooks: Array<(() => Promise<void>) | undefined>
+): (() => Promise<void>) | undefined {
+  const present = hooks.filter(x => x !== undefined)
+  if (present.length === 0) return undefined
+  if (present.length === 1) return present[0]!
+  return async () => {
+    for (const hook of present) await hook()
+  }
+}
+
 // ── orchestration ───────────────────────────────────────────────────────────
 
 /** The slice of a booted sandbox host the serve bootstrap needs — the shape
@@ -243,10 +507,22 @@ export interface SandboxServeHost {
   mcpUrl: string
   ports?: Record<number, string>
   expose?(port: number): Promise<{ url: string }>
+  /** Per-command execution inside the box — `BootedSandbox.exec`. Present
+   *  when the provider can shell into the box. The github workspace sync
+   *  rides this seam: git never runs host-side against an in-box path, and
+   *  the token reaches each command through `SandboxExecOpts.env` (the
+   *  provider SDK's per-command env merge — never the command line). */
+  exec?: SandboxExec
 }
 
 export type StartSandboxAppServeResult =
-  | { ok: true; appServe: SessionAppServeInfo }
+  | {
+      ok: true
+      appServe: SessionAppServeInfo
+      /** The app's declared github workspace pull outcome — present only
+       *  when the app declares a `storage: github` `pull-push` workspace. */
+      githubWorkspace?: AppGithubWorkspaceAtServe
+    }
   | { ok: false; message: string }
 
 /** Readiness probe: fetch the served URL and report whether it answered OK.
@@ -381,6 +657,12 @@ export async function startSandboxAppServe(
     /** Client factory — injectable for tests; defaults to a real MCP
      *  connection against `host.mcpUrl`. */
     connect?: (mcpUrl: string) => Promise<BoxToolClient>
+    /** Github workspace sync injection for tests — default resolves the
+     *  token from the spawn daemon's process env over the declared names. */
+    github?: {
+      resolveToken?: (envNames: readonly string[]) => string | undefined
+      cloneUrl?: string
+    }
   },
 ): Promise<StartSandboxAppServeResult> {
   const port = req.port ?? DEFAULT_APP_SERVE_PORT
@@ -420,6 +702,35 @@ export async function startSandboxAppServe(
 
   try {
     const appId = await installApp(client, req.dir)
+    // A2 — the app's github workspace: ensure it is present and up to date
+    // AFTER app_install and BEFORE the UI server launches. Best-effort: an
+    // invalid or unparsable declaration, a missing token, or a failed pull
+    // only warns — never breaks the serve. (The exec seam is absent for a
+    // provider that cannot shell into the box: the sync is skipped.)
+    let githubWorkspace: AppGithubWorkspaceAtServe | undefined
+    if (host.exec) {
+      try {
+        const sync = await readAppGithubWorkspaceSync(host.exec, req.dir)
+        if (sync) {
+          const pulled = await pullAppGithubWorkspace(host.exec, sync, {
+            ...(opts?.github ? { resolveToken: opts.github.resolveToken } : {}),
+            ...(opts?.github?.cloneUrl !== undefined ? { cloneUrl: opts.github.cloneUrl } : {}),
+          })
+          githubWorkspace = {
+            sync,
+            ok: pulled.ok,
+            ...(pulled.ok ? {} : { reason: pulled.reason }),
+          }
+          if (!pulled.ok) {
+            console.warn(`[app-serve] github workspace not synced: ${pulled.reason}`)
+          }
+        }
+      } catch (err) {
+        console.warn(
+          `[app-serve] github workspace not synced: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
     await seedAllowlist(client)
     await launchServeProcess(client, req.dir, port)
     const ready = await pollServeReady(url, {
@@ -439,6 +750,7 @@ export async function startSandboxAppServe(
     return {
       ok: true,
       appServe: { appId, dir: req.dir, port, url, ready, ...(message !== undefined ? { message } : {}) },
+      ...(githubWorkspace ? { githubWorkspace } : {}),
     }
   } catch (err) {
     return {

@@ -8,7 +8,7 @@
  * which `app-boundary.ts` deliberately keeps hidden from app sessions.
  */
 
-import { mkdir, readdir, stat } from "node:fs/promises"
+import { mkdir, readdir, rmdir, stat } from "node:fs/promises"
 import { isAbsolute } from "node:path"
 import { loadAppHandle } from "@agentproto/app-kit"
 import {
@@ -142,7 +142,9 @@ async function ensureGithubWorkspace(
   opts: GithubWorkspaceOptions = {},
 ): Promise<{ ok: true; dir: string } | { ok: false; reason: string }> {
   const { dir } = decl
+  let isExisting = false
   if (await isDirectory(dir)) {
+    isExisting = true
     const entries = await readdir(dir)
     if (entries.includes(".git")) return { ok: true, dir }
     if (entries.length > 0) {
@@ -162,10 +164,17 @@ async function ensureGithubWorkspace(
     { workspaceDir: dir, token },
     opts.gitRunner ? { gitRunner: opts.gitRunner } : {},
   )
+  const createdDir = !isExisting
   await mkdir(dir, { recursive: true })
   const res = await fs.pull(fs)
-  if (!res.seeded) return { ok: false, reason: res.message ?? "clone failed" }
-  scrubPersistedAuth(opts.gitRunner ?? realGitRunner, dir)
+  if (!res.seeded) {
+    // Only remove the mount when WE created it for this clone; a pre-existing
+    // (empty) dir is the user's and stays. rmdir only succeeds when truly
+    // empty, so it can never delete anything of the user's.
+    if (createdDir) await rmdir(dir).catch(() => undefined)
+    return { ok: false, reason: res.message ?? "clone failed" }
+  }
+  await scrubPersistedAuth(opts.gitRunner ?? realGitRunner, dir)
   return { ok: true, dir }
 }
 
@@ -173,10 +182,16 @@ async function ensureGithubWorkspace(
  * Remove the token header storage-github persists in the clone's `.git/config`
  * on a seed clone. Later git invocations authenticate via `buildGitEnv`, so the
  * at-rest entry is unnecessary; leaving it would expose the daemon's token to
- * the declaring app's own sessions. A missing section is not an error.
+ * the declaring app's own sessions. A missing section is not an error; any
+ * other failure is warned about so the "no credential at rest" guarantee is
+ * self-checking instead of silently dropped.
  */
-function scrubPersistedAuth(runner: GitRunner, cwd: string): void {
-  runner(["config", "--remove-section", "http.https://github.com/"], { cwd })
+async function scrubPersistedAuth(runner: GitRunner, cwd: string): Promise<void> {
+  const res = runner(["config", "--remove-section", "http.https://github.com/"], { cwd })
+  if (res.ok) return
+  const detail = res.stderr.trim() || res.stdout.trim() || "(no output)"
+  if (detail.includes("no such section")) return
+  console.warn(`[app-workspace] could not scrub the persisted auth entry from "${cwd}": ${detail}`)
 }
 
 function defaultResolveToken(envNames: readonly string[]): string | undefined {

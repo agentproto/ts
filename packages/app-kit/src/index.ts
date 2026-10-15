@@ -39,7 +39,7 @@
 
 export { defineApp, AppDefinitionError } from "./define-app.js"
 export { emitApp } from "./emit.js"
-export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi } from "./load-app.js"
+export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFromMarkdownText } from "./load-app.js"
 export type { AppUiPeek } from "./load-app.js"
 export { loadAppBundledTools } from "./load-app-tools.js"
 export {

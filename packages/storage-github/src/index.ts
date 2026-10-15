@@ -35,7 +35,7 @@ export { createGithubWorkspaceSync } from "./github-sync.js"
 export type { GithubWorkspaceSyncOpts } from "./github-sync.js"
 export { parseGithubRepo, createOctokitPrCreator } from "./pr.js"
 export type { PrCreator, PrResult } from "./pr.js"
-export { buildGitEnv, realGitRunner, writeAuthConfig } from "./git.js"
+export { buildGitEnv, realGitRunner, writeAuthConfig, type AsyncGitRunner } from "./git.js"
 export type { GitRunner, GitResult, GitRunOpts } from "./git.js"
 
 /** Capabilities metadata the registry indexes (AIP-43). */
