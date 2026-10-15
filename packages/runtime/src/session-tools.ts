@@ -793,6 +793,9 @@ export interface SessionListCompactItem {
   id: string
   kind: SessionDescriptor["kind"]
   origin?: string
+  /** Addressable human handle (see `SessionDescriptor.slug`) — the compact
+   *  list carries it so a client can address by slug without a full GET. */
+  slug?: SessionDescriptor["slug"]
   name?: string
   label?: string
   status: SessionDescriptor["status"]
@@ -912,6 +915,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   id: s.id,
   kind: s.kind,
   ...(s.origin ? { origin: s.origin } : {}),
+  ...(s.slug ? { slug: s.slug } : {}),
   name: s.name,
   label: s.label,
   status: s.status,

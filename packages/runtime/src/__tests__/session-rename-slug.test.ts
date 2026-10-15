@@ -16,7 +16,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
-import { registerSessionTools } from "../session-tools.js"
+import { registerSessionTools, compactSessionItem } from "../session-tools.js"
 
 function fakeHarness(): AgentSessionLike {
   return {
@@ -109,5 +109,12 @@ describe("session_rename accepts a slug override", () => {
     const result = await call({ sessionId: id })
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect(textOf(result)).toContain("nothing_to_rename")
+  })
+
+  it("surfaces the slug on the compact session_list projection", () => {
+    const id = spawn()
+    reg.renameSession(id, { slug: "compact-visible" })
+    const item = compactSessionItem(reg.get(id)!)
+    expect(item.slug).toBe("compact-visible")
   })
 })
