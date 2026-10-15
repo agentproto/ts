@@ -56,13 +56,58 @@
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
       ]
+    },
+    "opencode-go-step5-free": {
+      "reviewerAdapter": "opencode",
+      "reviewerAuthMode": "api-key",
+      "reviewerModel": "opencode-go/step-5-preview-free",
+      "reviewerSandbox": {
+        "provider": "e2b",
+        "lifecycle": {
+          "destroy_on": "workspace-close"
+        }
+      },
+      "reviewerSandboxEnv": [
+        "OPENCODE_API_KEY",
+        "GITHUB_TOKEN"
+      ]
+    },
+    "opencode-go-longcat-free": {
+      "reviewerAdapter": "opencode",
+      "reviewerAuthMode": "api-key",
+      "reviewerModel": "opencode-go/longcat-2.5-preview-free",
+      "reviewerSandbox": {
+        "provider": "e2b",
+        "lifecycle": {
+          "destroy_on": "workspace-close"
+        }
+      },
+      "reviewerSandboxEnv": [
+        "OPENCODE_API_KEY",
+        "GITHUB_TOKEN"
+      ]
+    },
+    "opencode-go-deepseek-flash": {
+      "reviewerAdapter": "opencode",
+      "reviewerAuthMode": "api-key",
+      "reviewerModel": "opencode-go/deepseek-v4.1-flash",
+      "reviewerSandbox": {
+        "provider": "e2b",
+        "lifecycle": {
+          "destroy_on": "workspace-close"
+        }
+      },
+      "reviewerSandboxEnv": [
+        "OPENCODE_API_KEY",
+        "GITHUB_TOKEN"
+      ]
     }
   },
   "agentActions": {
     "review": {
       "env": "AGENT_REVIEW_PRESETS",
       "presets": [
-        "opencode-deepseek-free",
+        "opencode-go-deepseek-flash",
         "opencode-mimo-free",
         "opencode-step5-free",
         "claude-cloud"
