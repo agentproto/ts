@@ -54,6 +54,51 @@ export function cloudChildEnv(
   return out
 }
 
+// ── TUI output normalization ────────────────────────────────────────────────
+
+/** Matches every terminal escape sequence the claude TUI emits: an OSC
+ *  (`\x1b]…\x07` or `\x1b]…\x1b\\`), a CSI (`\x1b[…<final byte>`), or a lone
+ *  two-byte `\x1b<char>`. Order matters — OSC and CSI are consumed before the
+ *  lone-ESC fallback can eat their introducer. */
+const ANSI_ESCAPE_RE =
+  /\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b./g
+
+/**
+ * The one normalization every regex over live PTY output must run on. The
+ * claude TUI draws text word-by-word, positioning each run with a
+ * cursor-column escape (`\x1b[12Gworkspace:`) instead of a space, so a raw
+ * `Yes, I trust this folder` never appears literally and the old matcher
+ * stalled until timeout. Here each escape sequence becomes one space, runs of
+ * horizontal whitespace collapse to one space, and runs of blank lines
+ * collapse to one newline — line boundaries are preserved so the
+ * line-oriented `Created cloud session` / `--teleport` regexes below keep
+ * working. Pure and exported so tests can target it directly and so no future
+ * matcher can reintroduce the same class of bug.
+ */
+export function normalizePtyOutput(raw: string): string {
+  return raw
+    .replace(ANSI_ESCAPE_RE, " ")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n[ \t]*(?:\n[ \t]*)+/g, "\n")
+    .trim()
+}
+
+/** The trust prompt only ever appears INTERLEAVED with cursor escapes. */
+const TRUST_PROMPT_RE = /Yes,\s*I\s*trust\s*this\s*folder/i
+
+/** Cap on {@link ptyOutputTail}: enough to see the stalled screen, short
+ *  enough that no incidental material can ride into a log. */
+const PTY_TAIL_CHARS = 300
+
+/** ANSI-stripped tail (last ~300 chars) of raw PTY output, for diagnosing a
+ *  PTY stall from the thrown error alone. */
+export function ptyOutputTail(raw: string, maxChars = PTY_TAIL_CHARS): string {
+  const stripped = normalizePtyOutput(raw)
+  return stripped.length > maxChars
+    ? stripped.slice(stripped.length - maxChars)
+    : stripped
+}
+
 // ── injectable runner ───────────────────────────────────────────────────────
 
 export interface RunResult {
@@ -88,9 +133,44 @@ export interface CloudCliRunner {
 
 const DEFAULT_RUN_TIMEOUT_MS = 60_000
 
+/** Options handed to a {@link PtySpawn} call (the node-pty fork options this
+ *  adapter actually sets). */
+export interface PtySpawnOptions {
+  name: string
+  cols: number
+  rows: number
+  cwd: string
+  env: Record<string, string>
+}
+
+/** The subset of node-pty's `IPty` surface this adapter drives. Structural, so
+ *  the real `IPty` satisfies it and a test can stand in a fake PTY. */
+export interface PtyProcess {
+  onData(cb: (chunk: string) => void): void
+  onExit(cb: (event: { exitCode: number }) => void): void
+  write(data: string): void
+  kill(signal?: string): void
+}
+
+/** Spawns a PTY. Production is node-pty's `spawn`; tests inject a fake. */
+export type PtySpawn = (
+  cmd: string,
+  args: string[],
+  opts: PtySpawnOptions,
+) => PtyProcess
+
+export interface CloudCliRunnerDeps {
+  /** Test seam: override node-pty's `spawn` so the PTY paths can be driven
+   *  from fixtures without a real claude CLI or a native PTY. Production
+   *  leaves it unset and node-pty is lazily imported. */
+  spawnPty?: PtySpawn
+}
+
 /** Real runner: child_process for headless calls, node-pty (optional dep)
  *  for the TTY-required `claude --cloud` start. */
-export function defaultCloudCliRunner(): CloudCliRunner {
+export function defaultCloudCliRunner(
+  deps: CloudCliRunnerDeps = {},
+): CloudCliRunner {
   return {
     run(cmd, args, opts) {
       return new Promise<RunResult>((resolve, reject) => {
@@ -124,72 +204,91 @@ export function defaultCloudCliRunner(): CloudCliRunner {
       })
     },
     runPty(cmd, args, opts) {
-      let resolveResult: (v: { code: number; output: string }) => void
-      let rejectResult: (err: unknown) => void
+      let resolveResult!: (v: { code: number; output: string }) => void
+      let rejectResult!: (err: unknown) => void
       const result = new Promise<{ code: number; output: string }>((res, rej) => {
         resolveResult = res
         rejectResult = rej
       })
-      let proc: import("node-pty").IPty | null = null
+      let proc: PtyProcess | null = null
       const pendingWrites: string[] = []
-      // node-pty is an optional native dep (same policy as @agentproto/cli):
-      // load it lazily and fail with an actionable message when absent.
-      void import("node-pty")
-        .then(mod => {
-          // node-pty is CJS — `import()` wraps it under `.default`.
-          const pty = (mod as { default?: { spawn: typeof import("node-pty").spawn } }).default ?? (mod as unknown as { spawn: typeof import("node-pty").spawn })
-          if (typeof pty.spawn !== "function") throw new Error("node-pty has no spawn")
-          const p = pty.spawn(cmd, args, {
-            name: "xterm-256color",
-            cols: 120,
-            rows: 40,
-            cwd: opts.cwd,
-            env: opts.env,
-          })
-          proc = p
-          for (const data of pendingWrites) p.write(data)
-          pendingWrites.length = 0
-          let output = ""
-          let answeredTrustPrompt = false
-          p.onData((chunk: string) => {
-            output += chunk
-            opts.onData?.(chunk)
-            // First run in a folder shows a trust prompt whose DEFAULT
-            // highlighted option is "No, exit" — Down + Enter picks
-            // "Yes, I trust this folder". Answer at most once.
-            if (!answeredTrustPrompt && /Yes, I trust this folder/.test(output)) {
-              answeredTrustPrompt = true
-              p.write("\x1b[B\r")
-            }
-          })
-          const timer = setTimeout(() => {
-            try {
-              p.kill("SIGKILL")
-            } catch {
-              // already dead
-            }
-            rejectResult(
-              new Error(
-                `claude code cloud: \`${cmd} ${args.join(" ")}\` timed out after ` +
-                  `${opts.timeoutMs ?? 120_000}ms under the PTY`,
-              ),
-            )
-          }, opts.timeoutMs ?? 120_000)
-          timer.unref?.()
-          p.onExit(({ exitCode }: { exitCode: number }) => {
-            clearTimeout(timer)
-            resolveResult({ code: exitCode, output })
-          })
+      const attach = (spawnFn: PtySpawn) => {
+        const p = spawnFn(cmd, args, {
+          name: "xterm-256color",
+          cols: 120,
+          rows: 40,
+          cwd: opts.cwd,
+          env: opts.env,
         })
-        .catch(err => {
+        proc = p
+        for (const data of pendingWrites) p.write(data)
+        pendingWrites.length = 0
+        let output = ""
+        let answeredTrustPrompt = false
+        p.onData((chunk: string) => {
+          output += chunk
+          opts.onData?.(chunk)
+          // First run in a folder shows a trust prompt whose DEFAULT
+          // highlighted option is "No, exit" — Down + Enter picks
+          // "Yes, I trust this folder". The TUI renders it through cursor
+          // escapes, so match on the normalized transcript. Answer at most
+          // once.
+          if (
+            !answeredTrustPrompt &&
+            TRUST_PROMPT_RE.test(normalizePtyOutput(output))
+          ) {
+            answeredTrustPrompt = true
+            p.write("\x1b[B\r")
+          }
+        })
+        const timer = setTimeout(() => {
+          try {
+            p.kill("SIGKILL")
+          } catch {
+            // already dead
+          }
           rejectResult(
             new Error(
-              `claude code cloud: \`claude --cloud\` needs a real PTY and ` +
-                `node-pty is not available (${err instanceof Error ? err.message : String(err)}) — ` +
-                `install it (npm i node-pty) to use managed cloud sessions`,
+              `claude code cloud: \`${cmd} ${args.join(" ")}\` timed out after ` +
+                `${opts.timeoutMs ?? 120_000}ms under the PTY; last output: ` +
+                `${ptyOutputTail(output)}`,
             ),
           )
+        }, opts.timeoutMs ?? 120_000)
+        timer.unref?.()
+        p.onExit(({ exitCode }: { exitCode: number }) => {
+          clearTimeout(timer)
+          resolveResult({ code: exitCode, output })
         })
+      }
+      if (deps.spawnPty) {
+        try {
+          attach(deps.spawnPty)
+        } catch (err) {
+          rejectResult(err)
+        }
+      } else {
+        // node-pty is an optional native dep (same policy as @agentproto/cli):
+        // load it lazily and fail with an actionable message when absent.
+        void import("node-pty")
+          .then(mod => {
+            // node-pty is CJS — `import()` wraps it under `.default`.
+            const pty =
+              (mod as { default?: { spawn: PtySpawn } }).default ??
+              (mod as unknown as { spawn: PtySpawn })
+            if (typeof pty.spawn !== "function") throw new Error("node-pty has no spawn")
+            attach(pty.spawn)
+          })
+          .catch(err => {
+            rejectResult(
+              new Error(
+                `claude code cloud: \`claude --cloud\` needs a real PTY and ` +
+                  `node-pty is not available (${err instanceof Error ? err.message : String(err)}) — ` +
+                  `install it (npm i node-pty) to use managed cloud sessions`,
+              ),
+            )
+          })
+      }
       return {
         write: (data: string) => {
           if (proc) proc.write(data)
@@ -354,14 +453,18 @@ export interface StartedCloudSession {
 export function parseCloudStartOutput(
   output: string,
 ): StartedCloudSession | null {
+  // The transcript may be the same escape-separated TUI output the trust
+  // matcher sees — normalize first so these line regexes can't go dark the
+  // way the trust prompt did.
+  const transcript = normalizePtyOutput(output)
   let sessionId: string | undefined
   let url: string | undefined
   let title: string | undefined
 
-  const resume = output.match(/Resume with:\s*claude\s+--teleport\s+(session_[A-Za-z0-9_-]+)/)
+  const resume = transcript.match(/Resume with:\s*claude\s+--teleport\s+(session_[A-Za-z0-9_-]+)/)
   if (resume?.[1]) sessionId = resume[1]
 
-  const view = output.match(/View:\s*(https?:\/\/\S+)/)
+  const view = transcript.match(/View:\s*(https?:\/\/\S+)/)
   if (view?.[1]) {
     url = view[1]
     if (!sessionId) {
@@ -370,7 +473,7 @@ export function parseCloudStartOutput(
     }
   }
 
-  const created = output.match(/Created cloud session:\s*(.+)/)
+  const created = transcript.match(/Created cloud session:\s*(.+)/)
   if (created?.[1]) title = created[1].trim()
 
   if (!sessionId) return null
