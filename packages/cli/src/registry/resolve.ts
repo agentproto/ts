@@ -25,10 +25,11 @@ import { dirname, join, resolve as resolvePath } from "node:path"
 import { homedir } from "node:os"
 import { createRequire } from "node:module"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import type {
-  AgentCliHandle,
-  AgentCliMode,
-  AgentCliRouteSelection,
+import {
+  spawnEnforcedPostures,
+  type AgentCliHandle,
+  type AgentCliMode,
+  type AgentCliRouteSelection,
 } from "@agentproto/driver-agent-cli"
 import {
   makeAdapterResolver,
@@ -163,6 +164,14 @@ export interface AdapterInfo {
    * guessed here.
    */
   provider?: string
+  /**
+   * Canonical postures this adapter turns into a real permission boundary
+   * through its isolated spawn config (claude-code's `permissions.defaultMode`,
+   * opencode's `permission` block) — see the driver's `spawnEnforcedPostures`.
+   * Lets a pre-spawn picker label those postures enforced rather than
+   * advisory. Omitted when the adapter enforces none this way.
+   */
+  spawnEnforcedPostures?: string[]
 }
 
 /** One entry of an adapter's declared model menu, projected from a
@@ -914,7 +923,13 @@ function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
       ? { routeSelection: toRouteSelection(handle.routeSelection) }
       : {}),
     ...(typeof handle.provider === "string" ? { provider: handle.provider } : {}),
+    ...spawnEnforcedPosturesField(typeof handle.id === "string" ? handle.id : slug),
   }
+}
+
+function spawnEnforcedPosturesField(id: string): { spawnEnforcedPostures?: string[] } {
+  const postures = spawnEnforcedPostures({ id })
+  return postures.length > 0 ? { spawnEnforcedPostures: [...postures] } : {}
 }
 
 export async function listInstalledAdapters(opts?: {

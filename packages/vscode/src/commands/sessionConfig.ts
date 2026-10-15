@@ -155,6 +155,11 @@ async function runSessionConfigFlow(
     ...(catalog ? { catalog } : {}),
     profiles,
     ...(session.availableModes ? { availableModes: session.availableModes } : {}),
+    // The live session's report wins; the adapter listing covers a daemon
+    // that stamps it per adapter but not (yet) on this session.
+    ...((session.spawnEnforcedPostures ?? adapter.spawnEnforcedPostures)
+      ? { spawnEnforcedPostures: session.spawnEnforcedPostures ?? adapter.spawnEnforcedPostures }
+      : {}),
   })
   if (chips.length === 0) {
     vscode.window.showInformationMessage(

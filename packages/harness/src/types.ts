@@ -84,6 +84,11 @@ export interface StartAgentArgs {
     baseUrl?: string
   }
   effort?: string
+  /** Canonical posture (`plan`/`bypass`/`accept-edits`/`read-only`/`default`)
+   *  or a raw harness mode id, forwarded to `agent_start.posture`. A sandbox
+   *  handoff carries it so the BOX's own daemon applies it — native mode,
+   *  isolated spawn config (claude-code/opencode), or the advisory preamble. */
+  posture?: string | { harnessModeId: string }
   /** Reattach to a prior adapter conversation instead of starting blank —
    *  the box re-attach path (`session_restart` on a live box) passes the
    *  prior in-box session id; a daemon also accepts a raw adapter
@@ -118,6 +123,10 @@ export interface SessionDescriptor {
    *  spawn's `resumeSessionId` rehydrated the prior conversation; absent on
    *  a fresh spawn (or a resume the adapter rejected, which fell back). */
   resumeVia?: string
+  /** Canonical postures the session's adapter enforces through its isolated
+   *  spawn config (claude-code / opencode) — absent when none, or from an
+   *  older daemon that predates the field. */
+  spawnEnforcedPostures?: string[]
 }
 
 /** Connection options for the shared MCP transport. */

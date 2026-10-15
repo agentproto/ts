@@ -134,7 +134,7 @@ import {
   type SandboxAgentSessionHost,
   type SandboxSpec,
 } from "@agentproto/sandbox"
-import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import {
   formatDeliveryNotice,
   trackedSandboxDeliveryOpts,
@@ -1696,6 +1696,7 @@ export async function restartAgentSession(
     }
 
     let remoteSessionId: string
+    let boxSpawnEnforcedPostures: string[] | undefined
     try {
       const remoteDesc = await host.start({
         adapter: adapterSlug,
@@ -1711,6 +1712,10 @@ export async function restartAgentSession(
             }
           : {}),
         ...(effEffort ? { effort: effEffort } : {}),
+        // The box daemon applies the posture itself (native mode, isolated
+        // spawn config, or the advisory preamble) — the host never does for a
+        // sandbox session, so a restart that dropped it would lose it outright.
+        ...(effPosture !== undefined ? { posture: effPosture } : {}),
         ...(prev.label ? { label: prev.label } : {}),
         ...(sandboxMcpServers ? { mcpServers: toBoxMcpServerMounts(sandboxMcpServers) } : {}),
         // BOX-LOGIN BRIDGE: stamp `loginFile` ONLY on a copy that actually
@@ -1724,6 +1729,7 @@ export async function restartAgentSession(
           : {}),
       })
       remoteSessionId = remoteDesc.id
+      boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
       // The box reports `resumeVia` only when its own adapter actually
       // rehydrated the prior conversation. A blank answer after a resume
       // attempt (old box daemon that strips the unknown field, a row id it
@@ -1753,6 +1759,7 @@ export async function restartAgentSession(
       host,
       remoteSessionId,
       lifecyclePolicy,
+      ...(boxSpawnEnforcedPostures ? { spawnEnforcedPostures: boxSpawnEnforcedPostures } : {}),
       // BOX-LOGIN BRIDGE refresh — re-upload the copy when the HOST's login
       // file changes under this re-attached box (see `createBoxLoginRefresher`;
       // the proxy owns the throttle + closed/detached gate). Absent when the

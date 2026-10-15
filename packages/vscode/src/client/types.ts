@@ -393,6 +393,12 @@ export interface SessionDescriptor {
    *  live-switchable) rows from this — without it only prompt-injected advisory
    *  postures are offerable. */
   availableModes?: Array<{ id: string; name?: string; description?: string }>
+  /** Canonical postures this live session's adapter enforces through its
+   *  isolated spawn config (claude-code / opencode) even with no advertised
+   *  mode — mirror of `@agentproto/runtime` SessionDescriptor
+   *  .spawnEnforcedPostures. The picker labels those rows enforced (applied at
+   *  restart) instead of advisory. Absent from an older daemon. */
+  spawnEnforcedPostures?: string[]
   route?: RouteSpec
   contextProfile?: ContextProfile
   /** Named auth-profile echo for the `access` axis (SPEC §3.6) — mirrors the
@@ -685,6 +691,10 @@ export interface AdapterInfo {
     status?: "active" | "noop"
     status_note?: string
   }>
+  /** Canonical postures the adapter enforces through its isolated spawn
+   *  config (mirror of the CLI's `AdapterInfo.spawnEnforcedPostures`). Absent
+   *  from an older daemon, or when the adapter enforces none this way. */
+  spawnEnforcedPostures?: string[]
   /** Conventional model ids the adapter advertises. */
   models?: string[]
   /** Same models as `models`, in the same order, each carrying the
