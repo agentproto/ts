@@ -1880,14 +1880,18 @@ export interface SessionDescriptor {
    *  which matches both. */
   name?: string
   /** Human-readable, UNIQUE handle for this session (the addressing `slug`
-   *  of the session-addressing plan). Minted by `spawnAgent`/`spawnPty`
-   *  through `mintSlug` — a slugified `title || label || adapterSlug || kind`,
+   *  of the session-addressing plan). Minted through `mintSlug` and
    *  de-duplicated with `-2`, `-3`, … against every session currently held,
-   *  falling back to `sess-<shortid>` when the input slugifies to empty — and
-   *  overridable via `session_rename`/`renameSession`. Never empty once a
-   *  session exists; addressable through `sessionId`/`idOrName`/`slug`
-   *  everywhere. `name` is its deprecated alias (`getSlug(desc)`), never a
-   *  second source of truth. */
+   *  falling back to `sess-<shortid>` when the input slugifies to empty:
+   *  `spawnAgent` slugs `title || label || adapterSlug || kind`;
+   *  `spawnPty` slugs `name || label || adapterSlug || "terminal"` (a
+   *  caller-supplied terminal `name` wins, else the display label, else the
+   *  classified provider slug); the boot backfill slugs
+   *  `name || title || label || adapterSlug || kind`, preferring a legacy
+   *  row's existing `name` handle. Overridable via `session_rename`/
+   *  `renameSession`. Never empty once a session exists; addressable through
+   *  `sessionId`/`idOrName`/`slug` everywhere. `name` is its deprecated alias
+   *  (`getSlug(desc)`), never a second source of truth. */
   slug?: string
   /** Argv that was spawned. Persisted so `agentproto sessions restart`
    *  can clone the original shape without re-tokenizing the display
@@ -6585,7 +6589,9 @@ export function createSessionsRegistry(opts?: {
       const desc = rt.desc
       if (desc.slug !== undefined && desc.slug !== "") continue
       desc.slug = mintSlug(
-        desc.title || desc.label || desc.adapterSlug || desc.kind,
+        // Prefer a legacy row's existing `name` handle so backfill keeps the
+        // address a human already knows, rather than deriving a new one.
+        desc.name || desc.title || desc.label || desc.adapterSlug || desc.kind,
         candidate => isSlugTaken(candidate, desc.id),
         desc.id,
       )
@@ -10835,10 +10841,12 @@ export function createSessionsRegistry(opts?: {
       // A terminal's human handle is minted from a caller-supplied `name`
       // (the legacy `--name`/`terminal_start.name`, still the most explicit
       // request), else the display `label`, else the classified provider
-      // slug, else `terminal`. Deduped with `-2`, `-3`, … against every
-      // session the registry holds — the shared `mintSlug` replaces the old
-      // terminal-only guard, so a colliding name no longer throws; it just
-      // gets the next free suffix. Computed after `conversationSlug` below.
+      // slug, else `terminal`. Deduped with `-2`, `-3`, … against every LIVE
+      // session the registry holds; a DEAD holder's handle is reclaimed so
+      // `stop X && terminal --name X` round-trips. The shared `mintSlug`
+      // replaces the old terminal-only guard — a colliding name no longer
+      // throws; it just gets the next free suffix. Computed after
+      // `conversationSlug` below.
       const [bin, ...args] = input.argv
       if (!bin) {
         throw new Error("sessions.spawnPty: argv must include a binary")
@@ -10905,11 +10913,22 @@ export function createSessionsRegistry(opts?: {
         conversationStore?.configDirEnvVar && input.env
           ? input.env[conversationStore.configDirEnvVar]
           : undefined
-      const slug = mintSlug(
-        input.name || input.label || conversationSlug || "terminal",
-        candidate => isSlugTaken(candidate),
-        id,
-      )
+      // The handle this spawn wants. `stop X && terminal --name X` must
+      // round-trip: a DEAD holder's handle is free to reuse, so reclaim it
+      // (clearing the new `slug` and any legacy `name`) before minting, and
+      // only LIVE holders count as taken. `mintSlug` with an always-false
+      // predicate yields the bare slugified base (no de-dup), which is what
+      // we compare a holder against. Live collisions still append `-2`, `-3`.
+      const rawSlug = input.name || input.label || conversationSlug || "terminal"
+      const baseSlug = mintSlug(rawSlug, () => false, id)
+      for (const rt of sessions.values()) {
+        if (getSlug(rt.desc) !== baseSlug) continue
+        const status = rt.desc.status
+        if (status === "running" || status === "starting") continue
+        rt.desc.slug = undefined
+        rt.desc.name = undefined
+      }
+      const slug = mintSlug(rawSlug, candidate => isSlugTaken(candidate), id)
       const desc: SessionDescriptor = {
         id,
         kind: "terminal",

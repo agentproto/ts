@@ -110,6 +110,19 @@ describe("session slug", () => {
     reg.shutdown()
   })
 
+  it("reuses a dead terminal's handle so stop X && terminal --name X round-trips", () => {
+    const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: fakePtyFactory })
+    const first = spawnPty(reg, "dev-shell")
+    expect(first.slug).toBe("dev-shell")
+    reg.kill(first.id)
+    expect(reg.get(first.id)?.status).toBe("killed")
+
+    const second = spawnPty(reg, "dev-shell")
+    expect(second.slug).toBe("dev-shell")
+    expect(reg.findByIdOrName("dev-shell")?.id).toBe(second.id)
+    reg.shutdown()
+  })
+
   it("honours a slug override via renameSession and keeps it unique", () => {
     const reg = createSessionsRegistry({ persistPath, persist: false })
     const desc = spawnAgent(reg, "original")
@@ -200,6 +213,8 @@ describe("session slug", () => {
     it("keeps a legacy `name` resolvable after backfill adds a slug", () => {
       writeSnapshot([legacyRow({ name: "old-handle" })])
       const reg = createSessionsRegistry({ persistPath })
+      // Backfill prefers the existing handle, so the canonical slug matches it.
+      expect(reg.get("sess_legacy0001")?.slug).toBe("old-handle")
       expect(reg.findByIdOrName("old-handle")?.id).toBe("sess_legacy0001")
       reg.shutdown()
     })
