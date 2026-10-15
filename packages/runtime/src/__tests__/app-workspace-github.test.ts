@@ -19,6 +19,7 @@ import {
   registerAppWorkspace,
 } from "../app-workspace.js"
 import { findWorkspace, loadWorkspacesConfig } from "../workspaces-config.js"
+import { realGitRunner } from "@agentproto/storage-github"
 
 const APP_ID = "@test/git-app"
 const REPO_URL = "https://github.com/acme/pygmalion-home"
@@ -202,14 +203,33 @@ describe("github-backed app workspace", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("no GitHub token"))
   })
 
-  it("a failed clone falls back instead of throwing", async () => {
+  it("a failed clone falls back instead of throwing and leaves no empty dir", async () => {
     const mount = join(base, "badorigin")
     const home = await declaredWorkspaceHome(workspaceDecl(mount), {
       cloneUrl: join(base, "missing.git"),
       resolveToken: token,
     })
     expect(home).toBeUndefined()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("clone failed"))
+    // A2: the just-created empty dir is removed again — the failed
+    // declaration leaves nothing behind.
+    expect(existsSync(mount)).toBe(false)
+  })
+
+  it("warns when the persisted-auth scrub fails (self-checking guarantee)", async () => {
+    const mount = join(base, "scrub-fail")
+    const home = await declaredWorkspaceHome(workspaceDecl(mount), {
+      cloneUrl: origin,
+      resolveToken: token,
+      gitRunner: (args, opts) => {
+        // Fail ONLY the scrub call; everything else runs for real.
+        if (args.some(a => a.includes("remove-section"))) {
+          return { ok: false, stdout: "", stderr: "boom", status: 1 }
+        }
+        return realGitRunner(args, opts)
+      },
+    })
+    expect(home).toBe(mount)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("could not scrub the persisted auth"))
   })
 
   it("registerAppWorkspace registers the clone as the app's workspace path", async () => {

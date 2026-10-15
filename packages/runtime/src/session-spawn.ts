@@ -269,7 +269,11 @@ import {
 } from "./sandbox-ledger.js"
 import {
   DEFAULT_APP_SERVE_PORT,
+  composeTeardownHooks,
+  createGithubWorkspacePushAtClose,
+  resolveGithubWorkspaceTokenFromBroker,
   startSandboxAppServe,
+  type AppGithubWorkspaceAtServe,
   type SandboxAppServeSpec,
   type SessionAppServeInfo,
 } from "./sandbox-app-serve.js"
@@ -5908,8 +5912,14 @@ export async function bootSandboxAgentSession(opts: {
   // WP3 — install + serve the requested app INSIDE the box, then hand the
   // public URL back on the result (the caller stamps it onto the descriptor).
   let appServe: SessionAppServeInfo | undefined
+  let appGithubSync: AppGithubWorkspaceAtServe | undefined
   if (opts.appServe) {
-    const serve = await startSandboxAppServe(host, opts.appServe)
+    // The app-workspace token is resolved through the daemon's secrets
+    // broker (never ambient `process.env`) — the same posture the box's own
+    // boot secrets resolution uses above.
+    const serve = await startSandboxAppServe(host, opts.appServe, {
+      github: { resolveToken: resolveGithubWorkspaceTokenFromBroker },
+    })
     if (!serve.ok) {
       await host.stop().catch(() => undefined)
       recordSandboxState(host.sandboxId, "stopped")
@@ -5920,7 +5930,43 @@ export async function bootSandboxAgentSession(opts: {
       }
     }
     appServe = serve.appServe
+    // A2 — the app's declared github workspace, pulled to the box by the
+    // serve bootstrap; the push-at-close hook (when the declaration opts
+    // in) reuses the same declaration.
+    appGithubSync = serve.githubWorkspace
   }
+
+  // A2 — opt-in push of the app's github workspace at session close (branch
+  // + PR, never the base branch). Rides the proxy's `onBeforeTeardown` —
+  // the last moment the box filesystem is reachable — composed with the
+  // work-branch delivery hook when both exist; each swallows its own
+  // failures, so a push miss never blocks the teardown or the delivery.
+  const appGithubPushHook = appGithubSync
+    ? createGithubWorkspacePushAtClose({
+        sync: appGithubSync.sync,
+        ...(boxExec ? { exec: boxExec } : {}),
+        ...(deliverySessionId ? { sessionId: deliverySessionId } : {}),
+      })
+    : undefined
+  const trackedDeliveryOpts =
+    deliveryTarget && boxExec && deliverySessionId && workspacePlan
+      ? trackedSandboxDeliveryOpts({
+          exec: boxExec,
+          ...(boxReadFile ? { readFile: boxReadFile } : {}),
+          target: deliveryTarget,
+          outDir: sessionTranscriptDir(deliverySessionId),
+          config: opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+          baseRef: workspacePlan.baseRef,
+          // The box session id the checkpoint's conversation-store
+          // passenger is keyed by — the id this spawn's descriptor records
+          // as `adapterSessionId` (the proxy's `sessionId`).
+          adapterStore: { adapterSessionId: remoteSessionId, adapter: opts.adapter },
+          ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
+          ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
+          ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),
+        })
+      : undefined
+  const onBeforeTeardown = composeTeardownHooks(trackedDeliveryOpts?.onBeforeTeardown, appGithubPushHook)
 
   return {
     ok: true,
@@ -5949,23 +5995,8 @@ export async function bootSandboxAgentSession(opts: {
       // F2 — when the first prompt rode the spawn dial, don't re-send it as a
       // second `agent_prompt` dial (see `promptCarriedInStart`).
       ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
-      ...(deliveryTarget && boxExec && deliverySessionId && workspacePlan
-        ? trackedSandboxDeliveryOpts({
-            exec: boxExec,
-            ...(boxReadFile ? { readFile: boxReadFile } : {}),
-            target: deliveryTarget,
-            outDir: sessionTranscriptDir(deliverySessionId),
-            config: opts.checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
-            baseRef: workspacePlan.baseRef,
-            // The box session id the checkpoint's conversation-store
-            // passenger is keyed by — the id this spawn's descriptor records
-            // as `adapterSessionId` (the proxy's `sessionId`).
-            adapterStore: { adapterSessionId: remoteSessionId, adapter: opts.adapter },
-            ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
-            ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
-            ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),
-          })
-        : {}),
+      ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
+      ...(trackedDeliveryOpts?.checkpoint ? { checkpoint: trackedDeliveryOpts.checkpoint } : {}),
       ...(tarTarget && deliverySessionId
         ? tarCheckpointProxyOpts({
             exec: boxExec,

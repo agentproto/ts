@@ -53,6 +53,11 @@ import { recordSandboxState } from "./sandbox-ledger.js"
 import { resolveSandboxSecretFromBroker } from "./session-restart-core.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import { readTarTarget, tarCheckpointProxyOpts } from "./sandbox-tar-checkpoint.js"
+import {
+  composeTeardownHooks,
+  createGithubWorkspacePushAtClose,
+  readAppGithubWorkspaceSync,
+} from "./sandbox-app-serve.js"
 import type { SandboxProviderHandle, SandboxProviderResolver } from "./sandbox-adapters.js"
 import type {
   SandboxReattachResult,
@@ -273,24 +278,36 @@ export async function runSandboxReattachPass(opts: {
       desc.sandboxCheckpointOverride,
     )
     const tarTarget = deliveryTarget ? undefined : await readTarTarget(sessionTranscriptDir(desc.id))
-    const agentSession = createSandboxAgentSessionProxy({
-      host,
-      remoteSessionId: record.remoteSessionId,
-      lifecyclePolicy: { teardown },
-      ledger: { sandboxId, provider: providerSlug },
-      detachable: true,
-      initialTranscriptCursor: record.transcriptSeq,
-      ...(tarTarget
-        ? tarCheckpointProxyOpts({
+    // A2 — a re-attached session whose app declares a github workspace must
+    // still push it at close (same as spawn/restart): re-read the in-box
+    // declaration off the live box and re-attach the opt-in push hook.
+    let githubPushHook: (() => Promise<void>) | undefined
+    if (desc.appServe && host.exec) {
+      try {
+        const sync = await readAppGithubWorkspaceSync(host.exec, desc.appServe.dir)
+        if (sync) {
+          githubPushHook = createGithubWorkspacePushAtClose({
+            sync,
             exec: host.exec,
-            ...(host.readFile ? { readFile: host.readFile } : {}),
-            target: tarTarget,
-            outDir: sessionTranscriptDir(desc.id),
-            config: checkpointConfig,
-            notify: text => registry.recordNotice?.(desc.id, text),
+            sessionId: desc.id,
           })
-        : {}),
-      ...(deliveryTarget && host.exec
+        }
+      } catch {
+        // Unreadable declaration → no push here; never blocks re-attach.
+      }
+    }
+    const tarOpts = tarTarget
+      ? tarCheckpointProxyOpts({
+          exec: host.exec,
+          ...(host.readFile ? { readFile: host.readFile } : {}),
+          target: tarTarget,
+          outDir: sessionTranscriptDir(desc.id),
+          config: checkpointConfig,
+          notify: text => registry.recordNotice?.(desc.id, text),
+        })
+      : undefined
+    const deliveryOpts =
+      deliveryTarget && host.exec
         ? {
             onBeforeTeardown: createDeliveryHook({
               exec: host.exec,
@@ -315,7 +332,21 @@ export async function runSandboxReattachPass(opts: {
               checkpointConfig,
             ),
           }
-        : {}),
+        : undefined
+    const onBeforeTeardown = composeTeardownHooks(
+      deliveryOpts?.onBeforeTeardown ?? tarOpts?.onBeforeTeardown,
+      githubPushHook,
+    )
+    const agentSession = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: record.remoteSessionId,
+      lifecyclePolicy: { teardown },
+      ledger: { sandboxId, provider: providerSlug },
+      detachable: true,
+      initialTranscriptCursor: record.transcriptSeq,
+      ...(tarOpts ?? {}),
+      ...(deliveryOpts ?? {}),
+      ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
       watchdog: {},
     })
     state.session = agentSession

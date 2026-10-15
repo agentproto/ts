@@ -471,3 +471,21 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.category !== undefined ? { category: fm.category } : {}),
   })
 }
+
+/**
+ * Parse WORKSPACE.md text WITHOUT touching the filesystem — the same
+ * manifest parse `loadAppHandle` runs on the file, lifted to a string, so a
+ * caller holding the text read from somewhere other than the app dir (e.g.
+ * out of a remote sandbox box) gets the identical validated workspace
+ * handle. Returns `undefined` for anything unparsable or schema-invalid —
+ * the caller falls back exactly as it would for an absent WORKSPACE.md.
+ */
+export function workspaceFromMarkdownText(
+  source: string,
+): ReturnType<typeof workspaceFromManifest> | undefined {
+  try {
+    return workspaceFromManifest(parseWorkspaceManifest(source))
+  } catch {
+    return undefined
+  }
+}

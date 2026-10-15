@@ -21,6 +21,7 @@ import {
   buildGitEnv,
   realGitRunner,
   writeAuthConfig,
+  type AsyncGitRunner,
   type GitRunner,
 } from "./git.js"
 import {
@@ -47,8 +48,21 @@ import type {
 
 /** Extra (test-injected) deps for the sync impl. */
 export interface GithubWorkspaceSyncOpts {
-  gitRunner?: GitRunner
+  /** Synchronous runner (spawns a local `git`) or an async one (execution
+   *  over a remote seam — e.g. a sandbox box, where each call is an exec
+   *  round-trip). Every call site below awaits the result, so both shapes
+   *  work unchanged. */
+  gitRunner?: GitRunner | AsyncGitRunner
   prCreator?: PrCreator
+  /** Persist the auth header into the clone's `.git/config` on a seed clone
+   *  (default `true`). Set `false` when the git invocation runs over a
+   *  remote seam whose command line is observable (a sandbox box): every
+   *  later pull/push already injects the token per call through
+   *  `buildGitEnv`'s `GIT_CONFIG_*` env config, so the at-rest entry — and
+   *  the `git config … "<base64>"` argument that writes it — is unnecessary
+   *  there. The host-side path keeps the default so a later
+   *  `git fetch`/`push` in the same tree authenticates without env help. */
+  persistAuth?: boolean
 }
 
 const DEFAULT_BASE_BRANCH = "main"
@@ -142,6 +156,7 @@ export function createGithubWorkspaceSync(
 ): WorkspaceSync {
   const runner = extra.gitRunner ?? realGitRunner
   const prCreator = extra.prCreator ?? createOctokitPrCreator()
+  const persistAuth = extra.persistAuth !== false
   const resolved = resolveConfig(config)
 
   async function pull(
@@ -157,12 +172,21 @@ export function createGithubWorkspaceSync(
     if (populated && !opts?.force) {
       // Fetch + merge the base branch.
       const env = buildGitEnv(process.env, token)
-      const fetchRes = runner(["fetch", "origin", resolved.baseBranch], {
+      const fetchRes = await runner(["fetch", "origin", resolved.baseBranch], {
         cwd: workspaceDir,
         env,
       })
-      assertGitOk(fetchRes, "fetch")
-      const mergeRes = runner(
+      if (!fetchRes.ok) {
+        const detail = fetchRes.stderr.trim() || fetchRes.stdout.trim()
+        return {
+          seeded: false,
+          ok: false,
+          files: 0,
+          bytes: 0,
+          message: `pull: fetch failed: ${detail}`,
+        }
+      }
+      const mergeRes = await runner(
         ["merge", `origin/${resolved.baseBranch}`, "--no-edit", "--ff-only"],
         { cwd: workspaceDir, env },
       )
@@ -172,6 +196,7 @@ export function createGithubWorkspaceSync(
         const detail = mergeRes.stderr.trim() || mergeRes.stdout.trim()
         return {
           seeded: false,
+          ok: false,
           files: 0,
           bytes: 0,
           message: `pull: merge failed (local diverged from origin/${resolved.baseBranch}): ${detail}`,
@@ -180,6 +205,7 @@ export function createGithubWorkspaceSync(
       const files = await tree.walk("")
       return {
         seeded: false,
+        ok: true,
         files: files.length,
         bytes: 0,
         message: `pulled origin/${resolved.baseBranch}`,
@@ -189,7 +215,7 @@ export function createGithubWorkspaceSync(
     // Empty tree → clone.
     const env = buildGitEnv(process.env, token)
     // Clone into workspaceDir; the dir is empty so `.` works.
-    const cloneRes = runner(
+    const cloneRes = await runner(
       ["clone", "--branch", resolved.baseBranch, resolved.cloneUrl, "."],
       { cwd: workspaceDir, env },
     )
@@ -197,16 +223,21 @@ export function createGithubWorkspaceSync(
       const detail = cloneRes.stderr.trim() || cloneRes.stdout.trim()
       return {
         seeded: false,
+        ok: false,
         files: 0,
         bytes: 0,
         message: `pull: clone failed: ${detail}`,
       }
     }
-    // Stamp the auth header into `.git/config` for future push/fetch.
-    writeAuthConfig(runner, workspaceDir, token)
+    // Stamp the auth header into `.git/config` for future push/fetch — unless
+    // the caller asked for remote-seam execution, where every later call
+    // injects the token per invocation and putting the base64 header on the
+    // box's command line would leak it to a process listing.
+    if (persistAuth) await writeAuthConfig(runner, workspaceDir, token)
     const files = await tree.walk("")
     return {
       seeded: true,
+      ok: true,
       files: files.length,
       bytes: 0,
       message: `cloned ${resolved.repoUrl} @ ${resolved.baseBranch}`,
@@ -222,11 +253,11 @@ export function createGithubWorkspaceSync(
     const branch = resolveBranch(resolved.branchPolicy, resolved.baseBranch, ctx)
 
     // Stage all changes.
-    const addRes = runner(["add", "-A"], { cwd: workspaceDir, env })
+    const addRes = await runner(["add", "-A"], { cwd: workspaceDir, env })
     assertGitOk(addRes, "add")
 
     // Check for changes.
-    const statusRes = runner(["status", "--porcelain"], { cwd: workspaceDir, env })
+    const statusRes = await runner(["status", "--porcelain"], { cwd: workspaceDir, env })
     assertGitOk(statusRes, "status")
     if (statusRes.stdout.trim() === "") {
       return { kind: "no_changes", message: "working tree clean — nothing to push" }
@@ -235,8 +266,8 @@ export function createGithubWorkspaceSync(
     // Resolve identity → author + trailers.
     const { name, email, trailers } = resolveAuthors(ctx.identity)
     // Set local user.name / user.email so the commit author is correct.
-    runner(["config", "user.name", name], { cwd: workspaceDir, env })
-    runner(["config", "user.email", email], { cwd: workspaceDir, env })
+    await runner(["config", "user.name", name], { cwd: workspaceDir, env })
+    await runner(["config", "user.email", email], { cwd: workspaceDir, env })
 
     // Build commit message with optional Co-authored-by trailers.
     const summary = opts?.summary ?? "agentproto sync"
@@ -245,7 +276,7 @@ export function createGithubWorkspaceSync(
         ? `${summary}\n\n${trailers.join("\n")}\n`
         : `${summary}\n`
 
-    const commitRes = runner(["commit", "-m", message], {
+    const commitRes = await runner(["commit", "-m", message], {
       cwd: workspaceDir,
       env,
     })
@@ -254,7 +285,7 @@ export function createGithubWorkspaceSync(
     // Branch handling — for per-conversation/per-turn, create/checkout the branch.
     if (resolved.branchPolicy !== "main") {
       // Create the branch at the current commit and check it out.
-      const checkoutRes = runner(
+      const checkoutRes = await runner(
         ["checkout", "-B", branch],
         { cwd: workspaceDir, env },
       )
@@ -262,7 +293,7 @@ export function createGithubWorkspaceSync(
     }
 
     // Push.
-    const pushRes = runner(["push", "-u", "origin", branch], {
+    const pushRes = await runner(["push", "-u", "origin", branch], {
       cwd: workspaceDir,
       env,
     })

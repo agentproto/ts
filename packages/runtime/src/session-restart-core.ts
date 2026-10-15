@@ -154,6 +154,11 @@ import {
   tarCheckpointProxyOpts,
 } from "./sandbox-tar-checkpoint.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import {
+  composeTeardownHooks,
+  createGithubWorkspacePushAtClose,
+  readAppGithubWorkspaceSync,
+} from "./sandbox-app-serve.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { AcpMcpServer } from "@agentproto/acp"
 
@@ -1772,29 +1777,38 @@ export async function restartAgentSession(
     const tarTarget = deliveryTarget
       ? undefined
       : await adoptTarCheckpoint(sessionTranscriptDir(prev.id), sessionTranscriptDir(restartedSessionId))
-    const agentSession = createSandboxAgentSessionProxy({
-      host,
-      remoteSessionId,
-      lifecyclePolicy,
-      ...(boxSpawnEnforcedPostures ? { spawnEnforcedPostures: boxSpawnEnforcedPostures } : {}),
-      // BOX-LOGIN BRIDGE refresh — re-upload the copy when the HOST's login
-      // file changes under this re-attached box (see `createBoxLoginRefresher`;
-      // the proxy owns the throttle + closed/detached gate). Absent when the
-      // pre-start upload never happened, so a degraded restart stays degraded.
-      ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
-      ledger: { sandboxId: host.sandboxId, provider: providerSlug },
-      ...(providerSlug.startsWith("device:") ? {} : { detachable: true }),
-      ...(tarTarget
-        ? tarCheckpointProxyOpts({
+    // A2 — the app's github workspace: re-read its in-box declaration off the
+    // live box and re-attach the opt-in close-time push, so a resumed
+    // session pushes at close exactly like a freshly-spawned one (the spawn
+    // path wires the same hook in `session-spawn.ts`). Best-effort: no
+    // declaration / no exec seam / an unreadable WORKSPACE.md leaves no hook.
+    let githubPushHook: (() => Promise<void>) | undefined
+    if (prev.appServe && host.exec) {
+      try {
+        const sync = await readAppGithubWorkspaceSync(host.exec, prev.appServe.dir)
+        if (sync) {
+          githubPushHook = createGithubWorkspacePushAtClose({
+            sync,
             exec: host.exec,
-            ...(host.readFile ? { readFile: host.readFile } : {}),
-            target: tarTarget,
-            outDir: sessionTranscriptDir(restartedSessionId),
-            config: checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
-            notify: text => registry.recordNotice(restartedSessionId, text),
+            sessionId: restartedSessionId,
           })
-        : {}),
-      ...(deliveryTarget && host.exec
+        }
+      } catch {
+        // A declaration that cannot be re-read simply means no push here.
+      }
+    }
+    const tarOpts = tarTarget
+      ? tarCheckpointProxyOpts({
+          exec: host.exec,
+          ...(host.readFile ? { readFile: host.readFile } : {}),
+          target: tarTarget,
+          outDir: sessionTranscriptDir(restartedSessionId),
+          config: checkpointConfig ?? resolveSandboxCheckpointConfig(undefined, undefined),
+          notify: text => registry.recordNotice(restartedSessionId, text),
+        })
+      : undefined
+    const deliveryOpts =
+      deliveryTarget && host.exec
         ? trackedSandboxDeliveryOpts({
             exec: host.exec,
             ...(host.readFile ? { readFile: host.readFile } : {}),
@@ -1816,7 +1830,29 @@ export async function restartAgentSession(
               registry.setSandboxDeliveryTarget(restartedSessionId, target)
             },
           })
-        : {}),
+        : undefined
+    // One `onBeforeTeardown` slot on the proxy: the delivery/tar hook (at
+    // most one is set — tar only when there is no delivery target) composed
+    // with the github push, delivery first (deadline-budgeted, box-critical).
+    const onBeforeTeardown = composeTeardownHooks(
+      deliveryOpts?.onBeforeTeardown ?? tarOpts?.onBeforeTeardown,
+      githubPushHook,
+    )
+    const agentSession = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId,
+      lifecyclePolicy,
+      ...(boxSpawnEnforcedPostures ? { spawnEnforcedPostures: boxSpawnEnforcedPostures } : {}),
+      // BOX-LOGIN BRIDGE refresh — re-upload the copy when the HOST's login
+      // file changes under this re-attached box (see `createBoxLoginRefresher`;
+      // the proxy owns the throttle + closed/detached gate). Absent when the
+      // pre-start upload never happened, so a degraded restart stays degraded.
+      ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
+      ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+      ...(providerSlug.startsWith("device:") ? {} : { detachable: true }),
+      ...(tarOpts ?? {}),
+      ...(deliveryOpts ?? {}),
+      ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
       watchdog: {},
     })
     return registerBoxSession(restartedSessionId, sandboxMcpServers, {

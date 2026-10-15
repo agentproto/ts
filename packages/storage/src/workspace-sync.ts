@@ -36,8 +36,19 @@ export interface SyncTree {
 }
 
 export interface PullResult {
-  /** False when the tree was already populated and `force` was unset. */
+  /** True when the tree was empty and got seeded from the origin. False in
+   *  BOTH the healthy case where the tree was already populated (a
+   *  fetch+merge refresh, `force` unset) and when the pull failed — use
+   *  {@link PullResult.ok} to tell those apart. */
   seeded: boolean
+  /** Whether the pull completed. A refresh of an already-populated tree
+   *  reports `seeded: false` and `ok: true`; a failed clone or a failed
+   *  fetch/merge reports `ok: false` (with the cause in `message`). This is
+   *  the discriminant callers must branch on; `seeded` alone cannot
+   *  distinguish a healthy refresh from a failure. Optional so existing
+   *  implementers stay source-compatible — a missing value means "no
+   *  failure signal", treated as success. */
+  ok?: boolean
   files: number
   bytes: number
   message: string
