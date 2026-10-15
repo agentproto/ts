@@ -96,6 +96,28 @@ describe("declaredGithubWorkspace", () => {
     expect(declaredGithubWorkspace(undefined)).toBeUndefined()
     expect(declaredGithubWorkspace({ storage: { ref: "x" } })).toBeUndefined()
   })
+
+  it("drops an unknown branch_policy / pr_policy instead of casting it through", () => {
+    const decl = declaredGithubWorkspace(
+      workspaceDecl("/data/home", {
+        sync: { mode: "pull-push", push: { branch_policy: "per_conversation", pr_policy: "sometimes" } },
+      }),
+    )
+    expect(decl?.dir).toBe("/data/home")
+    expect(decl?.config).toEqual({ repoUrl: REPO_URL })
+    expect("branchPolicy" in (decl?.config ?? {})).toBe(false)
+    expect("prPolicy" in (decl?.config ?? {})).toBe(false)
+  })
+
+  it("keeps a valid branch_policy / pr_policy", () => {
+    const decl = declaredGithubWorkspace(
+      workspaceDecl("/data/home", {
+        sync: { mode: "pull-push", push: { branch_policy: "per-turn", pr_policy: "auto" } },
+      }),
+    )
+    expect(decl?.config.branchPolicy).toBe("per-turn")
+    expect(decl?.config.prPolicy).toBe("auto")
+  })
 })
 
 describe("github-backed app workspace", () => {
@@ -120,6 +142,26 @@ describe("github-backed app workspace", () => {
     expect(home).toBe(mount)
     expect(await readFile(join(mount, "README.md"), "utf8")).toBe("# home\n")
     expect(existsSync(join(mount, ".git"))).toBe(true)
+  })
+
+  it("scrubs the persisted auth header from the clone's .git/config after a seed clone", async () => {
+    const mount = join(base, "scrubbed")
+    const home = await declaredWorkspaceHome(workspaceDecl(mount), { cloneUrl: origin, resolveToken: token })
+    expect(home).toBe(mount)
+    const config = await readFile(join(mount, ".git", "config"), "utf8")
+    expect(config).not.toContain("extraheader")
+    expect(config).not.toContain("x-access-token")
+    expect(config).not.toContain(token())
+    // the scrub did not break the checkout
+    expect(git(["status", "--porcelain"], mount)).toBe("")
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], mount)).toBe("main")
+  })
+
+  it("leaves no directory behind when the declaration fails (no token)", async () => {
+    const mount = join(base, "no-token-no-dir")
+    const home = await declaredWorkspaceHome(workspaceDecl(mount), { cloneUrl: origin, resolveToken: () => undefined })
+    expect(home).toBeUndefined()
+    expect(existsSync(mount)).toBe(false)
   })
 
   it("clones into an existing empty directory", async () => {

@@ -13,6 +13,7 @@ import { isAbsolute } from "node:path"
 import { loadAppHandle } from "@agentproto/app-kit"
 import {
   createGithubFilesystem,
+  realGitRunner,
   type BranchPolicy,
   type GitRunner,
   type GithubStorageConfig,
@@ -45,6 +46,9 @@ const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(?:\.git)?\/?$
 const ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 const DEFAULT_TOKEN_ENV = ["GITHUB_TOKEN", "GH_TOKEN"] as const
 
+const BRANCH_POLICIES: readonly BranchPolicy[] = ["main", "per-conversation", "per-turn"]
+const PR_POLICIES: readonly PrPolicy[] = ["none", "auto", "manual"]
+
 /** A WORKSPACE.md `storage: github` / `sync.mode: pull-push` declaration, validated. */
 export interface DeclaredGithubWorkspace {
   /** Absolute clone destination (`config.mount_path`). */
@@ -68,6 +72,16 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined
 }
 
+/** Narrow an unknown value to a plain object, else `undefined`. */
+function rec(v: unknown): Record<string, unknown> | undefined {
+  return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined
+}
+
+/** Keep `v` only when it is one of `allowed`; an unknown value is dropped. */
+function enumField<T extends string>(v: unknown, allowed: readonly T[]): T | undefined {
+  return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : undefined
+}
+
 /**
  * Parse an inline github storage declared in WORKSPACE.md:
  *
@@ -81,48 +95,59 @@ function str(v: unknown): string | undefined {
  * yields `undefined` so the caller falls back to the app dir.
  */
 export function declaredGithubWorkspace(workspace: unknown): DeclaredGithubWorkspace | undefined {
-  const inline = (workspace as { storage?: { inline?: Record<string, any> } } | undefined)?.storage?.inline
-  if (!inline || inline.provider !== "github" || inline.sync?.mode !== "pull-push") return undefined
-  const cfg: Record<string, unknown> = inline.config ?? {}
+  const inline = rec(rec((workspace as { storage?: unknown } | undefined)?.storage)?.inline)
+  if (!inline || inline.provider !== "github") return undefined
+  const sync = rec(inline.sync)
+  if (sync?.mode !== "pull-push") return undefined
+  const cfg = rec(inline.config) ?? {}
   const repoUrl = str(cfg.repoUrl) ?? str(cfg.repo_url)
   const dir = str(cfg.mountPath) ?? str(cfg.mount_path)
   if (!repoUrl || !GITHUB_REPO_URL.test(repoUrl) || !dir || !isAbsolute(dir)) return undefined
-  const push: Record<string, unknown> = inline.sync?.push ?? {}
-  const branchPolicy = str(push.branch_policy) ?? str(cfg.branchPolicy) ?? str(cfg.branch_policy)
-  const prPolicy = str(push.pr_policy) ?? str(cfg.prPolicy) ?? str(cfg.pr_policy)
+  const push = rec(sync.push) ?? {}
+  const branchPolicy = enumField(
+    push.branch_policy ?? cfg.branchPolicy ?? cfg.branch_policy,
+    BRANCH_POLICIES,
+  )
+  const prPolicy = enumField(push.pr_policy ?? cfg.prPolicy ?? cfg.pr_policy, PR_POLICIES)
   const baseBranch = str(cfg.baseBranch) ?? str(cfg.base_branch) ?? str(cfg.branch)
-  const declaredEnv = Array.isArray(inline.auth?.state?.env)
-    ? (inline.auth.state.env as unknown[]).filter((n): n is string => typeof n === "string" && ENV_VAR_NAME.test(n))
+  const authEnv = rec(rec(inline.auth)?.state)?.env
+  const declaredEnv = Array.isArray(authEnv)
+    ? authEnv.filter((n): n is string => typeof n === "string" && ENV_VAR_NAME.test(n))
     : []
   return {
     dir,
     config: {
       repoUrl,
       ...(baseBranch ? { baseBranch } : {}),
-      ...(branchPolicy ? { branchPolicy: branchPolicy as BranchPolicy } : {}),
-      ...(prPolicy ? { prPolicy: prPolicy as PrPolicy } : {}),
+      ...(branchPolicy ? { branchPolicy } : {}),
+      ...(prPolicy ? { prPolicy } : {}),
     },
     tokenEnv: declaredEnv.length > 0 ? declaredEnv : DEFAULT_TOKEN_ENV,
   }
 }
 
 /**
- * Make sure the declared github workspace exists on disk. Same guard as
- * `git-clone-workstation.ts`: clone only into an EMPTY (or missing) dir; a dir
- * that already holds a git checkout is accepted as-is (no fetch/merge here —
- * that is the sandbox lifecycle's job), and any other non-empty dir is refused
- * rather than overwritten.
+ * Make sure the declared github workspace exists on disk. Clone only into an
+ * EMPTY (or missing) dir; a dir that already holds a git checkout is accepted
+ * as-is (no fetch/merge here — that is the sandbox lifecycle's job), and any
+ * other non-empty dir is refused rather than overwritten. The clone destination
+ * is created only immediately before the clone, so a failed declaration leaves
+ * no empty directory behind. On a successful seed clone the token header
+ * storage-github stamps into `.git/config` is scrubbed (every later pull/push
+ * re-injects auth per invocation), so no credential is left at rest where the
+ * declaring app's sessions can read it.
  */
 async function ensureGithubWorkspace(
   decl: DeclaredGithubWorkspace,
   opts: GithubWorkspaceOptions = {},
 ): Promise<{ ok: true; dir: string } | { ok: false; reason: string }> {
   const { dir } = decl
-  await mkdir(dir, { recursive: true })
-  const entries = await readdir(dir)
-  if (entries.includes(".git")) return { ok: true, dir }
-  if (entries.length > 0) {
-    return { ok: false, reason: `"${dir}" is not empty and is not a git checkout — refusing to clone over it` }
+  if (await isDirectory(dir)) {
+    const entries = await readdir(dir)
+    if (entries.includes(".git")) return { ok: true, dir }
+    if (entries.length > 0) {
+      return { ok: false, reason: `"${dir}" is not empty and is not a git checkout — refusing to clone over it` }
+    }
   }
   const token = (opts.resolveToken ?? defaultResolveToken)(decl.tokenEnv)
   if (!token) {
@@ -137,8 +162,21 @@ async function ensureGithubWorkspace(
     { workspaceDir: dir, token },
     opts.gitRunner ? { gitRunner: opts.gitRunner } : {},
   )
+  await mkdir(dir, { recursive: true })
   const res = await fs.pull(fs)
-  return res.seeded ? { ok: true, dir } : { ok: false, reason: res.message ?? "clone failed" }
+  if (!res.seeded) return { ok: false, reason: res.message ?? "clone failed" }
+  scrubPersistedAuth(opts.gitRunner ?? realGitRunner, dir)
+  return { ok: true, dir }
+}
+
+/**
+ * Remove the token header storage-github persists in the clone's `.git/config`
+ * on a seed clone. Later git invocations authenticate via `buildGitEnv`, so the
+ * at-rest entry is unnecessary; leaving it would expose the daemon's token to
+ * the declaring app's own sessions. A missing section is not an error.
+ */
+function scrubPersistedAuth(runner: GitRunner, cwd: string): void {
+  runner(["config", "--remove-section", "http.https://github.com/"], { cwd })
 }
 
 function defaultResolveToken(envNames: readonly string[]): string | undefined {
