@@ -31,6 +31,13 @@ CLI has no local login yet (`claude login` / `codex login` not run), the
 command exits 1 and says to run the CLI's own login first; it never spawns a
 second login client.
 
+Trust boundary: the vault keypair lives in plaintext at `<dir>/key.json`
+(0600) next to the sealed entries, so at-rest confidentiality rests on
+filesystem permissions — any read of the vault dir (backup, sync, a
+compromised local account) yields key and ciphertext together. This is a
+LOCAL vault only: for sending the credential to a server without exposing the
+plaintext, use `provision` (seal to the target's own key first).
+
 ## Exposure surface (`@agentproto/secrets/exposure`)
 
 The manifest says *which* secrets exist; an **exposure** says *how* a resolved

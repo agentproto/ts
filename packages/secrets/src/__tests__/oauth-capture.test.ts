@@ -107,6 +107,47 @@ describe("extractOauthJson", () => {
     ).toThrow(/tokens\.nope/)
   })
 
+  it("omits an optional field whose PARENT object is absent (degrades, no throw)", () => {
+    const narrow = JSON.stringify({ claudeAiOauth: { accessToken: "at-narrow" } })
+    const out = JSON.parse(
+      extractOauthJson(narrow, {
+        accessToken: "claudeAiOauth.accessToken",
+        refreshToken: "meta.refreshToken",
+        expiresAt: "meta.expiresAt",
+      }),
+    ) as Record<string, unknown>
+    expect(out["accessToken"]).toBe("at-narrow")
+    expect("refreshToken" in out).toBe(false)
+    expect("expiresAt" in out).toBe(false)
+  })
+
+  it("treats a null / empty-string optional leaf as absent, never null in the output", () => {
+    const doc = JSON.stringify({ a: { access: "at-x", refresh: null, expires: "" } })
+    const out = JSON.parse(
+      extractOauthJson(doc, {
+        accessToken: "a.access",
+        refreshToken: "a.refresh",
+        expiresAt: "a.expires",
+      }),
+    ) as Record<string, unknown>
+    expect("refreshToken" in out).toBe(false)
+    expect("expiresAt" in out).toBe(false)
+    expect(JSON.parse(JSON.stringify(out))).not.toHaveProperty("refreshToken")
+  })
+
+  it("normalizes epoch-seconds too, and rejects a numeric accessToken", () => {
+    const doc = JSON.stringify({ access: "at-s", expires: 1790587204 })
+    const out = JSON.parse(
+      extractOauthJson(doc, { accessToken: "access", expiresAt: "expires" }),
+    ) as Record<string, unknown>
+    expect(out["expiresAt"]).toBe(new Date(1790587204000).toISOString())
+
+    const numeric = JSON.stringify({ access: 12345 })
+    expect(() => extractOauthJson(numeric, { accessToken: "access" })).toThrow(
+      /non-empty string/,
+    )
+  })
+
   it("throws on a non-JSON document", () => {
     expect(() => extractOauthJson("not json", { accessToken: "a.b" })).toThrow(
       /not valid JSON/,

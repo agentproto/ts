@@ -211,23 +211,44 @@ export async function capture(args: {
 
   await fs.mkdir(vaultDir, { recursive: true, mode: 0o700 })
   const keyPath = `${vaultDir}/key.json`
-  let keyPair: { keyId: string; publicKey: string; privateKey: string }
-  try {
-    keyPair = JSON.parse(await fs.readFile(keyPath, "utf8")) as {
-      keyId: string
-      publicKey: string
-      privateKey: string
+  const readKey = async (): Promise<{
+    keyId: string
+    publicKey: string
+    privateKey: string
+  } | undefined> => {
+    try {
+      return JSON.parse(await fs.readFile(keyPath, "utf8")) as {
+        keyId: string
+        publicKey: string
+        privateKey: string
+      }
+    } catch {
+      return undefined
     }
-  } catch {
+  }
+  let keyPair = await readKey()
+  if (!keyPair) {
+    // Mint exclusively so two concurrent captures can't clobber each other's
+    // key (and orphan the entries sealed under the loser). The loser re-reads
+    // the winner's key instead.
     const kp = await generateSealKeyPair()
-    keyPair = {
+    const candidateKey = {
       keyId: await sealKeyId(kp.publicKey),
       publicKey: kp.publicKey,
       privateKey: kp.privateKey,
     }
-    await fs.writeFile(keyPath, JSON.stringify(keyPair), { mode: 0o600 })
-    await fs.chmod(keyPath, 0o600)
+    try {
+      await fs.writeFile(keyPath, JSON.stringify(candidateKey), {
+        mode: 0o600,
+        flag: "wx",
+      })
+      await fs.chmod(keyPath, 0o600)
+      keyPair = candidateKey
+    } catch {
+      keyPair = await readKey()
+    }
   }
+  if (!keyPair) throw new Error(`vault key at ${keyPath} is unreadable`)
 
   const blob = await seal(value, keyPair.publicKey)
   const entry = {
