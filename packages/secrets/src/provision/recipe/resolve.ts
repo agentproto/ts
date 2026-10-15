@@ -15,7 +15,7 @@
 
 import { resolveCredential, extractJsonPath } from "../index.js"
 import { resolveRecipeMethod } from "./registry.js"
-import type { CredentialSourceSpec } from "./types.js"
+import type { CredentialSourceSpec, OauthFieldMap } from "./types.js"
 
 export interface ResolveSourceOptions {
   /** Asked for a `{ prompt }` source. Receives the prompt text, returns the
@@ -117,6 +117,141 @@ export async function readRecipeLoginJson(
       }
       if ("keychain" in spec) {
         return await resolveKeychain({ keychain: spec.keychain, ...(spec.account !== undefined ? { account: spec.account } : {}) })
+      }
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err))
+    }
+  }
+  throw new Error(
+    `no login file for recipe '${recipeId}' method '${method.id}' (${errors.join("; ") || "only env/prompt sources declared"})`,
+  )
+}
+
+/** Extract each dot-path of `fields` (AIP-19 `oauth` mapping) from one login
+ *  document string, returning canonical JSON with the keys the shape names:
+ *  `{accessToken, refreshToken?, expiresAt?}`. `expiresAt` normalizes — epoch
+ *  milliseconds and numeric strings both become ISO strings — so a consumer
+ *  never has to know which convention the CLI stored. `accessToken` is
+ *  required (must be a non-empty string); an OPTIONAL field whose path is
+ *  missing — any absent segment, a null leaf or an empty string — is simply
+ *  OMITTED from the output, never `null`, so a recipe whose optional refresh
+ *  lives in a subtree the CLI omits degrades instead of breaking capture. The
+ *  result is sensitive: seal it immediately, never print it. */
+export function extractOauthJson(doc: string, fields: OauthFieldMap): string {
+  const parse = (required: boolean, path: string): string | number | undefined => {
+    let docVal: unknown
+    try {
+      docVal = JSON.parse(doc)
+    } catch {
+      throw new Error(`login document is not valid JSON`)
+    }
+    for (const part of path.split(".")) {
+      if (docVal == null || typeof docVal !== "object") {
+        if (required) throw new Error(`field '${path}' not found in login document`)
+        return undefined
+      }
+      docVal = (docVal as Record<string, unknown>)[part]
+    }
+    docVal = normalizeLeaf(docVal)
+    if (docVal === undefined) {
+      if (required) {
+        throw new Error(`field '${path}' is missing or empty in login document`)
+      }
+      return undefined
+    }
+    if (typeof docVal !== "string" && typeof docVal !== "number") {
+      if (required) throw new Error(`field '${path}' is not a non-empty string`)
+      return undefined
+    }
+    return docVal
+  }
+
+  /** null / empty-string leaves count as absent for OPTIONAL fields; absent
+   *  leaves DO throw for required ones. */
+  const normalizeLeaf = (v: unknown): string | number | undefined => {
+    if (v === null || v === undefined) return undefined
+    if (typeof v === "string" && v.length === 0) return undefined
+    if (typeof v === "string" || typeof v === "number") return v
+    return undefined
+  }
+
+  const accessToken = parse(true, fields.accessToken) as string
+  if (typeof accessToken !== "string") {
+    throw new Error(`field '${fields.accessToken}' is not a non-empty string`)
+  }
+  const refreshToken = fields.refreshToken
+    ? (parse(false, fields.refreshToken) as string | undefined)
+    : undefined
+  if (refreshToken !== undefined && typeof refreshToken !== "string") {
+    throw new Error(`field '${fields.refreshToken}' is not a non-empty string`)
+  }
+  const rawExpires = fields.expiresAt
+    ? (parse(false, fields.expiresAt) as string | number | undefined)
+    : undefined
+  // Millisecond epochs (Claude Code) or numeric strings both land as ISO.
+  const expiresAt = rawExpires !== undefined ? normalizeExpires(rawExpires) : undefined
+
+  return JSON.stringify({
+    accessToken,
+    ...(typeof refreshToken === "string" ? { refreshToken } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+  })
+}
+
+/** Epoch-ms number or numeric string → ISO string. Epoch SECONDS (10 digits)
+ *  also converts, doubling as a sanity floor; anything else (already an ISO
+ *  string — e.g. Codex's `last_refresh` convention) passes through untouched. */
+function normalizeExpires(raw: number | string): string {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 100_000_000_000) {
+    return new Date(raw).toISOString()
+  }
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1_000_000_000) {
+    // Epoch seconds.
+    return new Date(raw * 1000).toISOString()
+  }
+  if (typeof raw === "string" && /^\d{13}$/.test(raw)) {
+    return new Date(Number(raw)).toISOString()
+  }
+  return String(raw)
+}
+
+/**
+ * Read a method's login document through its `oauth` field map and return the
+ * FULL AIP-19 oauth value shape as canonical JSON — the capture command's
+ * input, unlike {@link readRecipeLoginJson} which returns the raw document or
+ * {@link resolveSourceSpec} which extracts one string field. Requires the
+ * method to declare an `oauth` map (builtins: `claude-code-oauth`,
+ * `codex`/`oauth-subscription`); if the source chain has several documents,
+ * the first that RESOLVES wins and every path reads from that one document —
+ * the CLIs store access + refresh + expiry together. Env/prompt sources can't
+ * produce the shape and fail the chain. The result is sensitive: seal it
+ * immediately, never print it.
+ */
+export async function readRecipeOauthJson(
+  recipeId: string,
+  methodId?: string,
+): Promise<string> {
+  const { method } = resolveRecipeMethod(recipeId, methodId)
+  if (!method.oauth) {
+    throw new Error(
+      `recipe '${recipeId}' method '${method.id}' declares no oauth field map — it resolves an opaque credential, not the {accessToken, refreshToken, expiresAt} shape`,
+    )
+  }
+  const chain = Array.isArray(method.source) ? method.source : [method.source]
+  const errors: string[] = []
+  for (const spec of chain) {
+    try {
+      if ("file" in spec) {
+        return extractOauthJson(await resolveCredential({ fromFile: spec.file }), method.oauth)
+      }
+      if ("keychain" in spec) {
+        return extractOauthJson(
+          await resolveKeychain({
+            keychain: spec.keychain,
+            ...(spec.account !== undefined ? { account: spec.account } : {}),
+          }),
+          method.oauth,
+        )
       }
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err))
