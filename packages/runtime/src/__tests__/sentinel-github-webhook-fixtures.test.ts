@@ -132,8 +132,16 @@ describe("normalizeGithubEvent — raw webhook payloads", () => {
       type: "github.pull_request_review.submitted",
       subject: "github:agentproto/ts#1428",
       terminal: false,
-      data: { action: "submitted", state: "changes_requested", repo: "agentproto/ts", number: 1428, actor: "carol" },
-      summary: "PR agentproto/ts#1428 review changes_requested by carol",
+      data: {
+        action: "submitted",
+        state: "changes_requested",
+        repo: "agentproto/ts",
+        number: 1428,
+        actor: "carol",
+        body: "please add tests",
+        reviewUrl: "https://github.com/agentproto/ts/pull/1428#pullrequestreview-5",
+      },
+      summary: "PR agentproto/ts#1428 review changes_requested by carol — please add tests",
       subjects: ["github:agentproto/ts#1428", "github:agentproto/ts", "github:agentproto"],
     })
   })

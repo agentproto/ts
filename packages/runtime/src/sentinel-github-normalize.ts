@@ -117,6 +117,23 @@ interface BaseFields {
   time: string
 }
 
+/** Cap on `review.body` carried in `data.body` — the projection is <= 32 KiB
+ *  (SentinelEvent.data) and a review body can be arbitrarily long; ~4 KB of
+ *  text is enough for a watching session to see WHY a verdict was given. */
+const MAX_REVIEW_BODY_CHARS = 4096
+/** One-line snippet appended to `summary` when a review body exists. */
+const SUMMARY_SNIPPET_CHARS = 200
+
+function capReviewBody(body: string): string {
+  return body.length > MAX_REVIEW_BODY_CHARS ? body.slice(0, MAX_REVIEW_BODY_CHARS) : body
+}
+
+/** Whitespace-collapsed prefix of a review body, for the one-line summary. */
+function bodySnippet(body: string): string {
+  const collapsed = body.replace(/\s+/g, " ").trim()
+  return collapsed.length > SUMMARY_SNIPPET_CHARS ? collapsed.slice(0, SUMMARY_SNIPPET_CHARS) : collapsed
+}
+
 function actorOf(payload: Record<string, unknown>, ...fallbacks: (Record<string, unknown> | undefined)[]): string {
   for (const obj of fallbacks) {
     const login = str(asObject(obj?.user), "login")
@@ -186,6 +203,12 @@ function normalizePullRequestReview(payload: Record<string, unknown>, base: Base
   const review = asObject(payload.review)
   const state = str(review, "state") ?? "unknown"
   const actor = actorOf(payload, review)
+  // Additive (WP-D1): carry the review body + its URL so a watching session
+  // learns WHY, not just the verdict. Absent when GitHub sent no body (an
+  // empty review keeps the exact pre-existing data/summary shape).
+  const body = str(review, "body") ?? ""
+  const reviewUrl = str(review, "html_url")
+  const snippet = body.trim() ? bodySnippet(body) : ""
 
   return {
     ok: true,
@@ -197,8 +220,16 @@ function normalizePullRequestReview(payload: Record<string, unknown>, base: Base
       subject: prSubject(parts.owner, parts.repo, number),
       time: base.time,
       datacontenttype: "application/json",
-      data: { action, state, repo: `${parts.owner}/${parts.repo}`, number, actor },
-      summary: `PR ${parts.owner}/${parts.repo}#${number} review ${state} by ${actor}`,
+      data: {
+        action,
+        state,
+        repo: `${parts.owner}/${parts.repo}`,
+        number,
+        actor,
+        ...(body ? { body: capReviewBody(body) } : {}),
+        ...(reviewUrl ? { reviewUrl } : {}),
+      },
+      summary: `PR ${parts.owner}/${parts.repo}#${number} review ${state} by ${actor}${snippet ? ` — ${snippet}` : ""}`,
       subjects: subjectsFor(parts.owner, parts.repo, number),
       terminal: false,
     },
