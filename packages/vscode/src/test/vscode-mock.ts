@@ -60,6 +60,7 @@ export const window = {
     dispose() {},
   }),
   showInformationMessage: () => Promise.resolve(undefined),
+  showWarningMessage: () => Promise.resolve(undefined),
   showErrorMessage: () => Promise.resolve(undefined),
 }
 
