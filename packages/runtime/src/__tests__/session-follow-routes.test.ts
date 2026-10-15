@@ -101,7 +101,15 @@ describe("session-follow HTTP routes + MCP tools", () => {
       skipEmptyTurns: true,
       excludeFollowerChildren: true,
     })
-    expect(first.json.events).toEqual(["turn-end", "awaiting-input", "exited", "crashed", "pr-opened", "pr-merged"])
+    expect(first.json.events).toEqual([
+      "turn-end",
+      "awaiting-input",
+      "exited",
+      "crashed",
+      "pr-opened",
+      "pr-merged",
+      "task-changed",
+    ])
 
     const second = await call("POST", "/follows", {
       follower: followerId,

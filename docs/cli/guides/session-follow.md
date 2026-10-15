@@ -21,19 +21,25 @@ Sentinels watch external subjects (a PR, CI). Follows watch other *sessions*.
 | `crashed` | a followed session ended with status `error` or reason `crashed` |
 | `pr-opened` | a followed session got a new PR activity |
 | `pr-merged` | a followed session's PR activity reached `done` (closed-unmerged / cancelled is ignored) |
+| `task-changed` | a task on the followed board (`selector.boardId`) changed: created, claimed, a status transition, or a release. A pure field edit is ignored |
 
 `events` defaults to all of them. Empty (silent no-op) turns are dropped unless
 `skipEmptyTurns: false`.
 
 ## Selector
 
-At least one of `sessionIds` (non-empty), `all: true`, `cwdPrefix` is required.
+At least one of `sessionIds` (non-empty), `all: true`, `cwdPrefix`, `boardId` is
+required.
 
 - `sessionIds` - explicit ids; always match.
 - `all: true` - every session, evaluated at EVENT time, so sessions spawned
   after the follow are covered automatically. `rootOnly` defaults to `true`
   here (sessions with a parent are skipped).
 - `cwdPrefix` - sessions whose cwd is that path or below (path-boundary match).
+- `boardId` - a task board. Independent of the session selector: `task-changed`
+  events are matched on the board id alone (the `sessionIds`/`all`/`cwdPrefix`
+  rules do not apply to them). The follower's own writes never wake it (the
+  acting session id is compared against the follower).
 - `exclude: { sessionIds?, labels? }` - never deliver these.
 
 The follower never receives its own events. By default
