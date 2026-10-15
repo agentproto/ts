@@ -5,6 +5,7 @@
  * `agentproto tunnel list [--active] [--json]`
  * `agentproto tunnel stop <id-or-name> [--json]`     (alias: delete, rm)
  * `agentproto tunnel purge <id-or-name> [--json]`
+ * `agentproto tunnel login <provider> [--logout] [--no-wait] [--json]`
  * `agentproto tunnel add-hostname <id-or-name> <fqdn> [--json]`
  * `agentproto tunnel remove-hostname <id-or-name> <fqdn> [--json]`
  * `agentproto tunnel revoke <id-or-name> [--json]`
@@ -38,6 +39,7 @@ Usage:
   agentproto tunnel list   [--active] [--json]
   agentproto tunnel stop   <id-or-name> [--json]       (alias: delete, rm)
   agentproto tunnel purge  <id-or-name> [--json]
+  agentproto tunnel login  <provider> [--logout] [--no-wait] [--json]
   agentproto tunnel add-hostname    <id-or-name> <fqdn> [--json]
   agentproto tunnel remove-hostname <id-or-name> <fqdn> [--json]
   agentproto tunnel revoke <id-or-name> [--json]
@@ -96,6 +98,7 @@ export async function runTunnel(args: readonly string[]): Promise<number> {
   if (sub === "list") return runList(args.slice(1))
   if (sub === "stop" || sub === "delete" || sub === "rm") return runStop(args.slice(1))
   if (sub === "purge") return runPurge(args.slice(1))
+  if (sub === "login") return runLogin(args.slice(1))
   if (sub === "add-hostname") return runHostname("add", args.slice(1))
   if (sub === "remove-hostname") return runHostname("remove", args.slice(1))
   if (sub === "revoke") return runRevoke(args.slice(1))
@@ -107,7 +110,7 @@ export async function runTunnel(args: readonly string[]): Promise<number> {
   }
   process.stderr.write(
     `agentproto tunnel: unknown subcommand "${sub}"\n` +
-      `  Known: create | list | stop | purge | add-hostname | remove-hostname | revoke | status\n`,
+      `  Known: create | list | stop | purge | login | add-hostname | remove-hostname | revoke | status\n`,
   )
   return 2
 }
@@ -371,6 +374,106 @@ async function runPurge(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto tunnel purge: ${msg}\n`)
     return 1
   }
+}
+
+// ── login ─────────────────────────────────────────────────────────────
+
+type LoginState =
+  | { status: "logged_out" }
+  | { status: "pending"; userCode: string; verificationUri: string; verificationUriComplete?: string; expiresAt: string }
+  | { status: "logged_in"; subject?: string; expiresAt: string }
+  | { status: "failed"; reason: string }
+
+const LOGIN_POLL_MS = 3_000
+const LOGIN_MAX_WAIT_MS = 15 * 60_000
+
+async function runLogin(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      logout: { type: "boolean" },
+      "no-wait": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+
+  const slug = positionals[0]
+  if (!slug) {
+    process.stderr.write(
+      "agentproto tunnel login: missing provider.\n" +
+        "  Try: agentproto tunnel login cloudflare-provisioned\n",
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto tunnel login")
+    return 2
+  }
+  const endpoint = report.found
+  const call = () =>
+    httpPostJson<LoginState>(
+      `${endpoint.url}/tunnels/login`,
+      { slug, ...(values.logout ? { logout: true } : {}) },
+      endpoint.token,
+    )
+
+  let state: LoginState
+  try {
+    state = await call()
+  } catch (err) {
+    process.stderr.write(`agentproto tunnel login: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+
+  if (state.status === "pending") {
+    if (!values.json) {
+      process.stdout.write(
+        `Open ${state.verificationUriComplete ?? state.verificationUri}\n` +
+          `and confirm the code  ${state.userCode}\n` +
+          `(expires ${state.expiresAt})\n`,
+      )
+    }
+    if (!values["no-wait"]) {
+      if (!values.json) process.stdout.write("Waiting for approval…\n")
+      // Stop at the code's own expiry (+ a little slack for the daemon's
+      // last poll), and never wait more than LOGIN_MAX_WAIT_MS overall.
+      const expiry = Date.parse(state.expiresAt)
+      const deadline = Math.min(
+        Number.isFinite(expiry) ? expiry + 15_000 : Number.POSITIVE_INFINITY,
+        Date.now() + LOGIN_MAX_WAIT_MS,
+      )
+      while (state.status === "pending") {
+        if (Date.now() >= deadline) {
+          process.stderr.write(
+            "agentproto tunnel login: the code expired before it was approved — run it again\n",
+          )
+          return 1
+        }
+        await new Promise(r => setTimeout(r, LOGIN_POLL_MS))
+        try {
+          state = await call()
+        } catch (err) {
+          process.stderr.write(`agentproto tunnel login: ${err instanceof Error ? err.message : String(err)}\n`)
+          return 1
+        }
+      }
+    }
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify(state, null, 2) + "\n")
+  } else if (state.status === "logged_in") {
+    process.stdout.write(`logged in to ${slug}${state.subject ? ` as ${state.subject}` : ""}\n`)
+  } else if (state.status === "logged_out") {
+    process.stdout.write(`logged out of ${slug}\n`)
+  } else if (state.status === "failed") {
+    process.stderr.write(`agentproto tunnel login: ${state.reason}\n`)
+  }
+  return state.status === "failed" ? 1 : 0
 }
 
 // ── add-hostname / remove-hostname ───────────────────────────────────

@@ -54,6 +54,7 @@ import type {
   TunnelProviderHandle,
   TunnelProviderCapabilities,
 } from "./remote-providers/types.js"
+import type { DeviceLoginState } from "./remote-providers/oidc-device.js"
 
 /** Creds-store / ledger family key → `~/.agentproto/tunnel-creds/`. */
 export const TUNNEL_FAMILY = "tunnel"
@@ -270,53 +271,8 @@ export async function registerTunnelAdapterTools(
       "`oidcClientId` (+ optional `oidcScopes`), then `tunnel_login`.",
     validSlugs,
     fields,
-    onSetup: async (slug: string, fields: Record<string, string>) => {
-      // Resolve the chosen provider so its OWN setupFields drive validation —
-      // works for built-ins and third-party providers alike.
-      const handle = await resolveTunnelProvider(slug)
-      const declared = handle?.setupFields
-      if (!handle || !declared || declared.length === 0) {
-        return { ok: false, hint: `provider '${slug}' is not configurable` }
-      }
-
-      const missing = declared
-        .filter((f) => f.required === true)
-        .map((f) => f.name)
-        .filter((name) => {
-          const v = fields[name]
-          return v === undefined || v.length === 0
-        })
-      if (missing.length > 0) {
-        return {
-          ok: false,
-          hint: `missing required field(s): ${missing.join(", ")}`,
-        }
-      }
-
-      if (handle.validateSetup) {
-        try {
-          handle.validateSetup(fields)
-        } catch (err) {
-          return { ok: false, hint: err instanceof Error ? err.message : String(err) }
-        }
-      }
-
-      // Persist only the provider's declared, non-empty fields.
-      const creds: TunnelCreds = {}
-      for (const f of declared) {
-        const v = fields[f.name]
-        if (v !== undefined && v.length > 0) creds[f.name] = v
-      }
-      await credsStore.write(slug, creds)
-
-      const now = new Date().toISOString()
-      await ledger.write(slug, {
-        slug,
-        completedAt: now,
-        steps: [{ id: "creds", completedAt: now }],
-      })
-      return { ok: true, hint: `${slug} configured — status is now ready` }
-    },
+    onSetup: (slug: string, fields: Record<string, string>) =>
+      setupTunnelProvider(slug, fields, { credsStore, ledger }),
   })
 
   // ── tunnel_login ─────────────────────────────────────────────────
@@ -338,27 +294,116 @@ export async function registerTunnelAdapterTools(
       logout: z.boolean().optional().describe("Forget the stored session instead of logging in."),
     },
     async (input: { slug: string; logout?: boolean }) => {
-      const reply = (value: unknown, isError = false) => ({
-        content: [{ type: "text" as const, text: JSON.stringify(value) }],
-        ...(isError ? { isError: true } : {}),
+      const result = await tunnelLogin(input.slug, {
+        credsStore,
+        ...(input.logout ? { logout: true } : {}),
       })
-      try {
-        const creds = await credsStore.read(input.slug)
-        const handle = await resolveTunnelProvider(input.slug, { creds })
-        if (!handle?.auth) {
-          return reply({ error: `provider '${input.slug}' has no login` }, true)
-        }
-        if (input.logout) {
-          await handle.auth.logout()
-          return reply({ status: "logged_out" })
-        }
-        const state = await handle.auth.state()
-        if (state.status === "logged_in" || state.status === "pending") return reply(state)
-        const prompt = await handle.auth.begin()
-        return reply({ status: "pending", ...prompt })
-      } catch (err) {
-        return reply({ error: err instanceof Error ? err.message : String(err) }, true)
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        ...("error" in result ? { isError: true } : {}),
       }
     },
   )
+}
+
+export type TunnelLoginResult = DeviceLoginState | { error: string }
+
+/**
+ * Shared by the `tunnel_login` MCP tool, `POST /tunnels/login` and
+ * `agentproto tunnel login`: begin a device login (or return the pending /
+ * logged-in state), or log out. Never returns a token.
+ */
+export async function tunnelLogin(
+  slug: string,
+  opts: { logout?: boolean; credsStore?: CredsStore<TunnelCreds>; home?: string } = {},
+): Promise<TunnelLoginResult> {
+  try {
+    const credsStore = opts.credsStore ?? makeTunnelCredsStore(opts.home)
+    const creds = await credsStore.read(slug)
+    const handle = await resolveTunnelProvider(slug, { creds })
+    if (!handle?.auth) return { error: `provider '${slug}' has no login` }
+    if (opts.logout) {
+      await handle.auth.logout()
+      return { status: "logged_out" }
+    }
+    const state = await handle.auth.state()
+    if (state.status === "logged_in" || state.status === "pending") return state
+    const prompt = await handle.auth.begin()
+    return { status: "pending", ...prompt }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+}
+/**
+ * Validate + store a provider's setup fields (0600 creds store + setup
+ * ledger). Shared by the `setup_tunnel_provider` MCP tool and
+ * `PUT /tunnels/providers/:slug`. The hint never echoes a field value.
+ */
+export async function setupTunnelProvider(
+  slug: string,
+  fields: Record<string, string>,
+  opts: { credsStore?: CredsStore<TunnelCreds>; ledger?: SetupLedger; home?: string } = {},
+): Promise<{ ok: boolean; hint?: string }> {
+  const credsStore = opts.credsStore ?? makeTunnelCredsStore(opts.home)
+  const ledger = opts.ledger ?? makeSetupLedger(opts.home ? { home: opts.home } : {})
+  // Resolve the chosen provider so its OWN setupFields drive validation —
+  // works for built-ins and third-party providers alike.
+  const handle = await resolveTunnelProvider(slug)
+  const declared = handle?.setupFields
+  if (!handle || !declared || declared.length === 0) {
+    return { ok: false, hint: `provider '${slug}' is not configurable` }
+  }
+
+  const missing = declared
+    .filter((f) => f.required === true)
+    .map((f) => f.name)
+    .filter((name) => {
+      const v = fields[name]
+      return v === undefined || v.length === 0
+    })
+  if (missing.length > 0) {
+    return { ok: false, hint: `missing required field(s): ${missing.join(", ")}` }
+  }
+
+  if (handle.validateSetup) {
+    try {
+      handle.validateSetup(fields)
+    } catch (err) {
+      return { ok: false, hint: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  // Persist only the provider's declared, non-empty fields.
+  const creds: TunnelCreds = {}
+  for (const f of declared) {
+    const v = fields[f.name]
+    if (v !== undefined && v.length > 0) creds[f.name] = v
+  }
+  await credsStore.write(slug, creds)
+
+  const now = new Date().toISOString()
+  await ledger.write(slug, {
+    slug,
+    completedAt: now,
+    steps: [{ id: "creds", completedAt: now }],
+  })
+  return { ok: true, hint: `${slug} configured — status is now ready` }
+}
+
+/**
+ * Read a provider's login state WITHOUT starting a login (unlike
+ * {@link tunnelLogin}, which begins one when logged out).
+ */
+export async function tunnelLoginState(
+  slug: string,
+  opts: { credsStore?: CredsStore<TunnelCreds>; home?: string } = {},
+): Promise<TunnelLoginResult> {
+  try {
+    const credsStore = opts.credsStore ?? makeTunnelCredsStore(opts.home)
+    const handle = await resolveTunnelProvider(slug, { creds: await credsStore.read(slug) })
+    if (!handle?.auth) return { error: `provider '${slug}' has no login` }
+    return await handle.auth.state()
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
 }

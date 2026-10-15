@@ -637,3 +637,114 @@ describe("tunnel_login tool", () => {
     })
   })
 })
+
+// ── tunnelLogin (shared by MCP / HTTP / CLI) ────────────────────────────────────
+
+describe("tunnelLogin", () => {
+  // The provisioned provider keeps its OIDC session under $AGENTPROTO_HOME:
+  // never let a test read or clear the developer's real ~/.agentproto.
+  let prevHome: string | undefined
+  beforeEach(() => {
+    prevHome = process.env.AGENTPROTO_HOME
+    process.env.AGENTPROTO_HOME = home
+  })
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.AGENTPROTO_HOME
+    else process.env.AGENTPROTO_HOME = prevHome
+  })
+
+  it("errors for providers without a login, and when unconfigured", async () => {
+    const { tunnelLogin } = await import("../tunnel-adapters.js")
+    expect(await tunnelLogin("cloudflare-named", { home })).toEqual({ error: "provider 'cloudflare-named' has no login" })
+    expect(await tunnelLogin("cloudflare-provisioned", { home })).toMatchObject({ error: /not configured/ })
+  })
+
+  it("begin → same pending prompt on repeat → logout", async () => {
+    const { createServer } = await import("node:http")
+    let deviceCalls = 0
+    const idp = createServer((req, res) => {
+      const base = `http://127.0.0.1:${(idp.address() as { port: number }).port}`
+      res.setHeader("content-type", "application/json")
+      if (req.url === "/.well-known/openid-configuration") {
+        res.end(JSON.stringify({
+          token_endpoint: `${base}/token`,
+          device_authorization_endpoint: `${base}/device_authorization`,
+        }))
+      } else if (req.url === "/device_authorization") {
+        deviceCalls++
+        res.end(JSON.stringify({
+          device_code: "dc",
+          user_code: "WXYZ-1234",
+          verification_uri: `${base}/device`,
+          expires_in: 600,
+          interval: 3600,
+        }))
+      } else {
+        res.statusCode = 400
+        res.end(JSON.stringify({ error: "authorization_pending" }))
+      }
+    })
+    await new Promise<void>(r => idp.listen(0, "127.0.0.1", () => r()))
+    try {
+      const base = `http://127.0.0.1:${(idp.address() as { port: number }).port}`
+      const { tunnelLogin } = await import("../tunnel-adapters.js")
+      await makeTunnelCredsStore(home).write("cloudflare-provisioned", {
+        provisionerUrl: "http://127.0.0.1:1",
+        oidcIssuer: base,
+        oidcClientId: "client-1",
+      })
+      const first = await tunnelLogin("cloudflare-provisioned", { home })
+      expect(first).toMatchObject({ status: "pending", userCode: "WXYZ-1234" })
+      const again = await tunnelLogin("cloudflare-provisioned", { home })
+      expect(again).toMatchObject({ status: "pending", userCode: "WXYZ-1234" })
+      expect(deviceCalls).toBe(1)
+      expect(JSON.stringify(again)).not.toMatch(/dc|token/i)
+      expect(await tunnelLogin("cloudflare-provisioned", { home, logout: true })).toEqual({ status: "logged_out" })
+    } finally {
+      idp.close()
+    }
+  })
+})
+
+describe("setupTunnelProvider / tunnelLoginState (HTTP-facing helpers)", () => {
+  // The provisioned provider keeps its OIDC session under $AGENTPROTO_HOME:
+  // never let a test read or clear the developer's real ~/.agentproto.
+  let prevHome: string | undefined
+  beforeEach(() => {
+    prevHome = process.env.AGENTPROTO_HOME
+    process.env.AGENTPROTO_HOME = home
+  })
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.AGENTPROTO_HOME
+    else process.env.AGENTPROTO_HOME = prevHome
+  })
+
+  it("setup validates, stores 0600 and never echoes; state never starts a login", async () => {
+    const { setupTunnelProvider, tunnelLoginState } = await import("../tunnel-adapters.js")
+    const bad = await setupTunnelProvider(
+      "cloudflare-provisioned",
+      { provisionerUrl: "http://api.example.com", oidcIssuer: "https://auth.example.com", oidcClientId: "c" },
+      { home },
+    )
+    expect(bad.ok).toBe(false)
+    expect(await setupTunnelProvider("cloudflare-quick", {}, { home })).toEqual({
+      ok: false,
+      hint: "provider 'cloudflare-quick' is not configurable",
+    })
+    const ok = await setupTunnelProvider(
+      "cloudflare-provisioned",
+      { provisionerUrl: "https://api.example.com", oidcIssuer: "https://auth.example.com", oidcClientId: "client-xyz", junk: "x" },
+      { home },
+    )
+    expect(ok.ok).toBe(true)
+    expect(JSON.stringify(ok)).not.toContain("client-xyz")
+    expect(await makeTunnelCredsStore(home).read("cloudflare-provisioned")).toEqual({
+      provisionerUrl: "https://api.example.com",
+      oidcIssuer: "https://auth.example.com",
+      oidcClientId: "client-xyz",
+    })
+    // No network: reading the state of a never-logged-in provider is pure.
+    expect(await tunnelLoginState("cloudflare-provisioned", { home })).toEqual({ status: "logged_out" })
+    expect(await tunnelLoginState("ngrok", { home })).toEqual({ error: "provider 'ngrok' has no login" })
+  })
+})

@@ -211,3 +211,60 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     expect(rec.calls.at(-1)).toBe(`destroy ${desc.id} wa2.agentik.net,wa.agentik.net`)
   })
 })
+
+describe("gateway guard: never publish the daemon itself without authentication", () => {
+  function guardedRegistry(rec: Recorder, isProtected: () => boolean) {
+    const reg = new (class extends TunnelRegistry {
+      protected override async pickProviderForTest(): Promise<RemoteProvider> {
+        return managedMock(rec)
+      }
+    })({
+      persistPath: join(tmp, "tunnels.json"),
+      workspace: tmp,
+      gatewayGuard: { port: 18790, isProtected },
+    })
+    live.push(reg)
+    return reg
+  }
+
+  it("refuses a public tunnel to the gateway port while unprotected, before anything starts", async () => {
+    const rec: Recorder = { calls: [], starts: [] }
+    const reg = guardedRegistry(rec, () => false)
+    await expect(
+      reg.create({ provider: "cloudflare-provisioned", targetPort: 18790, public: true }),
+    ).rejects.toThrow(/refusing a public tunnel to this daemon's own port 18790/)
+    expect(rec.starts).toHaveLength(0)
+    expect(reg.list()).toHaveLength(0)
+  })
+
+  it("allows it behind the access guard, to another port, or once bearer mode is on", async () => {
+    const rec: Recorder = { calls: [], starts: [] }
+    let protectedNow = false
+    const reg = guardedRegistry(rec, () => protectedNow)
+    await reg.create({ provider: "cloudflare-provisioned", targetPort: 18790 }) // private
+    await reg.create({ provider: "cloudflare-provisioned", targetPort: 4871, public: true })
+    protectedNow = true
+    await reg.create({ provider: "cloudflare-provisioned", targetPort: 18790, public: true })
+    expect(rec.starts).toHaveLength(3)
+  })
+
+  it("an autostart tunnel restored after bearer mode was turned off comes back as error, not open", async () => {
+    const rec: Recorder = { calls: [], starts: [] }
+    let protectedNow = true
+    const reg = guardedRegistry(rec, () => protectedNow)
+    const desc = await reg.create({
+      provider: "cloudflare-provisioned",
+      targetPort: 18790,
+      public: true,
+      autostart: true,
+    })
+    await reg.shutdown()
+
+    protectedNow = false
+    const reg2 = guardedRegistry(rec, () => protectedNow)
+    const startsBefore = rec.starts.length
+    await reg2.restoreOnBoot()
+    expect(rec.starts.length).toBe(startsBefore)
+    expect(reg2.get(desc.id)).toMatchObject({ status: "error", lastError: /refusing a public tunnel/ })
+  })
+})
