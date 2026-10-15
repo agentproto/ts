@@ -1,5 +1,17 @@
 # @agentproto/pairing-host
 
+## 0.2.8
+
+### Patch Changes
+
+- 179ea46: Rate-limit the pairing channel up/closed reconnect-flap logs, so a flapping
+  sandbox-join channel no longer floods the daemon log with two lines per cycle.
+- Updated dependencies [bb711b8]
+- Updated dependencies [a21b38b]
+- Updated dependencies [bb711b8]
+  - @agentproto/secrets@2.1.0
+  - @agentproto/acp@0.11.1
+
 ## 0.2.7
 
 ### Patch Changes

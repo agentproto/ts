@@ -1,5 +1,11 @@
 # @agentproto/adapter-browser-chrome
 
+## 0.5.0
+
+### Minor Changes
+
+- d6ccf1f: Add chrome-live screencast for live view and recording of agent's tab
+
 ## 0.4.0
 
 ### Minor Changes

@@ -1,5 +1,49 @@
 # agentproto-vscode
 
+## 0.23.0
+
+### Minor Changes
+
+- 583e7bc: Sessions entering needs-you now raise a warning toast even when not watched; other states still notify only for watched sessions.
+
+### Patch Changes
+
+- 7314270: Add a cloud-badged Claude icon for the `claude-code-cloud` adapter.
+- 48ead31: Only persist the watched-sessions activity baseline when it actually changes, avoiding a workspaceState write on every poll.
+- 58c4eed: Forward posture to the box's agent_start for sandbox spawns and restarts, surface the box's spawnEnforcedPostures, expose spawnEnforcedPostures on adapter listings, and label spawn-enforced postures "(enforced)" in the VS Code posture picker and Configuration Lab.
+- Updated dependencies [3c94e79]
+- Updated dependencies [ebfd261]
+- Updated dependencies [d40020f]
+- Updated dependencies [2b6189d]
+- Updated dependencies [d6ccf1f]
+- Updated dependencies [855a9de]
+- Updated dependencies [6796022]
+- Updated dependencies [28b35b3]
+- Updated dependencies [c6ac536]
+- Updated dependencies [28b35b3]
+- Updated dependencies [58c4eed]
+- Updated dependencies [179ea46]
+- Updated dependencies [84d3993]
+- Updated dependencies [2b6189d]
+- Updated dependencies [98cce09]
+- Updated dependencies [0bc2def]
+- Updated dependencies [6e9b912]
+- Updated dependencies [e584cb3]
+- Updated dependencies [84cd47a]
+- Updated dependencies [98cce09]
+- Updated dependencies [b0224c7]
+- Updated dependencies [0bc2def]
+- Updated dependencies [58c4eed]
+- Updated dependencies [6e9b912]
+- Updated dependencies [50dffe6]
+- Updated dependencies [b83773b]
+- Updated dependencies [96e5008]
+- Updated dependencies [50dffe6]
+- Updated dependencies [87dfdfd]
+  - @agentproto/runtime@5.23.0
+  - @agentproto/mcp-app-host@0.1.3
+  - @agentproto/apps@0.23.3
+
 ## 0.22.12
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @agentproto/llm-endpoint
 
+## 0.11.11
+
+### Patch Changes
+
+- Updated dependencies [98cce09]
+- Updated dependencies [98cce09]
+  - @agentproto/auth@1.3.0
+  - @agentproto/providers-store@0.3.29
+
 ## 0.11.10
 
 ### Patch Changes

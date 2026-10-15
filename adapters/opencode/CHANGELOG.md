@@ -1,5 +1,19 @@
 # @agentproto/adapter-opencode
 
+## 1.8.5
+
+### Patch Changes
+
+- Updated dependencies [989828b]
+- Updated dependencies [a21b38b]
+- Updated dependencies [6796022]
+- Updated dependencies [c6ac536]
+- Updated dependencies [98cce09]
+- Updated dependencies [98cce09]
+  - @agentproto/model-catalog@0.12.6
+  - @agentproto/driver-agent-cli@2.13.1
+  - @agentproto/auth@1.3.0
+
 ## 1.8.4
 
 ### Patch Changes
