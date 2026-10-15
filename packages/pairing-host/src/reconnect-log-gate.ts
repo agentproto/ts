@@ -26,10 +26,13 @@ export interface ReconnectLogGate {
 }
 
 export function createReconnectLogGate(
-  opts: { windowMs?: number; now?: () => number } = {},
+  opts: { windowMs?: number; now?: () => number; noun?: string } = {},
 ): ReconnectLogGate {
   const windowMs = opts.windowMs ?? 60_000
   const now = opts.now ?? Date.now
+  // What the suppressed repeats are called in the suffix. Defaults to
+  // "failure" (the original dial/handshake use); a channel flap passes "flap".
+  const noun = opts.noun ?? "failure"
   const state = new Map<string, { lastLoggedAt: number; suppressed: number }>()
   return {
     onFailure(key, message) {
@@ -41,7 +44,7 @@ export function createReconnectLogGate(
       }
       const suffix =
         prev && prev.suppressed > 0
-          ? ` (${prev.suppressed} failure${prev.suppressed === 1 ? "" : "s"} suppressed)`
+          ? ` (${prev.suppressed} ${noun}${prev.suppressed === 1 ? "" : "s"} suppressed)`
           : ""
       state.set(key, { lastLoggedAt: ts, suppressed: 0 })
       return `${message}${suffix}`
