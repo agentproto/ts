@@ -34,6 +34,10 @@ import {
   cloudflareManagedTunnelProvider,
   CLOUDFLARE_MANAGED_SLUG,
 } from "./cloudflare-managed.js"
+import {
+  cloudflareProvisionedTunnelProvider,
+  CLOUDFLARE_PROVISIONED_SLUG,
+} from "./cloudflare-provisioned.js"
 import type {
   RemoteProvider,
   TunnelProviderHandle,
@@ -78,6 +82,7 @@ export const BUILTIN_TUNNEL_PROVIDERS: Record<string, TunnelProviderFactory> = {
         : undefined,
     ),
   [CLOUDFLARE_MANAGED_SLUG]: (creds) => cloudflareManagedTunnelProvider(creds ?? null),
+  [CLOUDFLARE_PROVISIONED_SLUG]: (creds) => cloudflareProvisionedTunnelProvider(creds ?? null),
 }
 
 /** The canonical built-in slugs, in catalog order. */
@@ -85,6 +90,7 @@ export const BUILTIN_TUNNEL_SLUGS = [
   CLOUDFLARE_QUICK_SLUG,
   CLOUDFLARE_NAMED_SLUG,
   CLOUDFLARE_MANAGED_SLUG,
+  CLOUDFLARE_PROVISIONED_SLUG,
   NGROK_SLUG,
 ] as const
 

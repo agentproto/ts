@@ -33,6 +33,7 @@ export default createTsupConfig({
     "app-ui-placeholder": "src/app-ui-placeholder.ts",
     "app-catalog": "src/app-catalog.ts",
     "daemon-tool-names": "src/daemon-tool-names.generated.ts",
+    "cloudflare-tunnel-engine": "src/cloudflare-tunnel-engine.ts",
     "first-party-catalog-gen": "src/first-party-catalog-gen.ts",
     "app-remote-install": "src/app-remote-install.ts",
     "app-install-offline": "src/app-install-offline.ts",

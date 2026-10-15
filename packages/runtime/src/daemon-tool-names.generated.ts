@@ -265,6 +265,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "tunnel_create",
   "tunnel_delete",
   "tunnel_list",
+  "tunnel_login",
   "tunnel_remove_hostname",
   "tunnel_revoke",
   "tunnel_status",

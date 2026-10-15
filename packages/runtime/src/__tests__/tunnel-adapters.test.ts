@@ -85,6 +85,7 @@ describe("tunnel catalog + lister", () => {
       "cloudflare-quick",
       "cloudflare-named",
       "cloudflare-managed",
+      "cloudflare-provisioned",
       "ngrok",
     ])
 
@@ -105,7 +106,7 @@ describe("tunnel catalog + lister", () => {
     expect(managed.info?.capabilities.hasApi).toBe(true)
     expect(managed.info?.capabilities.stableUrl).toBe(true)
 
-    const ngrok = entries[3]!
+    const ngrok = entries[4]!
     expect(ngrok.status).toBe("available") // requiresSetup + no creds
     expect(ngrok.info?.capabilities.requiresAuth).toBe(true)
     expect(ngrok.info?.capabilities.hasApi).toBe(true)
@@ -175,10 +176,11 @@ describe("list_tunnel_adapters tool", () => {
     const entries = JSON.parse(
       res.content[0]!.text,
     ) as AdapterEntry<TunnelAdapterInfo>[]
-    expect(entries).toHaveLength(4)
+    expect(entries).toHaveLength(5)
     expect(entries.map(e => e.slug).sort()).toEqual([
       "cloudflare-managed",
       "cloudflare-named",
+      "cloudflare-provisioned",
       "cloudflare-quick",
       "ngrok",
     ])
@@ -211,6 +213,10 @@ describe("setup_tunnel_provider tool", () => {
         "tunnelId",
         "zones",
         "zoneTokens",
+        "provisionerUrl",
+        "oidcIssuer",
+        "oidcClientId",
+        "oidcScopes",
       ].sort(),
     )
     expect(tool.shape).not.toHaveProperty("value")
@@ -304,6 +310,7 @@ describe("setup_tunnel_provider tool", () => {
       "cloudflare-quick",
       "cloudflare-named",
       "cloudflare-managed",
+      "cloudflare-provisioned",
       "ngrok",
     ])
   })
@@ -394,6 +401,10 @@ describe("setup_tunnel_provider — ngrok", () => {
         "tunnelId",
         "zones",
         "zoneTokens",
+        "provisionerUrl",
+        "oidcIssuer",
+        "oidcClientId",
+        "oidcScopes",
       ].sort(),
     )
     expect(tool.shape).not.toHaveProperty("value")
@@ -574,5 +585,55 @@ describe("setup_tunnel_provider — cloudflare-managed", () => {
     expect(dangling.isError).toBe(true)
     expect(dangling.content[0]!.text).toMatch(/stored:agentik/)
     expect(existsSync(join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-managed.json"))).toBe(false)
+  })
+})
+
+// ── tunnel_login ────────────────────────────────────────────────────────────────
+
+describe("tunnel_login tool", () => {
+  async function tools() {
+    const { server, tools } = fakeServer()
+    await registerTunnelAdapterTools(server, { home })
+    return {
+      login: tools.find(t => t.name === "tunnel_login")!,
+      setup: tools.find(t => t.name === "setup_tunnel_provider")!,
+    }
+  }
+
+  it("rejects providers without a login", async () => {
+    const { login } = await tools()
+    const res = await login.handler({ slug: "cloudflare-named" })
+    expect(res.isError).toBe(true)
+    expect(res.content[0]!.text).toMatch(/has no login/)
+  })
+
+  it("reports a clear error when cloudflare-provisioned is not configured", async () => {
+    const { login } = await tools()
+    const res = await login.handler({ slug: "cloudflare-provisioned" })
+    expect(res.isError).toBe(true)
+    expect(res.content[0]!.text).toMatch(/not configured/)
+  })
+
+  it("stores the provisioned config via setup_tunnel_provider (https enforced)", async () => {
+    const { setup } = await tools()
+    const bad = await setup.handler({
+      slug: "cloudflare-provisioned",
+      provisionerUrl: "http://api.example.com",
+      oidcIssuer: "https://auth.example.com",
+      oidcClientId: "395156406061302022",
+    })
+    expect(bad.isError).toBe(true)
+    const ok = await setup.handler({
+      slug: "cloudflare-provisioned",
+      provisionerUrl: "https://api.example.com/tunnels",
+      oidcIssuer: "https://auth.example.com",
+      oidcClientId: "395156406061302022",
+    })
+    expect(ok.isError).toBeFalsy()
+    expect(await makeTunnelCredsStore(home).read("cloudflare-provisioned")).toEqual({
+      provisionerUrl: "https://api.example.com/tunnels",
+      oidcIssuer: "https://auth.example.com",
+      oidcClientId: "395156406061302022",
+    })
   })
 })

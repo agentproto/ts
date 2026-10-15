@@ -42,6 +42,7 @@ Requires a running daemon ([`serve.md`](./serve.md) or
 | `cloudflare-quick` (default) | Cloudflare Quick Tunnel — no API key, ephemeral `*.trycloudflare.com` URL (changes every run). |
 | `cloudflare-named` | A pre-provisioned Cloudflare tunnel bound to a stable hostname. Needs `--hostname` and `--tunnel-id`. |
 | `cloudflare-managed` | The daemon creates, maintains and deletes the Cloudflare tunnel, its ingress and its DNS record through the Cloudflare API. Needs `--hostname` on a zone configured once (see below). |
+| `cloudflare-provisioned` | A remote provisioning service creates the tunnel for you after you log in (`tunnel_login`, OIDC device flow). No Cloudflare token on this machine; `--hostname` is optional (the service assigns one). |
 | `ngrok` | Ngrok tunnel — configure its authtoken first via the `setup_tunnel_provider` MCP tool. |
 | Third-party | Any installed `@scope/agentproto-adapter-<slug>` provider. |
 
@@ -129,6 +130,52 @@ Cloudflare delete fails, the descriptor is kept with `lastError` so you can
 retry.
 
 ## Subverbs
+
+
+### Provisioned Cloudflare tunnels (`cloudflare-provisioned`)
+
+For machines that must not hold a Cloudflare token (an end user's laptop).
+A provisioning service you run owns the Cloudflare account and zone, and the
+daemon only ever receives the connector token of its own tunnel.
+
+1. Configure once with `setup_tunnel_provider`, slug `cloudflare-provisioned`.
+   The fields are `provisionerUrl`, `oidcIssuer`, `oidcClientId` and the
+   optional `oidcScopes`. Both URLs must use https; loopback is allowed for
+   development.
+2. Log in with the `tunnel_login` MCP tool (`{ slug: "cloudflare-provisioned" }`).
+   It returns a short code and a URL. Approve it in a browser; the daemon
+   finishes in the background, and calling `tunnel_login` again shows the
+   state. The OIDC session is kept owner-only in
+   `~/.agentproto/tunnel-sessions/cloudflare-provisioned.json` and refreshed
+   automatically. `logout: true` forgets it. The client must be a public
+   ("native") OIDC client with the Device Code and refresh-token grants
+   enabled.
+3. Run `tunnel_create({ provider: "cloudflare-provisioned", targetPort: … })`.
+   `hostname` is an optional request; the service decides what it actually
+   routes and returns it.
+
+Everything after provisioning — the supervised `cloudflared`, the token kept
+in the environment only, health, `tunnel_add_hostname` / `tunnel_remove_hostname`
+and `tunnel purge` — works as for `cloudflare-managed`.
+
+**Provisioner contract (v1).** Every call carries
+`Authorization: Bearer <OIDC access token>`.
+
+| Call | Body | Response |
+|------|------|----------|
+| `PUT {provisionerUrl}/v1/tunnels/{key}` | `{ "service": "http://127.0.0.1:<port>" \| null, "hostnames": ["…"] }` | `200 { "tunnelId", "hostnames": ["…"], "token" }` |
+| `DELETE {provisionerUrl}/v1/tunnels/{key}` | — | 2xx, or 404 if already gone |
+
+- `key` is the daemon's stable tunnel id; the service namespaces it per user.
+- An empty `hostnames` means "assign me one".
+- `service: null` means the tunnel isn't running locally; keep the current origin.
+- `PUT` is idempotent and replayed on every start.
+- Errors are JSON `{ error, message, checkoutUrl? }`:
+  - **401:** the daemon refreshes its token once, then asks for `tunnel_login`.
+  - **402:** payment is required; `checkoutUrl` is shown to the user.
+  - **409:** the hostname is taken.
+- The service must verify the bearer token (issuer, audience/client id,
+  expiry), and should only accept loopback `service` origins.
 
 ### `create`
 
