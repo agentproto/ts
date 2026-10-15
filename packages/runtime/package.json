@@ -169,6 +169,11 @@
       "import": "./dist/daemon-tool-names.mjs",
       "default": "./dist/daemon-tool-names.mjs"
     },
+    "./cloudflare-tunnel-engine": {
+      "types": "./dist/cloudflare-tunnel-engine.d.ts",
+      "import": "./dist/cloudflare-tunnel-engine.mjs",
+      "default": "./dist/cloudflare-tunnel-engine.mjs"
+    },
     "./first-party-catalog-gen": {
       "types": "./dist/first-party-catalog-gen.d.ts",
       "import": "./dist/first-party-catalog-gen.mjs",
