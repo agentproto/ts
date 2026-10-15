@@ -1035,6 +1035,11 @@ jobs:
         if: steps.prstate.outputs.skip != 'true'
         env:
           REVIEW_CONFIG: ${{ steps.config.outputs.json }}
+          # Owner-controlled allow-list of metered model ids (repo VARIABLE, not
+          # the PR-editable config file) — the escape hatch that lets an
+          # explicitly-sanctioned paid model through while still failing closed
+          # on a model a PR slipped into the config.
+          ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
         run: |
           CONFIG="$REVIEW_CONFIG"
           CLI_SOURCE=$(printf '%s' "$CONFIG" | jq -r '.cliSource // "npm"')
@@ -1051,24 +1056,34 @@ jobs:
           REVIEWER_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
           FALLBACK_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerFallbackModels[0] // ""')
           HAS_CLOUD=$(printf '%s' "$CONFIG" | jq -r '(.resolvedAgentAction.presets // []) | index("claude-cloud") != null')
-          # Fail closed on a metered route. `.github/agentic-review.json` is
-          # PR-editable and its `reviewerModel` flows straight into the
-          # `model:`/`provider-key` of the OPENCODE_API_KEY-funded lane, so a
-          # PR could otherwise silently route reviews to a paid model and spend
-          # on that key. On the opencode adapter the resolved (and fallback)
-          # model ids must be a zero-priced free id — an id ending in `-free`,
-          # or the lone non-suffixed free id `big-pickle`. The claude-cloud
-          # preset (subscription-billed) is exempt. This replaces the guard
-          # from origin/main that refused any non-subscription auth-mode, which
-          # the free-route migration deliberately retired.
+          # Fail closed on a metered route UNLESS it is owner-sanctioned.
+          # `.github/agentic-review.json` is PR-editable and its `reviewerModel`
+          # flows straight into the `model:`/`provider-key` of the
+          # OPENCODE_API_KEY-funded lane, so a PR could otherwise silently
+          # route reviews to a paid model and spend on that key. On the
+          # opencode adapter a model is allowed only if it is a zero-priced
+          # free id (suffix `-free`, or `big-pickle`) OR appears in the
+          # owner-controlled `AGENT_ALLOWED_METERED_MODELS` repo variable — a
+          # PR cannot set that variable, so the metered escape hatch stays
+          # owner-only. The claude-cloud preset (subscription-billed) is
+          # exempt. This replaces the guard from origin/main that refused any
+          # non-subscription auth-mode, which the free-route migration retired.
+          allowed_metered() {
+            [ -n "$ALLOWED_METERED_MODELS" ] || return 1
+            printf '%s' "$ALLOWED_METERED_MODELS" | tr ', ' '\n\n' | grep -qxF "$1"
+          }
           if [ "$ADAPTER" = "opencode" ] || [ "$ADAPTER" = "opencode-go" ]; then
             for m in "$REVIEWER_MODEL" "$FALLBACK_MODEL"; do
               [ -z "$m" ] && continue
               case "$m" in
                 */big-pickle|*-free) ;;
                 *)
-                  echo "::error::.github/agentic-review.json routes the opencode reviewer to a metered model '$m' (adapter=$ADAPTER). Reviews must use a zero-priced free id (suffix '-free' or 'big-pickle')."
-                  exit 1
+                  if allowed_metered "$m"; then
+                    echo "::warning::Reviewer model '$m' is metered but owner-sanctioned via AGENT_ALLOWED_METERED_MODELS."
+                  else
+                    echo "::error::.github/agentic-review.json routes the opencode reviewer to a metered model '$m' (adapter=$ADAPTER). Reviews must use a zero-priced free id (suffix '-free' or 'big-pickle'), or the id must be listed in the AGENT_ALLOWED_METERED_MODELS repo variable."
+                    exit 1
+                  fi
                   ;;
               esac
             done
