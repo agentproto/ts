@@ -41,6 +41,7 @@ import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import { runShellGate } from "./supervisor.js"
 import { deriveSessionTitle, MAX_LENGTH as TITLE_MAX_LENGTH } from "./session-title.js"
+import { resolveSessionRef } from "./session-ref.js"
 import {
   regenerateActivitySummary,
   type SessionActivitySummary,
@@ -12120,22 +12121,20 @@ export function createSessionsRegistry(opts?: {
       }
     },
     findByIdOrName(query) {
-      const direct = sessions.get(query)
-      if (direct) {
-        stampReadLiveness(direct.desc)
-        stampInterrupted(direct.desc)
-        stampCurrentStatus(direct)
-        return direct.desc
-      }
-      for (const rt of sessions.values()) {
-        if (rt.desc.name === query) {
-          stampReadLiveness(rt.desc)
-          stampInterrupted(rt.desc)
-          stampCurrentStatus(rt)
-          return rt.desc
-        }
-      }
-      return undefined
+      const resolved = resolveSessionRef(
+        {
+          get: id => sessions.get(id)?.desc,
+          list: () => Array.from(sessions.values(), rt => rt.desc),
+        },
+        { idOrName: query },
+      )
+      if (!resolved.ok) return undefined
+      const rt = sessions.get(resolved.id)
+      if (!rt) return undefined
+      stampReadLiveness(rt.desc)
+      stampInterrupted(rt.desc)
+      stampCurrentStatus(rt)
+      return rt.desc
     },
     writeTerminalInput(id, data) {
       const rt = sessions.get(id)
