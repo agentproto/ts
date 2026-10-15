@@ -39,6 +39,10 @@ export interface SessionDescriptor {
   label?: string
   title?: string
   name?: string
+  /** The unique, human-readable handle on every session (WP-B1 of the
+   *  session-addressing plan); addressable through the shared
+   *  `sessionId|idOrName|slug` surface. `name` is its deprecated alias. */
+  slug?: string
   cwd?: string
   adapterSlug?: string
   model?: string

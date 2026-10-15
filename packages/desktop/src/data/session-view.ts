@@ -42,6 +42,25 @@ export function sessionTitle(s: SessionDescriptor): string {
   return s.title || s.label || s.name || s.command || s.id
 }
 
+/** The addressable handle shown where the raw id would otherwise appear — the
+ *  unique human `slug` (WP-B1) when known, else the machine id. This is an
+ *  ADDITIONAL addressable reference, deliberately NOT part of the display-title
+ *  chain above (sessionTitle is unchanged): the slug is what an operator can
+ *  type into any `sessionId|idOrName|slug` surface. */
+export function sessionHandle(s: SessionDescriptor): string {
+  return s.slug || s.id
+}
+
+/** Rail filter match — the display title plus the addressable references (slug
+ *  and id) and the adapter/model tags. Accepting the slug here means a typed
+ *  reference narrows the rail, the same handle the shared
+ *  `sessionId|idOrName|slug` surface resolves. Pure; an empty query matches. */
+export function sessionMatchesFilter(s: SessionDescriptor, q: string): boolean {
+  if (!q) return true
+  const hay = `${sessionTitle(s)} ${s.slug ?? ""} ${s.id} ${s.adapterSlug ?? ""} ${s.model ?? ""}`
+  return hay.toLowerCase().includes(q.toLowerCase())
+}
+
 /** A structured question ready to render: the prompt text plus zero or more
  *  answer buttons. */
 export interface QuestionView {

@@ -7,6 +7,8 @@ import { useMemo, useState, type Ref } from "react"
 import type { SessionDescriptor } from "../data/types"
 import {
   groupSessions,
+  sessionHandle,
+  sessionMatchesFilter,
   sessionTitle,
   statusKind,
   statusText,
@@ -30,11 +32,7 @@ interface SessionRailProps {
   filterRef?: Ref<HTMLInputElement>
 }
 
-function matches(s: SessionDescriptor, q: string): boolean {
-  if (!q) return true
-  const hay = `${sessionTitle(s)} ${s.adapterSlug ?? ""} ${s.model ?? ""}`.toLowerCase()
-  return hay.includes(q.toLowerCase())
-}
+const matches = sessionMatchesFilter
 
 function Row({
   session,
@@ -58,7 +56,9 @@ function Row({
     >
       <span className={`dot ${statusKind(session)}`} title={statusText(session)} />
       <div>
-        <div className="stitle">{sessionTitle(session)}</div>
+        <div className="stitle" title={sessionHandle(session)}>
+          {sessionTitle(session)}
+        </div>
         <div className="smeta">
           {statusKind(session) === "input" && session.awaitingQuestion?.text ? (
             <span className="tag question" title={session.awaitingQuestion.text}>

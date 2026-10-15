@@ -37,13 +37,36 @@ export function isLiveSession(session: SessionSummary): boolean {
 }
 
 export function describeSession(session: SessionDescriptor): string {
-  return session.label ?? session.name ?? session.id
+  return session.label ?? session.slug ?? session.name ?? session.id
+}
+
+/**
+ * Whether a session answers to a caller-supplied reference string. The daemon's
+ * ONE resolver (`resolveSessionRef`) is authoritative for the wire; this is a
+ * convenience match over the local snapshot so a command arg, a slug typed into
+ * a picker filter, etc. resolves without a round-trip. It mirrors the same
+ * three handles the shared surface accepts — id, slug, legacy name — and adds
+ * NO precedence/ambiguity logic of its own (the daemon already enforces slug
+ * uniqueness). Keep subsequent tool calls on `session.id`.
+ */
+export function sessionMatchesRef(session: SessionDescriptor, ref: string): boolean {
+  return session.id === ref || session.slug === ref || session.name === ref
+}
+
+/** First session in the snapshot answering to `ref` (id, slug, or legacy name). */
+export function findSessionByRef(
+  sessions: readonly SessionDescriptor[],
+  ref: string,
+): SessionDescriptor | undefined {
+  return sessions.find(session => sessionMatchesRef(session, ref))
 }
 
 export function mapSessionsToQuickPickItems(sessions: SessionDescriptor[]): SessionQuickPickItem[] {
   return sessions.map(session => ({
     label: describeSession(session),
-    description: [session.adapterSlug ?? session.kind, session.status].filter(Boolean).join(" · "),
+    description: [session.slug, session.adapterSlug ?? session.kind, session.status]
+      .filter(Boolean)
+      .join(" · "),
     session,
   }))
 }

@@ -341,6 +341,13 @@ export interface SessionDescriptor {
   pinnedOrder?: number
   pty?: boolean
   name?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.slug — the UNIQUE,
+   *  human-readable handle minted on every session (WP-B1 of the
+   *  session-addressing plan). Addressable through the shared
+   *  `sessionId|idOrName|slug` tool surface; `name` is its deprecated alias.
+   *  Display-only surfaces keep their own precedence (sessionDisplayName);
+   *  this is an ADDITIONAL addressable handle, not the display name. */
+  slug?: string
   argv?: readonly string[]
   cwd?: string
   /** Root of the git worktree the session was spawned in — the session→
@@ -555,6 +562,10 @@ export interface SessionSummary {
   pinnedOrder?: number
   pty?: boolean
   name?: string
+  /** Mirrors `@agentproto/runtime` SessionSummary.slug — the unique human
+   *  handle, surfaced on the list projection so a client can address a session
+   *  by slug without a full GET. See SessionDescriptor.slug above. */
+  slug?: string
   argv?: readonly string[]
   cwd?: string
   worktreePath?: string

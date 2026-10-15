@@ -13,6 +13,7 @@ import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import {
   describeSession,
+  findSessionByRef,
   isLiveSession,
   mapSessionsToQuickPickItems,
   normalizeSessionArg,
@@ -59,15 +60,18 @@ export async function pickSession(
  * Resolve a command arg to a SessionDescriptor: a tree node / descriptor, else
  * a bare session-id string, else a quick-pick (default: live sessions only).
  *
- * The bare-id arm matters: programmatic callers pass an id string, not a
- * descriptor — `agentproto.restartSession` reveals the session it just minted,
- * and spawn's "Open transcript" toast action reveals the one it just spawned.
- * Without it, `normalizeSessionArg` rejects the string (it only unwraps
- * objects) and the caller silently falls through to a QuickPick over EVERY
- * session — so the one thing the user asked to see is the one thing they then
- * have to hunt for. Falls back to the store first (no round-trip) and only
- * then to the daemon, since a just-restarted id may not be in the local
- * snapshot yet.
+ * The bare-ref arm matters: programmatic callers pass a reference string, not
+ * a descriptor — `agentproto.restartSession` reveals the session it just
+ * minted, and spawn's "Open transcript" toast action reveals the one it just
+ * spawned. The reference is matched by the SAME three handles the daemon's
+ * shared resolver accepts — id, slug, legacy name (`findSessionByRef`) — so a
+ * user who knows a session by its human slug can address it here too, exactly
+ * as on the wire. Without this arm `normalizeSessionArg` rejects the string
+ * (it only unwraps objects) and the caller silently falls through to a
+ * QuickPick over EVERY session — so the one thing the user asked to see is the
+ * one thing they then have to hunt for. Falls back to the store first (no
+ * round-trip) and only then to the daemon, since a just-restarted id may not be
+ * in the local snapshot yet.
  */
 export async function resolveSessionArg(
   arg: unknown,
@@ -79,7 +83,7 @@ export async function resolveSessionArg(
   const direct = normalizeSessionArg(arg)
   if (direct) return direct
   if (typeof arg === "string" && arg.length > 0) {
-    const known = store.sessions.find(s => s.id === arg)
+    const known = findSessionByRef(store.sessions, arg)
     if (known) return known
     if (client) {
       try {

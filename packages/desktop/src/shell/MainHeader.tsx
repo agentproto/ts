@@ -40,6 +40,15 @@ export function MainHeader({
     <div className="mhead">
       <div className="info">
         <h2>{sessionTitle(session)}</h2>
+        {/* The unique human handle an operator can type on any shared
+            `sessionId|idOrName|slug` surface. Shown only when the daemon has
+            minted one (an older row carries none); the display title above is
+            unchanged. */}
+        {session.slug ? (
+          <span className="tag handle" title={`session slug: ${session.slug}`}>
+            {session.slug}
+          </span>
+        ) : null}
         <span className={`status ${kind}`}>
           <span className={`dot ${kind}`} />
           {statusText(session)}

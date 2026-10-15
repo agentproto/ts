@@ -10,6 +10,7 @@ import {
   daemonSetModel,
   DEFAULT_DAEMON_URL,
 } from "../data/daemon"
+import { sessionHandle } from "../data/session-view"
 import type { ExportResult, SessionDescriptor, SetModelResult } from "../data/types"
 
 const MODELS = [
@@ -186,7 +187,7 @@ export function SessionActionMenu({
           {view === "delete" && (
             <div className="action-menu__panel">
               <span className="action-menu__warning">
-                Delete <b>{session.id}</b>?
+                Delete <b>{sessionHandle(session)}</b>?
               </span>
               <div className="action-menu__row">
                 <button

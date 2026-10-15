@@ -774,6 +774,15 @@ describe("tooltipFieldsFor", () => {
     const fields = tooltipFieldsFor(session({ pid: null }))
     expect(fields).toContainEqual({ label: "pid", value: "—" })
   })
+  it("carries the unique human slug when the session has one", () => {
+    expect(tooltipFieldsFor(session({ slug: "fix-login-bug" }))).toContainEqual({
+      label: "slug",
+      value: "fix-login-bug",
+    })
+    expect(tooltipFieldsFor(session())).not.toContainEqual(
+      expect.objectContaining({ label: "slug" }),
+    )
+  })
   it("includes cwd only when set", () => {
     expect(tooltipFieldsFor(session({ cwd: undefined }))).not.toContainEqual(
       expect.objectContaining({ label: "cwd" }),

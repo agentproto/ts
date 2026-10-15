@@ -671,9 +671,14 @@ export function contextPercent(used?: number, size?: number): string | undefined
   return `${Math.round((used / size) * 100)}%`
 }
 
-/** Ordered tooltip fields: id, cwd, isolation, pid, startedAt, activity, turnsCompleted, costUsd, tokensIn/Out, context %, blockedOn. */
+/** Ordered tooltip fields: id, slug, cwd, isolation, pid, startedAt, activity, turnsCompleted, costUsd, tokensIn/Out, context %, blockedOn. */
 export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   const fields: TooltipField[] = [{ label: "id", value: session.id }]
+  // The unique human handle (WP-B1) — the addressable reference an operator
+  // can type anywhere the shared `sessionId|idOrName|slug` surface is accepted.
+  // Shown beside the raw id (which is otherwise the only addressable handle in
+  // the tooltip); absent for a session persisted before slug minting/backfill.
+  if (session.slug) fields.push({ label: "slug", value: session.slug })
   if (session.cwd) fields.push({ label: "cwd", value: session.cwd })
   // The row shows only the worktree's leaf name (or "in-place"); the tooltip
   // carries the full worktree path and its generation id — the pair that pins
