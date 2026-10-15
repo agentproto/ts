@@ -7860,6 +7860,20 @@ async function handleSessions(
       ...(b.posture !== undefined ? { posture: b.posture as RestartOverrides["posture"] } : {}),
       ...(str(b.contextProfile) !== undefined ? { contextProfile: str(b.contextProfile)! } : {}),
       ...(str(b.mode) !== undefined ? { mode: str(b.mode)! } : {}),
+      // Full replacement (not a merge) — the caller passes the complete new
+      // MCP server list; see the apply-path comment in
+      // session-restart-core.ts's buildRestartMcpServers. Kept lenient here
+      // (shape-checked name/transport, the rest rides the type) so a host
+      // can replay its stored `agent_start.mcpServers` entry verbatim.
+      ...(Array.isArray(b.mcpServers) &&
+      b.mcpServers.every(
+        (s: unknown) =>
+          s !== null && typeof s === "object" &&
+          typeof (s as Record<string, unknown>).name === "string" &&
+          ["stdio", "http", "sse"].includes((s as Record<string, unknown>).transport as string),
+      )
+        ? { mcpServers: b.mcpServers as RestartOverrides["mcpServers"] }
+        : {}),
     }
     try {
       const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {

@@ -39,6 +39,7 @@ import { inferLegacyModeKind } from "@agentproto/driver-agent-cli"
 // its windowed-spend type here — unlike the structurally-mirrored `AuthMethod`
 // facet below — takes no value dependency and cannot introduce a cycle.
 import type { CostBudget } from "@agentproto/auth"
+import type { AcpMcpServer } from "@agentproto/acp"
 import type { ContextContinuityPolicy } from "./context-continuity.js"
 
 /**
@@ -146,6 +147,16 @@ export interface SessionConfig {
   /** Configurable context-continuity policy for this session — controls
    *  warning/compact/continue-fresh thresholds and checkpoint sections. */
   contextContinuity?: ContextContinuityPolicy
+
+  /** MCP servers mounted into the session. A RESTART-only axis (a restart
+   *  re-spawns the agent process, which is what re-mounts MCP servers) — the
+   *  same shape `agent_start.mcpServers` takes at spawn time
+   *  (`AcpMcpServer`). A restart override REPLACES the prior descriptor's
+   *  full list (never merges, same "present axis wins whole" convention as
+   *  `model`/`access`) — see `RestartOverrides` in `session-restart-core.ts`.
+   *  Omit ⇒ the prior list carries forward unchanged, as restarts always did. */
+  mcpServers?: AcpMcpServer[]
+
   /** Adapter harness slug — the canonical name for the adapter that runs the
    *  session (e.g. 'claude-code', 'hermes'). This is the same value historically
    *  carried on the wire as `adapter` / `adapterSlug`; the `harness` field is the

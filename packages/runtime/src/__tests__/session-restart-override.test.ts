@@ -34,6 +34,7 @@ import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import type { AuthProfile } from "@agentproto/auth"
+import type { AcpMcpServer } from "@agentproto/acp"
 
 let acpCounter = 0
 function fakeAgentSession(): AgentSessionLike {
@@ -79,7 +80,15 @@ function makeResolver(descriptor: AdapterAuthDescriptor | undefined): {
           `missing_auth_credential: auth mode "${authSpec.mode}" requires an explicit credential`,
         )
       }
-      captured.push({ auth: authSpec, model: o.model, effort: o.effort, mode: o.mode })
+      captured.push({
+        auth: authSpec,
+        model: o.model,
+        effort: o.effort,
+        mode: o.mode,
+        ...(o as { mcpServers?: AcpMcpServer[] }).mcpServers !== undefined
+          ? { mcpServers: (o as { mcpServers?: AcpMcpServer[] }).mcpServers }
+          : {},
+      })
       return fakeAgentSession()
     },
     commandPreview: "mock-adapter",
@@ -466,6 +475,105 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     expect(err).toBeInstanceOf(Error)
     expect(err.message).toMatch(/pins route "openrouter" but route override is "requesty"/)
+  })
+
+  it("mcpServers override REPLACES the restarted session's mounts (never the stale list)", async () => {
+    const { resolver, captured } = makeResolver(CLAUDE_CODE_DESC)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      // The stale baked-in allowTools query param — tonight's live incident.
+      mcpServers: [
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: "http://127.0.0.1:9211/mcp?callerSessionId=sess_OLD&allowTools=task_list",
+        },
+      ],
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-still9999" } } },
+      }),
+      overrides: {
+        mcpServers: [
+          {
+            name: "agentproto",
+            transport: "http",
+            // The refresh: same mount, NOW bearing the new tool allowlist.
+            ref: "http://127.0.0.1:9211/mcp?allowTools=task_create,task_update,task_claim",
+          },
+        ],
+      },
+    })
+
+    // The fresh descriptor carries the NEW list, not the stale one.
+    expect(restarted.desc.mcpServers).toHaveLength(1)
+    expect(restarted.desc.mcpServers?.[0]?.ref).toBe(
+      "http://127.0.0.1:9211/mcp?allowTools=task_create,task_update,task_claim",
+    )
+    expect(JSON.stringify(restarted.desc.mcpServers)).not.toContain("sess_OLD")
+    // The adapter's spawn inputs received the same replacement.
+    expect((captured[0] as unknown as { mcpServers?: AcpMcpServer[] }).mcpServers).toEqual(
+      restarted.desc.mcpServers,
+    )
+  })
+
+  it("an mcpServers override with no daemonMcpUrl still replaces the list (passed through untouched)", async () => {
+    const { resolver, captured } = makeResolver(CLAUDE_CODE_DESC)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      mcpServers: [
+        { name: "agentproto", transport: "http", ref: "http://127.0.0.1:9211/mcp?allowTools=old" },
+      ],
+    })
+
+    const replaced: AcpMcpServer[] = [
+      { name: "agentproto", transport: "http", ref: "http://127.0.0.1:9211/mcp?allowTools=new" },
+    ]
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-still9999" } } },
+      }),
+      overrides: { mcpServers: replaced },
+    })
+
+    expect(restarted.desc.mcpServers).toEqual(replaced)
+    expect((captured[0] as unknown as { mcpServers?: AcpMcpServer[] }).mcpServers).toEqual(replaced)
+  })
+
+  it("no mcpServers override still carries the prior list forward verbatim", async () => {
+    const { resolver } = makeResolver(CLAUDE_CODE_DESC)
+    const registry = createSessionsRegistry({ persist: false })
+    const carried: AcpMcpServer[] = [
+      { name: "agentproto", transport: "http", ref: "http://127.0.0.1:9211/mcp?allowTools=old" },
+    ]
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      mcpServers: carried,
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-still9999" } } },
+      }),
+    })
+
+    expect(restarted.desc.mcpServers).toEqual(carried)
   })
 
   it("leaves model and route untouched when neither is overridden", async () => {

@@ -4635,6 +4635,29 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe("Legacy AIP-45 mode id override, forwarded verbatim to the driver at spawn."),
+      mcpServers: z
+        .array(
+          z.object({
+            name: z.string().min(1),
+            transport: z.enum(["stdio", "http", "sse"]),
+            ref: z.string().optional(),
+            headers: z.record(z.string(), z.string()).optional(),
+            credentialRef: z.string().optional(),
+            args: z.array(z.string()).optional(),
+            env: z.record(z.string(), z.string()).optional(),
+          }),
+        )
+        .optional()
+        .describe(
+          "FULL REPLACEMENT of the restarted session's MCP server mounts (same shape " +
+            "as `agent_start.mcpServers`) — the list passed here is carried verbatim onto " +
+            "the restarted session; the old list is NOT merged in. This is the only way to " +
+            "change an HTTP-mounted server's config (e.g. a baked-in `?allowTools=` query " +
+            "string) — a bare restart clones the original list unchanged. Pass `[]` to " +
+            "restart with no mounts at all. A `http`/`sse` entry targeting this daemon's " +
+            "own /mcp mount is re-stamped with the NEW session's id at apply time, so a " +
+            "copied self-mount URL never resurrects a dead caller identity."
+        ),
       preferNativeTerminal: z
         .boolean()
         .optional()
@@ -4707,6 +4730,7 @@ export function registerSessionTools(
         ...(input.contextProfile !== undefined ? { contextProfile: input.contextProfile } : {}),
         ...(input.harness !== undefined ? { harness: input.harness } : {}),
         ...(input.mode !== undefined ? { mode: input.mode } : {}),
+        ...(input.mcpServers !== undefined ? { mcpServers: input.mcpServers } : {}),
       }
       if (Object.keys(overrides).length > 0) {
         if (!prev.adapterSlug || !resolveAgentAdapter) {

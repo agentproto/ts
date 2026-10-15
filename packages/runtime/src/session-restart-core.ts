@@ -41,7 +41,10 @@
  * the SAME `resolveAuthSpec` gate as the base path — no parallel auth path. The
  * remaining axes (`route`/`posture`/`contextProfile`/`model`/`effort`) overlay
  * the prior descriptor and round-trip onto the fresh one; a changed axis is
- * announced via `session:config-changed` (#490).
+ * announced via `session:config-changed` (#490). `mcpServers` (read off
+ * `SessionConfig` itself) is the one array-shaped axis and is a FULL
+ * REPLACEMENT, not a merge — see `buildRestartMcpServers`'s comment in
+ * `restartAgentSession`.
  */
 
 import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
@@ -1252,8 +1255,22 @@ export async function restartAgentSession(
   // caller that forgot to wire `daemonMcpUrl` shows up in the daemon's own
   // log rather than silently degrading identity.
   const buildRestartMcpServers = (newSessionId: string): SessionDescriptor["mcpServers"] => {
+    // The base list for this restart: an `mcpServers` OVERRIDE fully REPLACES
+    // the prior descriptor's list (the same "present axis wins whole"
+    // convention as `model`/`access` — the caller passes the complete new
+    // list, never a delta; a merge here would make "remove exactly one
+    // server" or "update one server's `allowTools` query params"
+    // inexpressible). This is the restart-only axis that lets a persistent
+    // consumer refresh a stale HTTP-mounted MCP mount (e.g. a baked-in
+    // `?allowTools=` query string on the daemon self-mount) — a bare restart
+    // could never change it because it clones the ORIGINAL list verbatim.
+    // The identity re-stamp below STILL runs on the override list: an
+    // `http` entry targeting this daemon's /mcp is re-pointed at THIS
+    // restart's fresh session id, so a caller that replays a copied
+    // self-mount URL never resurrects a dead session id.
+    const baseMcpServers = overrides.mcpServers !== undefined ? overrides.mcpServers : prev.mcpServers
     if (!opts.daemonMcpUrl) {
-      if (prev.mcpServers && prev.mcpServers.length > 0) {
+      if (baseMcpServers && baseMcpServers.length > 0) {
         console.warn(
           `[restartAgentSession] no daemonMcpUrl wired for restart of ${prev.id} — ` +
             `carrying mcpServers forward WITHOUT re-stamping callerSessionId (the ` +
@@ -1261,9 +1278,9 @@ export async function restartAgentSession(
             `the OLD session's identity).`,
         )
       }
-      return prev.mcpServers
+      return baseMcpServers
     }
-    const stripped = stripOwnCallerStamp(prev.mcpServers, prev.id)
+    const stripped = stripOwnCallerStamp(baseMcpServers, prev.id)
     return stampDaemonCallerSessionId(stripped, {
       daemonMcpUrl: opts.daemonMcpUrl,
       callerSessionId: newSessionId,
@@ -2255,6 +2272,7 @@ export async function restartAgentSession(
   if (overrides.posture !== undefined) emit("posture", overrides.posture)
   if (overrides.contextProfile !== undefined) emit("contextProfile", overrides.contextProfile)
   if (overrides.harness !== undefined) emit("harness", overrides.harness)
+  if (overrides.mcpServers !== undefined) emit("mcpServers", overrides.mcpServers)
 
   return {
     desc,
