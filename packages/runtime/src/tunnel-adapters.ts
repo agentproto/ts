@@ -40,6 +40,7 @@ import {
 import { CLOUDFLARE_QUICK_SLUG } from "./remote-providers/quick.js"
 import { CLOUDFLARE_NAMED_SLUG } from "./remote-providers/named.js"
 import { NGROK_SLUG, type TunnelNgrokCreds } from "./remote-providers/ngrok.js"
+import { CLOUDFLARE_MANAGED_SLUG } from "./remote-providers/cloudflare-managed.js"
 import {
   resolveTunnelProvider,
   discoverTunnelHandles,
@@ -75,10 +76,19 @@ export interface TunnelNamedCreds {
   credentialsFile?: string
 }
 
-/** Union of all tunnel-family credential shapes (per-slug). */
-export type TunnelProviderCreds = TunnelNamedCreds | TunnelNgrokCreds
+/**
+ * Stored config for `cloudflare-managed` — both JSON strings, see
+ * `remote-providers/cloudflare-managed-config.ts`.
+ */
+export interface TunnelManagedCreds {
+  zones: string
+  zoneTokens?: string
+}
 
-/** Static catalog of the three providers. */
+/** Union of all tunnel-family credential shapes (per-slug). */
+export type TunnelProviderCreds = TunnelNamedCreds | TunnelNgrokCreds | TunnelManagedCreds
+
+/** Static catalog of the built-in providers. */
 export const TUNNEL_CATALOG: AdapterCatalog = [
   {
     slug: CLOUDFLARE_QUICK_SLUG,
@@ -95,6 +105,14 @@ export const TUNNEL_CATALOG: AdapterCatalog = [
       "Persistent Cloudflare tunnel bound to a stable hostname you control (BYO credentials).",
     packageName: "@agentproto/runtime",
     hint: "cloudflare · stable",
+  },
+  {
+    slug: CLOUDFLARE_MANAGED_SLUG,
+    name: "Cloudflare Managed Tunnel",
+    description:
+      "Cloudflare tunnel created, routed (DNS) and deleted through the Cloudflare API — stable hostname on your zones.",
+    packageName: "@agentproto/runtime",
+    hint: "cloudflare · stable · api",
   },
   {
     slug: NGROK_SLUG,
@@ -232,9 +250,12 @@ export async function registerTunnelAdapterTools(
     toolName: "setup_tunnel_provider",
     description:
       "Configure a tunnel provider that requires credentials (e.g. " +
-      "cloudflare-named or ngrok). Each field is SENSITIVE — stored 0600 and " +
-      "never echoed back in tool results. Only the fields a given provider " +
-      "declares are stored.",
+      "cloudflare-named, cloudflare-managed or ngrok). Fields are stored 0600 " +
+      "and never echoed back in tool results. Only the fields a given provider " +
+      "declares are stored. cloudflare-managed takes `zones` (JSON array of " +
+      "{zone, accountId, tokenRef, zoneId?, maxLabels?}; tokenRef = env:<VAR> | " +
+      "file:<path> | keychain:<path> | stored:<key>) and optionally " +
+      "`zoneTokens` (JSON {key: token}, for stored:<key> refs).",
     validSlugs,
     fields,
     onSetup: async (slug: string, fields: Record<string, string>) => {
@@ -257,6 +278,14 @@ export async function registerTunnelAdapterTools(
         return {
           ok: false,
           hint: `missing required field(s): ${missing.join(", ")}`,
+        }
+      }
+
+      if (handle.validateSetup) {
+        try {
+          handle.validateSetup(fields)
+        } catch (err) {
+          return { ok: false, hint: err instanceof Error ? err.message : String(err) }
         }
       }
 

@@ -80,10 +80,11 @@ describe("tunnel catalog + lister", () => {
     const lister = makeTunnelLister({ credsStore, ledger })
 
     const entries = await lister()
-    // All three catalog entries present, in catalog order.
+    // All catalog entries present, in catalog order.
     expect(entries.map(e => e.slug)).toEqual([
       "cloudflare-quick",
       "cloudflare-named",
+      "cloudflare-managed",
       "ngrok",
     ])
 
@@ -98,7 +99,13 @@ describe("tunnel catalog + lister", () => {
     expect(named.info?.capabilities.requiresAuth).toBe(true)
     expect(named.info?.capabilities.stableUrl).toBe(true)
 
-    const ngrok = entries[2]!
+    const managed = entries[2]!
+    expect(managed.slug).toBe("cloudflare-managed")
+    expect(managed.status).toBe("available") // requiresSetup + no creds
+    expect(managed.info?.capabilities.hasApi).toBe(true)
+    expect(managed.info?.capabilities.stableUrl).toBe(true)
+
+    const ngrok = entries[3]!
     expect(ngrok.status).toBe("available") // requiresSetup + no creds
     expect(ngrok.info?.capabilities.requiresAuth).toBe(true)
     expect(ngrok.info?.capabilities.hasApi).toBe(true)
@@ -168,8 +175,9 @@ describe("list_tunnel_adapters tool", () => {
     const entries = JSON.parse(
       res.content[0]!.text,
     ) as AdapterEntry<TunnelAdapterInfo>[]
-    expect(entries).toHaveLength(3)
+    expect(entries).toHaveLength(4)
     expect(entries.map(e => e.slug).sort()).toEqual([
+      "cloudflare-managed",
       "cloudflare-named",
       "cloudflare-quick",
       "ngrok",
@@ -201,6 +209,8 @@ describe("setup_tunnel_provider tool", () => {
         "hostname",
         "slug",
         "tunnelId",
+        "zones",
+        "zoneTokens",
       ].sort(),
     )
     expect(tool.shape).not.toHaveProperty("value")
@@ -289,10 +299,11 @@ describe("setup_tunnel_provider tool", () => {
     expect(res.isError).toBe(true)
   })
 
-  it("catalog exposes exactly the three providers", () => {
+  it("catalog exposes exactly the built-in providers", () => {
     expect(TUNNEL_CATALOG.map(c => c.slug)).toEqual([
       "cloudflare-quick",
       "cloudflare-named",
+      "cloudflare-managed",
       "ngrok",
     ])
   })
@@ -381,6 +392,8 @@ describe("setup_tunnel_provider — ngrok", () => {
         "domain",
         "hostname",
         "tunnelId",
+        "zones",
+        "zoneTokens",
       ].sort(),
     )
     expect(tool.shape).not.toHaveProperty("value")
@@ -507,5 +520,59 @@ describe("setup_tunnel_provider — ngrok", () => {
       authToken: "x",
     })
     expect(res.isError).toBe(true)
+  })
+})
+
+// ── setup_tunnel_provider — cloudflare-managed ──────────────────────────────────
+
+describe("setup_tunnel_provider — cloudflare-managed", () => {
+  const ZONES = JSON.stringify([
+    { zone: "agentik.net", accountId: "acct", tokenRef: "stored:agentik" },
+    { zone: "clipgen.co", accountId: "acct", tokenRef: "env:CF_TOKEN_CLIPGEN", maxLabels: 2 },
+  ])
+  const TOKEN = "cf-api-token-should-never-be-echoed"
+
+  async function setupTool(): Promise<Registered> {
+    const { server, tools } = fakeServer()
+    await registerTunnelAdapterTools(server, { home })
+    return tools.find(t => t.name === "setup_tunnel_provider")!
+  }
+
+  it("stores zones + token map 0600 and never echoes the token", async () => {
+    const tool = await setupTool()
+    expect((tool.shape["zoneTokens"] as { description?: string }).description?.toLowerCase()).toContain(
+      "sensitive",
+    )
+    const res = await tool.handler({
+      slug: "cloudflare-managed",
+      zones: ZONES,
+      zoneTokens: JSON.stringify({ agentik: TOKEN }),
+    })
+    expect(res.isError).toBeFalsy()
+    expect(res.content[0]!.text).not.toContain(TOKEN)
+    const store = makeTunnelCredsStore(home)
+    expect(await store.read("cloudflare-managed")).toEqual({
+      zones: ZONES,
+      zoneTokens: JSON.stringify({ agentik: TOKEN }),
+    })
+    const { statSync } = await import("node:fs")
+    const mode = statSync(join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-managed.json")).mode
+    if (process.platform !== "win32") expect(mode & 0o077).toBe(0)
+  })
+
+  it("rejects an invalid zone list or a dangling stored: ref without storing anything", async () => {
+    const tool = await setupTool()
+    const bad = await tool.handler({
+      slug: "cloudflare-managed",
+      zones: JSON.stringify([{ zone: "agentik.net", accountId: "acct", tokenRef: TOKEN }]),
+    })
+    expect(bad.isError).toBe(true)
+    expect(bad.content[0]!.text).toMatch(/reference/)
+    expect(bad.content[0]!.text).not.toContain(TOKEN)
+
+    const dangling = await tool.handler({ slug: "cloudflare-managed", zones: ZONES })
+    expect(dangling.isError).toBe(true)
+    expect(dangling.content[0]!.text).toMatch(/stored:agentik/)
+    expect(existsSync(join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-managed.json"))).toBe(false)
   })
 })

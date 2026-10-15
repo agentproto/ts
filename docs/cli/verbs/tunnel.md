@@ -8,6 +8,9 @@ agentproto tunnel create --port <n> [--provider <slug>] [--name <slug>]
                          [--public] [--json]
 agentproto tunnel list   [--active] [--json]
 agentproto tunnel stop   <id-or-name> [--json]        (alias: delete, rm)
+agentproto tunnel purge  <id-or-name> [--json]
+agentproto tunnel add-hostname    <id-or-name> <fqdn> [--json]
+agentproto tunnel remove-hostname <id-or-name> <fqdn> [--json]
 agentproto tunnel revoke <id-or-name> [--json]
 agentproto tunnel status <id-or-name> [--json]
 ```
@@ -38,6 +41,7 @@ Requires a running daemon ([`serve.md`](./serve.md) or
 |----------|-------------|
 | `cloudflare-quick` (default) | Cloudflare Quick Tunnel — no API key, ephemeral `*.trycloudflare.com` URL (changes every run). |
 | `cloudflare-named` | A pre-provisioned Cloudflare tunnel bound to a stable hostname. Needs `--hostname` and `--tunnel-id`. |
+| `cloudflare-managed` | The daemon creates, maintains and deletes the Cloudflare tunnel, its ingress and its DNS record through the Cloudflare API. Needs `--hostname` on a zone configured once (see below). |
 | `ngrok` | Ngrok tunnel — configure its authtoken first via the `setup_tunnel_provider` MCP tool. |
 | Third-party | Any installed `@scope/agentproto-adapter-<slug>` provider. |
 
@@ -53,6 +57,77 @@ cloudflared tunnel route dns <name> <hostname>
 
 Then reference it with `--provider cloudflare-named --hostname … --tunnel-id …`.
 
+### Managed Cloudflare tunnels (`cloudflare-managed`)
+
+You declare the desired state (local port + hostname); the daemon makes
+Cloudflare match it, on every start:
+
+1. finds the tunnel `agentproto-managed-<name>-<id8>` (or `…-<id>` when unnamed) or creates it
+   (`config_src: "cloudflare"`) — it always lists first, so replays never
+   duplicate;
+2. writes the tunnel's remote ingress: one rule per hostname →
+   `http://127.0.0.1:<port>` (or the access guard's port for a private
+   tunnel), then `http_status:404`;
+3. upserts a proxied `CNAME <hostname> → <tunnel-id>.cfargotunnel.com`
+   with the comment `managed by agentproto tunnel engine`;
+4. runs `cloudflared tunnel run` under a supervisor (restart with
+   exponential backoff, gives up after a crash loop). The connector token
+   is fetched from the API on each start, held in memory only and passed
+   through the `TUNNEL_TOKEN` env var — never argv, never disk, never logs;
+5. probes `https://<hostname>/` every 60 s. Any answer from the app
+   (including the guard's 401 or the app's 404) is `active`; a Cloudflare
+   edge 5xx (502/530…) or a network error is `degraded`; a cloudflared
+   crash loop is `error`. `tunnel status` shows it as `health`.
+
+**Ownership.** The engine only touches tunnels named `agentproto-managed-…`
+and DNS records carrying its comment. If any other record already exists for
+the hostname, create fails and the record is left alone. It also refuses to
+take over a hostname that is still routed to another live managed tunnel.
+
+**Configure once** via the `setup_tunnel_provider` MCP tool, slug
+`cloudflare-managed`. The config is stored 0600 in
+`~/.agentproto/tunnel-creds/cloudflare-managed.json`:
+
+| Field | Required | Value |
+|-------|----------|-------|
+| `zones` | yes | JSON array, one entry per zone: `{ "zone", "accountId", "tokenRef", "zoneId"?, "maxLabels"? }` |
+| `zoneTokens` | no | JSON object `{ "<key>": "<api token>" }`, for `tokenRef: "stored:<key>"` (SENSITIVE, never echoed) |
+
+```json
+{
+  "slug": "cloudflare-managed",
+  "zones": "[{\"zone\":\"agentik.net\",\"accountId\":\"<account id>\",\"tokenRef\":\"env:CF_TOKEN_AGENTIK\"},{\"zone\":\"clipgen.co\",\"accountId\":\"<account id>\",\"tokenRef\":\"keychain:cloudflare/clipgen\",\"maxLabels\":2}]"
+}
+```
+
+- `tokenRef` is a **reference**, never the token: `env:<VAR>` (daemon
+  env), `file:<path>` (must be owner-only, `chmod 600`),
+  `keychain:<service>` (OS keychain), or `stored:<key>` (from
+  `zoneTokens`). Each token needs *Account › Cloudflare Tunnel › Edit*,
+  *Zone › DNS › Edit* and *Zone › Zone › Read* (the last one is not needed
+  if you set `zoneId`).
+- The zone is picked by hostname suffix (longest match wins). A hostname
+  that matches no zone fails with the list of configured zones.
+- `maxLabels` (default `1`) caps how deep a hostname may be under the zone.
+  Without Advanced Certificate Manager the edge certificate only covers
+  `*.<zone>`, so `relay.agentik.net` works but `wa.relay.agentik.net` is
+  rejected unless you raise `maxLabels` for that zone.
+- All hostnames of one tunnel must live in zones of the same account.
+
+**Hostname swap.** `tunnel add-hostname <tunnel> <new-fqdn>` routes the new
+hostname to the same tunnel (ingress + CNAME) and makes it the primary, while
+the old one keeps working. `tunnel status` lists both under `hostnames`, with
+health per hostname. Once consumers have moved,
+`tunnel remove-hostname <tunnel> <old-fqdn>` retires the old hostname. The new
+hostname can be on another configured zone in the same account.
+
+**Stop vs purge.** `tunnel stop` only stops cloudflared. The tunnel and DNS
+stay, so the URL is the same after the next start. `tunnel purge` stops
+cloudflared, deletes the engine's CNAME(s), clears the tunnel's connections
+and deletes the tunnel, tolerating anything that is already gone. If the
+Cloudflare delete fails, the descriptor is kept with `lastError` so you can
+retry.
+
 ## Subverbs
 
 ### `create`
@@ -67,7 +142,7 @@ Creates a tunnel via `POST /tunnels`.
 | `--label <text>` | — | Human-readable label. |
 | `--host <host>` | `127.0.0.1` | Target host to forward to. |
 | `--autostart` | `false` | Relaunch the tunnel automatically when the daemon boots. |
-| `--hostname <fqdn>` | — | (Named) Stable FQDN for the tunnel. |
+| `--hostname <fqdn>` | — | (Named, managed) Stable FQDN for the tunnel. |
 | `--tunnel-id <id>` | — | (Named) Pre-provisioned Cloudflare tunnel id. |
 | `--credentials-file <path>` | — | (Named) Path to Cloudflare credentials JSON. |
 | `--ttl <dur>` | `24h` | How long the signed link stays valid (`1h`, `24h`, `7d`; clamped to 1 minute – 30 days). Ignored with `--public`. |
@@ -95,6 +170,18 @@ aliases.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--json` | `false` | Emit `{"ok":bool,"tunnelId":str}` as JSON. |
+
+### `purge <id-or-name>`
+
+Stops the tunnel and deletes what its provider created remotely, via
+`DELETE /tunnels/:id?purge=true`. For `cloudflare-managed` that's the CNAME(s)
+and the Cloudflare tunnel; for the other providers it is the same as `stop`,
+and the descriptor is also forgotten. This cannot be undone.
+
+### `add-hostname <id-or-name> <fqdn>` / `remove-hostname <id-or-name> <fqdn>`
+
+Hostname swap for `cloudflare-managed`, via `POST /tunnels/:id/hostnames`
+and `DELETE /tunnels/:id/hostnames/:fqdn`. See *Managed Cloudflare tunnels*.
 
 ### `revoke <id-or-name>`
 
@@ -129,6 +216,17 @@ agentproto tunnel create --port 3040 --name prod-preview \
   --provider cloudflare-named \
   --hostname preview.example.com --tunnel-id my-tunnel \
   --autostart
+
+# Managed Cloudflare tunnel — created through the API, survives restarts
+agentproto tunnel create --port 8081 --name wa-relay \
+  --provider cloudflare-managed --hostname wa.agentik.net --autostart --public
+
+# Move it to another hostname with an overlap window, then retire the old one
+agentproto tunnel add-hostname wa-relay wa.clipgen.co
+agentproto tunnel remove-hostname wa-relay wa.agentik.net
+
+# Delete the managed tunnel and its DNS record
+agentproto tunnel purge wa-relay
 
 # List active tunnels
 agentproto tunnel list --active
