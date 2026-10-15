@@ -186,7 +186,7 @@ export interface JudgeGateSpec {
      * wallet LADDER is out of scope here. An unresolvable profile fails the
      * gate (fail-safe FAIL), same as any other judge-spawn failure.
      */
-    access?: { profileRef?: string }
+    access?: { profileRef?: string; profileRefs?: string[] }
     /** Decomposed route identity for the judge spawn (custom gateway /
      *  preset id) — same shape and forwarding as `agent_start`'s `route`.
      *  Only consulted together with `access.profileRef` (eligibility +
@@ -1191,10 +1191,11 @@ export function createCompletionPolicySupervisor(opts: {
       // WP-D: resolve the judge's own billing pin, if requested. Failure here
       // is fail-safe FAIL, same as any other judge-spawn failure below.
       let judgeAuth: ResolvedAuthSpec | undefined
-      if (spec.access?.profileRef) {
+      if (spec.access?.profileRef || spec.access?.profileRefs?.length) {
         const authResult = await resolveAccessProfileAuth({
           adapter: spec.adapter,
-          profileRef: spec.access.profileRef,
+          ...(spec.access?.profileRef ? { profileRef: spec.access.profileRef } : {}),
+          ...(spec.access?.profileRefs?.length ? { profileRefs: spec.access.profileRefs } : {}),
           authDescriptor: resolved.authDescriptor,
           route: spec.route,
           model: spec.model,

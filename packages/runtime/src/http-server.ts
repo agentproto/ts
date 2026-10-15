@@ -6060,11 +6060,19 @@ function parseCostBudgetField(
   return { maxCostUsd: usd, window: obj.window, scope: obj.scope }
 }
 
-function parseAccessField(raw: unknown): { profileRef?: string } | undefined {
+function parseAccessField(raw: unknown): { profileRef?: string; profileRefs?: string[] } | undefined {
   const value = typeof raw === "string" ? tryParseJson(raw) : raw
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
-  const profileRef = (value as Record<string, unknown>).profileRef
-  return typeof profileRef === "string" && profileRef.length > 0 ? { profileRef } : {}
+  const record = value as Record<string, unknown>
+  const out: { profileRef?: string; profileRefs?: string[] } = {}
+  if (typeof record.profileRef === "string" && record.profileRef.length > 0) {
+    out.profileRef = record.profileRef
+  }
+  if (Array.isArray(record.profileRefs)) {
+    const refs = record.profileRefs.filter((r): r is string => typeof r === "string" && r.length > 0)
+    if (refs.length > 0) out.profileRefs = refs
+  }
+  return out.profileRef !== undefined || out.profileRefs !== undefined ? out : undefined
 }
 
 /** Parse the `inference` body field — the HTTP twin of the MCP `agent_start`

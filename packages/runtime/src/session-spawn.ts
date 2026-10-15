@@ -625,7 +625,14 @@ export interface AccessProfileAuthError {
  */
 export async function resolveAccessProfileAuth(input: {
   adapter: string
-  profileRef: string
+  /** Single named profile (back-compat). Superseded by {@link profileRefs}. */
+  profileRef?: string
+  /** Ordered candidate profiles. The runtime picks the FIRST one eligible for
+   *  the model's route — the money-safe way for a caller (e.g. CI) to say
+   *  "bill the Go key for an `opencode-go/*` model, the Zen key otherwise"
+   *  without re-deriving the route itself. A missing profile anywhere in the
+   *  list is a hard error (fail closed), never a silent skip. */
+  profileRefs?: string[]
   authDescriptor: AdapterAuthDescriptor | undefined
   route?: RouteSpec
   /** Model used for eligibility (route/provider derivation) — falls back to
@@ -638,61 +645,99 @@ export async function resolveAccessProfileAuth(input: {
    *  misrepresent the request as having named a model it didn't). */
   defaultModel?: string
 }): Promise<AccessProfileAuthResult | AccessProfileAuthError> {
-  const { adapter, profileRef, authDescriptor, route, model, defaultModel } = input
-  const profile = await getAuthProfile(profileRef)
-  if (!profile) {
+  const { adapter, authDescriptor, route, model, defaultModel } = input
+  // Ordered candidate list: `profileRefs` (preferred) else the single
+  // `profileRef`.
+  const candidates =
+    input.profileRefs !== undefined && input.profileRefs.length > 0
+      ? input.profileRefs
+      : input.profileRef !== undefined
+        ? [input.profileRef]
+        : []
+  if (candidates.length === 0) {
     return {
       ok: false,
       code: "access_profile_not_found",
-      message: `no auth profile "${profileRef}" found.`,
+      message: "no auth profile was named.",
     }
   }
   if (!authDescriptor) {
     return {
       ok: false,
       code: "access_profile_ineligible",
-      message: `adapter "${adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
+      message: `adapter "${adapter}" presents no billing-auth; a profile cannot be attached.`,
     }
   }
-  let projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
-  // The naive/prefix-guessed route above is only ever a GUESS when the
-  // caller didn't pin one explicitly (`route?.gateway` still wins outright,
-  // untouched, above); when the guess leaves the named profile ineligible,
-  // fall back to searching the model's real candidate routes before failing.
-  let resolvedRouteGateway: string | undefined
-  if (
-    route?.gateway === undefined &&
-    (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0)
-  ) {
-    const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
-    if (resolved) {
-      projected = resolved
-      // A GATEWAY resolution (routeId ≠ the adapter's direct endpoint) must
-      // thread through the REST of the spawn exactly as an explicit
-      // `route: {gateway}` would — auth spec, launch-config base_url,
-      // descriptor `route` echo. Using it only for the eligibility check
-      // above and then resolving auth against the profile's endpoint as a
-      // DIRECT provider was the claude-sdk/moonshot bug: the spawn cleared
-      // eligibility on the moonshot gateway but launched with the provider
-      // preset's keyEnv (MOONSHOT_API_KEY) and no ANTHROPIC_BASE_URL, so
-      // the session hit Anthropic direct and 404'd on the model. Skipped
-      // when the caller pinned a custom `route.baseUrl` (their transport
-      // choice must not be overridden by a preset's base_url).
-      if (!resolved.direct && route?.baseUrl === undefined) {
-        resolvedRouteGateway = resolved.routeId
+  const firstRef = candidates[0]!
+  type Candidate = {
+    profile: NonNullable<Awaited<ReturnType<typeof getAuthProfile>>>
+    projected: NonNullable<ReturnType<typeof spawnEligibilityManifest>>
+    resolvedRouteGateway?: string
+  }
+  let selected: Candidate | undefined
+  let firstProfile: Candidate["profile"] | undefined
+  let firstProjected: ReturnType<typeof spawnEligibilityManifest>
+  for (const ref of candidates) {
+    const profile = await getAuthProfile(ref)
+    if (!profile) {
+      // A named-but-missing profile is a hard error, never a skip — the
+      // caller asked to bill a wallet that isn't there.
+      return {
+        ok: false,
+        code: "access_profile_not_found",
+        message: `no auth profile "${ref}" found.`,
       }
     }
+    if (ref === firstRef) firstProfile = profile
+    let projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+    // The naive/prefix-guessed route above is only ever a GUESS when the
+    // caller didn't pin one explicitly (`route?.gateway` still wins outright,
+    // untouched, above); when the guess leaves the named profile ineligible,
+    // fall back to searching the model's real candidate routes before failing.
+    let resolvedRouteGateway: string | undefined
+    if (
+      route?.gateway === undefined &&
+      (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0)
+    ) {
+      const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
+      if (resolved) {
+        projected = resolved
+        // A GATEWAY resolution (routeId ≠ the adapter's direct endpoint) must
+        // thread through the REST of the spawn exactly as an explicit
+        // `route: {gateway}` would — auth spec, launch-config base_url,
+        // descriptor `route` echo. Skipped when the caller pinned a custom
+        // `route.baseUrl` (their transport choice must not be overridden by a
+        // preset's base_url).
+        if (!resolved.direct && route?.baseUrl === undefined) {
+          resolvedRouteGateway = resolved.routeId
+        }
+      }
+    }
+    if (ref === firstRef) firstProjected = projected
+    if (
+      projected &&
+      eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length > 0
+    ) {
+      selected = { profile, projected, ...(resolvedRouteGateway !== undefined ? { resolvedRouteGateway } : {}) }
+      break
+    }
   }
-  if (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0) {
-    const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
+  if (!selected) {
+    const endpoint = firstProjected?.manifest.endpointByRoute[firstProjected.routeId] ?? "an unknown endpoint"
+    const suffix =
+      candidates.length > 1
+        ? ` None of the ${candidates.length} candidate profiles [${candidates.join(", ")}] are eligible — add the route to a profile's \`routes\` (\`agentproto auth profile create <id> <endpoint> --route <route>\`) or name a profile that bills it.`
+        : ""
     return {
       ok: false,
       code: "access_profile_ineligible",
       message:
-        `profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
-        `for adapter "${adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
+        `profile "${firstRef}" (${firstProfile?.endpoint ?? "?"}/${firstProfile?.method ?? "?"}) is not eligible ` +
+        `for adapter "${adapter}" on route "${firstProjected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).${suffix}`,
     }
   }
+  const { profile, projected } = selected
+  const resolvedRouteGateway = selected.resolvedRouteGateway
   const authMode = profileMethodToAuthMode(profile.method)
   // Subscription-credential resolution: a source-backed profile
   // (`profile.source`) resolves the credential FRESH via Mode 3 on every
@@ -1394,9 +1439,11 @@ export interface SpawnAgentSessionInput {
   /** Decomposed route identity.  This is canonical transport; `mode` remains
    * a legacy adapter projection only. */
   route?: RouteSpec
-  /** Named billing credential. Resolved from auth-profiles + keychain at the
-   * final spawn boundary; the secret never crosses HTTP/MCP. */
-  access?: { profileRef?: string }
+  /** Named billing credential. `profileRefs` (ordered) supersedes `profileRef`;
+   *  the runtime bills the FIRST profile eligible for the model's route.
+   *  Resolved from auth-profiles + keychain at the final spawn boundary; the
+   *  secret never crosses HTTP/MCP. */
+  access?: { profileRef?: string; profileRefs?: string[] }
   /** Bind this spawn to a local/LAN inference endpoint — resolved (and fit-
    *  checked) at the very top of `spawnAgentSession`, BEFORE preset
    *  expansion, into ordinary `model`/`route`/`access`/`auth`/`deferredTools`
@@ -3079,7 +3126,7 @@ export async function spawnAgentSession(
   // billed. Keep the normal sandbox path free of this host dependency.
   const resolveHostAuth =
     input.sandbox !== undefined &&
-    (input.access?.profileRef !== undefined ||
+    (input.access?.profileRef !== undefined || (input.access?.profileRefs?.length ?? 0) > 0 ||
       (spawnDefaults.auth.explicitConfig && input.auth === undefined))
   const resolved =
     input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
@@ -3145,6 +3192,8 @@ export async function spawnAgentSession(
         `agent_start: adapter "${input.adapter}" must be available on the host to resolve ` +
         (input.access?.profileRef !== undefined
           ? `access profile "${input.access.profileRef}"`
+          : (input.access?.profileRefs?.length ?? 0) > 0
+            ? `access profiles [${input.access!.profileRefs!.join(", ")}]`
           : "the configured default wallet") +
         " for a sandbox spawn.",
     }
@@ -3296,10 +3345,11 @@ export async function spawnAgentSession(
   // router echo (hermes/pi/opencode, above) keeps its echo-only behaviour
   // unchanged while the profile-resolved gateway also drives wire routing.
   let profileResolvedRoute: RouteSpec | undefined
-  if (resolved && input.access?.profileRef && !cloudResolved) {
+  if (resolved && (input.access?.profileRef || input.access?.profileRefs?.length) && !cloudResolved) {
     const result = await resolveAccessProfileAuth({
       adapter: input.adapter,
-      profileRef: input.access.profileRef,
+      ...(input.access?.profileRef ? { profileRef: input.access.profileRef } : {}),
+      ...(input.access?.profileRefs?.length ? { profileRefs: input.access.profileRefs } : {}),
       authDescriptor: resolved.authDescriptor,
       route: input.route,
       model: input.model,
