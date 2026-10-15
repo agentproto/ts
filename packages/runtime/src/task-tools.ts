@@ -9,6 +9,17 @@
  * on the server hangs the MCP handshake — empirically verified); when no
  * ledger is wired the handlers answer a structured error instead.
  *
+ * All four go through the same (possibly wrapped) server, so every default
+ * mount lists all four or none — `DEFAULT_ALWAYS_ON_TOOLS` (index.ts) keeps
+ * them together under deferred loading. A session that sees `task_list` but
+ * not the write verbs is on a mount configured to split them: a custom
+ * `defaults.mcp.deferredTools.alwaysOn` (it REPLACES the default set) that
+ * names only `task_list` ⇒ the other three are deferred, reachable through
+ * `tool_search`; or an `allowTools` scope (AGENT.md `tools:`) that names only
+ * `task_list` ⇒ they are not registered at all. `session_capabilities`
+ * shows which list the harness actually loaded. Pinned by
+ * `__tests__/task-tools-visibility.test.ts`.
+ *
  * Caller identity drives ACL + the default board: a scoped child arrives
  * with `callerScope.ownerSessionId` (the same identity the policy tools
  * scope on) → a `{kind:"session"}` caller whose default board is its
@@ -142,7 +153,9 @@ export function registerTaskTools(
       "children spawned from a client). Leave `owner` absent for a claimable " +
       "task; pass \"self\" to keep it for yourself. Declare `verify` to make " +
       "done GATED: a done report then runs the gate (shell exit 0 / judge " +
-      "PASS) before the task closes.",
+      "PASS) before the task closes. May be deferred (absent from " +
+      "`tools/list` while task_list shows) on a deferred-tools mount — " +
+      "`tool_search` `select:task_create` returns it; always callable.",
     {
       title: z.string().min(1).describe("One-line imperative title."),
       description: z.string().optional().describe("Longer context for whoever claims it."),
@@ -236,7 +249,14 @@ export function registerTaskTools(
       "COMPACT BY DEFAULT: each task is a slim projection (taskId/rev/title/" +
       "status/owner/boardId/blockedBy/hasVerify/createdAt/updatedAt/closedAt); " +
       "pass `full: true` (or `compact: false`) for the complete record " +
-      "(description, verify spec, meta, sessions, verification, …).",
+      "(description, verify spec, meta, sessions, verification, …). " +
+      "The write verbs are task_create/task_claim/task_update; if they are " +
+      "not in your tool list, this mount DEFERS them (a custom " +
+      "`deferredTools.alwaysOn` set naming only task_list) — call " +
+      "`tool_search` with `select:task_create,task_claim,task_update` for " +
+      "their schemas and call them directly. If `tool_search` doesn't find " +
+      "them either, your mount's tool allowlist (e.g. an AGENT.md `tools:` " +
+      "list) leaves them out.",
     inputSchema: taskListSchema,
     handler: async (input) => {
       if (!ledger) return notAvailable
@@ -278,7 +298,9 @@ export function registerTaskTools(
       "task flips to in_progress. A lost race answers `{conflict:true, " +
       "current}` — re-read `current` and pick another task (or retry with its " +
       "rev) instead of assuming the claim landed. Claim BEFORE working; " +
-      "update when done.",
+      "update when done. May be deferred (absent from `tools/list` while " +
+      "task_list shows) on a deferred-tools mount — `tool_search` " +
+      "`select:task_claim` returns it; always callable.",
     {
       taskId: z.string().describe("Task id from task_list / task_create."),
       rev: z
@@ -321,7 +343,9 @@ export function registerTaskTools(
       "the task) — a human `approval:decided` on any of them then moves it " +
       "on its own: approved → in_progress, denied → cancelled " +
       "(`meta.reason:\"denied\"`). The owner never gets released while " +
-      "waiting, even across a restart.",
+      "waiting, even across a restart. May be deferred (absent from " +
+      "`tools/list` while task_list shows) on a deferred-tools mount — " +
+      "`tool_search` `select:task_update` returns it; always callable.",
     {
       taskId: z.string().describe("Task id from task_list / task_create."),
       rev: z.number().int().min(0).describe("The rev you last read."),
