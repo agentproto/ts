@@ -14,6 +14,7 @@
  */
 
 import { addReviewWorktree, ownerRepoOfReviewWorktree, removeReviewWorktrees } from "./review-worktree.js"
+import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import type { ReviewRunner } from "./review-runner.js"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
@@ -4635,18 +4636,7 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe("Legacy AIP-45 mode id override, forwarded verbatim to the driver at spawn."),
-      mcpServers: z
-        .array(
-          z.object({
-            name: z.string().min(1),
-            transport: z.enum(["stdio", "http", "sse"]),
-            ref: z.string().optional(),
-            headers: z.record(z.string(), z.string()).optional(),
-            credentialRef: z.string().optional(),
-            args: z.array(z.string()).optional(),
-            env: z.record(z.string(), z.string()).optional(),
-          }),
-        )
+      mcpServers: mcpServerMountsOverrideSchema
         .optional()
         .describe(
           "FULL REPLACEMENT of the restarted session's MCP server mounts (same shape " +

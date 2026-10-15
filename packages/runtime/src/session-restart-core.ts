@@ -2254,6 +2254,14 @@ export async function restartAgentSession(
   // sees which axes moved. Emitted only after a successful spawn — an override
   // that failed eligibility (400) or missing-credential (fail-loud) never gets
   // here, so no phantom "changed" is announced for a restart that didn't happen.
+  //
+  // `mcpServers` is announced REDACTED: an AcpMcpServer entry can carry
+  // `headers` (often a bearer token), `env` and `credentialRef`, and this
+  // event lands on the session event bus for every subscriber to read —
+  // the same redaction logic `access` applies by emitting only the
+  // `profileRef`. Names + transports + public refs are enough for a UI
+  // to say "the mounts changed"; the mounts themselves are on the
+  // descriptor, which stays the privileged read surface.
   const ts = new Date().toISOString()
   const emit = (axis: SessionConfigAxis, value: NonNullable<SessionConfig[SessionConfigAxis]>) => {
     registry.emitConfigChanged({
@@ -2272,7 +2280,16 @@ export async function restartAgentSession(
   if (overrides.posture !== undefined) emit("posture", overrides.posture)
   if (overrides.contextProfile !== undefined) emit("contextProfile", overrides.contextProfile)
   if (overrides.harness !== undefined) emit("harness", overrides.harness)
-  if (overrides.mcpServers !== undefined) emit("mcpServers", overrides.mcpServers)
+  if (overrides.mcpServers !== undefined) {
+    emit(
+      "mcpServers",
+      // Redacted — see the comment above. Only the never-secret facets.
+      overrides.mcpServers.map(s => {
+        const { name, transport, ref } = s
+        return { name, transport, ...(ref !== undefined ? { ref } : {}) } as AcpMcpServer
+      }),
+    )
+  }
 
   return {
     desc,

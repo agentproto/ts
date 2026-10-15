@@ -35,6 +35,7 @@ import type { AgentAdapterResolver } from "../http-server.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import type { AuthProfile } from "@agentproto/auth"
 import type { AcpMcpServer } from "@agentproto/acp"
+import { mcpServerMountsOverrideSchema } from "../agent-start-schema.js"
 
 let acpCounter = 0
 function fakeAgentSession(): AgentSessionLike {
@@ -61,6 +62,7 @@ type CapturedStart = {
   model?: string
   effort?: string
   mode?: string
+  mcpServers?: AcpMcpServer[]
 }
 
 /** Adapter resolver whose `startSession` replicates the driver's own
@@ -85,9 +87,7 @@ function makeResolver(descriptor: AdapterAuthDescriptor | undefined): {
         model: o.model,
         effort: o.effort,
         mode: o.mode,
-        ...(o as { mcpServers?: AcpMcpServer[] }).mcpServers !== undefined
-          ? { mcpServers: (o as { mcpServers?: AcpMcpServer[] }).mcpServers }
-          : {},
+        ...(o.mcpServers !== undefined ? { mcpServers: o.mcpServers } : {}),
       })
       return fakeAgentSession()
     },
@@ -130,6 +130,39 @@ function spawnClaudeSubSession(registry: ReturnType<typeof createSessionsRegistr
     },
   })
 }
+
+describe("mcpServerMountsOverrideSchema — the shape both restart transports validate against", () => {
+  it("accepts a well-formed list (http entry with ref, stdio entry with command ref)", () => {
+    const parsed = mcpServerMountsOverrideSchema.safeParse([
+      { name: "agentproto", transport: "http", ref: "http://127.0.0.1:9211/mcp?allowTools=new" },
+      { name: "chrome", transport: "stdio", ref: "npx", args: ["-y", "chrome-devtools-mcp"] },
+    ])
+    expect(parsed.success).toBe(true)
+  })
+
+  it("rejects an http entry with no ref — it could never be mounted (clear per-entry message)", () => {
+    const parsed = mcpServerMountsOverrideSchema.safeParse([
+      { name: "agentproto", transport: "http", headers: { Authorization: "Bearer x" } },
+    ])
+    expect(parsed.success).toBe(false)
+    expect(JSON.stringify(parsed.error?.issues)).toMatch(/agentproto.*requires a .ref./)
+  })
+
+  it("rejects a stdio entry with no ref (no command to launch)", () => {
+    const parsed = mcpServerMountsOverrideSchema.safeParse([
+      { name: "chrome", transport: "stdio", args: ["-y"] },
+    ])
+    expect(parsed.success).toBe(false)
+  })
+
+  it("rejects a non-array or entry with a bad transport", () => {
+    expect(mcpServerMountsOverrideSchema.safeParse({ name: "x" }).success).toBe(false)
+    expect(
+      mcpServerMountsOverrideSchema.safeParse([{ name: "x", transport: "carrier-pigeon", ref: "y" }])
+        .success,
+    ).toBe(false)
+  })
+})
 
 describe("restartAgentSession — restart-with-override (step 6)", () => {
   it("R1 money bug: an access override bills the REQUESTED profile, never the prior wallet even when it's still in config", async () => {
@@ -519,7 +552,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
     )
     expect(JSON.stringify(restarted.desc.mcpServers)).not.toContain("sess_OLD")
     // The adapter's spawn inputs received the same replacement.
-    expect((captured[0] as unknown as { mcpServers?: AcpMcpServer[] }).mcpServers).toEqual(
+    expect(captured[0]?.mcpServers).toEqual(
       restarted.desc.mcpServers,
     )
   })
@@ -549,7 +582,119 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
     })
 
     expect(restarted.desc.mcpServers).toEqual(replaced)
-    expect((captured[0] as unknown as { mcpServers?: AcpMcpServer[] }).mcpServers).toEqual(replaced)
+    expect(captured[0]?.mcpServers).toEqual(replaced)
+  })
+
+  it("an override self-mount targeting the daemon is re-stamped with the NEW session's callerSessionId", async () => {
+    const { resolver, captured } = makeResolver(CLAUDE_CODE_DESC)
+    const registry = createSessionsRegistry({ persist: false })
+    const daemonUrl = "http://127.0.0.1:9211/mcp"
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      mcpServers: [
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `${daemonUrl}?allowTools=old`,
+        },
+      ],
+    })
+    // Stamp the carried list the way a real spawn did — with prev's OWN id —
+    // so the restart's strip/re-stamp pass has a genuine stale stamp to work
+    // with (prev.id is minted by the registry, hence the post-spawn patch).
+    prev.mcpServers = [
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonUrl}?callerSessionId=${prev.id}&allowTools=old`,
+      },
+    ]
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      daemonMcpUrl: daemonUrl,
+      loadDefaultsConfig: async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-still9999" } } },
+      }),
+      // Same mount, refreshed allowlist, NO callerSessionId — the daemon knows.
+      overrides: {
+        mcpServers: [
+          { name: "agentproto", transport: "http", ref: `${daemonUrl}?allowTools=new` },
+        ],
+      },
+    })
+
+    const ref = restarted.desc.mcpServers?.[0]?.ref
+    expect(ref).toContain("allowTools=new")
+    expect(ref).toContain(`callerSessionId=${restarted.desc.id}`)
+    expect(ref).not.toContain(prev.id)
+    expect(captured[0]?.mcpServers?.[0]?.ref).toBe(ref)
+  })
+
+  it("an empty mcpServers override explicitly clears every mount", async () => {
+    const { resolver } = makeResolver(CLAUDE_CODE_DESC)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      mcpServers: [
+        { name: "agentproto", transport: "http", ref: "http://127.0.0.1:9211/mcp?allowTools=old" },
+      ],
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-still9999" } } },
+      }),
+      overrides: { mcpServers: [] },
+    })
+
+    expect(restarted.desc.mcpServers).toEqual([])
+  })
+
+  it("emits config-changed for mcpServers REDACTED — headers/env/credentialRef never reach the event bus", async () => {
+    const { resolver } = makeResolver(CLAUDE_CODE_DESC)
+    const bus = createSessionEventBus()
+    const seen: SessionEvent[] = []
+    bus.on("session:config-changed", ev => seen.push(ev))
+    const registry = createSessionsRegistry({ persist: false, sessionEvents: bus })
+    const prev = spawnClaudeSubSession(registry)
+
+    await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-still9999" } } },
+      }),
+      overrides: {
+        mcpServers: [
+          {
+            name: "secret-mount",
+            transport: "http",
+            ref: "https://example.com/mcp",
+            headers: { Authorization: "Bearer sk-live-SECRET9999" },
+            env: { TOKEN: "sk-live-SECRET9999" },
+            credentialRef: "kc:whatever",
+          },
+        ],
+      },
+    })
+
+    const ev = seen.find(e => e.type === "session:config-changed" && (e as { axis?: string }).axis === "mcpServers") as
+      | { value: AcpMcpServer[] }
+      | undefined
+    expect(ev).toBeDefined()
+    expect(ev?.value).toEqual([
+      { name: "secret-mount", transport: "http", ref: "https://example.com/mcp" },
+    ])
+    expect(JSON.stringify(ev)).not.toContain("SECRET9999")
+    expect(JSON.stringify(ev)).not.toContain("credentialRef")
+    // But the stored descriptor keeps the full entry (its privileged surface).
   })
 
   it("no mcpServers override still carries the prior list forward verbatim", async () => {

@@ -42,6 +42,59 @@ export const mcpPositiveNumber = z.preprocess(
  *  suffix so every field's pointer stays byte-identical. */
 const help = (field: string) => `Details: tool_help {name:"agent_start", topic:"${field}"}`
 
+/**
+ * ONE MCP-server-mount entry — the shape both `agent_start.mcpServers` (below)
+ * and the restart-override paths (`session_restart` MCP verb + the
+ * `POST /sessions/:id/restart` route, via {@link mcpServerMountsOverrideSchema})
+ * validate against, so they can't drift.
+ */
+export const mcpServerMountEntrySchema = z.object({
+  name: z.string().min(1),
+  transport: z.enum(["stdio", "http", "sse"]),
+  ref: z.string().optional(),
+  headers: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe("Static HTTP headers for `http`/`sse` transports. Ignored for `stdio`."),
+  credentialRef: z
+    .string()
+    .optional()
+    .describe(
+      "Brokered credential resolved into `headers` at mount time (wins on " +
+        "collision with `headers`); the secret never lives in env/config."
+    ),
+  args: z
+    .array(z.string())
+    .optional()
+    .describe("`stdio` only: argv passed to the `ref` command."),
+  env: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe("`stdio` only: extra environment for the launched server."),
+})
+
+/**
+ * A full mcpServers list for a RESTART override. Every entry must carry a
+ * `ref` (the transport's URL or command — an entry without one would mount a
+ * broken server the agent can never call); fail-loud instead.
+ */
+export const mcpServerMountsOverrideSchema = z
+  .array(mcpServerMountEntrySchema)
+  .superRefine((entries, ctx) => {
+    entries.forEach((entry, i) => {
+      if (entry.ref === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            `mcpServers[${i}] ("${entry.name}", ${entry.transport}) requires a ` +
+            "`ref` — the URL the `http`/`sse` mount points at, or the command " +
+            "a `stdio` mount launches. An entry without one cannot be mounted.",
+          path: [i, "ref"],
+        })
+      }
+    })
+  })
+
 export const agentStartInputShape = {
   adapter: z
     .string()
@@ -301,34 +354,7 @@ export const agentStartInputShape = {
         "credits. FAILS FAST with no fallback if the " +
         `resolved mode has no credential configured anywhere. ${help("auth")}`
     ),
-  mcpServers: jsonTolerant(
-    z.array(
-      z.object({
-        name: z.string(),
-        transport: z.enum(["stdio", "http", "sse"]),
-        ref: z.string().optional(),
-        headers: z
-          .record(z.string(), z.string())
-          .optional()
-          .describe("Static HTTP headers for `http`/`sse` transports. Ignored for `stdio`."),
-        credentialRef: z
-          .string()
-          .optional()
-          .describe(
-            "Brokered credential resolved into `headers` at spawn time (wins on " +
-              "collision with `headers`); the secret never lives in env/config."
-          ),
-        args: z
-          .array(z.string())
-          .optional()
-          .describe("`stdio` only: argv passed to the `ref` command."),
-        env: z
-          .record(z.string(), z.string())
-          .optional()
-          .describe("`stdio` only: extra environment for the launched server."),
-      })
-    )
-  )
+  mcpServers: jsonTolerant(z.array(mcpServerMountEntrySchema))
     .optional()
     .describe(
       "MCP servers to mount into the spawned agent's session at spawn time. " +
