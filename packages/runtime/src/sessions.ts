@@ -4453,8 +4453,11 @@ export interface SessionsRegistry {
    *  configured `sessionRetention` defaults. Async + batched; never touches
    *  a live, pinned or keepAlive session or an ancestor of a live one. */
   pruneSessionDirs(opts?: SessionRetentionOptions): Promise<SessionRetentionResult>
-  /** Set or clear a session's user-facing name and/or its `slug`
-   *  (`PATCH /sessions/:id`, the `session_rename` MCP verb). Each of
+  /** Set or clear a session's user-facing name and/or its `slug`. This is
+   *  the write-path behind `PATCH /sessions/:id` and the `session_rename` MCP
+   *  verb; the registry honours a `slug` key on `patch`, and those two
+   *  surfaces forward it once their schemas carry it (owned by WP-A2 / WP-C1
+   *  — this method is the contract they call). Each of
    *  `title`/`label`: a non-empty string sets that field (trimmed, capped to
    *  the derivation's `MAX_LENGTH` by code point); an empty/whitespace-only
    *  string or `null` CLEARS it (the UI reverts to the derived title /
@@ -6581,8 +6584,10 @@ export function createSessionsRegistry(opts?: {
    *  override (or a prior boot's mint) is never rewritten. Rows minted in one
    *  pass are visible to the next (they're written straight onto `sessions`),
    *  so two restored rows with the same title land `x` and `x-2`. Persists via
-   *  the ordinary debounced snapshot; the per-row index sidecar is refreshed
-   *  immediately, matching every other descriptor write-path. */
+   *  the ordinary debounced snapshot (sessions.json) — the per-session
+   *  `index.json` sidecar has no `slug` field, so there is nothing to refresh
+   *  there and this deliberately does not pay for a synchronous index write
+   *  (with its transcript-tail read) per restored row at boot. */
   const backfillMissingSlugs = (): void => {
     let changed = false
     for (const rt of sessions.values()) {
@@ -6596,7 +6601,6 @@ export function createSessionsRegistry(opts?: {
         desc.id,
       )
       changed = true
-      writeIndexNow(rt)
     }
     if (changed) schedulePersist()
   }
