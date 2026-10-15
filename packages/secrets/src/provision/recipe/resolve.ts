@@ -15,7 +15,7 @@
 
 import { resolveCredential, extractJsonPath } from "../index.js"
 import { resolveRecipeMethod } from "./registry.js"
-import type { CredentialSourceSpec } from "./types.js"
+import type { CredentialSourceSpec, OauthFieldMap } from "./types.js"
 
 export interface ResolveSourceOptions {
   /** Asked for a `{ prompt }` source. Receives the prompt text, returns the
@@ -117,6 +117,113 @@ export async function readRecipeLoginJson(
       }
       if ("keychain" in spec) {
         return await resolveKeychain({ keychain: spec.keychain, ...(spec.account !== undefined ? { account: spec.account } : {}) })
+      }
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err))
+    }
+  }
+  throw new Error(
+    `no login file for recipe '${recipeId}' method '${method.id}' (${errors.join("; ") || "only env/prompt sources declared"})`,
+  )
+}
+
+/** Extract each dot-path of `fields` (AIP-19 `oauth` mapping) from one login
+ *  document string, returning canonical JSON with the keys the shape names:
+ *  `{accessToken, refreshToken?, expiresAt?}`. `expiresAt` normalizes — epoch
+ *  milliseconds and numeric strings both become ISO strings — so a consumer
+ *  never has to know which convention the CLI stored. Throws when a REQUIRED
+ *  field is missing; an optional field missing is simply omitted. The result
+ *  is sensitive: seal it immediately, never print it. */
+export function extractOauthJson(doc: string, fields: OauthFieldMap): string {
+  const parse = <T>(required: boolean, path: string): T | undefined => {
+    let cur: unknown
+    try {
+      cur = JSON.parse(doc)
+    } catch {
+      throw new Error(`login document is not valid JSON`)
+    }
+    for (const part of path.split(".")) {
+      if (cur == null || typeof cur !== "object") {
+        throw new Error(`field '${path}' not found in login document`)
+      }
+      cur = (cur as Record<string, unknown>)[part]
+    }
+    if (typeof cur === "string" && cur.length === 0) {
+      if (required) throw new Error(`field '${path}' is empty`)
+      cur = undefined
+    }
+    if (required && (typeof cur !== "string" || cur.length === 0) && typeof cur !== "number") {
+      throw new Error(`field '${path}' is not a non-empty string or number`)
+    }
+    return cur as T
+  }
+
+  const accessToken = parse<string>(true, fields.accessToken)
+  const refreshToken = fields.refreshToken
+    ? parse<string>(false, fields.refreshToken)
+    : undefined
+  const rawExpires = fields.expiresAt
+    ? parse<number>(false, fields.expiresAt)
+    : undefined
+  // Millisecond epochs (Claude Code) or numeric strings both land as ISO.
+  const expiresAt = rawExpires !== undefined ? normalizeExpires(rawExpires) : undefined
+
+  return JSON.stringify({
+    accessToken,
+    ...(refreshToken !== undefined ? { refreshToken } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+  }) as string
+}
+
+/** Epoch-ms number or numeric string → ISO string; anything else (already an
+ *  ISO string) passes through untouched. */
+function normalizeExpires(raw: number | string): string {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 100_000_000_000) {
+    return new Date(raw).toISOString()
+  }
+  if (typeof raw === "string" && /^\d{13}$/.test(raw)) {
+    return new Date(Number(raw)).toISOString()
+  }
+  return String(raw)
+}
+
+/**
+ * Read a method's login document through its `oauth` field map and return the
+ * FULL AIP-19 oauth value shape as canonical JSON — the capture command's
+ * input, unlike {@link readRecipeLoginJson} which returns the raw document or
+ * {@link resolveSourceSpec} which extracts one string field. Requires the
+ * method to declare an `oauth` map (builtins: `claude-code-oauth`,
+ * `codex`/`oauth-subscription`); if the source chain has several documents,
+ * the first that RESOLVES wins and every path reads from that one document —
+ * the CLIs store access + refresh + expiry together. Env/prompt sources can't
+ * produce the shape and fail the chain. The result is sensitive: seal it
+ * immediately, never print it.
+ */
+export async function readRecipeOauthJson(
+  recipeId: string,
+  methodId?: string,
+): Promise<string> {
+  const { method } = resolveRecipeMethod(recipeId, methodId)
+  if (!method.oauth) {
+    throw new Error(
+      `recipe '${recipeId}' method '${method.id}' declares no oauth field map — it resolves an opaque credential, not the {accessToken, refreshToken, expiresAt} shape`,
+    )
+  }
+  const chain = Array.isArray(method.source) ? method.source : [method.source]
+  const errors: string[] = []
+  for (const spec of chain) {
+    try {
+      if ("file" in spec) {
+        return extractOauthJson(await resolveCredential({ fromFile: spec.file }), method.oauth)
+      }
+      if ("keychain" in spec) {
+        return extractOauthJson(
+          await resolveKeychain({
+            keychain: spec.keychain,
+            ...(spec.account !== undefined ? { account: spec.account } : {}),
+          }),
+          method.oauth,
+        )
       }
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err))

@@ -44,11 +44,25 @@ export const methodSourceSchema = z.union([
   z.array(credentialSourceSpecSchema).min(1),
 ])
 
+/** Dot-paths mapping the method's login document onto the AIP-19 `oauth` value
+ *  shape. Holds paths, never values — same rule as a recipe's sources. */
+export const oauthFieldMapSchema = z
+  .object({
+    accessToken: z.string().min(1),
+    refreshToken: z.string().min(1).optional(),
+    expiresAt: z.string().min(1).optional(),
+  })
+  .strict()
+  .describe(
+    "Dot-paths into the login document for each field of the AIP-19 'oauth' value shape ({accessToken, refreshToken, expiresAt}). Locations, never values.",
+  )
+
 export const recipeMethodSchema = z
   .object({
     id: z.string().min(1),
     label: z.string().min(1).optional(),
     source: methodSourceSchema,
+    oauth: oauthFieldMapSchema.optional(),
   })
   .strict()
 

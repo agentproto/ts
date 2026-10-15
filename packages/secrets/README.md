@@ -18,6 +18,19 @@ const x = defineSecrets({
 })
 ```
 
+## `capture` — vault a CLI's own OAuth login locally
+
+`agentproto-secrets capture [--provider <recipe>] [--vault-dir <dir>]` reads a
+coding CLI's subscription OAuth login through its builtin recipe's `oauth`
+field map (the full AIP-19 `oauth` shape `{accessToken, refreshToken,
+expiresAt}`), seals it to the vault's own local keypair (`<dir>/key.json`,
+0600, minted on first run), and writes `entries/<provider>.json` (0600). It
+prints a capability pointer (`agentproto-secrets://vault/<provider>?method=…&key=…`)
+— the token values are never printed, logged, or written in the clear. If the
+CLI has no local login yet (`claude login` / `codex login` not run), the
+command exits 1 and says to run the CLI's own login first; it never spawns a
+second login client.
+
 ## Exposure surface (`@agentproto/secrets/exposure`)
 
 The manifest says *which* secrets exist; an **exposure** says *how* a resolved

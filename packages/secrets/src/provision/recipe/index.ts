@@ -15,6 +15,7 @@
 
 export type {
   CredentialSourceSpec,
+  OauthFieldMap,
   RecipeMethod,
   ProvisionRecipe,
   ProvisionRecipeDefinition,
@@ -22,6 +23,7 @@ export type {
 export {
   provisionRecipeFrontmatterSchema,
   recipeMethodSchema,
+  oauthFieldMapSchema,
   credentialSourceSpecSchema,
   type ProvisionRecipeFrontmatter,
 } from "./schema.js"
@@ -47,5 +49,7 @@ export {
 export {
   resolveSourceSpec,
   readRecipeLoginJson,
+  readRecipeOauthJson,
+  extractOauthJson,
   type ResolveSourceOptions,
 } from "./resolve.js"

@@ -32,6 +32,14 @@ export const claudeCodeOauthRecipe = defineProvisionRecipe({
           jsonPath: "claudeAiOauth.accessToken",
         },
       ],
+      // The CLI stores access + refresh + expiry together (one JSON blob in
+      // the Keychain or the file), so the capture flow can vault the FULL
+      // AIP-19 oauth shape from the same document. expiresAt is epoch ms here.
+      oauth: {
+        accessToken: "claudeAiOauth.accessToken",
+        refreshToken: "claudeAiOauth.refreshToken",
+        expiresAt: "claudeAiOauth.expiresAt",
+      },
     },
   ],
 })
@@ -47,6 +55,13 @@ export const codexRecipe = defineProvisionRecipe({
       id: "oauth-subscription",
       label: "Codex (subscription)",
       source: { file: "~/.codex/auth.json", jsonPath: "tokens.access_token" },
+      // Codex stores id/access/refresh tokens under `tokens` (no stored expiry
+      // — the CLI refreshes on demand), so the oauth shape here is access +
+      // refresh without expiresAt.
+      oauth: {
+        accessToken: "tokens.access_token",
+        refreshToken: "tokens.refresh_token",
+      },
     },
     {
       id: "api-key",

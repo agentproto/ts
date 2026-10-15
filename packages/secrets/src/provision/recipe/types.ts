@@ -34,6 +34,26 @@ export type CredentialSourceSpec =
   | { keychain: string; account?: string; jsonPath?: string }
   | { prompt: string }
 
+/**
+ * Dot-paths into the method's login document for each field of the AIP-19
+ * `oauth` value shape (`{accessToken, refreshToken, expiresAt}`). `accessToken`
+ * is required — a method without it can't produce an oauth-shaped value —
+ * while `refreshToken` and `expiresAt` are optional (some CLIs store only the
+ * access half, or keep no expiry). If the source chain has several documents
+ * (Keychain → file), the FIRST document that resolves wins and all paths are
+ * read from that one document — the CLIs store the full set together.
+ */
+export interface OauthFieldMap {
+  /** Path to the access token (e.g. `claudeAiOauth.accessToken`). */
+  accessToken: string
+  /** Path to the refresh token, if the CLI stores one (e.g.
+   *  `claudeAiOauth.refreshToken`). */
+  refreshToken?: string
+  /** Path to the expiry. Epoch milliseconds or ISO strings both normalize to
+   *  an ISO `expiresAt`. */
+  expiresAt?: string
+}
+
 /** One installable flavor of a provider's credential. The first method in a
  *  recipe is the default when `--method` is omitted. */
 export interface RecipeMethod {
@@ -46,6 +66,10 @@ export interface RecipeMethod {
    *  fallback chain — the first source that resolves wins (e.g. macOS Keychain,
    *  then a file, so one recipe spans platforms). */
   source: CredentialSourceSpec | CredentialSourceSpec[]
+  /** Dot-paths to extract the FULL AIP-19 `oauth` value shape (access + refresh
+   *  + expiry) from the same login document the single-credential `source`
+   *  reads. Optional: absent for opaque sources (API keys, bare tokens). */
+  oauth?: OauthFieldMap
 }
 
 export interface ProvisionRecipeDefinition {
