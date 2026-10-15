@@ -197,6 +197,43 @@ describe("pullAppGithubWorkspace", () => {
     expect(config).not.toContain(token())
   })
 
+  it("hands the box git an env-config credential git actually honors", async () => {
+    const mount = join(base, "authenv")
+    const seen: Array<Record<string, string> | undefined> = []
+    const capturing: SandboxExec = async ({ command, cwd, env }) => {
+      seen.push(env)
+      const res = spawnSync("sh", ["-c", command], {
+        cwd: cwd ?? base,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: env ? { ...process.env, ...env } : process.env,
+      })
+      return { exitCode: res.status ?? -1, stdout: res.stdout ?? "", stderr: res.stderr ?? "", durationMs: 1 }
+    }
+    const res = await pullAppGithubWorkspace(capturing, myDecl(mount), {
+      cloneUrl: origin,
+      resolveToken: token,
+    })
+    expect(res.ok).toBe(true)
+    // The git call carried the credential as git env-config (`GIT_CONFIG_*`),
+    // the mechanism git reads — NOT `GIT_HTTP_EXTRAHEADER`, which git ignores.
+    const gitEnv = seen.find(e => e !== undefined && e.GIT_CONFIG_VALUE_0 !== undefined)
+    expect(gitEnv, "a git call ran with no env-config credential").toBeDefined()
+    expect(gitEnv?.GIT_CONFIG_COUNT).toBe("1")
+    expect(gitEnv?.GIT_CONFIG_KEY_0).toBe("http.https://github.com/.extraheader")
+    expect(gitEnv?.GIT_CONFIG_VALUE_0).toContain("Authorization: Basic")
+    expect(gitEnv?.GIT_HTTP_EXTRAHEADER).toBeUndefined()
+    // And git consumes that env config for real (no network, no worktree
+    // dependency on the persisted header — `persistAuth: false`).
+    const probe = spawnSync("git", ["config", "--get-all", "http.https://github.com/.extraheader"], {
+      cwd: mount,
+      encoding: "utf8",
+      env: { ...process.env, ...(gitEnv ?? {}) },
+    })
+    expect(probe.status).toBe(0)
+    expect(probe.stdout.trim()).toContain("Authorization: Basic")
+  })
+
   it("refreshes an existing checkout from the origin", async () => {
     const mount = join(base, "existing")
     git(["clone", origin, mount], base)

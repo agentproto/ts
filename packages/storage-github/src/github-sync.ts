@@ -57,9 +57,9 @@ export interface GithubWorkspaceSyncOpts {
   /** Persist the auth header into the clone's `.git/config` on a seed clone
    *  (default `true`). Set `false` when the git invocation runs over a
    *  remote seam whose command line is observable (a sandbox box): every
-   *  later pull/push already injects the token per call via
-   *  `GIT_HTTP_EXTRAHEADER` (`buildGitEnv`), so the at-rest entry — and the
-   *  `git config … "<base64>"` argument that writes it — is unnecessary
+   *  later pull/push already injects the token per call through
+   *  `buildGitEnv`'s `GIT_CONFIG_*` env config, so the at-rest entry — and
+   *  the `git config … "<base64>"` argument that writes it — is unnecessary
    *  there. The host-side path keeps the default so a later
    *  `git fetch`/`push` in the same tree authenticates without env help. */
   persistAuth?: boolean
