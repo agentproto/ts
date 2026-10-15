@@ -154,10 +154,12 @@ describe("session_migrate over MCP and HTTP", () => {
       const tool = tools.tools.find(t => t.name === "session_migrate")
       expect(tool).toBeDefined()
       expect(Object.keys((tool?.inputSchema.properties ?? {}) as object).sort()).toEqual([
+        "idOrName",
         "model",
         "profile",
         "sandbox",
         "sessionId",
+        "slug",
       ])
 
       const missing = await client.callTool({ name: "session_migrate", arguments: { sessionId: "sess_nope" } })
