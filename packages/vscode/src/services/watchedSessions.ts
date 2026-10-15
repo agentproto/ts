@@ -2,17 +2,20 @@
  * WatchedSessions — the set of session ids the operator has pinned an eye on,
  * persisted per workspace via a Memento.
  *
- * Two jobs:
+ * Three jobs:
  *   1. The set itself (`isWatched` / `toggle` / `onDidChange`) — drives the
  *      tree's 👁 prefix, the `-watched` contextValue suffix, and the
  *      watch/unwatch commands' gating.
- *   2. Activity-transition notifications (`attach`): subscribes to the
- *      SessionStore and raises a toast the moment a WATCHED session slides
- *      into needs-you / stalled / parked-bg / failed / done — the states a
- *      parked session would otherwise sit in forever with nobody looking.
- *      The transition rules (which state earns which toast, and the debounce
- *      that keeps one state from re-firing) live in watchedSessions.logic.ts,
- *      pure and unit-tested.
+ *   2. The unconditional auto-toast: ANY session sliding into needs-you —
+ *      blocked on the human — raises a toast, eye pinned or not. That is
+ *      the one state too important to depend on a watcher having guessed
+ *      which session would eventually need intervention.
+ *   3. Activity-transition notifications for WATCHED sessions (`attach`):
+ *      subscribes to the SessionStore and raises a toast the moment a
+ *      watched session slides into needs-you / stalled / parked-bg /
+ *      failed / done. The transition rules (which state earns which toast,
+ *      and the debounce that keeps one state from re-firing) live in
+ *      watchedSessions.logic.ts, pure and unit-tested.
  */
 
 import * as vscode from "vscode"
@@ -53,11 +56,12 @@ export class WatchedSessions implements vscode.Disposable {
   }
 
   /** Flip the watch state; returns the new state. Fires onDidChange only on a
-   *  real change so the tree never repaints for a no-op. */
+   *  real change so the tree never repaints for a no-op. The activity baseline
+   *  is deliberately kept on unwatch — the auto-toast tier still needs to know
+   *  the session's last state so needs-you doesn't "first-sight" re-fire. */
   toggle(id: string): boolean {
     if (this.watched.has(id)) {
       this.watched.delete(id)
-      this.lastActivity.delete(id)
     } else {
       this.watched.add(id)
     }
@@ -68,26 +72,32 @@ export class WatchedSessions implements vscode.Disposable {
   }
 
   /**
-   * Subscribe to the store and toast on watched-session transitions. Returns
-   * the subscription so the caller can push it into ctx.subscriptions.
+   * Subscribe to the store and toast on transitions: the unconditional
+   * needs-you auto-toast for every session, plus the full warn/info set for
+   * watched ones. Returns the subscription so the caller can push it into
+   * ctx.subscriptions.
    */
   attach(store: SessionStore): vscode.Disposable {
     return store.onDidChange(() => this.checkTransitions(store))
   }
 
   private checkTransitions(store: SessionStore): void {
-    if (this.watched.size === 0) return
+    // Every session is in the baseline map — the auto-toast tier needs to see
+    // unwatched sessions transition, not just 👁-pinned ones.
     const current: Record<string, SessionActivity> = {}
     for (const session of store.sessions) {
-      if (this.watched.has(session.id)) current[session.id] = activityFor(session, Date.now())
+      current[session.id] = activityFor(session, Date.now())
     }
-    const transitions = detectWatchTransitions(Object.fromEntries(this.lastActivity), current)
-    // Advance the baseline for every watched session still present, whether or
-    // not it fired — that's the debounce (one toast per state, not per poll).
-    for (const [id, activity] of Object.entries(current)) this.lastActivity.set(id, activity)
-    if (transitions.length > 0) {
-      void this.memento.update(ACTIVITY_KEY, Object.fromEntries(this.lastActivity))
-    }
+    const transitions = detectWatchTransitions(
+      Object.fromEntries(this.lastActivity),
+      current,
+      this.watched,
+    )
+    // Advance the baseline for every session still present, whether or not it
+    // fired — that's the debounce (one toast per state, not per poll) — and
+    // drop the ones that vanished so the persisted map can't grow forever.
+    this.lastActivity = new Map(Object.entries(current))
+    void this.memento.update(ACTIVITY_KEY, Object.fromEntries(this.lastActivity))
     for (const transition of transitions) void this.notify(store, transition)
   }
 

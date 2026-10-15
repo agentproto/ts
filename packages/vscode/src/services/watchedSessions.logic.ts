@@ -4,11 +4,16 @@
  * vitest. watchedSessions.ts wraps this into the vscode.Memento-persisted
  * service + the toast itself; this module only decides WHEN one fires.
  *
- * The whole point of watching a session is to be told the moment it stalls,
- * needs you, parks with background work pending, fails, or finishes — the
- * states a parked session would otherwise sit in silently forever. Anything
- * quieter (working → idle churn) is exactly the noise a watcher is meant to
- * filter out.
+ * Two notification tiers:
+ *   • WATCHED sessions (👁) earn the full set — a watcher asked to be told
+ *     the moment the session stalls, needs them, parks with background work
+ *     pending, fails, or finishes — the states a parked session would
+ *     otherwise sit in silently forever.
+ *   • UNWATCHED sessions earn exactly ONE state unconditionally: needs-you.
+ *     A session blocked ON THE HUMAN is worth interrupting for even without
+ *     an eye pinned on it; everything quieter stays silent. Anything quieter
+ *     (working → idle churn, done/failed of sessions nobody follows) is
+ *     exactly the noise a watcher is meant to filter out.
  */
 
 import type { SessionActivity } from "../views/sessionsTree.logic.js"
@@ -33,9 +38,21 @@ export type WatchActivityMap = Readonly<Record<string, SessionActivity>>
 const WARNING_ACTIVITIES = new Set<SessionActivity>(["needs-you", "stalled", "parked-bg"])
 const INFO_ACTIVITIES = new Set<SessionActivity>(["done", "failed"])
 
-/** The notification kind for a transition INTO `activity`, or undefined when
- *  the state is not one a watcher cares about (idle/working churn). */
-export function notificationKindFor(activity: SessionActivity): WatchNotificationKind | undefined {
+/**
+ * The notification kind for a transition INTO `activity`, or undefined when
+ * the state is not one that deserves a toast.
+ *
+ * `watched` selects the tier: watched sessions earn the full set (warnings
+ * for needs-you/stalled/parked-bg, info for done/failed); unwatched sessions
+ * earn only the one state that blocks on the human — needs-you, always a
+ * warning — so auto-spawned sessions can't bury the operator in noise.
+ */
+export function notificationKindFor(
+  activity: SessionActivity,
+  watched: boolean,
+): WatchNotificationKind | undefined {
+  if (activity === "needs-you") return "warning"
+  if (!watched) return undefined
   if (WARNING_ACTIVITIES.has(activity)) return "warning"
   if (INFO_ACTIVITIES.has(activity)) return "info"
   return undefined
@@ -50,20 +67,24 @@ export function notificationKindFor(activity: SessionActivity): WatchNotificatio
  * `previous` (first sighting after a reload) transitions only when its current
  * activity is a notifiable one — we don't invent a quiet "was idle" baseline.
  *
+ * `watched` is the set of 👁-pinned ids and selects each session's
+ * notification tier (see {@link notificationKindFor}): watched ids earn the
+ * full warn/info set, everyone else only the unconditional needs-you toast.
+ *
  * `previous` maps session id → last known activity; `current` maps session id
- * → current activity, only for sessions still present. A watched session that
- * vanished from the store simply produces no transition (it has no activity
- * to report).
+ * → current activity, only for sessions still present. A session that vanished
+ * from the store simply produces no transition (it has no activity to report).
  */
 export function detectWatchTransitions(
   previous: WatchActivityMap,
   current: Readonly<Record<string, SessionActivity>>,
+  watched: ReadonlySet<string> = new Set(),
 ): WatchTransition[] {
   const transitions: WatchTransition[] = []
   for (const [sessionId, activity] of Object.entries(current)) {
     const before = previous[sessionId]
     if (before === activity) continue
-    const kind = notificationKindFor(activity)
+    const kind = notificationKindFor(activity, watched.has(sessionId))
     if (kind) transitions.push({ sessionId, activity, kind })
   }
   return transitions
