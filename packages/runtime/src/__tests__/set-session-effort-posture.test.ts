@@ -207,6 +207,7 @@ describe("SessionsRegistry.setPosture", () => {
       posture: "plan",
       modeId: "plan",
       resolution: "native",
+      enforcement: "native",
     })
     // The native harness mode was actually switched.
     expect(switchedTo).toEqual(["plan"])
@@ -251,11 +252,35 @@ describe("SessionsRegistry.setPosture", () => {
       applied: false,
       reason: "requires-restart",
       resolution: "prompt",
+      enforcement: "prompt-advisory",
     })
     // NOT forced live — setSessionMode was never called, descriptor untouched.
     expect(switchedTo).toEqual([])
     expect(reg.get(desc.id)?.posture).toBeUndefined()
     expect(seen.find(ev => ev.type === "session:config-changed")).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("reports spawn-config enforcement for a requires-restart posture the adapter enforces at spawn (opencode bypass)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: baseSession({
+        availableModes: [mode("build", "Build"), mode("plan", "Plan")],
+        spawnEnforcedPostures: ["bypass", "accept-edits", "read-only"],
+      }),
+      adapterSlug: "opencode",
+    })
+
+    expect(await reg.setPosture(desc.id, "bypass")).toEqual({
+      applied: false,
+      reason: "requires-restart",
+      resolution: "prompt",
+      enforcement: "spawn-config",
+    })
+    // Read-time echo on the descriptor, so posture surfaces can classify too.
+    expect(reg.get(desc.id)?.spawnEnforcedPostures).toEqual(["bypass", "accept-edits", "read-only"])
     reg.shutdown()
   })
 
@@ -277,6 +302,7 @@ describe("SessionsRegistry.setPosture", () => {
       applied: false,
       reason: "requires-restart",
       resolution: "unavailable",
+      enforcement: "unavailable",
     })
     reg.shutdown()
   })
@@ -462,6 +488,7 @@ describe("POST /sessions/:id/{effort,posture} — HTTP", () => {
         posture: "plan",
         modeId: "plan",
         resolution: "native",
+        enforcement: "native",
       })
 
       const noModes = registry.spawnAgent({
@@ -482,6 +509,7 @@ describe("POST /sessions/:id/{effort,posture} — HTTP", () => {
         applied: false,
         reason: "requires-restart",
         resolution: "prompt",
+        enforcement: "prompt-advisory",
       })
 
       const missing = await fetch(`http://127.0.0.1:${port}/sessions/${native.id}/posture`, {
@@ -564,6 +592,7 @@ describe("agent_set_effort / agent_set_posture (MCP)", () => {
       posture: "plan",
       modeId: "plan",
       resolution: "native",
+      enforcement: "native",
     })
 
     const noModes = registry.spawnAgent({
@@ -582,6 +611,7 @@ describe("agent_set_effort / agent_set_posture (MCP)", () => {
       applied: false,
       reason: "requires-restart",
       resolution: "prompt",
+      enforcement: "prompt-advisory",
     })
     registry.shutdown()
   })

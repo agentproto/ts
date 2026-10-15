@@ -1151,13 +1151,14 @@ export type {
 } from "./session-config.js"
 export {
   resolvePosture,
+  postureEnforcement,
   findNativeMode,
   canonicalForModeId,
   normalizeModeId,
   POSTURE_PREAMBLES,
   POSTURE_NATIVE_ALIASES,
 } from "./canonical-posture.js"
-export type { PostureResolution, SessionMode } from "./canonical-posture.js"
+export type { PostureEnforcement, PostureResolution, SessionMode } from "./canonical-posture.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export {

@@ -53,7 +53,9 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineAgentCli, createAgentCliRuntime, spawnEnforcedPostures } = await import(
+  "../define-agent-cli.js"
+)
 const { opencodePermissionForPosture, mergeOpencodePermission } = await import(
   "../opencode-permission.js"
 )
@@ -251,5 +253,28 @@ describe("opencode spawn: posture → OPENCODE_CONFIG_CONTENT permission", () =>
         defaultMode: "plan",
       })
     })
+  })
+})
+
+describe("spawnEnforcedPostures (enforced-vs-advisory read surface)", () => {
+  it("names the postures each adapter enforces through its isolated config", () => {
+    expect([...spawnEnforcedPostures({ id: "opencode" })].sort()).toEqual(
+      ["accept-edits", "bypass", "read-only"],
+    )
+    expect([...spawnEnforcedPostures({ id: "claude-code" })].sort()).toEqual(
+      ["accept-edits", "bypass", "plan", "read-only"],
+    )
+    expect(spawnEnforcedPostures({ id: "codex" })).toEqual([])
+  })
+
+  it("stamps the list on a started opencode session and omits it for an adapter with none", async () => {
+    spawnCalls.length = 0
+    const oc = await createAgentCliRuntime(defineAgentCli(opencodeLike())).start({ cwd: "/scratch" })
+    expect(oc.spawnEnforcedPostures).toEqual(spawnEnforcedPostures({ id: "opencode" }))
+
+    const other = await createAgentCliRuntime(
+      defineAgentCli({ ...opencodeLike(), id: "mastracode", name: "mastracode" }),
+    ).start({ cwd: "/scratch" })
+    expect(other.spawnEnforcedPostures).toBeUndefined()
   })
 })

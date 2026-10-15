@@ -19,7 +19,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { resolvePosture } from "./canonical-posture.js"
+import { postureEnforcement } from "./canonical-posture.js"
 import type { EscalationOutcome } from "./decision.js"
 import { validateSpawnTarget, type DecisionExecProfile, type ResolvedTarget } from "./decision-profile.js"
 import type { EventRing } from "./event-ring.js"
@@ -47,7 +47,7 @@ export interface ToolControls {
   }
   /** What the live session proves it enforces. */
   readonly enforced: {
-    readonly posture: "native" | "prompt-advisory" | "none" | "unknown"
+    readonly posture: "native" | "spawn-config" | "prompt-advisory" | "none" | "unknown"
     readonly mcpServers: "none-mounted"
     readonly commandSandbox: "requested" | "not-requested"
     /** Always true: this module does not disable the harness's built-in tools. */
@@ -163,7 +163,11 @@ export function createDaemonEscalationHost(deps: DaemonEscalationHostDeps): Esca
             ...(liveModel ? { model: liveModel } : {}),
           }
         }
-        const resolution = resolvePosture("read-only", desc?.availableModes ?? [])
+        const enforcement = postureEnforcement(
+          "read-only",
+          desc?.availableModes ?? [],
+          desc?.spawnEnforcedPostures ?? [],
+        )
         const toolControls: ToolControls = {
           configured: {
             posture: "read-only",
@@ -171,14 +175,7 @@ export function createDaemonEscalationHost(deps: DaemonEscalationHostDeps): Esca
             ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
           },
           enforced: {
-            posture:
-              resolution.kind === "native"
-                ? "native"
-                : resolution.kind === "prompt"
-                  ? "prompt-advisory"
-                  : resolution.kind === "noop"
-                    ? "none"
-                    : "unknown",
+            posture: enforcement === "unavailable" ? "unknown" : enforcement,
             mcpServers: "none-mounted",
             commandSandbox: input.commandSandbox ? "requested" : "not-requested",
             harnessBuiltinToolsAvailable: true,
