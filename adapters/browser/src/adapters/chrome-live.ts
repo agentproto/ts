@@ -43,6 +43,12 @@ async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<Brows
     wasAlreadyRunning: instance.wasAlreadyRunning,
     healthy: (await instance.health()).ok,
     health: async () => instance.health(),
+    // Screencast (chrome-live's own Page.startScreencast, live view + frames
+    // for the runtime's mp4 recording) — pass the provider methods straight
+    // through; the runtime browser tools call them structurally.
+    screencastStart: (opts) => instance.screencastStart(opts),
+    screencastFrame: () => instance.screencastFrame(),
+    screencastStop: () => instance.screencastStop(),
     screenshot: async (tabId) => {
       const shot = await instance.screenshotOwnedTarget(tabId)
       return {

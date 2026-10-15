@@ -20,12 +20,15 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { dirname, join } from "node:path"
+import { tmpdir } from "node:os"
 import { z } from "zod"
 import type { AdapterLister } from "@agentproto/provider-kit"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { catchErrors, paginated } from "@agentproto/tool"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
+import { encodeScreencastFramesToMp4, prepareScreencastOutDir } from "./browser-screencast.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -759,4 +762,224 @@ export function registerBrowserTools(
       }
     }
   )
+
+  // ── browser_screencast_* ─────────────────────────────────────────────────────
+  // Live view + recording over the agent's OWN tab inside the user's Chrome.
+  // CAPABILITY/STATE SPLIT — the same shape the liveInstances fix uses:
+  //   • the long-lived frame buffer + CDP mechanics live on the chrome-live
+  //     adapter instance (module-level `entries` in live.ts), reached through
+  //     the module-scope `liveInstances` map above — so this state SURVIVES the
+  //     per-request `mcpServerFactory` runs (the stateless-transport bug class:
+  //     per-registration closures would strand every started screencast on the
+  //     request that started it),
+  //   • while the mp4 encoding below is a pure frames-in → file-out function
+  //     (browser-screencast.ts) — nothing live to lose.
+  // NOTE: this is the agent tab inside Chrome only (what CDP can see). It is
+  // NOT a desktop/screen-capture feature, and it has nothing to do with the
+  // separate Bureau (:8830) browser service.
+
+  // Structural shapes matching ChromeLiveInstance's screencast methods — the
+  // runtime stays free of a hard dependency on @agentproto/adapter-browser.
+  interface ScreencastOptionsLike {
+    format?: "jpeg" | "png"
+    quality?: number
+    everyNthFrame?: number
+    maxWidth?: number
+    maxHeight?: number
+  }
+  interface ScreencastFrameLike {
+    data: string
+    format: "jpeg" | "png"
+    timestampMs: number
+    index: number
+    width?: number
+    height?: number
+  }
+
+  const screencastInstance = (
+    desc: SessionDescriptor
+  ): (BrowserInstanceLike &
+    {
+      screencastStart?: (opts?: ScreencastOptionsLike) => Promise<{ targetId: string; index: number }>
+      screencastFrame?: () => Promise<ScreencastFrameLike | null>
+      screencastStop?: () => Promise<{ targetId: string | undefined; frameCount: number; total: number; frames: ScreencastFrameLike[] }>
+    }) | undefined => {
+    if (desc.kind !== "browser" || desc.browserAdapterId !== "chrome-live") return undefined
+    return liveInstances.get(desc.id) as BrowserInstanceLike & {
+      screencastStart?: (opts?: ScreencastOptionsLike) => Promise<{ targetId: string; index: number }>
+      screencastFrame?: () => Promise<ScreencastFrameLike | null>
+      screencastStop?: () => Promise<{ targetId: string | undefined; frameCount: number; total: number; frames: ScreencastFrameLike[] }>
+    }
+  }
+
+  const screencastInstanceUnavailable = (
+    toolName: string,
+    sessionId: string
+  ): ReturnType<typeof errResult> =>
+    errResult(
+      `${toolName}: chrome-live provider instance is unavailable; start the browser again to reconnect ` +
+        `(session "${sessionId}")`
+    )
+
+  server.tool(
+    "browser_screencast_start",
+    "chrome-live only. Start a live screencast of the agent's OWN tab inside the user's Chrome " +
+      "(CDP Page.startScreencast; never a foreign tab, never the desktop). " +
+      "Frames stream to the daemon HTTP surface: open the daemon URL + viewPath " +
+      "(`/sessions/<sessionId>/screencast`) in a browser, or expose it remotely with `tunnel_create` " +
+      "over the daemon's HTTP port. `browser_screencast_frame` (or the .jpg endpoint) grabs the latest " +
+      "frame; `browser_screencast_stop` ends it and optionally encodes the buffered frames to mp4 " +
+      "(needs ffmpeg on PATH).",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      format: z.enum(["jpeg", "png"]).optional(),
+      quality: z.number().int().min(1).max(100).optional(),
+      everyNthFrame: z.number().int().min(1).optional(),
+      maxWidth: z.number().int().min(1).optional(),
+      maxHeight: z.number().int().min(1).optional(),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_screencast_start: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(
+          `browser_screencast_start: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`
+        )
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live") {
+        return errResult(
+          `browser_screencast_start: adapter "${adapterId}" does not support screencast; ` +
+            "only the chrome-live adapter does (it attaches to the user's running Chrome)."
+        )
+      }
+      const inst = screencastInstance(desc)
+      if (!inst?.screencastStart) return screencastInstanceUnavailable("browser_screencast_start", input.sessionId)
+      try {
+        const started = await inst.screencastStart({
+          ...(input.format ? { format: input.format } : {}),
+          ...(input.quality !== undefined ? { quality: input.quality } : {}),
+          ...(input.everyNthFrame !== undefined ? { everyNthFrame: input.everyNthFrame } : {}),
+          ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
+          ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
+        })
+        return okResult({
+          ok: true,
+          sessionId: input.sessionId,
+          targetId: started.targetId,
+          viewPath: `/sessions/${input.sessionId}/screencast`,
+          mjpegPath: `/sessions/${input.sessionId}/screencast.mjpg`,
+          latestFramePath: `/sessions/${input.sessionId}/screencast.jpg`,
+          tip:
+            "Watch live: open <daemon http url>" +
+            viewPathSuffix(input.sessionId) +
+            " (same-origin HTML viewer, MJPEG). Remote: run `tunnel_create` over the daemon's HTTP port " +
+            "and use the same path behind the tunnel's signed URL. Record: call `browser_screencast_stop`.",
+        })
+      } catch (err) {
+        return errResult(
+          `browser_screencast_start: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+   )
+
+  server.tool(
+    "browser_screencast_frame",
+    "chrome-live only. Return the latest buffered screencast frame of the agent's tab as base64, " +
+      "plus how many frames arrived since `browser_screencast_start`. `frame: null` means no frame yet.",
+    {
+      sessionId: z.string().min(1).describe("Browser session id (adapter `chrome-live`)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_screencast_frame: session "${input.sessionId}" not found.`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (desc.kind !== "browser")
+        return errResult(
+          `browser_screencast_frame: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`
+        )
+      if (adapterId !== "chrome-live") {
+        return errResult(
+          `browser_screencast_frame: adapter "${adapterId}" does not support screencast; ` +
+            "only the chrome-live adapter does."
+        )
+      }
+      const inst = screencastInstance(desc)
+      if (!inst?.screencastFrame) return screencastInstanceUnavailable("browser_screencast_frame", input.sessionId)
+      try {
+        const frame = await inst.screencastFrame()
+        return okResult({ frame })
+      } catch (err) {
+        return errResult(`browser_screencast_frame: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  server.tool(
+    "browser_screencast_stop",
+    "chrome-live only. Stop the live screencast started with `browser_screencast_start`. When ffmpeg " +
+      "is on PATH and at least 2 frames were captured, the buffered frames are encoded to an mp4 saved " +
+      "in the session directory; the tool returns its path. Without ffmpeg, the frames are dropped and " +
+      "the response explains why (nothing live is ever left on the instance).",
+    {
+      sessionId: z.string().min(1).describe("Browser session id (adapter `chrome-live`)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_screencast_stop: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(
+          `browser_screencast_stop: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`
+        )
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live") {
+        return errResult(
+          `browser_screencast_stop: adapter "${adapterId}" does not support screencast; ` +
+            "only the chrome-live adapter does."
+        )
+      }
+      const inst = screencastInstance(desc)
+      if (!inst?.screencastStop) return screencastInstanceUnavailable("browser_screencast_stop", input.sessionId)
+      try {
+        const stopped = await inst.screencastStop()
+        let filePath: string | undefined
+        let encodeNote: string | undefined
+        if (stopped.frames.length >= 2) {
+          try {
+            const outDir = outDirOf(desc)
+            await prepareScreencastOutDir(outDir)
+            const outPath = join(outDir, `screencast-${Date.now()}.mp4`)
+            filePath = await encodeScreencastFramesToMp4(stopped.frames, outPath)
+          } catch (err) {
+            encodeNote = err instanceof Error ? err.message : String(err)
+          }
+        } else {
+          encodeNote =
+            "fewer than 2 frames were captured — nothing to encode (was the screencast started just now?)"
+        }
+        return okResult({
+          ok: true,
+          sessionId: input.sessionId,
+          frameCount: stopped.frameCount,
+          total: stopped.total,
+          ...(filePath ? { filePath } : {}),
+          ...(encodeNote ? { note: encodeNote } : {}),
+        })
+      } catch (err) {
+        return errResult(`browser_screencast_stop: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+}
+
+function viewPathSuffix(sessionId: string): string {
+  return `/sessions/${sessionId}/screencast`
+}
+
+/** Recording output dir: the session's own directory (derived from its events path), tmp as fallback. */
+function outDirOf(desc: SessionDescriptor): string {
+  return dirname(desc.eventsPath ?? join(tmpdir(), "chrome-live-screencast"))
 }

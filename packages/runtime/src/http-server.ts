@@ -180,6 +180,7 @@ import { normalizeInbound, verifyInboundSignature, type InboundProvider } from "
 import type { InboundEndpoint, InboundEndpointStore } from "./inbound-endpoints.js"
 import {
   setLiveBrowserInstance,
+  getLiveBrowserInstance,
   forgetLiveBrowserInstance,
   type BrowserAdapterResolver,
   type BrowserAdapterLister,
@@ -6912,6 +6913,132 @@ async function handleSessions(
         message: err instanceof Error ? err.message : String(err),
       })
     }
+    return true
+  }
+
+  // chrome-live live screencast surfaces — same frames the MCP
+  // browser_screencast_* tools read (through the module-scope liveInstances
+  // map, so they survive mcpServerFactory's per-request runs). Chrome Live's
+  // agent tab inside the user's Chrome only — never the desktop, and not the
+  // separate Bureau (:8830) browser service.
+  const screencastMatch =
+    /^\/sessions\/([^/]+)\/screencast(?:\.(jpg|mjpg))?$/.exec(path)
+  if (screencastMatch && req.method === "GET") {
+    const ext = screencastMatch[2]
+    const browserDescriptor = registry.get(screencastMatch[1] as string)
+    if (!browserDescriptor || browserDescriptor.kind !== "browser" || browserDescriptor.browserAdapterId !== "chrome-live") {
+      json(404, {
+        error: "screencast_session_not_found",
+        message: "No chrome-live browser session with that id.",
+      })
+      return true
+    }
+    const liveBrowser = getLiveBrowserInstance(browserDescriptor.id)
+    const lastFrame = async (): Promise<
+      { data: string; format: string; index?: number } | null
+    > => {
+      const inst = liveBrowser as
+        | { screencastFrame?: () => Promise<{ data: string; format: string; index?: number } | null> }
+        | undefined
+      if (!inst?.screencastFrame) return null
+      try {
+        return await inst.screencastFrame()
+      } catch {
+        return null
+      }
+    }
+
+    if (ext === "jpg") {
+      const frame = await lastFrame()
+      if (!frame) {
+        json(404, {
+          error: "no_screencast_frame",
+          message: "No frame captured yet — call `browser_screencast_start` first.",
+        })
+        return true
+      }
+      res.writeHead(200, {
+        "content-type": `image/${frame.format}`,
+        "cache-control": "no-store",
+      })
+      res.end(Buffer.from(frame.data, "base64"))
+      return true
+    }
+
+    if (ext === "mjpg") {
+      res.writeHead(200, {
+        "content-type": "multipart/x-mixed-replace; boundary=screencastframe",
+        "cache-control": "no-store, must-revalidate",
+        connection: "close",
+      })
+      let sentUpTo = -1
+      let sentSignature = ""
+      let nullStreak = 0
+      let streaming = true
+      req.once("close", () => {
+        streaming = false
+      })
+      const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+      while (streaming && !res.writableEnded && !res.destroyed) {
+        const frame = await lastFrame()
+        if (!frame) {
+          // After a stop (or loss of the provider instance) the frame source
+          // stays null — wrap the stream up once we've sent something.
+          nullStreak++
+          if (sentUpTo >= 0 && nullStreak > 30) break
+          await sleep(100)
+          continue
+        }
+        nullStreak = 0
+        if (frame.data && (frame.index === undefined || frame.index > sentUpTo)) {
+          // Dedupe on the frame index when present; fall back to content when an
+          // older provider instance doesn't carry the counter.
+          if (frame.index !== undefined) sentUpTo = frame.index
+          else {
+            if (frame.data === sentSignature) {
+              await sleep(100)
+              continue
+            }
+            sentSignature = frame.data
+          }
+          const payload = Buffer.from(frame.data, "base64")
+          res.write(
+            `--screencastframe\r\nContent-Type: image/${frame.format}\r\nContent-Length: ${payload.length}\r\n\r\n`
+          )
+          res.write(payload)
+          res.write("\r\n")
+        }
+        await sleep(100)
+      }
+      res.end()
+      return true
+    }
+
+    // Extensionless: a minimal same-origin HTML viewer around the MJPEG stream.
+    const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>agentproto chrome-live screencast</title>
+<style>
+body { margin: 0; background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+img { max-width: 100vw; max-height: 88vh; display: block; margin: 0 auto; }
+header { padding: 8px 12px; }
+code { color: #9ad; }
+</style>
+</head>
+<body>
+<header>
+  <strong>chrome-live screencast</strong> · session <code>${browserDescriptor.id}</code> ·
+  agent tab inside the user's Chrome (CDP <code>Page.startScreencast</code>; not a desktop capture).
+</header>
+<img alt="chrome-live screencast" src="/sessions/${browserDescriptor.id}/screencast.mjpg"/>
+</body>
+</html>
+`
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+    res.end(html)
     return true
   }
 
