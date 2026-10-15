@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { runLlm, parseJsonLoose, parseLastJsonObject } from '../llm.mjs'
 import { connectDaemon, readDaemonToken, readSessionTail, runWorkflowFile } from '../../lib/daemon-mcp.mjs'
+import { resolveAgentAction, toReviewConfig } from '../../lib/agent-action-config.mjs'
 
 export const DIFF_CAP = 16_000
 
@@ -131,7 +132,8 @@ const PR_REVIEW_WORKFLOW = ['.github', 'agentproto-workflows', 'pr-review', 'WOR
  *  `claude-sdk`). */
 function buildDaemonReviewConfig(root, adapterOverride) {
   const raw = readFileSync(join(root, '.github', 'agentic-review.json'), 'utf8')
-  const reviewConfig = JSON.parse(raw)
+  const config = JSON.parse(raw)
+  const reviewConfig = toReviewConfig(config, resolveAgentAction(config, 'review'))
   delete reviewConfig.reviewerSandbox
   if (adapterOverride) reviewConfig.reviewerAdapter = adapterOverride
   return reviewConfig

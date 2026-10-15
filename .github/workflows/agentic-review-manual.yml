@@ -49,9 +49,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          AGENT_REVIEW_PRESETS: ${{ vars.AGENT_REVIEW_PRESETS }}
+          AGENT_BACKEND: opencode-free
         run: |
           echo "base-ref=$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)" >> "$GITHUB_OUTPUT"
-          CONFIG=$(jq -c '. * .reviewerPresets["opencode-free"]' .github/agentic-review.json)
+          CONFIG=$(node scripts/resolve-agent-action.mjs review --review-config)
           echo "config=$CONFIG" >> "$GITHUB_OUTPUT"
           echo "adapter=$(printf '%s' "$CONFIG" | jq -r .reviewerAdapter)" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$(printf '%s' "$CONFIG" | jq -r .reviewerAuthMode)" >> "$GITHUB_OUTPUT"

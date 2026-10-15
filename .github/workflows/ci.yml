@@ -970,15 +970,11 @@ jobs:
       - name: Load agentic-review config
         id: config
         if: steps.prstate.outputs.skip != 'true'
+        env:
+          AGENT_REVIEW_PRESETS: ${{ vars.AGENT_REVIEW_PRESETS }}
         run: |
           if [ -f .github/agentic-review.json ]; then
-            CONFIG=$(jq -c '
-              (.reviewerPreset // "") as $preset
-              | if $preset != "" and (.reviewerPresets[$preset] != null)
-                then . * .reviewerPresets[$preset]
-                else .
-                end
-            ' .github/agentic-review.json)
+            CONFIG=$(node scripts/resolve-agent-action.mjs review --review-config)
             echo "json=$CONFIG" >> "$GITHUB_OUTPUT"
             echo "present=true" >> "$GITHUB_OUTPUT"
           else

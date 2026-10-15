@@ -11,13 +11,9 @@
  * removed. Where it finds drift, it edits the doc file directly. It never
  * invents new doc files — only existing ones are in scope.
  *
- * Runs on OpenRouter's `z-ai/glm-5.3-flash` via the Claude Agent SDK's
- * gateway mode (cheap enough to run on every release without burning
- * Anthropic spend) — see adapters/claude-sdk/src/options.ts for the
- * auth-hygiene rules this mirrors (never let ANTHROPIC_API_KEY reach a
- * third-party gateway) and for
- * why `bypassPermissions` is required: this runs unattended in CI, with no
- * human able to answer a tool-permission prompt.
+ * Supports OpenCode's free-model lane as well as the legacy Claude Agent SDK
+ * lanes. The release workflow uses the shared `opencode-free` preset (MiMo,
+ * then Step 5), so routine doc maintenance does not consume Anthropic spend.
  *
  * The workflow step that runs this script is responsible for diffing the
  * tree afterward and opening a PR if anything changed — this script only
@@ -26,6 +22,7 @@
  * Usage:
  *   node scripts/docs-check.mjs               # edits docs in place (release-triggered)
  *   node scripts/docs-check.mjs --dry-run     # read-only, reports findings
+ *   node scripts/docs-check.mjs --print-cloud-prompt # print a remote patch-producing prompt
  *   node scripts/docs-check.mjs --path 'docs/agents.md'            # on-demand, scoped to one doc
  *   node scripts/docs-check.mjs --path 'docs/**' --base origin/main # on-demand, scoped area, custom diff base
  *
@@ -41,9 +38,9 @@
  *
  * Env:
  *   AGENT_LANE         — billing lane (see scripts/lib/agent-lane.mjs); unset ⇒ first lane
- *                        whose credential is present (subscription → … → openrouter)
- *   <lane credential>  — CLAUDE_CODE_OAUTH_TOKEN / …_FALLBACK / OPENROUTER_API_KEY /
- *                        ANTHROPIC_API_KEY
+ *                        whose credential is present (opencode-free → legacy lanes)
+ *   <lane credential>  — OPENCODE_API_KEY / CLAUDE_CODE_OAUTH_TOKEN /
+ *                        …_FALLBACK / OPENROUTER_API_KEY / ANTHROPIC_API_KEY
  *   ANTHROPIC_API_KEY  — must NOT be set for this to reach the gateway; if it
  *                        is set, it is scrubbed before the SDK spawns its child
  *                        (see buildEnv below) so it can never leak to OpenRouter.
@@ -56,9 +53,8 @@
  *   1 — hard error before the SDK run even started (missing API key)
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk'
-import { execSync } from 'node:child_process'
-import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+import { execFileSync, execSync, spawn } from 'node:child_process'
+import { appendFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeConfineToRepoRoot } from './lib/path-confine.mjs'
 import { describeLane, pickLane, resolveLane } from './lib/agent-lane.mjs'
@@ -67,20 +63,22 @@ import { describeLane, pickLane, resolveLane } from './lib/agent-lane.mjs'
 
 function findGitRoot(start) {
   try {
-    return execSync('git rev-parse --show-toplevel', { cwd: start, encoding: 'utf8', stdio: 'pipe' }).trim()
+    return execSync('git rev-parse --show-toplevel', {
+      cwd: start,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    }).trim()
   } catch {
     return null
   }
 }
-const ROOT =
-  findGitRoot(process.cwd()) ??
-  findGitRoot(new URL('..', import.meta.url).pathname) ??
-  new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+const ROOT = findGitRoot(process.cwd()) ?? findGitRoot(new URL('..', import.meta.url).pathname) ?? new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 
 // ── CLI args ──────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
 const DRY_RUN = args.includes('--dry-run')
+const PRINT_CLOUD_PROMPT = args.includes('--print-cloud-prompt')
 
 function readValue(flag) {
   const i = args.indexOf(flag)
@@ -118,9 +116,7 @@ function listPublishedPackages() {
   if (!releaseCommit) return []
 
   const commitHash = releaseCommit.split(' ')[0]
-  const changedFiles = run(`git diff-tree --no-commit-id -r --name-only ${commitHash}`)
-    .split('\n')
-    .filter(Boolean)
+  const changedFiles = run(`git diff-tree --no-commit-id -r --name-only ${commitHash}`).split('\n').filter(Boolean)
   const changelogs = changedFiles.filter((f) => f.endsWith('CHANGELOG.md'))
 
   const published = []
@@ -207,9 +203,7 @@ When you're done, summarize what you changed (or confirm nothing needed changing
     process.exit(0)
   }
 
-  const releaseSummary = published
-    .map(({ name, version, changelogPath }) => `### ${name}@${version}\n\n${readLatestChangelogEntry(changelogPath)}`)
-    .join('\n\n---\n\n')
+  const releaseSummary = published.map(({ name, version, changelogPath }) => `### ${name}@${version}\n\n${readLatestChangelogEntry(changelogPath)}`).join('\n\n---\n\n')
   scopeLabel = `release: ${published.length} package(s)`
 
   prompt = `A release of @agentproto packages just published. Here is what changed, per package, from each CHANGELOG's latest entry:
@@ -243,6 +237,17 @@ ${DRY_RUN ? '- This is a DRY RUN: do not edit any files. Instead, report exactly
 When you're done, summarize what you changed (or confirm nothing needed changing).`
 }
 
+if (PRINT_CLOUD_PROMPT) {
+  console.log(`${prompt}
+
+CLOUD TRANSFER MODE:
+- Work in your remote checkout and make any necessary in-scope doc edits there.
+- Your FINAL response must be exactly the resulting unified git diff, with no prose and no markdown fence.
+- If no edits are needed, respond with exactly NO_CHANGES.
+- Never commit, push, open a pull request, or call an external service.`)
+  process.exit(0)
+}
+
 // ── auth / env hygiene ───────────────────────────────────────────────────────
 //
 // Mirrors adapters/claude-sdk/src/options.ts's gateway-mode env building: a
@@ -254,7 +259,7 @@ When you're done, summarize what you changed (or confirm nothing needed changing
 // ── billing lane ─────────────────────────────────────────────────────────────
 //
 // One lane per invocation, picked by AGENT_LANE (see scripts/lib/agent-lane.mjs):
-// subscription | subscription-fallback | openrouter | api-key. The release
+// opencode-free | subscription | subscription-fallback | openrouter | api-key. The release
 // workflow walks the lanes in order until this step reports `status=ok`, so a
 // dead credential (2026-09-01: "suspended due to insufficient balance") no
 // longer means no docs check at all. The lane env is built with every OTHER
@@ -275,9 +280,7 @@ function emitStatus(status) {
 
 function buildEnv() {
   if (!LANE || LANE.missing) {
-    console.error(
-      `Error: no usable agent lane — ${LANE ? describeLane(LANE) : 'no credential set (CLAUDE_CODE_OAUTH_TOKEN / OPENROUTER_API_KEY / ANTHROPIC_API_KEY)'}.`,
-    )
+    console.error(`Error: no usable agent lane — ${LANE ? describeLane(LANE) : 'no credential set (CLAUDE_CODE_OAUTH_TOKEN / OPENROUTER_API_KEY / ANTHROPIC_API_KEY)'}.`)
     emitStatus('no-lane')
     process.exit(0)
   }
@@ -286,12 +289,120 @@ function buildEnv() {
 
 const confineToRepoRoot = makeConfineToRepoRoot(ROOT)
 
+function workingTreePaths() {
+  const split = (value) => value.toString('utf8').split('\0').filter(Boolean)
+  const changed = execFileSync('git', ['diff', '--name-only', '-z', 'HEAD'], {
+    cwd: ROOT,
+  })
+  const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: ROOT })
+  return new Set([...split(changed), ...split(untracked)])
+}
+
+function globRegex(glob) {
+  let pattern = '^'
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i]
+    if (char === '*' && glob[i + 1] === '*') {
+      pattern += '.*'
+      i++
+    } else if (char === '*') pattern += '[^/]*'
+    else if (char === '?') pattern += '[^/]'
+    else pattern += char.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
+  }
+  return new RegExp(pattern + '$')
+}
+
+function isAllowedDocPath(path) {
+  if (PATH_GLOB) return globRegex(PATH_GLOB).test(path)
+  return path === 'README.md' || path.startsWith('docs/') || path.endsWith('/README.md')
+}
+
+function restoreDisallowedChanges(before) {
+  const introduced = [...workingTreePaths()].filter((path) => !before.has(path) && !isAllowedDocPath(path))
+  for (const path of introduced) {
+    let tracked = false
+    try {
+      execFileSync('git', ['ls-files', '--error-unmatch', '--', path], {
+        cwd: ROOT,
+        stdio: 'ignore',
+      })
+      tracked = true
+    } catch {}
+    if (tracked) {
+      execFileSync('git', ['restore', '--source=HEAD', '--staged', '--worktree', '--', path], { cwd: ROOT })
+    } else {
+      const absolute = resolve(ROOT, path)
+      if (absolute.startsWith(ROOT + '/')) rmSync(absolute, { recursive: true, force: true })
+    }
+  }
+  if (introduced.length) throw new Error(`OpenCode attempted changes outside the docs scope: ${introduced.join(', ')}`)
+}
+
+function runOpenCode(env) {
+  const before = workingTreePaths()
+  const inlineConfig = {
+    small_model: MODEL,
+    permission: {
+      read: 'allow',
+      edit: DRY_RUN ? 'deny' : 'allow',
+      bash: 'deny',
+      external_directory: 'deny',
+      webfetch: 'deny',
+    },
+  }
+  const childEnv = {
+    ...env,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(inlineConfig),
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: '1',
+    OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+  }
+
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn('opencode', ['run', '--pure', '--model', MODEL], {
+      cwd: ROOT,
+      env: childEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.on('error', reject)
+    child.on('close', (code) => {
+      try {
+        restoreDisallowedChanges(before)
+        if (code !== 0) throw new Error(`OpenCode exited ${code}: ${stderr.slice(-500)}`)
+        if (stdout.trim()) console.log(stdout.trim())
+        resolvePromise()
+      } catch (error) {
+        reject(error)
+      }
+    })
+    child.stdin.end(prompt)
+  })
+}
+
 // ── run ───────────────────────────────────────────────────────────────────
 
 async function main() {
   const env = buildEnv()
   console.log(`\n📚 docs-check starting${DRY_RUN ? ' (dry-run)' : ''} — ${scopeLabel}, lane ${describeLane(LANE)}…`)
 
+  if (LANE.lane === 'opencode-free') {
+    try {
+      await runOpenCode(env)
+      console.log('\n✅ docs-check complete (OpenCode).')
+      emitStatus('ok')
+    } catch (error) {
+      console.warn(`\n⚠️  docs-check did not finish cleanly: ${error.message}`)
+      emitStatus('error')
+    }
+    return
+  }
+
+  const { query } = await import('@anthropic-ai/claude-agent-sdk')
   const abortController = new AbortController()
   const result = query({
     prompt,
