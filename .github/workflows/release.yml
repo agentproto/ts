@@ -324,17 +324,21 @@ jobs:
       # whether a consolidated release already carries THIS batch's marker; the
       # next lane only runs when it doesn't. Every lane is continue-on-error;
       # the final gate below is the one honest red.
-      - name: Generate agentic release notes (subscription)
+      - name: Install OpenCode runtime for free release notes
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        run: npm install --global opencode-ai@1.19.0
+
+      - name: Generate agentic release notes (OpenCode free)
         id: notes-1
         if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         run: node scripts/release-notes.mjs
         env:
-          AGENT_LANE: subscription
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AGENT_LANE: opencode-free
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Release notes posted? (after subscription)
+      - name: Release notes posted? (after OpenCode free)
         id: notes-check-1
         if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true

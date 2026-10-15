@@ -9,7 +9,8 @@
  * same ladder — they each pick ONE lane per invocation (`AGENT_LANE`), and the
  * workflow walks the lanes in order until the step's success gate is met.
  *
- * A lane is a complete, self-consistent env for the Claude Agent SDK:
+ * A lane is a complete, self-consistent harness + environment:
+ *   - `opencode-free`         OpenCode CLI + an explicit zero-priced Zen model
  *   - `subscription`          CLAUDE_CODE_OAUTH_TOKEN (claude.ai plan, no per-token bill)
  *   - `subscription-fallback` CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, same shape
  *   - `openrouter`            OPENROUTER_API_KEY via OpenRouter's Anthropic-compatible
@@ -22,15 +23,16 @@
  * token when both are present, and a gateway 401s on a native key).
  */
 
-export const LANES = ['subscription', 'subscription-fallback', 'openrouter', 'api-key']
+export const LANES = ['opencode-free', 'subscription', 'subscription-fallback', 'openrouter', 'api-key']
 
 /** Default walk order when `AGENT_LANE` is unset: Claude subscription first,
  *  then GLM (openrouter), then the remaining Claude lanes. */
-export const AUTO_ORDER = ['subscription', 'subscription-fallback', 'openrouter', 'api-key']
+export const AUTO_ORDER = ['opencode-free', 'subscription', 'subscription-fallback', 'openrouter', 'api-key']
 
 export const OPENROUTER_ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
 
 export const DEFAULT_MODELS = {
+  'opencode-free': 'opencode/mimo-v2.6-flash-free',
   subscription: 'claude-sonnet-5-5',
   'subscription-fallback': 'claude-sonnet-5-5',
   openrouter: 'z-ai/glm-5.3-flash',
@@ -60,9 +62,11 @@ const LANE_VARS = [
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
+  'OPENCODE_API_KEY',
 ]
 
 const CREDENTIAL_FOR = {
+  'opencode-free': ['OPENCODE_API_KEY'],
   subscription: ['CLAUDE_CODE_OAUTH_TOKEN'],
   'subscription-fallback': ['CLAUDE_CODE_OAUTH_TOKEN_FALLBACK'],
   openrouter: ['OPENROUTER_API_KEY'],
@@ -116,6 +120,9 @@ export function resolveLane(name, base = process.env, { model } = {}) {
   }
 
   switch (name) {
+    case 'opencode-free':
+      env.OPENCODE_API_KEY = base[cred]
+      break
     case 'subscription':
     case 'subscription-fallback':
       env.CLAUDE_CODE_OAUTH_TOKEN = base[cred]

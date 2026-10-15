@@ -49,7 +49,7 @@
  *   3 — --check: no consolidated release carries this batch's marker
  */
 
-import { execSync, execFileSync } from 'node:child_process'
+import { execSync, execFileSync, spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -487,9 +487,46 @@ npm install @agentproto/agent@latest @agentproto/mcp-server@latest ...
 - Use the imperative for feature names: "Add extends-chain validation", not "Extends-chain validation was added".
 `
 
-// ── generation (Claude Agent SDK, one lane) ───────────────────────────────────
+// ── generation (selected harness, one lane) ──────────────────────────────────
+
+function generateWithOpenCode(resolved, context) {
+  const prompt =
+    `${SYSTEM_PROMPT}\n\n` +
+    'Please generate the consolidated release notes for this batch of @agentproto package publishes. ' +
+    'Read the code behind the changes, then reply with the announcement only.\n\n' +
+    renderContext(context)
+
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn('opencode', ['run', '--pure', '--model', resolved.model], {
+      cwd: ROOT,
+      env: resolved.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`OpenCode exited ${code}: ${stderr.slice(-500)}`))
+        return
+      }
+      const body = unwrapFence(stdout.trim())
+      if (!body) {
+        reject(new Error(`OpenCode produced no release-note body: ${stderr.slice(-500)}`))
+        return
+      }
+      resolvePromise(body)
+    })
+    child.stdin.end(prompt)
+  })
+}
 
 async function generateBody(resolved, context) {
+  if (resolved.lane === 'opencode-free') return generateWithOpenCode(resolved, context)
   // Lazy: --check and the unit tests must not need the SDK installed.
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
   const confineToRepoRoot = makeConfineToRepoRoot(ROOT)
@@ -552,8 +589,8 @@ async function main() {
   const laneName = pickLane()
   if (!laneName) {
     log(
-      'Error: no agent lane credential set — need one of CLAUDE_CODE_OAUTH_TOKEN, ' +
-        'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.',
+        'Error: no agent lane credential set — need one of OPENCODE_API_KEY, ' +
+        'CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.',
     )
     return 1
   }

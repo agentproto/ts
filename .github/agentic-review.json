@@ -1,20 +1,38 @@
 {
   "blocking": true,
-  "model": "claude-sonnet-5-5",
+  "model": "opencode/mimo-v2.6-flash-free",
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
   "maxReviewTurns": 50,
   "cliSource": "workspace",
   "cliVersion": "0.8.0",
-  "reviewerAdapter": "claude-sdk",
-  "reviewerAuthMode": "subscription",
-  "reviewerModel": "claude-sonnet-5-5",
+  "reviewerPreset": "opencode-free",
+  "reviewerPresets": {
+    "opencode-free": {
+      "reviewerAdapter": "opencode",
+      "reviewerAuthMode": "api-key",
+      "reviewerModel": "opencode/mimo-v2.6-flash-free",
+      "reviewerFallbackModels": ["opencode/step-5-preview-free"],
+      "reviewerSandbox": {
+        "provider": "e2b",
+        "lifecycle": { "destroy_on": "workspace-close" }
+      },
+      "reviewerSandboxEnv": ["OPENCODE_API_KEY", "GITHUB_TOKEN"]
+    },
+    "claude-cloud": {
+      "cloud": "anthropic",
+      "reviewerAdapter": "claude-code-cloud"
+    }
+  },
+  "reviewerAdapter": "opencode",
+  "reviewerAuthMode": "api-key",
+  "reviewerModel": "opencode/mimo-v2.6-flash-free",
   "reviewerSandbox": {
     "provider": "e2b",
     "lifecycle": { "destroy_on": "workspace-close" }
   },
-  "reviewerSandboxEnv": ["ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"],
+  "reviewerSandboxEnv": ["OPENCODE_API_KEY", "GITHUB_TOKEN"],
   "describe": {
     "auto": true,
     "minBodyChars": 80
