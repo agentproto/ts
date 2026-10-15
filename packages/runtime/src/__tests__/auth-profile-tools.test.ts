@@ -44,6 +44,8 @@ beforeEach(async () => {
     endpoint: "moonshot",
     method: "api-key",
     costBudget: { maxCostUsd: 5, window: "5h", scope: "profile" },
+    // The new cross-route field — must survive the compact projection.
+    routes: ["opencode-go"],
   })
 })
 
@@ -129,6 +131,8 @@ describe("auth_profile_list compact projection (tool-transformer migration)", ()
     expect(p4.costBudget).toBeUndefined()
     // The identity fields a listing caller needs survive compaction.
     expect(p4).toMatchObject({ id: "p-4", endpoint: "moonshot", method: "api-key", keyStatus: "self-refreshing" })
+    // Declared extra billing routes survive compaction (visible over the daemon surface).
+    expect(p4.routes).toEqual(["opencode-go"])
     await close()
   })
 

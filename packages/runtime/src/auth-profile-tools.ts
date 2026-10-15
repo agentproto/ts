@@ -99,6 +99,7 @@ export const compactAuthProfileRow = (p: AuthProfileListRow) => ({
   ...(p.label !== undefined ? { label: p.label } : {}),
   ...(p.disabled !== undefined ? { disabled: p.disabled } : {}),
   ...(p.models !== undefined ? { models: p.models } : {}),
+  ...(p.routes !== undefined ? { routes: p.routes } : {}),
   ...(p.origin !== undefined ? { origin: p.origin } : {}),
   keyStatus: p.keyStatus,
   ...(p.fingerprint !== undefined ? { fingerprint: p.fingerprint } : {}),
@@ -261,8 +262,15 @@ export function registerAuthProfileTools(server: McpServer): void {
           "Optional explicit keychain slot; omit to derive from endpoint+method. " +
             "Ignored for a source-backed profile.",
         ),
+      routes: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Additional billing routes this one credential also serves, beyond `endpoint` " +
+            "(e.g. [\"opencode-go\"] for a key billed on both the opencode-go and opencode routes).",
+        ),
     },
-    async ({ id, endpoint, method, credential, source, subaccount, label, credentialRef }) => {
+    async ({ id, endpoint, method, credential, source, subaccount, label, credentialRef, routes }) => {
       try {
         const created = await createAuthProfile(
           {
@@ -274,6 +282,7 @@ export function registerAuthProfileTools(server: McpServer): void {
             ...(subaccount ? { subaccount } : {}),
             ...(label ? { label } : {}),
             ...(credentialRef ? { credentialRef } : {}),
+            ...(routes && routes.length ? { routes } : {}),
           },
           defaultProfileProvisionDeps(),
         )

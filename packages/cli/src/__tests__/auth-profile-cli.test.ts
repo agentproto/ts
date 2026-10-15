@@ -511,6 +511,30 @@ describe("agentproto auth subaccounts / profile create --subaccount", () => {
     expect(await listAuthProfiles()).toHaveLength(0)
   })
 
+  it("accumulates repeatable --route flags into the created profile's routes", async () => {
+    const { restore } = capture()
+    const code = await runAuth([
+      "profile", "create", "ws03", "fake-api",
+      "--method", "api-key", "--source", "fake-login", "--subaccount", "workspace:ws_a",
+      "--route", "opencode-go", "--route", "beta-route",
+    ])
+    restore()
+    expect(code).toBe(0)
+    expect(await getAuthProfile("ws03")).toMatchObject({
+      routes: ["opencode-go", "beta-route"],
+    })
+  })
+
+  it("omits routes when no --route is given (back-compat)", async () => {
+    const { restore } = capture()
+    const code = await runAuth([
+      "profile", "create", "plain", "fake-api", "--method", "api-key", "--source", "fake-login", "--subaccount", "workspace:ws_b",
+    ])
+    restore()
+    expect(code).toBe(0)
+    expect((await getAuthProfile("plain"))?.routes).toBeUndefined()
+  })
+
   it("lists a provider's sub-accounts, then --create makes one profile each (idempotent)", async () => {
     const first = capture()
     expect(await runAuth(["subaccounts", "list", "fake-vendor"])).toBe(0)

@@ -4148,6 +4148,7 @@ export async function startHttpServer(
             source?: unknown
             label?: unknown
             credentialRef?: unknown
+            routes?: unknown
           } | null
           try {
             const created = await createAuthProfile(
@@ -4160,6 +4161,9 @@ export async function startHttpServer(
                 ...(typeof body?.label === "string" ? { label: body.label } : {}),
                 ...(typeof body?.credentialRef === "string"
                   ? { credentialRef: body.credentialRef }
+                  : {}),
+                ...(Array.isArray(body?.routes)
+                  ? { routes: body.routes.filter((r): r is string => typeof r === "string") }
                   : {}),
               },
               defaultProfileProvisionDeps(),

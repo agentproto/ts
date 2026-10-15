@@ -1,7 +1,7 @@
 ---
-"@agentproto/auth": patch
-"@agentproto/cli": patch
-"@agentproto/runtime": patch
+"@agentproto/auth": minor
+"@agentproto/cli": minor
+"@agentproto/runtime": minor
 ---
 
 Route/account selection moves into the auth model instead of CI glue. An auth
