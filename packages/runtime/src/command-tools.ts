@@ -84,6 +84,7 @@ import {
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
+import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
 import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
@@ -463,10 +464,7 @@ export function registerCommandTools(
     "command_log_tail",
     "Read back command_execute (and cron `command` job) results. Every invocation is its own `kind:\"command\"` session — the same rows `command_list`/`session_list({kind:'command'})` return — with its full stdout/stderr/exitCode/durationMs stored at that session's own record. Pass `sessionId` (e.g. from a session descriptor's `priorCommandSessionId`) to fetch one specific invocation, or omit it to list the most recent ones for this workspace.",
     {
-      sessionId: z
-        .string()
-        .optional()
-        .describe("Fetch one specific command session's full result by id."),
+      ...sessionRefSchema(z),
       lastN: z
         .number()
         .int()
@@ -481,15 +479,30 @@ export function registerCommandTools(
           "Restrict the listing to invocations spawned with this cwd (workspace-relative or absolute). Ignored with `sessionId`.",
         ),
     },
-    async ({ sessionId, lastN, cwd }) => {
-      if (sessionId) {
-        const entry = await opts.registry.readCommandLog(sessionId)
+    async input => {
+      const ref = resolveSessionRef(archivedInclusiveRegistry(opts.registry), input)
+      if (input.sessionId !== undefined || input.idOrName !== undefined || input.slug !== undefined) {
+        if (!ref.ok && ref.error.code !== "not_found") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: `session reference is ${ref.error.code}: "${input.sessionId ?? input.idOrName ?? input.slug}"`,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        const id = ref.ok ? ref.id : (input.sessionId ?? input.idOrName ?? input.slug ?? "")
+        const entry = await opts.registry.readCommandLog(id)
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ entry }) }],
         }
       }
-      const limit = lastN ?? 50
-      const resolvedCwd = cwd !== undefined ? anchorCwd(cwd) : undefined
+      const limit = input.lastN ?? 50
+      const resolvedCwd = input.cwd !== undefined ? anchorCwd(input.cwd) : undefined
       let rows = opts.registry.list().filter(d => d.kind === "command")
       if (resolvedCwd !== undefined) {
         rows = rows.filter(d => d.cwd === resolvedCwd)
@@ -568,10 +581,7 @@ export function registerCommandTools(
       "one session's calls; omit it to list the most recent calls across " +
       "recent command + agent-cli sessions.",
     {
-      sessionId: z
-        .string()
-        .optional()
-        .describe("Restrict to one session's tool calls (a command or agent-cli session id)."),
+      ...sessionRefSchema(z),
       lastN: z
         .number()
         .int()
@@ -595,8 +605,9 @@ export function registerCommandTools(
             "`full: true` returns today's unfiltered records.",
         ),
     },
-    async ({ sessionId, lastN, fields, full }) => {
-      const limit = lastN ?? 50
+    async input => {
+      const { fields, full } = input
+      const limit = input.lastN ?? 50
       const enrich = (sid: string, records: ToolCallRecord[]) => {
         const desc = opts.registry.get(sid)
         return records.map(r => ({
@@ -606,7 +617,26 @@ export function registerCommandTools(
           ...(desc?.callerSessionId ? { callerSessionId: desc.callerSessionId } : {}),
         }))
       }
-      if (sessionId) {
+      const anyRef =
+        input.sessionId !== undefined || input.idOrName !== undefined || input.slug !== undefined
+      if (anyRef) {
+        const resolved = resolveSessionRef(archivedInclusiveRegistry(opts.registry), input)
+        if (!resolved.ok && resolved.error.code !== "not_found") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: `session reference is ${resolved.error.code}: "${input.sessionId ?? input.idOrName ?? input.slug}"`,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        const sessionId = resolved.ok
+          ? resolved.id
+          : (input.sessionId ?? input.idOrName ?? input.slug ?? "")
         const records = enrich(sessionId, await opts.registry.readToolCallRecords(sessionId))
         records.sort((a, b) => a.ts.localeCompare(b.ts))
         return {

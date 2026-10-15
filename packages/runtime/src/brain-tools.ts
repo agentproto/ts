@@ -19,6 +19,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
+import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 
 /** MCP clients commonly stringify booleans; coerce so both the boolean
@@ -168,10 +169,7 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
         .string()
         .optional()
         .describe("Workspace slug. Omit to use the calling session's workspace."),
-      sessionId: z
-        .string()
-        .optional()
-        .describe("Ingest one specific session (sess_xxx) instead of the backlog."),
+      ...sessionRefSchema(z),
       reindex: mcpBool
         .optional()
         .describe(
@@ -192,8 +190,22 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
       const workspace = resolveTargetWorkspace(brains, registry, callerSessionId, input.workspace)
       try {
         const brain = brains.getBrain(workspace)
-        if (input.sessionId) {
-          const result = await brain.ingestSession(input.sessionId, input.reindex === true)
+        const anyRef =
+          input.sessionId !== undefined || input.idOrName !== undefined || input.slug !== undefined
+        const ref = resolveSessionRef(archivedInclusiveRegistry(registry), input)
+        if (anyRef && !ref.ok) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `workspace_brain_ingest: no session "${input.sessionId ?? input.idOrName ?? input.slug}" found`,
+              },
+            ],
+            isError: true as const,
+          }
+        }
+        if (ref.ok) {
+          const result = await brain.ingestSession(ref.id, input.reindex === true)
           return {
             content: [
               {

@@ -25,6 +25,7 @@ import { join } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import type { ExportedSession, ExportedMessage } from "./transcript-export.js"
 import { claudeProjectSlug } from "./conversation-store.js"
 
@@ -203,8 +204,11 @@ export async function writeToNativeStore(
 // ── MCP tool ─────────────────────────────────────────────────────────
 
 export interface ConversationExportInput {
-  /** agentproto session id (sess_xxx) or session name. */
-  sessionId: string
+  /** agentproto session id (sess_xxx), name, or slug. Exactly one of the
+   *  three frozen addressing keys should be supplied. */
+  sessionId?: string
+  idOrName?: string
+  slug?: string
   /** Target adapter format whose native store to write. */
   target: ConversationExportTarget
   /** Override cwd scoping the native store (defaults to the session's cwd). */
@@ -226,9 +230,17 @@ export async function exportConversation(
   input: ConversationExportInput,
   exportFn?: ConversationExportOps["exportFn"],
 ): Promise<ConversationExportResult> {
-  const desc = registry.findByIdOrName(input.sessionId)
+  const resolved = resolveSessionRef(archivedInclusiveRegistry(registry), input)
+  if (!resolved.ok) {
+    throw new Error(
+      `conversation_export: session "${input.sessionId ?? input.idOrName ?? input.slug ?? ""}" not found`,
+    )
+  }
+  const desc = registry.get(resolved.id)
   if (!desc) {
-    throw new Error(`conversation_export: session "${input.sessionId}" not found`)
+    throw new Error(
+      `conversation_export: session "${input.sessionId ?? input.idOrName ?? input.slug ?? ""}" not found`,
+    )
   }
 
   const exporter = exportFn ?? (async (sid, d) => {
@@ -258,7 +270,7 @@ export function registerConversationExportTool(server: McpServer, ops: Conversat
       "`claude --resume <uuid>`. Returns the conversation id, the written path, and the " +
       "ready-to-run resume command. Works on stopped and running sessions alike.",
     {
-      sessionId: z.string().describe("agentproto session id (sess_xxx) or session name."),
+      ...sessionRefSchema(z),
       target: z
         .enum(["claude-code"])
         .describe("Target adapter format whose native store to write. Extensible enum."),
