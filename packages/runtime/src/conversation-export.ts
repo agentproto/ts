@@ -25,7 +25,7 @@ import { join } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
-import { sessionRefSchema, resolveSessionRef } from "./session-ref.js"
+import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import type { ExportedSession, ExportedMessage } from "./transcript-export.js"
 import { claudeProjectSlug } from "./conversation-store.js"
 
@@ -230,7 +230,7 @@ export async function exportConversation(
   input: ConversationExportInput,
   exportFn?: ConversationExportOps["exportFn"],
 ): Promise<ConversationExportResult> {
-  const resolved = resolveSessionRef(registry, input)
+  const resolved = resolveSessionRef(archivedInclusiveRegistry(registry), input)
   if (!resolved.ok) {
     throw new Error(
       `conversation_export: session "${input.sessionId ?? input.idOrName ?? input.slug ?? ""}" not found`,

@@ -393,8 +393,20 @@ export function registerConversationReadTool(server: McpServer, ops: Conversatio
         ),
     },
     async input => {
+      const idOrName = input.idOrName ?? input.sessionId ?? input.slug
+      if (idOrName === undefined || idOrName === "") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "conversation_read: one of idOrName, sessionId, or slug is required.",
+            },
+          ],
+          isError: true as const,
+        }
+      }
       const result = await readConversation(ops.registry, {
-        idOrName: input.idOrName ?? input.sessionId ?? input.slug ?? "",
+        idOrName,
         ...(input.format ? { format: input.format } : {}),
         ...(input.lastN !== undefined ? { lastN: input.lastN } : {}),
         ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),

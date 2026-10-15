@@ -175,4 +175,35 @@ describe("every session-addressing tool accepts sessionId | idOrName | slug", ()
       })
     })
   }
+
+  // The archived-session regression: `registry.list()` hides archived rows, so
+  // a resolver fed the raw registry cannot find an archived session by
+  // name/slug — even though `session_unarchive` (and any archived lookup) must.
+  // Every call site wraps the registry in `archivedInclusiveRegistry`; these
+  // tests pin that.
+  describe("archived sessions stay addressable by name/slug", () => {
+    const archive = (id: string) => {
+      const desc = reg.get(id) as unknown as { status?: string }
+      if (desc) desc.status = "exited"
+      reg.archiveSession(id)
+    }
+
+    it("resolves an archived session by slug (session_unarchive)", async () => {
+      const { id, slug } = await withHarness()
+      archive(id)
+      const result = await call("session_unarchive", { slug })
+      expect((result as { isError?: boolean }).isError).toBeFalsy()
+      expect(reg.get(id)?.archived).toBe(false)
+    })
+
+    it("resolves an archived session by legacy name (session_unarchive)", async () => {
+      const { id } = await withHarness()
+      const name = `legacy-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}`
+      ;(reg.get(id) as unknown as { name?: string }).name = name
+      archive(id)
+      const result = await call("session_unarchive", { idOrName: name })
+      expect((result as { isError?: boolean }).isError).toBeFalsy()
+      expect(reg.get(id)?.archived).toBe(false)
+    })
+  })
 })

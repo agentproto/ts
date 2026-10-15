@@ -84,7 +84,7 @@ import {
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
-import { sessionRefSchema, resolveSessionRef } from "./session-ref.js"
+import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
 import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
@@ -480,8 +480,21 @@ export function registerCommandTools(
         ),
     },
     async input => {
-      const ref = resolveSessionRef(opts.registry, input)
+      const ref = resolveSessionRef(archivedInclusiveRegistry(opts.registry), input)
       if (input.sessionId !== undefined || input.idOrName !== undefined || input.slug !== undefined) {
+        if (!ref.ok && ref.error.code !== "not_found") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: `session reference is ${ref.error.code}: "${input.sessionId ?? input.idOrName ?? input.slug}"`,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
         const id = ref.ok ? ref.id : (input.sessionId ?? input.idOrName ?? input.slug ?? "")
         const entry = await opts.registry.readCommandLog(id)
         return {
@@ -607,7 +620,20 @@ export function registerCommandTools(
       const anyRef =
         input.sessionId !== undefined || input.idOrName !== undefined || input.slug !== undefined
       if (anyRef) {
-        const resolved = resolveSessionRef(opts.registry, input)
+        const resolved = resolveSessionRef(archivedInclusiveRegistry(opts.registry), input)
+        if (!resolved.ok && resolved.error.code !== "not_found") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: `session reference is ${resolved.error.code}: "${input.sessionId ?? input.idOrName ?? input.slug}"`,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
         const sessionId = resolved.ok
           ? resolved.id
           : (input.sessionId ?? input.idOrName ?? input.slug ?? "")

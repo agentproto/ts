@@ -113,6 +113,26 @@ export function resolveSessionRef(
 }
 
 /**
+ * An addressing view of a registry that also resolves **archived** rows.
+ *
+ * `registry.list()` hides archived sessions by default, but every
+ * session-addressing surface must still resolve a legacy `name`/`slug` for an
+ * archived session — that is exactly `session_unarchive`'s use case, and the
+ * old `findByIdOrName` resolved against an all-rows adapter. `get()` already
+ * ignores the archived flag (a transcript stays openable by id), so only
+ * `list()` needs the opt-in. Pass this to {@link resolveSessionRef} at every
+ * call site that hands over the real registry.
+ */
+export function archivedInclusiveRegistry(
+  registry: Pick<SessionsRegistry, "get" | "list">,
+): Pick<SessionsRegistry, "get" | "list"> {
+  return {
+    get: id => registry.get(id),
+    list: () => registry.list({ includeArchived: true }),
+  }
+}
+
+/**
  * The zod fragment every session-addressing tool spreads into its schema —
  * `sessionId` (canonical) plus `idOrName` and `slug` (aliases), all
  * optional strings.

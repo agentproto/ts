@@ -204,7 +204,7 @@ import {
   loadAllowlistEntries,
   loadTerminalGateMode,
 } from "./command-allowlist.js"
-import { resolveSessionRef, sessionRefSchema } from "./session-ref.js"
+import { archivedInclusiveRegistry, resolveSessionRef, sessionRefSchema } from "./session-ref.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -251,7 +251,7 @@ function resolveSessionDesc(
   const sessionId = refString(input.sessionId) ?? refString(input.id)
   const idOrName = refString(input.idOrName)
   const slug = refString(input.slug)
-  const resolved = resolveSessionRef(registry, {
+  const resolved = resolveSessionRef(archivedInclusiveRegistry(registry), {
     ...(sessionId ? { sessionId } : {}),
     ...(idOrName ? { idOrName } : {}),
     ...(slug ? { slug } : {}),

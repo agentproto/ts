@@ -19,7 +19,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
-import { sessionRefSchema, resolveSessionRef } from "./session-ref.js"
+import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 
 /** MCP clients commonly stringify booleans; coerce so both the boolean
@@ -192,7 +192,7 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
         const brain = brains.getBrain(workspace)
         const anyRef =
           input.sessionId !== undefined || input.idOrName !== undefined || input.slug !== undefined
-        const ref = resolveSessionRef(registry, input)
+        const ref = resolveSessionRef(archivedInclusiveRegistry(registry), input)
         if (anyRef && !ref.ok) {
           return {
             content: [
