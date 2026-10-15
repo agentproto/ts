@@ -395,9 +395,31 @@ function extractText(v){
   }
   return null;
 }
+function summarizeCommandJson(text){
+  var trimmed=String(text).trim();
+  if(trimmed.charAt(0)!=='{') return null;
+  var parsed;
+  try{ parsed=JSON.parse(trimmed); }catch(e){ return null; }
+  if(!parsed || typeof parsed!=='object' || Array.isArray(parsed)) return null;
+  var stdout=typeof parsed.stdout==='string'? parsed.stdout : null;
+  var stderr=typeof parsed.stderr==='string'? parsed.stderr : null;
+  if(stdout===null && stderr===null) return null;
+  var exitCode=(parsed.exitCode!==undefined)? parsed.exitCode : parsed.exit_code;
+  var exitPart=(exitCode===undefined || exitCode===null)? '' : ('exit '+String(exitCode)+' · ');
+  var body=(stderr && stderr.trim()? stderr : (stdout||'')).trim();
+  if(!body) return exitPart+'no output';
+  var lines=body.split(/\\r?\\n/);
+  if(lines.length>1){
+    var bytes=new TextEncoder().encode(body).length;
+    return exitPart+lines.length+' lines, '+bytes+'B';
+  }
+  return exitPart+truncateStr(lines[0],160);
+}
 function formatToolResult(toolName,result,isError){
   var text=extractText(result);
   if(isError){
+    var structured=text!=null? summarizeCommandJson(text) : null;
+    if(structured!=null) return structured;
     var message=text!=null? text : (result!=null? JSON.stringify(result) : 'failed');
     var firstLine=String(message).split(/\\r?\\n/)[0] || message;
     return truncateStr(firstLine,160);
@@ -405,6 +427,8 @@ function formatToolResult(toolName,result,isError){
   if(text==null) return null;
   var trimmed=text.trim();
   if(!trimmed) return null;
+  var structured=summarizeCommandJson(trimmed);
+  if(structured!=null) return structured;
   var lines=trimmed.split(/\\r?\\n/);
   if(lines.length>1){
     var bytes=new TextEncoder().encode(trimmed).length;
