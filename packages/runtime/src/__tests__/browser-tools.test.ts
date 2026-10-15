@@ -876,3 +876,108 @@ describe("list tools pagination (PR-8) + compact projection (tool-transformer mi
     await cleanup()
   })
 })
+
+// ── start then screenshot across two separate mounts (/mcp requests) ─────────
+// Regression: `registerBrowserTools` re-runs once per `/mcp` request
+// (mcpServerFactory), so any per-registration `liveInstances` Map died with
+// the request that attached the browser — `browser_screenshot` on the next
+// request failed with "chrome-live provider instance is unavailable" even
+// though the underlying adapter singleton was perfectly alive. The provider
+// instance map must therefore live at module scope, matching the adapter.
+
+describe("live browser instances across separate mounts", () => {
+  it("browser_screenshot on a SECOND registerBrowserTools mount reaches the instance started on the first", async () => {
+    const screenshot = vi.fn(async () => ({
+      data: "AAAA",
+      format: "png" as const,
+      width: 1,
+      height: 1,
+    }))
+    const stop = vi.fn(async () => {})
+    const health = vi.fn(async () => ({ ok: true }))
+    const chromeLiveAdapter = {
+      id: "chrome-live",
+      name: "Chrome Live",
+      description: "fake attach-to-user's-chrome adapter",
+      defaultPort: 9222,
+      healthPath: "/json/version",
+      // Mimics the real adapter: the CDP websocket lives on a module-level
+      // singleton, so a second ensure() with the browser already up returns
+      // the SAME live instance (wasAlreadyRunning: true).
+      ensure: async () => ({
+        id: "chrome-live",
+        port: 9222,
+        baseUrl: "http://127.0.0.1:9222",
+        wasAlreadyRunning: true,
+        healthy: true,
+        health,
+        screenshot,
+        stop,
+      }),
+    }
+    const resolveBrowserAdapter = (id: string) =>
+      id === "chrome-live" ? chromeLiveAdapter : undefined
+
+    const registry = createSessionsRegistry({
+      persistPath: join(tmp, "cross-mount.json"),
+    })
+    // Mount A — first /mcp request.
+    const serverA = new McpServer({ name: "browser-a", version: "0.0.1" })
+    registerBrowserTools(serverA, { registry, resolveBrowserAdapter })
+    const [transportA, serverTransportA] = InMemoryTransport.createLinkedPair()
+    await serverA.connect(serverTransportA)
+    const clientA = new Client({ name: "client-a", version: "0.0.1" })
+    await clientA.connect(transportA)
+    // Mount B — a genuinely fresh registration, as mcpServerFactory builds
+    // for the NEXT /mcp request.
+    const serverB = new McpServer({ name: "browser-b", version: "0.0.1" })
+    registerBrowserTools(serverB, { registry, resolveBrowserAdapter })
+    const [transportB, serverTransportB] = InMemoryTransport.createLinkedPair()
+    await serverB.connect(serverTransportB)
+    const clientB = new Client({ name: "client-b", version: "0.0.1" })
+    await clientB.connect(transportB)
+
+    try {
+      const started = await clientA.callTool({
+        name: "start_browser",
+        arguments: { adapter: "chrome-live" },
+      })
+      expect(started.isError).toBeFalsy()
+      const { sessionId } = JSON.parse(
+        (started.content as Array<{ text: string }>)[0]!.text
+      ) as { sessionId: string }
+
+      // Cross-mount call — this failed with "provider instance is
+      // unavailable" before the fix.
+      const shot = await clientB.callTool({
+        name: "browser_screenshot",
+        arguments: { sessionId },
+      })
+      expect(shot.isError).toBeFalsy()
+      expect(shot.structuredContent).toEqual({ data: "AAAA", format: "png", width: 1, height: 1 })
+      expect(screenshot).toHaveBeenCalledTimes(1)
+
+      const status = await clientB.callTool({
+        name: "browser_status",
+        arguments: { sessionId },
+      })
+      expect(JSON.parse((status.content as Array<{ text: string }>)[0]!.text)).toMatchObject({
+        healthy: true,
+        healthBody: { ok: true },
+      })
+      expect(health).toHaveBeenCalledTimes(1)
+
+      // stop_browser from ANY mount must reach the adapter's stop.
+      const stopped = await clientB.callTool({
+        name: "stop_browser",
+        arguments: { sessionId },
+      })
+      expect(stopped.isError).toBeFalsy()
+      expect(stop).toHaveBeenCalledTimes(1)
+    } finally {
+      await clientA.close()
+      await clientB.close()
+      registry.shutdown()
+    }
+  })
+})

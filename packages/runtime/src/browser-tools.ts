@@ -179,6 +179,37 @@ const errResult = (text: string) => ({
 
 // ── Registration ──────────────────────────────────────────────────────────────
 
+// Live browser adapter instances, keyed by the registry session id. This MUST
+// live at module scope: `mcpServerFactory` re-runs `registerBrowserTools` once
+// per `/mcp` request (the SDK's stateless per-request transport pattern,
+// packages/runtime/src/index.ts), so a map closed over by a single
+// registration dies with that request — `start_browser` stored the instance in
+// a map its next tool call never saw (chrome-live screenshots failed with
+// "provider instance unavailable" right after a successful attach). The
+// adapter-level singleton (`chromeLive`) survives because browsers hold their
+// own module-level entries map — this map must survive the same way.
+const liveInstances = new Map<string, BrowserInstanceLike>()
+
+// Track the registry id an instance is stored under (the id only becomes
+// known after `registerBrowser` returns); the `start_browser` handler wires
+// the registry's `stop` to drop the entry.
+export function setLiveBrowserInstance(
+  sessionId: string,
+  instance: BrowserInstanceLike
+): void {
+  liveInstances.set(sessionId, instance)
+}
+
+export function getLiveBrowserInstance(
+  sessionId: string
+): BrowserInstanceLike | undefined {
+  return liveInstances.get(sessionId)
+}
+
+export function forgetLiveBrowserInstance(sessionId: string): void {
+  liveInstances.delete(sessionId)
+}
+
 interface RegisterBrowserToolsOptions {
   registry: SessionsRegistry
   /** Resolver for browser adapters — injected by the serve/CLI layer (P6).
@@ -202,7 +233,6 @@ export function registerBrowserTools(
   opts: RegisterBrowserToolsOptions
 ): void {
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
-  const liveInstances = new Map<string, BrowserInstanceLike>()
 
   // ── browser_adapter_list ────────────────────────────────────────────────────
   // Migrated onto the AIP contract layer (defineTool + implementTool +
@@ -345,6 +375,10 @@ export function registerBrowserTools(
           initialWaitMs: START_BROWSER_INITIAL_WAIT_MS,
           log: msg => log?.(`[start_browser:${input.adapter}] ${msg}`),
         })
+        // The registry's `stop` wrapper drops the map entry keyed by this
+        // session id (registry kill() → browserStop → wrapper → delete).
+        const pendingId: { current?: string } = {}
+        const stopInstance = instance.stop.bind(instance)
         const desc = registry.registerBrowser({
           adapterId: instance.id,
           port: instance.port,
@@ -353,10 +387,14 @@ export function registerBrowserTools(
           pid: instance.pid,
           wasAlreadyRunning: instance.wasAlreadyRunning,
           status: instance.healthy ? "running" : "starting",
-          stop: instance.stop.bind(instance),
+          stop: async () => {
+            if (pendingId.current) liveInstances.delete(pendingId.current)
+            await stopInstance()
+          },
           label: input.label,
         })
-        liveInstances.set(desc.id, instance)
+        pendingId.current = desc.id
+        setLiveBrowserInstance(desc.id, instance)
         const stillStarting = !instance.healthy
         return {
           content: [

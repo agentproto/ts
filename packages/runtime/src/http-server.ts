@@ -178,9 +178,11 @@ import { computeCapabilitiesInventory } from "./capabilities-inventory.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { normalizeInbound, verifyInboundSignature, type InboundProvider } from "./inbound-adapters.js"
 import type { InboundEndpoint, InboundEndpointStore } from "./inbound-endpoints.js"
-import type {
-  BrowserAdapterResolver,
-  BrowserAdapterLister,
+import {
+  setLiveBrowserInstance,
+  forgetLiveBrowserInstance,
+  type BrowserAdapterResolver,
+  type BrowserAdapterLister,
 } from "./browser-tools.js"
 import type {
   OrchestratorScope,
@@ -6885,6 +6887,8 @@ async function handleSessions(
         binPath,
         initialWaitMs: 6_000,
       })
+      const pendingId: { current?: string } = {}
+      const stopInstance = instance.stop.bind(instance)
       const desc = registry.registerBrowser({
         adapterId: instance.id,
         port: instance.port,
@@ -6893,9 +6897,14 @@ async function handleSessions(
         pid: instance.pid,
         wasAlreadyRunning: instance.wasAlreadyRunning,
         status: instance.healthy ? "running" : "starting",
-        stop: instance.stop.bind(instance),
+        stop: async () => {
+          if (pendingId.current) forgetLiveBrowserInstance(pendingId.current)
+          await stopInstance()
+        },
         label: typeof b.label === "string" ? b.label : undefined,
       })
+      pendingId.current = desc.id
+      setLiveBrowserInstance(desc.id, instance)
       json(201, desc)
     } catch (err) {
       json(500, {
