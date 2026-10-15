@@ -14,6 +14,7 @@
  */
 
 import { addReviewWorktree, ownerRepoOfReviewWorktree, removeReviewWorktrees } from "./review-worktree.js"
+import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import type { ReviewRunner } from "./review-runner.js"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
@@ -4635,6 +4636,18 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe("Legacy AIP-45 mode id override, forwarded verbatim to the driver at spawn."),
+      mcpServers: mcpServerMountsOverrideSchema
+        .optional()
+        .describe(
+          "FULL REPLACEMENT of the restarted session's MCP server mounts (same shape " +
+            "as `agent_start.mcpServers`) — the list passed here is carried verbatim onto " +
+            "the restarted session; the old list is NOT merged in. This is the only way to " +
+            "change an HTTP-mounted server's config (e.g. a baked-in `?allowTools=` query " +
+            "string) — a bare restart clones the original list unchanged. Pass `[]` to " +
+            "restart with no mounts at all. A `http`/`sse` entry targeting this daemon's " +
+            "own /mcp mount is re-stamped with the NEW session's id at apply time, so a " +
+            "copied self-mount URL never resurrects a dead caller identity."
+        ),
       preferNativeTerminal: z
         .boolean()
         .optional()
@@ -4707,6 +4720,7 @@ export function registerSessionTools(
         ...(input.contextProfile !== undefined ? { contextProfile: input.contextProfile } : {}),
         ...(input.harness !== undefined ? { harness: input.harness } : {}),
         ...(input.mode !== undefined ? { mode: input.mode } : {}),
+        ...(input.mcpServers !== undefined ? { mcpServers: input.mcpServers } : {}),
       }
       if (Object.keys(overrides).length > 0) {
         if (!prev.adapterSlug || !resolveAgentAdapter) {

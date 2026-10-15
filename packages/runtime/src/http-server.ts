@@ -278,6 +278,7 @@ import {
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
+import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import {
   deleteUserPreset,
   deriveRecentSpawnConfigs,
@@ -7966,6 +7967,28 @@ code { color: #9ad; }
     const body = (await readJsonBody(req)) as Record<string, unknown> | undefined
     const b = body && typeof body === "object" ? body : {}
     const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined)
+    // Full replacement (not a merge) — the caller passes the complete new
+    // MCP server list; see the apply-path comment in
+    // session-restart-core.ts's buildRestartMcpServers. Validated with the
+    // SAME zod schema the `session_restart` MCP verb uses
+    // (`mcpServerMountsOverrideSchema`), so the two transports can't
+    // disagree — and an `mcpServers` key that is PRESENT but malformed is a
+    // real 400, never a silent drop: silently restarting with the stale
+    // mounts is exactly the bug this axis exists to fix.
+    let mcpServersOverride: RestartOverrides["mcpServers"]
+    if (b.mcpServers !== undefined) {
+      const parsed = mcpServerMountsOverrideSchema.safeParse(b.mcpServers)
+      if (parsed.success) {
+        mcpServersOverride = parsed.data
+      } else {
+        const invalid = new RestartOverrideError(
+          "restart mcpServers override: " +
+            parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; "),
+        )
+        json(invalid.status, { ...sessionRestartErrorBody(invalid), sessionId: prev.id })
+        return true
+      }
+    }
     const overrides: RestartOverrides = {
       ...(str(b.model) !== undefined ? { model: str(b.model)! } : {}),
       ...(str(b.effort) !== undefined ? { effort: str(b.effort) as RestartOverrides["effort"] } : {}),
@@ -7987,6 +8010,7 @@ code { color: #9ad; }
       ...(b.posture !== undefined ? { posture: b.posture as RestartOverrides["posture"] } : {}),
       ...(str(b.contextProfile) !== undefined ? { contextProfile: str(b.contextProfile)! } : {}),
       ...(str(b.mode) !== undefined ? { mode: str(b.mode)! } : {}),
+      ...(mcpServersOverride !== undefined ? { mcpServers: mcpServersOverride } : {}),
     }
     try {
       const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
