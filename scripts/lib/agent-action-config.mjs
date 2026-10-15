@@ -53,6 +53,8 @@ export function toReviewConfig(config, resolved) {
 export function githubOutputs(resolved) {
   const primary = resolved.presets[0] || {}
   const fallback = resolved.presets[1] || {}
+  const free = resolved.presets.filter((preset) => preset.reviewerAdapter === 'opencode')
+  const cloud = resolved.presets.find((preset) => preset.cloud === 'anthropic' || preset.reviewerAdapter === 'claude-code-cloud')
   return {
     names: resolved.names.join(','),
     backend: primary.cloud === 'anthropic' || primary.reviewerAdapter === 'claude-code-cloud' ? 'claude-cloud' : 'opencode-free',
@@ -62,6 +64,12 @@ export function githubOutputs(resolved) {
     fallback_name: fallback.name || '',
     fallback_adapter: fallback.reviewerAdapter || '',
     fallback_model: fallback.reviewerModel || '',
+    has_cloud: cloud ? 'true' : 'false',
+    cloud_name: cloud?.name || '',
+    free_primary_name: free[0]?.name || '',
+    free_primary_model: free[0]?.reviewerModel || '',
+    free_fallback_name: free[1]?.name || '',
+    free_fallback_model: free[1]?.reviewerModel || '',
   }
 }
 

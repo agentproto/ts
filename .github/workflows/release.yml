@@ -345,24 +345,71 @@ jobs:
         run: node scripts/resolve-agent-action.mjs docs-check --github-output
 
       - name: Install OpenCode runtime for free release agents
-        if: always() && (steps.release-agent.outputs.backend == 'opencode-free' || steps.docs-agent.outputs.backend == 'opencode-free') && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && (steps.release-agent.outputs.free_primary_model != '' || steps.docs-agent.outputs.free_primary_model != '') && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         run: npm install --global opencode-ai@1.19.0
+
+      - name: Install Claude Code Cloud runtime
+        if: always() && (steps.release-agent.outputs.has_cloud == 'true' || steps.docs-agent.outputs.has_cloud == 'true') && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        run: npm install --global @anthropic-ai/claude-code@2.1.300
+
+      - name: Trust this disposable checkout for Claude Cloud
+        if: always() && (steps.release-agent.outputs.has_cloud == 'true' || steps.docs-agent.outputs.has_cloud == 'true') && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        run: |
+          node -e '
+            const fs=require("fs"), os=require("os"), path=require("path");
+            const p=path.join(os.homedir(), ".claude.json");
+            let c={}; try { c=JSON.parse(fs.readFileSync(p,"utf8")) } catch {}
+            c.projects ||= {};
+            c.projects[fs.realpathSync(process.env.GITHUB_WORKSPACE)] = {hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
+            fs.writeFileSync(p, JSON.stringify(c));
+          '
+
+      - name: Generate and publish release notes (Claude Cloud primary)
+        id: notes-cloud-primary
+        if: always() && steps.release-agent.outputs.backend == 'claude-cloud' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/release-notes.mjs --print-cloud-prompt > "$RUNNER_TEMP/release-notes-cloud.prompt"
+          node scripts/claude-cloud-ci.mjs \
+            --prompt-file "$RUNNER_TEMP/release-notes-cloud.prompt" \
+            --output "$RUNNER_TEMP/release-notes-cloud.md" \
+            --label ci-release-notes
+          node scripts/release-notes.mjs --body-file "$RUNNER_TEMP/release-notes-cloud.md"
+
+      - name: Release notes posted? (after Claude Cloud primary)
+        id: notes-check-cloud-primary
+        if: always() && steps.release-agent.outputs.backend == 'claude-cloud' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node scripts/release-notes.mjs --check; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Generate agentic release notes (OpenCode free)
         id: notes-1
-        if: always() && steps.release-agent.outputs.backend == 'opencode-free' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && steps.release-agent.outputs.free_primary_model != '' && steps.notes-check-cloud-primary.outputs.posted != 'true' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         timeout-minutes: 20
         run: node scripts/release-notes.mjs
         env:
           AGENT_LANE: opencode-free
-          AGENT_MODEL: ${{ steps.release-agent.outputs.primary_model }}
+          AGENT_MODEL: ${{ steps.release-agent.outputs.free_primary_model }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release notes posted? (after OpenCode free)
         id: notes-check-1
-        if: always() && steps.release-agent.outputs.backend == 'opencode-free' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && steps.release-agent.outputs.free_primary_model != '' && steps.notes-check-cloud-primary.outputs.posted != 'true' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -376,23 +423,23 @@ jobs:
       - name: Generate agentic release notes (OpenCode free fallback)
         id: notes-2
         if:
-          always() && steps.release-agent.outputs.backend == 'opencode-free' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
-          steps.release-agent.outputs.fallback_model != '' &&
+          always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.release-agent.outputs.free_fallback_model != '' &&
           steps.notes-check-1.outputs.posted != 'true'
         continue-on-error: true
         timeout-minutes: 20
         run: node scripts/release-notes.mjs
         env:
           AGENT_LANE: opencode-free
-          AGENT_MODEL: ${{ steps.release-agent.outputs.fallback_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
+          AGENT_MODEL: ${{ steps.release-agent.outputs.free_fallback_model }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release notes posted? (after OpenCode free fallback)
         id: notes-check-2
         if:
-          always() && steps.release-agent.outputs.backend == 'opencode-free' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
-          steps.release-agent.outputs.fallback_model != '' &&
+          always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.release-agent.outputs.free_fallback_model != '' &&
           steps.notes-check-1.outputs.posted != 'true'
         continue-on-error: true
         env:
@@ -404,25 +451,10 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Claude Code Cloud runtime
-        if: always() && (steps.release-agent.outputs.backend == 'claude-cloud' || steps.docs-agent.outputs.backend == 'claude-cloud') && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
-        run: npm install --global @anthropic-ai/claude-code@2.1.300
-
-      - name: Trust this disposable checkout for Claude Cloud
-        if: always() && (steps.release-agent.outputs.backend == 'claude-cloud' || steps.docs-agent.outputs.backend == 'claude-cloud') && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
-        run: |
-          node -e '
-            const fs=require("fs"), os=require("os"), path=require("path");
-            const p=path.join(os.homedir(), ".claude.json");
-            let c={}; try { c=JSON.parse(fs.readFileSync(p,"utf8")) } catch {}
-            c.projects ||= {};
-            c.projects[fs.realpathSync(process.env.GITHUB_WORKSPACE)] = {hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
-            fs.writeFileSync(p, JSON.stringify(c));
-          '
-
-      - name: Generate and publish release notes (Claude Code Cloud)
-        id: notes-cloud
-        if: always() && steps.release-agent.outputs.backend == 'claude-cloud' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+      - name: Generate and publish release notes (Claude Cloud fallback)
+        id: notes-cloud-fallback
+        if: always() && steps.release-agent.outputs.backend != 'claude-cloud' && steps.release-agent.outputs.has_cloud == 'true' && steps.notes-check-1.outputs.posted != 'true' && steps.notes-check-2.outputs.posted != 'true' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        continue-on-error: true
         timeout-minutes: 45
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -434,7 +466,7 @@ jobs:
           node scripts/claude-cloud-ci.mjs \
             --prompt-file "$RUNNER_TEMP/release-notes-cloud.prompt" \
             --output "$RUNNER_TEMP/release-notes-cloud.md" \
-            --label ci-release-notes
+            --label ci-release-notes-fallback
           node scripts/release-notes.mjs --body-file "$RUNNER_TEMP/release-notes-cloud.md"
 
       - name: Release notes posted? (final gate)
@@ -453,37 +485,13 @@ jobs:
       # "Machine proposes, human merges": like catalog-sync.yml, edits
       # land as a draft PR, never a direct commit to main.
       #
-      # Same MiMo → Step 5 free-model ladder as the notes above. Each step
+      # Uses the ordered per-action chain (cloud/free or free/cloud). Each step
       # reports `status=ok|error|no-result|no-lane`; the
       # next lane only runs when the previous one wasn't ok. Every lane is
       # continue-on-error and the script itself soft-fails — this is a
       # best-effort bonus on top of an already-published release.
-      - name: Check docs for release drift (OpenCode free)
-        id: docs-1
-        if: always() && steps.docs-agent.outputs.backend == 'opencode-free' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
-        continue-on-error: true
-        timeout-minutes: 20
-        run: node scripts/docs-check.mjs
-        env:
-          AGENT_LANE: opencode-free
-          AGENT_MODEL: ${{ steps.docs-agent.outputs.primary_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-      - name: Check docs for release drift (OpenCode free fallback)
-        id: docs-2
-        if:
-          always() && steps.docs-agent.outputs.backend == 'opencode-free' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
-          steps.docs-agent.outputs.fallback_model != '' &&
-          steps.docs-1.outputs.status != 'ok'
-        continue-on-error: true
-        timeout-minutes: 20
-        run: node scripts/docs-check.mjs
-        env:
-          AGENT_LANE: opencode-free
-          AGENT_MODEL: ${{ steps.docs-agent.outputs.fallback_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
-
-      - name: Check docs for release drift (Claude Code Cloud)
-        id: docs-cloud
+      - name: Check docs for release drift (Claude Cloud primary)
+        id: docs-cloud-primary
         if: always() && steps.docs-agent.outputs.backend == 'claude-cloud' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         timeout-minutes: 45
@@ -498,6 +506,49 @@ jobs:
             --output "$RUNNER_TEMP/docs-check-cloud.patch" \
             --label ci-docs-check
           node scripts/apply-cloud-docs-patch.mjs "$RUNNER_TEMP/docs-check-cloud.patch"
+          echo "status=ok" >> "$GITHUB_OUTPUT"
+
+      - name: Check docs for release drift (OpenCode free)
+        id: docs-1
+        if: always() && steps.docs-agent.outputs.free_primary_model != '' && steps.docs-cloud-primary.outputs.status != 'ok' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        continue-on-error: true
+        timeout-minutes: 20
+        run: node scripts/docs-check.mjs
+        env:
+          AGENT_LANE: opencode-free
+          AGENT_MODEL: ${{ steps.docs-agent.outputs.free_primary_model }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+      - name: Check docs for release drift (OpenCode free fallback)
+        id: docs-2
+        if:
+          always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.docs-agent.outputs.free_fallback_model != '' &&
+          steps.docs-1.outputs.status != 'ok'
+        continue-on-error: true
+        timeout-minutes: 20
+        run: node scripts/docs-check.mjs
+        env:
+          AGENT_LANE: opencode-free
+          AGENT_MODEL: ${{ steps.docs-agent.outputs.free_fallback_model }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
+
+      - name: Check docs for release drift (Claude Cloud fallback)
+        id: docs-cloud-fallback
+        if: always() && steps.docs-agent.outputs.backend != 'claude-cloud' && steps.docs-agent.outputs.has_cloud == 'true' && steps.docs-1.outputs.status != 'ok' && steps.docs-2.outputs.status != 'ok' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
+        run: |
+          node scripts/docs-check.mjs --print-cloud-prompt > "$RUNNER_TEMP/docs-check-cloud.prompt"
+          node scripts/claude-cloud-ci.mjs \
+            --prompt-file "$RUNNER_TEMP/docs-check-cloud.prompt" \
+            --output "$RUNNER_TEMP/docs-check-cloud.patch" \
+            --label ci-docs-check-fallback
+          node scripts/apply-cloud-docs-patch.mjs "$RUNNER_TEMP/docs-check-cloud.patch"
+          echo "status=ok" >> "$GITHUB_OUTPUT"
       - name: Detect docs drift
         id: docs-drift
         if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)

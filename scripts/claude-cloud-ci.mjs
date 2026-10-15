@@ -4,7 +4,7 @@
 
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
@@ -96,6 +96,17 @@ async function main() {
     const answer = [...(transcript.messages || [])].reverse().find((message) => message.role === 'assistant' && typeof message.text === 'string' && message.text.trim())?.text
     if (!answer) throw new Error('Claude Cloud produced no final assistant text')
     writeFileSync(outputFile, unwrapFence(answer), 'utf8')
+    if (process.env.GITHUB_OUTPUT) {
+      const provenance = JSON.stringify([
+        {
+          sessionId: descriptor.id,
+          label,
+          adapter: 'claude-code-cloud',
+          source: 'adapter',
+        },
+      ])
+      appendFileSync(process.env.GITHUB_OUTPUT, `session_id=${descriptor.id}\nprovenance=${provenance}\n`)
+    }
     console.log(`Claude Cloud output written to ${outputFile}`)
   } finally {
     daemon.kill('SIGTERM')

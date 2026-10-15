@@ -35,6 +35,17 @@ test('claude-cloud force selects the cloud preset without a sandbox fallback', (
   assert.equal(githubOutputs(resolved).backend, 'claude-cloud')
 })
 
+test('github outputs preserve a cross-backend chain and its free-model order', () => {
+  const resolved = resolveAgentAction(config, 'review', {
+    AGENT_REVIEW_PRESETS: 'cloud, step, mimo',
+  })
+  const outputs = githubOutputs(resolved)
+  assert.equal(outputs.backend, 'claude-cloud')
+  assert.equal(outputs.has_cloud, 'true')
+  assert.equal(outputs.free_primary_model, 'opencode/step-free')
+  assert.equal(outputs.free_fallback_model, 'opencode/mimo-free')
+})
+
 test('unknown presets fail with an actionable error', () => {
   assert.throws(() => resolveAgentAction(config, 'review', { AGENT_REVIEW_PRESETS: 'missing' }), /unknown preset: missing/)
 })

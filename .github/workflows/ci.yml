@@ -1021,9 +1021,9 @@ jobs:
 
           # A second free OpenCode model is retained as a provider-side
           # fallback when the primary free route is rate-limited. Prefer the
-          # independent ws02 account when configured, otherwise retry on the
-          # primary credential so model rotation still works.
-          if [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+          # independent ws03/ws02 accounts when configured, otherwise retry on
+          # the primary credential so model rotation still works.
+          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "has-opencode-fallback=true" >> "$GITHUB_OUTPUT"
           else
             echo "has-opencode-fallback=false" >> "$GITHUB_OUTPUT"
@@ -1050,13 +1050,15 @@ jobs:
           # adapters that route by model id) the provider key env.
           REVIEWER_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
           FALLBACK_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerFallbackModels[0] // ""')
+          HAS_CLOUD=$(printf '%s' "$CONFIG" | jq -r '(.resolvedAgentAction.presets // []) | index("claude-cloud") != null')
           echo "cli-source=$CLI_SOURCE" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$AUTH_MODE" >> "$GITHUB_OUTPUT"
           echo "adapter=$ADAPTER" >> "$GITHUB_OUTPUT"
           echo "model=$REVIEWER_MODEL" >> "$GITHUB_OUTPUT"
           echo "fallback-model=$FALLBACK_MODEL" >> "$GITHUB_OUTPUT"
-          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) adapter=$ADAPTER auth-mode=$AUTH_MODE model=$REVIEWER_MODEL fallback=$FALLBACK_MODEL"
+          echo "has-cloud=$HAS_CLOUD" >> "$GITHUB_OUTPUT"
+          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) adapter=$ADAPTER auth-mode=$AUTH_MODE model=$REVIEWER_MODEL fallback=$FALLBACK_MODEL cloud-fallback=$HAS_CLOUD"
 
       - name: Build local agentproto CLI
         if: |
@@ -1071,12 +1073,37 @@ jobs:
           if [ "${{ steps.mode.outputs.has-opencode-fallback }}" = "true" ]; then
             FILTERS="$FILTERS --filter @agentproto/adapter-opencode..."
           fi
+          if [ "${{ steps.cliver.outputs.has-cloud }}" = "true" ]; then
+            FILTERS="$FILTERS --filter @agentproto/adapter-claude-code-cloud..."
+          fi
           pnpm build $FILTERS
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
+
+      - name: Install Claude Code Cloud runtime
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.cliver.outputs.has-cloud == 'true'
+        run: npm install --global @anthropic-ai/claude-code@2.1.300
+
+      - name: Trust this disposable checkout for Claude Cloud
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.cliver.outputs.has-cloud == 'true'
+        run: |
+          node -e '
+            const fs=require("fs"),os=require("os"),path=require("path");
+            const p=path.join(os.homedir(),".claude.json");
+            let c={}; try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}
+            c.projects ||= {};
+            c.projects[fs.realpathSync(process.env.GITHUB_WORKSPACE)]={hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true};
+            fs.writeFileSync(p,JSON.stringify(c));
+          '
 
       # Seed claude-code's trust/onboarding state so it doesn't hit an
       # interactive trust dialog headless (a clean runner has no ~/.claude.json,
@@ -1547,8 +1574,8 @@ jobs:
         with:
           adapter: opencode
           auth-mode: api-key
-          api-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
@@ -1652,6 +1679,38 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Run agentic PR reviewer (Claude Cloud fallback)
+        id: reviewer-claude-cloud
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.cliver.outputs.has-cloud == 'true' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.postcheck-fallback.outputs.posted != 'true' &&
+          steps.postcheck-fallback.outputs.posted != 'unknown' &&
+          steps.postcheck-opencode.outputs.posted != 'true' &&
+          steps.postcheck-opencode.outputs.posted != 'unknown'
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          node scripts/cloud-review-prompt.mjs > "$RUNNER_TEMP/cloud-review.prompt"
+          node scripts/claude-cloud-ci.mjs \
+            --prompt-file "$RUNNER_TEMP/cloud-review.prompt" \
+            --output "$RUNNER_TEMP/cloud-review.json" \
+            --label ci-pr-review-fallback
+          node scripts/post-cloud-review.mjs "$RUNNER_TEMP/cloud-review.json"
+
       - name: Propagate reviewer outcome for gate
         id: reviewer
         if: |
@@ -1666,6 +1725,7 @@ jobs:
           PRIMARY_PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
           FALLBACK_PROVENANCE: ${{ steps.reviewer-agentproto-fallback.outputs.provenance }}
           OPENCODE_PROVENANCE: ${{ steps.reviewer-agentproto-opencode.outputs.provenance }}
+          CLOUD_PROVENANCE: ${{ steps.reviewer-claude-cloud.outputs.provenance }}
           # The artifact ledger (review id recorded at creation time) travels the
           # same tier-selection path as provenance below, so the review-footer
           # stamp keys off the id the winning account actually posted under.
@@ -1685,9 +1745,15 @@ jobs:
             || [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ] \
             || [ "${{ steps.postcheck-fallback.outputs.posted }}" = "true" ] \
             || [ "${{ steps.reviewer-agentproto-opencode.outputs.status }}" = "done" ] \
-            || [ "${{ steps.postcheck-opencode.outputs.posted }}" = "true" ]; then
+            || [ "${{ steps.postcheck-opencode.outputs.posted }}" = "true" ] \
+            || [ "${{ steps.reviewer-claude-cloud.outputs.posted }}" = "true" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
+            if [ "${{ steps.reviewer-claude-cloud.outputs.posted }}" = "true" ]; then
+              echo "auth-mode=cloud" >> "$GITHUB_OUTPUT"
+            else
+              echo "auth-mode=${{ steps.cliver.outputs.auth-mode }}" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "outcome=failure" >> "$GITHUB_OUTPUT"
             echo "mode=none" >> "$GITHUB_OUTPUT"
@@ -1698,7 +1764,10 @@ jobs:
           # account/session that posted, not the failed primary attempt's
           # (possibly empty) provenance when the fallback account is the one
           # that succeeded.
-          if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
+          if [ "${{ steps.reviewer-claude-cloud.outputs.posted }}" = "true" ]; then
+            PROVENANCE="$CLOUD_PROVENANCE"
+            ARTIFACTS=""
+          elif [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
             PROVENANCE="$PRIMARY_PROVENANCE"
             ARTIFACTS="$PRIMARY_ARTIFACTS"
           elif [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ]; then
@@ -1999,7 +2068,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          AUTH_MODE: ${{ steps.cliver.outputs.auth-mode }}
+          AUTH_MODE: ${{ steps.reviewer.outputs.auth-mode || steps.cliver.outputs.auth-mode }}
           RUN_ID: ${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
           # Resolved by "Propagate reviewer outcome for gate" to whichever
