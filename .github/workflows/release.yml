@@ -39,7 +39,13 @@ jobs:
   release:
     name: Version or publish
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Must cover the worst case of BOTH LLM ladders running every lane to its
+    # own ceiling. Notes: cloud-primary 45 + free 20 + free-fallback 20 +
+    # cloud-fallback 45 = 130. Docs: the same shape = 130. 260 total, plus the
+    # non-LLM release work (install, publish, vsce) — so the job cap is 300,
+    # comfortably above 260, or a pathological run is killed mid-ladder and
+    # never reaches the final honest-red notes gate below.
+    timeout-minutes: 300
     env:
       AGENT_RELEASE_NOTES_PRESETS: ${{ vars.AGENT_RELEASE_NOTES_PRESETS }}
       AGENT_DOCS_CHECK_PRESETS: ${{ vars.AGENT_DOCS_CHECK_PRESETS }}

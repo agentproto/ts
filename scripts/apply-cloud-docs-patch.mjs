@@ -17,14 +17,31 @@ const patch = output + '\n'
 
 const options = { cwd: process.cwd(), input: patch, encoding: 'utf8' }
 execFileSync('git', ['apply', '--check'], options)
-const paths = execFileSync('git', ['apply', '--numstat'], options)
-  .split('\n')
-  .filter(Boolean)
-  .map((line) => line.split('\t').slice(2).join('\t'))
+
+// Extract every path the patch touches, from the patch's OWN headers rather
+// than `git apply --numstat`. numstat reports only the DESTINATION of a
+// rename/copy (`scripts/pwn.mjs -> docs/ok.md` reads as just `docs/ok.md`), so
+// a scope check that trusts numstat can be bypassed by renaming a non-docs
+// file into docs/ (or vice versa). Parsing both sides of `diff --git` /
+// `---`/`+++` and rejecting rename/copy directives outright closes that hole.
+const paths = new Set()
+for (const line of patch.split('\n')) {
+  let m
+  if ((m = /^diff --git a\/(.+) b\/(.+)$/.exec(line))) {
+    paths.add(m[1])
+    paths.add(m[2])
+  } else if ((m = /^--- a\/(.+)$/.exec(line))) {
+    paths.add(m[1])
+  } else if ((m = /^\+\+\+ b\/(.+)$/.exec(line))) {
+    paths.add(m[1])
+  } else if (/^(?:rename|copy) (?:from|to) /.test(line)) {
+    throw new Error(`Claude Cloud patch uses a rename/copy directive (${line.trim()}) — not allowed in a docs-scope patch`)
+  }
+}
 
 const allowed = (path) => path === 'README.md' || path.startsWith('docs/') || path.endsWith('/README.md')
-const disallowed = paths.filter((path) => !allowed(path))
+const disallowed = [...paths].filter((path) => !allowed(path))
 if (disallowed.length) throw new Error(`Claude Cloud patch escapes the docs scope: ${disallowed.join(', ')}`)
 
 execFileSync('git', ['apply', '--whitespace=error-all'], options)
-console.log(`Applied Claude Cloud documentation patch (${paths.length} file(s)).`)
+console.log(`Applied Claude Cloud documentation patch (${paths.size} file(s)).`)

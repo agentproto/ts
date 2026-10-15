@@ -1051,6 +1051,28 @@ jobs:
           REVIEWER_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
           FALLBACK_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerFallbackModels[0] // ""')
           HAS_CLOUD=$(printf '%s' "$CONFIG" | jq -r '(.resolvedAgentAction.presets // []) | index("claude-cloud") != null')
+          # Fail closed on a metered route. `.github/agentic-review.json` is
+          # PR-editable and its `reviewerModel` flows straight into the
+          # `model:`/`provider-key` of the OPENCODE_API_KEY-funded lane, so a
+          # PR could otherwise silently route reviews to a paid model and spend
+          # on that key. On the opencode adapter the resolved (and fallback)
+          # model ids must be a zero-priced free id — an id ending in `-free`,
+          # or the lone non-suffixed free id `big-pickle`. The claude-cloud
+          # preset (subscription-billed) is exempt. This replaces the guard
+          # from origin/main that refused any non-subscription auth-mode, which
+          # the free-route migration deliberately retired.
+          if [ "$ADAPTER" = "opencode" ] || [ "$ADAPTER" = "opencode-go" ]; then
+            for m in "$REVIEWER_MODEL" "$FALLBACK_MODEL"; do
+              [ -z "$m" ] && continue
+              case "$m" in
+                */big-pickle|*-free) ;;
+                *)
+                  echo "::error::.github/agentic-review.json routes the opencode reviewer to a metered model '$m' (adapter=$ADAPTER). Reviews must use a zero-priced free id (suffix '-free' or 'big-pickle')."
+                  exit 1
+                  ;;
+              esac
+            done
+          fi
           echo "cli-source=$CLI_SOURCE" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$AUTH_MODE" >> "$GITHUB_OUTPUT"
@@ -1064,24 +1086,27 @@ jobs:
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.cliver.outputs.cli-source == 'workspace'
-        run: |
-          pnpm install --frozen-lockfile
-          FILTERS="--filter @agentproto/cli... --filter @agentproto/adapter-${{ steps.cliver.outputs.adapter }}..."
-          # The opencode-go fallback tier spawns a DIFFERENT adapter than this
-          # job's primary lane — build its package too when the secret is set,
-          # or the tier's box daemon can't resolve `@agentproto/adapter-opencode`.
-          if [ "${{ steps.mode.outputs.has-opencode-fallback }}" = "true" ]; then
-            FILTERS="$FILTERS --filter @agentproto/adapter-opencode..."
-          fi
-          if [ "${{ steps.cliver.outputs.has-cloud }}" = "true" ]; then
-            FILTERS="$FILTERS --filter @agentproto/adapter-claude-code-cloud..."
-          fi
-          pnpm build $FILTERS
         env:
+          ADAPTER: ${{ steps.cliver.outputs.adapter }}
+          HAS_OPENCODE_FALLBACK: ${{ steps.mode.outputs.has-opencode-fallback }}
+          HAS_CLOUD: ${{ steps.cliver.outputs.has-cloud }}
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
+        run: |
+          pnpm install --frozen-lockfile
+          FILTERS="--filter @agentproto/cli... --filter @agentproto/adapter-${ADAPTER}..."
+          # The opencode-go fallback tier spawns a DIFFERENT adapter than this
+          # job's primary lane — build its package too when the secret is set,
+          # or the tier's box daemon can't resolve `@agentproto/adapter-opencode`.
+          if [ "$HAS_OPENCODE_FALLBACK" = "true" ]; then
+            FILTERS="$FILTERS --filter @agentproto/adapter-opencode..."
+          fi
+          if [ "$HAS_CLOUD" = "true" ]; then
+            FILTERS="$FILTERS --filter @agentproto/adapter-claude-code-cloud..."
+          fi
+          pnpm build $FILTERS
 
       - name: Install Claude Code Cloud runtime
         if: |
@@ -1161,8 +1186,9 @@ jobs:
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
-          # The key authenticates OpenCode; the resolver step above pins and
-          # validates a zero-priced model route before this action can run.
+          # The key authenticates OpenCode; the resolver step above fails closed
+          # unless the resolved model is a zero-priced free id before this
+          # action can run.
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
           api-key: ${{ secrets.OPENCODE_API_KEY }}
           provider-key: ${{ secrets.OPENCODE_API_KEY }}
@@ -1532,9 +1558,10 @@ jobs:
           steps.cliver.outputs.fallback-model != ''
         env:
           BASE_CONFIG: ${{ steps.config.outputs.json }}
+          FALLBACK_MODEL: ${{ steps.cliver.outputs.fallback-model }}
         run: |
           OVERRIDE=$(printf '%s' "$BASE_CONFIG" \
-            | jq -c --arg model '${{ steps.cliver.outputs.fallback-model }}' '. + {
+            | jq -c --arg model "$FALLBACK_MODEL" '. + {
                 reviewerAdapter: "opencode",
                 model: $model,
                 reviewerModel: $model,
@@ -2261,8 +2288,59 @@ jobs:
       # The auto-fix loop is pinned to commit-mode (push onto the PR branch) so
       # the review→fix→re-review cycle stays tight. Stacked-PR delivery is an
       # on-demand choice via `/fix --pr` (config.fixDelivery sets that default).
-      - name: Apply review fixes
+      #
+      # Two backends. Preferred is a managed Claude Code Cloud session (runs on
+      # the Claude subscription, not the metered ANTHROPIC_API_KEY) — the cloud
+      # box cannot write our tree, so it returns the fixes as a unified diff
+      # (scripts/apply-review-cloud.mjs) which is validated and applied locally.
+      # Fallback is the direct Anthropic Messages API tool-loop
+      # (scripts/apply-review.mjs), which needs a real Anthropic `fixModel` —
+      # never the reviewer's preset-driven OpenCode model.
+      - name: Choose review fixer backend
+        id: fixer
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        run: |
+          if [ -n "${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}" ] && [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]; then
+            echo "has-cloud=true" >> "$GITHUB_OUTPUT"
+            echo "Cloud fixer backend selected (Claude Code Cloud)."
+          else
+            echo "has-cloud=false" >> "$GITHUB_OUTPUT"
+            echo "No Claude Cloud credentials — using the Anthropic API fixer."
+          fi
+
+      - name: Build the agentproto CLI for the cloud fixer
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.fixer.outputs.has-cloud == 'true'
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-claude-code-cloud...
+          npm install --global @anthropic-ai/claude-code@2.1.300
+
+      - name: Apply review fixes (Claude Cloud)
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.fixer.outputs.has-cloud == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
+          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
+          # App token so the fixer can read the review + diff via the GitHub API.
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/apply-review-cloud.mjs --delivery commit
+
+      - name: Apply review fixes (Anthropic API)
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.fixer.outputs.has-cloud != 'true'
         run: node scripts/apply-review.mjs --delivery commit
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

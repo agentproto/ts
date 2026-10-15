@@ -350,6 +350,7 @@ async function main() {
   // window, but idle cancellation only arms once we HAVE a signature.
   let lastActivityAt = pollStartedAt
   let lastActivitySig = ""
+  let observedActivity = false
   let timedOut = false
   let run
   for (;;) {
@@ -373,16 +374,21 @@ async function main() {
     if (progress !== lastProgress || Date.now() - lastHeartbeatAt >= HEARTBEAT_MS) {
       const context = await buildProgressContext(client, run)
       console.log(`driver: [+${Math.round((Date.now() - pollStartedAt) / 1000)}s] ${describeRunProgress(run, context)}`)
+      const progressChanged = progress !== lastProgress
       lastProgress = progress
       lastHeartbeatAt = Date.now()
       // Treat EITHER a stage/step change OR a session-counter advance as
       // activity: the reviewer can grind through one long step (constant
-      // status text) while its turn/tool/token counters climb, and that must
-      // keep the idle watchdog from firing on a run that is plainly working.
+      // status text) while its turn/tool/token counters climb, and a run can
+      // also advance stages with its session counters momentarily static.
+      // Both must keep the idle watchdog from firing on a run that is plainly
+      // working.
       const activitySig = activitySignature(context)
-      if (activitySig !== "" && activitySig !== lastActivitySig) {
-        lastActivitySig = activitySig
+      const countersAdvanced = activitySig !== "" && activitySig !== lastActivitySig
+      if (activitySig !== "") lastActivitySig = activitySig
+      if (progressChanged || countersAdvanced) {
         lastActivityAt = Date.now()
+        observedActivity = true
       }
     }
 
@@ -391,9 +397,10 @@ async function main() {
     // Deadline checked AFTER the status read so a run that lands terminal right
     // on the boundary is still harvested as terminal rather than cancelled.
     // Two independent ceilings: the hard wall-clock cap, and an idle cap that
-    // only applies once we can actually observe the run's session counters.
+    // only applies once we can actually observe progress (a stage/step change
+    // or a session-counter advance).
     const idleDeadline = lastActivityAt + idleTimeoutMinutes * 60_000
-    const idleExpired = lastActivitySig !== "" && Date.now() > idleDeadline
+    const idleExpired = observedActivity && Date.now() > idleDeadline
     if (Date.now() > pollDeadline || idleExpired) {
       timedOut = true
       const reason = Date.now() > pollDeadline
