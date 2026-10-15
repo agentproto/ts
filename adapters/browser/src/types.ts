@@ -202,7 +202,7 @@ export interface BrowserAdapterInstance {
   /** Optional capture on a provider-owned target. */
   screenshot?(tabId?: string): Promise<{ data: string; format: "png" | "jpeg"; width?: number; height?: number }>
   /** Optional CDP screencast over a provider-owned tab (chrome-live). Frames come base64-encoded. */
-  screencastStart?(opts?: { format?: "jpeg" | "png"; quality?: number; everyNthFrame?: number; maxWidth?: number; maxHeight?: number }): Promise<{ targetId: string; index: number }>
+  screencastStart?(opts?: { format?: "jpeg" | "png"; quality?: number; everyNthFrame?: number; maxWidth?: number; maxHeight?: number }): Promise<{ targetId: string; index: number; alreadyRunning: boolean }>
   screencastFrame?(): Promise<{ data: string; format: "jpeg" | "png"; timestampMs: number; index: number; width?: number; height?: number } | null>
   screencastStop?(): Promise<{ targetId: string | undefined; frameCount: number; total: number; frames: Array<{ data: string; format: "jpeg" | "png"; timestampMs: number; index: number; width?: number; height?: number }> }>
   /**

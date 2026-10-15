@@ -136,7 +136,7 @@ export type ChromeLiveProvider = Omit<BrowserProvider, "launch"> & {
 export interface ChromeLiveInstance extends BrowserInstance {
   screenshotOwnedTarget(targetId?: string): Promise<Awaited<ReturnType<BrowserDriver["screenshot"]>>>
   /** Start Page.startScreencast on one OWNED agent tab (reused if one exists; attach() opens a fresh one otherwise). Idempotent per driver. */
-  screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }>
+  screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number; alreadyRunning: boolean }>
   /** Latest buffered frame, or null before the first frame lands / after a stop. */
   screencastFrame(): Promise<ChromeLiveScreencastFrame | null>
   /** Stop the screencast and hand back every frame buffered since start (for the runtime's mp4 encoder). */
@@ -169,8 +169,9 @@ export interface ChromeLiveScreencastFrame {
   height?: number
 }
 
-/** Buffer for frames — generous but bounded: what a recording session turns into mp4. */
+/** Buffer for frames — bounded twice over: frame count and approximate bytes. */
 const MAX_SCREENCAST_FRAMES = 2000
+const MAX_SCREENCAST_BUFFER_BYTES = 64 * 1024 * 1024
 
 export const chromeLiveDriverCapabilities: BrowserDriverCapabilities = {
   ...chromeDriverCapabilities,
@@ -269,18 +270,26 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     const ev = event.params as {
       data?: string
       sessionId?: string
+      timestamp?: number
       metadata?: { deviceWidth?: number; deviceHeight?: number; pageScaleFactor?: number }
     }
     if (!ev.data) return
     this.screencastBuffer.push({
       data: ev.data,
       format: this.screencastFormat,
-      timestampMs: Date.now(),
+      // CDP's `timestamp` is epoch seconds on the frame; prefer it so the
+      // mp4's pacing reflects capture time, not host-scheduling jitter.
+      timestampMs: typeof ev.timestamp === "number" ? Math.round(ev.timestamp * 1000) : Date.now(),
       index: this.screencastIndex++,
       ...(ev.metadata?.deviceWidth !== undefined ? { width: ev.metadata.deviceWidth } : {}),
       ...(ev.metadata?.deviceHeight !== undefined ? { height: ev.metadata.deviceHeight } : {}),
     })
     if (this.screencastBuffer.length > MAX_SCREENCAST_FRAMES) this.screencastBuffer.shift()
+    // A full-frame-count ring alone could still balloon (2 000 JPEGs can be
+    // hundreds of MB): cap the buffered bytes as well (~64 MB alive).
+    while (this.bufferedScreencastBytes() > MAX_SCREENCAST_BUFFER_BYTES && this.screencastBuffer.length > 2) {
+      this.screencastBuffer.shift()
+    }
     // Chrome throttles screencast delivery until each frame is acked: the ack
     // echoes the FRAME's own id (params.sessionId — not the flat session's).
     if (ev.sessionId) {
@@ -288,6 +297,12 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
         .send<void>("Page.screencastFrameAck", { sessionId: ev.sessionId }, this.screencastSessionId)
         .catch(() => {})
     }
+  }
+
+  private bufferedScreencastBytes(): number {
+    let bytes = 0
+    for (const frame of this.screencastBuffer) bytes += (frame.data.length * 3) / 4
+    return bytes
   }
 
   /**
@@ -319,9 +334,12 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     return this.screencastSessionId
   }
 
-  async startScreencast(opts?: ChromeLiveScreencastOptions): Promise<void> {
+  async startScreencast(opts?: ChromeLiveScreencastOptions): Promise<boolean> {
     if (this.conn.closed) throw new ChromeDisconnectedError(this.wsUrl, "startScreencast on a closed connection")
-    if (this.screencastActive) return
+    // Already casting on this driver: leave it be — Chrome's cast params can't
+    // be changed mid-stream. Callers surface this so the agent knows the new
+    // options (format/quality/…) were NOT applied (stop + start to change).
+    if (this.screencastActive) return false
     this.screencastIndex = 0
     this.screencastBuffer.length = 0
     this.screencastFormat = opts?.format ?? "jpeg"
@@ -345,13 +363,24 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
         "Target.attachToTarget",
         { targetId: this.target.id, flatten: true },
       )).sessionId
+      this.screencastIndex = 0
+      this.screencastBuffer.length = 0
       this.screencastSessionId = sessionId
       this.screencastActive = true
       this.screencastUnsubscribe = this.conn.onEvent((event) => {
         if (event.sessionId !== sessionId || event.method !== "Page.screencastFrame") return
         this.screencastListener(event)
       })
-      await this.conn.send<void>("Page.startScreencast", params, sessionId)
+      try {
+        await this.conn.send<void>("Page.startScreencast", params, sessionId)
+      } catch (err) {
+        // The cast never started: release the session we just attached.
+        await this.conn
+          .send<void>("Target.detachFromTarget", { sessionId })
+          .catch(() => {})
+        throw err
+      }
+      return true
     } catch (err) {
       this.screencastActive = false
       this.screencastUnsubscribe?.()
@@ -373,9 +402,14 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     await this.conn
       .send<void>("Page.stopScreencast", {}, this.screencastSessionId)
       .catch(() => {})
-    // The (fresh) cast session is released on the NEXT start; the current
-    // session stays up so buffer reads keep being possible between stop and
-    // the runtime's encode call.
+    // Frames were copied above — release the cast session right away rather
+    // than leaving it attached to the user's Chrome until the next start.
+    if (this.screencastSessionId) {
+      await this.conn
+        .send<void>("Target.detachFromTarget", { sessionId: this.screencastSessionId })
+        .catch(() => {})
+      this.screencastSessionId = undefined
+    }
     return { frameCount: frames.length, frames, total: this.screencastIndex }
   }
 
@@ -645,7 +679,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         return driver.screenshot({ format: "png", fullPage: false })
       },
 
-      async screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }> {
+      async screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number; alreadyRunning: boolean }> {
         if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
         // The screencast follows the agent window: the driver already
         // screencasting wins, else any live driver (the "first active agent
@@ -654,10 +688,10 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         let driver = entry.screencast?.driver && !entry.screencast.driver.closed ? entry.screencast.driver : undefined
         if (!driver) driver = [...entry.drivers].find(candidate => !candidate.closed)
         if (!driver) driver = (await this.attach()) as ChromeLiveDriver
-        const before = driver.screencastRunning
-        await driver.startScreencast(opts)
+        const alreadyRunning = driver.screencastRunning
+        const started = await driver.startScreencast(opts)
         entry.screencast = { driver, format: driver.screencastFormatNow() }
-        return { targetId: driver.target.id, index: before ? driver.lastScreencastIndex() : 0 }
+        return { targetId: driver.target.id, index: driver.lastScreencastIndex(), alreadyRunning: alreadyRunning || !started }
       },
 
       async screencastFrame(): Promise<ChromeLiveScreencastFrame | null> {
@@ -695,6 +729,9 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
               forget(entry, id)
               entry.drivers.delete(driver as ChromeLiveDriver)
               mine.delete(driver as ChromeLiveDriver)
+              // A closed driver's buffer is gone — the screencast pointer
+              // must not keep advertising a frame source that answers null.
+              if (entry.screencast?.driver === driver) entry.screencast = undefined
             })
             await driver.bootstrap()
             if (attachOpts?.initialUrl) driver.target.url = attachOpts.initialUrl

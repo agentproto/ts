@@ -2977,6 +2977,19 @@ export async function startHttpServer(
         // /sessions/:id/stream (SSE), POST /sessions/:id/kill,
         // DELETE /sessions/:id (forget after exit).
         if (opts.sessions && path.startsWith("/sessions")) {
+          // chrome-live live screencast reads stream the agent tab's pixels —
+          // gate them the same way session-scoped attachment reads are gated
+          // (bearer header / ?token= / origin rules from checkSessionsToken),
+          // so a drive-by HTTP request can't watch a user's browser. With no
+          // daemon.authToken configured this is a no-op, exactly like every
+          // other /sessions route on an unauthenticated local daemon.
+          if (/^\/sessions\/[^/]+\/screencast(\.mjpg|\.jpg)?$/.test(path)) {
+            const gate = checkSessionsToken(req)
+            if (gate !== "ok") {
+              rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+          }
           if (isMutatingSessionsRoute(req.method ?? "GET", path)) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
@@ -6925,6 +6938,7 @@ async function handleSessions(
     /^\/sessions\/([^/]+)\/screencast(?:\.(jpg|mjpg))?$/.exec(path)
   if (screencastMatch && req.method === "GET") {
     const ext = screencastMatch[2]
+    // Registry-generated id, but escape before interpolating into HTML anyway.
     const browserDescriptor = registry.get(screencastMatch[1] as string)
     if (!browserDescriptor || browserDescriptor.kind !== "browser" || browserDescriptor.browserAdapterId !== "chrome-live") {
       json(404, {
@@ -6933,6 +6947,13 @@ async function handleSessions(
       })
       return true
     }
+
+    const safeId = browserDescriptor.id
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;")
     const liveBrowser = getLiveBrowserInstance(browserDescriptor.id)
     const lastFrame = async (): Promise<
       { data: string; format: string; index?: number } | null
@@ -7005,8 +7026,24 @@ async function handleSessions(
           res.write(
             `--screencastframe\r\nContent-Type: image/${frame.format}\r\nContent-Length: ${payload.length}\r\n\r\n`
           )
-          res.write(payload)
+          // Backpressure: when the socket buffer is full, wait for `drain`
+          // (up to 5s) instead of piling frames up in memory.
+          const backpressured = !res.write(payload)
           res.write("\r\n")
+          if (backpressured) {
+            await new Promise<void>(resolve => {
+              const t = setTimeout(() => {
+                res.off("drain", onDrain)
+                resolve()
+              }, 5_000)
+              const onDrain = (): void => {
+                clearTimeout(t)
+                res.off("drain", onDrain)
+                resolve()
+              }
+              res.once("drain", onDrain)
+            })
+          }
         }
         await sleep(100)
       }
@@ -7030,10 +7067,10 @@ code { color: #9ad; }
 </head>
 <body>
 <header>
-  <strong>chrome-live screencast</strong> · session <code>${browserDescriptor.id}</code> ·
+  <strong>chrome-live screencast</strong> · session <code>${safeId}</code> ·
   agent tab inside the user's Chrome (CDP <code>Page.startScreencast</code>; not a desktop capture).
 </header>
-<img alt="chrome-live screencast" src="/sessions/${browserDescriptor.id}/screencast.mjpg"/>
+<img alt="chrome-live screencast" src="/sessions/${safeId}/screencast.mjpg"/>
 </body>
 </html>
 `

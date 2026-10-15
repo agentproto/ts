@@ -28,7 +28,11 @@ import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { catchErrors, paginated } from "@agentproto/tool"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
-import { encodeScreencastFramesToMp4, prepareScreencastOutDir } from "./browser-screencast.js"
+import {
+  encodeScreencastFramesToMp4,
+  prepareScreencastOutDir,
+  type ScreencastFrameLike,
+} from "./browser-screencast.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -787,26 +791,18 @@ export function registerBrowserTools(
     maxWidth?: number
     maxHeight?: number
   }
-  interface ScreencastFrameLike {
-    data: string
-    format: "jpeg" | "png"
-    timestampMs: number
-    index: number
-    width?: number
-    height?: number
-  }
 
   const screencastInstance = (
     desc: SessionDescriptor
   ): (BrowserInstanceLike &
     {
-      screencastStart?: (opts?: ScreencastOptionsLike) => Promise<{ targetId: string; index: number }>
+      screencastStart?: (opts?: ScreencastOptionsLike) => Promise<{ targetId: string; index: number; alreadyRunning: boolean }>
       screencastFrame?: () => Promise<ScreencastFrameLike | null>
       screencastStop?: () => Promise<{ targetId: string | undefined; frameCount: number; total: number; frames: ScreencastFrameLike[] }>
     }) | undefined => {
     if (desc.kind !== "browser" || desc.browserAdapterId !== "chrome-live") return undefined
     return liveInstances.get(desc.id) as BrowserInstanceLike & {
-      screencastStart?: (opts?: ScreencastOptionsLike) => Promise<{ targetId: string; index: number }>
+      screencastStart?: (opts?: ScreencastOptionsLike) => Promise<{ targetId: string; index: number; alreadyRunning: boolean }>
       screencastFrame?: () => Promise<ScreencastFrameLike | null>
       screencastStop?: () => Promise<{ targetId: string | undefined; frameCount: number; total: number; frames: ScreencastFrameLike[] }>
     }
@@ -869,12 +865,21 @@ export function registerBrowserTools(
           ok: true,
           sessionId: input.sessionId,
           targetId: started.targetId,
+          ...(started.alreadyRunning
+            ? {
+                alreadyRunning: true as const,
+                note:
+                  "a screencast was already running on this driver — the new format/quality/everyNthFrame " +
+                  "options were NOT applied (Chrome cannot change cast params mid-stream); " +
+                  "call `browser_screencast_stop` then start again to apply them",
+              }
+            : {}),
           viewPath: `/sessions/${input.sessionId}/screencast`,
           mjpegPath: `/sessions/${input.sessionId}/screencast.mjpg`,
           latestFramePath: `/sessions/${input.sessionId}/screencast.jpg`,
           tip:
             "Watch live: open <daemon http url>" +
-            viewPathSuffix(input.sessionId) +
+            `/sessions/${input.sessionId}/screencast` +
             " (same-origin HTML viewer, MJPEG). Remote: run `tunnel_create` over the daemon's HTTP port " +
             "and use the same path behind the tunnel's signed URL. Record: call `browser_screencast_stop`.",
         })
@@ -884,7 +889,7 @@ export function registerBrowserTools(
         )
       }
     }
-   )
+  )
 
   server.tool(
     "browser_screencast_frame",
@@ -973,13 +978,9 @@ export function registerBrowserTools(
       }
     }
   )
-}
-
-function viewPathSuffix(sessionId: string): string {
-  return `/sessions/${sessionId}/screencast`
-}
 
 /** Recording output dir: the session's own directory (derived from its events path), tmp as fallback. */
 function outDirOf(desc: SessionDescriptor): string {
   return dirname(desc.eventsPath ?? join(tmpdir(), "chrome-live-screencast"))
+}
 }

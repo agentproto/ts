@@ -1071,7 +1071,7 @@ describe("browser_screencast_* — chrome-live live view + recording", () => {
         screencastStart: async () => {
           buffered.length = 0
           frameCounter = 0
-          return { targetId: "agent-target-1", index: 0 }
+          return { targetId: "agent-target-1", index: 0, alreadyRunning: false }
         },
         screencastFrame: async () => buffered.length > 0 ? buffered[buffered.length - 1]! : null,
         screencastStop: async () => {
