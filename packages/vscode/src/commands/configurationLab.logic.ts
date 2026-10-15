@@ -281,7 +281,7 @@ function buildPostureRows(
     id: m.id,
     ...(m.status_note ? { description: m.status_note } : {}),
   }))
-  return resolvePostureRows(modes)
+  return resolvePostureRows(modes, adapter?.spawnEnforcedPostures)
 }
 
 /** Build effort options via sessionConfig.logic.ts's canonical resolver. */

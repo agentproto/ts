@@ -114,6 +114,30 @@ describe("listInstalledAdapters — routeSelection projection", () => {
   })
 })
 
+describe("listInstalledAdapters — spawnEnforcedPostures projection", () => {
+  it("lists the postures claude-code enforces through its isolated settings", { timeout: 15_000 }, async () => {
+    const adapters = await listInstalledAdapters()
+    const claude = adapters.find((a) => a.slug === "claude-code")
+    expect(claude).toBeDefined()
+    expect([...(claude?.spawnEnforcedPostures ?? [])].sort()).toEqual(["accept-edits", "bypass", "plan", "read-only"])
+  })
+
+  it("lists opencode's permission-config postures when it is built here", async () => {
+    const adapters = await listInstalledAdapters()
+    const opencode = adapters.find((a) => a.slug === "opencode")
+    if (opencode) {
+      expect([...(opencode.spawnEnforcedPostures ?? [])].sort()).toEqual(["accept-edits", "bypass", "read-only"])
+    }
+  })
+
+  it("omits the field for an adapter with no spawn-config enforcement (hermes)", async () => {
+    const adapters = await listInstalledAdapters()
+    const hermes = adapters.find((a) => a.slug === "hermes")
+    expect(hermes).toBeDefined()
+    expect(hermes?.spawnEnforcedPostures).toBeUndefined()
+  })
+})
+
 // The operator-visible bug this splits apart: `models.allowed` used to be a
 // flat string, so a manifest could declare a gateway model id (Moonshot's
 // kimi-k2.7-code) but had nowhere to say it needs claude-sdk's `moonshot`

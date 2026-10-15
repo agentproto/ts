@@ -153,6 +153,20 @@ const STREAM_EVENT_RECORD_KINDS = new Set([
   "available-commands",
 ])
 
+/**
+ * The canonical postures a box session's adapter enforces through its own
+ * isolated spawn config, read off the BOX daemon's `agent_start` descriptor
+ * (`spawnEnforcedPostures`). `undefined` when the box reported none — an older
+ * box daemon, or a non-enforcing adapter — so the host keeps labelling those
+ * postures advisory rather than over-claiming a boundary it cannot see.
+ */
+export function boxSpawnEnforcedPosturesOf(remoteDesc: unknown): string[] | undefined {
+  const raw = (remoteDesc as { spawnEnforcedPostures?: unknown } | null | undefined)?.spawnEnforcedPostures
+  if (!Array.isArray(raw)) return undefined
+  const postures = raw.filter((p): p is string => typeof p === "string" && p.length > 0)
+  return postures.length > 0 ? postures : undefined
+}
+
 export interface SandboxAgentSessionProxyOpts {
   /** The booted sandbox's daemon host. `prompt`/`output`/`kill`/`waitForAny`
    *  drive the box's OWN `agent_start` session; `stop()`/`pause()` tear the
@@ -176,6 +190,11 @@ export interface SandboxAgentSessionProxyOpts {
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
    *  proxy's local session id (the registry mints its own on `spawnAgent`). */
   remoteSessionId: string
+  /** Postures the box's adapter enforces through its isolated spawn config,
+   *  as the box daemon reported them (`boxSpawnEnforcedPosturesOf`). Surfaced
+   *  as the proxy's `spawnEnforcedPostures` so the host's enforcement labels
+   *  match what the box actually applies. */
+  spawnEnforcedPostures?: readonly string[]
   /** PR3 AIP-36 lifecycle policy (`resolveLifecyclePolicy`) — decides
    *  whether `close()` pauses the box (reuse-friendly, or an explicit
    *  `pause_after_idle`) or kills it. Kill is the default teardown; an
@@ -964,6 +983,9 @@ export function createSandboxAgentSessionProxy(
 
   const proxy: AgentSessionLike = {
     sessionId: remoteSessionId,
+    ...(opts.spawnEnforcedPostures && opts.spawnEnforcedPostures.length > 0
+      ? { spawnEnforcedPostures: [...opts.spawnEnforcedPostures] }
+      : {}),
 
     ...(opts.watchdog
       ? {

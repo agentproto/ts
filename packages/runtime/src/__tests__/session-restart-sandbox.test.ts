@@ -359,6 +359,19 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(result.desc.effort).toBe("high")
   })
 
+  it("forwards the posture to the box's agent_start — the box daemon applies it, never the host", async () => {
+    const { resolver, providerResolver } = await setup()
+
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+      overrides: { posture: "bypass" },
+    })
+
+    // The box daemon's own spawn hands it to its adapter like a local spawn.
+    expect(receivedStarts[0]?.posture).toBe("bypass")
+    expect(result.desc.posture).toBe("bypass")
+  })
+
   it("fails LOUD when the box is expired — never falls back to a local spawn", async () => {
     const { resolver, providerResolver } = await setup()
     // Reconnect failure = the box is gone.

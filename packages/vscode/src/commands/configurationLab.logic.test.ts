@@ -255,6 +255,16 @@ describe("buildConfigurationLabSnapshot", () => {
     expect(warning?.message).toContain("advisory")
   })
 
+  it("does not warn about a posture the adapter enforces through its spawn config", () => {
+    const snapshot = buildConfigurationLabSnapshot(
+      rawData({ adapters: [adapter({ spawnEnforcedPostures: ["plan", "read-only", "accept-edits", "bypass"] })] }),
+      { adapter: "claude-code", model: "claude-opus-4-8", posture: "bypass" },
+    )
+    expect(snapshot.issues.find((i) => i.axis === "posture")).toBeUndefined()
+    const bypass = snapshot.axes.postures.find((p) => p.value === "bypass")
+    expect(bypass).toMatchObject({ enforcement: "enforced", restartRequired: true })
+  })
+
   it("surfaces Codex's fixed OpenAI route and eligible profiles", () => {
     const data = rawData({
       adapters: [

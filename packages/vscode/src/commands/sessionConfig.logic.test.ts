@@ -185,6 +185,27 @@ describe("resolvePostureRows — native vs advisory labeling (SPEC Rw)", () => {
     expect(architect?.enforcement).toBe("enforced")
     expect(architect?.label).toBe("Architect (enforced)")
   })
+
+  it("labels a spawn-config-enforced posture 'enforced' but restart-tagged (opencode bypass)", () => {
+    // opencode advertises build/plan; bypass/accept-edits/read-only ride its
+    // isolated `permission` config instead.
+    const rows = resolvePostureRows(
+      [{ id: "build", name: "Build" }, { id: "plan", name: "Plan" }],
+      ["bypass", "accept-edits", "read-only"],
+    )
+    const bypass = rows.find(r => r.value === "bypass")
+    expect(bypass).toMatchObject({ enforcement: "enforced", label: "bypass (enforced)", restartRequired: true })
+    expect(bypass?.description).toMatch(/restart/)
+    expect(rows.filter(r => r.value === "bypass")).toHaveLength(1)
+    // Native still wins over the spawn-config list.
+    expect(rows.find(r => r.value === "plan")?.restartRequired).toBe(false)
+  })
+
+  it("never labels a posture enforced unless the daemon reported it", () => {
+    const rows = resolvePostureRows([], ["bypass"])
+    expect(rows.find(r => r.value === "read-only")?.enforcement).toBe("advisory")
+    expect(rows.find(r => r.value === "bypass")?.enforcement).toBe("enforced")
+  })
 })
 
 describe("isRouteSwitchable — the route chip's dim signal (chip-pickers)", () => {

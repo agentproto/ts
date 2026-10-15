@@ -10469,6 +10469,10 @@ export function createSessionsRegistry(opts?: {
       // caller shouldn't have to wait for a get() to learn WHERE the
       // durable transcript lands (same base dir the writer uses).
       desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
+      // Same read-time stamp a get() applies, so the spawn response itself
+      // reports the live modes + spawn-enforced postures — a host proxying
+      // this session from a sandbox reads them off this response.
+      stampLiveModes(desc, rt)
       // Fire-and-forget the initial prompt (if any). Errors land in
       // the ring buffer + bump status to "error" but don't reject
       // the spawn — the descriptor was already returned.

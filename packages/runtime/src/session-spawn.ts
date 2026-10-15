@@ -239,7 +239,7 @@ import {
   type SandboxLifecyclePolicy,
   type SandboxSpec,
 } from "@agentproto/sandbox"
-import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import { isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
@@ -4280,6 +4280,7 @@ export async function spawnAgentSession(
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
         ...(input.label ? { label: input.label } : {}),
         // A fresh box has neither the host's named profiles nor its keychain.
         // Forward the already-resolved credential when the caller selected a
@@ -5256,6 +5257,11 @@ export async function bootSandboxAgentSession(opts: {
   model?: string
   route?: RouteSpec
   effort?: string
+  /** The caller's posture, forwarded onto the BOX's own `agent_start` so the
+   *  box daemon applies it exactly as a local spawn would (native mode,
+   *  isolated spawn config, or the advisory preamble). The host never applies
+   *  it itself for a sandbox spawn — without this it was dropped outright. */
+  posture?: Posture
   label?: string
   /** Explicit billing-auth forwarded to the BOX's own `agent_start` — see
    *  the call-site comment (fresh boxes have no config and claude-code never
@@ -5769,6 +5775,7 @@ export async function bootSandboxAgentSession(opts: {
   let remoteSessionId: string
   let resolvedCwd = boxCwd
   let boxResumeVia: string | undefined
+  let boxSpawnEnforcedPostures: string[] | undefined
   try {
     const startArgs = {
       adapter: opts.adapter,
@@ -5790,6 +5797,7 @@ export async function bootSandboxAgentSession(opts: {
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.route ? { route: opts.route } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
+      ...(opts.posture !== undefined ? { posture: opts.posture } : {}),
       ...(opts.label ? { label: opts.label } : {}),
       // BOX-LOGIN BRIDGE — stamp the marker ONLY on a copy that actually
       // landed in the box (`boxLoginUpload`), so the box's own fail-loud
@@ -5805,6 +5813,7 @@ export async function bootSandboxAgentSession(opts: {
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
         : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
+    boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
     // The box reports `resumeVia` only when its own adapter actually
     // rehydrated the requested conversation (`resumeSessionId` above) —
     // surfaced on the boot result so the caller can keep the host
@@ -5863,6 +5872,10 @@ export async function bootSandboxAgentSession(opts: {
       host,
       remoteSessionId,
       lifecyclePolicy,
+      // The box's own report of which postures its adapter enforces through
+      // its isolated spawn config — absent from an older box daemon, which
+      // then reads as advisory on the host (never over-claimed).
+      ...(boxSpawnEnforcedPostures ? { spawnEnforcedPostures: boxSpawnEnforcedPostures } : {}),
       // BOX-LOGIN BRIDGE refresh — re-upload the copy when the HOST's login
       // file changes under a long-lived box (see `createBoxLoginRefresher`;
       // the proxy owns the throttle + closed/detached gate). Absent when the

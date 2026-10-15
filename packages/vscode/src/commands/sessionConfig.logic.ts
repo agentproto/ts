@@ -211,6 +211,9 @@ export interface CapabilityResolutionInput {
   defaultEfforts?: readonly EffortLevel[]
   /** The session's advertised native modes (#482 read-surface). */
   availableModes?: readonly HarnessMode[]
+  /** Canonical postures the adapter enforces through its isolated spawn
+   *  config (SessionDescriptor/AdapterInfo `spawnEnforcedPostures`). */
+  spawnEnforcedPostures?: readonly string[]
   /** `catalog_models` filtered to this adapter (SPEC §5). Supplies route rows. */
   catalog?: CatalogModelsResult
   /** Named auth profiles known to the daemon — for access-row labels/methods. */
@@ -235,16 +238,23 @@ export function resolveEfforts(input: CapabilityResolutionInput): EffortLevel[] 
 
 /**
  * The posture rows = the harness's advertised native modes (enforced, live)
- * UNION the agentproto-canonical postures that have no native equivalent
- * (advisory, prompt-injected) — SPEC §3.4a. Native always wins: a canonical
- * posture the harness advertises natively appears ONCE, as its native
- * (enforced) row, never doubled as an advisory one.
+ * UNION the agentproto-canonical postures that have no native equivalent —
+ * SPEC §3.4a. Native always wins: a canonical posture the harness advertises
+ * natively appears ONCE, as its native (enforced) row, never doubled.
+ *
+ * A canonical posture with no native mode is either enforced by the adapter's
+ * isolated spawn config (`spawnEnforcedPostures` — claude-code, opencode; it
+ * takes effect at restart) or advisory (prompt-injected). Never guessed: only
+ * a posture the daemon reports in `spawnEnforcedPostures` is labelled enforced.
  *
  * Rw labeling is applied here and nowhere else: an enforced row reads
  * "plan (enforced)", an advisory one "plan (advisory)". Even a harness with no
  * modes (hermes) still gets the canonical postures — all advisory.
  */
-export function resolvePostureRows(availableModes: readonly HarnessMode[] = []): PostureRow[] {
+export function resolvePostureRows(
+  availableModes: readonly HarnessMode[] = [],
+  spawnEnforcedPostures: readonly string[] = [],
+): PostureRow[] {
   const rows: PostureRow[] = []
   const canonicalCovered = new Set<CanonicalPosture>()
 
@@ -264,8 +274,21 @@ export function resolvePostureRows(availableModes: readonly HarnessMode[] = []):
     })
   }
 
+  const spawnEnforced = new Set(spawnEnforcedPostures)
   for (const posture of CANONICAL_POSTURES) {
     if (canonicalCovered.has(posture)) continue
+    if (spawnEnforced.has(posture)) {
+      rows.push({
+        value: posture,
+        label: `${posture} (enforced)`,
+        // A real boundary, but written into the adapter's spawn config — it
+        // needs a fresh spawn, unlike a native mode's live switch.
+        description: "enforced by the harness config — applied on restart",
+        enforcement: "enforced",
+        restartRequired: true,
+      })
+      continue
+    }
     rows.push({
       value: posture,
       label: `${posture} (advisory)`,
@@ -445,7 +468,7 @@ export function resolveCapabilities(
   ]
   return {
     efforts: resolveEfforts(input),
-    postures: resolvePostureRows(input.availableModes),
+    postures: resolvePostureRows(input.availableModes, input.spawnEnforcedPostures),
     routes: resolveRouteRows(input.catalog, input.model),
     methods,
   }
@@ -612,7 +635,7 @@ export function buildSessionConfigChips(
   })
 
   // posture — live (native) chip, but advisory rows are individually restart-tagged.
-  const postures = resolvePostureRows(input.availableModes)
+  const postures = resolvePostureRows(input.availableModes, input.spawnEnforcedPostures)
   if (postures.length > 0) {
     const currentPosture = describePosture(descriptor.posture)
     chips.push({
