@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -979,5 +979,188 @@ describe("live browser instances across separate mounts", () => {
       await clientB.close()
       registry.shutdown()
     }
+  })
+})
+
+// ── browser_screencast_* (chrome-live only) ───────────────────────────────────
+// Live view + recording over the agent's OWN tab inside the user's Chrome.
+// These tests cover:
+//   (a) the chrome-only guard (camofox/bureau get a clear refusal),
+//   (b) start → frame → stop lifecycle through a fake chrome-live adapter,
+//   (c) the mp4 recording path (frames in → file out, ffmpeg on PATH),
+//   (d) the same cross-mount lesson as the liveInstances fix: start on mount
+//       A, frame/stop on mount B — the instance lives on the module-scope map,
+//       never on a per-request registration.
+
+describe("browser_screencast_* — chrome-live live view + recording", () => {
+  it("refuses non-chrome-live adapters with a clear error", async () => {
+    const { client, cleanup } = await makeSetup({
+      resolveBrowserAdapter: id =>
+        id === "camofox"
+          ? {
+              id,
+              name: "Camofox",
+              description: "fake",
+              defaultPort: 9377,
+              healthPath: "/health",
+              ensure: async () => ({
+                id,
+                port: 9377,
+                baseUrl: "http://127.0.0.1:9377",
+                wasAlreadyRunning: false,
+                healthy: true,
+                stop: async () => {},
+              }),
+            }
+          : undefined,
+    })
+    const started = await client.callTool({ name: "start_browser", arguments: { adapter: "camofox" } })
+    const { sessionId } = JSON.parse(
+      (started.content as Array<{ type: string; text: string }>)[0]!.text
+    ) as { sessionId: string }
+    for (const tool of ["browser_screencast_start", "browser_screencast_frame", "browser_screencast_stop"]) {
+      const result = await client.callTool({ name: tool, arguments: { sessionId } })
+      expect(result.isError).toBe(true)
+      expect((result.content as Array<{ type: string; text: string }>)[0]!.text).toContain("does not support screencast")
+    }
+    await cleanup()
+  })
+
+  it("returns the provider-unavailable error when the chrome-live instance is gone from the live map", async () => {
+    const registry = createSessionsRegistry({ persistPath: join(tmp, "screencast-unavailable.json") })
+    const server = new McpServer({ name: "test-screencast-unavailable", version: "0.0.1" })
+    registerBrowserTools(server, { registry })
+    registry.registerBrowser({
+      adapterId: "chrome-live",
+      port: 9222,
+      baseUrl: "http://127.0.0.1:9222",
+      wasAlreadyRunning: true,
+      status: "running",
+      stop: async () => {},
+      label: undefined,
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "test-client", version: "0.0.1" })
+    await client.connect(clientTransport)
+    const rows = registry.list() as Array<{ id: string }>
+    const result = await client.callTool({ name: "browser_screencast_frame", arguments: { sessionId: rows[0]!.id } })
+    expect(result.isError).toBe(true)
+    expect((result.content as Array<{ type: string; text: string }>)[0]!.text).toContain("provider instance is unavailable")
+    await client.close()
+    registry.shutdown()
+  })
+
+  it("start/frame/stop lifecycle across TWO separate registersBrowserTools mounts, with mp4 recording on stop", async () => {
+    const framesViaStop: Array<{ data: string; format: "jpeg" | "png"; timestampMs: number; index: number }> = []
+    let frameCounter = 0
+    const buffered: Array<{ data: string; format: "jpeg" | "png"; timestampMs: number; index: number }> = []
+    const chromeLiveAdapter = {
+      id: "chrome-live",
+      name: "Chrome Live",
+      description: "fake",
+      defaultPort: 9222,
+      healthPath: "/json/version",
+      ensure: async () => ({
+        id: "chrome-live",
+        port: 9222,
+        baseUrl: "http://127.0.0.1:9222",
+        wasAlreadyRunning: true,
+        healthy: true,
+        stop: async () => {},
+        screencastStart: async () => {
+          buffered.length = 0
+          frameCounter = 0
+          return { targetId: "agent-target-1", index: 0 }
+        },
+        screencastFrame: async () => buffered.length > 0 ? buffered[buffered.length - 1]! : null,
+        screencastStop: async () => {
+          const frames = [...buffered]
+          framesViaStop.push(...frames)
+          return { targetId: "agent-target-1", frameCount: frames.length, total: frameCounter, frames }
+        },
+      }),
+    }
+    const registry = createSessionsRegistry({ persistPath: join(tmp, "screencast-lifecycle.json") })
+    const mountFactory = () => {
+      const server = new McpServer({ name: "test-screencast", version: "0.0.1" })
+      registerBrowserTools(server, {
+        registry,
+        resolveBrowserAdapter: (id: string) => (id === "chrome-live" ? chromeLiveAdapter : undefined),
+      })
+      return server
+    }
+    const connectClient = async (server: McpServer) => {
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      const client = new Client({ name: "test-client", version: "0.0.1" })
+      await client.connect(clientTransport)
+      return client
+    }
+    // Mount A — first /mcp request: start_browser + screencast_start.
+    const serverA = mountFactory()
+    const clientA = await connectClient(serverA)
+    // Mount B — a genuinely fresh registration for the next /mcp request.
+    const serverB = mountFactory()
+    const clientB = await connectClient(serverB)
+
+    const started = await clientA.callTool({ name: "start_browser", arguments: { adapter: "chrome-live" } })
+    const { sessionId } = JSON.parse((started.content as Array<{ type: string; text: string }>)[0]!.text) as { sessionId: string }
+
+    const screencastStart = await clientA.callTool({
+      name: "browser_screencast_start",
+      arguments: { sessionId, everyNthFrame: 1, quality: 70 },
+    })
+    expect(screencastStart.isError).toBeFalsy()
+    const startBody = JSON.parse((screencastStart.content as Array<{ type: string; text: string }>)[0]!.text) as {
+      targetId: string
+      viewPath: string
+      mjpegPath: string
+      latestFramePath: string
+    }
+    expect(startBody.targetId).toBe("agent-target-1")
+    expect(startBody.viewPath).toBe(`/sessions/${sessionId}/screencast`)
+    expect(startBody.mjpegPath).toBe(`/sessions/${sessionId}/screencast.mjpg`)
+
+    // Cross-mount frame pull: mount B (fresh registration) sees the buffer.
+    for (const data of ["AAAA", "BBBB"]) {
+      buffered.push({
+        data,
+        format: "jpeg",
+        timestampMs: Date.now() + frameCounter * 50,
+        index: frameCounter++,
+      })
+    }
+    const frameResult = await clientB.callTool({ name: "browser_screencast_frame", arguments: { sessionId } })
+    expect(frameResult.isError).toBeFalsy()
+    expect(
+      (JSON.parse((frameResult.content as Array<{ type: string; text: string }>)[0]!.text) as {
+        frame: { data: string } | null
+      }).frame?.data
+    ).toBe("BBBB")
+
+    const stop = await clientB.callTool({
+      name: "browser_screencast_stop",
+      arguments: { sessionId },
+    })
+    expect(stop.isError).toBeFalsy()
+    const stopBody = JSON.parse((stop.content as Array<{ type: string; text: string }>)[0]!.text) as {
+      frameCount: number
+      filePath?: string
+      note?: string
+    }
+    expect(stopBody.frameCount).toBe(2)
+    if (stopBody.filePath) {
+      expect(existsSync(stopBody.filePath!)).toBe(true)
+      expect(stopBody.filePath!.endsWith(".mp4")).toBe(true)
+    } else {
+      // CI has no ffmpeg: the tool degrades gracefully with an explanatory note, never a blind drop.
+      expect(stopBody.note).toBeTruthy()
+    }
+    await expect(framesViaStop.map(f => f.data)).toEqual(["AAAA", "BBBB"])
+
+    await clientA.close()
+    await clientB.close()
+    registry.shutdown()
   })
 })

@@ -27,16 +27,24 @@ export interface FakeChrome {
   commands: FakeCommand[]
   /** Commands that addressed a target the client did not create. */
   violations: FakeCommand[]
+  /** Page.screencastFrameAck payloads received, with the CDP session they rode on. */
+  acknowledgments: Array<{ sessionId?: string; params: Record<string, unknown> }>
   userTargets: readonly string[]
   /** Targets alive now, with their window. */
   targets: Map<string, { windowId: number; url: string; created: boolean }>
   options: FakeChromeOptions
+  /** Emit a Page.screencastFrame event into an open flat session (test hook). */
+  emitScreencastFrame(
+    cdpSessionId: string,
+    frame: { data: string; sessionId?: string; deviceWidth?: number; deviceHeight?: number },
+  ): void
+  /** Whether Page.startScreencast (without a following stop) was seen for this CDP session. */
+  screencastActive(sessionId: string): boolean
   dropAll(): void
   close(): Promise<void>
 }
 
 const USER_WINDOW = 1
-
 export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<FakeChrome> {
   const server: Server = createServer((_req, res) => {
     // The toggle answers HTTP with an empty body.
@@ -54,6 +62,11 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
   let nextTarget = 0
   let nextWindow = 100
   let lastActiveWindow = USER_WINDOW
+  // CDP sessions with Page.startScreencast seen and not stopped.
+  const screencastActiveSessions = new Set<string>()
+  // Server-initiated sends, added when a websocket connects (frames can arrive
+  // at any moment in real Chrome; the same shape here).
+  const senders = new Set<(raw: string) => void>()
   const fake: FakeChrome = {
     port: 0,
     wsUrl: "",
@@ -61,12 +74,35 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
     httpRequests: 0,
     commands: [],
     violations: [],
+    acknowledgments: [],
     userTargets: ["user-tab-1", "user-tab-2"],
     targets: new Map([
       ["user-tab-1", { windowId: USER_WINDOW, url: "https://mail.example/", created: false }],
       ["user-tab-2", { windowId: USER_WINDOW, url: "https://bank.example/", created: false }],
     ]),
     options,
+    emitScreencastFrame(cdpSessionId, frame) {
+      for (const send of senders) {
+        send(
+          JSON.stringify({
+            method: "Page.screencastFrame",
+            sessionId: cdpSessionId,
+            params: {
+              data: frame.data,
+              // Real Chrome puts a frame identifier in params.sessionId; the
+              // ack echoes it back (this is NOT the flat session's id).
+              sessionId: frame.sessionId ?? "frame-1",
+              ...(frame.deviceWidth !== undefined || frame.deviceHeight !== undefined
+                ? { metadata: { deviceWidth: frame.deviceWidth ?? 0, deviceHeight: frame.deviceHeight ?? 0 } }
+                : {}),
+            },
+          })
+        )
+      }
+    },
+    screencastActive(sessionId) {
+      return screencastActiveSessions.has(sessionId)
+    },
     dropAll() {
       for (const ws of sockets) ws.terminate()
     },
@@ -94,6 +130,7 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
     fake.connections++
     sockets.add(ws)
     ws.on("close", () => sockets.delete(ws))
+    senders.add((raw2) => ws.send(raw2))
     const reply = (id: number, sessionId: string | undefined, result: unknown): void =>
       ws.send(JSON.stringify({ id, ...(sessionId ? { sessionId } : {}), result }))
     const fail = (id: number, message: string): void => ws.send(JSON.stringify({ id, error: { code: -32000, message } }))
@@ -141,6 +178,18 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
           return reply(msg.id, msg.sessionId, { cssVisualViewport: { clientWidth: 1, clientHeight: 1 } })
         case "Page.captureScreenshot":
           return reply(msg.id, msg.sessionId, { data: "AAAA" })
+        case "Page.startScreencast":
+          if (msg.sessionId) screencastActiveSessions.add(msg.sessionId)
+          return reply(msg.id, msg.sessionId, {})
+        case "Page.stopScreencast":
+          if (msg.sessionId) screencastActiveSessions.delete(msg.sessionId)
+          return reply(msg.id, msg.sessionId, {})
+        case "Page.screencastFrameAck":
+          fake.acknowledgments.push({
+            ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+            params: (msg.params ?? {}) as Record<string, unknown>,
+          })
+          return reply(msg.id, msg.sessionId, {})
         default:
           return reply(msg.id, msg.sessionId, {})
       }

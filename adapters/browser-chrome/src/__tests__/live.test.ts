@@ -9,6 +9,7 @@ import {
   chromeLive,
   createChromeLiveProvider,
   readChromeLiveEnv,
+  type ChromeLiveDriver,
   type ChromeLiveProviderConfig,
 } from "../index.js"
 import { startFakeChrome, type FakeChrome, type FakeChromeOptions } from "./live-fake-chrome.js"
@@ -47,6 +48,7 @@ async function closedPort(): Promise<number> {
 }
 
 const newWindowCalls = (f: FakeChrome) => f.commands.filter((c) => c.method === "Target.createTarget" && c.params?.newWindow === true)
+const createTargetNewWindowCount = (f: FakeChrome) => newWindowCalls(f).length
 const methods = (f: FakeChrome) => f.commands.map((c) => c.method)
 const until = async (cond: () => boolean): Promise<void> => {
   for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 10))
@@ -63,7 +65,7 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     expect(methods(f)[0]).toBe("Browser.getVersion")
     expect(lines.join("\n")).toMatch(/click "Allow"/)
 
-    const driver = await instance.attach({ initialUrl: "https://mail.example/inbox" })
+    const driver = (await instance.attach({ initialUrl: "https://mail.example/inbox" })) as ChromeLiveDriver
     const create = f.commands.find((c) => c.method === "Target.createTarget")
     expect(create?.params).toEqual({ url: "https://mail.example/inbox", newWindow: true })
     expect(f.commands.find((c) => c.method === "Target.attachToTarget")?.params).toEqual({ targetId: driver.target.id, flatten: true })
@@ -347,5 +349,136 @@ describe("chrome-live: config", () => {
       canCookies: false,
     })
     expect(chromeLive.config.map((c) => c.persist?.env)).toEqual(["CHROME_LIVE_PORT", "CHROME_LIVE_WS_URL"])
+  })
+})
+
+describe("chrome-live: screencast of the agent's own tab", () => {
+  it("exposes the screencast capability and only chrome-live declares it", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, { log: () => undefined })
+    const driver = await instance.attach()
+    expect(driver.capabilities.canScreencast).toBe(true)
+    await instance.stop()
+  })
+
+  it("driver lifecycle: start → frame → ack → stop, all on the driver's own flat session", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, { log: () => undefined })
+    const driver = (await instance.attach({ initialUrl: "https://mail.example/inbox" })) as ChromeLiveDriver
+    const cdpSession = `session-${driver.target.id}`
+
+    await driver.startScreencast({ everyNthFrame: 1, quality: 80 })
+    expect(f.screencastActive(cdpSession)).toBe(true)
+    const start = f.commands.find(c => c.method === "Page.startScreencast")
+    expect(start?.sessionId).toBe(cdpSession)
+    expect(start?.params).toMatchObject({ format: "jpeg", quality: 80, everyNthFrame: 1 })
+    // Ownership guard untouched — screencast rides Page.* only.
+    await expect(driver.send({ method: "Network.setCookies", params: { cookies: [] } })).rejects.toThrow(/refused/)
+
+    f.emitScreencastFrame(cdpSession, { data: "AAAA", sessionId: "frame-1" })
+    f.emitScreencastFrame(cdpSession, { data: "BBBB", sessionId: "frame-2" })
+    await until(() => driver.getScreencastFrames().frames.length >= 2)
+    const frame = driver.getScreencastFrame()
+    expect(frame?.data).toBe("BBBB")
+    expect(frame?.format).toBe("jpeg")
+    expect(frame?.width).toBeUndefined()
+    await until(() => f.acknowledgments.length >= 2)
+    expect(f.acknowledgments.map(a => a.params.sessionId).sort()).toEqual(["frame-1", "frame-2"])
+
+    const stopped = await driver.stopScreencast()
+    expect(stopped.frameCount).toBe(2)
+    expect(stopped.total).toBe(2)
+    expect(f.screencastActive(cdpSession)).toBe(false)
+    expect(methods(f).includes("Page.stopScreencast")).toBe(true)
+    // No screencast activity outside the agent's session:
+    expect(f.violations).toEqual([])
+    await instance.stop()
+  })
+})
+
+describe("chrome-live: instance-level screencast across reused handles", () => {
+  it("instance.screencastStart attaches its own driver, frame/stop see the frames, and a re-launch (wasAlreadyRunning) reaches the same running entry", async () => {
+    const f = await fake()
+    // One provider instance owns the module-level entries map (the
+    // "ws://127.0.0.1:<port>/devtools/browser" → entry singleton) — a second
+    // `start_browser` in the real world goes through the SAME provider.
+    const config = provider(f)
+    const first = await config.launch({}, { log: () => undefined })
+    expect(first.wasAlreadyRunning).toBe(false)
+
+    const ownershipTargetsBefore = createTargetNewWindowCount(f)
+    const started = await first.screencastStart({ everyNthFrame: 1 })
+    expect(started.targetId).toBeDefined()
+    // No pre-existing agent driver: screencastStart opened an owned tab.
+    expect(createTargetNewWindowCount(f)).toBe(ownershipTargetsBefore + 1)
+    const cdpSession = `session-${started.targetId}`
+    expect(f.screencastActive(cdpSession)).toBe(true)
+
+    f.emitScreencastFrame(cdpSession, { data: "AAAA", sessionId: "frame-1" })
+    f.emitScreencastFrame(cdpSession, { data: "CCCC", sessionId: "frame-2", deviceWidth: 64, deviceHeight: 32 })
+    const untilAsync = async (cond: () => Promise<boolean>): Promise<void> => {
+      for (let i = 0; i < 100; i++) {
+        if (await cond()) return
+        await new Promise((r) => setTimeout(r, 10))
+      }
+    }
+    await untilAsync(async () => (await first.screencastFrame())?.data === "CCCC")
+    const latest = await first.screencastFrame()
+    expect(latest?.width).toBe(64)
+    expect(latest?.height).toBe(32)
+
+    // A second instance handle (the real-world `wasAlreadyRunning: true`
+    // second start_browser — a fresh makeInstance on the same entry) still
+    // reaches the same screencast: the pointer lives on the entry, not on
+    // any single instance handle.
+    const second = await config.launch({}, { log: () => undefined })
+    expect(second.wasAlreadyRunning).toBe(true)
+    expect((await second.screencastFrame())?.data).toBe("CCCC")
+    const stopped = await second.screencastStop()
+    expect(stopped.targetId).toBe(started.targetId)
+    expect(stopped.frameCount).toBe(2)
+    expect(stopped.frames.map(fr => fr.data)).toEqual(["AAAA", "CCCC"])
+    expect(f.screencastActive(cdpSession)).toBe(false)
+  })
+})
+
+describe("chrome-live: screencast restart-after-stop", () => {
+  it("attaches a fresh flat session per start (same owned target), so stop -> start keeps delivering frames", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, { log: () => undefined })
+    const started1 = await instance.screencastStart({ everyNthFrame: 1 })
+    const cdpSession = `session-${started1.targetId}`
+    f.emitScreencastFrame(cdpSession, { data: "AAAA", sessionId: "frame-1" })
+    await until(() => f.acknowledgments.length >= 1)
+    const stopped = await instance.screencastStop()
+    expect(stopped.frameCount).toBe(1)
+
+    const attachCallsBeforeRestart = f.commands.filter(
+      c => c.method === "Target.attachToTarget" && c.params?.targetId === started1.targetId,
+    ).length
+    const started2 = await instance.screencastStart({ everyNthFrame: 1 })
+    expect(started2.targetId).toBe(started1.targetId)
+    const attachCalls = f.commands.filter(
+      c => c.method === "Target.attachToTarget" && c.params?.targetId === started1.targetId,
+    )
+    expect(attachCalls.length).toBe(attachCallsBeforeRestart + 1)
+    // Detached the previous cast session first (fresh-session rule).
+    expect(methods(f).includes("Target.detachFromTarget")).toBe(true)
+    // New flat session id differs from the driver's control session.
+    expect(started2.targetId).toBeDefined()
+    const castSession = `session-${started2.targetId}`
+    f.emitScreencastFrame(castSession, { data: "BBBB", sessionId: "frame-2" })
+    f.emitScreencastFrame(castSession, { data: "CCCC", sessionId: "frame-3" })
+    const untilAsync = async (cond: () => Promise<boolean>): Promise<void> => {
+      for (let i = 0; i < 100; i++) {
+        if (await cond()) return
+        await new Promise((r) => setTimeout(r, 10))
+      }
+    }
+    await untilAsync(async () => (await instance.screencastFrame())?.data === "CCCC")
+    const stopped2 = await instance.screencastStop()
+    expect(stopped2.frameCount).toBe(2)
+    expect(stopped2.frames.map((fr) => fr.data)).toEqual(["BBBB", "CCCC"])
+    await instance.stop()
   })
 })
