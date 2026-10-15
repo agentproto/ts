@@ -9032,10 +9032,21 @@ async function handleTunnels(
 
   // Device login for providers that act on the user's behalf
   // (cloudflare-provisioned). Same logic as the `tunnel_login` MCP tool;
-  // returns the prompt / state, never a token.
+  // returns the prompt / state, never a token. POST begins (or continues)
+  // a login; GET only reads the state.
+  if (path === "/tunnels/login" && req.method === "POST") {
+    const body = (await readJsonBody(req)) as Record<string, unknown> | null
+    const slug = typeof body?.slug === "string" ? body.slug : ""
+    if (!slug) {
+      json(400, { error: "missing_slug", message: "body must include `slug`" })
+      return true
+    }
+    const result = await tunnelLogin(slug, { ...(body?.logout === true ? { logout: true } : {}) })
+    json("error" in result ? 400 : 200, result)
+    return true
+  }
   if (path === "/tunnels/login" && req.method === "GET") {
-    const urlStr = req.url ?? ""
-    const slug = new URLSearchParams(urlStr.includes("?") ? urlStr.slice(urlStr.indexOf("?") + 1) : "").get("slug") ?? ""
+    const slug = new URL(req.url ?? "/", "http://localhost").searchParams.get("slug") ?? ""
     if (!slug) {
       json(400, { error: "missing_slug", message: "query must include `slug`" })
       return true
@@ -9046,26 +9057,23 @@ async function handleTunnels(
   }
 
   // Same as the `setup_tunnel_provider` MCP tool: fields are validated by the
-  // provider and stored 0600; the response never echoes a value.
+  // provider and stored 0600; the response never echoes a value. Behind the
+  // same gate as every other route (`tunnelBearerAllowed` runs before any
+  // dispatch): loopback, or the tunnel bearer once remote mode is on.
   const providerSetup = path.match(/^\/tunnels\/providers\/([^/]+)$/)
   if (providerSetup && req.method === "PUT") {
+    let slug: string
+    try {
+      slug = decodeURIComponent(providerSetup[1] ?? "")
+    } catch {
+      json(400, { error: "bad_slug", message: "malformed provider slug" })
+      return true
+    }
     const body = (await readJsonBody(req)) as Record<string, unknown> | null
     const fields: Record<string, string> = {}
     for (const [k, v] of Object.entries(body ?? {})) if (typeof v === "string") fields[k] = v
-    const result = await setupTunnelProvider(decodeURIComponent(providerSetup[1] ?? ""), fields)
+    const result = await setupTunnelProvider(slug, fields)
     json(result.ok ? 200 : 400, result)
-    return true
-  }
-
-  if (path === "/tunnels/login" && req.method === "POST") {
-    const body = (await readJsonBody(req)) as Record<string, unknown> | null
-    const slug = typeof body?.slug === "string" ? body.slug : ""
-    if (!slug) {
-      json(400, { error: "missing_slug", message: "body must include `slug`" })
-      return true
-    }
-    const result = await tunnelLogin(slug, { ...(body?.logout === true ? { logout: true } : {}) })
-    json("error" in result ? 400 : 200, result)
     return true
   }
 

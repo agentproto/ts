@@ -192,6 +192,14 @@ export interface TunnelRegistryOptions {
    * still takes precedence.
    */
   readCreds?: (slug: string) => Promise<TunnelCreds | null>
+  /**
+   * The daemon's own gateway. A `public` tunnel (no access guard) to this
+   * port is refused while `isProtected()` is false: the gateway only
+   * demands its bearer on non-local requests in bearer mode
+   * (`remote_enable` / static `auth`), so such a tunnel would publish
+   * sessions, MCP and commands to anyone with the URL.
+   */
+  gatewayGuard?: { port: number; isProtected: () => boolean }
 }
 
 const TUNNELS_FILE_PATH = (): string =>
@@ -212,6 +220,7 @@ export class TunnelRegistry {
   private readonly readCreds:
     | ((slug: string) => Promise<TunnelCreds | null>)
     | undefined
+  private readonly gatewayGuard: TunnelRegistryOptions["gatewayGuard"]
   private persistTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(opts: TunnelRegistryOptions = {}) {
@@ -219,6 +228,7 @@ export class TunnelRegistry {
     this.workspace = opts.workspace ?? homedir()
     this.onLog = opts.onLog
     this.readCreds = opts.readCreds
+    this.gatewayGuard = opts.gatewayGuard
 
     this.loadFromDisk()
   }
@@ -254,6 +264,12 @@ export class TunnelRegistry {
       }
       hostname = normalizeHostname(hostname)
     }
+
+    this.assertGatewayNotExposed({
+      access: input.public ? "public" : "private",
+      targetHost,
+      targetPort: input.targetPort,
+    })
 
     if (input.name) {
       const conflict = this.findByIdOrName(input.name)
@@ -306,6 +322,16 @@ export class TunnelRegistry {
    */
   private async startEntry(entry: TunnelEntry): Promise<void> {
     const { desc, provider } = entry
+    // Re-checked on every start: an autostart tunnel restored at boot must
+    // not come back unguarded if bearer mode was turned off since.
+    try {
+      this.assertGatewayNotExposed(desc)
+    } catch (err) {
+      desc.status = "error"
+      desc.lastError = err instanceof Error ? err.message : String(err)
+      this.schedulePersist()
+      throw err
+    }
     desc.status = "starting"
     delete desc.lastError
     delete desc.health
@@ -666,6 +692,22 @@ export class TunnelRegistry {
 
   // ── private ──────────────────────────────────────────────────────
 
+  private assertGatewayNotExposed(t: {
+    access?: "private" | "public"
+    targetHost: string
+    targetPort: number
+  }): void {
+    const g = this.gatewayGuard
+    if (!g || t.access !== "public" || t.targetPort !== g.port) return
+    if (!LOOPBACK_TARGETS.has(t.targetHost.toLowerCase())) return
+    if (g.isProtected()) return
+    throw new Error(
+      `refusing a public tunnel to this daemon's own port ${g.port}: it does not ` +
+        "authenticate remote requests unless remote mode is on (remote_enable). " +
+        "Drop `public: true` so the access guard sits in front, or enable remote mode first.",
+    )
+  }
+
   private requireEntry(idOrName: string): TunnelEntry {
     const entry = this.findEntryByIdOrName(idOrName)
     if (!entry) {
@@ -782,6 +824,8 @@ export class TunnelRegistry {
 }
 
 // ── module-level helpers ───────────────────────────────────────────
+
+const LOOPBACK_TARGETS = new Set(["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"])
 
 function normalizeHostname(h: string): string {
   return h.trim().toLowerCase().replace(/\.$/, "")

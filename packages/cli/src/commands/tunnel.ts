@@ -385,6 +385,7 @@ type LoginState =
   | { status: "failed"; reason: string }
 
 const LOGIN_POLL_MS = 3_000
+const LOGIN_MAX_WAIT_MS = 15 * 60_000
 
 async function runLogin(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -438,7 +439,20 @@ async function runLogin(args: readonly string[]): Promise<number> {
     }
     if (!values["no-wait"]) {
       if (!values.json) process.stdout.write("Waiting for approval…\n")
+      // Stop at the code's own expiry (+ a little slack for the daemon's
+      // last poll), and never wait more than LOGIN_MAX_WAIT_MS overall.
+      const expiry = Date.parse(state.expiresAt)
+      const deadline = Math.min(
+        Number.isFinite(expiry) ? expiry + 15_000 : Number.POSITIVE_INFINITY,
+        Date.now() + LOGIN_MAX_WAIT_MS,
+      )
       while (state.status === "pending") {
+        if (Date.now() >= deadline) {
+          process.stderr.write(
+            "agentproto tunnel login: the code expired before it was approved — run it again\n",
+          )
+          return 1
+        }
         await new Promise(r => setTimeout(r, LOGIN_POLL_MS))
         try {
           state = await call()

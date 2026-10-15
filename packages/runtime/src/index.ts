@@ -2069,6 +2069,20 @@ export async function createGateway(
         line,
       }),
     readCreds: slug => tunnelCredsStore.read(slug),
+    // Never publish this gateway guard-less while it doesn't authenticate
+    // remote requests (see TunnelRegistryOptions.gatewayGuard). `remote` is
+    // created further down; until then only the static auth counts.
+    gatewayGuard: {
+      port,
+      isProtected: () => {
+        if (opts.auth?.mode === "bearer") return true
+        try {
+          return remote.readAuth().mode === "bearer"
+        } catch {
+          return false
+        }
+      },
+    },
   })
   // Relaunch any `autostart` (named) tunnels that were live before this
   // daemon restarted. Non-blocking — boot must not wait on cloudflared,
