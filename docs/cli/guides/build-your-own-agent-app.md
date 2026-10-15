@@ -224,7 +224,12 @@ Every installed app also owns a registered workspace, `app-<slug>` (marked
 `ownerApp` in `~/.agentproto/workspaces.json`, visible in
 `agentproto workspace list`). It points at the `local-fs` `mount_path` or
 `dev-local` `root` declared in the app's `WORKSPACE.md` when that directory
-exists, else at the app dir. `app_run` (and app-attributed workflow runs)
+exists; a `storage: github` declaration with `sync.mode: pull-push` instead
+resolves to a clone of `repo_url` (github.com over HTTPS only) in its
+`mount_path` — the token is read from `auth.state.env` (default
+`GITHUB_TOKEN` / `GH_TOKEN`), the clone is seeded on first use into an empty
+or missing dir only, and no credential is left at rest in the clone. If none
+of that resolves, the workspace points at the app dir. `app_run` (and app-attributed workflow runs)
 spawn sessions into it instead of `default`, unless you pass an explicit
 `cwd`. `app_uninstall` removes the workspace only if that app owns it; a user
 workspace with the same slug is never overwritten, and app-owned workspaces

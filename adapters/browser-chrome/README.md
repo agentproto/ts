@@ -131,6 +131,37 @@ then fails with a clear error. It never stays among your tabs. Once you close th
 agent window, the next attach opens a new one. CDP has no tab-group API, so the
 agent's tabs are not grouped.
 
+### Screencast of the agent's own tab
+
+`chrome-live` is the only provider that can screencast
+(`driver.capabilities.canScreencast`). The screencast rides CDP
+`Page.startScreencast` inside the driver's own flat session, on a tab the
+provider opened — so it stays inside the same ownership rules as a
+screenshot (`Page.*` only, never a foreign tab, never the desktop).
+
+```ts
+const { targetId, index } = await instance.screencastStart({ everyNthFrame: 1, quality: 80 })
+const latest = await instance.screencastFrame() // null until the first frame lands
+const { frameCount, frames } = await instance.screencastStop()
+```
+
+Options mirror `Page.startScreencast`: `format` (default `jpeg`),
+`quality` (1–100), `everyNthFrame`, `maxWidth`, `maxHeight`. Frames are
+normalized to `{ data /* base64 */, format, timestampMs, index, width?,
+height? }` and buffered in a bounded ring (2000 frames) so a later stop
+can hand every buffered frame to a recording encoder. `screencastStart`
+reuses an owned agent tab when one exists and opens a fresh one
+otherwise, and is idempotent per driver. The screencast pointer lives on
+the connection entry, so a second `launch()` handle that reuses the
+already-running connection (`wasAlreadyRunning`) reaches the same
+frames.
+
+The daemon projects the same instance methods as the MCP tools
+`browser_screencast_start` / `browser_screencast_frame` /
+`browser_screencast_stop` and the HTTP routes
+`GET /sessions/<id>/screencast` (HTML viewer), `.mjpg` (MJPEG stream)
+and `.jpg` (latest frame).
+
 ### Safety guarantees
 
 - **Never launches, kills or closes Chrome.** `stop()` sends
@@ -147,7 +178,9 @@ agent's tabs are not grouped.
   `Network.setCookies`, granted-cookie payloads are ignored, and the driver
   reports `canCookies: false`. Reading (`Network.getCookies`) works.
 - **Declared capabilities:** `cdp`, `isUserVisible`, `canMultiTarget` (tabs of
-  the agent window), `headed`. Not `headless`, not `persistentProfile`.
+  the agent window), `headed`, `canScreencast` (see
+  [Screencast](#screencast-of-the-agents-own-tab)). Not `headless`, not
+  `persistentProfile`.
 
 **This is not a bypass of F11.** The F11 guard above stays as it is: the
 `chrome` provider still refuses to **launch** Chrome on the default profile.
