@@ -60,7 +60,12 @@ import {
   type SessionAccessProfileEcho,
 } from "./sessions.js"
 import { isRetired } from "./session-retirement.js"
-import { encodeCloudSessionMeta, resolveCloudResumeId } from "./cloud-vendors.js"
+import {
+  cloudHarnessFor,
+  cloudMetaOf,
+  encodeCloudSessionMeta,
+  resolveCloudResumeId,
+} from "./cloud-vendors.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
@@ -1072,7 +1077,19 @@ export async function restartAgentSession(
   const effRoute = reconciled.route ?? prev.route
   const effPosture = overrides.posture ?? prev.posture
   const effContextProfile = overrides.contextProfile ?? prev.contextProfile
-  const effHarness = overrides.harness ?? prev.harness ?? prev.adapterSlug
+  // AIP-66 cloud: a cloud session's recorded harness is the VENDOR's harness
+  // (`claude-code`), never the local relay adapter slug (`claude-code-cloud`)
+  // — see `cloud-vendors.ts` / `session-spawn.ts`. A restart must re-record
+  // that same label instead of falling back to `prev.adapterSlug` when the
+  // prior descriptor's own `harness` is absent or predates that fix (#1953).
+  // Decoded from `meta.cloud`; a non-cloud session is untouched (the
+  // `cloudHarness` term is undefined there). `prevCloudMeta` also drives the
+  // vendor-binding carry-forward below.
+  const prevCloudMeta = cloudMetaOf(prev)
+  const cloudHarness = prevCloudMeta
+    ? cloudHarnessFor(prevCloudMeta.vendor, prev.harness)
+    : undefined
+  const effHarness = overrides.harness ?? cloudHarness ?? prev.harness ?? prev.adapterSlug
   const effMode = overrides.mode ?? prev.mode
   // An `access` override is present iff a `profileRef` was explicitly requested.
   const accessOverrideRef = overrides.access?.profileRef
@@ -1308,6 +1325,16 @@ export async function restartAgentSession(
           ...(prev.commandSandbox === "off" ? { commandSandbox: "off" as const } : {}),
         })
       : {}
+    // AIP-66 cloud identity survives a restart too: a restart is the SAME
+    // logical cloud session, and the re-attach path reads the vendor id off
+    // `meta.cloud` (`resolveCloudResumeId`) — dropping it loses the vendor /
+    // sessionId / url and forces the relay-side-file fallback on the next
+    // resume. Merged with the app-boundary meta so carrying one never drops
+    // the other; encoded through the cloud-vendors helper (never hand-rolled).
+    const restartMeta: Record<string, string> = {
+      ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
+      ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
+    }
     const agentSession = await resolved.startSession({
       cwd,
       ...boundaryStart,
@@ -1405,7 +1432,7 @@ export async function restartAgentSession(
       ...(prev.appendSystemPrompt
         ? { appendSystemPrompt: prev.appendSystemPrompt }
         : {}),
-      ...(prevBoundary ? { meta: boundaryMeta(prevBoundary) } : {}),
+      ...(Object.keys(restartMeta).length > 0 ? { meta: restartMeta } : {}),
       ...(effModel ? { model: effModel } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
       // and overlaid with any override so every axis round-trips onto the fresh

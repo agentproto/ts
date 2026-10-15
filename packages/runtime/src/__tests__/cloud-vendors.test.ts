@@ -953,4 +953,72 @@ describe("restartAgentSession — cloud resume id fallback", () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it("carries meta.cloud + the vendor harness label onto the restarted descriptor", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const cloud = {
+      vendor: "anthropic",
+      sessionId: "session_live",
+      url: "https://claude.ai/code/session_live",
+    }
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: mockSession("acp_uuid_prev"),
+      adapterSlug: "claude-code-cloud",
+      // The descriptor a cloud spawn records carries the VENDOR harness, not
+      // the relay adapter slug — but a stale/pre-#1953 row can spell it as the
+      // adapter slug, which the restart must not propagate.
+      harness: "claude-code-cloud",
+      meta: { cloud: encodeCloudSessionMeta(cloud) },
+    })
+    registry.kill(prev.id)
+
+    const resolver: AgentAdapterResolver = async () => ({
+      async startSession() {
+        return mockSession("acp_uuid_restarted")
+      },
+      commandPreview: "mock-claude-code-cloud",
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({}),
+    })
+    expect(restarted.desc.id).toMatch(/^sess_/)
+    expect(restarted.desc.id).not.toBe(prev.id)
+    // The vendor binding is preserved byte-for-byte (same JSON string).
+    expect(restarted.desc.meta?.cloud).toBe(
+      encodeCloudSessionMeta(cloud),
+    )
+    expect(cloudMetaOf(restarted.desc as any)).toEqual(cloud)
+    // The harness label is the vendor's (`claude-code`), not the relay slug.
+    expect(restarted.desc.harness).toBe("claude-code")
+  })
+
+  it("leaves a non-cloud restart's harness and meta unchanged", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: mockSession("acp_uuid_local"),
+      adapterSlug: "claude-code",
+      harness: "claude-code",
+    })
+    registry.kill(prev.id)
+
+    const resolver: AgentAdapterResolver = async () => ({
+      async startSession() {
+        return mockSession("acp_uuid_local_restarted")
+      },
+      commandPreview: "mock-claude-code",
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({}),
+    })
+    expect(restarted.desc.harness).toBe("claude-code")
+    expect(restarted.desc.meta?.cloud).toBeUndefined()
+  })
 })

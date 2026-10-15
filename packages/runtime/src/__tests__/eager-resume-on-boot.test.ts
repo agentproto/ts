@@ -12,6 +12,7 @@ import {
 import { runEagerResumePass } from "../eager-resume.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createCompletionPolicySupervisor } from "../supervisor.js"
+import { cloudMetaOf, encodeCloudSessionMeta } from "../cloud-vendors.js"
 
 /**
  * Opt-in eager resume-on-boot (session-survivability plan §5, PR-4).
@@ -132,6 +133,38 @@ describe("registry.resumeOnBoot (per-row eager resume)", () => {
     expect(resumed).toHaveBeenCalledWith(
       expect.objectContaining({ type: "session:resumed", sessionId: "idle", interrupted: false }),
     )
+    reg.shutdown()
+  })
+
+  it("keeps meta.cloud on the same descriptor across an in-place lazy resume (AIP-66 cloud)", async () => {
+    const cloud = {
+      vendor: "anthropic",
+      sessionId: "session_boot",
+      url: "https://claude.ai/code/session_boot",
+    }
+    writeSessions(persistPath, [
+      {
+        id: "cloud",
+        adapterSlug: "claude-code-cloud",
+        harness: "claude-code",
+        meta: { cloud: encodeCloudSessionMeta(cloud) },
+      },
+    ])
+    const reg = createSessionsRegistry({
+      persistPath,
+      resumeAgent: makeRecordingResumer([]),
+    })
+
+    expect(reg.get("cloud")?.status).toBe("killed")
+    const outcome = await reg.resumeOnBoot("cloud")
+
+    expect(outcome).toEqual({ status: "resumed" })
+    const resumed = reg.get("cloud")
+    expect(resumed?.status).toBe("running")
+    // The in-place lazy resume revives the SAME row — the vendor binding must
+    // survive byte-for-byte, or the NEXT resume loses the vendor id.
+    expect(resumed?.meta?.cloud).toBe(encodeCloudSessionMeta(cloud))
+    expect(cloudMetaOf(resumed as any)).toEqual(cloud)
     reg.shutdown()
   })
 
