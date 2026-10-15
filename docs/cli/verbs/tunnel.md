@@ -241,6 +241,10 @@ command waits until you've approved. No token is ever printed.
 | `--no-wait` | `false` | Print the URL and code, then return; the daemon keeps polling in the background. |
 | `--json` | `false` | Emit the login state as JSON. |
 
+For local UIs that drive the daemon over HTTP, there are two more routes:
+- `GET /tunnels/login?slug=<provider>` reads the login state and never starts a login.
+- `PUT /tunnels/providers/<provider>` with the setup fields as JSON does the same as `setup_tunnel_provider`.
+
 ### `add-hostname <id-or-name> <fqdn>` / `remove-hostname <id-or-name> <fqdn>`
 
 Hostname swap for `cloudflare-managed`, via `POST /tunnels/:id/hostnames`

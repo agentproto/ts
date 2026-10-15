@@ -72,7 +72,7 @@ import {
 } from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
-import { tunnelLogin } from "./tunnel-adapters.js"
+import { setupTunnelProvider, tunnelLogin, tunnelLoginState } from "./tunnel-adapters.js"
 import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
 import {
   deliveryPreferenceFor,
@@ -8951,6 +8951,8 @@ async function handlePresets(
  *   DELETE /tunnels/:id?purge=true → { ok, tunnelId, deleted } (stop + delete remote state)
  *   POST   /tunnels/:id/revoke   → TunnelDescriptor (fresh signed link, tunnel stays up)
  *   POST   /tunnels/login        { slug, logout? } → device-login prompt / state (no token)
+ *   GET    /tunnels/login?slug=  → login state, never starts a login
+ *   PUT    /tunnels/providers/:slug  { …fields } → setup_tunnel_provider over HTTP
  *   POST   /tunnels/:id/hostnames            → TunnelDescriptor (swap: add `hostname`)
  *   DELETE /tunnels/:id/hostnames/:hostname  → TunnelDescriptor (swap: retire it)
  */
@@ -9031,6 +9033,30 @@ async function handleTunnels(
   // Device login for providers that act on the user's behalf
   // (cloudflare-provisioned). Same logic as the `tunnel_login` MCP tool;
   // returns the prompt / state, never a token.
+  if (path === "/tunnels/login" && req.method === "GET") {
+    const urlStr = req.url ?? ""
+    const slug = new URLSearchParams(urlStr.includes("?") ? urlStr.slice(urlStr.indexOf("?") + 1) : "").get("slug") ?? ""
+    if (!slug) {
+      json(400, { error: "missing_slug", message: "query must include `slug`" })
+      return true
+    }
+    const result = await tunnelLoginState(slug)
+    json("error" in result ? 400 : 200, result)
+    return true
+  }
+
+  // Same as the `setup_tunnel_provider` MCP tool: fields are validated by the
+  // provider and stored 0600; the response never echoes a value.
+  const providerSetup = path.match(/^\/tunnels\/providers\/([^/]+)$/)
+  if (providerSetup && req.method === "PUT") {
+    const body = (await readJsonBody(req)) as Record<string, unknown> | null
+    const fields: Record<string, string> = {}
+    for (const [k, v] of Object.entries(body ?? {})) if (typeof v === "string") fields[k] = v
+    const result = await setupTunnelProvider(decodeURIComponent(providerSetup[1] ?? ""), fields)
+    json(result.ok ? 200 : 400, result)
+    return true
+  }
+
   if (path === "/tunnels/login" && req.method === "POST") {
     const body = (await readJsonBody(req)) as Record<string, unknown> | null
     const slug = typeof body?.slug === "string" ? body.slug : ""
