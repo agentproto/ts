@@ -25,7 +25,7 @@ jobs:
     name: Review with OpenCode free model
     if: inputs.backend == 'opencode-free'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,7 +83,7 @@ jobs:
               "githubToken": "${{ secrets.GITHUB_TOKEN }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.review.outputs.config || '{}')) }}
             }
-          timeout-minutes: '25'
+          timeout-minutes: '50'
 
   claude-cloud-smoke:
     name: Read-only review with Claude Code cloud

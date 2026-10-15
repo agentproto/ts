@@ -1193,7 +1193,7 @@ jobs:
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
             }
-          timeout-minutes: 15
+          timeout-minutes: 50
 
       # The native lane can POST its review and STILL report failure — the
       # box session erroring during post-review wind-down (changeset delivery)
@@ -1405,7 +1405,7 @@ jobs:
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
             }
-          timeout-minutes: 15
+          timeout-minutes: 50
 
       # Second tier of the same "review already posted?" guard as the
       # postcheck step above — the fallback account's session can ALSO post
@@ -1596,7 +1596,7 @@ jobs:
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.opencode-config.outputs.json || '{}')) }}
             }
-          timeout-minutes: 15
+          timeout-minutes: 50
 
       # Third tier of the same guard as postcheck / postcheck-fallback: the
       # opencode-go tier's session can also post successfully and then fail
