@@ -147,6 +147,7 @@ Usage:
                                       [--options-json <json|@file>]
                                       [--prompt <text>]
                                       [--label <text>] [--title <text>]
+                                      [--slug <slug>]
                                       [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
@@ -161,6 +162,7 @@ Usage:
                                       [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
+                                            [--slug <slug>]
                                             [--label <text>] [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
   agentproto sessions export <id-or-name> [--json] [-o|--output <file>]
@@ -308,6 +310,11 @@ now-stale token; the error diagnoses that case and names the file it
 came from — AGENTPROTO_DAEMON_TOKEN is the manual override.
 
 sessions start flags:
+  --slug <slug>                 set the new session's addressable slug — the
+                                 unique, human-readable handle it can be
+                                 addressed by (instead of the daemon-minted
+                                 default from title/label/adapter). Slugified +
+                                 de-duplicated with -2, -3, …
   --auth subscription|api-key   deterministic billing-auth mode for adapters that
                                  declare a subscription login (authSubscription) and/or
                                  an API-key provider in their manifest; any other
@@ -413,6 +420,9 @@ sessions start flags:
                                  session). Mirrors MCP agent_start.browser.
 
 sessions terminal flags:
+  --name <slug>                the session's addressable slug (unique human
+                                 handle) — kept as an alias for --slug.
+  --slug <slug>                same as --name; sets the addressable slug.
   --preset <name>              use a named 'terminalPresets' entry from
                                  ~/.agentproto/config.json. The preset may define
                                  argv, env, cwd, workspace, name and label.
@@ -791,6 +801,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       prompt: { type: "string", short: "p" },
       label: { type: "string" },
       title: { type: "string" },
+      slug: { type: "string" },
       attach: { type: "boolean" },
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
@@ -1170,6 +1181,10 @@ async function runStart(args: readonly string[]): Promise<number> {
   // Explicit title (FIX C): overrides the first-sentence-of-prompt derivation
   // the daemon would otherwise apply. `label` still out-ranks it in the UI.
   if (values.title) body.title = values.title
+  // Requested human handle — the daemon mints a unique slug by default and this
+  // overrides it (applied through the canonical rename path). `--slug` is the
+  // addressable handle; `--label`/`--title` stay display-only.
+  if (values.slug) body.slug = values.slug
   if (orchestrator !== undefined) body.orchestrator = orchestrator
   if (mcpServers !== undefined) body.mcpServers = mcpServers
   if (values["hold-permissions"]) body.permissionHold = true
@@ -3080,6 +3095,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
       cwd: { type: "string" },
       workspace: { type: "string" },
       name: { type: "string" },
+      slug: { type: "string" },
       label: { type: "string" },
       cols: { type: "string" },
       rows: { type: "string" },
@@ -3101,7 +3117,10 @@ async function runTerminal(args: readonly string[]): Promise<number> {
   let presetEnv: Record<string, string> | undefined
   let resolvedCwd = values.cwd
   let resolvedWorkspace = values.workspace
-  let resolvedName = values.name
+  // `--slug` and `--name` are the same thing (the session's addressable,
+  // human-readable handle) — `--name` is the historical spelling kept as an
+  // alias. `--slug` wins when both are given.
+  let resolvedName = values.slug ?? values.name
   let resolvedLabel = values.label
 
   if (values.preset) {
@@ -3110,7 +3129,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
       argv: explicitArgv.length > 0 ? explicitArgv : undefined,
       cwd: values.cwd,
       workspace: values.workspace,
-      name: values.name,
+      name: values.slug ?? values.name,
       label: values.label,
     }
     const result = resolveTerminalPreset(values.preset, cfg, cliValues)

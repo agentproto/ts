@@ -6018,20 +6018,31 @@ export function registerSessionTools(
 
   // ── session_rename ──────────────────────────────────────────────
   // The headless twin of the VS Code rename UX + `PATCH /sessions/:id`.
-  // Pure display state (the descriptor's `title`/`label`) — never touches the
-  // live agent — so, like archive, it just resolves + scopes + delegates to
-  // the registry, which trims/caps, persists, and emits `session:renamed`.
+  // Display state (the descriptor's `title`/`label`) plus the addressable
+  // `slug` — never touches the live agent — so, like archive, it just resolves
+  // + scopes + delegates to the registry, which trims/caps, persists, and
+  // emits `session:renamed`.
+  //
+  // Addressing here is `sessionId` / `idOrName` (the canonical keys): `slug` is
+  // the NEW handle this tool sets, NOT an addressing alias (the two roles
+  // collide on one key). Address the target by id/name, then pass the desired
+  // slug.
   server.tool(
     "session_rename",
-    "Set or clear a session's user-facing name — the label the sessions tree, " +
-      "transcript header, and tab show. `label` out-ranks `title` in that " +
-      "display chain, so a user rename should write `label` (the default a UI " +
-      "picks) to be sure it shows; `title` is the auto-derived first-sentence " +
-      "fallback. For EACH of `title`/`label`: a non-empty string sets it " +
-      "(trimmed + length-capped), an empty string clears it (reverting to the " +
-      "derived title / a friendly `adapter · id` fallback), and omitting it " +
-      "leaves that field untouched. Persists across daemon restarts. Does NOT " +
-      "rename the adapter-native session or touch the running agent.",
+    "Set or clear a session's user-facing name AND/OR its addressable slug. " +
+      "`label` is the label the sessions tree, transcript header, and tab show " +
+      "(it out-ranks `title` in that display chain, so a user rename should " +
+      "write `label` — the default a UI picks); `title` is the auto-derived " +
+      "first-sentence fallback; `slug` is the unique, human-readable handle " +
+      "the session can be addressed by (`sessionId`/`idOrName`/`slug`). " +
+      "Address the target with `sessionId` or `idOrName`. For EACH of " +
+      "`title`/`label`: a non-empty string sets it (trimmed + length-capped), " +
+      "an empty string clears it (reverting to the derived title / a friendly " +
+      "`adapter · id` fallback); for `slug`: a non-empty string sets it " +
+      "(slugified + de-duplicated with `-2`, `-3`, …), an empty string clears " +
+      "it. Omitting a field leaves it untouched. Persists across daemon " +
+      "restarts. Does NOT rename the adapter-native session or touch the " +
+      "running agent.",
     {
       ...sessionRefSchema(z),
       label: z
@@ -6048,15 +6059,29 @@ export function registerSessionTools(
           "New title (the auto-derived fallback slot). Empty string clears it, " +
             "reverting to the first-sentence derivation. Omit to leave it untouched.",
         ),
+      slug: z
+        .string()
+        .optional()
+        .describe(
+          "New addressable slug (the unique human handle). Slugified and " +
+            "de-duplicated against other sessions. Empty string clears it. " +
+            "Omit to leave the current slug untouched.",
+        ),
     },
     async input => {
-      const prev = resolveSessionDesc(registry, input)
+      // Address by id/name only — `input.slug` is the OVERRIDE, not an
+      // addressing key (see the tool docblock above).
+      const prev = resolveSessionDesc(registry, {
+        sessionId: input.sessionId,
+        idOrName: input.idOrName,
+      })
+      const refQuery = refString(input.sessionId) ?? refString(input.idOrName) ?? ""
       if (!prev) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
+              text: JSON.stringify({ error: `no session "${refQuery}" found` }),
             },
           ],
           isError: true,
@@ -6088,14 +6113,14 @@ export function registerSessionTools(
           }
         }
       }
-      if (input.title === undefined && input.label === undefined) {
+      if (input.title === undefined && input.label === undefined && input.slug === undefined) {
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify({
                 error: "nothing_to_rename",
-                message: "session_rename: supply at least one of `title` or `label`.",
+                message: "session_rename: supply at least one of `title`, `label`, or `slug`.",
                 ok: false,
                 sessionId: prev.id,
               }),
@@ -6108,6 +6133,7 @@ export function registerSessionTools(
         const desc = registry.renameSession(prev.id, {
           ...(input.title !== undefined ? { title: input.title } : {}),
           ...(input.label !== undefined ? { label: input.label } : {}),
+          ...(input.slug !== undefined ? { slug: input.slug } : {}),
         })
         return {
           content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],

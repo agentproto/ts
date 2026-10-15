@@ -23,7 +23,7 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                         [--worktree | --no-worktree]
                                         [--mode <id>] [--effort <level>]
                                         [--prompt <text>] [--label <text>]
-                                        [--title <text>]
+                                        [--title <text>] [--slug <slug>]
                                         [--orchestrator | --orchestrator-json <json>]
                                         [--mcp-servers-json <json|@file>]
                                         [--sandbox <provider-or-json|@file>]
@@ -34,7 +34,8 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                         [--attach] [--json] [--no-color]
 agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cwd <dir>] [--workspace <slug>]
-                                           [--name <slug>] [--label <text>]
+                                           [--name <slug>] [--slug <slug>]
+                                           [--label <text>]
                                            [--cols <n>] [--rows <n>]
                                            [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
@@ -73,6 +74,12 @@ agentproto sessions migrate  <id-or-name> [--sandbox <provider>] [--model <id>]
 Browse and control the daemon's live sessions — terminals, agent CLIs,
 generic commands — from any shell. Requires a running daemon
 ([`serve.md`](./serve.md) or [`daemon.md`](./daemon.md)).
+
+Every command that takes `<id-or-name>` accepts either a session's
+`id` (`sess_…`) or its **slug** — the unique, human-readable handle every
+session carries (auto-derived from its title/label/adapter, overridable at
+spawn with `--slug` or later through the rename route/tool). A legacy
+spawn `name` still resolves as an alias for the slug.
 
 ## Discovery
 
@@ -363,6 +370,7 @@ reattached later.
 | `--prompt <text>`, `-p` | Initial user turn. |
 | `--label <text>` | UI label for this session. |
 | `--title <text>` | Display title (auto-derived fallback) for this session. |
+| `--slug <slug>` | Set the session's addressable **slug** — the unique human handle it can be addressed by (id or slug everywhere an `<id-or-name>` is taken). Slugified and de-duplicated with `-2`, `-3`, …; defaults to a slugified `title`/`label`/adapter.
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |
 | `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
 | `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |
@@ -599,7 +607,8 @@ otherwise be eaten by the verb's parser.
 |------|---------|
 | `--cwd <dir>` | Spawn cwd. |
 | `--workspace <slug>` | Registered workspace to bind to. |
-| `--name <slug>` | Stable session name (alphanumeric + `-`); used as an alias for attach/stop/restart. |
+| `--name <slug>` | Addressable slug (alphanumeric + `-`); the session's unique human handle, used by every `<id-or-name>` slot. Kept as an alias for `--slug`. |
+| `--slug <slug>` | Same as `--name`; sets the addressable slug. Wins when both are passed. |
 | `--label <text>` | UI label. |
 | `--cols <n>` / `--rows <n>` | Initial PTY dimensions. Default: current terminal size, fallback `80x24`. |
 | `--attach` / `--json` / `--no-color` | As above. |

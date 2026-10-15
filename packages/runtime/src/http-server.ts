@@ -58,6 +58,7 @@ import {
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire } from "./sessions.js"
+import { resolveSessionRef } from "./session-ref.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
@@ -2672,12 +2673,15 @@ export async function startHttpServer(
             res.writeHead(status, { "content-type": "application/json" })
             res.end(JSON.stringify(body))
           }
-          const id = attachmentMatch[1]
+          const rawId = attachmentMatch[1]
           const rawName = attachmentMatch[2]
-          if (!id || !rawName) {
+          if (!rawId || !rawName) {
             replyJson(400, { error: "invalid_request" })
             return
           }
+          const id = opts.sessions
+            ? (resolveSessionRouteParam(opts.sessions, rawId) ?? rawId)
+            : rawId
           const safeName = decodeURIComponent(rawName).replace(/[\x00/\\]/g, "_")
           const dir = sessionAttachmentsDir(id)
           const target = resolvePath(dir, safeName)
@@ -2715,7 +2719,10 @@ export async function startHttpServer(
             rejectUnauthorizedSession(req, res, gate)
             return
           }
-          const id = artifactRawMatch[1]!
+          const rawId = artifactRawMatch[1]!
+          const id = opts.sessions
+            ? (resolveSessionRouteParam(opts.sessions, rawId) ?? rawId)
+            : rawId
           const key = decodeURIComponent(artifactRawMatch[2]!)
           const subPath = artifactRawMatch[3] ? decodeURIComponent(artifactRawMatch[3]) : ""
           const versionParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("version")
@@ -2777,7 +2784,8 @@ export async function startHttpServer(
             res.end(JSON.stringify({ error: "sessions_not_configured" }))
             return
           }
-          const id = artifactPinMatch[1]!
+          const rawId = artifactPinMatch[1]!
+          const id = resolveSessionRouteParam(opts.sessions, rawId) ?? rawId
           const key = decodeURIComponent(artifactPinMatch[2]!)
           const body = (await readJsonBody(req)) as { pinned?: boolean } | null
           try {
@@ -2808,7 +2816,8 @@ export async function startHttpServer(
             res.end(JSON.stringify({ error: "sessions_not_configured" }))
             return
           }
-          const id = artifactKeyMatch[1]!
+          const rawId = artifactKeyMatch[1]!
+          const id = resolveSessionRouteParam(opts.sessions, rawId) ?? rawId
           const key = decodeURIComponent(artifactKeyMatch[2]!)
           const versionParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("version")
           try {
@@ -2853,7 +2862,8 @@ export async function startHttpServer(
             res.end(JSON.stringify({ error: "sessions_not_configured" }))
             return
           }
-          const id = path.slice("/sessions/".length, -"/artifacts".length)
+          const rawId = path.slice("/sessions/".length, -"/artifacts".length)
+          const id = resolveSessionRouteParam(opts.sessions, rawId) ?? rawId
           if (req.method === "GET") {
             try {
               const artifacts = opts.sessions.listSessionArtifacts(id)
@@ -6366,6 +6376,21 @@ async function handleSandboxes(
   return true
 }
 
+/**
+ * Resolve a session route param — an id, a slug, or a legacy name — to its
+ * canonical id through the shared resolver (`session-ref.ts`). A route param
+ * is NEVER a bare registry map key: every `:id`/`:idOrName` slot resolves here
+ * first so `/sessions/<slug>/…` reaches the same handler as
+ * `/sessions/<id>/…`. Returns undefined when nothing matches (caller 404s).
+ */
+function resolveSessionRouteParam(
+  registry: Pick<SessionsRegistry, "get" | "list">,
+  raw: string,
+): string | undefined {
+  const resolved = resolveSessionRef(registry, { idOrName: raw })
+  return resolved.ok ? resolved.id : undefined
+}
+
 async function handleSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -6690,8 +6715,25 @@ async function handleSessions(
       })
       return true
     }
+    // Requested human handle (`--slug` / `slug` body field). The registry has
+    // no spawn-time slug input (it mints one from `title || label || adapter`),
+    // so the anonymous HTTP spawn path applies the caller's request through the
+    // SAME canonical rename path `PATCH /sessions/:id` uses — deduped and
+    // persisted by the registry, never a silent drop. Best-effort: a rejected
+    // override leaves the minted slug in place.
+    const requestedSlug =
+      typeof b.slug === "string" && b.slug.trim().length > 0 ? b.slug.trim() : undefined
+    const descriptor = requestedSlug
+      ? (() => {
+          try {
+            return registry.renameSession(result.descriptor.id, { slug: requestedSlug })
+          } catch {
+            return result.descriptor
+          }
+        })()
+      : result.descriptor
     json(201, {
-      ...sessionDescriptorForHttp(result.descriptor),
+      ...sessionDescriptorForHttp(descriptor),
       ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.deduped ? { deduped: true } : {}),
       ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
@@ -7174,8 +7216,12 @@ code { color: #9ad; }
   //   (mirroring MCP `agent_prompt`, which always calls `enqueuePrompt`).
   const promptMatch = path.match(/^\/sessions\/([^/]+)\/prompt$/)
   if (promptMatch && req.method === "POST") {
-    const id = promptMatch[1]
-    if (!id) return false
+    const rawIdOrName = promptMatch[1]
+    if (!rawIdOrName) return false
+    // Resolve a slug/legacy name to the canonical id; an unresolvable param
+    // flows through unchanged so the registry's own "no session" error (→ 404)
+    // is preserved byte-for-byte.
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const body = await readJsonBody(req)
     const prompt = (body as { prompt?: unknown } | null)?.prompt
     const interrupt = (body as { interrupt?: unknown } | null)?.interrupt === true
@@ -7288,9 +7334,10 @@ code { color: #9ad; }
   // same no-op-is-not-an-error shape as `POST /sessions/:id/interrupt`.
   const queueItemMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)$/)
   if (queueItemMatch && req.method === "DELETE") {
-    const id = queueItemMatch[1]
+    const rawIdOrName = queueItemMatch[1]
     const queueId = queueItemMatch[2]
-    if (!id || !queueId) return false
+    if (!rawIdOrName || !queueId) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const { removed } = registry.removeQueuedPrompt(id, queueId)
     json(200, { ok: true, id, queueId, removed })
     return true
@@ -7300,9 +7347,10 @@ code { color: #9ad; }
   // after-the-fact counterpart of the enqueue-time `force` opt.
   const queuePromoteMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)\/promote$/)
   if (queuePromoteMatch && req.method === "POST") {
-    const id = queuePromoteMatch[1]
+    const rawIdOrName = queuePromoteMatch[1]
     const queueId = queuePromoteMatch[2]
-    if (!id || !queueId) return false
+    if (!rawIdOrName || !queueId) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const result = registry.promoteQueuedPrompt(id, queueId)
     if (!result.promoted) {
       json(404, { error: "queued_item_not_found", id, queueId })
@@ -7315,9 +7363,10 @@ code { color: #9ad; }
   // the new turn (`session_queue_deliver`). The "I need this NOW" op.
   const queueDeliverMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)\/deliver$/)
   if (queueDeliverMatch && req.method === "POST") {
-    const id = queueDeliverMatch[1]
+    const rawIdOrName = queueDeliverMatch[1]
     const queueId = queueDeliverMatch[2]
-    if (!id || !queueId) return false
+    if (!rawIdOrName || !queueId) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     try {
       const result = await registry.deliverQueuedPrompt(id, queueId)
       if (!result.delivered) {
@@ -7339,13 +7388,14 @@ code { color: #9ad; }
   // the sender.
   const messagesMatch = path.match(/^\/sessions\/([^/]+)\/messages$/)
   if (messagesMatch && req.method === "POST") {
-    const id = messagesMatch[1]
-    if (!id) return false
-    const recipient = registry.get(id)
+    const rawIdOrName = messagesMatch[1]
+    if (!rawIdOrName) return false
+    const recipient = registry.findByIdOrName(rawIdOrName)
     if (!recipient) {
-      json(404, { error: "no_such_session", id })
+      json(404, { error: "no_such_session", id: rawIdOrName })
       return true
     }
+    const id = recipient.id
     const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
     if (b.from !== undefined) {
       json(400, { error: "from_not_settable", message: "the daemon attests the sender" })
@@ -7368,7 +7418,7 @@ code { color: #9ad; }
       new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "").get(
         "callerSessionId",
       ) ?? undefined
-    const sender = callerId ? registry.get(callerId) : undefined
+    const sender = callerId ? registry.findByIdOrName(callerId) : undefined
     if (callerId && !sender) {
       json(404, { error: "no_such_caller", callerSessionId: callerId })
       return true
@@ -7420,8 +7470,9 @@ code { color: #9ad; }
   // GET /sessions/:id/inbox — un-consumed messages, oldest first.
   const inboxMatch = path.match(/^\/sessions\/([^/]+)\/inbox$/)
   if (inboxMatch && req.method === "GET") {
-    const id = inboxMatch[1]
-    if (!id) return false
+    const rawIdOrName = inboxMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const inbox = registry.listInbox(id)
     if (inbox === null) {
       json(404, { error: "no_such_session", id })
@@ -7435,10 +7486,11 @@ code { color: #9ad; }
   // POST /sessions/:id/inbox/ack — body `{ ids: string[] | "all" }`.
   const inboxAckMatch = path.match(/^\/sessions\/([^/]+)\/inbox\/ack$/)
   if (inboxAckMatch && req.method === "POST") {
-    const id = inboxAckMatch[1]
-    if (!id) return false
+    const rawIdOrName = inboxAckMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     if (!registry.get(id)) {
-      json(404, { error: "no_such_session", id })
+      json(404, { error: "no_such_session", id: rawIdOrName })
       return true
     }
     const b = ((await readJsonBody(req)) ?? {}) as { ids?: unknown }
@@ -7778,11 +7830,12 @@ code { color: #9ad; }
   // ordered list (origin, preview, queuedAt, position). 0 = next to dispatch.
   const queueListMatch = path.match(/^\/sessions\/([^/]+)\/queue$/)
   if (queueListMatch && req.method === "GET") {
-    const id = queueListMatch[1]
-    if (!id) return false
+    const rawIdOrName = queueListMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const queue = registry.listQueuedPrompts(id)
     if (queue === null) {
-      json(404, { error: "no_such_session", id })
+      json(404, { error: "no_such_session", id: rawIdOrName })
       return true
     }
     json(200, { ok: true, id, queue })
@@ -7798,12 +7851,13 @@ code { color: #9ad; }
     /^\/sessions\/([^/]+)\/background-tasks\/([^/]+)\/tail$/,
   )
   if (bgTaskTailMatch && req.method === "GET") {
-    const id = decodeURIComponent(bgTaskTailMatch[1] ?? "")
+    const rawId = decodeURIComponent(bgTaskTailMatch[1] ?? "")
     const taskId = decodeURIComponent(bgTaskTailMatch[2] ?? "")
-    if (!id || !taskId) return false
+    if (!rawId || !taskId) return false
+    const id = resolveSessionRouteParam(registry, rawId) ?? rawId
     const result = registry.readBackgroundTaskTail(id, taskId)
     if (!result) {
-      json(404, { error: "no_such_task", id, taskId })
+      json(404, { error: "no_such_task", id: rawId, taskId })
       return true
     }
     json(200, { ok: true, id, taskId, ...result })
@@ -7818,8 +7872,9 @@ code { color: #9ad; }
   // idempotency contract (idle/terminal/unknown-but-alive all no-op).
   const interruptMatch = path.match(/^\/sessions\/([^/]+)\/interrupt$/)
   if (interruptMatch && req.method === "POST") {
-    const id = interruptMatch[1]
-    if (!id) return false
+    const rawIdOrName = interruptMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     try {
       const { wasBusy } = await registry.interruptSession(id)
       json(200, { ok: true, id, wasBusy })
@@ -7847,8 +7902,9 @@ code { color: #9ad; }
   // pasted newline. Body: { text: string, enter?: boolean (default true) }.
   const terminalInputMatch = path.match(/^\/sessions\/([^/]+)\/terminal\/input$/)
   if (terminalInputMatch && req.method === "POST") {
-    const id = terminalInputMatch[1]
-    if (!id) return false
+    const rawIdOrName = terminalInputMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     if (!ptyEnabled) {
       json(501, {
         error: "pty_not_configured",
@@ -7907,8 +7963,9 @@ code { color: #9ad; }
   // was well-formed and got a definitive answer, it's just not "yes".
   const modelMatch = path.match(/^\/sessions\/([^/]+)\/model$/)
   if (modelMatch && req.method === "POST") {
-    const id = modelMatch[1]
-    if (!id) return false
+    const rawIdOrName = modelMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const body = await readJsonBody(req)
     const model =
       body && typeof body === "object" && typeof (body as Record<string, unknown>).model === "string"
@@ -8046,8 +8103,9 @@ code { color: #9ad; }
   // (still 200 — the request got a definitive answer, just not "yes").
   const effortMatch = path.match(/^\/sessions\/([^/]+)\/effort$/)
   if (effortMatch && req.method === "POST") {
-    const id = effortMatch[1]
-    if (!id) return false
+    const rawIdOrName = effortMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const body = await readJsonBody(req)
     const effort =
       body && typeof body === "object" && typeof (body as Record<string, unknown>).effort === "string"
@@ -8081,8 +8139,9 @@ code { color: #9ad; }
   // `parsePostureInput` picks which.
   const postureMatch = path.match(/^\/sessions\/([^/]+)\/posture$/)
   if (postureMatch && req.method === "POST") {
-    const id = postureMatch[1]
-    if (!id) return false
+    const rawIdOrName = postureMatch[1]
+    if (!rawIdOrName) return false
+    const id = resolveSessionRouteParam(registry, rawIdOrName) ?? rawIdOrName
     const body = await readJsonBody(req)
     const postureRaw =
       body && typeof body === "object" && typeof (body as Record<string, unknown>).posture === "string"
@@ -8129,13 +8188,16 @@ code { color: #9ad; }
     return true
   }
 
-  // Rename a session — set or clear its user-facing `title`/`label` (SPEC-3
-  // FIX B write-path). The ONLY session mutation route that isn't a POST: it's
-  // a partial update of the descriptor's display fields, so PATCH. Body:
-  // `{ title?: string | null, label?: string | null }` — a string sets (the
-  // registry trims + caps), `null` or `""` clears (reverts to derived/
-  // fallback), an omitted key leaves that field untouched. Persist + the
-  // `session:renamed` event are the registry's job. 404 on an unknown id.
+  // Rename a session — set or clear its user-facing `title`/`label` and/or its
+  // addressable `slug` (SPEC-3 FIX B write-path, extended by the
+  // session-addressing work). The ONLY session mutation route that isn't a
+  // POST: it's a partial update of the descriptor's display fields, so PATCH.
+  // Body: `{ title?: string | null, label?: string | null, slug?: string | null }`
+  // — a string sets (the registry trims + caps display fields, and dedupes the
+  // slug), `null` or `""` clears (reverts to derived/fallback / drops the slug),
+  // an omitted key leaves that field untouched. The `:id` slot itself resolves
+  // through the shared resolver, so a slug/id/legacy name all address. Persist +
+  // the `session:renamed` event are the registry's job. 404 on an unknown id.
   const renameMatch = path.match(/^\/sessions\/([^/]+)$/)
   if (renameMatch && req.method === "PATCH") {
     const rawIdOrName = renameMatch[1]
@@ -8152,9 +8214,10 @@ code { color: #9ad; }
     // rename should never fail because an unrelated stray field rode along.
     const field = (v: unknown): string | null | undefined =>
       typeof v === "string" ? v : v === null ? null : undefined
-    const patch: { title?: string | null; label?: string | null } = {
+    const patch: { title?: string | null; label?: string | null; slug?: string | null } = {
       ...("title" in b ? { title: field(b.title) } : {}),
       ...("label" in b ? { label: field(b.label) } : {}),
+      ...("slug" in b ? { slug: field(b.slug) } : {}),
     }
     try {
       const desc = registry.renameSession(resolved.id, patch)

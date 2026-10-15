@@ -232,11 +232,14 @@ content hash, versioned by key, and survive restarts:
 
 ```bash
 # from an agent or script, over MCP
+# every session-addressing tool takes `sessionId`, `idOrName`, or `slug` —
+# `<id>` below is any of them (a session id or its human-readable slug)
 session_artifact_add   { "idOrName": "<id>", "sourcePath": "/abs/notes.md", "key": "notes", "label": "Notes" }
 session_artifact_list  { "idOrName": "<id>" }
+session_rename         { "sessionId": "<id>", "slug": "q3-notes", "label": "Q3 notes" }
 
-# or read over HTTP
-curl -s -H "$AUTH" $DAEMON/sessions/<session-id>/artifacts
+# or read over HTTP — the route's `:id` slot also accepts a slug
+curl -s -H "$AUTH" $DAEMON/sessions/<session-id-or-slug>/artifacts
 ```
 
 `session_artifact_get` returns a version's content and `session_artifact_pin`
