@@ -5,6 +5,7 @@ import { adapterLogoFor } from "./adapterIcon.logic.js"
 describe("adapterLogoFor", () => {
   it("maps known harness/provider slugs to the canonical icon files", () => {
     expect(adapterLogoFor("claude-code")).toEqual({ kind: "icon", file: "claude.svg" })
+    expect(adapterLogoFor("claude-code-cloud")).toEqual({ kind: "icon", file: "claude-cloud.svg" })
     expect(adapterLogoFor("claude-sdk")).toEqual({ kind: "icon", file: "anthropic.svg" })
     expect(adapterLogoFor("anthropic")).toEqual({ kind: "icon", file: "anthropic.svg" })
     expect(adapterLogoFor("codex")).toEqual({ kind: "icon", file: "openai.svg" })
