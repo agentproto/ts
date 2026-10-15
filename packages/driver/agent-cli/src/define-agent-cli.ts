@@ -13,6 +13,7 @@ import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-w
 import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
 import { resolveSmallModelEnv } from "./small-model.js"
+import { mergeOpencodePermission, opencodePermissionForPosture } from "./opencode-permission.js"
 import { applySessionSkills, readSessionSkillsMetadata } from "./session-skills.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
@@ -467,6 +468,23 @@ export function createAgentCliRuntime(
       // truncation (a silent cut would change the agent's instructions).
       if (systemPromptText && systemPromptDecl?.via === "env-file") {
         env[systemPromptDecl.env] = writeSystemPromptFile(systemPromptText)
+      }
+      // opencode advertises no native `bypass`/`accept-edits`/`read-only`
+      // mode, so the runtime's only path for those was the advisory prompt
+      // preamble. Enforce them instead through the session's own inline
+      // config (OPENCODE_CONFIG_CONTENT, the per-session top layer — the
+      // user's opencode config files are never touched), the opencode
+      // counterpart of claude-code's isolated `permissions.defaultMode`
+      // below. Last inline-config write, so it lands on the final JSON. See
+      // `opencode-permission.ts` for the mapping and its limits.
+      const opencodePermission =
+        definition.id === "opencode" ? opencodePermissionForPosture(opts?.posture) : undefined
+      if (opencodePermission) {
+        env.OPENCODE_CONFIG_CONTENT = mergeOpencodePermission(
+          env.OPENCODE_CONFIG_CONTENT,
+          opencodePermission,
+          "OPENCODE_CONFIG_CONTENT",
+        )
       }
       // After ALL env layers (ambient, mode/option patches, billing-auth,
       // opts.env) so the append lands on the final PATH — see the helper's

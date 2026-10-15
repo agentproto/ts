@@ -15,6 +15,13 @@
  *      posture is honoured as an injected system-prompt PREAMBLE — advisory,
  *      NOT a permission boundary (SPEC risk Rw). This module returns the
  *      preamble text; steps 5/6 ride it onto the system prompt at spawn.
+ *      Independently, the driver forwards the canonical posture to the adapter
+ *      at spawn/restart (`AgentCliStartOptions.posture`), and some adapters
+ *      enforce it there even with no advertised mode — claude-code via its
+ *      isolated `permissions.defaultMode`, opencode via a per-session
+ *      `permission` config block (`@agentproto/driver-agent-cli`'s
+ *      `opencode-permission.ts`). For those the preamble is then accurate
+ *      context riding alongside a real boundary, not the only one.
  *
  * This module deliberately does NOT implement the live-posture verb (step 5) or
  * the posture restart-override (step 6) — it only tells them WHICH of the two
