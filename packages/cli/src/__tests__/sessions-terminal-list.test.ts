@@ -61,6 +61,18 @@ describe("sessionRowLabel", () => {
     ).toBe("local-tui")
   })
 
+  it("prefers the addressable slug over the legacy name alias", () => {
+    expect(
+      sessionRowLabel({ ...terminal, slug: "my-slug", name: "legacy-name", command: "claude" }),
+    ).toBe("my-slug")
+  })
+
+  it("falls back to the legacy name when no slug is set", () => {
+    expect(sessionRowLabel({ ...terminal, name: "legacy-name", command: "claude" })).toBe(
+      "legacy-name",
+    )
+  })
+
   it("labels a terminal session with the command it ran when there is no name", () => {
     // The shareholder case: a supervisor launched via `claude --resume`
     // must read as `claude --resume …`, not as an opaque session id.

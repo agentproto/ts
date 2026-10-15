@@ -91,6 +91,7 @@ import {
   buildSessionRecap,
   defaultTranscriptBaseDir,
   deriveIndexFromTranscript,
+  getSlug,
   readAllSessionIndexes,
   readSessionIndex,
   searchSessionIndexes,
@@ -663,7 +664,7 @@ async function runListStats(
   const list = await fetchSessions(baseUrl)
   const rows = sortPinnedFirst(list).map(s => ({
     id: s.id,
-    label: s.label ?? s.name ?? "",
+    label: s.label ?? getSlug(s) ?? "",
     kind: terminalKindMark(s) || s.kind,
     status: statusLabel(s, opts.attentionDelaySec),
   }))
@@ -1493,7 +1494,7 @@ async function runShow(args: readonly string[]): Promise<number> {
     process.stdout.write(JSON.stringify(desc, null, 2) + "\n")
     return 0
   }
-  const name = desc.name ?? desc.label ?? desc.title
+  const name = getSlug(desc) ?? desc.label ?? desc.title
   const header = [
     `${desc.id}${name ? `  ${name}` : ""}`,
     `  status:   ${desc.status}${desc.endedReason ? ` (${desc.endedReason})` : ""}`,
@@ -3219,7 +3220,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
   } else {
     process.stdout.write(
       `agentproto sessions terminal: spawned ${desc.id}` +
-        `${desc.name ? ` (${desc.name})` : ""} — ${desc.command}\n`,
+        `${getSlug(desc) ? ` (${getSlug(desc)})` : ""} — ${desc.command}\n`,
     )
   }
 
@@ -3801,15 +3802,17 @@ export function isTerminalSession(
   return s.kind === "terminal" || s.pty === true
 }
 
-/** Row label for the interactive lists: a human-given `name` outranks
- *  everything; a terminal session with no name is labelled by the
- *  command it actually ran (`claude --resume …`) instead of its opaque
- *  id — which is what makes supervisors launched via `claude --resume`
- *  recognisable at a glance. Anything else falls back to the id. */
+/** Row label for the interactive lists: an addressable handle (slug, or the
+ *  legacy name alias) outranks everything; a terminal session with no handle
+ *  is labelled by the command it actually ran (`claude --resume …`) instead of
+ *  its opaque id — which is what makes supervisors launched via
+ *  `claude --resume` recognisable at a glance. Anything else falls back to the
+ *  id. */
 export function sessionRowLabel(
-  s: Pick<SessionDescriptor, "kind" | "pty" | "name" | "command" | "id">,
+  s: Pick<SessionDescriptor, "kind" | "pty" | "name" | "slug" | "command" | "id">,
 ): string {
-  if (s.name) return s.name
+  const handle = getSlug(s)
+  if (handle) return handle
   if (isTerminalSession(s) && s.command) return s.command
   return s.id
 }
@@ -4735,6 +4738,9 @@ function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false)
         ...(strategy.resumeSessionId
           ? { resumeSessionId: strategy.resumeSessionId }
           : {}),
+        // Carry the addressable handle forward so the respawned session is
+        // addressable by the SAME slug (`/sessions/agent` applies it at spawn).
+        ...(getSlug(prev) ? { slug: getSlug(prev) } : {}),
         ...(prev.label ? { label: prev.label } : {}),
       },
     }
@@ -4753,7 +4759,9 @@ function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false)
       workspaceSlug: prev.workspaceSlug,
       cols: process.stdout.columns ?? 80,
       rows: process.stdout.rows ?? 24,
-      ...(prev.name ? { name: prev.name } : {}),
+      // `POST /sessions/terminal` reads `name` as the desired-slug base, so the
+      // respawned PTY keeps the same addressable handle (slug, or legacy name).
+      ...(getSlug(prev) ? { name: getSlug(prev) } : {}),
       ...(prev.label ? { label: prev.label } : {}),
     },
   }
@@ -4776,7 +4784,7 @@ async function executeRestartWithFallback(
     )
     const path = describeResumePath(prev)
     return `restarted ${prev.id} → ${next.id}${
-      next.name ? ` (${next.name})` : ""
+      getSlug(next) ? ` (${getSlug(next)})` : ""
     }${path ? ` (${path})` : ""}`
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -4797,7 +4805,7 @@ async function executeRestartWithFallback(
         endpoint.token,
       )
       return `restarted ${prev.id} → ${next.id}${
-        next.name ? ` (${next.name})` : ""
+        getSlug(next) ? ` (${getSlug(next)})` : ""
       } (fresh — resume not available)`
     }
     throw err
@@ -4859,7 +4867,8 @@ export function renderDetail(
     out.push("")
     const kw = (k: string): string => `${c.dim}${k.padEnd(10)}${c.reset}`
     out.push(`  ${kw("id")} ${s.id}`)
-    if (s.name) out.push(`  ${kw("name")} ${c.bold}${s.name}${c.reset}`)
+    const handle = getSlug(s)
+    if (handle) out.push(`  ${kw("slug")} ${c.bold}${handle}${c.reset}`)
     out.push(`  ${kw("kind")} ${s.kind}${s.pty ? ` ${c.green}(pty)${c.reset}` : ""}`)
     const stale = isStaleRunning(s)
     out.push(
@@ -5207,7 +5216,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
         }) || "fresh shape"
     process.stdout.write(
       `agentproto sessions restart: spawned ${next.id}` +
-        `${next.name ? ` (${next.name})` : ""} — ${next.command}\n` +
+        `${getSlug(next) ? ` (${getSlug(next)})` : ""} — ${next.command}\n` +
         `  (${lineage} from ${prev.id})\n`,
     )
   }
@@ -5302,7 +5311,7 @@ async function runPtyMirror(
     })
 
     process.stderr.write(
-      `\x1b[2m─ mirroring ${desc.id}${desc.name ? ` (${desc.name})` : ""} · read-only · Ctrl-C to exit ·\x1b[0m\n`,
+      `\x1b[2m─ mirroring ${desc.id}${getSlug(desc) ? ` (${getSlug(desc)})` : ""} · read-only · Ctrl-C to exit ·\x1b[0m\n`,
     )
 
     let closed = false
@@ -5398,14 +5407,14 @@ function printDeadSessionHint(
   verb: string,
   desc: SessionDescriptor,
 ): void {
-  const handle = desc.name ?? desc.id
+  const handle = getSlug(desc) ?? desc.id
   const exitInfo =
     typeof desc.exitCode === "number" ? ` exit ${desc.exitCode}` : ""
   const age = desc.endedAt
     ? humaniseDelta(Date.now() - new Date(desc.endedAt).getTime()) + " ago"
     : "previously"
   process.stderr.write(
-    `${verb}: session ${desc.id}${desc.name ? ` (${desc.name})` : ""} ` +
+    `${verb}: session ${desc.id}${getSlug(desc) ? ` (${getSlug(desc)})` : ""} ` +
       `is \x1b[31m${desc.status}\x1b[0m (${age}${exitInfo}).\n` +
       `  Spawn a fresh instance with the same shape:\n` +
       `    agentproto sessions restart ${handle}\n` +
@@ -5425,7 +5434,7 @@ async function runSseAttach(
     const headers: Record<string, string> = { accept: "text/event-stream" }
     if (endpoint.token) headers.authorization = `Bearer ${endpoint.token}`
     process.stderr.write(
-      `\x1b[2m─ attached to ${desc.id}${desc.name ? ` (${desc.name})` : ""} · Ctrl-C to detach ·\x1b[0m\n`,
+      `\x1b[2m─ attached to ${desc.id}${getSlug(desc) ? ` (${getSlug(desc)})` : ""} · Ctrl-C to detach ·\x1b[0m\n`,
     )
     const req = lib.get(url, { headers }, res => {
       if (res.statusCode === 404) {
@@ -5669,7 +5678,7 @@ async function runPtyAttach(
       sock.on("open", () => {
         if (attempt === 0) {
           process.stderr.write(
-            `\x1b[2m─\x1b[0m attached to \x1b[1m${desc.id}${desc.name ? ` (${desc.name})` : ""}\x1b[0m · ` +
+            `\x1b[2m─\x1b[0m attached to \x1b[1m${desc.id}${getSlug(desc) ? ` (${getSlug(desc)})` : ""}\x1b[0m · ` +
               `\x1b[7m triple Ctrl-C \x1b[0m or \x1b[7m Ctrl-] then q \x1b[0m to detach · ` +
               `Ctrl-C reaches the child (works with Claude's exit)\n`,
           )
@@ -5762,7 +5771,7 @@ async function runPtyAttach(
         process.stderr.write(
           `\n\x1b[31m─ disconnected (close ${code}${reasonText})\x1b[0m\n` +
             `  daemon may be down. Restart it (\`agentproto serve\`) then re-attach:\n` +
-            `    agentproto sessions --attach ${desc.name ?? desc.id}\n`,
+            `    agentproto sessions --attach ${getSlug(desc) ?? desc.id}\n`,
         )
         restore()
         done(1)

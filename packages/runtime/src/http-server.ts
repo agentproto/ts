@@ -57,7 +57,7 @@ import {
   parseSessionListFilterParams,
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
-import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire } from "./sessions.js"
+import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, getSlug, retiredErrorWire } from "./sessions.js"
 import { resolveSessionRef } from "./session-ref.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -4948,8 +4948,8 @@ export async function startHttpServer(
         socket,
         410,
         `session_${desc.status}`,
-        `Session ${desc.id}${desc.name ? ` (${desc.name})` : ""} has ${desc.status}. ` +
-          `Spawn a fresh one with: agentproto sessions restart ${desc.name ?? desc.id}`,
+        `Session ${desc.id}${getSlug(desc) ? ` (${getSlug(desc)})` : ""} has ${desc.status}. ` +
+          `Spawn a fresh one with: agentproto sessions restart ${getSlug(desc) ?? desc.id}`,
       )
       return
     }

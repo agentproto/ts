@@ -23,7 +23,7 @@ import type {
   SessionDescriptor,
   SessionsRegistry,
 } from "./sessions.js"
-import { applyBracketedPasteWrap } from "./sessions.js"
+import { applyBracketedPasteWrap, getSlug } from "./sessions.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -4967,7 +4967,11 @@ export function registerSessionTools(
             rows: input.rows ?? 24,
             ...(combinedPtyEnv ? { env: combinedPtyEnv } : {}),
             ...(authUnsetEnv && authUnsetEnv.length > 0 ? { unsetEnv: authUnsetEnv } : {}),
-            ...(prev.name ? { name: prev.name } : {}),
+            // Carry the addressable handle forward (slug, or the legacy name
+            // alias) — `spawnPty`'s `name` is the desired-slug base it feeds
+            // to `mintSlug`, so the respawned PTY stays addressable by the
+            // SAME handle the caller used.
+            ...(getSlug(prev) ? { name: getSlug(prev) } : {}),
             ...(prev.label ? { label: prev.label } : {}),
             // Lineage carry-forward (#session-visibility) — same reasoning as
             // the agent branch in session-restart-core.ts: a restart keeps the

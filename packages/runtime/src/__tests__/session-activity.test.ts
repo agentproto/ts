@@ -39,11 +39,16 @@ describe("summarizeLines", () => {
     expect(summarizeLines(lines, { command: "claude" })).toBe("Patched the token refresh path.")
   })
 
-  it("falls back to label/name/command when there is no usable output", () => {
+  it("falls back to label/slug/name/command when there is no usable output", () => {
     expect(summarizeLines([], { command: "claude", label: "my label" })).toBe("my label")
     expect(summarizeLines(["\x1b[2m── turn-end (completed) ──\x1b[0m"], { command: "claude" })).toBe(
       "claude",
     )
+    // The addressable handle (slug) outranks the legacy `name` alias.
+    expect(
+      summarizeLines([], { command: "claude", slug: "my-slug", name: "legacy-name" }),
+    ).toBe("my-slug")
+    expect(summarizeLines([], { command: "claude", name: "legacy-name" })).toBe("legacy-name")
   })
 
   it("truncates a very long line", () => {

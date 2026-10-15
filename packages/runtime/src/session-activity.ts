@@ -51,7 +51,7 @@ function strip(s: string): string {
  */
 export function summarizeLines(
   lines: readonly string[],
-  desc: Pick<SessionDescriptor, "command" | "label" | "name">,
+  desc: Pick<SessionDescriptor, "command" | "label" | "name" | "slug">,
 ): string {
   for (let i = lines.length - 1; i >= 0; i--) {
     const t = strip(lines[i] ?? "").trim()
@@ -60,7 +60,10 @@ export function summarizeLines(
     if (FRAMING_RE.test(t)) continue
     return t.length > 160 ? `${t.slice(0, 157)}…` : t
   }
-  return desc.label || desc.name || desc.command || "Aucune sortie pour le moment."
+  // Prefer the addressable handle (slug, then the legacy `name` alias) over a
+  // bare command. Kept inline rather than importing `getSlug` so this module
+  // stays dependency-free (sessions.ts imports us — a back-import would cycle).
+  return desc.label || desc.slug || desc.name || desc.command || "Aucune sortie pour le moment."
 }
 
 /**
