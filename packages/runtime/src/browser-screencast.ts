@@ -58,10 +58,15 @@ export async function encodeScreencastFramesToMp4(
   try {
     const ext = frames[0]!.format === "png" ? "png" : "jpg"
     const list: string[] = []
+    // Per-frame delta (clamped): the concat demuxer expects each entry's
+    // duration to be SHOW TIME of that file, not a cumulative offset —
+    // cumulative values made recent-motion recordings play ~40× too slow.
+    const clamp = (v: number) => Math.min(Math.max(v, 0.05), 2)
     for (const [i, frame] of frames.entries()) {
       const file = `f${String(i).padStart(4, "0")}.${ext}`
       await writeFile(join(work, file), Buffer.from(frame.data, "base64"))
-      list.push(`file '${file}'`, `duration ${(frame.timestampMs - frames[0]!.timestampMs) / 1000 || FRAME_FALLBACK_INTERVAL_S}`)
+      const prev = i === 0 ? frames[0]!.timestampMs : frames[i - 1]!.timestampMs
+      list.push(`file '${file}'`, `duration ${clamp((frame.timestampMs - prev) / 1000)}`)
     }
     // The concat demuxer needs the last file named again (its duration is ignored).
     list.push(`file 'f${String(frames.length - 1).padStart(4, "0")}.${ext}'`)
@@ -82,7 +87,7 @@ export async function encodeScreencastFramesToMp4(
         "-i",
         listPath,
         "-vf",
-        `fps=${fps}`,
+        `scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=${fps}`,
         "-pix_fmt",
         "yuv420p",
         outPath,

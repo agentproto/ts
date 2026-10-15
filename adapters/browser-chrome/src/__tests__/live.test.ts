@@ -441,3 +441,44 @@ describe("chrome-live: instance-level screencast across reused handles", () => {
     expect(f.screencastActive(cdpSession)).toBe(false)
   })
 })
+
+describe("chrome-live: screencast restart-after-stop", () => {
+  it("attaches a fresh flat session per start (same owned target), so stop -> start keeps delivering frames", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, { log: () => undefined })
+    const started1 = await instance.screencastStart({ everyNthFrame: 1 })
+    const cdpSession = `session-${started1.targetId}`
+    f.emitScreencastFrame(cdpSession, { data: "AAAA", sessionId: "frame-1" })
+    await until(() => f.acknowledgments.length >= 1)
+    const stopped = await instance.screencastStop()
+    expect(stopped.frameCount).toBe(1)
+
+    const attachCallsBeforeRestart = f.commands.filter(
+      c => c.method === "Target.attachToTarget" && c.params?.targetId === started1.targetId,
+    ).length
+    const started2 = await instance.screencastStart({ everyNthFrame: 1 })
+    expect(started2.targetId).toBe(started1.targetId)
+    const attachCalls = f.commands.filter(
+      c => c.method === "Target.attachToTarget" && c.params?.targetId === started1.targetId,
+    )
+    expect(attachCalls.length).toBe(attachCallsBeforeRestart + 1)
+    // Detached the previous cast session first (fresh-session rule).
+    expect(methods(f).includes("Target.detachFromTarget")).toBe(true)
+    // New flat session id differs from the driver's control session.
+    expect(started2.targetId).toBeDefined()
+    const castSession = `session-${started2.targetId}`
+    f.emitScreencastFrame(castSession, { data: "BBBB", sessionId: "frame-2" })
+    f.emitScreencastFrame(castSession, { data: "CCCC", sessionId: "frame-3" })
+    const untilAsync = async (cond: () => Promise<boolean>): Promise<void> => {
+      for (let i = 0; i < 100; i++) {
+        if (await cond()) return
+        await new Promise((r) => setTimeout(r, 10))
+      }
+    }
+    await untilAsync(async () => (await instance.screencastFrame())?.data === "CCCC")
+    const stopped2 = await instance.screencastStop()
+    expect(stopped2.frameCount).toBe(2)
+    expect(stopped2.frames.map((fr) => fr.data)).toEqual(["BBBB", "CCCC"])
+    await instance.stop()
+  })
+})

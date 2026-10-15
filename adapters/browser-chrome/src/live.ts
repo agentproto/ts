@@ -247,14 +247,21 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
   }
 
   // ── screencast ──────────────────────────────────────────────────────────────
-  // Page.* only: this driver's own flat session on a tab the provider opened,
-  // so the ownership guard of isRefusedLiveCommand is untouched — screencast
-  // frames come to us, we ack them, nothing foreign is attached.
+  // Page.* only, on a tab the provider opened — the ownership guard of
+  // isRefusedLiveCommand is untouched: frames come to us, we ack them, nothing
+  // foreign is attached. The cast rides a DEDICATED flat session of its own
+  // (freshly attached per start on the SAME owned target), because Chrome
+  // stops delivering frames once a session has been through stop → start; a
+  // fresh session sidesteps that quirk without churning tabs.
+  // Target.detachFromTarget/attachToTarget go out through the BROWSER-level
+  // connection directly (our own target only) — the driver's `send` guard is
+  // not involved, and no event from another session can reach the listener.
 
   private screencastActive = false
   private screencastFormat: "jpeg" | "png" = "jpeg"
   private screencastIndex = 0
   private readonly screencastBuffer: ChromeLiveScreencastFrame[] = []
+  private screencastSessionId?: string
   private screencastUnsubscribe?: Unsubscribe
 
   private screencastListener = (event: { params: unknown }): void => {
@@ -274,11 +281,12 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
       ...(ev.metadata?.deviceHeight !== undefined ? { height: ev.metadata.deviceHeight } : {}),
     })
     if (this.screencastBuffer.length > MAX_SCREENCAST_FRAMES) this.screencastBuffer.shift()
-    // Chrome throttles screencast delivery until each frame is acked.
+    // Chrome throttles screencast delivery until each frame is acked: the ack
+    // echoes the FRAME's own id (params.sessionId — not the flat session's).
     if (ev.sessionId) {
-      void this.send<void>({ method: "Page.screencastFrameAck", params: { sessionId: ev.sessionId } }).catch(
-        () => {},
-      )
+      void this.conn
+        .send<void>("Page.screencastFrameAck", { sessionId: ev.sessionId }, this.screencastSessionId)
+        .catch(() => {})
     }
   }
 
@@ -306,29 +314,49 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     return this.screencastIndex
   }
 
+  /** The flat session id the screencast runs in (its own, mp4-invisible). */
+  screencastSessionNow(): string | undefined {
+    return this.screencastSessionId
+  }
+
   async startScreencast(opts?: ChromeLiveScreencastOptions): Promise<void> {
     if (this.conn.closed) throw new ChromeDisconnectedError(this.wsUrl, "startScreencast on a closed connection")
     if (this.screencastActive) return
     this.screencastIndex = 0
     this.screencastBuffer.length = 0
     this.screencastFormat = opts?.format ?? "jpeg"
-    this.screencastActive = true
-    this.screencastUnsubscribe = this.onEvent("Page.screencastFrame", this.screencastListener as CDPEventListener)
+    const params = {
+      format: this.screencastFormat,
+      quality: opts?.quality ?? 60,
+      maxWidth: opts?.maxWidth ?? 1280,
+      maxHeight: opts?.maxHeight ?? 720,
+      everyNthFrame: opts?.everyNthFrame ?? 3,
+    }
     try {
-      await this.send<void>({
-        method: "Page.startScreencast",
-        params: {
-          format: this.screencastFormat,
-          quality: opts?.quality ?? 60,
-          maxWidth: opts?.maxWidth ?? 1280,
-          maxHeight: opts?.maxHeight ?? 720,
-          everyNthFrame: opts?.everyNthFrame ?? 3,
-        },
+      // Fresh flat session per start (releasing the previous one first, when
+      // there is one) — see the block comment above for why.
+      if (this.screencastSessionId) {
+        await this.conn
+          .send<void>("Target.detachFromTarget", { sessionId: this.screencastSessionId })
+          .catch(() => {})
+        this.screencastSessionId = undefined
+      }
+      const sessionId = (await this.conn.send<{ sessionId: string }>(
+        "Target.attachToTarget",
+        { targetId: this.target.id, flatten: true },
+      )).sessionId
+      this.screencastSessionId = sessionId
+      this.screencastActive = true
+      this.screencastUnsubscribe = this.conn.onEvent((event) => {
+        if (event.sessionId !== sessionId || event.method !== "Page.screencastFrame") return
+        this.screencastListener(event)
       })
+      await this.conn.send<void>("Page.startScreencast", params, sessionId)
     } catch (err) {
       this.screencastActive = false
       this.screencastUnsubscribe?.()
       this.screencastUnsubscribe = undefined
+      this.screencastSessionId = undefined
       if (this.conn.closed) throw new ChromeDisconnectedError(this.wsUrl, "startScreencast aborted", err)
       throw err
     }
@@ -342,7 +370,12 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     this.screencastActive = false
     this.screencastUnsubscribe?.()
     this.screencastUnsubscribe = undefined
-    await this.send<void>({ method: "Page.stopScreencast", params: {} }).catch(() => {})
+    await this.conn
+      .send<void>("Page.stopScreencast", {}, this.screencastSessionId)
+      .catch(() => {})
+    // The (fresh) cast session is released on the NEXT start; the current
+    // session stays up so buffer reads keep being possible between stop and
+    // the runtime's encode call.
     return { frameCount: frames.length, frames, total: this.screencastIndex }
   }
 
@@ -363,6 +396,12 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     this.screencastActive = false
     this.screencastUnsubscribe?.()
     this.screencastUnsubscribe = undefined
+    if (this.screencastSessionId) {
+      void this.conn
+        .send<void>("Target.detachFromTarget", { sessionId: this.screencastSessionId })
+        .catch(() => {})
+      this.screencastSessionId = undefined
+    }
     this.screencastBuffer.length = 0
     this.screencastIndex = 0
   }
