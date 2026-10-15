@@ -114,6 +114,55 @@ describe("normalizeGithubEvent", () => {
     expect(result.event.terminal).toBe(false)
   })
 
+  it("carries the review body (capped) + reviewUrl, and a one-line snippet in the summary", () => {
+    const longBody = `first line\n  second   line ${"x".repeat(5000)}`
+    const result = normalizeGithubEvent({
+      event: "pull_request_review",
+      deliveryId: "d-review-body",
+      payload: {
+        action: "submitted",
+        pull_request: { number: 42 },
+        review: {
+          state: "changes_requested",
+          body: longBody,
+          html_url: "https://github.com/acme/widgets/pull/42#pullrequestreview-7",
+          user: { login: "carol" },
+        },
+        repository: { full_name: "acme/widgets" },
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const body = result.event.data.body
+    expect(typeof body).toBe("string")
+    expect((body as string).length).toBe(4096)
+    expect(result.event.data.reviewUrl).toBe(
+      "https://github.com/acme/widgets/pull/42#pullrequestreview-7",
+    )
+    const snippet = result.event.summary.slice("PR acme/widgets#42 review changes_requested by carol — ".length)
+    expect(result.event.summary.startsWith("PR acme/widgets#42 review changes_requested by carol — first line second")).toBe(true)
+    expect(snippet.length).toBeLessThanOrEqual(200)
+    expect(snippet).not.toContain("\n")
+  })
+
+  it("an empty-body review keeps the pre-existing summary shape and adds no data.body/reviewUrl", () => {
+    const result = normalizeGithubEvent({
+      event: "pull_request_review",
+      deliveryId: "d-review-empty",
+      payload: {
+        action: "submitted",
+        pull_request: { number: 42 },
+        review: { state: "approved", body: "", user: { login: "carol" } },
+        repository: { full_name: "acme/widgets" },
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.event.summary).toBe("PR acme/widgets#42 review approved by carol")
+    expect(result.event.data.body).toBeUndefined()
+    expect(result.event.data.reviewUrl).toBeUndefined()
+  })
+
   it("normalizes check_suite.completed against its PR when pull_requests[] is non-empty", () => {
     const result = normalizeGithubEvent({
       event: "check_suite",
