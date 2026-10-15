@@ -32,9 +32,19 @@ import {
 const WATCHED_KEY = "agentproto.watched.v1"
 const ACTIVITY_KEY = "agentproto.watched.activity.v1"
 
+/** Canonical JSON for a baseline map — keys sorted, so a store reordering
+ *  or a reload's key order alone never counts as "changed" worth writing. */
+function stableJson(map: Readonly<Record<string, SessionActivity>>): string {
+  return JSON.stringify(
+    Object.entries(map).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  )
+}
+
 export class WatchedSessions implements vscode.Disposable {
   private watched: Set<string>
   private lastActivity: Map<string, SessionActivity>
+  /** Canonical JSON of what the memento already holds — the write gate. */
+  private persistedJson: string
   private readonly memento: vscode.Memento
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChange = this._onDidChange.event
@@ -44,6 +54,7 @@ export class WatchedSessions implements vscode.Disposable {
     this.watched = new Set(memento.get<string[]>(WATCHED_KEY) ?? [])
     const activity = memento.get<WatchActivityMap>(ACTIVITY_KEY) ?? {}
     this.lastActivity = new Map(Object.entries(activity))
+    this.persistedJson = stableJson(activity)
   }
 
   isWatched(id: string): boolean {
@@ -66,9 +77,20 @@ export class WatchedSessions implements vscode.Disposable {
       this.watched.add(id)
     }
     void this.memento.update(WATCHED_KEY, [...this.watched])
-    void this.memento.update(ACTIVITY_KEY, Object.fromEntries(this.lastActivity))
+    this.persistBaseline()
     this._onDidChange.fire()
     return this.watched.has(id)
+  }
+
+  /** Persist the baseline only when it actually differs from what the memento
+   *  already holds — the store polls far more often than activities change,
+   *  and a write per poll would be pointless workspaceState churn. */
+  private persistBaseline(): void {
+    const baseline = Object.fromEntries(this.lastActivity)
+    const json = stableJson(baseline)
+    if (json === this.persistedJson) return
+    this.persistedJson = json
+    void this.memento.update(ACTIVITY_KEY, baseline)
   }
 
   /**
@@ -97,7 +119,7 @@ export class WatchedSessions implements vscode.Disposable {
     // fired — that's the debounce (one toast per state, not per poll) — and
     // drop the ones that vanished so the persisted map can't grow forever.
     this.lastActivity = new Map(Object.entries(current))
-    void this.memento.update(ACTIVITY_KEY, Object.fromEntries(this.lastActivity))
+    this.persistBaseline()
     for (const transition of transitions) void this.notify(store, transition)
   }
 
