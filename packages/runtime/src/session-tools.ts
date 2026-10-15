@@ -24,6 +24,7 @@ import type {
   SessionsRegistry,
 } from "./sessions.js"
 import { applyBracketedPasteWrap } from "./sessions.js"
+import { getSlug } from "./sessions.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -4960,7 +4961,12 @@ export function registerSessionTools(
             rows: input.rows ?? 24,
             ...(combinedPtyEnv ? { env: combinedPtyEnv } : {}),
             ...(authUnsetEnv && authUnsetEnv.length > 0 ? { unsetEnv: authUnsetEnv } : {}),
-            ...(prev.name ? { name: prev.name } : {}),
+            // Carry the addressable handle across the restart: post-PR rows
+            // never write `name`, so forwarding only `name` re-mints the slug
+            // from label/conversationSlug/"terminal" and silently loses the
+            // `--name dev-shell` handle. `getSlug` reads `slug ?? name`, so a
+            // legacy named row is migrated onto the slug on restart.
+            ...(getSlug(prev) ? { slug: getSlug(prev) } : {}),
             ...(prev.label ? { label: prev.label } : {}),
             // Lineage carry-forward (#session-visibility) — same reasoning as
             // the agent branch in session-restart-core.ts: a restart keeps the

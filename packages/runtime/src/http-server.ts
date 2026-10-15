@@ -7128,6 +7128,7 @@ code { color: #9ad; }
         ...(b.env && typeof b.env === "object"
           ? { env: b.env as Record<string, string> }
           : {}),
+        ...(typeof b.slug === "string" ? { slug: b.slug } : {}),
         ...(typeof b.name === "string" ? { name: b.name } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
       })

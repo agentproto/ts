@@ -605,6 +605,10 @@ export type SessionConfigChangedEvent = {
 export interface SessionRenamedEvent {
   type: "session:renamed"
   sessionId: string
+  /** The canonical addressable handle now on the descriptor (absent when
+   *  cleared). Lets a live client address the session by its new slug
+   *  without a full re-poll. */
+  slug?: string
   title?: string
   label?: string
   /** Always `true` — this event only fires from the human-driven rename

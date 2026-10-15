@@ -41,7 +41,7 @@ import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import { runShellGate } from "./supervisor.js"
 import { deriveSessionTitle, MAX_LENGTH as TITLE_MAX_LENGTH } from "./session-title.js"
-import { resolveSessionRef } from "./session-ref.js"
+import { mintSlug, resolveSessionRef } from "./session-ref.js"
 import {
   regenerateActivitySummary,
   type SessionActivitySummary,
@@ -1872,9 +1872,27 @@ export interface SessionDescriptor {
    *  bytes (alt-screen, key bindings, colors); attach goes through
    *  WS /sessions/:id/pty rather than SSE /sessions/:id/stream. */
   pty?: boolean
-  /** User-friendly slug supplied at spawn time. Optional; when set,
-   *  attach/stop/kill commands accept it as an alias for the id. */
+  /** DEPRECATED, read-only legacy alias for {@link slug}. Pre-`slug`
+   *  sessions used this as the terminal-only addressing handle; it is never
+   *  written by the daemon anymore (`spawnAgent`/`spawnPty` write `slug`
+   *  instead). Kept readable so a legacy row still resolves — see
+   *  {@link getSlug} (`slug ?? name`) and the resolver in `session-ref.ts`,
+   *  which matches both. */
   name?: string
+  /** Human-readable, UNIQUE handle for this session (the addressing `slug`
+   *  of the session-addressing plan). Minted through `mintSlug` and
+   *  de-duplicated with `-2`, `-3`, … against every session currently held,
+   *  falling back to `sess-<shortid>` when the input slugifies to empty:
+   *  `spawnAgent` slugs `title || label || adapterSlug || kind`;
+   *  `spawnPty` slugs `name || label || adapterSlug || "terminal"` (a
+   *  caller-supplied terminal `name` wins, else the display label, else the
+   *  classified provider slug); the boot backfill slugs
+   *  `name || title || label || adapterSlug || kind`, preferring a legacy
+   *  row's existing `name` handle. Overridable via `session_rename`/
+   *  `renameSession`. Never empty once a session exists; addressable through
+   *  `sessionId`/`idOrName`/`slug` everywhere. `name` is its deprecated alias
+   *  (`getSlug(desc)`), never a second source of truth. */
+  slug?: string
   /** Argv that was spawned. Persisted so `agentproto sessions restart`
    *  can clone the original shape without re-tokenizing the display
    *  `command` string. Empty for agent-cli sessions (we record
@@ -2594,6 +2612,18 @@ export interface SessionDescriptor {
   sandboxCheckedAt?: string
 }
 
+/** The session's canonical human handle: the {@link SessionDescriptor.slug}
+ *  when present, else the deprecated legacy {@link SessionDescriptor.name} it
+ *  replaced. Never the display `label`/`title` — those are not addressable.
+ *  Mirrors the `slug ?? name` fallback the shared resolver (`session-ref.ts`)
+ *  applies, so `findByIdOrName`/`resolveSessionRef` accept a legacy row's
+ *  `name` even before backfill (or for a row backfill skipped). */
+export function getSlug(
+  desc: Pick<SessionDescriptor, "slug" | "name">,
+): string | undefined {
+  return desc.slug ?? desc.name
+}
+
 /** Persisted re-attach coordinates — see `SessionDescriptor.sandboxReattach`. */
 export interface SandboxReattachRecord extends SandboxDetachRecord {
   /** ISO instant of the graceful detach; absent on a crash-stamped record. */
@@ -2670,6 +2700,9 @@ export interface SessionSummary {
   pinnedOrder?: number
   pty?: boolean
   name?: string
+  /** Unique human handle — see `SessionDescriptor.slug`. Surfaced on the list
+   *  projection so a client can address by slug without a full GET. */
+  slug?: string
   argv?: readonly string[]
   cwd?: string
   worktreePath?: string
@@ -2801,6 +2834,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     pinnedOrder: desc.pinnedOrder,
     pty: desc.pty,
     name: desc.name,
+    slug: desc.slug,
     argv: desc.argv,
     cwd: desc.cwd,
     worktreePath: desc.worktreePath,
@@ -4419,18 +4453,25 @@ export interface SessionsRegistry {
    *  configured `sessionRetention` defaults. Async + batched; never touches
    *  a live, pinned or keepAlive session or an ancestor of a live one. */
   pruneSessionDirs(opts?: SessionRetentionOptions): Promise<SessionRetentionResult>
-  /** Set or clear a session's user-facing name (`PATCH /sessions/:id`, the
-   *  `session_rename` MCP verb). Each of `title`/`label`: a non-empty string
-   *  sets that field (trimmed, capped to the derivation's `MAX_LENGTH` by
-   *  code point); an empty/whitespace-only string or `null` CLEARS it (the
-   *  UI reverts to the derived title / friendly fallback); `undefined`
-   *  leaves it untouched. Persists via the same `schedulePersist` every
-   *  descriptor mutation uses, and emits `session:renamed` so live UIs
-   *  repaint. Pure display state — never touches the live agent. Throws when
-   *  the id is unknown. */
+  /** Set or clear a session's user-facing name and/or its `slug`. This is
+   *  the write-path behind `PATCH /sessions/:id` and the `session_rename` MCP
+   *  verb; the registry honours a `slug` key on `patch`, and those two
+   *  surfaces forward it once their schemas carry it (owned by WP-A2 / WP-C1
+   *  — this method is the contract they call). Each of
+   *  `title`/`label`: a non-empty string sets that field (trimmed, capped to
+   *  the derivation's `MAX_LENGTH` by code point); an empty/whitespace-only
+   *  string or `null` CLEARS it (the UI reverts to the derived title /
+   *  friendly fallback); `undefined` leaves it untouched. `slug` (the
+   *  addressable human handle, WP-B1): a non-empty string sets it — slugified
+   *  and de-duplicated against every other held session with `-2`, `-3`, …;
+   *  an empty string or `null` clears it; `undefined` leaves it untouched.
+   *  Persists via the same `schedulePersist` every descriptor mutation uses,
+   *  and emits `session:renamed` so live UIs repaint. `title`/`label` writes
+   *  are pure display state; a `slug` write only changes the addressable
+   *  handle. Never touches the live agent. Throws when the id is unknown. */
   renameSession(
     id: string,
-    patch: { title?: string | null; label?: string | null },
+    patch: { title?: string | null; label?: string | null; slug?: string | null },
   ): SessionDescriptor
   /** Set or clear a session's idle-reaper exemption (the `session_set_keepalive`
    *  MCP verb). `true` flips `SessionDescriptor.keepAlive` on — `isReapable`
@@ -5332,8 +5373,17 @@ export interface SpawnPtyInput {
    *  one inherited from process.env. Applied AFTER `env` overrides so an
    *  explicit override always wins over a scrub of the same key. */
   unsetEnv?: string[]
-  /** User-friendly slug. Used by `findByIdOrName(query)`. Must not
-   *  collide with an existing session's name. */
+  /** Desired human handle. Fed to `mintSlug` as the preferred base for the
+   *  new session's {@link SessionDescriptor.slug} (ahead of `label`); the
+   *  result is de-duplicated against every held session with `-2`, `-3`, …,
+   *  so a collision never throws. Used by `findByIdOrName(query)`.
+   *
+   *  `slug` is the stronger form of the same preference: when set it is the
+   *  handle to carry over (a restart forwards `getSlug(prev)` so the new row
+   *  keeps the same addressable handle instead of re-minting from the
+   *  no-longer-written `name`/`label`). Still normalized + de-duplicated by
+   *  `mintSlug`, so it can never collide or throw. */
+  slug?: string
   name?: string
   label?: string
   /** Parent attribution + depth — same semantics as `SpawnAgentInput`
@@ -6520,6 +6570,49 @@ export function createSessionsRegistry(opts?: {
       // best-effort — an index write must never fail a session write
     }
   }
+
+  /** True when any held session already carries `candidate` as its handle
+   *  (`getSlug` — slug, or legacy name). `exceptId` excludes one session so a
+   *  row's own legacy `name` never blocks minting its replacement `slug`
+   *  during backfill. */
+  const isSlugTaken = (candidate: string, exceptId?: string): boolean => {
+    for (const rt of sessions.values()) {
+      if (rt.desc.id === exceptId) continue
+      if (getSlug(rt.desc) === candidate) return true
+    }
+    return false
+  }
+
+  /** Lazy slug backfill (session-addressing PLAN §4 WP-B1). A descriptor
+   *  restored from `sessions.json` before `slug` existed (or one whose slug
+   *  was somehow dropped) gets one minted here, from the same frozen
+   *  derivation `spawnAgent`/`spawnPty` use. Idempotent by construction: a
+   *  row that already has a non-empty `slug` is left untouched, so a user
+   *  override (or a prior boot's mint) is never rewritten. Rows minted in one
+   *  pass are visible to the next (they're written straight onto `sessions`),
+   *  so two restored rows with the same title land `x` and `x-2`. Persists via
+   *  the ordinary debounced snapshot (sessions.json) — the per-session
+   *  `index.json` sidecar has no `slug` field, so there is nothing to refresh
+   *  there and this deliberately does not pay for a synchronous index write
+   *  (with its transcript-tail read) per restored row at boot. */
+  const backfillMissingSlugs = (): void => {
+    let changed = false
+    for (const rt of sessions.values()) {
+      const desc = rt.desc
+      if (desc.slug !== undefined && desc.slug !== "") continue
+      desc.slug = mintSlug(
+        // Prefer a legacy row's existing `name` handle so backfill keeps the
+        // address a human already knows, rather than deriving a new one.
+        desc.name || desc.title || desc.label || desc.adapterSlug || desc.kind,
+        candidate => isSlugTaken(candidate, desc.id),
+        desc.id,
+      )
+      changed = true
+    }
+    if (changed) schedulePersist()
+  }
+
+  backfillMissingSlugs()
 
   const flushDirtyIndexes = (): void => {
     if (indexFlushTimer) {
@@ -10290,9 +10383,19 @@ export function createSessionsRegistry(opts?: {
       const id = input.id ?? mintSessionId()
       const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
       const restartPolicy = effectiveRestartPolicy(input)
+      // The human handle. Derivation is frozen (PLAN §2): slugify the first
+      // present of title || label || adapterSlug || kind, de-duped against
+      // every session the registry currently holds. `id` is the fallback tail
+      // when the input slugifies to empty.
+      const slug = mintSlug(
+        input.title || input.label || input.adapterSlug || "agent-cli",
+        candidate => isSlugTaken(candidate),
+        id,
+      )
       const desc: SessionDescriptor = {
         id,
         kind: "agent-cli",
+        slug,
         workspaceSlug: input.workspaceSlug,
         command: input.commandPreview ?? `${input.adapterSlug} (agent)`,
         pid: input.agentSession.pid ?? null,
@@ -10746,25 +10849,15 @@ export function createSessionsRegistry(opts?: {
         )
       }
       const id = `sess_${randomUUID().slice(0, 8)}`
-      // Reject the name only when the prior holder is still alive —
-      // killed/exited/error sessions keep their descriptor in the
-      // registry for history, but their name is free to reuse so
-      // `stop X && terminal --name X` round-trips cleanly.
-      if (input.name) {
-        for (const rt of sessions.values()) {
-          if (rt.desc.name !== input.name) continue
-          const status = rt.desc.status
-          if (status === "running" || status === "starting") {
-            throw new Error(
-              `sessions.spawnPty: name "${input.name}" already in use by ${rt.desc.id} (status=${status})`,
-            )
-          }
-          // Free the name on the dead session so id-or-name lookup
-          // resolves to the NEW one. The old descriptor stays in the
-          // registry (you can still find it by id in the list).
-          rt.desc.name = undefined
-        }
-      }
+      // A terminal's human handle is minted from a caller-supplied `name`
+      // (the legacy `--name`/`terminal_start.name`, still the most explicit
+      // request), else the display `label`, else the classified provider
+      // slug, else `terminal`. Deduped with `-2`, `-3`, … against every LIVE
+      // session the registry holds; a DEAD holder's handle is reclaimed so
+      // `stop X && terminal --name X` round-trips. The shared `mintSlug`
+      // replaces the old terminal-only guard — a colliding name no longer
+      // throws; it just gets the next free suffix. Computed after
+      // `conversationSlug` below.
       const [bin, ...args] = input.argv
       if (!bin) {
         throw new Error("sessions.spawnPty: argv must include a binary")
@@ -10831,9 +10924,26 @@ export function createSessionsRegistry(opts?: {
         conversationStore?.configDirEnvVar && input.env
           ? input.env[conversationStore.configDirEnvVar]
           : undefined
+      // The handle this spawn wants. `stop X && terminal --name X` must
+      // round-trip: a DEAD holder's handle is free to reuse, so reclaim it
+      // (clearing the new `slug` and any legacy `name`) before minting, and
+      // only LIVE holders count as taken. `mintSlug` with an always-false
+      // predicate yields the bare slugified base (no de-dup), which is what
+      // we compare a holder against. Live collisions still append `-2`, `-3`.
+      const rawSlug = input.slug || input.name || input.label || conversationSlug || "terminal"
+      const baseSlug = mintSlug(rawSlug, () => false, id)
+      for (const rt of sessions.values()) {
+        if (getSlug(rt.desc) !== baseSlug) continue
+        const status = rt.desc.status
+        if (status === "running" || status === "starting") continue
+        rt.desc.slug = undefined
+        rt.desc.name = undefined
+      }
+      const slug = mintSlug(rawSlug, candidate => isSlugTaken(candidate), id)
       const desc: SessionDescriptor = {
         id,
         kind: "terminal",
+        slug,
         workspaceSlug: input.workspaceSlug,
         command: [bin, ...args].map(quoteArg).join(" "),
         pid: pty.pid,
@@ -10843,7 +10953,6 @@ export function createSessionsRegistry(opts?: {
         argv: input.argv,
         cwd: input.cwd,
         ...worktreeFields(input.cwd),
-        ...(input.name ? { name: input.name } : {}),
         ...(input.label ? { label: input.label } : {}),
         // Same rule as spawnAgent: a NEW spawn's label is a slug, not a
         // human rename — let a later derived title outrank it.
@@ -12772,12 +12881,25 @@ export function createSessionsRegistry(opts?: {
       }
       apply("title")
       apply("label")
+      // `slug` is the addressable human handle, not a display field — set it
+      // through the shared minter so the override stays unique (a collision
+      // gets `-2`, never a throw). Clearing reverts to no slug (the legacy
+      // `name` alias, if any, still resolves via `getSlug`).
+      if (patch.slug !== undefined) {
+        const rawSlug = patch.slug === null ? "" : patch.slug.trim()
+        rt.desc.slug =
+          rawSlug === ""
+            ? undefined
+            : mintSlug(rawSlug, candidate => isSlugTaken(candidate, rt.desc.id), rt.desc.id)
+      }
       // This IS the explicit-user-rename write-path (both callers —
       // `PATCH /sessions/:id` and the `session_rename` MCP verb — are
       // human-driven). Flag it so a user's `label` outranks the derived
       // `title` in `sessionDisplayName`; a spawn `label`, set by `spawnAgent`
-      // with `renamedByUser: false`, does not.
-      rt.desc.renamedByUser = true
+      // with `renamedByUser: false`, does not. Only the DISPLAY fields feed
+      // that chain, so a slug-only override deliberately leaves the flag (and
+      // the displayed name) untouched.
+      if (patch.title !== undefined || patch.label !== undefined) rt.desc.renamedByUser = true
       schedulePersist()
       // Announce it so a live UI repaints the name without waiting for its
       // next snapshot poll — same bus every other lifecycle event rides.
@@ -12786,9 +12908,10 @@ export function createSessionsRegistry(opts?: {
       sessionEvents?.emit({
         type: "session:renamed",
         sessionId: id,
+        ...(rt.desc.slug !== undefined ? { slug: rt.desc.slug } : {}),
         ...(rt.desc.title !== undefined ? { title: rt.desc.title } : {}),
         ...(rt.desc.label !== undefined ? { label: rt.desc.label } : {}),
-        renamedByUser: true,
+        renamedByUser: rt.desc.renamedByUser === true,
         ts: new Date().toISOString(),
       })
       stampReadLiveness(rt.desc)

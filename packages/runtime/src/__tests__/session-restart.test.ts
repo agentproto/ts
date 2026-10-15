@@ -1044,6 +1044,35 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     await close()
     registry.shutdown()
   })
+
+  it("preserves the addressable slug across a plain PTY restart (the --name handle survives)", async () => {
+    const { client, registry, close } = await buildHarness()
+    const prev = registry.spawnPty({
+      argv: ["bash"],
+      cwd: process.cwd(),
+      workspaceSlug: "default",
+      cols: 80,
+      rows: 24,
+      name: "dev-shell",
+    })
+    expect(prev.slug).toBe("dev-shell")
+    expect(prev.name).toBeUndefined() // post-slug rows never write `name`
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    const desc = toolJson(result)
+    // Regression: forwarding only the now-dead `name` re-minted the slug from
+    // label/conversationSlug/"terminal" and silently dropped `dev-shell`. The
+    // restart must carry `getSlug(prev)` instead.
+    expect(desc.slug).toBe("dev-shell")
+    expect(desc.name).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
 })
 
 /**
