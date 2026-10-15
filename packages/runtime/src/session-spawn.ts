@@ -661,6 +661,24 @@ export async function resolveAccessProfileAuth(input: {
       message: "no auth profile was named.",
     }
   }
+  const firstRef = candidates[0]!
+  type Profile = NonNullable<Awaited<ReturnType<typeof getAuthProfile>>>
+  // Resolve EVERY candidate up front: a named-but-missing profile is a hard
+  // error (never a skip). This runs BEFORE the descriptor check so a missing
+  // profile with no descriptor still reports `access_profile_not_found` — the
+  // single-`profileRef` contract, preserved.
+  const resolvedCandidates: Array<{ ref: string; profile: Profile }> = []
+  for (const ref of candidates) {
+    const profile = await getAuthProfile(ref)
+    if (!profile) {
+      return {
+        ok: false,
+        code: "access_profile_not_found",
+        message: `no auth profile "${ref}" found.`,
+      }
+    }
+    resolvedCandidates.push({ ref, profile })
+  }
   if (!authDescriptor) {
     return {
       ok: false,
@@ -668,27 +686,15 @@ export async function resolveAccessProfileAuth(input: {
       message: `adapter "${adapter}" presents no billing-auth; a profile cannot be attached.`,
     }
   }
-  const firstRef = candidates[0]!
   type Candidate = {
-    profile: NonNullable<Awaited<ReturnType<typeof getAuthProfile>>>
+    profile: Profile
     projected: NonNullable<ReturnType<typeof spawnEligibilityManifest>>
     resolvedRouteGateway?: string
   }
   let selected: Candidate | undefined
-  let firstProfile: Candidate["profile"] | undefined
+  const firstProfile = resolvedCandidates[0]!.profile
   let firstProjected: ReturnType<typeof spawnEligibilityManifest>
-  for (const ref of candidates) {
-    const profile = await getAuthProfile(ref)
-    if (!profile) {
-      // A named-but-missing profile is a hard error, never a skip — the
-      // caller asked to bill a wallet that isn't there.
-      return {
-        ok: false,
-        code: "access_profile_not_found",
-        message: `no auth profile "${ref}" found.`,
-      }
-    }
-    if (ref === firstRef) firstProfile = profile
+  for (const [index, { profile }] of resolvedCandidates.entries()) {
     let projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
     // The naive/prefix-guessed route above is only ever a GUESS when the
     // caller didn't pin one explicitly (`route?.gateway` still wins outright,
@@ -713,7 +719,7 @@ export async function resolveAccessProfileAuth(input: {
         }
       }
     }
-    if (ref === firstRef) firstProjected = projected
+    if (index === 0) firstProjected = projected
     if (
       projected &&
       eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length > 0
