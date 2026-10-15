@@ -49,14 +49,18 @@ const DELIVERY = delIdx !== -1 ? args[delIdx + 1] : "commit";
 function gh(endpoint) {
   const env = { ...process.env };
   if (TOKEN) env.GH_TOKEN = TOKEN;
-  return JSON.parse(
-    execFileSync("gh", ["api", "--paginate", endpoint], {
-      cwd: ROOT,
-      encoding: "utf8",
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    }),
-  );
+  const out = execFileSync("gh", ["api", "--paginate", endpoint], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  if (!out) return [];
+  // `gh api --paginate` concatenates JSON arrays back to back (`[…][…]`), so
+  // a bare JSON.parse throws past the first page; split the pages apart first
+  // (same recipe as version-pr-changelog.mjs).
+  const pages = out.replace(/\]\s*\[/g, "],[");
+  return JSON.parse(`[${pages}]`).flat();
 }
 
 // ── gather the review + diff the model must act on ───────────────────────────
@@ -150,28 +154,25 @@ const options = { cwd: ROOT, input: patch, encoding: "utf8" };
 execFileSync("git", ["apply", "--check"], options);
 
 // The fixer may edit any repo file the review touches, but must never escape
-// the working tree, touch .git, or hide a path behind a rename/copy directive
-// (a rename's destination-only numstat would let a scope check be bypassed).
+// the working tree, touch .git, or hide a path behind a rename/copy directive.
+// Paths come from `git apply --numstat -z` (NUL-delimited, UNQUOTED) — parsing
+// the patch's own headers instead misses git C-quoted paths (a quote, a
+// backslash, or non-ASCII), which is the same hole the docs-scope guard had.
+if (/^(?:rename|copy) (?:from|to) /m.test(patch)) {
+  throw new Error("Cloud fix patch uses a rename/copy directive — not allowed");
+}
 const bad = (p) =>
   p.startsWith("/") ||
   p === ".git" ||
   p.startsWith(".git/") ||
   p.split("/").includes("..");
-for (const line of patch.split("\n")) {
-  let m;
-  if (
-    (m = /^diff --git a\/(.+) b\/(.+)$/.exec(line)) ||
-    (m = /^--- a\/(.+)$/.exec(line)) ||
-    (m = /^\+\+\+ b\/(.+)$/.exec(line))
-  ) {
-    for (const p of m.slice(1))
-      if (p && bad(p))
-        throw new Error(`Cloud fix patch touches an out-of-tree path: ${p}`);
-  } else if (/^(?:rename|copy) (?:from|to) /.test(line)) {
-    throw new Error(
-      `Cloud fix patch uses a rename/copy directive (${line.trim()}) — not allowed`,
-    );
-  }
+const paths = execFileSync("git", ["apply", "--numstat", "-z"], options)
+  .split("\0")
+  .filter(Boolean)
+  .map((record) => record.split("\t").slice(2).join("\t"));
+for (const p of paths) {
+  if (p && bad(p))
+    throw new Error(`Cloud fix patch touches an out-of-tree path: ${p}`);
 }
 
 execFileSync("git", ["apply", "--whitespace=error-all"], options);
