@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-minimax.mjs
-// (ids: MiniMax pricing page + committed PascalCase list, pricing: platform.minimax.io pay-as-you-go pricing page, OpenRouter /v1/models (minimax/*) fallback per row, synced 2026-10-12T13:51:54.600Z)
+// (ids: MiniMax pricing page + committed PascalCase list, pricing: platform.minimax.io pay-as-you-go pricing page, OpenRouter /v1/models (minimax/*) fallback per row, synced 2026-10-15T10:35:26.523Z)
 // OpenRouter fallback rows: normalization lowercase → prepend "minimax-" when
 // missing; OpenRouter's minimax/* routes carry no input_cache_write, so those
 // rows have no cacheWriteMultiplier.

@@ -2,13 +2,23 @@
   "opencode-go": {
     "id": "opencode-go",
     "name": "OpenCode Go",
-    "api": "https://opencode.ai/zen/go/v1",
-    "doc": "https://opencode.ai/docs/go",
+    "api": "https://opencode.ai/inference/go/v1",
+    "doc": "https://opencode.ai/v2/docs/console/go/",
     "env": [
       "OPENCODE_API_KEY"
     ],
     "npm": "@ai-sdk/openai-compatible",
     "models": {
+      "cat-jam-free": {
+        "id": "cat-jam-free",
+        "name": "Cat Jam Free",
+        "release_date": "2026-10-12",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "claude-haiku-5-5": {
         "id": "claude-haiku-5-5",
         "name": "Claude Haiku 5.5",
@@ -29,6 +39,7 @@
         "name": "DeepSeek V4 Flash",
         "family": "deepseek-flash",
         "release_date": "2026-07-31",
+        "status": "deprecated",
         "cost": {
           "input": 0.15,
           "output": 0.6,
@@ -40,6 +51,7 @@
         "name": "DeepSeek V4 Flash Vision Exp",
         "family": "deepseek-flash",
         "release_date": "2026-08-21",
+        "status": "deprecated",
         "cost": {
           "input": 0.15,
           "output": 0.6,
@@ -66,6 +78,20 @@
           "input": 0.15,
           "output": 0.6,
           "cache_read": 0.003
+        }
+      },
+      "gemini-4-argon-contributor": {
+        "id": "gemini-4-argon-contributor",
+        "name": "Gemini 4 Argon Contributor",
+        "family": "gemini",
+        "release_date": "2026-10-13",
+        "provider": {
+          "npm": "@ai-sdk/google"
+        },
+        "cost": {
+          "input": 4,
+          "output": 20,
+          "cache_read": 0.2
         }
       },
       "glm-5.2": {

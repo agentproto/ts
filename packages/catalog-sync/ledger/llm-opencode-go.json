@@ -1,9 +1,11 @@
 {
+  "opencode-go/cat-jam-free": "2026-10-12",
   "opencode-go/claude-haiku-5-5": "2026-10-07",
   "opencode-go/deepseek-v4-flash": "2026-07-31",
   "opencode-go/deepseek-v4-flash-vision-exp": "2026-08-21",
   "opencode-go/deepseek-v4-pro": "2026-04-24",
   "opencode-go/deepseek-v4.1-flash": "2026-09-10",
+  "opencode-go/gemini-4-argon-contributor": "2026-10-13",
   "opencode-go/glm-5": "2026-02-11",
   "opencode-go/glm-5.1": "2026-04-07",
   "opencode-go/glm-5.2": "2026-06-13",

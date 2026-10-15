@@ -27,6 +27,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "opencode",
     provider: "opencode",
   },
+  "opencode/cat-jam-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-10-12",
+    vendor: "opencode",
+    provider: "opencode",
+  },
   "opencode/claude-fable-5": {
     inputPer1M: 10,
     outputPer1M: 50,
@@ -194,11 +201,11 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "deepseek",
     provider: "opencode",
   },
-  "opencode/exo-free": {
+  "opencode/deepseek-v4.1-flash-free": {
     inputPer1M: 0,
     outputPer1M: 0,
-    addedAt: "2026-10-06",
-    vendor: "opencode",
+    addedAt: "2026-09-10",
+    vendor: "deepseek",
     provider: "opencode",
   },
   "opencode/gemini-3-flash": {
@@ -254,6 +261,14 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     outputPer1M: 7.5,
     cacheReadMultiplier: 0.1,
     addedAt: "2026-09-02",
+    vendor: "google",
+    provider: "opencode",
+  },
+  "opencode/gemini-4-argon": {
+    inputPer1M: 2,
+    outputPer1M: 10,
+    cacheReadMultiplier: 0.05,
+    addedAt: "2026-10-13",
     vendor: "google",
     provider: "opencode",
   },
@@ -558,20 +573,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     cacheReadMultiplier: 0.1,
     addedAt: "2026-07-16",
     vendor: "moonshotai",
-    provider: "opencode",
-  },
-  "opencode/ling-3.0-flash-fin-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-08-27",
-    vendor: "inclusionai",
-    provider: "opencode",
-  },
-  "opencode/ling-3.1-flash-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-09-29",
-    vendor: "inclusionai",
     provider: "opencode",
   },
   "opencode/longcat-2.5-preview-free": {

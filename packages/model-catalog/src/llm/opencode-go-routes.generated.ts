@@ -20,6 +20,13 @@
 import type { LLMPricing } from "./catalog.js"
 
 export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
+  "opencode-go/cat-jam-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-10-12",
+    vendor: "opencode",
+    provider: "opencode-go",
+  },
   "opencode-go/claude-haiku-5-5": {
     inputPer1M: 0.1,
     outputPer1M: 0.5,
@@ -27,22 +34,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     cacheWriteMultiplier: 1.25,
     addedAt: "2026-10-07",
     vendor: "anthropic",
-    provider: "opencode-go",
-  },
-  "opencode-go/deepseek-v4-flash": {
-    inputPer1M: 0.15,
-    outputPer1M: 0.6,
-    cacheReadMultiplier: 0.02,
-    addedAt: "2026-07-31",
-    vendor: "deepseek",
-    provider: "opencode-go",
-  },
-  "opencode-go/deepseek-v4-flash-vision-exp": {
-    inputPer1M: 0.15,
-    outputPer1M: 0.6,
-    cacheReadMultiplier: 0.02,
-    addedAt: "2026-08-21",
-    vendor: "deepseek",
     provider: "opencode-go",
   },
   "opencode-go/deepseek-v4-pro": {
@@ -59,6 +50,14 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     cacheReadMultiplier: 0.02,
     addedAt: "2026-09-10",
     vendor: "deepseek",
+    provider: "opencode-go",
+  },
+  "opencode-go/gemini-4-argon-contributor": {
+    inputPer1M: 4,
+    outputPer1M: 20,
+    cacheReadMultiplier: 0.05,
+    addedAt: "2026-10-13",
+    vendor: "google",
     provider: "opencode-go",
   },
   "opencode-go/glm-5.2": {

@@ -1,9 +1,9 @@
 {
   "opencode": {
     "id": "opencode",
-    "name": "OpenCode Zen",
-    "api": "https://opencode.ai/zen/v1",
-    "doc": "https://opencode.ai/docs/zen",
+    "name": "OpenCode",
+    "api": "https://opencode.ai/inference/v1",
+    "doc": "https://opencode.ai/v2/docs/console/models/",
     "env": [
       "OPENCODE_API_KEY"
     ],
@@ -19,6 +19,16 @@
           "output": 0,
           "cache_read": 0,
           "cache_write": 0
+        }
+      },
+      "cat-jam-free": {
+        "id": "cat-jam-free",
+        "name": "Cat Jam Free",
+        "release_date": "2026-10-12",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
         }
       },
       "claude-3-5-haiku": {
@@ -334,10 +344,22 @@
           "cache_read": 0.006
         }
       },
+      "deepseek-v4.1-flash-free": {
+        "id": "deepseek-v4.1-flash-free",
+        "name": "DeepSeek V4.1 Flash Free",
+        "family": "deepseek-flash",
+        "release_date": "2026-09-10",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "exo-free": {
         "id": "exo-free",
         "name": "Exo Free",
         "release_date": "2026-10-06",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0
@@ -464,6 +486,20 @@
           "input": 1.5,
           "output": 7.5,
           "cache_read": 0.15
+        }
+      },
+      "gemini-4-argon": {
+        "id": "gemini-4-argon",
+        "name": "Gemini 4 Argon",
+        "family": "gemini",
+        "release_date": "2026-10-13",
+        "provider": {
+          "npm": "@ai-sdk/google"
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1
         }
       },
       "glm-4.6": {
@@ -1113,6 +1149,7 @@
         "name": "Ling 3.0 Flash Fin Free",
         "family": "ling",
         "release_date": "2026-08-27",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
@@ -1147,6 +1184,7 @@
         "name": "Ling 3.1 Flash Free",
         "family": "ling",
         "release_date": "2026-09-29",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
