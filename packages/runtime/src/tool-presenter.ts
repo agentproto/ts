@@ -132,6 +132,47 @@ function extractText(value: unknown): string | null {
 }
 
 /**
+ * A command tool (`command_execute`) returns its whole result as a SINGLE
+ * JSON string — `JSON.stringify({ exitCode, signal, stdout, stderr, … })`
+ * (`command-tools.ts`). JSON escapes every newline inside `stdout`/`stderr`
+ * into `\`+`n`, so the string carries NO literal newline. Treated as plain
+ * text it therefore always looks like ONE line, and the generic path below
+ * truncates it to the first ~160 chars: the JSON preamble plus the first
+ * thing the command printed — frequently a cwd/path banner. That is exactly
+ * the "I only see the first part of the output, usually the cwd" symptom.
+ *
+ * Recognize that shape and summarize the PARSED `stdout`/`stderr` (real
+ * newlines) instead, prefixed with the exit code. Returns `null` for anything
+ * that isn't a `{stdout|stderr}`-bearing JSON object, so plain-text and other
+ * tool results are untouched.
+ */
+function summarizeCommandJson(text: string): string | null {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith("{")) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+  if (!isRecord(parsed)) return null
+  const stdout = typeof parsed.stdout === "string" ? parsed.stdout : null
+  const stderr = typeof parsed.stderr === "string" ? parsed.stderr : null
+  if (stdout === null && stderr === null) return null
+  const exitCode = parsed.exitCode ?? parsed.exit_code
+  const exitPart =
+    exitCode === undefined || exitCode === null ? "" : `exit ${String(exitCode)} · `
+  // stderr wins when present — it's the actionable half of a command result.
+  const body = (stderr && stderr.trim() ? stderr : (stdout ?? "")).trim()
+  if (!body) return `${exitPart}no output`
+  const lines = body.split(/\r?\n/)
+  if (lines.length > 1) {
+    return `${exitPart}${lines.length} lines, ${Buffer.byteLength(body, "utf8")}B`
+  }
+  return `${exitPart}${truncate(lines[0]!, MAX_RESULT_LENGTH)}`
+}
+
+/**
  * A short outcome line for a completed tool call, or `null` when there's
  * nothing useful to show (e.g. an empty/void result). `toolName` is
  * accepted for parity with `formatToolCall` and future bespoke result
@@ -146,6 +187,8 @@ export function formatToolResult(
   const text = extractText(result)
 
   if (isError) {
+    const structured = text != null ? summarizeCommandJson(text) : null
+    if (structured != null) return structured
     const message = text ?? (result != null ? JSON.stringify(result) : "failed")
     const firstLine = message.split(/\r?\n/)[0] ?? message
     return truncate(firstLine, MAX_RESULT_LENGTH)
@@ -154,6 +197,9 @@ export function formatToolResult(
   if (text == null) return null
   const trimmed = text.trim()
   if (!trimmed) return null
+
+  const structured = summarizeCommandJson(trimmed)
+  if (structured != null) return structured
 
   const lines = trimmed.split(/\r?\n/)
   if (lines.length > 1) {
