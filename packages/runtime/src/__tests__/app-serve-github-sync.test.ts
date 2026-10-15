@@ -56,9 +56,12 @@ async function makeBareOrigin(base: string): Promise<string> {
 }
 
 /** The token must never touch a command line: every exec command string is
- *  scanned for the raw token. */
-function localExec(base: string, forbidden?: string): SandboxExec {
+ *  scanned for the raw token. A `sink`, when given, records every command
+ *  string so a test can prove the git calls flow through THIS seam (and not
+ *  the host's `realGitRunner`). */
+function localExec(base: string, forbidden?: string, sink?: string[]): SandboxExec {
   return async ({ command, cwd, env }) => {
+    sink?.push(command)
     const res = spawnSync("sh", ["-c", command], {
       cwd: cwd ?? base,
       encoding: "utf8",
@@ -166,9 +169,10 @@ describe("pullAppGithubWorkspace", () => {
     tokenEnv: ["GITHUB_TOKEN", "GH_TOKEN"],
   })
 
-  it("clones into an empty mount and scrubs the persisted auth header", async () => {
+  it("clones through the box exec seam and never persists the token", async () => {
     const mount = join(base, "mount")
-    const res = await pullAppGithubWorkspace(localExec(base, token()), myDecl(mount), {
+    const commands: string[] = []
+    const res = await pullAppGithubWorkspace(localExec(base, token(), commands), myDecl(mount), {
       cloneUrl: origin,
       resolveToken: token,
     })
@@ -176,8 +180,20 @@ describe("pullAppGithubWorkspace", () => {
     expect(await readFile(join(mount, "README.md"), "utf8")).toBe(
       "# home\n",
     )
+    // The regression guard: the sync's git runs through the INJECTED seam
+    // (a `git clone` command string reached the box exec), NOT the host's
+    // `realGitRunner` against an in-box path.
+    expect(commands.some(c => /git .*clone|git clone/.test(c))).toBe(true)
+    // No command line ever carried the token, nor the base64 auth header the
+    // host path would write.
+    for (const c of commands) {
+      expect(c).not.toContain(token())
+      expect(c).not.toContain("Authorization: Basic")
+      expect(c).not.toContain("--replace-all")
+    }
     const config = await readFile(join(mount, ".git", "config"), "utf8")
     expect(config).not.toContain("extraheader")
+    expect(config).not.toContain("Authorization")
     expect(config).not.toContain(token())
   })
 
@@ -239,6 +255,28 @@ describe("pullAppGithubWorkspace", () => {
       resolveToken: token,
     })
     expect(res.ok).toBe(false)
+  })
+
+  it("defaults to the secrets broker — ambient process.env is never the source", async () => {
+    const mount = join(base, "ambient")
+    const previous = process.env.GITHUB_TOKEN
+    process.env.GITHUB_TOKEN = "ambient-token-must-be-ignored"
+    try {
+      // No `resolveToken` → the broker default runs. With no broker wired
+      // (the test process) that resolves nothing, whatever the ambient env
+      // holds — so a worker that still read `process.env` would clone here.
+      const res = await pullAppGithubWorkspace(
+        localExec(base, "ambient-token-must-be-ignored"),
+        myDecl(mount),
+        { cloneUrl: origin },
+      )
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.reason).toContain("no GitHub token")
+    } finally {
+      if (previous === undefined) delete process.env.GITHUB_TOKEN
+      else process.env.GITHUB_TOKEN = previous
+    }
+    expect(existsSync(join(mount, ".git"))).toBe(false)
   })
 
   it("pull keeps the declared branch/pr policy and lands the checkout on main", async () => {
@@ -319,20 +357,26 @@ describe("createGithubWorkspacePushAtClose — opt-in decision", () => {
     const mount = join(base, "mount")
     git(["clone", origin, mount], base)
     await writeFile(join(mount, "work.txt"), "session work\n")
+    const commands: string[] = []
     const hook = createGithubWorkspacePushAtClose({
       sync: decl(mount, { branchPolicy: "per-conversation", prPolicy: "manual" }),
-      exec: exec(),
+      exec: localExec(base, token(), commands),
       sessionId: "sess_abc123",
       resolveToken: token,
       cloneUrl: origin,
     })
     expect(hook).toBeDefined()
     await hook?.()
+    // The push ran through the injected box seam, not host-side git.
+    expect(commands.some(c => /git ['"]?push/.test(c))).toBe(true)
+    for (const c of commands) {
+      expect(c).not.toContain(token())
+      expect(c).not.toContain("--replace-all")
+    }
     const originBranches = gitAll(["branch", "--format=%(refname:short)"], origin).split("\n")
     expect(originBranches).toContain("agentproto/sess_abc123")
     expect(originBranches).toEqual(expect.arrayContaining(["main", "agentproto/sess_abc123"]))
     expect(originBranches).toHaveLength(2)
-    // the per-conversation branch carries the work
     // the per-conversation branch carries the work
     expect(gitAll(["show", "agentproto/sess_abc123:work.txt"], origin)).toBe("session work")
   })

@@ -112,6 +112,7 @@ describe("createGithubWorkspaceSync", () => {
     })
     const result = await fs.pull(fs)
     expect(result.seeded).toBe(true)
+    expect(result.ok).toBe(true)
     expect(result.files).toBeGreaterThan(0)
     // The README from the seed commit is present.
     expect(await fs.exists("README.md")).toBe(true)
@@ -128,6 +129,8 @@ describe("createGithubWorkspaceSync", () => {
     // Second pull should fetch+merge (ff) and report seeded: false.
     const result = await fs.pull(fs)
     expect(result.seeded).toBe(false)
+    // A healthy refresh is `seeded: false` but NOT a failure.
+    expect(result.ok).toBe(true)
     expect(result.message).toContain("pulled")
   })
 
@@ -318,6 +321,7 @@ describe("createGithubWorkspaceSync", () => {
     })
     const result = await fs.pull(fs)
     expect(result.seeded).toBe(false)
+    expect(result.ok).toBe(false)
     expect(result.message).toContain("clone failed")
   })
 })

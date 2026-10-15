@@ -53,6 +53,7 @@ import {
   type GithubStorageConfig,
 } from "@agentproto/storage-github"
 import { declaredGithubWorkspace } from "./app-workspace.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import type { SyncTree } from "@agentproto/storage-github"
 
 /** Default port `appServe` serves on when the caller doesn't pin one. */
@@ -267,10 +268,13 @@ export interface AppGithubWorkspaceAtServe {
 }
 
 /** Token lookup for the sync — mirrors `app-workspace`'s default: the first
- *  set env var among the declared names, on the HOST. */
+ *  set env var among the declared names, against an EXPLICIT env map.
+ *  Standalone/test helper: the spawn path resolves through the daemon's
+ *  secrets broker ({@link resolveGithubWorkspaceTokenFromBroker}), never
+ *  ambient `process.env`. */
 export function resolveGithubWorkspaceToken(
   envNames: readonly string[],
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv,
 ): string | undefined {
   for (const name of envNames) {
     const v = env[name]
@@ -278,6 +282,33 @@ export function resolveGithubWorkspaceToken(
   }
   return undefined
 }
+
+/** Resolve a declared github-workspace token through the daemon's secrets
+ *  broker (`mcp-credential-deps`), matching the spawn path's posture — the
+ *  ambient `process.env` is never read here. Returns the first declared env
+ *  name the broker can resolve, or `undefined`. Never throws. */
+export async function resolveGithubWorkspaceTokenFromBroker(
+  envNames: readonly string[],
+): Promise<string | undefined> {
+  const { resolveSandboxSecret } = getMcpCredentialDeps()
+  if (!resolveSandboxSecret) return undefined
+  for (const name of envNames) {
+    try {
+      const v = await resolveSandboxSecret(name)
+      if (v) return v
+    } catch {
+      // Unresolvable name → try the next declared one; a genuinely missing
+      // token surfaces as the caller's "no GitHub token" warning.
+    }
+  }
+  return undefined
+}
+
+/** A declared-token resolver. Async so the broker-backed default fits; a
+ *  sync resolver is assignable too. */
+export type GithubWorkspaceTokenResolver = (
+  envNames: readonly string[],
+) => string | undefined | Promise<string | undefined>
 
 /** Shell-quote one argument for an in-box `SandboxExec` command string. */
 function shQuote(value: string): string {
@@ -362,9 +393,10 @@ export async function readAppGithubWorkspaceSync(
 }
 
 export interface AppGithubWorkspacePullOpts {
-  /** Host-side token lookup over the declared env names. Defaults to the
-   *  spawn daemon's own process env. */
-  resolveToken?: (envNames: readonly string[]) => string | undefined
+  /** Token lookup over the declared env names. Defaults to the daemon's
+   *  secrets broker ({@link resolveGithubWorkspaceTokenFromBroker}) — never
+   *  ambient `process.env`. */
+  resolveToken?: GithubWorkspaceTokenResolver
   /** Overrides the clone/fetch URL (local origin in tests). Never read
    *  from the manifest: the token must only ever reach the validated
    *  github.com `repoUrl`. */
@@ -379,35 +411,40 @@ export type AppGithubWorkspacePullResult =
  * Pull the app's github workspace inside the box through
  * `createGithubWorkspaceSync`'s pull contract: an empty/missing mount dir is
  * cloned, an existing checkout is fetched + merged (`--ff-only` — a diverged
- * local branch fails the pull rather than being clobbered). Never throws:
- * a failed pull is reported and the serve continues. After a seed clone the
- * token header storage-github stamps into `.git/config` is scrubbed — no
- * credential at rest in the box, same guarantee as A1's host-side clone.
+ * local branch fails the pull rather than being clobbered). Git runs IN the
+ * box — the sync is driven by {@link boxGitRunner} over the per-command exec
+ * seam, never the host's `spawnSync` against an in-box path — with
+ * `persistAuth: false` so the token never lands on the box's command line
+ * nor in `.git/config`. Never throws: a failed pull is reported and the
+ * serve continues.
  */
 export async function pullAppGithubWorkspace(
   exec: SandboxExec,
   sync: AppGithubWorkspaceSync,
   opts: AppGithubWorkspacePullOpts = {},
 ): Promise<AppGithubWorkspacePullResult> {
-  const token = (opts.resolveToken ?? resolveGithubWorkspaceToken)(sync.tokenEnv)
+  const token = await (opts.resolveToken ?? resolveGithubWorkspaceTokenFromBroker)(sync.tokenEnv)
   if (!token) {
     return { ok: false, reason: `no GitHub token (set one of ${sync.tokenEnv.join(", ")})` }
   }
-  const runner = boxGitRunner(exec)
   const config: GithubStorageConfig = {
     ...sync.config,
     ...(opts.cloneUrl !== undefined ? { cloneUrl: opts.cloneUrl } : {}),
   }
-  const syncer = createGithubWorkspaceSync(config, { workspaceDir: sync.dir, token }, {})
+  // `boxGitRunner` is the WHOLE point: the sync's git calls must round-trip
+  // through the box, not run host-side against a path that only exists in it.
+  const syncer = createGithubWorkspaceSync(
+    config,
+    { workspaceDir: sync.dir, token },
+    { gitRunner: boxGitRunner(exec), persistAuth: false },
+  )
   try {
     await exec({ command: `mkdir -p ${shQuote(sync.dir)}` })
     const res = await syncer.pull(boxSyncTree(exec, sync.dir))
-    const failed = !res.seeded && res.message.includes("failed")
-    if (failed) return { ok: false, reason: res.message }
-    if (res.seeded) {
-      // Same at-rest scrub as A1's host-side clone.
-      await runner(["config", "--remove-section", "http.https://github.com/"], { cwd: sync.dir })
-    }
+    // Real discriminant: `ok === false` is a failed clone or fetch/merge,
+    // whatever `seeded`; a healthy refresh of an existing checkout is
+    // `seeded: false, ok: true`.
+    if (res.ok === false) return { ok: false, reason: res.message }
     return { ok: true, dir: sync.dir, message: res.message }
   } catch (err) {
     return {
@@ -432,7 +469,9 @@ export function createGithubWorkspacePushAtClose(input: {
   /** Conversation id for a `per-conversation` branch policy — the spawning
    *  session's id when known; `agentproto/<now>` when not. */
   sessionId?: string
-  resolveToken?: (envNames: readonly string[]) => string | undefined
+  /** Token lookup; defaults to the daemon's secrets broker — never ambient
+   *  `process.env`. */
+  resolveToken?: GithubWorkspaceTokenResolver
   cloneUrl?: string
 }): (() => Promise<void>) | undefined {
   const { sync } = input
@@ -450,7 +489,7 @@ export function createGithubWorkspacePushAtClose(input: {
     const exec = input.exec
     if (!exec) return
     try {
-      const token = (input.resolveToken ?? resolveGithubWorkspaceToken)(sync.tokenEnv)
+      const token = await (input.resolveToken ?? resolveGithubWorkspaceTokenFromBroker)(sync.tokenEnv)
       if (!token) {
         console.warn(
           `[app-serve] github workspace push skipped: no GitHub token ` +
@@ -468,7 +507,9 @@ export function createGithubWorkspacePushAtClose(input: {
           token,
           ...(input.sessionId !== undefined ? { conversationId: input.sessionId } : {}),
         },
-        {},
+        // Runs IN the box (per-command exec seam) and never writes the token
+        // to `.git/config` — every git call injects it via env only.
+        { gitRunner: boxGitRunner(exec), persistAuth: false },
       )
       const res = await syncer.push(boxSyncTree(exec, sync.dir), {
         summary: `agentproto app-workspace sync (session ${input.sessionId ?? "close"})`,
@@ -657,10 +698,12 @@ export async function startSandboxAppServe(
     /** Client factory — injectable for tests; defaults to a real MCP
      *  connection against `host.mcpUrl`. */
     connect?: (mcpUrl: string) => Promise<BoxToolClient>
-    /** Github workspace sync injection for tests — default resolves the
-     *  token from the spawn daemon's process env over the declared names. */
+    /** Github workspace sync injection. The spawn path supplies the
+     *  daemon's broker-backed resolver; the default is the same broker
+     *  ({@link resolveGithubWorkspaceTokenFromBroker}) — ambient
+     *  `process.env` is never the source. */
     github?: {
-      resolveToken?: (envNames: readonly string[]) => string | undefined
+      resolveToken?: GithubWorkspaceTokenResolver
       cloneUrl?: string
     }
   },

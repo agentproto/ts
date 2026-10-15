@@ -271,6 +271,7 @@ import {
   DEFAULT_APP_SERVE_PORT,
   composeTeardownHooks,
   createGithubWorkspacePushAtClose,
+  resolveGithubWorkspaceTokenFromBroker,
   startSandboxAppServe,
   type AppGithubWorkspaceAtServe,
   type SandboxAppServeSpec,
@@ -5913,7 +5914,12 @@ export async function bootSandboxAgentSession(opts: {
   let appServe: SessionAppServeInfo | undefined
   let appGithubSync: AppGithubWorkspaceAtServe | undefined
   if (opts.appServe) {
-    const serve = await startSandboxAppServe(host, opts.appServe)
+    // The app-workspace token is resolved through the daemon's secrets
+    // broker (never ambient `process.env`) — the same posture the box's own
+    // boot secrets resolution uses above.
+    const serve = await startSandboxAppServe(host, opts.appServe, {
+      github: { resolveToken: resolveGithubWorkspaceTokenFromBroker },
+    })
     if (!serve.ok) {
       await host.stop().catch(() => undefined)
       recordSandboxState(host.sandboxId, "stopped")

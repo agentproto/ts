@@ -54,6 +54,15 @@ export interface GithubWorkspaceSyncOpts {
    *  work unchanged. */
   gitRunner?: GitRunner | AsyncGitRunner
   prCreator?: PrCreator
+  /** Persist the auth header into the clone's `.git/config` on a seed clone
+   *  (default `true`). Set `false` when the git invocation runs over a
+   *  remote seam whose command line is observable (a sandbox box): every
+   *  later pull/push already injects the token per call via
+   *  `GIT_HTTP_EXTRAHEADER` (`buildGitEnv`), so the at-rest entry — and the
+   *  `git config … "<base64>"` argument that writes it — is unnecessary
+   *  there. The host-side path keeps the default so a later
+   *  `git fetch`/`push` in the same tree authenticates without env help. */
+  persistAuth?: boolean
 }
 
 const DEFAULT_BASE_BRANCH = "main"
@@ -147,6 +156,7 @@ export function createGithubWorkspaceSync(
 ): WorkspaceSync {
   const runner = extra.gitRunner ?? realGitRunner
   const prCreator = extra.prCreator ?? createOctokitPrCreator()
+  const persistAuth = extra.persistAuth !== false
   const resolved = resolveConfig(config)
 
   async function pull(
@@ -166,7 +176,16 @@ export function createGithubWorkspaceSync(
         cwd: workspaceDir,
         env,
       })
-      assertGitOk(fetchRes, "fetch")
+      if (!fetchRes.ok) {
+        const detail = fetchRes.stderr.trim() || fetchRes.stdout.trim()
+        return {
+          seeded: false,
+          ok: false,
+          files: 0,
+          bytes: 0,
+          message: `pull: fetch failed: ${detail}`,
+        }
+      }
       const mergeRes = await runner(
         ["merge", `origin/${resolved.baseBranch}`, "--no-edit", "--ff-only"],
         { cwd: workspaceDir, env },
@@ -177,6 +196,7 @@ export function createGithubWorkspaceSync(
         const detail = mergeRes.stderr.trim() || mergeRes.stdout.trim()
         return {
           seeded: false,
+          ok: false,
           files: 0,
           bytes: 0,
           message: `pull: merge failed (local diverged from origin/${resolved.baseBranch}): ${detail}`,
@@ -185,6 +205,7 @@ export function createGithubWorkspaceSync(
       const files = await tree.walk("")
       return {
         seeded: false,
+        ok: true,
         files: files.length,
         bytes: 0,
         message: `pulled origin/${resolved.baseBranch}`,
@@ -202,16 +223,21 @@ export function createGithubWorkspaceSync(
       const detail = cloneRes.stderr.trim() || cloneRes.stdout.trim()
       return {
         seeded: false,
+        ok: false,
         files: 0,
         bytes: 0,
         message: `pull: clone failed: ${detail}`,
       }
     }
-    // Stamp the auth header into `.git/config` for future push/fetch.
-    await writeAuthConfig(runner, workspaceDir, token)
+    // Stamp the auth header into `.git/config` for future push/fetch — unless
+    // the caller asked for remote-seam execution, where every later call
+    // injects the token per invocation and putting the base64 header on the
+    // box's command line would leak it to a process listing.
+    if (persistAuth) await writeAuthConfig(runner, workspaceDir, token)
     const files = await tree.walk("")
     return {
       seeded: true,
+      ok: true,
       files: files.length,
       bytes: 0,
       message: `cloned ${resolved.repoUrl} @ ${resolved.baseBranch}`,
