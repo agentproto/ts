@@ -410,7 +410,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.release-agent.outputs.free_primary_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release notes posted? (after OpenCode free)
@@ -438,7 +438,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.release-agent.outputs.free_fallback_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release notes posted? (after OpenCode free fallback)
@@ -523,7 +523,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.docs-agent.outputs.free_primary_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
       - name: Check docs for release drift (OpenCode free fallback)
         id: docs-2
         if:
@@ -536,7 +536,7 @@ jobs:
         env:
           AGENT_LANE: opencode-free
           AGENT_MODEL: ${{ steps.docs-agent.outputs.free_fallback_model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
 
       - name: Check docs for release drift (Claude Cloud fallback)
         id: docs-cloud-fallback
