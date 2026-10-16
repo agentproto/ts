@@ -1,5 +1,19 @@
 # @agentproto/app-kit
 
+## 1.10.0
+
+### Minor Changes
+
+- 0d1cb7b: Add AIP-42 agent manifest authoring: the shared `renderAgentManifest` in app-kit, the `agentproto agent create|list` CLI verb, the daemon `create_agent` MCP tool, and spawn-time `agentId`/`agentPath` manifest defaults (plus `sessions start --agent`).
+- 5a1a7e0: Add the AIP-53 `services` production-hosting field: a validated, frozen `services: [{ name, entry, port? }]` array on `AppDefinition`/`AppHandle` that `defineApp`, `emitApp` and `loadAppHandle` carry verbatim. app-kit never executes a service `entry`; the host spawns one keep-alive service-owner session per entry at install time. The `services` load error shares the `invalid services declaration` phrase with the runtime install-time launcher.
+- 5a1a7e0: Add the AIP-53 `services` frontmatter field (`services: [{ name, entry, port? }]`) — an app's production hosting surface, distinct from the dev-only `dev.launch`. `defineApp`, `loadAppHandle` and `emitApp` validate it (non-empty array, unique kebab-case `name`, non-empty `entry`, optional 1..65535 `port`, no extra keys) and carry it verbatim / round-trip it. app-kit never executes a service `entry`: the host spawns one keep-alive service-owner session per entry at install time (later work item), and `dev.launch` remains validation-only.
+
+### Patch Changes
+
+- Updated dependencies [3a02a3b]
+  - @agentproto/agent@0.4.0
+  - @agentproto/mastra@0.2.18
+
 ## 1.9.0
 
 ### Minor Changes

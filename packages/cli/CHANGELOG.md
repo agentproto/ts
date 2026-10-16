@@ -1,5 +1,22 @@
 # @agentproto/cli
 
+## 1.25.0
+
+### Minor Changes
+
+- a2cd821: Add `agentproto app tunnel`, the `app_tunnel` MCP tool, and the `buildSessionLink` miniapp helper
+- 0d1cb7b: Add AIP-42 agent manifest authoring: the shared `renderAgentManifest` in app-kit, the `agentproto agent create|list` CLI verb, the daemon `create_agent` MCP tool, and spawn-time `agentId`/`agentPath` manifest defaults (plus `sessions start --agent`).
+- a2cd821: Add `agentproto app tunnel` — create a public (private-by-default, signed-link) tunnel for an app's `ui.port` through the running daemon, optionally minting the miniapp session deep link. Adds the daemon-side `app_tunnel` MCP tool plus the exported `buildSessionLink` helper and `AppTunnelResult` type.
+
+### Patch Changes
+
+- Updated dependencies [0d1cb7b]
+- Updated dependencies [5a1a7e0]
+- Updated dependencies [5a1a7e0]
+  - @agentproto/app-kit@1.10.0
+  - @agentproto/apps@0.23.4
+  - @agentproto/adapter-browser@0.6.1
+
 ## 1.24.0
 
 ### Minor Changes
