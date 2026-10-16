@@ -1,6 +1,6 @@
 ---
 "@agentproto/runtime": minor
-"@agentproto/agent": patch
+"@agentproto/agent": minor
 ---
 
 New `create_tool` / `delete_tool` daemon verbs author an AIP-14/AIP-30
