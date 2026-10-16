@@ -7,6 +7,7 @@
  * `agentproto app uninstall <appId> [--json]`
  * `agentproto app update [<appId>] [--dry-run] [--json]`
  * `agentproto app store [--print]`
+ * `agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>] [--name <name>] [--json]`
  *
  * Package an agentproto app folder (one holding a valid `.agentproto/APP.md`)
  * into a single self-contained `.agentapp` tar.gz bundle — the "APK for
@@ -30,7 +31,7 @@ import { dirname, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
-import { AgentAppPackError, packApp, peekAppUi, unpackApp } from "@agentproto/app-kit"
+import { AgentAppPackError, loadAppHandle, packApp, peekAppUi, unpackApp } from "@agentproto/app-kit"
 import { ensureAppUiBuilt } from "@agentproto/runtime/app-ui-build"
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
@@ -62,6 +63,7 @@ Usage:
   agentproto app update [<appId>] [--dry-run] [--json]
   agentproto app store [--print]
   agentproto app list
+  agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>] [--name <name>] [--json]
   agentproto app serve [appDir] [--port <n>] [--app <appId>] [--json]
   agentproto app build <appDir> [--json]
   agentproto app dev <appDir> [--port <n>] [--json] [-- <viteArgs...>]
@@ -146,6 +148,20 @@ store:
   Open the daemon's App Store panel (\`<daemon base url>/store\`) in the
   browser. --print just prints the URL.
 
+tunnel:
+  Load the app at <dir> (its APP.md \`ui.port\`) and create a public tunnel for
+  it through the running daemon, printing the URL to share. Requires the
+  daemon to be up and the app to declare \`ui.port\` (error otherwise).
+  Private by default: the printed URL is a signed link with a TTL, not the
+  bare host.
+  --session <id> prints the miniapp deep link \`<url>/s/<sessionId>\`.
+  --hostname <fqdn> creates a STABLE-hostname tunnel (cloudflare-named) using
+  the named-tunnel creds already registered with the daemon
+  (\`setup_tunnel_provider cloudflare-named\`); no secret is passed on the CLI.
+  --name <name> sets a friendly tunnel name slug.
+  --json prints { tunnelId, url, provider, targetPort, [name], [hostname],
+  [sessionLink] }.
+
 serve:
   Serve <appDir>'s .agentproto/ui/ as a standalone webapp with a window.McpApp
   bridge wired to the daemon's /mcp endpoint. Pass --app <appId> to serve an
@@ -195,6 +211,9 @@ export async function runApp(args: readonly string[]): Promise<number> {
   }
   if (subVerb === "store") {
     return runAppStore(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "tunnel") {
+    return runAppTunnel(args.filter((a) => a !== subVerb))
   }
   if (subVerb === "list") {
     return runAppList()
@@ -803,6 +822,111 @@ export async function runAppStore(args: readonly string[]): Promise<number> {
   }
   openInBrowser(storeUrl)
   process.stdout.write(`agentproto: opening ${storeUrl}\n`)
+  return 0
+}
+
+/** `agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>]
+ *  [--name <name>] [--json]` — create a public tunnel for the app's UI.
+ *
+ *  The app manifest is loaded here so a missing `ui.port` (or a `ui` block
+ *  whose built file is absent) is reported before any daemon round-trip; the
+ *  tunnel itself is created by the daemon's `app_tunnel` tool, which owns the
+ *  provider creds and the tunnel registry. */
+export async function runAppTunnel(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      session: { type: "string" },
+      hostname: { type: "string" },
+      name: { type: "string" },
+      json: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  })
+  if (values.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return 0
+  }
+
+  const dirArg = positionals[0]
+  if (!dirArg) {
+    process.stderr.write(`agentproto app tunnel: <dir> is required.\n${USAGE}\n`)
+    return 2
+  }
+  const appDir = resolve(process.cwd(), expandHome(dirArg))
+
+  let handle: Awaited<ReturnType<typeof loadAppHandle>>
+  try {
+    handle = await loadAppHandle(appDir)
+  } catch (err) {
+    process.stderr.write(
+      `agentproto app tunnel: cannot load app at ${appDir} ` +
+        `(${err instanceof Error ? err.message : String(err)}).\n`,
+    )
+    return 1
+  }
+  const port = handle.ui?.port
+  if (port === undefined) {
+    process.stderr.write(
+      `agentproto app tunnel: ${appDir} declares no 'ui.port' in its APP.md — ` +
+        `add one (the tunnel needs a port to expose).\n`,
+    )
+    return 2
+  }
+
+  const sessionArg = typeof values.session === "string" ? values.session : undefined
+  if (sessionArg !== undefined && sessionArg.trim() === "") {
+    process.stderr.write(`agentproto app tunnel: --session needs a session id.\n`)
+    return 2
+  }
+  const hostnameArg = typeof values.hostname === "string" ? values.hostname : undefined
+  if (hostnameArg !== undefined && hostnameArg.trim() === "") {
+    process.stderr.write(`agentproto app tunnel: --hostname needs a hostname.\n`)
+    return 2
+  }
+  const nameArg = typeof values.name === "string" ? values.name : undefined
+
+  const { code, texts } = await callDaemonAppToolRaw("tunnel", "app_tunnel", {
+    targetPort: port,
+    ...(sessionArg !== undefined ? { session: sessionArg } : {}),
+    ...(hostnameArg !== undefined ? { hostname: hostnameArg } : {}),
+    ...(nameArg !== undefined ? { name: nameArg } : {}),
+  })
+  if (code !== 0) return code
+
+  let result: {
+    tunnelId?: string
+    url?: string
+    provider?: string
+    targetPort?: number
+    name?: string
+    hostname?: string
+    sessionLink?: string
+  } = {}
+  try {
+    result = JSON.parse(texts[0] ?? "{}") as typeof result
+  } catch {
+    // Keep the empty object; we fall back to the raw line below.
+  }
+
+  if (values.json) {
+    process.stdout.write((texts[0] ?? "{}") + "\n")
+    return 0
+  }
+  if (!result.url) {
+    process.stdout.write((texts[0] ?? "{}") + "\n")
+    return 0
+  }
+  process.stdout.write(
+    `tunnel created  id=${result.tunnelId ?? "?"}${result.name ? `  name=${result.name}` : ""}\n` +
+      `  url    ${result.url}\n` +
+      (result.hostname ? `  host   ${result.hostname}\n` : "") +
+      `  target 127.0.0.1:${result.targetPort ?? port}\n` +
+      `  provider ${result.provider ?? "quick"}\n` +
+      (result.sessionLink ? `  session link ${result.sessionLink}\n` : ""),
+  )
   return 0
 }
 
