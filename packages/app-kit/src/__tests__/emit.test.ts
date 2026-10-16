@@ -264,6 +264,52 @@ describe("emit — manifests round-trip through the loaders", () => {
     })
   })
 
+  it("writes services verbatim into APP.md frontmatter, and omits it when absent", async () => {
+    const withServices = await mkdtemp(join(tmpdir(), "app-kit-emit-services-"))
+    const without = await mkdtemp(join(tmpdir(), "app-kit-emit-noservices-"))
+    try {
+      const services = [
+        { name: "api", entry: "node dist/server.js", port: 8080 },
+        { name: "worker", entry: "node dist/worker.js" },
+      ]
+      const { appPath } = await defineApp({
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "solo",
+              description: "Solo agent.",
+              model: "claude-sonnet-5",
+            }),
+            body: "Solo.",
+          },
+        ],
+        services,
+      }).emit(withServices)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      expect(parsed.data.services).toEqual(services)
+
+      const bare = await defineApp({
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "solo",
+              description: "Solo agent.",
+              model: "claude-sonnet-5",
+            }),
+            body: "Solo.",
+          },
+        ],
+      }).emit(without)
+      const bareParsed = matter(await readFile(bare.appPath, "utf8"))
+      expect("services" in bareParsed.data).toBe(false)
+    } finally {
+      await rm(withServices, { recursive: true, force: true })
+      await rm(without, { recursive: true, force: true })
+    }
+  })
+
   it("copies artifact/index.html from source and writes path into APP.md frontmatter", async () => {
     const artifactHtml = "<html><body><h1>Dashboard</h1></body></html>"
     const artifactSrc = join(dir, "source-artifact.html")
