@@ -563,7 +563,7 @@ describe("loadAppHandle — services (production hosting surface)", () => {
         matter.stringify(parsed.content, { ...parsed.data, services: "api" }),
         "utf8",
       )
-      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter 'services'/)
+      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter invalid services declaration/)
     } finally {
       await rm(d, { recursive: true, force: true })
     }

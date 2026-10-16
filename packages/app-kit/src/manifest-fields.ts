@@ -235,7 +235,20 @@ export function normalizeManifestFields(
     accepts = { tasks: bool(input.accepts.tasks, "accepts.tasks", fail) }
   }
 
-  const services = serviceList(input.services, "services", fail)
+  // `services[]` validation is shared with the install-time launcher
+  // (packages/runtime/src/app-tools.ts's parseAppServices), which reports an
+  // "invalid services declaration" error. The loader is the FIRST validator
+  // on the app_install path, so it carries the same phrase — a malformed
+  // block fails the install with ONE recognizable message whichever gate
+  // sees it first.
+  let services: readonly AppService[] | undefined
+  try {
+    services = serviceList(input.services, "services", fail)
+  } catch (err) {
+    throw fail(
+      `invalid services declaration — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
 
   return { placement, requires, requirements, appRequirements, exposes, accepts, services }
 }
