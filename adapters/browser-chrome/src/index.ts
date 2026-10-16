@@ -48,3 +48,13 @@ export type { ResolveChromeInput } from "./resolve.js"
 
 export { buildChromeArgs, defaultDataDir, parseDevToolsActivePort } from "./launch.js"
 export type { ChromeProcess, SpawnChrome } from "./launch.js"
+
+export {
+  CHROME_LIVE_LAUNCH_DEFAULT_TIMEOUT_MS,
+  CHROME_LIVE_LAUNCH_DIR_ENV,
+  CHROME_LIVE_LAUNCH_PROFILE,
+  findFreePort,
+  launchDetachedChrome,
+  liveLaunchDataDir,
+} from "./live-launch.js"
+export type { JsonVersion, LaunchedChrome, LiveLaunchDeps } from "./live-launch.js"

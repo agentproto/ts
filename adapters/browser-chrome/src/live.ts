@@ -18,17 +18,26 @@ import { ToolError } from "@agentproto/tool"
 import { z } from "zod"
 import { CdpConnection } from "./cdp.js"
 import { ChromeCdpDriver, chromeDriverCapabilities } from "./driver.js"
+import { launchDetachedChrome, type LaunchedChrome, type LiveLaunchDeps } from "./live-launch.js"
 
 /**
  * `chrome-live`: attach to the user's own, already running Chrome through the
  * remote debugging toggle at chrome://inspect/#remote-debugging (Chrome 144+).
  *
- * Nothing is launched, killed or written to the profile. One websocket per
- * endpoint (each new one makes Chrome ask the user for consent again). The
- * agent works in a window it opened itself and only ever addresses targets it
- * created: no `Target.getTargets`, no attach to a foreign tab, no `Browser.close`.
- * The F11 guard of the `chrome` provider (no LAUNCH on the default profile) is
- * untouched; this provider never launches.
+ * Attachment is preferred: on the default endpoint (dial the toggle at port
+ * `CHROME_LIVE_PORT`, 9222) a successful attach wins. When nothing answers
+ * there — the toggle was never turned on, or consent was refused — the provider
+ * AUTO-LAUNCHES a dedicated headful Chrome (`launchDetachedChrome`): a free
+ * port, its own PERSISTED user-data-dir (never the user's default profile), and
+ * zero consent clicks. That child is recorded and only THAT pid is ever killed
+ * by `stop()` — the user's own Chrome is never touched. An explicit endpoint
+ * (launch `wsUrl`/`port`, provider config, or `CHROME_LIVE_*` env) disables the
+ * fallback: a pinned endpoint is taken literally.
+ *
+ * The agent works in a window it opened itself and only ever addresses targets
+ * it created: no `Target.getTargets`, no attach to a foreign tab, no
+ * `Browser.close`. The F11 guard of the `chrome` provider (no LAUNCH on the
+ * default profile) is untouched — the fallback launches on a dedicated profile.
  */
 
 export const CHROME_LIVE_PROVIDER_ID = "chrome-live"
@@ -122,11 +131,24 @@ export interface ChromeLiveProviderConfig {
   discover?: boolean
   /** Env read for `CHROME_LIVE_*`. Default `process.env`; `launch({ env })` is merged over it. */
   env?: Readonly<Record<string, string | undefined>>
+  /**
+   * Auto-launch a dedicated headful Chrome when the default endpoint is not
+   * attachable. Default `true`. An explicit endpoint (launch `wsUrl`/`port`,
+   * this config, or `CHROME_LIVE_*` env) disables the fallback regardless.
+   */
+  autoLaunch?: boolean
+  /** Seams for the auto-launched Chrome (binary, spawn, free port, `/json/version`, dir, timeout). */
+  launchDeps?: LiveLaunchDeps
 }
 
 export interface ChromeLiveLaunchOptions extends BrowserLaunchOptions {
   /** Full browser websocket URL for this launch. */
   wsUrl?: string
+  /**
+   * Test/dev seam: force the auto-launch fallback even when an explicit
+   * endpoint was given, so the fallback path can be exercised deterministically.
+   */
+  forceAutoLaunch?: boolean
 }
 
 export type ChromeLiveProvider = Omit<BrowserProvider, "launch"> & {
@@ -423,6 +445,8 @@ interface LiveEntry {
   stopping?: Promise<void>
   log?: (line: string) => void
   owner?: ChromeLiveInstance
+  /** Set only when THIS provider auto-launched the Chrome behind this endpoint; `stop()` kills it (and only it). */
+  ownedChrome?: LaunchedChrome
 }
 
 /** What survives a dropped connection: our own targets, so a reconnect can still close them. */
@@ -433,6 +457,8 @@ interface Leftover {
 
 const HEALTH_TIMEOUT_MS = 5_000
 const DISCOVERY_TIMEOUT_MS = 1_500
+/** Grace before SIGKILL when stopping a Chrome this provider auto-launched. */
+const OWNED_STOP_GRACE_MS = 5_000
 
 function errnoCode(err: unknown): string | undefined {
   for (let e: unknown = err, depth = 0; e && depth < 4; depth++) {
@@ -453,7 +479,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => Error)
 
 const DESCRIPTION =
   "Your own running Chrome (your logged-in profile), attached through Chrome's remote debugging toggle at chrome://inspect/#remote-debugging. " +
-  "Launches nothing; Chrome asks you to Allow the connection. The agent works in its own window and never touches your tabs."
+  "When the toggle is off it auto-launches a dedicated headful Chrome on its own profile (no consent click). " +
+  "The agent works in its own window and never touches your tabs."
 
 export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}): ChromeLiveProvider {
   const consentTimeoutMs = config.consentTimeoutMs ?? CHROME_LIVE_DEFAULT_CONSENT_TIMEOUT_MS
@@ -463,6 +490,8 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   const leftovers = new Map<string, Leftover>()
   /** Endpoints that had a connection before: reconnecting there means a new consent dialog. */
   const seen = new Set<string>()
+  /** The entry behind the Chrome THIS provider auto-launched, reused across launches so we never leak instances. */
+  let autoEntry: LiveEntry | undefined
 
   function endpoint(opts: ChromeLiveLaunchOptions): { wsUrl?: string; port: number } {
     // Launch options, then the provider config, then the env; at each level a ws URL beats a port.
@@ -472,6 +501,24 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       if (level.port) return { port: level.port }
     }
     return { port: CHROME_LIVE_DEFAULT_PORT }
+  }
+
+  /** True when an endpoint was pinned (launch opts, provider config, or env) — the fallback never runs then. */
+  function explicitEndpoint(opts: ChromeLiveLaunchOptions): boolean {
+    if (opts.wsUrl || opts.port) return true
+    if (config.wsUrl || config.port) return true
+    const env = readChromeLiveEnv({ ...(config.env ?? process.env), ...opts.env })
+    return env.wsUrl !== undefined || env.port !== undefined
+  }
+
+  function autoLaunchEnabled(opts: ChromeLiveLaunchOptions): boolean {
+    if (config.autoLaunch === false) return false
+    return opts.forceAutoLaunch === true || !explicitEndpoint(opts)
+  }
+
+  /** Attach was impossible (nothing listening, or no consent): the fallback's trigger conditions. */
+  function isAttachUnavailable(err: unknown): boolean {
+    return err instanceof ChromeRemoteDebuggingOffError || err instanceof ChromeConsentTimeoutError
   }
 
   async function discover(port: number): Promise<string> {
@@ -505,12 +552,14 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   }
 
   /** Open the one websocket, then wait for the user's "Allow" (`Browser.getVersion` answers only after it). */
-  async function openConnection(url: string, log?: (line: string) => void): Promise<CdpConnection> {
+  async function openConnection(url: string, log?: (line: string) => void, launched = false): Promise<CdpConnection> {
     const secs = Math.round(consentTimeoutMs / 1000)
     log?.(
-      seen.has(url)
-        ? `[chrome-live] reconnecting to ${url}: Chrome will ask for consent again, click "Allow" (waiting up to ${secs}s)`
-        : `[chrome-live] connecting to ${url}: click "Allow" in Chrome's remote debugging dialog (waiting up to ${secs}s)`,
+      launched
+        ? `[chrome-live] connecting to the auto-launched Chrome at ${url} (no consent needed)`
+        : seen.has(url)
+          ? `[chrome-live] reconnecting to ${url}: Chrome will ask for consent again, click "Allow" (waiting up to ${secs}s)`
+          : `[chrome-live] connecting to ${url}: click "Allow" in Chrome's remote debugging dialog (waiting up to ${secs}s)`,
     )
     seen.add(url)
     const attempt = CdpConnection.connect(url, { timeoutMs: consentTimeoutMs })
@@ -547,8 +596,8 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     }
   }
 
-  async function open(url: string, ctx: BrowserHostContext): Promise<LiveEntry> {
-    const conn = await openConnection(url, ctx.log)
+  async function open(url: string, ctx: BrowserHostContext, owned?: LaunchedChrome): Promise<LiveEntry> {
+    const conn = await openConnection(url, ctx.log, owned !== undefined)
     const entry: LiveEntry = {
       url,
       conn,
@@ -557,6 +606,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       drivers: new Set(),
       lock: Promise.resolve(),
       ...(ctx.log ? { log: ctx.log } : {}),
+      ...(owned ? { ownedChrome: owned } : {}),
     }
     // Our sessions are flat: a closed tab of ours shows up as detachedFromTarget on the browser session.
     conn.onEvent((event) => {
@@ -568,6 +618,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       if (entry.state !== "open") return
       entry.state = "dropped"
       if (entries.get(url) === entry) entries.delete(url)
+      if (autoEntry === entry) autoEntry = undefined
       discovering.clear()
       if (entry.targets.size > 0) leftovers.set(url, { targets: new Set(entry.targets), ...(entry.windowId !== undefined ? { windowId: entry.windowId } : {}) })
       entry.log?.(`[chrome-live] lost the connection to Chrome at ${url} (${reason}); the next launch reconnects, and Chrome will ask for consent again`)
@@ -622,6 +673,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     const instance: ChromeLiveInstance = {
       id: `${CHROME_LIVE_PROVIDER_ID}:${new URL(entry.url).host}`,
       endpoints: { cdp: entry.url },
+      ...(entry.ownedChrome?.pid !== undefined ? { pid: entry.ownedChrome.pid } : {}),
       wasAlreadyRunning,
 
       async health(): Promise<BrowserHealth> {
@@ -723,22 +775,29 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         }
         if (!entry.stopping) {
           entry.stopping = (async () => {
-            const wasOpen = entry.state === "open"
+            const wasOpen = entry.state === "open" && !entry.conn.closed
             entry.state = "stopped"
             if (entries.get(entry.url) === entry) entries.delete(entry.url)
-            if (!wasOpen || entry.conn.closed) {
-              if (entry.targets.size > 0) entry.log?.(`[chrome-live] ${entry.targets.size} agent tab(s) stay open in Chrome: the connection is gone`)
-              return
+            if (!wasOpen && entry.targets.size > 0) {
+              entry.log?.(`[chrome-live] ${entry.targets.size} agent tab(s) stay open in Chrome: the connection is gone`)
             }
-            leftovers.delete(entry.url)
-            for (const driver of [...entry.drivers]) await driver.close().catch(() => {})
-            // Tabs adopted after a reconnect have no driver; close them by their (our own) targetId.
-            for (const targetId of [...entry.targets]) {
-              await entry.conn.send("Target.closeTarget", { targetId }).catch(() => {})
-              forget(entry, targetId)
+            if (wasOpen) {
+              leftovers.delete(entry.url)
+              for (const driver of [...entry.drivers]) await driver.close().catch(() => {})
+              // Tabs adopted after a reconnect have no driver; close them by their (our own) targetId.
+              for (const targetId of [...entry.targets]) {
+                await entry.conn.send("Target.closeTarget", { targetId }).catch(() => {})
+                forget(entry, targetId)
+              }
+              // Never Browser.close: that could be the user's Chrome. Only our socket goes.
+              entry.conn.close()
             }
-            // Never Browser.close: that is the user's Chrome. Only our socket goes.
-            entry.conn.close()
+            // Pid scissors: kill ONLY the Chrome this provider auto-launched.
+            // An attach-only entry has no `ownedChrome`, so the user's own
+            // Chrome (which we merely attached to) is never signalled.
+            await stopOwnedChrome(entry.ownedChrome)
+            entry.ownedChrome = undefined
+            if (autoEntry === entry) autoEntry = undefined
           })()
         }
         await entry.stopping
@@ -747,14 +806,26 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     return instance
   }
 
-  async function launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
-    const url = await resolveUrl(opts)
+  /** SIGTERM → (grace) SIGKILL a Chrome we spawned. No-op when we did not spawn it, or it already exited. */
+  async function stopOwnedChrome(owned: LaunchedChrome | undefined): Promise<void> {
+    if (!owned || owned.hasExited()) return
+    const gone = new Promise<void>((resolve) => owned.process.once("exit", resolve))
+    owned.process.kill("SIGTERM")
+    const killer = setTimeout(() => owned.process.kill("SIGKILL"), OWNED_STOP_GRACE_MS)
+    try {
+      await gone
+    } finally {
+      clearTimeout(killer)
+    }
+  }
+
+  async function connectEntry(url: string, ctx: BrowserHostContext, owned?: LaunchedChrome): Promise<ChromeLiveInstance> {
     const live = entries.get(url)
     if (live && live.state === "open" && !live.conn.closed) return makeInstance(live, true)
     const pending = connecting.get(url)
     if (pending) return makeInstance(await pending, true)
 
-    const promise = open(url, ctx)
+    const promise = open(url, ctx, owned)
     connecting.set(url, promise)
     try {
       const entry = await promise
@@ -763,6 +834,29 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       return entry.owner
     } finally {
       connecting.delete(url)
+    }
+  }
+
+  async function launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
+    try {
+      return await connectEntry(await resolveUrl(opts), ctx)
+    } catch (err) {
+      if (!autoLaunchEnabled(opts) || !isAttachUnavailable(err)) throw err
+      // The toggle is not attachable: reuse the Chrome we already launched, else
+      // launch a dedicated one and connect to it via its advertised ws URL.
+      const existing = autoEntry
+      if (existing && existing.state === "open" && !existing.conn.closed) return makeInstance(existing, true)
+      ctx.log?.(`[chrome-live] no attachable Chrome at the configured endpoint: auto-launching a dedicated instance`)
+      const launched = await launchDetachedChrome({ ...config.launchDeps, ...(ctx.log ? { log: ctx.log } : {}) })
+      try {
+        const instance = await connectEntry(launched.wsUrl, ctx, launched)
+        autoEntry = entries.get(launched.wsUrl)
+        return instance
+      } catch (connectErr) {
+        // We launched it, so we clean it up ourselves before surfacing the error.
+        await stopOwnedChrome(launched)
+        throw connectErr
+      }
     }
   }
 
