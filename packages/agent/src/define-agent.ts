@@ -3,6 +3,17 @@ import { agentFrontmatterSchema } from "./schema.js"
 import type { AgentDefinition, AgentHandle } from "./types.js"
 
 /**
+ * AIP-42 id pattern — the single source of truth for a valid agent id.
+ *
+ * Bare ids, or an `@<owner>/`-prefixed namespaced id (`@agentik/writer`).
+ * Exported so callers that must resolve an id to a filesystem path (e.g.
+ * `create_tool`'s grant check) can reject path-traversal (`..`, `/`) BEFORE
+ * any `join`, instead of re-deriving a looser regex locally.
+ */
+export const AGENT_ID_PATTERN =
+  /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,79}$/
+
+/**
  * AIP-42 reference implementation of `defineAgent`.
  *
  * Built on `createDoctype` so the cross-AIP invariants (id pattern,
@@ -20,7 +31,7 @@ export const defineAgent = createDoctype<AgentDefinition, AgentHandle>({
   name: "agent",
   // AIP-42 ids accept an optional `@<owner>/` prefix for namespacing
   // across registries (e.g. `@agentik/writer`). Bare ids stay valid.
-  idPattern: /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,79}$/,
+  idPattern: AGENT_ID_PATTERN,
   validate(def) {
     const result = agentFrontmatterSchema.safeParse(def)
     if (!result.success) {

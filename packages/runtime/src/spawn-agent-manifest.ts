@@ -75,6 +75,11 @@ export function resolveAgentManifestPath(
 
 export interface AgentManifestSpawnDefaults {
   readonly path: string
+  /** The manifest's own `id:` (may carry an `@owner/` prefix). Recorded on
+   *  the spawned session so the gateway can bind a per-caller grant check
+   *  (e.g. `create_tool`) to the caller's OWN manifest instead of trusting a
+   *  caller-supplied tool argument. */
+  readonly id: string
   readonly model?: string
   /** Adapter options the manifest projected — the AGENT.md path for a
    *  manifest-native adapter (`caps.agentManifestOption`, e.g. mastra-agent).
@@ -128,6 +133,7 @@ export async function loadAgentManifestDefaults(
     ok: true,
     defaults: {
       path,
+      id: loaded.handle.id,
       ...(projected.model !== undefined ? { model: projected.model } : {}),
       ...(projected.options !== undefined ? { options: projected.options } : {}),
       ...(projected.instructions !== undefined ? { instructions: projected.instructions } : {}),

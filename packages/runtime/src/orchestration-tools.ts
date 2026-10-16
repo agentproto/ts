@@ -2716,9 +2716,12 @@ export function registerOrchestrationTools(
         kind: z.literal("tool"),
         tool: z.string().min(1)
           .refine(t => !isSelfSchedulingTool(t), {
-            message: "cron jobs may not dispatch cron_* tools (self-scheduling)",
+            message:
+              "cron jobs may not dispatch cron_* (self-scheduling) or create_*/delete_* authoring tools (unattended tool/agent minting)",
           })
-          .describe("Registered daemon MCP tool name to call in-process, e.g. 'worktree_gc'. cron_* tools are refused."),
+          .describe(
+            "Registered daemon MCP tool name to call in-process, e.g. 'worktree_gc'. cron_* (self-scheduling) and create_*/delete_* (authoring) tools are refused.",
+          ),
         inputs: z.record(z.string(), z.unknown()).optional().describe("Arguments passed to the tool verbatim."),
       }),
     ])

@@ -3262,9 +3262,22 @@ export async function createGateway(
     // renderer (same path `emitApp` and `agentproto agent create` use).
     registerCreateAgentTool(rawServer, { workspace })
     // AIP-14/AIP-30 tool authoring (`create_tool` / `delete_tool`). A NEW
-    // primitive, gated by the caller's AIP-42 `actions.granted` (default
-    // DENY) and bounded by a minimum lifetime + a per-agent/day delete limit.
-    registerCreateToolTools(rawServer, { workspace })
+    // primitive, gated by the AUTHENTICATED CALLER'S own AIP-42
+    // `actions.granted` (default DENY) and bounded by a minimum lifetime + a
+    // per-agent/day delete limit. The grant subject is resolved here from the
+    // trusted `callerSessionId` (the session's own manifest is recorded on its
+    // descriptor `meta` at spawn — see `session-spawn.ts`), NEVER from a
+    // caller-supplied tool argument. A caller with no resolvable manifest
+    // fails closed.
+    const createToolCallerSession = callerSessionId ? sessions.get(callerSessionId) : undefined
+    const callerAgentId = createToolCallerSession?.meta?.agentId
+    const callerAgentManifestPath = createToolCallerSession?.meta?.agentManifestPath
+    registerCreateToolTools(rawServer, {
+      workspace,
+      ...(callerSessionId ? { sessionId: callerSessionId } : {}),
+      ...(callerAgentId ? { agentId: callerAgentId } : {}),
+      ...(callerAgentManifestPath ? { manifestPath: callerAgentManifestPath } : {}),
+    })
     // Read `defaults.agentPromptInterrupt` / `defaults.messaging.*` fresh on
     // every call (this factory runs once per `/mcp` request — the SDK's
     // stateless pattern, see `serveMcp` in http-server.ts) instead of the
