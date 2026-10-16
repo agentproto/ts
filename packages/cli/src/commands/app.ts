@@ -63,7 +63,7 @@ Usage:
   agentproto app update [<appId>] [--dry-run] [--json]
   agentproto app store [--print]
   agentproto app list
-  agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>] [--name <name>] [--json]
+  agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>] [--name <name>] [--public] [--json]
   agentproto app serve [appDir] [--port <n>] [--app <appId>] [--json]
   agentproto app build <appDir> [--json]
   agentproto app dev <appDir> [--port <n>] [--json] [-- <viteArgs...>]
@@ -159,6 +159,9 @@ tunnel:
   the named-tunnel creds already registered with the daemon
   (\`setup_tunnel_provider cloudflare-named\`); no secret is passed on the CLI.
   --name <name> sets a friendly tunnel name slug.
+  --public opts out of the access guard: the URL is no longer a signed,
+  expiring link (only for content that is genuinely public). Mirrors the
+  \`app_tunnel\` MCP tool's \`public\` argument.
   --json prints { tunnelId, url, provider, targetPort, [name], [hostname],
   [sessionLink] }.
 
@@ -826,12 +829,14 @@ export async function runAppStore(args: readonly string[]): Promise<number> {
 }
 
 /** `agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>]
- *  [--name <name>] [--json]` — create a public tunnel for the app's UI.
+ *  [--name <name>] [--public] [--json]` — create a public tunnel for the app's UI.
  *
  *  The app manifest is loaded here so a missing `ui.port` (or a `ui` block
  *  whose built file is absent) is reported before any daemon round-trip; the
  *  tunnel itself is created by the daemon's `app_tunnel` tool, which owns the
- *  provider creds and the tunnel registry. */
+ *  provider creds and the tunnel registry. `--public` is forwarded verbatim as
+ *  the tool's `public: true` (opt out of the access guard — genuinely public
+ *  content only). */
 export async function runAppTunnel(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -841,6 +846,7 @@ export async function runAppTunnel(args: readonly string[]): Promise<number> {
       session: { type: "string" },
       hostname: { type: "string" },
       name: { type: "string" },
+      public: { type: "boolean" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -893,6 +899,7 @@ export async function runAppTunnel(args: readonly string[]): Promise<number> {
     ...(sessionArg !== undefined ? { session: sessionArg } : {}),
     ...(hostnameArg !== undefined ? { hostname: hostnameArg } : {}),
     ...(nameArg !== undefined ? { name: nameArg } : {}),
+    ...(values.public ? { public: true } : {}),
   })
   if (code !== 0) return code
 
