@@ -3627,6 +3627,7 @@ export async function createGateway(
       daemonWorkspace: workspace,
       daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
+      persist,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
