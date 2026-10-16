@@ -37,6 +37,7 @@ import {
   registerConversationLocateTool,
   registerConversationExportTool,
 } from "./session-tools.js"
+import { registerCreateAgentTool } from "./create-agent-tool.js"
 import { collectSubtree } from "./agent-tools.js"
 import { registerBrainTools } from "./brain-tools.js"
 import { createWorkspaceBrains } from "./workspace-brains.js"
@@ -3252,6 +3253,10 @@ export async function createGateway(
       name: opts.name ?? "agentproto-runtime",
       version: opts.version ?? "0.1.0-alpha",
     })
+    // AIP-42 manifest authoring: render a valid `agent/v1` AGENT.md into the
+    // caller's workspace `.agents/<id>/AGENT.md` via the shared app-kit
+    // renderer (same path `emitApp` and `agentproto agent create` use).
+    registerCreateAgentTool(rawServer, { workspace })
     // Read `defaults.agentPromptInterrupt` / `defaults.messaging.*` fresh on
     // every call (this factory runs once per `/mcp` request — the SDK's
     // stateless pattern, see `serveMcp` in http-server.ts) instead of the

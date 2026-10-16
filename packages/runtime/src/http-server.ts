@@ -5501,6 +5501,11 @@ export function buildSpawnSessionHttpArgs(
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
     ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
+    // AIP-42 manifest defaults — the HTTP twins of the MCP-side spawn
+    // `agentId`/`agentPath` fields (see session-spawn.ts). `agentId` resolves
+    // to `<cwd>/.agents/<id>/AGENT.md`; `agentPath` is an explicit path.
+    ...(typeof b.agentId === "string" && b.agentId.length > 0 ? { agentId: b.agentId } : {}),
+    ...(typeof b.agentPath === "string" && b.agentPath.length > 0 ? { agentPath: b.agentPath } : {}),
     // AIP-66 managed cloud vendor — the HTTP twin of the MCP `agent_start`
     // tool's `cloud` field. Forwarded verbatim; spawnAgentSession's
     // resolveCloudSpawn refuses an unknown vendor or a §4 field by name

@@ -49,6 +49,7 @@ import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
 import { runApp } from "./commands/app.js"
+import { runAgent } from "./commands/agent.js"
 import { runCatalog } from "./commands/catalog.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runBranch } from "./commands/branch.js"
@@ -214,6 +215,9 @@ Usage:
   agentproto app       list
   agentproto app       serve [appDir] [--port <n>] [--app <appId>] [--json]
                      serve an app's .agentproto/ui/ with an MCP bridge
+  agentproto agent     create <slug> [dir] [--force] [--model <id>] [--description <text>]
+                     render an AIP-42 AGENT.md at <dir>/.agents/<slug>/AGENT.md
+  agentproto agent     list [dir]              agents discovered under <dir>/.agents/
   agentproto catalog  build <entry.json|dir>... --out <apps.json> [--base <f>] [--check] [--emit-ts <f.ts>]
                      merge pack --release --entry outputs into the published apps.json
   agentproto llm       endpoints <list|test> [--json]
@@ -304,6 +308,7 @@ const VERBS = new Set([
   "task",
   "permissions",
   "app",
+  "agent",
   "catalog",
   "acp",
   "pair",
@@ -433,6 +438,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runPack(rest)
     case "app":
       return runApp(rest)
+    case "agent":
+      return runAgent(rest)
     case "catalog":
       return runCatalog(rest)
     case "worktree":

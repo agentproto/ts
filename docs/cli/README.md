@@ -35,6 +35,7 @@ Pick whichever matches what you're trying to do:
 
 ### Verbs
 
+- [`agentproto agent`](./verbs/agent.md) — create/list AIP-42 agent manifests under `.agents/<id>/AGENT.md`
 - [`agentproto app`](./verbs/app.md) — package, unpack, or serve an agentproto app bundle (.agentapp)
 - [`agentproto acp`](./verbs/acp.md) — manage generic ACP agents (zero-code ACP CLIs)
 - [`agentproto adapters`](./verbs/adapters.md) — manage runtime adapters (swarm-kernel substrates/dispatchers/executors)

@@ -146,6 +146,7 @@ Usage:
                                       [--base-url <url>] [--auth-token <token>]
                                       [--options-json <json|@file>]
                                       [--prompt <text>]
+                                      [--agent <id-or-path>]
                                       [--label <text>] [--title <text>]
                                       [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
@@ -334,6 +335,11 @@ sessions start flags:
                                  (wins over --orchestrator when both are given)
   --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
   --mcp-servers-json @<file>    same, read from a file instead of inline JSON
+  --agent <id-or-path>          load an AIP-42 AGENT.md as this spawn's defaults
+                                  (prompt/persona/model/skills/tools). An id
+                                  resolves to <cwd>/.agents/<id>/AGENT.md; a
+                                  value ending in .md or containing a slash is
+                                  treated as an explicit AGENT.md path.
 --access-profile <ref>        bill this spawn through the named auth profile
                                   (CLI twin of the MCP agent_start access.profileRef
                                   — pin endpoint + credential, never silently the
@@ -789,6 +795,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       "auth-token": { type: "string" },
       "options-json": { type: "string" },
       prompt: { type: "string", short: "p" },
+      agent: { type: "string" },
       label: { type: "string" },
       title: { type: "string" },
       attach: { type: "boolean" },
@@ -1166,6 +1173,15 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (sandbox !== undefined) body.sandbox = sandbox
   if (options !== undefined && Object.keys(options).length > 0) body.options = options
   if (values.prompt) body.prompt = values.prompt
+  // AIP-42 manifest defaults — `--agent <id-or-path>`. A value that looks like
+  // a file path (ends in `.md`, or contains `/` without the `@owner/` id
+  // prefix) is an explicit `agentPath`; anything else is a logical `agentId`
+  // resolved under the session's `.agents/` root by the daemon.
+  if (values.agent) {
+    const ref = values.agent
+    if (ref.endsWith(".md") || (ref.includes("/") && !ref.startsWith("@"))) body.agentPath = ref
+    else body.agentId = ref
+  }
   if (values.label) body.label = values.label
   // Explicit title (FIX C): overrides the first-sentence-of-prompt derivation
   // the daemon would otherwise apply. `label` still out-ranks it in the UI.

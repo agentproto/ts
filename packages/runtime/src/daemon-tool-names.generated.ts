@@ -93,6 +93,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "conversation_export",
   "conversation_locate",
   "conversation_read",
+  "create_agent",
   "cron_create",
   "cron_delete",
   "cron_list",
