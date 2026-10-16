@@ -55,11 +55,6 @@
       "file": "aip-62/draft/ATTESTATION.schema.json",
       "field": "$defs.lane.properties.sharedExecution",
       "reason": "review fallback dedup: marks lanes that share one reviewer execution so they are not read as independent agreement; pending upstream spec PR"
-    },
-    {
-      "file": "aip-42/draft/AGENT.schema.json",
-      "field": "$defs.memoryConfig.properties.enabled",
-      "reason": "AIP-42 memory gating: memory.enabled=false suppresses all MEMORY.md writes for the agent; pending upstream spec PR"
     }
   ]
 }
