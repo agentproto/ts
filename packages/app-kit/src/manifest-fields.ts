@@ -117,43 +117,47 @@ const SERVICE_NAME_RE = /^[a-z][a-z0-9-]*$/
  * (omitted = a service that does not listen). app-kit NEVER executes `entry`
  * — that is the later install-time service-owner's job (see define-app.ts's
  * NOT-A-LAUNCHER note); this only carries the field through validate/freeze.
+ *
+ * Throws a PLAIN `Error` (no `fail`): the caller wraps it once with the
+ * shared "invalid services declaration" phrase, so the message is composed
+ * exactly once by the caller's `fail` factory.
  */
-function serviceList(v: unknown, key: string, fail: Fail): readonly AppService[] | undefined {
+function serviceList(v: unknown, key: string): readonly AppService[] | undefined {
   if (v === undefined) return undefined
   if (!Array.isArray(v)) {
-    throw fail(`'${key}' must be an array of { name, entry, port? } objects.`)
+    throw new Error(`'${key}' must be an array of { name, entry, port? } objects.`)
   }
   if (v.length < 1) {
-    throw fail(`'${key}' must declare at least one service.`)
+    throw new Error(`'${key}' must declare at least one service.`)
   }
   const seen = new Set<string>()
   return v.map((entry, i) => {
     const path = `${key}[${i}]`
     if (!isRecord(entry)) {
-      throw fail(`'${path}' must be an object { name, entry, port? }.`)
+      throw new Error(`'${path}' must be an object { name, entry, port? }.`)
     }
     const extra = Object.keys(entry).filter(k => k !== "name" && k !== "entry" && k !== "port")
     if (extra.length > 0) {
-      throw fail(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, port).`)
+      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, port).`)
     }
     const name = entry.name
     if (typeof name !== "string" || !SERVICE_NAME_RE.test(name)) {
-      throw fail(
+      throw new Error(
         `'${path}.name' must be a kebab-case slug matching /^[a-z][a-z0-9-]*$/, got ${JSON.stringify(name)}.`,
       )
     }
     if (seen.has(name)) {
-      throw fail(`two services named '${name}' — service names must be unique.`)
+      throw new Error(`two services named '${name}' — service names must be unique.`)
     }
     seen.add(name)
     const command = entry.entry
     if (typeof command !== "string" || command.trim() === "") {
-      throw fail(`'${path}.entry' must be a non-empty shell command string.`)
+      throw new Error(`'${path}.entry' must be a non-empty shell command string.`)
     }
     const port = entry.port
     if (port !== undefined) {
       if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
-        throw fail(`'${path}.port' must be an integer between 1 and 65535.`)
+        throw new Error(`'${path}.port' must be an integer between 1 and 65535.`)
       }
     }
     return {
@@ -243,8 +247,10 @@ export function normalizeManifestFields(
   // sees it first.
   let services: readonly AppService[] | undefined
   try {
-    services = serviceList(input.services, "services", fail)
+    services = serviceList(input.services, "services")
   } catch (err) {
+    // serviceList throws a plain Error, so the phrase is composed exactly
+    // ONCE here by the shared `fail` factory (no double prefix).
     throw fail(
       `invalid services declaration — ${err instanceof Error ? err.message : String(err)}`,
     )

@@ -537,6 +537,12 @@ describe("loadAppHandle — services (production hosting surface)", () => {
       )
       await expect(loadAppHandle(d)).rejects.toThrow(AppLoadError)
       await expect(loadAppHandle(d)).rejects.toThrow(/two services named 'api'/)
+      // Pin the EXACT composed message: the shared phrase is composed once,
+      // by the loader's `fail` factory — never double-prefixed.
+      const err = await loadAppHandle(d).catch((e: unknown) => e)
+      expect((err as Error).message).toBe(
+        `loadAppHandle: '${appPath}': frontmatter invalid services declaration — two services named 'api' — service names must be unique.`,
+      )
     } finally {
       await rm(d, { recursive: true, force: true })
     }
