@@ -32,8 +32,9 @@
  */
 
 import { copyFile, cp, mkdir, writeFile } from "node:fs/promises"
-import { join, relative } from "node:path"
+import { dirname, join, relative } from "node:path"
 import matter from "gray-matter"
+import { defineAgent, type AgentDefinition } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
 import type { AgentEntry, AppAccepts, AppArtifactDecl, AppArtifactSurface, AppBoundariesDefinition, AppDataDefinition, AppDevDefinition, AppExposes, AppPlacement, AppRequirement, AppRequirements, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
@@ -64,6 +65,55 @@ interface EmitInput {
   readonly category?: string
 }
 
+/**
+ * Where an emitted/created agent manifest is laid out.
+ *
+ *  - `"canonical"` — `<dir>/.agents/<id>/AGENT.md`, the AIP-42 hand-written
+ *    layout `loadAgent`/`self_inspect` read first.
+ *  - `"app"` — `<dir>/.agentproto/agents/<id>/AGENT.md`, the app-kit
+ *    `emitApp` default (stays out of the shared root `.agents/`).
+ */
+export type AgentManifestLayout = "canonical" | "app"
+
+export interface RenderAgentManifestTarget {
+  /** Base directory the manifest tree is rooted at. */
+  readonly dir: string
+  /** Layout to resolve the manifest path against. Defaults to `"canonical"`. */
+  readonly layout?: AgentManifestLayout
+}
+
+export interface RenderedAgentManifest {
+  /** The manifest id with any `@owner/` prefix stripped (the on-disk dir name). */
+  readonly id: string
+  /** Absolute/joined path the manifest should be written to. */
+  readonly path: string
+  /** The rendered AGENT.md (frontmatter + body). */
+  readonly contents: string
+}
+
+/**
+ * Render one AIP-42 agent manifest — validate the handle with `defineAgent`
+ * (`agent/v1` frontmatter; throws on an invalid handle), serialise it with
+ * the handle's body, and resolve the target path for the requested layout.
+ * The single rendering path shared by `emitApp` and the `agent create` /
+ * `create_agent` verbs, so a hand-created manifest is byte-identical to an
+ * app-emitted one.
+ */
+export function renderAgentManifest(
+  handle: AgentDefinition,
+  body: string,
+  target: RenderAgentManifestTarget,
+): RenderedAgentManifest {
+  const validated = defineAgent(handle)
+  const id = stripOwner(validated.id)
+  const root = target.layout === "app" ? join(".agentproto", "agents") : ".agents"
+  return {
+    id,
+    path: join(target.dir, root, id, "AGENT.md"),
+    contents: toManifest(validated, body),
+  }
+}
+
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
   let workspacePath: string | undefined
   if (app.workspace) {
@@ -78,11 +128,10 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
 
   const agentPaths: Record<string, string> = {}
   for (const { agent, body } of app.agents) {
-    const agentDir = join(dir, ".agentproto", "agents", stripOwner(agent.id))
-    await mkdir(agentDir, { recursive: true })
-    const agentPath = join(agentDir, "AGENT.md")
-    await writeFile(agentPath, toManifest(agent, body ?? ""), "utf8")
-    agentPaths[agent.id] = agentPath
+    const rendered = renderAgentManifest(agent, body ?? "", { dir, layout: "app" })
+    await mkdir(dirname(rendered.path), { recursive: true })
+    await writeFile(rendered.path, rendered.contents, "utf8")
+    agentPaths[agent.id] = rendered.path
   }
 
   let uiPath: string | undefined

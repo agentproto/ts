@@ -307,6 +307,8 @@ import {
   ensureGhShimDir,
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
+import { prefixPrompt } from "./agent-projection.js"
+import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -1374,6 +1376,14 @@ export interface SpawnAgentSessionInput {
    *  the model driving the session has no way to know its own appId unless
    *  told. Absent on a spawn made outside `app_run`. */
   appId?: string
+  /** AIP-42 manifest by logical id: resolve `<cwd>/.agents/<agentId>/AGENT.md`
+   *  and apply its prompt/persona/model/skills/tools as spawn DEFAULTS (a
+   *  caller-supplied field always wins). The by-id twin of `agentPath`; when
+   *  both are set, `agentPath` wins. See `spawn-agent-manifest.ts`. */
+  agentId?: string
+  /** AIP-42 manifest by explicit AGENT.md path (absolute, or relative to the
+   *  resolved cwd). Same default-filling semantics as `agentId`. */
+  agentPath?: string
   /**
    * Filesystem boundary for this spawn (see `app-boundary.ts`): app source
    * read-only, run workspace + data dir writable, the rest denied. Set by
@@ -1760,6 +1770,9 @@ export type SpawnAgentSessionResult =
         | "worktree_async_wait_conflict"
         | "turn_retry_rotate_invalid"
         | "cloud_spawn_refused"
+        | "no_agent_ref"
+        | "agent_manifest_unresolved"
+        | "agent_manifest_unreadable"
       message: string
       details?: Record<string, unknown>
     }
@@ -2425,6 +2438,57 @@ export async function spawnAgentSession(
   // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
   // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
   const spawnWarnings: string[] = [...(input.harnessWarnings ?? [])]
+  // AIP-42 manifest defaults (agentId / agentPath): load the AGENT.md and fold
+  // its model/instructions/skills/tools into the spawn, WITHOUT overriding
+  // anything the caller pinned. Resolved here — after `cwd` is final (agentId
+  // is rooted at it), before the model/auth/prompt consumers below. An
+  // unreadable manifest fails the spawn loudly rather than degrading to an
+  // unconfigured one.
+  if (input.agentId !== undefined || input.agentPath !== undefined) {
+    const resolvedPath = resolveAgentManifestPath(
+      {
+        ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
+        ...(input.agentPath !== undefined ? { agentPath: input.agentPath } : {}),
+      },
+      cwd,
+    )
+    if (!resolvedPath.ok) {
+      return { ok: false, code: resolvedPath.code, message: resolvedPath.message }
+    }
+    const manifest = await loadAgentManifestDefaults(resolvedPath.path, {
+      adapter: input.harness ?? input.adapter,
+      resolveAgentAdapter,
+      ...(input.model !== undefined ? { modelOverride: input.model } : {}),
+    })
+    if (!manifest.ok) {
+      return { ok: false, code: manifest.code, message: manifest.message }
+    }
+    const d = manifest.defaults
+    const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
+    const manifestPrompt =
+      d.instructions !== undefined ? prefixPrompt(d.instructions, callerPrompt) : callerPrompt
+    const mergedSystemPrompt =
+      input.appendSystemPrompt !== undefined && d.systemPrompt !== undefined
+        ? `${input.appendSystemPrompt}\n\n${d.systemPrompt}`
+        : (input.appendSystemPrompt ?? d.systemPrompt)
+    input = {
+      ...input,
+      ...(d.model !== undefined ? { model: d.model } : {}),
+      // A block/array prompt (an attachment turn) is never string-prefixed;
+      // leave it untouched, exactly as the daemon's own preamble does.
+      ...(typeof input.prompt === "string" && manifestPrompt !== undefined
+        ? { prompt: manifestPrompt }
+        : {}),
+      ...(mergedSystemPrompt !== undefined ? { appendSystemPrompt: mergedSystemPrompt } : {}),
+      // Manifest-native adapters (caps.agentManifestOption) project an
+      // `options` map pointing the adapter at the AGENT.md path instead of
+      // instructions — forwarded exactly as `app_run` does.
+      ...(input.options === undefined && d.options !== undefined ? { options: d.options } : {}),
+      ...(input.skills === undefined && d.skills !== undefined ? { skills: d.skills } : {}),
+      ...(input.allowTools === undefined && d.tools !== undefined ? { allowTools: d.tools } : {}),
+    }
+    if (d.warnings.length > 0) spawnWarnings.push(...d.warnings)
+  }
   if (input.sandbox === undefined && !appBoundary) {
     const mode = resolveWorktreeIsolation
       ? await resolveWorktreeIsolation()

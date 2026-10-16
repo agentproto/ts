@@ -609,6 +609,15 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       expect(key in args).toBe(false)
     }
   })
+
+  it("forwards agentId / agentPath (AIP-42 manifest defaults); drops empty/absent", () => {
+    expect(buildSpawnSessionHttpArgs({ agentId: "reviewer" }, "opencode").agentId).toBe("reviewer")
+    expect(buildSpawnSessionHttpArgs({ agentPath: "/ws/.agents/x/AGENT.md" }, "opencode").agentPath).toBe(
+      "/ws/.agents/x/AGENT.md",
+    )
+    expect("agentId" in buildSpawnSessionHttpArgs({ agentId: "" }, "opencode")).toBe(false)
+    expect("agentPath" in buildSpawnSessionHttpArgs({}, "opencode")).toBe(false)
+  })
 })
 
 describe("POST /sessions/agent — auth field (parseAuthField)", () => {

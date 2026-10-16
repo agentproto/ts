@@ -38,7 +38,8 @@
  */
 
 export { defineApp, AppDefinitionError } from "./define-app.js"
-export { emitApp } from "./emit.js"
+export { emitApp, renderAgentManifest } from "./emit.js"
+export type { AgentManifestLayout, RenderAgentManifestTarget, RenderedAgentManifest } from "./emit.js"
 export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFromMarkdownText } from "./load-app.js"
 export type { AppUiPeek } from "./load-app.js"
 export { loadAppBundledTools } from "./load-app-tools.js"
