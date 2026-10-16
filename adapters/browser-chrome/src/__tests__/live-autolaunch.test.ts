@@ -14,8 +14,8 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-async function fake(): Promise<FakeChrome> {
-  const f = await startFakeChrome()
+async function fake(options?: Parameters<typeof startFakeChrome>[0]): Promise<FakeChrome> {
+  const f = await startFakeChrome(options)
   fakes.push(f)
   return f
 }
@@ -91,6 +91,33 @@ describe("chrome-live: auto-launch fallback", () => {
     await instance.stop()
     expect(child.signal()).toBe("SIGTERM")
     expect(f.commands.map((c) => c.method)).not.toContain("Browser.close")
+  })
+
+  it("falls back on the default endpoint when the consent click never comes (browser:consent-timeout)", async () => {
+    const holding = await fake({ consent: "hold" })
+    const launched = await fake()
+    const child = stubChild(5151)
+    let spawns = 0
+    const provider = createChromeLiveProvider({
+      consentTimeoutMs: 300,
+      env: {},
+      launchDeps: {
+        dataDir: tmpDir(),
+        executablePath: "/fake/chrome",
+        findFreePort: async () => launched.port,
+        spawn: () => {
+          spawns++
+          return child.process
+        },
+        fetchJsonVersion: async () => ({ webSocketDebuggerUrl: launched.wsUrl }),
+      },
+    })
+    const instance = await provider.launch({ port: holding.port, forceAutoLaunch: true }, {})
+    expect(spawns).toBe(1)
+    expect(instance.pid).toBe(5151)
+    expect(instance.endpoints.cdp).toBe(launched.wsUrl)
+    await instance.stop()
+    expect(child.signal()).toBe("SIGTERM")
   })
 
   it("does not auto-launch when an explicit endpoint is pinned (attach-only failure surfaces)", async () => {

@@ -813,7 +813,10 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     owned.process.kill("SIGTERM")
     const killer = setTimeout(() => owned.process.kill("SIGKILL"), OWNED_STOP_GRACE_MS)
     try {
-      await gone
+      // Bounded: a child that never emits `exit` must not hang stop() forever.
+      await withTimeout(gone, OWNED_STOP_GRACE_MS + 2_000, () => new Error("owned Chrome did not exit"))
+    } catch {
+      // Best-effort teardown: we already sent SIGKILL; move on.
     } finally {
       clearTimeout(killer)
     }

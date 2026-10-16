@@ -24,13 +24,15 @@ Requires a running daemon ([`serve.md`](./serve.md) or
 | `camofox` | Stealth Firefox headless                 | 9377        |
 | `bureau`  | Camofox + MCP capability server          | 8830        |
 | `chromium`| Chromium browser service                 | 3200        |
-| `chrome-live` | Your own running Chrome, attached through `chrome://inspect/#remote-debugging` | 9222 |
+| `chrome-live` | Your own running Chrome, attached through `chrome://inspect/#remote-debugging`; if the toggle is off, auto-launches a dedicated Chrome | 9222 |
 
-`chrome-live` launches nothing: turn on Chrome's remote debugging toggle
-first, then click **Allow** in the dialog Chrome shows when the session
-starts. The agent works in its own window and only touches tabs it opened;
-`stop` closes those tabs and its own connection, never your Chrome. Cookies
-are read-only. See the
+`chrome-live` prefers attaching to your running Chrome: turn on the remote
+debugging toggle and click **Allow** when the session starts. If the toggle is
+off (or the Allow click never comes), it **auto-launches its own dedicated
+headful Chrome** on a persisted profile dir (never yours) so the agent is never
+stuck — no click to give. The agent works in its own window and only touches
+tabs it opened; `stop` closes those tabs and its own connection, and kills only
+the Chrome it launched itself, never your Chrome. Cookies are read-only. See the
 [adapter README](../../../adapters/browser-chrome/README.md#chrome-live-your-running-chrome).
 
 `chrome-live` is also the only adapter that can screencast. The MCP tools
