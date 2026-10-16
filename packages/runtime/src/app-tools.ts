@@ -40,6 +40,21 @@ import { spawnAgentSession } from "./session-spawn.js"
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
+import {
+  buildServiceOwnerPrompt,
+  createAppServiceStore,
+  ensureAppServiceOwners,
+  killServicePid,
+  parseAppServices,
+  removeAppServiceOwners,
+  serviceOwnerLabel,
+  servicePidFilePath,
+  type AppService,
+  type AppServiceOwner,
+  type AppServiceStore,
+  type SpawnServiceOwner,
+  type SpawnServiceOwnerResult,
+} from "./app-services.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
@@ -1103,10 +1118,10 @@ interface AppRefsSkill {
 
 async function readAppRefs(
   dir: string,
-): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[]; ui?: AppRefsUi; artifact?: AppRefsArtifact; skill?: AppRefsSkill }> {
+): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[]; ui?: AppRefsUi; artifact?: AppRefsArtifact; skill?: AppRefsSkill; services?: unknown }> {
   const appPath = join(dir, ".agentproto", "APP.md")
   const source = await readFile(appPath, "utf8")
-  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown; ui?: unknown; artifact?: unknown; skill?: unknown } }
+  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown; ui?: unknown; artifact?: unknown; skill?: unknown; services?: unknown } }
   const toRefs = (v: unknown): InstalledAppRef[] =>
     Array.isArray(v)
       ? v
@@ -1134,7 +1149,7 @@ async function readAppRefs(
     const skillData = data.skill as AppRefsSkill
     skill = { ...skillData, path: resolveRef(dir, skillData.path) }
   }
-  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows), ...(ui ? { ui } : {}), ...(artifact ? { artifact } : {}), ...(skill ? { skill } : {}) }
+  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows), ...(ui ? { ui } : {}), ...(artifact ? { artifact } : {}), ...(skill ? { skill } : {}), ...(data.services !== undefined ? { services: data.services } : {}) }
 }
 
 export interface RegisterAppToolsOptions {
@@ -1172,6 +1187,23 @@ export interface RegisterAppToolsOptions {
   workspacesConfigPath?: string
   /** Absolute path for the persistence file. Defaults to `~/.agentproto/apps.json`. */
   persistPath?: string
+  /** Service-owner ownership store (Pygmalion phase 1b item 2). Defaults to
+   *  `app-services.json` beside `persistPath` (`~/.agentproto/app-services.json`
+   *  in the daemon). Tests inject their own to inspect/seed owner records. */
+  serviceStore?: AppServiceStore
+  /** Overrides the service-owner store's persistence path (ignored when
+   *  `serviceStore` is supplied). */
+  serviceStorePath?: string
+  /** Spawn seam for a service owner. Defaults to `spawnAgentSession` with
+   *  `keepAlive` + `restartPolicy` (see `defaultSpawnServiceOwner` inside
+   *  `registerAppTools`); tests inject a stub. */
+  spawnServiceOwner?: SpawnServiceOwner
+  /** Adapter slug a service owner spawns under. Defaults to `"pi"` — the same
+   *  adapter `agent_start` defaults to when the caller names none. */
+  serviceAdapter?: string
+  /** Kill seam for an uninstalled/replaced service owner. Defaults to
+   *  `registry.kill(sessionId)` + `killServicePid(pid)`; tests inject a spy. */
+  killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
   /** Root for remote-installed apps (`<appsDir>/<slug>`, `app_install {url|file}`).
    *  Defaults to `apps/` next to `persistPath` (the daemon state dir). */
   appsDir?: string
@@ -1292,6 +1324,20 @@ export interface PerformInstallOptions {
   readonly skipDaemonChecks?: boolean
   /** `workspaces.json` the app-owned workspace is registered in. Default `~/.agentproto/workspaces.json`. */
   readonly workspacesConfigPath?: string
+  /**
+   * Service-owner launcher (frozen `services:` semantics). Called after the
+   * record is upserted and the app workspace registered, once per install,
+   * for an app whose manifest declares `services`. Omitted ⇒ a `services:`
+   * block is validated but no owners are spawned (e.g. the offline CLI
+   * install, which has no daemon to spawn sessions on). The callback is
+   * itself idempotent (`ensureAppServiceOwners`) so a reinstall does not
+   * spawn a duplicate owner for a service already alive.
+   */
+  readonly ensureServices?: (input: {
+    app: InstalledApp
+    dir: string
+    services: readonly AppService[]
+  }) => Promise<void>
 }
 
 /**
@@ -1414,6 +1460,13 @@ export async function performInstall(
   }
 
   const refs = await readAppRefs(dir)
+  // Frozen `services:` semantics — validated here so a malformed block fails
+  // the install instead of launching a partial service set. Absent = the
+  // no-op case (the launcher below never fires for an app without services).
+  const parsedServices = parseAppServices(refs.services)
+  if (parsedServices.errors.length > 0) {
+    return { ok: false, error: `invalid services declaration — ${parsedServices.errors.join("; ")}` }
+  }
   const unvalidatedAgentTools = [
     ...new Set(handle.agents.flatMap(e => (e.agent.tools ?? []).map(refIdOf))),
   ]
@@ -1528,6 +1581,21 @@ export async function performInstall(
     ...(opts?.workspacesConfigPath !== undefined ? { configPath: opts.workspacesConfigPath } : {}),
   })
 
+  // Service-owner launch (frozen `services:` semantics, Phase 1b item 2).
+  // Runs AFTER the record + workspace exist; idempotent and best-effort — a
+  // service that fails to spawn is reported, never fails the install. An app
+  // without `services` skips this entirely (byte-for-byte unchanged).
+  if (parsedServices.services.length > 0 && opts?.ensureServices) {
+    try {
+      await opts.ensureServices({ app: record, dir, services: parsedServices.services })
+    } catch (err) {
+      console.warn(
+        `[app-services] could not launch service owners for "${record.appId}": ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   return { ok: true, record }
 }
 
@@ -1582,6 +1650,106 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient({ cacheDir: catalogCacheDir })
   const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
   const fallbackCatalogEntries = opts.fallbackCatalogEntries ?? FIRST_PARTY_CATALOG_ENTRIES
+
+  // ── service owners (Pygmalion phase 1b item 2) ──────────────────────────
+  const serviceStore: AppServiceStore =
+    opts.serviceStore ??
+    createAppServiceStore({
+      ...(opts.serviceStorePath !== undefined
+        ? { persistPath: opts.serviceStorePath }
+        : opts.persistPath !== undefined
+          ? { persistPath: join(dirname(opts.persistPath), "app-services.json") }
+          : {}),
+      ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
+    })
+
+  const serviceAdapter = opts.serviceAdapter ?? "pi"
+
+  /** The default spawn: the SAME infra as agents (`spawnAgentSession`), with
+   *  `keepAlive` (exempt from the idle-reaper) + a `restartPolicy` (the daemon
+   *  revives the owner if the adapter process crashes). The owner's own prompt
+   *  supervises the `entry` child — there is no scheduler. */
+  const defaultSpawnServiceOwner = async (input: {
+    appId: string
+    dir: string
+    service: AppService
+    workspaceSlug?: string
+    stateDir: string
+  }): Promise<SpawnServiceOwnerResult> => {
+    if (!resolveAgentAdapter) {
+      return { ok: false, error: "no adapter resolver is wired — cannot spawn a service owner" }
+    }
+    const result = await spawnAgentSession(
+      {
+        registry,
+        resolveAgentAdapter,
+        ...(opts.daemonMcpUrl !== undefined ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+      },
+      {
+        adapter: serviceAdapter,
+        cwd: input.dir,
+        ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+        prompt: buildServiceOwnerPrompt(input.service, servicePidFilePath(input.stateDir, input.service.name)),
+        label: serviceOwnerLabel(input.appId, input.service.name),
+        appId: input.appId,
+        keepAlive: true,
+        restartPolicy: {
+          on: ["crashed", "error"],
+          maxRetries: 5,
+          windowMs: 10 * 60 * 1000,
+          baseDelayMs: 5_000,
+          factor: 2,
+          maxDelayMs: 60_000,
+        },
+      },
+    )
+    if (!result.ok) return { ok: false, error: result.message }
+    return {
+      ok: true,
+      sessionId: result.descriptor.id,
+      ...(result.descriptor.pid !== null && result.descriptor.pid !== undefined
+        ? { pid: result.descriptor.pid }
+        : {}),
+    }
+  }
+
+  /** Kill seam: the owner SESSION + the recorded process pid. */
+  const killServiceOwner: (owner: AppServiceOwner) => void = owner => {
+    registry.kill(owner.sessionId)
+    killServicePid(owner.pid)
+  }
+
+  const ensureServices: NonNullable<PerformInstallOptions["ensureServices"]> = async ({ app, dir, services }) => {
+    const workspaceSlug = await ensureAppWorkspace({
+      appId: app.appId,
+      dir,
+      ...(opts.workspacesConfigPath !== undefined ? { configPath: opts.workspacesConfigPath } : {}),
+    })
+    const stateDir = app.stateDir ?? app.dataDir ?? dir
+    const spawnOwner: SpawnServiceOwner =
+      opts.spawnServiceOwner ??
+      (input => defaultSpawnServiceOwner({ ...input, stateDir }))
+    const result = await ensureAppServiceOwners({
+      store: serviceStore,
+      appId: app.appId,
+      services,
+      isOwnerAlive: owner => {
+        const desc = registry.get(owner.sessionId)
+        return desc !== undefined && !isSessionTerminal(desc.status)
+      },
+      spawn: service =>
+        spawnOwner({
+          appId: app.appId,
+          dir,
+          service,
+          ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
+        }),
+      killOwner: opts.killServiceOwner ?? killServiceOwner,
+    })
+    for (const e of result.errors) {
+      console.warn(`[app-services] service "${app.appId}:${e.name}" not started: ${e.error}`)
+    }
+  }
 
   interface RemoteCatalogEntryRef {
     entry: AppCatalogEntry
@@ -1661,6 +1829,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         defaultDataDir: (appId: string) =>
           defaultRemoteAppDataDir(join(dirname(appsDir), APP_DATA_ROOT_SUBDIR), appId),
         ...(catalogUrl !== undefined ? { catalogUrl } : {}),
+        ensureServices,
       })
     } catch (err) {
       await swap.rollback()
@@ -1750,6 +1919,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
           ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
           ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+          ensureServices,
         })
         if (!result.ok) return errorResult(`app_install: ${result.error}`)
         return textResult(result.record)
@@ -2544,6 +2714,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         const installResult = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
           ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
           ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+          ensureServices,
         })
         if (!installResult.ok) return errorResult(`app_apply: ${installResult.error}`)
         installed = installResult.record
@@ -2828,8 +2999,16 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       if (!removed) {
         return errorResult(`app_uninstall: no installed app "${input.appId}".`)
       }
+      // Kill every service owner (session + recorded pid) and drop its
+      // ownership record — otherwise a reinstall spawns a second owner for a
+      // service still running from the old install.
+      const killedServices = await removeAppServiceOwners({
+        store: serviceStore,
+        appId: removed.appId,
+        killOwner: opts.killServiceOwner ?? killServiceOwner,
+      })
       await unregisterAppWorkspace(removed.appId, opts.workspacesConfigPath)
-      return textResult({ appId: removed.appId })
+      return textResult({ appId: removed.appId, ...(killedServices.length > 0 ? { services: killedServices } : {}) })
     },
   )
 
