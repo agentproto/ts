@@ -38,6 +38,7 @@ import {
   registerConversationExportTool,
 } from "./session-tools.js"
 import { registerCreateAgentTool } from "./create-agent-tool.js"
+import { registerCreateToolTools } from "./create-tool-tool.js"
 import { collectSubtree } from "./agent-tools.js"
 import { registerBrainTools } from "./brain-tools.js"
 import { createWorkspaceBrains } from "./workspace-brains.js"
@@ -3260,6 +3261,10 @@ export async function createGateway(
     // caller's workspace `.agents/<id>/AGENT.md` via the shared app-kit
     // renderer (same path `emitApp` and `agentproto agent create` use).
     registerCreateAgentTool(rawServer, { workspace })
+    // AIP-14/AIP-30 tool authoring (`create_tool` / `delete_tool`). A NEW
+    // primitive, gated by the caller's AIP-42 `actions.granted` (default
+    // DENY) and bounded by a minimum lifetime + a per-agent/day delete limit.
+    registerCreateToolTools(rawServer, { workspace })
     // Read `defaults.agentPromptInterrupt` / `defaults.messaging.*` fresh on
     // every call (this factory runs once per `/mcp` request — the SDK's
     // stateless pattern, see `serveMcp` in http-server.ts) instead of the
