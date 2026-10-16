@@ -887,6 +887,7 @@ import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
+import { registerAppTunnelTools } from "./app-tunnel-tools.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
 import { registerBuiltinRoutes } from "./builtin-routes.js"
@@ -919,6 +920,8 @@ export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
 export type { TunnelHealth, TunnelHealthState } from "./remote-providers/types.js"
+export { buildSessionLink } from "./tunnel-links.js"
+export type { AppTunnelResult } from "./app-tunnel-tools.js"
 export type { SentinelStatus } from "./sentinel-store.js"
 export type {
   SentinelSpec,
@@ -3819,6 +3822,10 @@ export async function createGateway(
     registerConversationExportTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
+    // App-facing tunnel verb — loads an app manifest (ui.port) and creates its
+    // tunnel through the same registry, optionally minting the miniapp session
+    // deep link. Same closure-rebind pattern as `registerTunnelTools`.
+    registerAppTunnelTools(server, { registry: tunnels })
     // llm-endpoint proxy sidecar lifecycle — only when the feature is on.
     if (llmEndpoint) registerLlmEndpointTools(server, { registry: llmEndpoint })
     // Tunnel adapter introspection/setup, riding on @agentproto/provider-kit

@@ -51,6 +51,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "app_status",
   "app_stop",
   "app_tool_call",
+  "app_tunnel",
   "app_unapply",
   "app_uninstall",
   "app_updates",
