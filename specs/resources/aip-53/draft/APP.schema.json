@@ -223,10 +223,40 @@
               "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
               "url": { "type": "string" }
             }
-          }
+          },
+          "description": "Dev-only launch recipes. Carried verbatim; NEVER executed by app-kit — `defineApp` validates the shape only (packages/app-kit/src/define-app.ts:62-64) and no loader/emit path runs it. The production hosting surface is `services` (below), not this."
         }
       },
       "description": "Dev-launch configuration, carried verbatim in frontmatter."
+    },
+    "services": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["name", "entry"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "description": "Service identifier — kebab-case slug, unique across the array."
+          },
+          "entry": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Non-empty shell command line that starts the service (e.g. `pnpm --filter x start`, `node dist/server.js`). Carried verbatim; the loader/`defineApp` never executes it."
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. One process per entry, one port."
+          }
+        }
+      },
+      "description": "Production hosting surface: one supervised service process per entry — NO dependency graph, NO scaling, NO scheduler. The host (NOT app-kit) spawns exactly one keep-alive service-owner session per entry at install time (later work item) that runs `entry`; `dev.launch` is NOT executed by the loader and is not this surface. Names MUST be unique. See specs/resources/pending/services/SERVICES.schema.json (pending upstream spec PR)."
     },
     "data": {
       "type": "object",

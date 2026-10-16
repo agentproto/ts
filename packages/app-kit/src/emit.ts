@@ -37,7 +37,7 @@ import matter from "gray-matter"
 import { defineAgent, type AgentDefinition } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
-import type { AgentEntry, AppAccepts, AppArtifactDecl, AppArtifactSurface, AppBoundariesDefinition, AppDataDefinition, AppDevDefinition, AppExposes, AppPlacement, AppRequirement, AppRequirements, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
+import type { AgentEntry, AppAccepts, AppArtifactDecl, AppArtifactSurface, AppBoundariesDefinition, AppDataDefinition, AppDevDefinition, AppExposes, AppPlacement, AppRequirement, AppRequirements, AppService, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
 import { stripOwner } from "./refs.js"
 
 interface EmitInput {
@@ -59,6 +59,7 @@ interface EmitInput {
   readonly skill?: AppSkillSurface
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
+  readonly services?: readonly AppService[]
   readonly data?: AppDataDefinition
   readonly externalReadRoots?: readonly string[]
   readonly boundaries?: AppBoundariesDefinition
@@ -219,6 +220,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(skillFrontmatter !== undefined ? { skill: skillFrontmatter } : {}),
     ...(app.artifacts !== undefined ? { artifacts: app.artifacts } : {}),
     ...(app.dev !== undefined ? { dev: app.dev } : {}),
+    ...(app.services !== undefined ? { services: app.services } : {}),
     ...(app.data !== undefined ? { data: app.data } : {}),
     ...(app.externalReadRoots !== undefined ? { externalReadRoots: app.externalReadRoots } : {}),
     ...(app.boundaries !== undefined ? { boundaries: app.boundaries } : {}),
