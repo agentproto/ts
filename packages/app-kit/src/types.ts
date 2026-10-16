@@ -251,6 +251,28 @@ export interface AppDevDefinition {
 }
 
 /**
+ * One supervised service the app hosts in production (AIP-53 `services[]`).
+ *
+ * This is NOT a dev launcher: `dev.launch` stays dev-only and is never
+ * executed by app-kit. A `services` entry names the production hosting
+ * surface — the host (later work item) spawns ONE keep-alive service-owner
+ * session per entry at install time that runs `entry`. One process per
+ * entry, one port; there is no dependency graph, no scaling and no
+ * scheduler behind this field. app-kit's loader/`defineApp` only carries it.
+ */
+export interface AppService {
+  /** Service identifier — kebab-case, unique across the array. */
+  readonly name: string
+  /** Non-empty shell command line that starts the service, e.g.
+   *  `"pnpm --filter x start"` or `"node dist/server.js"`. Carried verbatim;
+   *  app-kit never runs it. */
+  readonly entry: string
+  /** Optional TCP port the service listens on (1..65535). Omitted = a
+   *  service that does not listen (no port). */
+  readonly port?: number
+}
+
+/**
  * Where the app's durable data lives (the `app_data_*` plane). `dir` is a
  * path RELATIVE to the app dir — `"data"` means `<appDir>/data`, which is
  * also what the daemon uses when the hint is absent. It is a hint: an
@@ -415,6 +437,15 @@ export interface AppDefinition {
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */
   readonly dev?: AppDevDefinition
+  /**
+   * Production hosting surface (AIP-53 `services`): one supervised service
+   * process per entry. The host spawns ONE keep-alive service-owner session
+   * per entry at install time (later work item) that runs the entry's
+   * `entry` command; app-kit only carries the field. NOT a launcher —
+   * `dev.launch` remains dev-only and is never executed here. Array must be
+   * non-empty with unique kebab-case names when present.
+   */
+  readonly services?: readonly AppService[]
   /** Default data directory hint for the `app_data_*` plane (relative to
    *  the app dir; see {@link AppDataDefinition}). */
   readonly data?: AppDataDefinition
@@ -514,6 +545,10 @@ export interface AppHandle {
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */
   readonly dev?: AppDevDefinition
+  /** Production hosting surface (see {@link AppDefinition.services}): one
+   *  supervised service process per entry, carried verbatim. NOT executed by
+   *  app-kit — the host runs each `entry` at install time (later work item). */
+  readonly services?: readonly AppService[]
   /** Default data directory hint (see {@link AppDataDefinition}). Resolved
    *  against the app dir at install time in `performInstall`. */
   readonly data?: AppDataDefinition

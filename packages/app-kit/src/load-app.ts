@@ -48,6 +48,7 @@ import type {
   AppDefinition,
   AppDevDefinition,
   AppHandle,
+  AppService,
   AppUiBuildConfig,
   AppUiDefinition,
 } from "./types.js"
@@ -116,6 +117,7 @@ interface AppFrontmatter {
   readonly skill?: AppFrontmatterSkill
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
+  readonly services?: readonly AppService[]
   readonly data?: AppDataDefinition
   readonly externalReadRoots?: readonly string[]
   readonly boundaries?: AppBoundariesDefinition
@@ -266,8 +268,11 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
       `'${appPath}': frontmatter 'workflows' must be an array of { id, path }.`,
     )
   }
-  // placement / requires / exposes / accepts: shape, enum and "exposed id is
-  // declared" checks, same rules `defineApp` re-applies.
+  // placement / requires / exposes / accepts / services: shape, enum and
+  // "exposed id is declared" checks, same rules `defineApp` re-applies.
+  // `services` additionally rejects a duplicate `name` ("two services named
+  // 'x'") and a malformed entry/port; its `entry` is read PLAINLY — never
+  // executed here (see define-app.ts's NOT-A-LAUNCHER note).
   normalizeManifestFields(
     data,
     { agents: data.agents.map(a => a.id), workflows: data.workflows.map(w => w.id) },
@@ -465,6 +470,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       : {}),
     ...(fm.artifacts !== undefined ? { artifacts: fm.artifacts } : {}),
     ...(fm.dev !== undefined ? { dev: fm.dev } : {}),
+    ...(fm.services !== undefined ? { services: fm.services } : {}),
     ...(fm.data !== undefined ? { data: fm.data } : {}),
     ...(fm.externalReadRoots !== undefined ? { externalReadRoots: fm.externalReadRoots } : {}),
     ...(fm.boundaries !== undefined ? { boundaries: fm.boundaries } : {}),

@@ -5,7 +5,7 @@
  * hand-edited APP.md and a bad `defineApp({...})` call get the same diagnostic.
  */
 
-import type { AppAccepts, AppExposes, AppPlacement, AppRequirement, AppRequirements } from "./types.js"
+import type { AppAccepts, AppExposes, AppPlacement, AppRequirement, AppRequirements, AppService } from "./types.js"
 import { parseVersionRange } from "./version-range.js"
 
 export const APP_PLACEMENTS: readonly AppPlacement[] = ["local", "box", "any", "split"]
@@ -15,6 +15,7 @@ export interface ManifestFieldsInput {
   readonly requires?: unknown
   readonly exposes?: unknown
   readonly accepts?: unknown
+  readonly services?: unknown
 }
 
 export interface DeclaredIds {
@@ -32,6 +33,8 @@ export interface NormalizedManifestFields {
   readonly appRequirements: readonly AppRequirement[]
   readonly exposes: AppExposes
   readonly accepts: AppAccepts
+  /** `services[]` — production hosting entries. undefined when absent. */
+  readonly services: readonly AppService[] | undefined
 }
 
 type Fail = (message: string) => Error
@@ -105,6 +108,66 @@ function appRequirementList(v: unknown, key: string, fail: Fail): readonly AppRe
   return v.map((e, i) => appRequirementEntry(e, `${key}[${i}]`, fail))
 }
 
+const SERVICE_NAME_RE = /^[a-z][a-z0-9-]*$/
+
+/**
+ * Parse + validate the AIP-53 `services` array (production hosting surface).
+ * One entry = one supervised service process: `name` is a unique kebab-case
+ * slug, `entry` a non-empty command line, `port` an optional 1..65535 integer
+ * (omitted = a service that does not listen). app-kit NEVER executes `entry`
+ * — that is the later install-time service-owner's job (see define-app.ts's
+ * NOT-A-LAUNCHER note); this only carries the field through validate/freeze.
+ *
+ * Throws a PLAIN `Error` (no `fail`): the caller wraps it once with the
+ * shared "invalid services declaration" phrase, so the message is composed
+ * exactly once by the caller's `fail` factory.
+ */
+function serviceList(v: unknown, key: string): readonly AppService[] | undefined {
+  if (v === undefined) return undefined
+  if (!Array.isArray(v)) {
+    throw new Error(`'${key}' must be an array of { name, entry, port? } objects.`)
+  }
+  if (v.length < 1) {
+    throw new Error(`'${key}' must declare at least one service.`)
+  }
+  const seen = new Set<string>()
+  return v.map((entry, i) => {
+    const path = `${key}[${i}]`
+    if (!isRecord(entry)) {
+      throw new Error(`'${path}' must be an object { name, entry, port? }.`)
+    }
+    const extra = Object.keys(entry).filter(k => k !== "name" && k !== "entry" && k !== "port")
+    if (extra.length > 0) {
+      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, port).`)
+    }
+    const name = entry.name
+    if (typeof name !== "string" || !SERVICE_NAME_RE.test(name)) {
+      throw new Error(
+        `'${path}.name' must be a kebab-case slug matching /^[a-z][a-z0-9-]*$/, got ${JSON.stringify(name)}.`,
+      )
+    }
+    if (seen.has(name)) {
+      throw new Error(`two services named '${name}' — service names must be unique.`)
+    }
+    seen.add(name)
+    const command = entry.entry
+    if (typeof command !== "string" || command.trim() === "") {
+      throw new Error(`'${path}.entry' must be a non-empty shell command string.`)
+    }
+    const port = entry.port
+    if (port !== undefined) {
+      if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`'${path}.port' must be an integer between 1 and 65535.`)
+      }
+    }
+    return {
+      name,
+      entry: command,
+      ...(port !== undefined ? { port } : {}),
+    }
+  })
+}
+
 export function normalizeManifestFields(
   input: ManifestFieldsInput,
   declared: DeclaredIds,
@@ -176,5 +239,22 @@ export function normalizeManifestFields(
     accepts = { tasks: bool(input.accepts.tasks, "accepts.tasks", fail) }
   }
 
-  return { placement, requires, requirements, appRequirements, exposes, accepts }
+  // `services[]` validation is shared with the install-time launcher
+  // (packages/runtime/src/app-tools.ts's parseAppServices), which reports an
+  // "invalid services declaration" error. The loader is the FIRST validator
+  // on the app_install path, so it carries the same phrase — a malformed
+  // block fails the install with ONE recognizable message whichever gate
+  // sees it first.
+  let services: readonly AppService[] | undefined
+  try {
+    services = serviceList(input.services, "services")
+  } catch (err) {
+    // serviceList throws a plain Error, so the phrase is composed exactly
+    // ONCE here by the shared `fail` factory (no double prefix).
+    throw fail(
+      `invalid services declaration — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  return { placement, requires, requirements, appRequirements, exposes, accepts, services }
 }

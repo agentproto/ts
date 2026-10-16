@@ -78,6 +78,7 @@ export type {
   AppBoundariesDefinition,
   AppDataDefinition,
   AppDevDefinition,
+  AppService,
   AppPlacement,
   AppRequirements,
   AppRequirement,

@@ -131,6 +131,93 @@ describe("CronScheduler", () => {
     }
   })
 
+  it("create() — ownedBy sets the owner and defaults expiresAt; explicit expiresAt wins", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { sessionEvents, registry } = makeDeps(workspace)
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const owned = await scheduler.create({
+        schedule: "* * * * *",
+        action: { kind: "command", command: "echo" },
+        ownedBy: "sess_coach",
+      })
+      expect(owned.ownedBy).toBe("sess_coach")
+      expect(owned.expiresAt).toBeTruthy()
+      expect(Date.parse(owned.expiresAt!)).toBeGreaterThan(Date.now())
+
+      const explicit = new Date(Date.now() + 60_000).toISOString()
+      const pinned = await scheduler.create({
+        schedule: "* * * * *",
+        action: { kind: "command", command: "echo" },
+        ownedBy: "sess_coach",
+        expiresAt: explicit,
+      })
+      expect(pinned.expiresAt).toBe(explicit)
+
+      // An operator job (no owner) never expires unless pinned.
+      const unowned = await scheduler.create({
+        schedule: "* * * * *",
+        action: { kind: "command", command: "echo" },
+      })
+      expect(unowned.ownedBy).toBeUndefined()
+      expect(unowned.expiresAt).toBeUndefined()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("tick() retires an owned job whose owner session is gone", async () => {
+    vi.useFakeTimers()
+    try {
+      const workspace = makeTmpWorkspace()
+      tmpDirs.push(workspace)
+      const { sessionEvents, registry } = makeDeps(workspace)
+      const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+      try {
+        const job = await scheduler.create({
+          schedule: "0 20 * * *",
+          action: { kind: "command", command: "echo" },
+          ownedBy: "sess_gone",
+        })
+        expect(scheduler.get(job.id)?.active).toBe(true)
+        vi.advanceTimersByTime(20_000)
+        const after = scheduler.get(job.id)
+        expect(after?.active).toBe(false)
+        expect(after?.pausedReason).toMatch(/gone/)
+      } finally {
+        scheduler.shutdown()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("tick() retires a job whose expiresAt has passed", async () => {
+    vi.useFakeTimers()
+    try {
+      const workspace = makeTmpWorkspace()
+      tmpDirs.push(workspace)
+      const { sessionEvents, registry } = makeDeps(workspace)
+      const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+      try {
+        const job = await scheduler.create({
+          schedule: "0 20 * * *",
+          action: { kind: "command", command: "echo" },
+          expiresAt: new Date(Date.now() - 1_000).toISOString(),
+        })
+        vi.advanceTimersByTime(20_000)
+        const after = scheduler.get(job.id)
+        expect(after?.active).toBe(false)
+        expect(after?.pausedReason).toMatch(/expired/)
+      } finally {
+        scheduler.shutdown()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("create() — invalid schedule throws SyntaxError", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
