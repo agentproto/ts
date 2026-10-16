@@ -4,6 +4,7 @@
 agentproto app install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--data-dir <path>]
 agentproto app resync <appId>
 agentproto app list
+agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>] [--name <name>] [--public] [--json]
 agentproto app catalog [--refresh] [--json]
 agentproto app uninstall <appId> [--json]
 agentproto app update [<appId>|--all] [--dry-run] [--json]
@@ -20,7 +21,7 @@ agentproto app validate [dir] [--json]
 ```
 
 > This page covers the `agentproto app` CLI verb (install/serve/pack/build/
-> dev). For what a bundled agent can actually reach at runtime — `app_run`,
+> dev/tunnel). For what a bundled agent can actually reach at runtime — `app_run`,
 > and which tool ids an `AGENT.md` can declare — see [Which tools can an app
 > agent call?](../guides/app-agent-tools.md).
 
@@ -458,6 +459,26 @@ Exit `0` iff ALL of:
 Findings print one per line as `[error] <scope>: <message>` on stderr.
 `--json` prints `{ ok, findings: [{scope, level, message}] }` on stdout;
 exit `0` iff `ok`.
+
+### `tunnel <dir> [--session <id>] [--hostname <fqdn>] [--name <name>] [--public] [--json]`
+
+Create a public HTTPS tunnel to the app's UI through the running daemon,
+printing the URL to share. The app manifest at `<dir>` is loaded first so a
+missing `ui.port` is reported before any daemon round-trip; the tunnel itself
+is created by the daemon's `app_tunnel` tool, which owns the provider
+credentials and the tunnel registry. Requires the daemon to be up and the
+app to declare `ui.port` in its APP.md (error otherwise).
+
+Private by default: the printed URL is a signed link with a TTL, not the
+bare host.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session <id>` | unset | Also print the miniapp deep link `<url>/s/<sessionId>` for that session. |
+| `--hostname <fqdn>` | unset | Create a STABLE-hostname tunnel (`cloudflare-named`) using the named-tunnel creds already registered with the daemon (`setup_tunnel_provider cloudflare-named`); no secret is passed on the CLI. |
+| `--name <name>` | unset | Friendly tunnel name slug. |
+| `--public` | `false` | Opt out of the access guard — the URL is no longer a signed, expiring link (only for content that is genuinely public). Mirrors the `app_tunnel` MCP tool's `public` argument. |
+| `--json` | `false` | Print `{ tunnelId, url, provider, targetPort, [name], [hostname], [sessionLink] }` instead of a human summary. |
 
 ## Optional `ui/` source project
 
