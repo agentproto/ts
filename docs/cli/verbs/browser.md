@@ -33,6 +33,17 @@ starts. The agent works in its own window and only touches tabs it opened;
 are read-only. See the
 [adapter README](../../../adapters/browser-chrome/README.md#chrome-live-your-running-chrome).
 
+`chrome-live` is also the only adapter that can screencast. The MCP tools
+`browser_screencast_start` / `browser_screencast_frame` /
+`browser_screencast_stop` stream the agent's **own tab** (CDP
+`Page.startScreencast` — never a foreign tab, never the desktop) as it
+works. `start` returns `viewPath` `/sessions/<sessionId>/screencast`:
+open it on the daemon's HTTP port for an HTML viewer, with `.mjpg`
+(MJPEG stream) and `.jpg` (latest frame) on the same path; to watch from
+another machine, put a tunnel over the daemon's HTTP port in front of it
+(see [`tunnel.md`](./tunnel.md)). `stop` encodes the frames buffered since
+`start` to an `mp4` in the session directory when `ffmpeg` is on `PATH`.
+
 ## Subverbs
 
 ### `install <adapter>`

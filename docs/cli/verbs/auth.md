@@ -145,8 +145,11 @@ agentproto auth provider rm openai
 
 Named auth profiles (`~/.agentproto/auth-profiles.json` + OS keychain)
 attach a billing credential to a name so spawns can reference it with
-`--access-profile <id>` / `agent_start.access.profileRef`. All `profile`
-subcommands operate daemon-less.
+`--access-profile <id>` / `agent_start.access.profileRef` — or, for a
+fallback list, `agent_start.access.profileRefs` (ordered candidates; the
+first eligible for the model's route is billed, and none eligible fails
+closed naming the candidate list). All `profile` subcommands operate
+daemon-less.
 
 ### `profile create <id> <endpoint>`
 
@@ -165,6 +168,7 @@ Flags:
 | `--label <text>` | Human-readable name for the profile. |
 | `--source <name>` | Source tag for oauth-bearer profiles (enables self-refreshing). |
 | `--subaccount <kind>:<id>` | Pin the profile to a sub-account (org / workspace / project) of its account; see `auth subaccounts`. |
+| `--route <route>` | Repeatable. An ADDITIONAL billing route this credential also serves, beyond `<endpoint>` — e.g. `--route opencode-go` for a key billed on both the opencode-go Go route and the opencode Zen route. Stored as the profile's `routes`. |
 | `--credential-file <path>` | Read the credential from a file. |
 | `--credential-env <VAR>` | Read the credential from an environment variable. |
 | `--credential-ref <slot>` | Reference an existing keychain slot directly. |
