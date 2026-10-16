@@ -96,19 +96,28 @@ export type CronAction =
 
 /**
  * True for a tool a `kind:"tool"` job must never dispatch: the cron verbs
- * themselves. A job that creates/runs/deletes cron jobs is self-scheduling —
- * one tick can fan out into unbounded persisted jobs — so it's refused at
- * create time AND at fire time (a hand-edited cron-jobs.json can't sneak one in).
+ * themselves, plus the workspace-authoring verbs (`create_tool` /
+ * `delete_tool`, and any `create_*` / `delete_*` authoring verb such as
+ * `create_agent`). A job that creates/runs/deletes cron jobs is
+ * self-scheduling — one tick can fan out into unbounded persisted jobs — and
+ * an unattended job must never mint or remove tools/agents either, so both are
+ * refused at create time AND at fire time (a hand-edited cron-jobs.json can't
+ * sneak one in). New tools can only be created from a live, gated turn.
  */
 export function isSelfSchedulingTool(tool: string): boolean {
-  return tool.startsWith("cron_")
+  return (
+    tool.startsWith("cron_") ||
+    tool.startsWith("create_") ||
+    tool.startsWith("delete_")
+  )
 }
 
 /** Throws when `action` is one the scheduler refuses to hold. */
 export function assertCronActionAllowed(action: CronAction): void {
   if (action.kind === "tool" && isSelfSchedulingTool(action.tool)) {
     throw new Error(
-      `cron action kind "tool" cannot dispatch '${action.tool}': cron jobs may not schedule cron_* tools (self-scheduling)`,
+      `cron action kind "tool" cannot dispatch '${action.tool}': cron jobs may not schedule ` +
+        "cron_* (self-scheduling) or create_*/delete_* authoring verbs (unattended tool/agent minting)",
     )
   }
 }

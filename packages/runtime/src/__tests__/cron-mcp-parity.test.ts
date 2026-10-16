@@ -167,22 +167,32 @@ describe("cron_create schema — kind:\"tool\"", () => {
     expect(expiresAt).toBeUndefined()
   })
 
-  it.each(["cron_create", "cron_run", "cron_delete"])("refuses self-scheduling tool %s", async tool => {
-    const { scheduler } = makeScheduler()
-    const client = await buildClient(scheduler)
-    const res = await call(client, "cron_create", {
-      schedule: "* * * * *",
-      action: { kind: "tool", tool, inputs: {} },
-    })
-    expect(res.isError).toBe(true)
-    expect(res.text).toMatch(/self-scheduling/)
-    expect(scheduler.list()).toHaveLength(0)
-  })
+    it.each(["cron_create", "cron_run", "cron_delete", "create_tool", "delete_tool", "create_agent"])(
+    "refuses self-scheduling / authoring tool %s",
+    async tool => {
+      const { scheduler } = makeScheduler()
+      const client = await buildClient(scheduler)
+      const res = await call(client, "cron_create", {
+        schedule: "* * * * *",
+        action: { kind: "tool", tool, inputs: {} },
+      })
+      expect(res.isError).toBe(true)
+      expect(res.text).toMatch(/self-scheduling/)
+      expect(scheduler.list()).toHaveLength(0)
+    },
+  )
 
   it("scheduler.create() refuses cron_* even when called directly", async () => {
     const { scheduler } = makeScheduler()
     await expect(
       scheduler.create({ schedule: "* * * * *", action: { kind: "tool", tool: "cron_create" } }),
+    ).rejects.toThrow(/self-scheduling/)
+  })
+
+  it("scheduler.create() refuses create_tool as a cron tool action (Block 3.4)", async () => {
+    const { scheduler } = makeScheduler()
+    await expect(
+      scheduler.create({ schedule: "* * * * *", action: { kind: "tool", tool: "create_tool" } }),
     ).rejects.toThrow(/self-scheduling/)
   })
 

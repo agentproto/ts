@@ -308,6 +308,7 @@ import {
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
 import { prefixPrompt } from "./agent-projection.js"
+import { stripOwner } from "@agentproto/app-kit"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
@@ -2438,6 +2439,13 @@ export async function spawnAgentSession(
   // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
   // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
   const spawnWarnings: string[] = [...(input.harnessWarnings ?? [])]
+  // The caller's OWN AIP-42 manifest identity, captured when the spawn names
+  // one (`agentId`/`agentPath`). Recorded on the descriptor `meta` below so
+  // the gateway can bind a per-caller grant check (`create_tool`/`delete_tool`)
+  // to this session instead of trusting a caller-supplied tool argument —
+  // the reviewer's spoofable-grant finding (PR #2003).
+  let callerAgentId: string | undefined
+  let callerAgentManifestPath: string | undefined
   // AIP-42 manifest defaults (agentId / agentPath): load the AGENT.md and fold
   // its model/instructions/skills/tools into the spawn, WITHOUT overriding
   // anything the caller pinned. Resolved here — after `cwd` is final (agentId
@@ -2464,6 +2472,8 @@ export async function spawnAgentSession(
       return { ok: false, code: manifest.code, message: manifest.message }
     }
     const d = manifest.defaults
+    callerAgentManifestPath = d.path
+    callerAgentId = stripOwner(d.id)
     const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
     const manifestPrompt =
       d.instructions !== undefined ? prefixPrompt(d.instructions, callerPrompt) : callerPrompt
@@ -4736,13 +4746,24 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId || appBoundary || input.workflowOwner || cloudMeta
+      ...(input.boardId ||
+      appBoundary ||
+      input.workflowOwner ||
+      cloudMeta ||
+      callerAgentId ||
+      callerAgentManifestPath
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
               ...workflowOwnerMeta(input.workflowOwner),
               ...(appBoundary ? boundaryMeta(appBoundary) : {}),
               ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
+              // The caller's OWN AIP-42 manifest identity (see the capture
+              // above). Trusted because the daemon resolved it at spawn; the
+              // gateway reads it to bind the `create_tool`/`delete_tool` grant
+              // to the caller session, never a caller-supplied payload field.
+              ...(callerAgentId ? { agentId: callerAgentId } : {}),
+              ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
             },
           }
         : {}),

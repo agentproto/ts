@@ -97,6 +97,9 @@ describe("loadAgentManifestDefaults", () => {
     })
     expect(out.ok).toBe(true)
     if (out.ok) {
+      // The manifest's own id is surfaced so the spawn can record the
+      // caller's identity (binding the create_tool grant to the session).
+      expect(out.defaults.id).toBe("reviewer")
       expect(out.defaults.model).toBe("test-model")
       expect(out.defaults.instructions).toContain("You review rigorously.")
       expect(out.defaults.skills).toEqual(["search"])

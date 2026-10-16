@@ -13,7 +13,7 @@
 export const SPEC_NAME = "agentagent/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
-export { defineAgent } from "./define-agent.js"
+export { defineAgent, AGENT_ID_PATTERN } from "./define-agent.js"
 export { loadAgent } from "./load-agent.js"
 export { composeInstructions } from "./instructions.js"
 export {
