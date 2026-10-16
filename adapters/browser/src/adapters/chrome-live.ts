@@ -21,7 +21,8 @@ const CHROME_LIVE_META = {
   name: "Chrome (your running browser)",
   description:
     "Your own running Chrome (logged-in profile), attached through chrome://inspect/#remote-debugging. " +
-    "Launches nothing; Chrome asks you to Allow the connection, and the agent works in its own window.",
+    "If the toggle is off it auto-launches a dedicated headful Chrome on its own persisted profile (no consent click). " +
+    "The agent works in its own window and never touches your tabs.",
 } as const
 
 async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<BrowserAdapterInstance> {
@@ -40,6 +41,9 @@ async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<Brows
     id: chromeLiveProvider.id,
     port: Number(url.port) || CHROME_LIVE_DEFAULT_PORT,
     baseUrl: `http://${url.host}`,
+    // Set only when the provider auto-launched a dedicated Chrome; an
+    // attach-only session leaves it undefined and is never signalled by stop().
+    ...(instance.pid !== undefined ? { pid: instance.pid } : {}),
     wasAlreadyRunning: instance.wasAlreadyRunning,
     healthy: (await instance.health()).ok,
     health: async () => instance.health(),

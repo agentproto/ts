@@ -6,7 +6,8 @@ CDP:
 - `chrome`: the Chrome installed on the machine, **launched** on a fresh
   dedicated profile directory (never your profile).
 - `chrome-live`: **your own running Chrome**, attached through Chrome's remote
-  debugging toggle. It launches nothing; see [chrome-live](#chrome-live-your-running-chrome).
+  debugging toggle. When the toggle is off it auto-launches a dedicated headful
+  Chrome on its own persisted profile dir; see [chrome-live](#chrome-live-your-running-chrome).
 
 ```ts
 import { chrome } from "@agentproto/adapter-browser-chrome"
@@ -60,8 +61,11 @@ real source in a later lane. Only the cookie count is logged, never a value.
 ## chrome-live: your running Chrome
 
 `chrome-live` attaches to the Chrome you already use, with your logged-in
-profile, so an agent can work on sites where you are signed in. It never
-launches, kills or closes Chrome, and it never touches your tabs.
+profile, so an agent can work on sites where you are signed in. Attach is
+preferred; when the remote debugging toggle is not attachable it auto-launches
+its **own** dedicated headful Chrome (a fresh persisted profile dir, never
+yours) and connects to it, so the user has nothing to click. It never touches
+your tabs, and it never closes your Chrome.
 
 ```ts
 import { chromeLive } from "@agentproto/adapter-browser-chrome"
@@ -86,6 +90,33 @@ In the daemon it is the `chrome-live` browser adapter: `start_browser
 
 Turn the toggle off again to cut every connection.
 
+### Auto-launch fallback
+
+You do not have to turn the toggle on. On the **default endpoint** (no explicit
+`wsUrl`/`port`, from `launch()`, the provider config, or `CHROME_LIVE_*` env),
+when the attach is not possible the provider **auto-launches a dedicated,
+headful Chrome** and connects to it — no Allow click:
+
+- **No Chrome on the toggle** (`browser:remote-debugging-off`, nothing listens
+  on 9222): a dedicated Chrome is launched.
+- **Consent never granted** (`browser:consent-timeout`: no Allow click within
+  `consentTimeoutMs`, or Chrome rejected the connection): the provider stops
+  waiting and launches the dedicated Chrome instead of leaving the agent stuck.
+  This IS a behavior change for the default endpoint — the fallback is
+  deliberate, not an error path.
+
+The launched Chrome listens on a free port and uses a **persisted** profile dir,
+`$CHROME_LIVE_LAUNCH_DATA_DIR` (default `~/.agentproto/browser/chrome/live`),
+kept across runs so it stays warm. It is connected in discover mode (the uuid
+`webSocketDebuggerUrl` from `GET /json/version`), and its pid is recorded on the
+instance. `stop()` kills **only** that child (pid scissors, SIGTERM → grace →
+SIGKILL) — an attach-only session has no owned child and its `stop()` never
+signals your Chrome.
+
+An **explicit endpoint disables the fallback**: a pinned `wsUrl`/`port` (launch
+opts, config, or env) is taken literally. `autoLaunch: false` disables it
+globally.
+
 ### Configuration
 
 | Setting | Default | |
@@ -94,6 +125,8 @@ Turn the toggle off again to cut every connection.
 | `createChromeLiveProvider({ wsUrl })` / `CHROME_LIVE_WS_URL` | `ws://127.0.0.1:<port>/devtools/browser` | Full browser websocket URL; beats the port |
 | `consentTimeoutMs` | `60000` | How long to wait for the Allow click |
 | `discover` | `false` | Opt-in: try `GET /json/version` for a `webSocketDebuggerUrl` first |
+| `autoLaunch` | `true` | Auto-launch a dedicated Chrome when the default endpoint is not attachable (explicit endpoints disable it) |
+| `CHROME_LIVE_LAUNCH_DATA_DIR` | `~/.agentproto/browser/chrome/live` | Persisted profile dir for the auto-launched Chrome |
 
 `launch({ wsUrl, port })` wins over the provider config, which wins over the
 env. In toggle mode Chrome answers only the browser websocket without an id:
@@ -164,11 +197,13 @@ and `.jpg` (latest frame).
 
 ### Safety guarantees
 
-- **Never launches, kills or closes Chrome.** `stop()` sends
+- **Never touches your Chrome.** When it attached, `stop()` sends
   `Target.closeTarget` for the targets this provider created, then closes its
-  own websocket. It never sends `Browser.close`. A handle returned by a reused
+  own websocket; it never sends `Browser.close`. A handle returned by a reused
   `launch()` closes only the tabs it opened and leaves the connection to the
-  first launch.
+  first launch. When instead it **auto-launched** a dedicated Chrome, `stop()`
+  kills only that child by pid (SIGTERM → grace → SIGKILL) — your Chrome is
+  never signalled.
 - **Never touches your tabs.** The provider only knows the target ids it
   created. It never calls `Target.getTargets` and never attaches to a target it
   did not create. Through `driver.send` (the agent's `cdp_send`), the whole
@@ -182,11 +217,12 @@ and `.jpg` (latest frame).
   [Screencast](#screencast-of-the-agents-own-tab)). Not `headless`, not
   `persistentProfile`.
 
-**This is not a bypass of F11.** The F11 guard above stays as it is: the
-`chrome` provider still refuses to **launch** Chrome on the default profile.
-`chrome-live` is a separate provider that launches nothing and writes nothing to
-the profile. It only uses a connection that you turned on and then allowed in
-Chrome's own UI, and you can turn it off there at any time.
+**This is not a bypass of F11.** The F11 guard above stays as it is: neither
+provider ever launches Chrome on the **default** profile. When the toggle is
+off, `chrome-live` auto-launches a dedicated Chrome on its **own** persisted
+profile dir (never your default profile) and writes nothing to your profile; it
+otherwise only uses a connection you turned on and allowed in Chrome's own UI,
+which you can cut at any time.
 
 ### Errors
 
