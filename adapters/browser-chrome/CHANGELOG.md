@@ -1,5 +1,11 @@
 # @agentproto/adapter-browser-chrome
 
+## 0.5.1
+
+### Patch Changes
+
+- 65b571e: Sync the browser-chrome README with the shipped chrome-live screencast surface (`canScreencast`, `screencastStart`/`screencastFrame`/`screencastStop`, the MCP tools and HTTP viewer routes). Documentation-only change; no runtime behavior changed.
+
 ## 0.5.0
 
 ### Minor Changes

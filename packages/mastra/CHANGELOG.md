@@ -1,5 +1,12 @@
 # @agentproto/mastra
 
+## 0.2.18
+
+### Patch Changes
+
+- Updated dependencies [3a02a3b]
+  - @agentproto/agent@0.4.0
+
 ## 0.2.17
 
 ### Patch Changes
