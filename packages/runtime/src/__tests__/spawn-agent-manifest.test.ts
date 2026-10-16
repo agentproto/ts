@@ -51,6 +51,11 @@ describe("resolveAgentManifestPath", () => {
     expect(out).toEqual({ ok: true, path: join("/ws", ".agents", "reviewer", "AGENT.md") })
   })
 
+  it("strips the @owner/ prefix for an owner-prefixed agentId (create→resolve round-trip)", () => {
+    const out = resolveAgentManifestPath({ agentId: "@acme/reviewer" }, "/ws")
+    expect(out).toEqual({ ok: true, path: join("/ws", ".agents", "reviewer", "AGENT.md") })
+  })
+
   it("resolves an absolute agentPath as-is", () => {
     const out = resolveAgentManifestPath({ agentPath: "/tmp/x/AGENT.md" }, "/ws")
     expect(out).toEqual({ ok: true, path: "/tmp/x/AGENT.md" })
@@ -96,6 +101,22 @@ describe("loadAgentManifestDefaults", () => {
       expect(out.defaults.instructions).toContain("You review rigorously.")
       expect(out.defaults.skills).toEqual(["search"])
       expect(out.defaults.tools).toEqual(["read_file"])
+    }
+  })
+
+  it("projects an `options` map (AGENT.md path) for a manifest-native adapter", async () => {
+    const root = await mktmp()
+    const path = await writeAgent(root, "native")
+    const out = await loadAgentManifestDefaults(path, {
+      adapter: "mastra-agent",
+      resolveAgentAdapter: (async () => ({ agentManifestOption: "agent" }) as never) as never,
+    })
+    expect(out.ok).toBe(true)
+    if (out.ok) {
+      expect(out.defaults.options).toEqual({ agent: path })
+      // A manifest-native adapter takes the path, not rendered instructions.
+      expect(out.defaults.instructions).toBeUndefined()
+      expect(out.defaults.systemPrompt).toBeUndefined()
     }
   })
 

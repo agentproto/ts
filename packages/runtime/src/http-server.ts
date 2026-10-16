@@ -5501,8 +5501,8 @@ export function buildSpawnSessionHttpArgs(
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
     ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
-    // AIP-42 manifest defaults — the HTTP twins of the MCP-side spawn
-    // `agentId`/`agentPath` fields (see session-spawn.ts). `agentId` resolves
+    // AIP-42 manifest defaults — HTTP/CLI-only today (the MCP `agent_start`
+    // schema declares neither field; see session-spawn.ts). `agentId` resolves
     // to `<cwd>/.agents/<id>/AGENT.md`; `agentPath` is an explicit path.
     ...(typeof b.agentId === "string" && b.agentId.length > 0 ? { agentId: b.agentId } : {}),
     ...(typeof b.agentPath === "string" && b.agentPath.length > 0 ? { agentPath: b.agentPath } : {}),

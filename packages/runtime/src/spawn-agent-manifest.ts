@@ -9,8 +9,10 @@
  * SAME `projectAgentToSpawn` (`agent-projection.ts`) renders the manifest, so
  * a session spawned with `agentId: "reviewer"` behaves exactly like one
  * spawned by `app_run` for a bundled `reviewer` agent. `agentId` resolves to
- * `<workspace>/.agents/<id>/AGENT.md` (the canonical hand-written layout);
- * `agentPath` is an explicit AGENT.md path (`agentId` wins when both given).
+ * `<workspace>/.agents/<id>/AGENT.md` (the canonical hand-written layout; an
+ * `@owner/` prefix is stripped for the directory, matching
+ * `renderAgentManifest`); `agentPath` is an explicit AGENT.md path. When BOTH
+ * are given, `agentPath` wins.
  *
  * Caller-supplied fields always win: the manifest only fills a slot the
  * caller left unspecified.
@@ -18,6 +20,7 @@
 
 import { isAbsolute, join, resolve as resolvePath } from "node:path"
 import { loadAgent } from "@agentproto/agent"
+import { stripOwner } from "@agentproto/app-kit"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 
@@ -62,7 +65,10 @@ export function resolveAgentManifestPath(
           "`<workspace>/.agents/<id>/AGENT.md` — pass `cwd` (or `workspaceSlug`).",
       }
     }
-    return { ok: true, path: join(root, ".agents", ref.agentId.trim(), "AGENT.md") }
+    return {
+      ok: true,
+      path: join(root, ".agents", stripOwner(ref.agentId.trim()), "AGENT.md"),
+    }
   }
   return { ok: false, code: "no_agent_ref", message: "agent_start: no agentId/agentPath given." }
 }
@@ -70,6 +76,10 @@ export function resolveAgentManifestPath(
 export interface AgentManifestSpawnDefaults {
   readonly path: string
   readonly model?: string
+  /** Adapter options the manifest projected — the AGENT.md path for a
+   *  manifest-native adapter (`caps.agentManifestOption`, e.g. mastra-agent).
+   *  Undefined for every other adapter. */
+  readonly options?: Record<string, string>
   /** Composed text for a no-channel adapter (first-prompt prefix). */
   readonly instructions?: string
   /** Composed text for an adapter with a real system-prompt channel. */
@@ -119,6 +129,7 @@ export async function loadAgentManifestDefaults(
     defaults: {
       path,
       ...(projected.model !== undefined ? { model: projected.model } : {}),
+      ...(projected.options !== undefined ? { options: projected.options } : {}),
       ...(projected.instructions !== undefined ? { instructions: projected.instructions } : {}),
       ...(projected.systemPrompt !== undefined ? { systemPrompt: projected.systemPrompt } : {}),
       ...(projected.skills !== undefined ? { skills: projected.skills } : {}),

@@ -2480,6 +2480,10 @@ export async function spawnAgentSession(
         ? { prompt: manifestPrompt }
         : {}),
       ...(mergedSystemPrompt !== undefined ? { appendSystemPrompt: mergedSystemPrompt } : {}),
+      // Manifest-native adapters (caps.agentManifestOption) project an
+      // `options` map pointing the adapter at the AGENT.md path instead of
+      // instructions — forwarded exactly as `app_run` does.
+      ...(input.options === undefined && d.options !== undefined ? { options: d.options } : {}),
       ...(input.skills === undefined && d.skills !== undefined ? { skills: d.skills } : {}),
       ...(input.allowTools === undefined && d.tools !== undefined ? { allowTools: d.tools } : {}),
     }

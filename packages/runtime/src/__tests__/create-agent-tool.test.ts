@@ -34,6 +34,15 @@ describe("createAgentManifest", () => {
     expect(fm.model).toBe(DEFAULT_CREATED_AGENT_MODEL)
   })
 
+  it("strips an @owner/ prefix for the on-disk dir (matches spawn resolution)", async () => {
+    const workspace = await mktmp()
+    const created = await createAgentManifest({ workspace, id: "@acme/reviewer" })
+    expect(created.id).toBe("reviewer")
+    expect(created.path).toBe(join(workspace, ".agents", "reviewer", "AGENT.md"))
+    const fm = matter(await readFile(created.path, "utf8")).data as Record<string, unknown>
+    expect(fm.id).toBe("@acme/reviewer")
+  })
+
   it("throws on an existing manifest without force", async () => {
     const workspace = await mktmp()
     await createAgentManifest({ workspace, id: "dup" })
