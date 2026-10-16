@@ -495,6 +495,87 @@ describe("loadAppHandle — boundaries", () => {
   })
 })
 
+describe("loadAppHandle — services (production hosting surface)", () => {
+  const soloAgent = () =>
+    defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+
+  it("round-trips services through emit → loadAppHandle", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-services-"))
+    try {
+      await defineApp({
+        agents: [{ agent: soloAgent(), body: "Solo." }],
+        services: [
+          { name: "api", entry: "node dist/server.js", port: 8080 },
+          { name: "worker", entry: "node dist/worker.js" },
+        ],
+      }).emit(d)
+      const loaded = await loadAppHandle(d)
+      expect(loaded.services).toEqual([
+        { name: "api", entry: "node dist/server.js", port: 8080 },
+        { name: "worker", entry: "node dist/worker.js" },
+      ])
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects two services with the same name as a load error", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-dupservices-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }] }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(
+        appPath,
+        matter.stringify(parsed.content, {
+          ...parsed.data,
+          services: [
+            { name: "api", entry: "a" },
+            { name: "api", entry: "b" },
+          ],
+        }),
+        "utf8",
+      )
+      await expect(loadAppHandle(d)).rejects.toThrow(AppLoadError)
+      await expect(loadAppHandle(d)).rejects.toThrow(/two services named 'api'/)
+      // Pin the EXACT composed message: the shared phrase is composed once,
+      // by the loader's `fail` factory — never double-prefixed.
+      const err = await loadAppHandle(d).catch((e: unknown) => e)
+      expect((err as Error).message).toBe(
+        `loadAppHandle: '${appPath}': frontmatter invalid services declaration — two services named 'api' — service names must be unique.`,
+      )
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a wrong `port` and a malformed service shape as load errors", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-badservices-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }] }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(
+        appPath,
+        matter.stringify(parsed.content, {
+          ...parsed.data,
+          services: [{ name: "api", entry: "a", port: 70000 }],
+        }),
+        "utf8",
+      )
+      await expect(loadAppHandle(d)).rejects.toThrow(AppLoadError)
+      await expect(loadAppHandle(d)).rejects.toThrow(/services\[0\]\.port/)
+
+      await writeFile(
+        appPath,
+        matter.stringify(parsed.content, { ...parsed.data, services: "api" }),
+        "utf8",
+      )
+      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter invalid services declaration/)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("loadAppHandle — frontmatter strictness posture (AIP-53)", () => {
   const solo = () =>
     defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })

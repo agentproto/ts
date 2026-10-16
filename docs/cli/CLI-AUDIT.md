@@ -18,6 +18,7 @@ All 29 verbs in the dispatcher's `VERBS` set at the time of the audit
 | Command | Subcommands | Key Flags | Purpose |
 |---------|-------------|-----------|---------|
 | **acp** | ls, add, rm | --bin, --args, --name, --desc, --env, --resumable, --json | Register generic ACP agents (zero-code ACP CLIs) in config |
+| **agent** | create, list | --force, --model, --description | Create/list AIP-42 agent manifests under `.agents/<id>/AGENT.md` |
 | **auth** | login, status, logout, provider | --host, --token, --label, --no-browser | OAuth2 device flow host binding + provider API keys |
 | **browser** | install, start, stop, list, status | --port, --camofox-port, --force, --dry-run, --json | Browser service session management (Camofox, Bureau) |
 | **chat** | — | --model, --cwd, --workspace, --label, --keep, --no-color | Interactive multi-turn REPL on daemon-hosted agent session |

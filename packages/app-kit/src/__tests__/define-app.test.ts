@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest"
+import { existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { defineWorkspace } from "@agentproto/workspace"
@@ -356,6 +359,84 @@ describe("defineApp — category", () => {
   it("throws when category is empty", () => {
     expect(() => defineApp({ agents: [agent("solo", [])], category: "" })).toThrow(/category/)
     expect(() => defineApp({ agents: [agent("solo", [])], category: "   " })).toThrow(/category/)
+  })
+})
+
+describe("defineApp — services (production hosting surface)", () => {
+  it("carries services through to the handle, frozen", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      services: [
+        { name: "api", entry: "node dist/server.js", port: 8080 },
+        { name: "worker", entry: "node dist/worker.js" },
+      ],
+    })
+    expect(app.services).toEqual([
+      { name: "api", entry: "node dist/server.js", port: 8080 },
+      { name: "worker", entry: "node dist/worker.js" },
+    ])
+    expect(Object.isFrozen(app.services)).toBe(true)
+    expect(Object.isFrozen(app.services![0])).toBe(true)
+  })
+
+  it("is absent when not declared", () => {
+    expect(defineApp({ agents: [agent("solo", [])] }).services).toBeUndefined()
+  })
+
+  it("rejects an empty services array", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], services: [] }),
+    ).toThrow(/services.*at least one/)
+  })
+
+  it("rejects two services with the same name", () => {
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        services: [
+          { name: "api", entry: "a" },
+          { name: "api", entry: "b" },
+        ],
+      }),
+    ).toThrow(/two services named 'api'/)
+  })
+
+  it("rejects a non-kebab name, an empty entry and a bad port", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], services: [{ name: "Api", entry: "a" }] }),
+    ).toThrow(/services\[0\]\.name/)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], services: [{ name: "api", entry: "  " }] }),
+    ).toThrow(/services\[0\]\.entry/)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], services: [{ name: "api", entry: "a", port: 0 }] }),
+    ).toThrow(/services\[0\]\.port/)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], services: [{ name: "api", entry: "a", port: 70000 }] }),
+    ).toThrow(/services\[0\]\.port/)
+  })
+
+  it("rejects an unknown service field", () => {
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        services: [{ name: "api", entry: "a", extra: true }],
+      } as never),
+    ).toThrow(/services\[0\]\.extra/)
+  })
+
+  // Conformance: `services` is a production SURFACE, not a launcher. Neither
+  // defineApp nor its emit/load paths may execute `entry` — and it must not
+  // trigger the (also never-executed) dev.launch path either.
+  it("never executes `entry` — services is carried as data, not run", () => {
+    const marker = join(tmpdir(), `app-kit-services-marker-${process.pid}-${Date.now()}`)
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      dev: { launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["touch", marker] }] },
+      services: [{ name: "api", entry: `touch ${marker}` }],
+    })
+    expect(existsSync(marker)).toBe(false)
+    expect(app.services![0]!.entry).toBe(`touch ${marker}`)
   })
 })
 

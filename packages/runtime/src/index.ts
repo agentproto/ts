@@ -37,6 +37,7 @@ import {
   registerConversationLocateTool,
   registerConversationExportTool,
 } from "./session-tools.js"
+import { registerCreateAgentTool } from "./create-agent-tool.js"
 import { collectSubtree } from "./agent-tools.js"
 import { registerBrainTools } from "./brain-tools.js"
 import { createWorkspaceBrains } from "./workspace-brains.js"
@@ -886,6 +887,7 @@ import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
+import { registerAppTunnelTools } from "./app-tunnel-tools.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
 import { registerBuiltinRoutes } from "./builtin-routes.js"
@@ -918,6 +920,8 @@ export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
 export type { TunnelHealth, TunnelHealthState } from "./remote-providers/types.js"
+export { buildSessionLink } from "./tunnel-links.js"
+export type { AppTunnelResult } from "./app-tunnel-tools.js"
 export type { SentinelStatus } from "./sentinel-store.js"
 export type {
   SentinelSpec,
@@ -3252,6 +3256,10 @@ export async function createGateway(
       name: opts.name ?? "agentproto-runtime",
       version: opts.version ?? "0.1.0-alpha",
     })
+    // AIP-42 manifest authoring: render a valid `agent/v1` AGENT.md into the
+    // caller's workspace `.agents/<id>/AGENT.md` via the shared app-kit
+    // renderer (same path `emitApp` and `agentproto agent create` use).
+    registerCreateAgentTool(rawServer, { workspace })
     // Read `defaults.agentPromptInterrupt` / `defaults.messaging.*` fresh on
     // every call (this factory runs once per `/mcp` request — the SDK's
     // stateless pattern, see `serveMcp` in http-server.ts) instead of the
@@ -3619,6 +3627,7 @@ export async function createGateway(
       daemonWorkspace: workspace,
       daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
+      persist,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
@@ -3814,6 +3823,10 @@ export async function createGateway(
     registerConversationExportTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
+    // App-facing tunnel verb — loads an app manifest (ui.port) and creates its
+    // tunnel through the same registry, optionally minting the miniapp session
+    // deep link. Same closure-rebind pattern as `registerTunnelTools`.
+    registerAppTunnelTools(server, { registry: tunnels })
     // llm-endpoint proxy sidecar lifecycle — only when the feature is on.
     if (llmEndpoint) registerLlmEndpointTools(server, { registry: llmEndpoint })
     // Tunnel adapter introspection/setup, riding on @agentproto/provider-kit

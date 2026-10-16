@@ -2753,6 +2753,11 @@ export function registerOrchestrationTools(
         runTimeoutMs: z.number().int().positive().optional().describe(
           "Bound (ms) on following a spawned session's first turn before recording `timeout`. Default 30 min.",
         ),
+        expiresAt: z.iso.datetime().optional().describe(
+          "ISO timestamp after which the job stops firing (deactivated on the next tick). " +
+          "A job created from a session is `ownedBy` that session and defaults to 7 days; " +
+          "an operator job never expires unless this is set.",
+        ),
       },
       async input => {
         try {
@@ -2774,6 +2779,11 @@ export function registerOrchestrationTools(
               ? { maxConsecutiveFailures: input.maxConsecutiveFailures }
               : {}),
             ...(input.runTimeoutMs !== undefined ? { runTimeoutMs: input.runTimeoutMs } : {}),
+            // The job belongs to the calling session (from `?callerSessionId=`),
+            // so a dead owner's re-arms are retired with it — absent for a
+            // human/root call, whose jobs live until deleted or expired.
+            ...(opts.callerSessionId ? { ownedBy: opts.callerSessionId } : {}),
+            ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
           })
           return {
             content: [
@@ -2785,6 +2795,8 @@ export function registerOrchestrationTools(
                   recurring: job.recurring,
                   nextRunAt: job.nextRunAt,
                   active: job.active,
+                  ownedBy: job.ownedBy,
+                  expiresAt: job.expiresAt,
                 }),
               },
             ],
@@ -2817,6 +2829,10 @@ export function registerOrchestrationTools(
       finished: j.finished ?? false,
       nextRunAt: j.nextRunAt,
       lastRunAt: j.lastRunAt,
+      // Ownership/expiry are the self-scheduling lifetime guards — visible
+      // without `full: true` (a job that silently expired must not look live).
+      ownedBy: j.ownedBy,
+      expiresAt: j.expiresAt,
       // A failed last run must be visible without `full: true`.
       lastOk: j.lastResult?.ok,
       // Real-run health: last outcome, consecutive non-productive count, and
@@ -2861,6 +2877,9 @@ export function registerOrchestrationTools(
         ),
         runTimeoutMs: z.number().int().positive().optional().describe(
           "Bound (ms) on following a spawned session's first turn before recording `timeout`.",
+        ),
+        expiresAt: z.iso.datetime().nullable().optional().describe(
+          "Set/replace the job's expiry (deactivated on the next tick); `null` clears it (never expires).",
         ),
       },
       async input => {

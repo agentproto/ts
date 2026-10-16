@@ -50,7 +50,7 @@ function makeScheduler(opts: { dispatchTool?: DispatchTool; persistPath?: string
 
 async function buildClient(
   scheduler: CronScheduler,
-  extra: { toolSubset?: ReadonlySet<string> } = {},
+  extra: { toolSubset?: ReadonlySet<string>; callerSessionId?: string } = {},
 ): Promise<Client> {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
@@ -124,6 +124,47 @@ describe("cron_create schema — kind:\"tool\"", () => {
       tool: "worktree_gc",
       inputs: { dryRun: true },
     })
+  })
+
+  it("tags a session-created job ownedBy and cron_list shows ownedBy/expiresAt", async () => {
+    const { scheduler } = makeScheduler()
+    const client = await buildClient(scheduler, { callerSessionId: "sess_coach" })
+    const created = await call(client, "cron_create", {
+      schedule: "0 20 * * *",
+      action: { kind: "tool", tool: "worktree_gc" },
+    })
+    expect(created.isError).toBe(false)
+    const { jobId, ownedBy, expiresAt } = JSON.parse(created.text) as {
+      jobId: string
+      ownedBy?: string
+      expiresAt?: string
+    }
+    expect(ownedBy).toBe("sess_coach")
+    expect(expiresAt).toBeTruthy()
+
+    // Visible in the COMPACT list — a fact of the job, not a `full:` extra.
+    const listed = await call(client, "cron_list", {})
+    const { jobs } = JSON.parse(listed.text) as {
+      jobs: Array<{ id: string; ownedBy?: string; expiresAt?: string }>
+    }
+    const row = jobs.find(j => j.id === jobId)
+    expect(row?.ownedBy).toBe("sess_coach")
+    expect(row?.expiresAt).toBeTruthy()
+  })
+
+  it("defaults an operator-created job to no owner and no expiry", async () => {
+    const { scheduler } = makeScheduler()
+    const client = await buildClient(scheduler)
+    const created = await call(client, "cron_create", {
+      schedule: "0 20 * * *",
+      action: { kind: "tool", tool: "worktree_gc" },
+    })
+    const { ownedBy, expiresAt } = JSON.parse(created.text) as {
+      ownedBy?: string
+      expiresAt?: string
+    }
+    expect(ownedBy).toBeUndefined()
+    expect(expiresAt).toBeUndefined()
   })
 
   it.each(["cron_create", "cron_run", "cron_delete"])("refuses self-scheduling tool %s", async tool => {

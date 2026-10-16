@@ -17,6 +17,16 @@
       "reason": "link-token scoping: argument-level refinement of ui.tools, keyed by tool id, enforced only for calls made under a valid AIP-53 scoped link/session token; pending upstream spec PR"
     },
     {
+      "file": "aip-53/draft/APP.schema.json",
+      "field": "properties.services",
+      "reason": "app service hosting: services[] declares the production hosting surface ({ name, entry, port? }), one supervised service process per entry — distinct from dev.launch (dev-only, never executed); pending upstream spec PR"
+    },
+    {
+      "file": "aip-53/draft/APP.schema.json",
+      "field": "properties.dev.properties.launch.description",
+      "reason": "app service hosting: dev.launch description notes it is dev-only/validation-only and never executed, pointing at services as the production hosting surface; pending upstream spec PR"
+    },
+    {
       "file": "aip-62/draft/REVIEW.schema.json",
       "field": "$defs.agentCheck.properties.fallbackPresets",
       "reason": "review lane fallback: ordered fallback reviewer presets tried when the primary reviewer is unavailable; pending upstream spec PR"
@@ -45,6 +55,11 @@
       "file": "aip-62/draft/ATTESTATION.schema.json",
       "field": "$defs.lane.properties.sharedExecution",
       "reason": "review fallback dedup: marks lanes that share one reviewer execution so they are not read as independent agreement; pending upstream spec PR"
+    },
+    {
+      "file": "aip-42/draft/AGENT.schema.json",
+      "field": "$defs.memoryConfig.properties.enabled",
+      "reason": "AIP-42 memory gating: memory.enabled=false suppresses all MEMORY.md writes for the agent; pending upstream spec PR"
     }
   ]
 }

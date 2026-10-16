@@ -29,6 +29,7 @@ import type {
   AppDefinition,
   AppHandle,
   AppRequirement,
+  AppService,
   DoctypeHandle,
   OpenAIAppUiExtension,
   OpenAIEntrypoint,
@@ -99,7 +100,13 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const version = def.version ?? (id ? "0.1.0" : undefined)
   const description = def.description
   const fields = normalizeManifestFields(
-    { placement: def.placement, requires: def.requires, exposes: def.exposes, accepts: def.accepts },
+    {
+      placement: def.placement,
+      requires: def.requires,
+      exposes: def.exposes,
+      accepts: def.accepts,
+      services: def.services,
+    },
     { agents: agents.map(e => e.agent.id), workflows: workflows.map(w => w.id) },
     msg => new AppDefinitionError(msg),
   )
@@ -197,6 +204,18 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const dev = def.dev
     ? Object.freeze({ launch: Object.freeze(def.dev.launch.map(l => Object.freeze({ ...l }))) })
     : undefined
+  // NOT A LAUNCHER. `services[]` is the production hosting surface — one
+  // supervised service process per entry — and `defineApp` only validates +
+  // carries it. This never spawns anything: `entry` is a plain string the
+  // LATER install-time service-owner (performInstall, a separate work item)
+  // runs, one keep-alive session per entry. `dev.launch` above is likewise
+  // validation-only and is NEVER executed by app-kit (define-app.ts:62-64 /
+  // no execution path). Conformance is asserted in __tests__: a `services`
+  // entry whose `entry` would be destructive if run MUST NOT cause
+  // defineApp/emit/load to execute it.
+  const services: readonly AppService[] | undefined = fields.services
+    ? Object.freeze(fields.services.map(s => Object.freeze({ ...s })))
+    : undefined
   const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
   const data = def.data ? Object.freeze({ ...def.data }) : undefined
   const boundaries = def.boundaries ? Object.freeze({ ...def.boundaries }) : undefined
@@ -234,6 +253,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(skill !== undefined ? { skill } : {}),
     ...(artifacts !== undefined ? { artifacts } : {}),
     ...(dev !== undefined ? { dev } : {}),
+    ...(services !== undefined ? { services } : {}),
     ...(data !== undefined ? { data } : {}),
     ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
     ...(boundaries !== undefined ? { boundaries } : {}),
@@ -282,6 +302,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(skill !== undefined ? { skill } : {}),
           ...(artifacts !== undefined ? { artifacts } : {}),
           ...(dev !== undefined ? { dev } : {}),
+          ...(services !== undefined ? { services } : {}),
           ...(data !== undefined ? { data } : {}),
           ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
           ...(boundaries !== undefined ? { boundaries } : {}),

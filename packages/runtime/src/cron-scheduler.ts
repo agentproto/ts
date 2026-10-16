@@ -217,6 +217,22 @@ export interface CronJob {
    * `observeTimeoutMs` (30 min).
    */
   runTimeoutMs?: number
+  /**
+   * Session id the job belongs to — the creating session's
+   * `?callerSessionId=` (a cron job a live agent re-arms for itself). The
+   * scheduler deactivates (or relinks to the successor of) a job whose owner
+   * is retired/gone on the next tick, so a dead owner's re-arms die with it.
+   * Absent for operator/root-created jobs, which live until deleted or
+   * (if set) `expiresAt`.
+   */
+  ownedBy?: string
+  /**
+   * ISO timestamp after which the job stops firing (deactivated on the next
+   * tick). Defaulted to `now + DEFAULT_OWNED_JOB_TTL_MS` when `ownedBy` is set
+   * and this is omitted, so an owned job can never outlive its owner forever;
+   * absent for unowned jobs (which never expire).
+   */
+  expiresAt?: string
 }
 
 /** Real outcome of a single cron run, as recorded in the ledger. */
@@ -252,6 +268,8 @@ export interface CronUpdate {
   action?: CronAction
   maxConsecutiveFailures?: number
   runTimeoutMs?: number
+  /** Set/replace the expiry; `null` clears it (the job never expires). */
+  expiresAt?: string | null
 }
 
 export interface CronRunsPage {
@@ -303,6 +321,16 @@ export const DEFAULT_MAX_CONSECUTIVE_FAILURES = 2
 /** Default bound on following a spawned session's first turn (30 min). */
 export const DEFAULT_OBSERVE_TIMEOUT_MS = 30 * 60_000
 
+/**
+ * Default `expiresAt` window for an `ownedBy` job created without one. A
+ * deliberately generous backstop (NOT the sibling loop plan's 24h): the
+ * owner-retirement check below is what makes a dead owner's jobs die with it,
+ * while this only bounds a job whose owner row lingers. It must comfortably
+ * outlive a daily self-renewal (a coach re-arming tomorrow's reminder), so
+ * 24h would race the very fire the job exists for.
+ */
+export const DEFAULT_OWNED_JOB_TTL_MS = 7 * 24 * 60 * 60_000
+
 /** Project a job's health for `cron_list` / callers that don't read the ledger. */
 export function cronJobHealth(job: CronJob): CronJobHealth {
   return {
@@ -329,6 +357,11 @@ export interface CronScheduler {
     action: CronAction
     maxConsecutiveFailures?: number
     runTimeoutMs?: number
+    /** Creating session id — see {@link CronJob.ownedBy}. Defaults the job's
+     *  `expiresAt` to `now + DEFAULT_OWNED_JOB_TTL_MS` unless one is given. */
+    ownedBy?: string
+    /** ISO expiry — see {@link CronJob.expiresAt}. */
+    expiresAt?: string
   }): Promise<CronJob>
 
   list(): CronJob[]
@@ -586,6 +619,45 @@ export function createCronScheduler(opts: {
 
   const persistNow = (): void => {
     if (shouldPersist) saveJobs(jobs, persistPath)
+  }
+
+  /**
+   * Why an active job should be retired before it fires again, or undefined.
+   * Expiry is a plain cap. Ownership mirrors the `prompt-session` successor
+   * path: a retired owner's jobs relink to a live successor, otherwise the
+   * owner is gone and its re-arms die with it.
+   */
+  const ownerRetirement = (state: JobState): string | undefined => {
+    const { job } = state
+    if (job.expiresAt && Date.parse(job.expiresAt) <= Date.now()) {
+      return `expired at ${job.expiresAt}`
+    }
+    const owner = job.ownedBy
+    if (!owner) return undefined
+    const desc = registry.get(owner)
+    if (!desc) return `owner session '${owner}' is gone`
+    if (!isRetired(desc)) return undefined
+    const successorId = resolveSuccessor(id => registry.get(id), desc.id)
+    const successor = successorId ? registry.get(successorId) : undefined
+    if (
+      successorId &&
+      successor &&
+      (successor.status === "running" || successor.status === "starting")
+    ) {
+      job.ownedBy = successorId
+      persistNow()
+      return undefined
+    }
+    return `owner session '${owner}' retired with no live successor`
+  }
+
+  /** Deactivate a job the scheduler no longer holds (expired / orphaned). */
+  const retire = (state: JobState, reason: string): void => {
+    state.job.active = false
+    state.job.pausedReason = reason
+    state.cronInstance?.stop()
+    state.cronInstance = undefined
+    persistNow()
   }
 
   // ── Action executor ───────────────────────────────────────────────
@@ -957,6 +1029,13 @@ export function createCronScheduler(opts: {
     const now = new Date()
     for (const state of jobs.values()) {
       if (!state.job.active) continue
+      // Retire an expired/orphaned job before it can fire — an owner that is
+      // gone (or whose expiry passed) must not keep re-arming reminders.
+      const retired = ownerRetirement(state)
+      if (retired) {
+        retire(state, retired)
+        continue
+      }
       if (!state.job.nextRunAt) continue
       const fireAt = new Date(state.job.nextRunAt)
       if (fireAt <= now) {
@@ -975,7 +1054,7 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    async create({ label, schedule, timezone, recurring = true, action, maxConsecutiveFailures, runTimeoutMs }) {
+    async create({ label, schedule, timezone, recurring = true, action, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt }) {
       assertCronActionAllowed(action)
       // Validate schedule — throws SyntaxError if invalid.
       const cronInstance = parseCron(schedule, timezone)
@@ -986,6 +1065,14 @@ export function createCronScheduler(opts: {
       })
       const id = `cron_${randomUUID()}`
       const next = nextFireDate(cronInstance)
+      const createdAt = new Date()
+      // An owned job with no explicit expiry gets a default backstop; an
+      // operator/root job (no owner) never expires unless one is given.
+      const effectiveExpiresAt =
+        expiresAt ??
+        (ownedBy
+          ? new Date(createdAt.getTime() + DEFAULT_OWNED_JOB_TTL_MS).toISOString()
+          : undefined)
       const job: CronJob = {
         id,
         ...(label ? { label } : {}),
@@ -993,12 +1080,14 @@ export function createCronScheduler(opts: {
         ...(timezone ? { timezone } : {}),
         recurring,
         action,
-        createdAt: new Date().toISOString(),
+        createdAt: createdAt.toISOString(),
         active: true,
         finished: false,
         nextRunAt: next?.toISOString(),
         ...(maxConsecutiveFailures !== undefined ? { maxConsecutiveFailures } : {}),
         ...(runTimeoutMs !== undefined ? { runTimeoutMs } : {}),
+        ...(ownedBy ? { ownedBy } : {}),
+        ...(effectiveExpiresAt ? { expiresAt: effectiveExpiresAt } : {}),
       }
       jobs.set(id, { job, cronInstance })
       persistNow()
@@ -1040,6 +1129,8 @@ export function createCronScheduler(opts: {
       if (patch.label !== undefined) job.label = patch.label === null ? undefined : patch.label
       if (patch.maxConsecutiveFailures !== undefined) job.maxConsecutiveFailures = patch.maxConsecutiveFailures
       if (patch.runTimeoutMs !== undefined) job.runTimeoutMs = patch.runTimeoutMs
+      if (patch.expiresAt !== undefined)
+        job.expiresAt = patch.expiresAt === null ? undefined : patch.expiresAt
       job.active = active
       if (active) {
         job.finished = false
