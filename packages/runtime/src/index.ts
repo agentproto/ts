@@ -210,10 +210,12 @@ import { registerMcpAppHostTools } from "./mcp-app-host-tools.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import {
   registerAppTools,
+  reensureInstalledAppServicesOnBoot,
   resolveAgentRefsForWorkflow,
   resolveAppToolsForWorkflow,
   performInstall,
 } from "./app-tools.js"
+import { createAppServiceStore } from "./app-services.js"
 import { registerAppDataTools } from "./app-data.js"
 import { APP_STATE_APPEND_TOOL_NAME } from "./app-state.js"
 import { registerAppExternalTools } from "./app-external.js"
@@ -1882,6 +1884,19 @@ export interface GatewayHandle {
   continueInterruptedOnBoot(opts?: {
     isServed?: (desc: SessionDescriptor) => boolean
   }): Promise<ContinueOnBootSummary>
+  /** Boot re-ensure of app-service owners (Pygmalion phase 1b item 2).
+   *  `app_install`'s `ensureServices` runs only on the install path, so a
+   *  service whose owner died with the previous daemon stays down until the
+   *  next reinstall; this force-replaces every recorded owner at boot. Gated by
+   *  the same `resumeSessionsOnBoot` knob (a no-op returning
+   *  `{ enabled: false, ... }` when it is off). serve.ts calls this AFTER the
+   *  resume/sandbox passes so it never races them for an owner session id. */
+  reensureAppServicesOnBoot(): Promise<{
+    enabled: boolean
+    apps: number
+    spawned: number
+    errors: string[]
+  }>
   /** Daemon-startup backfill for the per-session index sidecars
    *  (`session-index.ts`): create a compact `index.json` for every session dir
    *  that lacks one, recovering the last prompt/output from the transcript
@@ -4535,6 +4550,25 @@ export async function createGateway(
         policy: opts.bootResumePolicy,
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
+    },
+    async reensureAppServicesOnBoot() {
+      // Same boot-automation gate as the resume passes: when the operator has
+      // turned boot automation off, nothing auto-starts at boot — including
+      // app services. Runs AFTER the resume passes in serve.ts, so it never
+      // races them for an owner session id (it force-replaces every owner).
+      if (!opts.resumeSessionsOnBoot) {
+        return { enabled: false, apps: 0, spawned: 0, errors: [] as string[] }
+      }
+      const result = await reensureInstalledAppServicesOnBoot({
+        appRegistry,
+        serviceStore: createAppServiceStore({
+          ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
+        }),
+        registry: sessions,
+        ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+        ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
+      })
+      return { enabled: true, ...result }
     },
     async backfillSessionIndexes() {
       // Best-effort: a broken sessions store must never gate the daemon being

@@ -46,10 +46,12 @@ import {
   ensureAppServiceOwners,
   killServicePid,
   parseAppServices,
+  reensureAppServiceOwners,
   removeAppServiceOwners,
   serviceOwnerLabel,
   servicePidFilePath,
   type AppService,
+  type EnsureAppServiceOwnersResult,
   type AppServiceOwner,
   type AppServiceStore,
   type SpawnServiceOwner,
@@ -1337,7 +1339,11 @@ export interface PerformInstallOptions {
     app: InstalledApp
     dir: string
     services: readonly AppService[]
-  }) => Promise<void>
+    /** Boot mode: treat every recorded owner as stale and replace it (see
+     *  `reensureAppServiceOwners`), instead of keeping a live one. Omitted by
+     *  every install path; set only by the boot re-ensure. */
+    force?: boolean
+  }) => Promise<EnsureAppServiceOwnersResult>
 }
 
 /**
@@ -1626,7 +1632,196 @@ export async function repairIncompleteApps(
 
 const repairStarted = new WeakSet<AppRegistry>()
 
-export function registerAppTools(server: McpServer, opts: RegisterAppToolsOptions): void {
+/** Result of the boot-time app-service re-ensure (`reensureInstalledAppServicesOnBoot`). */
+export interface AppServiceBootReensureResult {
+  /** Installed apps that declared a non-empty `services:` block. */
+  apps: number
+  /** Owners freshly spawned across those apps. */
+  spawned: number
+  /** Per-service failures, `"<appId>:<name>: <error>"` — surfaced, never thrown. */
+  errors: string[]
+}
+
+/** Everything `buildAppServiceEnsurer` needs to spawn/kill service owners —
+ *  all of it available where a gateway is built. */
+export interface AppServiceEnsurerDeps {
+  registry: SessionsRegistry
+  serviceStore: AppServiceStore
+  resolveAgentAdapter?: AgentAdapterResolver
+  daemonMcpUrl?: string
+  serviceAdapter?: string
+  workspacesConfigPath?: string
+  spawnServiceOwner?: SpawnServiceOwner
+  killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
+}
+
+/**
+ * Build the `ensureServices` callback `app_install` runs (frozen `services:`
+ * semantics). Extracted to module scope so the boot re-ensure
+ * (`reensureInstalledAppServicesOnBoot`) reuses the exact same spawn/kill
+ * wiring — `registerAppTools` runs per `/mcp` request (stateless pattern), so
+ * a handle returned from it is not a boot singleton.
+ */
+export function buildAppServiceEnsurer(
+  deps: AppServiceEnsurerDeps,
+): NonNullable<PerformInstallOptions["ensureServices"]> {
+  const serviceAdapter = deps.serviceAdapter ?? "pi"
+
+  /** The default spawn: the SAME infra as agents (`spawnAgentSession`), with
+   *  `keepAlive` (exempt from the idle-reaper) + a `restartPolicy` (the daemon
+   *  revives the owner if the adapter process crashes). The owner's own prompt
+   *  supervises the `entry` child — there is no scheduler. */
+  const defaultSpawnServiceOwner = async (input: {
+    appId: string
+    dir: string
+    service: AppService
+    workspaceSlug?: string
+    stateDir: string
+  }): Promise<SpawnServiceOwnerResult> => {
+    const resolveAgentAdapter = deps.resolveAgentAdapter
+    if (!resolveAgentAdapter) {
+      return { ok: false, error: "no adapter resolver is wired — cannot spawn a service owner" }
+    }
+    const result = await spawnAgentSession(
+      {
+        registry: deps.registry,
+        resolveAgentAdapter,
+        ...(deps.daemonMcpUrl !== undefined ? { daemonMcpUrl: deps.daemonMcpUrl } : {}),
+      },
+      {
+        adapter: serviceAdapter,
+        cwd: input.dir,
+        ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+        prompt: buildServiceOwnerPrompt(input.service, servicePidFilePath(input.stateDir, input.service.name)),
+        label: serviceOwnerLabel(input.appId, input.service.name),
+        appId: input.appId,
+        keepAlive: true,
+        restartPolicy: {
+          on: ["crashed", "error"],
+          maxRetries: 5,
+          windowMs: 10 * 60 * 1000,
+          baseDelayMs: 5_000,
+          factor: 2,
+          maxDelayMs: 60_000,
+        },
+      },
+    )
+    if (!result.ok) return { ok: false, error: result.message }
+    return {
+      ok: true,
+      sessionId: result.descriptor.id,
+      ...(result.descriptor.pid !== null && result.descriptor.pid !== undefined
+        ? { pid: result.descriptor.pid }
+        : {}),
+    }
+  }
+
+  /** Kill seam: the owner SESSION + the recorded process pid. */
+  const killServiceOwner = (owner: AppServiceOwner): void => {
+    deps.registry.kill(owner.sessionId)
+    killServicePid(owner.pid)
+  }
+
+  return async ({ app, dir, services, force }) => {
+    const workspaceSlug = await ensureAppWorkspace({
+      appId: app.appId,
+      dir,
+      ...(deps.workspacesConfigPath !== undefined ? { configPath: deps.workspacesConfigPath } : {}),
+    })
+    const stateDir = app.stateDir ?? app.dataDir ?? dir
+    const spawnOwner: SpawnServiceOwner =
+      deps.spawnServiceOwner ?? (input => defaultSpawnServiceOwner({ ...input, stateDir }))
+    const spawn = (service: AppService): Promise<SpawnServiceOwnerResult> =>
+      spawnOwner({
+        appId: app.appId,
+        dir,
+        service,
+        ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
+      })
+    const killOwner = deps.killServiceOwner ?? killServiceOwner
+    const result =
+      force === true
+        ? await reensureAppServiceOwners({
+            store: deps.serviceStore,
+            appId: app.appId,
+            services,
+            stateDir,
+            spawn,
+            killOwner,
+          })
+        : await ensureAppServiceOwners({
+            store: deps.serviceStore,
+            appId: app.appId,
+            services,
+            isOwnerAlive: owner => {
+              const desc = deps.registry.get(owner.sessionId)
+              return desc !== undefined && !isSessionTerminal(desc.status)
+            },
+            spawn,
+            killOwner,
+          })
+    for (const e of result.errors) {
+      console.warn(`[app-services] service "${app.appId}:${e.name}" not started: ${e.error}`)
+    }
+    return result
+  }
+}
+
+/**
+ * Boot re-ensure of app-service owners (Pygmalion phase 1b item 2).
+ * `app_install`'s `ensureServices` runs only on the install path, so a service
+ * whose owner died with the previous daemon stays down until the next
+ * reinstall. This force-replaces every recorded owner for every installed app
+ * that declares `services:` (see `reensureAppServiceOwners` for why force, not
+ * an `isOwnerAlive` check). Best-effort: a per-app failure is collected, never
+ * thrown. The daemon boot path (serve.ts) calls this AFTER the session resume
+ * passes, so it never races them for an owner session id.
+ *
+ * Deliberately NOT bucket-scoped, unlike the three sibling boot passes it
+ * runs after (`reattachSandboxSessionsOnBoot` / `resumeSessionsOnBoot` /
+ * `continueInterruptedOnBoot`, each threading an `isServed` predicate so a
+ * daemon never touches another bucket's sessions): `deps.appRegistry` (the
+ * installed-app registry, `~/.agentproto/apps.json`) and the app-service
+ * store (`~/.agentproto/app-services.json`) carry no workspace/bucket field
+ * to filter on — `InstalledApp` never has, and `ensureServices` already
+ * iterates every installed app unfiltered on the pre-existing `app_install`
+ * path this re-ensure mirrors. Apps and their declared services are
+ * machine-global, single-daemon-owned state; running two daemons for
+ * different buckets of the SAME machine against the same shared apps.json
+ * would double-own a service's owner regardless of this pass.
+ */
+export async function reensureInstalledAppServicesOnBoot(
+  deps: AppServiceEnsurerDeps & { appRegistry: AppRegistry },
+): Promise<AppServiceBootReensureResult> {
+  const ensureServices = buildAppServiceEnsurer(deps)
+  let apps = 0
+  let spawned = 0
+  const errors: string[] = []
+  for (const app of deps.appRegistry.listApps()) {
+    let services: readonly AppService[]
+    try {
+      services = parseAppServices((await readAppRefs(app.dir)).services).services
+    } catch {
+      // Unreadable APP.md (dir moved/removed) — not this pass's job to repair.
+      continue
+    }
+    if (services.length === 0) continue
+    apps += 1
+    try {
+      const result = await ensureServices({ app, dir: app.dir, services, force: true })
+      spawned += result.spawned.length
+      for (const e of result.errors) errors.push(`${app.appId}:${e.name}: ${e.error}`)
+    } catch (err) {
+      errors.push(`${app.appId}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  return { apps, spawned, errors }
+}
+
+export function registerAppTools(
+  server: McpServer,
+  opts: RegisterAppToolsOptions,
+): void {
   const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner, dispatchTool, callImportedTool, resolveModelRole } =
     opts
   const appRegistry: AppRegistry = opts.appRegistry ?? createAppRegistry({
@@ -1663,92 +1858,23 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
     })
 
-  const serviceAdapter = opts.serviceAdapter ?? "pi"
+  const ensureServices: NonNullable<PerformInstallOptions["ensureServices"]> = buildAppServiceEnsurer({
+    registry,
+    serviceStore,
+    ...(resolveAgentAdapter ? { resolveAgentAdapter } : {}),
+    ...(opts.daemonMcpUrl !== undefined ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+    ...(opts.serviceAdapter !== undefined ? { serviceAdapter: opts.serviceAdapter } : {}),
+    ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+    ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
+    ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
+  })
 
-  /** The default spawn: the SAME infra as agents (`spawnAgentSession`), with
-   *  `keepAlive` (exempt from the idle-reaper) + a `restartPolicy` (the daemon
-   *  revives the owner if the adapter process crashes). The owner's own prompt
-   *  supervises the `entry` child — there is no scheduler. */
-  const defaultSpawnServiceOwner = async (input: {
-    appId: string
-    dir: string
-    service: AppService
-    workspaceSlug?: string
-    stateDir: string
-  }): Promise<SpawnServiceOwnerResult> => {
-    if (!resolveAgentAdapter) {
-      return { ok: false, error: "no adapter resolver is wired — cannot spawn a service owner" }
-    }
-    const result = await spawnAgentSession(
-      {
-        registry,
-        resolveAgentAdapter,
-        ...(opts.daemonMcpUrl !== undefined ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
-      },
-      {
-        adapter: serviceAdapter,
-        cwd: input.dir,
-        ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
-        prompt: buildServiceOwnerPrompt(input.service, servicePidFilePath(input.stateDir, input.service.name)),
-        label: serviceOwnerLabel(input.appId, input.service.name),
-        appId: input.appId,
-        keepAlive: true,
-        restartPolicy: {
-          on: ["crashed", "error"],
-          maxRetries: 5,
-          windowMs: 10 * 60 * 1000,
-          baseDelayMs: 5_000,
-          factor: 2,
-          maxDelayMs: 60_000,
-        },
-      },
-    )
-    if (!result.ok) return { ok: false, error: result.message }
-    return {
-      ok: true,
-      sessionId: result.descriptor.id,
-      ...(result.descriptor.pid !== null && result.descriptor.pid !== undefined
-        ? { pid: result.descriptor.pid }
-        : {}),
-    }
-  }
-
-  /** Kill seam: the owner SESSION + the recorded process pid. */
-  const killServiceOwner: (owner: AppServiceOwner) => void = owner => {
+  /** Kill seam for `app_uninstall` below: the owner SESSION + the recorded
+   *  process pid. Mirrors `buildAppServiceEnsurer`'s own default (same logic,
+   *  just closed over this function's `registry` instead of `deps.registry`). */
+  const killServiceOwner = (owner: AppServiceOwner): void => {
     registry.kill(owner.sessionId)
     killServicePid(owner.pid)
-  }
-
-  const ensureServices: NonNullable<PerformInstallOptions["ensureServices"]> = async ({ app, dir, services }) => {
-    const workspaceSlug = await ensureAppWorkspace({
-      appId: app.appId,
-      dir,
-      ...(opts.workspacesConfigPath !== undefined ? { configPath: opts.workspacesConfigPath } : {}),
-    })
-    const stateDir = app.stateDir ?? app.dataDir ?? dir
-    const spawnOwner: SpawnServiceOwner =
-      opts.spawnServiceOwner ??
-      (input => defaultSpawnServiceOwner({ ...input, stateDir }))
-    const result = await ensureAppServiceOwners({
-      store: serviceStore,
-      appId: app.appId,
-      services,
-      isOwnerAlive: owner => {
-        const desc = registry.get(owner.sessionId)
-        return desc !== undefined && !isSessionTerminal(desc.status)
-      },
-      spawn: service =>
-        spawnOwner({
-          appId: app.appId,
-          dir,
-          service,
-          ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
-        }),
-      killOwner: opts.killServiceOwner ?? killServiceOwner,
-    })
-    for (const e of result.errors) {
-      console.warn(`[app-services] service "${app.appId}:${e.name}" not started: ${e.error}`)
-    }
   }
 
   interface RemoteCatalogEntryRef {

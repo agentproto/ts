@@ -1088,6 +1088,21 @@ export async function runServe(args: readonly string[]): Promise<number> {
           `${color.reset}\n`,
       )
     }
+    // App-service boot re-ensure (Pygmalion phase 1b item 2). Strictly AFTER
+    // the resume passes above: it force-replaces every app-service owner, so
+    // it must not race them for an owner session id. `ensureServices` otherwise
+    // runs only on the install path, leaving a service whose owner died with
+    // the previous daemon down until the next reinstall. Same boot-automation
+    // gate as the passes (`daemon.resumeSessionsOnBoot`), enforced in the
+    // gateway method. Best-effort.
+    const services = await gateway.reensureAppServicesOnBoot()
+    if (services.enabled && services.apps > 0) {
+      process.stderr.write(
+        `${color.dim}re-ensured ${services.spawned} app service owner(s) across ${services.apps} app(s)` +
+          `${services.errors.length > 0 ? ` (${services.errors.length} failed)` : ""}` +
+          `${color.reset}\n`,
+      )
+    }
   } catch (err) {
     process.stderr.write(
       `${color.dim}eager resume-on-boot skipped — ${

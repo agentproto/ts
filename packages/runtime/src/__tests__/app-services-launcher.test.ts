@@ -18,7 +18,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { defineApp } from "@agentproto/app-kit"
 import { defineAgent } from "@agentproto/agent"
-import { registerAppTools } from "../app-tools.js"
+import { registerAppTools, reensureInstalledAppServicesOnBoot } from "../app-tools.js"
 import { createAppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createAppServiceStore, type AppServiceOwner, type SpawnServiceOwner } from "../app-services.js"
@@ -65,6 +65,7 @@ async function setup(opts: {
   spawnServiceOwner?: SpawnServiceOwner
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
   startSession?: ReturnType<typeof fakeStartSession>
+  workspacesConfigPath?: string
 } = {}) {
   const registry = createSessionsRegistry({ persist: false })
   const startSession = opts.startSession ?? fakeStartSession()
@@ -73,14 +74,16 @@ async function setup(opts: {
       ? { startSession, commandPreview: "mock-adapter", agentManifestOption: "agent" }
       : null
   const serviceStore = createAppServiceStore({ persist: false })
+  const appRegistry = createAppRegistry()
   const server = new McpServer({ name: "app-services-launcher-test", version: "0.0.0" })
   registerAppTools(server, {
     registry,
-    appRegistry: createAppRegistry(),
+    appRegistry,
     listRegisteredToolIds: async () => [],
     resolveAgentAdapter,
     waitForSessionTerminal: async () => {},
     serviceStore,
+    ...(opts.workspacesConfigPath ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
     ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
     ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
   })
@@ -88,7 +91,20 @@ async function setup(opts: {
   await server.connect(serverTransport)
   const client = new Client({ name: "app-services-launcher-client", version: "0.0.0" })
   await client.connect(clientTransport)
-  return { client, registry, serviceStore, startSession }
+  // Same wiring index.ts's `reensureAppServicesOnBoot` gateway method uses —
+  // exercised directly against this test's own `appRegistry`/`serviceStore`
+  // instead of going through a second MCP tool.
+  const reensureServicesOnBoot = () =>
+    reensureInstalledAppServicesOnBoot({
+      appRegistry,
+      serviceStore,
+      registry,
+      resolveAgentAdapter,
+      ...(opts.workspacesConfigPath ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+      ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
+      ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
+    })
+  return { client, registry, serviceStore, startSession, reensureServicesOnBoot }
 }
 
 describe("service-owner launcher via app_install", () => {
@@ -190,5 +206,63 @@ describe("service-owner launcher via app_install", () => {
       expect.objectContaining({ appId: APP_ID, name: "web", sessionId: "owner_sess_web", pid: 555 }),
     )
     expect(serviceStore.listForApp(APP_ID)).toEqual([])
+  })
+})
+
+describe("app-service boot re-ensure (reensureAppServicesOnBoot)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-services-boot-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("force-replaces every recorded owner, even when its session still looks alive", async () => {
+    await buildServiceApp(dir, [{ name: "web", entry: "node server.js", port: 4321 }])
+    let n = 0
+    const spawnServiceOwner = vi.fn(async () => ({
+      ok: true as const,
+      sessionId: `owner_sess_${++n}`,
+      pid: 700 + n,
+    }))
+    const killServiceOwner = vi.fn()
+    const { client, serviceStore, reensureServicesOnBoot } = await setup({
+      spawnServiceOwner,
+      killServiceOwner,
+      workspacesConfigPath: join(dir, "workspaces.json"),
+    })
+
+    expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
+    expect(serviceStore.listForApp(APP_ID)[0]?.sessionId).toBe("owner_sess_1")
+
+    const result = await reensureServicesOnBoot()
+    expect(result).toEqual({ apps: 1, spawned: 1, errors: [] })
+    // The pre-boot owner was killed (never kept) and a fresh one spawned.
+    expect(killServiceOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ appId: APP_ID, name: "web", sessionId: "owner_sess_1" }),
+    )
+    expect(spawnServiceOwner).toHaveBeenCalledTimes(2)
+    const after = serviceStore.listForApp(APP_ID)
+    expect(after).toHaveLength(1)
+    expect(after[0]?.sessionId).toBe("owner_sess_2")
+  })
+
+  it("is a no-op for an app that declares no services", async () => {
+    await defineApp({
+      id: "@test/plain-boot",
+      name: "Plain",
+      agents: [
+        {
+          agent: defineAgent({ schema: "agent/v1", id: "worker", description: "w", model: "claude-sonnet-5" }),
+          body: "work",
+        },
+      ],
+    }).emit(dir)
+    const { client, reensureServicesOnBoot } = await setup({
+      workspacesConfigPath: join(dir, "workspaces.json"),
+    })
+    expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
+    expect(await reensureServicesOnBoot()).toEqual({ apps: 0, spawned: 0, errors: [] })
   })
 })
