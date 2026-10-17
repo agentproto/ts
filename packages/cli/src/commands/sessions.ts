@@ -70,6 +70,7 @@ import {
   renderStatsTable,
   type StatsMode,
 } from "./sessions-stats.js"
+import { renderSessionReportText } from "./sessions-report.js"
 import { parseDuration, formatDuration } from "../util/duration.js"
 import {
   hasResumeStrategy,
@@ -86,7 +87,7 @@ import {
   type StoryStepKind,
   type ExportedSession,
 } from "@agentproto/runtime/session-story"
-import type { LabeledProcessStatsReport, SessionDescriptor } from "@agentproto/runtime"
+import type { LabeledProcessStatsReport, SessionDescriptor, SessionReport } from "@agentproto/runtime"
 import {
   buildSessionRecap,
   defaultTranscriptBaseDir,
@@ -177,6 +178,12 @@ Usage:
                              (one-glance "where did we stop": the last N user
                               prompts with timestamps, the final assistant text
                               of the last turn, and session meta. Default N=8.)
+  agentproto sessions report [--since 12h] [--topN 5] [--json]
+                             (fleet-wide stats over a start-time window: counts
+                              by harness/model, status + end-reason breakdown,
+                              duration, tokens/cost, PRs opened, top-N costliest
+                              and longest sessions, active sessions, and
+                              permanent keepAlive agents.)
   agentproto sessions prompt <id-or-name> --prompt <text>
                               [--wait] [--interrupt] [--force] [--json]
                               (default: fire-and-forget, queued behind any
@@ -477,6 +484,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "story") return runStory(args.slice(1))
   if (sub === "find") return runFind(args.slice(1))
   if (sub === "recap") return runRecap(args.slice(1))
+  if (sub === "report") return runReport(args.slice(1))
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
@@ -1651,6 +1659,66 @@ async function runRecap(args: readonly string[]): Promise<number> {
     lines.push("", "LAST OUTPUT", `  ${recap.lastOutputText.replace(/\s+/g, " ").trim()}`)
   }
   process.stdout.write(lines.join("\n") + "\n")
+  return 0
+}
+
+/**
+ * `agentproto sessions report [--since 12h] [--topN 5] [--json]` — fleet-wide
+ * session stats over a start-time window: counts by harness/model, status +
+ * end-reason breakdown, total/average duration, tokens/cost (subscription vs
+ * api-key), PRs opened, top-N costliest/longest sessions, currently-active
+ * sessions, and permanent (`keepAlive`) agents. Same report the
+ * `sessions_report` MCP tool returns, fetched from `GET /sessions/report`.
+ */
+async function runReport(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: {
+      since: { type: "string" },
+      topN: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const since = values.since ?? "12h"
+  let topN: number | undefined
+  if (values.topN !== undefined) {
+    const n = Number(values.topN)
+    if (!Number.isInteger(n) || n < 1) {
+      process.stderr.write("agentproto sessions report: --topN must be a positive integer\n")
+      return 2
+    }
+    topN = n
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions report")
+    return 2
+  }
+  const endpoint = report.found
+
+  const qs = new URLSearchParams({ since })
+  if (topN !== undefined) qs.set("topN", String(topN))
+  let sessionReport: SessionReport
+  try {
+    sessionReport = await httpGetJson<SessionReport>(`${endpoint.url}/sessions/report?${qs.toString()}`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(
+      `agentproto sessions report: could not read the report (${msg})` +
+        (/404/.test(msg)
+          ? ". A daemon started before this feature has no /sessions/report route - restart it to pick it up.\n"
+          : ".\n"),
+    )
+    return 1
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify(sessionReport, null, 2) + "\n")
+    return 0
+  }
+  process.stdout.write(renderSessionReportText(sessionReport))
   return 0
 }
 

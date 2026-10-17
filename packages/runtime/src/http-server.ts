@@ -200,6 +200,7 @@ import {
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { exportAgentSession } from "./transcript-export.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
+import { buildSessionReportFromRegistry } from "./session-report-service.js"
 import { projectSessionUsage } from "./usage.js"
 import { rollupSessionSubtree } from "./usage-subtree.js"
 import { buildSessionCapabilities } from "./session-capabilities.js"
@@ -6579,6 +6580,32 @@ async function handleSessions(
       )
     } catch (err) {
       json(500, { error: "stats_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  // GET /sessions/report?since=<w>&topN=<n> — fleet-wide session stats over a
+  // start-time window (default "12h"): counts by harness/model, status +
+  // end-reason breakdown, total/average wall-clock duration, tokens/cost
+  // (subscription vs api-key), PRs opened, top-N costliest/longest sessions,
+  // every currently-active session, and every alive `keepAlive` "permanent"
+  // agent. Full daemon view (REST has no callerScope / subtree scoping). Same
+  // collector + reducer the `sessions_report` MCP tool uses.
+  if (path === "/sessions/report" && req.method === "GET") {
+    const reqUrl = req.url ?? ""
+    const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+    const params = new URLSearchParams(queryString)
+    const since = params.get("since") ?? "12h"
+    const topNRaw = params.get("topN")
+    const topN = topNRaw !== null ? Number.parseInt(topNRaw, 10) : undefined
+    if (topN !== undefined && (!Number.isInteger(topN) || topN < 1)) {
+      json(400, { error: "invalid_topN", message: `?topN must be a positive integer, got ${JSON.stringify(topNRaw)}.` })
+      return true
+    }
+    try {
+      json(200, buildSessionReportFromRegistry(registry, { since, ...(topN !== undefined ? { topN } : {}) }))
+    } catch (err) {
+      json(400, { error: "report_failed", message: err instanceof Error ? err.message : String(err) })
     }
     return true
   }

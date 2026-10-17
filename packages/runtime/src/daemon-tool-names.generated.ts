@@ -252,6 +252,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "session_wrapup_apply",
   "session_wrapup_plan",
   "session_wrapup_status",
+  "sessions_report",
   "setup_eval_reporter",
   "setup_sandbox_provider",
   "setup_sentinel_provider",
