@@ -75,6 +75,8 @@ async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<Brows
         ...(shot.height !== undefined ? { height: shot.height } : {}),
       }
     },
+    navigate: (url, tabId) => instance.navigateOwnedTarget(url, tabId),
+    getDom: (tabId) => instance.domOwnedTarget(tabId),
     stop: () => instance.stop(),
   }
 }

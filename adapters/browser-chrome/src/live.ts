@@ -45,6 +45,12 @@ import { launchDetachedChrome, type LaunchedChrome, type LiveLaunchDeps } from "
  * `Browser.close`. The F11 guard of the `chrome` provider (no LAUNCH on the
  * default profile) is untouched — the dedicated Chrome launches on its own
  * profile, never the user's default one.
+ *
+ * `navigateOwnedTarget`/`domOwnedTarget` are the read path for an owned tab:
+ * navigate reuses an existing owned tab (or opens one via `attach`) and
+ * `ChromeCdpDriver.navigate` under the hood; `domOwnedTarget` serializes it
+ * with `driver.getDom()`. Both go through the same ownership guard as
+ * `screenshotOwnedTarget` — never a foreign tab.
  */
 
 export const CHROME_LIVE_PROVIDER_ID = "chrome-live"
@@ -213,6 +219,20 @@ export type ChromeLiveProvider = Omit<BrowserProvider, "launch"> & {
 
 export interface ChromeLiveInstance extends BrowserInstance {
   screenshotOwnedTarget(targetId?: string): Promise<Awaited<ReturnType<BrowserDriver["screenshot"]>>>
+  /**
+   * Navigate one OWNED agent tab to `url` — reuses an existing owned tab
+   * (any one, or the one named by `targetId`) via `driver.navigate()`, or
+   * opens a fresh one via `attach({ initialUrl: url })` when none exists yet.
+   * Never addresses a tab this instance didn't create.
+   */
+  navigateOwnedTarget(url: string, targetId?: string): Promise<{ targetId: string; url: string }>
+  /**
+   * Serialized DOM (`driver.getDom()`) of one OWNED agent tab — the same
+   * "first active agent tab, or `targetId`" anchor rule as
+   * `screenshotOwnedTarget`. Throws when no owned tab is open yet (navigate
+   * first).
+   */
+  domOwnedTarget(targetId?: string): Promise<{ targetId: string; url: string; html: string }>
   /** Start Page.startScreencast on one OWNED agent tab (reused if one exists; attach() opens a fresh one otherwise). Idempotent per driver. */
   screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }>
   /** Latest buffered frame, or null before the first frame lands / after a stop. */
@@ -748,6 +768,34 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         const driver = [...entry.drivers].find(candidate => candidate.target.id === ownedTargetId)
         if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${ownedTargetId}" has no active driver`)
         return driver.screenshot({ format: "png", fullPage: false })
+      },
+
+      async navigateOwnedTarget(url: string, targetId?: string): Promise<{ targetId: string; url: string }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        let driver: ChromeLiveDriver | undefined
+        if (targetId) {
+          if (!entry.targets.has(targetId)) throw new Error(`[chrome-live] target "${targetId}" is not owned by this provider instance`)
+          driver = [...entry.drivers].find(candidate => candidate.target.id === targetId)
+          if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${targetId}" has no active driver`)
+        } else {
+          // Reuse any live owned tab rather than opening a second one — the
+          // same "first active agent tab" anchor as screenshotOwnedTarget.
+          driver = [...entry.drivers].find(candidate => !candidate.closed)
+        }
+        if (driver) await driver.navigate({ url, waitUntil: "load" })
+        else driver = (await this.attach({ initialUrl: url })) as ChromeLiveDriver
+        return { targetId: driver.target.id, url: driver.target.url ?? url }
+      },
+
+      async domOwnedTarget(targetId?: string): Promise<{ targetId: string; url: string; html: string }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const ownedTargetId = targetId ?? entry.targets.values().next().value
+        if (!ownedTargetId) throw new Error("[chrome-live] no agent-owned tab is open to read")
+        if (!entry.targets.has(ownedTargetId)) throw new Error(`[chrome-live] target "${ownedTargetId}" is not owned by this provider instance`)
+        const driver = [...entry.drivers].find(candidate => candidate.target.id === ownedTargetId)
+        if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${ownedTargetId}" has no active driver`)
+        const html = await driver.getDom()
+        return { targetId: driver.target.id, url: driver.target.url ?? "", html }
       },
 
       async screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }> {

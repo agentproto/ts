@@ -61,6 +61,15 @@ describe("chrome-live facade", () => {
     expect(chromeLiveProvider.capabilities).toMatchObject({ cdp: true, headless: false, persistentProfile: false })
   })
 
+  it("ensure's instance exposes navigate/getDom, wired to the provider's owned-target methods", async () => {
+    const chrome = await toggleChrome()
+    const handle = getBrowserAdapter("chrome-live")!
+    const instance = await handle.ensure({ port: chrome.port, env: {} })
+    expect(typeof instance.navigate).toBe("function")
+    expect(typeof instance.getDom).toBe("function")
+    await instance.stop()
+  })
+
   it("ensure attaches to a running toggle-mode Chrome, reuses the one connection, and stop never closes Chrome", async () => {
     const chrome = await toggleChrome()
     const handle = getBrowserAdapter("chrome-live")!

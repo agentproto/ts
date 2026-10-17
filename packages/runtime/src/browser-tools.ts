@@ -4,12 +4,15 @@
  * inspect browser service sessions through the same MCP connection it uses
  * for fs/exec/agent-cli.
  *
- * Five tools:
+ * Eight tools:
  *   browser_adapter_list   discover available browser adapter ids + metadata
  *   start_browser           ensure a browser adapter is up, register as a session
  *   stop_browser            kill a running browser session
  *   list_browsers           browse alive/recent browser sessions
  *   browser_status          descriptor + live health probe for one session
+ *   fetch_page              plain HTTP read (no browser) → { title, text, url, blocked }
+ *   browser_navigate        chrome-live only: open/reuse an owned tab at a URL
+ *   browser_extract_text    chrome-live only: purify an owned tab's DOM → { title, text, url }
  *
  * Auth: same as every other daemon tool — gated by the gateway's auth source.
  *
@@ -29,6 +32,7 @@ import { catchErrors, paginated } from "@agentproto/tool"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { encodeScreencastFramesToMp4, prepareScreencastOutDir } from "./browser-screencast.js"
+import { extractPageText, looksBlocked } from "./page-text.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -43,6 +47,8 @@ interface BrowserInstanceLike {
   baseUrl: string
   pid?: number
   wasAlreadyRunning: boolean
+  navigate?(url: string, tabId?: string): Promise<{ targetId: string; url: string }>
+  getDom?(tabId?: string): Promise<{ targetId: string; url: string; html: string }>
   /** False when a non-blocking cold start returned before the service
    *  finished converging (background health-wait still running). */
   healthy: boolean
@@ -776,6 +782,116 @@ export function registerBrowserTools(
         )
       } finally {
         clearTimeout(timer)
+      }
+    }
+  )
+
+  // ── fetch_page ───────────────────────────────────────────────────────────────
+  server.tool(
+    "fetch_page",
+    "Read a URL over plain HTTP — no browser, instant. Returns clean text: " +
+      "{ title, text (markdown, boilerplate stripped), url (after redirects), blocked }. " +
+      "`blocked: true` means the response looks anti-bot-gated (403/429/503, or a " +
+      "known challenge page from Cloudflare/Akamai/PerimeterX/Datadome/Incapsula) — " +
+      "`text` is omitted in that case; escalate to `start_browser` + `browser_navigate` " +
+      "+ `browser_extract_text` instead of retrying the same fetch. Try this FIRST for " +
+      "any public page: it is seconds faster than a browser, and most sites are not gated.",
+    {
+      url: z.string().min(1).describe("URL to fetch."),
+      timeoutMs: z.number().int().positive().max(60_000).optional().describe("Default 15000."),
+    },
+    async input => {
+      const ac = new AbortController()
+      const timer = setTimeout(() => ac.abort(), input.timeoutMs ?? 15_000)
+      try {
+        const res = await fetch(input.url, { signal: ac.signal, redirect: "follow" })
+        const html = await res.text()
+        if (looksBlocked(res.status, html)) {
+          return okResult({ url: res.url, blocked: true, status: res.status })
+        }
+        if (!res.ok) return errResult(`fetch_page: HTTP ${res.status} fetching ${input.url}`)
+        const { title, text } = await extractPageText(html, res.url)
+        return okResult({ title, text, url: res.url, blocked: false })
+      } catch (err) {
+        return errResult(`fetch_page: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+  )
+
+  // ── browser_navigate ─────────────────────────────────────────────────────────
+  server.tool(
+    "browser_navigate",
+    "chrome-live only. Navigate to `url` on an agent-OWNED tab — reuses the " +
+      "existing owned tab (any one, or the one named by `tabId`) if there is " +
+      "one, else opens a fresh one. Never addresses a tab the agent did not " +
+      "open. Returns { targetId, url } (the url after redirects). Follow with " +
+      "`browser_extract_text` to read the page, or `browser_screenshot` to see it.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      url: z.string().min(1).describe("URL to navigate to."),
+      tabId: z
+        .string()
+        .optional()
+        .describe("Provider-owned target id to navigate (default: any existing owned tab, else a new one)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_navigate: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_navigate: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_navigate: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.navigate)
+        return errResult("browser_navigate: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(await liveInstance.navigate(input.url, input.tabId))
+      } catch (err) {
+        return errResult(`browser_navigate: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_extract_text ─────────────────────────────────────────────────────
+  server.tool(
+    "browser_extract_text",
+    "chrome-live only. Read the agent-OWNED tab's current page as clean text: " +
+      "strips boilerplate (nav/ads/scripts) and returns { title, text (markdown), url }. " +
+      "Call `browser_navigate` first — this never opens a tab itself, same " +
+      "ownership rule as `browser_screenshot`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z
+        .string()
+        .optional()
+        .describe("Provider-owned target id to read (default: the first active agent tab)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_extract_text: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_extract_text: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_extract_text: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.getDom)
+        return errResult("browser_extract_text: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        const { url, html } = await liveInstance.getDom(input.tabId)
+        const { title, text } = await extractPageText(html, url)
+        return okResult({ title, text, url })
+      } catch (err) {
+        return errResult(`browser_extract_text: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
   )

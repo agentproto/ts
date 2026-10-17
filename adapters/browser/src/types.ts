@@ -209,6 +209,10 @@ export interface BrowserAdapterInstance {
   health?(): Promise<{ ok: boolean; reason?: string }>
   /** Optional capture on a provider-owned target. */
   screenshot?(tabId?: string): Promise<{ data: string; format: "png" | "jpeg"; width?: number; height?: number }>
+  /** Optional navigate on a provider-owned target (chrome-live): reuses an existing owned tab, or opens one. */
+  navigate?(url: string, tabId?: string): Promise<{ targetId: string; url: string }>
+  /** Optional serialized DOM of a provider-owned target (chrome-live). Throws when no owned tab is open yet. */
+  getDom?(tabId?: string): Promise<{ targetId: string; url: string; html: string }>
   /** Optional CDP screencast over a provider-owned tab (chrome-live). Frames come base64-encoded. */
   screencastStart?(opts?: { format?: "jpeg" | "png"; quality?: number; everyNthFrame?: number; maxWidth?: number; maxHeight?: number }): Promise<{ targetId: string; index: number }>
   screencastFrame?(): Promise<{ data: string; format: "jpeg" | "png"; timestampMs: number; index: number; width?: number; height?: number } | null>
