@@ -6,12 +6,13 @@
  * user-data-dir and granted cookies are injected; a default-profile or
  * full-profile request is refused with `browser:profile-refused`. See the README.
  *
- * `chrome-live` is a separate provider that PREFERS attaching to the user's
- * running Chrome over the connection they allowed in Chrome's own remote
- * debugging UI, and only drives tabs it opened in its own window. When that
- * toggle is not attachable it auto-launches a dedicated headful Chrome on its
- * own persisted profile dir (never the user's default profile) and connects to
- * it; `stop()` kills only that child.
+ * `chrome-live` is a separate provider: a dedicated headful Chrome on its own
+ * persisted profile dir (never the user's default profile) by default — no
+ * attach attempt, no consent wait. Attaching to the user's own running Chrome
+ * through its remote debugging toggle only happens on an explicit ask (a
+ * pinned endpoint, or `attachIntent`), and only ever drives tabs it opened in
+ * its own window. `stop()` kills only the child this provider itself
+ * launched.
  */
 
 export { chrome, createChromeProvider } from "./provider.js"
@@ -39,7 +40,9 @@ export {
   chromeLiveWsUrl,
   createChromeLiveProvider,
   isRefusedLiveCommand,
+  pinnedEndpoint,
   readChromeLiveEnv,
+  wantsAttachFirst,
 } from "./live.js"
 export type { ChromeLiveInstance, ChromeLiveLaunchOptions, ChromeLiveProvider, ChromeLiveProviderConfig } from "./live.js"
 

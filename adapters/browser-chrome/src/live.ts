@@ -21,23 +21,30 @@ import { ChromeCdpDriver, chromeDriverCapabilities } from "./driver.js"
 import { launchDetachedChrome, type LaunchedChrome, type LiveLaunchDeps } from "./live-launch.js"
 
 /**
- * `chrome-live`: attach to the user's own, already running Chrome through the
- * remote debugging toggle at chrome://inspect/#remote-debugging (Chrome 144+).
+ * `chrome-live`: either a DEDICATED, headful Chrome this provider launches
+ * itself on a free port with its own persisted user-data-dir (never the
+ * user's default profile, zero consent clicks), or an attach to the user's
+ * own, already running Chrome through the remote debugging toggle at
+ * chrome://inspect/#remote-debugging (Chrome 144+, port `CHROME_LIVE_PORT` /
+ * 9222 by default).
  *
- * Attachment is preferred: on the default endpoint (dial the toggle at port
- * `CHROME_LIVE_PORT`, 9222) a successful attach wins. When nothing answers
- * there — the toggle was never turned on, or consent was refused — the provider
- * AUTO-LAUNCHES a dedicated headful Chrome (`launchDetachedChrome`): a free
- * port, its own PERSISTED user-data-dir (never the user's default profile), and
- * zero consent clicks. That child is recorded and only THAT pid is ever killed
- * by `stop()` — the user's own Chrome is never touched. An explicit endpoint
- * (launch `wsUrl`/`port`, provider config, or `CHROME_LIVE_*` env) disables the
- * fallback: a pinned endpoint is taken literally.
+ * DEDICATED IS THE DEFAULT: with nothing pinned and no explicit ask, `launch()`
+ * reuses the dedicated Chrome it already started (hot) or starts a fresh one —
+ * no attach attempt, no consent wait, the user's Chrome is never touched or
+ * even dialed. Attaching to the user's own Chrome only happens on an EXPLICIT
+ * ask: a pinned endpoint (launch `wsUrl`/`port`, provider config, or
+ * `CHROME_LIVE_*` env), or `opts.attachIntent: true` (a caller that
+ * specifically wants the user's real, logged-in profile). In that attach path,
+ * a consent timeout or nothing listening still falls back to the dedicated
+ * Chrome, same as before (see `wantsAttachFirst`). The child this provider
+ * launches is recorded and only THAT pid is ever killed by `stop()` — the
+ * user's own Chrome is never signalled.
  *
  * The agent works in a window it opened itself and only ever addresses targets
  * it created: no `Target.getTargets`, no attach to a foreign tab, no
  * `Browser.close`. The F11 guard of the `chrome` provider (no LAUNCH on the
- * default profile) is untouched — the fallback launches on a dedicated profile.
+ * default profile) is untouched — the dedicated Chrome launches on its own
+ * profile, never the user's default one.
  */
 
 export const CHROME_LIVE_PROVIDER_ID = "chrome-live"
@@ -132,11 +139,22 @@ export interface ChromeLiveProviderConfig {
   /** Env read for `CHROME_LIVE_*`. Default `process.env`; `launch({ env })` is merged over it. */
   env?: Readonly<Record<string, string | undefined>>
   /**
-   * Auto-launch a dedicated headful Chrome when the default endpoint is not
-   * attachable. Default `true`. An explicit endpoint (launch `wsUrl`/`port`,
-   * this config, or `CHROME_LIVE_*` env) disables the fallback regardless.
+   * May this provider ever launch a dedicated Chrome at all — as the default
+   * primary path, or as the attach path's fallback. Default `true`. `false`
+   * means attach is the ONLY path: the default-dedicated-first preference
+   * below is moot (there is nothing to prefer), and an attach failure never
+   * falls back.
    */
   autoLaunch?: boolean
+  /**
+   * `false` restores the OLD global default (attach preferred, dedicated only
+   * as its fallback) for every call this provider instance makes, without
+   * touching call sites. Default `true` (unset counts as `true`): a bare
+   * `launch({})` goes straight to the dedicated Chrome, no attach attempt.
+   * A pinned endpoint or `opts.attachIntent` still forces attach-first
+   * regardless of this flag (see `wantsAttachFirst`).
+   */
+  preferDedicated?: boolean
   /** Seams for the auto-launched Chrome (binary, spawn, free port, `/json/version`, dir, timeout). */
   launchDeps?: LiveLaunchDeps
 }
@@ -149,6 +167,44 @@ export interface ChromeLiveLaunchOptions extends BrowserLaunchOptions {
    * endpoint was given, so the fallback path can be exercised deterministically.
    */
   forceAutoLaunch?: boolean
+  /**
+   * Explicit ask: prefer attaching to the user's own Chrome (the remote
+   * debugging toggle) over the dedicated-first default, for THIS call — for a
+   * caller that specifically needs the user's real, logged-in profile. A
+   * consent timeout or nothing listening still falls back to the dedicated
+   * Chrome (gated by `autoLaunch`, same as a pinned endpoint's fallback).
+   */
+  attachIntent?: boolean
+}
+
+/** True when an endpoint was pinned (launch opts, provider config, or `CHROME_LIVE_*` env) — a literal ask to use THAT endpoint. */
+export function pinnedEndpoint(config: ChromeLiveProviderConfig, opts: ChromeLiveLaunchOptions): boolean {
+  if (opts.wsUrl || opts.port) return true
+  if (config.wsUrl || config.port) return true
+  const env = readChromeLiveEnv({ ...(config.env ?? process.env), ...opts.env })
+  return env.wsUrl !== undefined || env.port !== undefined
+}
+
+/**
+ * Whether `launch()` should try attaching to the user's own Chrome before the
+ * dedicated one — true only on an explicit ask:
+ * - a pinned endpoint (`pinnedEndpoint`) — a literal "use THIS Chrome",
+ * - `opts.attachIntent` — a caller that specifically wants the user's real,
+ *   logged-in profile,
+ * - `config.preferDedicated === false` — restores the old global default for
+ *   every call this provider instance makes,
+ * - `config.autoLaunch === false` — dedicated launching is disabled outright,
+ *   so attach is the only path left.
+ *
+ * Otherwise (the common case: nothing pinned, no explicit ask) the dedicated,
+ * zero-consent Chrome comes first — `launch()` never dials the user's Chrome
+ * at all.
+ */
+export function wantsAttachFirst(config: ChromeLiveProviderConfig, opts: ChromeLiveLaunchOptions): boolean {
+  if (config.autoLaunch === false) return true
+  if (opts.attachIntent === true) return true
+  if (config.preferDedicated === false) return true
+  return pinnedEndpoint(config, opts)
 }
 
 export type ChromeLiveProvider = Omit<BrowserProvider, "launch"> & {
@@ -478,8 +534,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => Error)
 }
 
 const DESCRIPTION =
-  "Your own running Chrome (your logged-in profile), attached through Chrome's remote debugging toggle at chrome://inspect/#remote-debugging. " +
-  "When the toggle is off it auto-launches a dedicated headful Chrome on its own profile (no consent click). " +
+  "A dedicated headful Chrome on its own profile (no consent click) by default — fast, and your own browser is never touched. " +
+  "Attaching to your real, logged-in Chrome (chrome://inspect/#remote-debugging) only happens on an explicit ask (a pinned endpoint, or attachIntent). " +
   "The agent works in its own window and never touches your tabs."
 
 export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}): ChromeLiveProvider {
@@ -503,12 +559,9 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     return { port: CHROME_LIVE_DEFAULT_PORT }
   }
 
-  /** True when an endpoint was pinned (launch opts, provider config, or env) — the fallback never runs then. */
+  /** True when an endpoint was pinned (launch opts, provider config, or env) — the fallback never runs then, and attach is tried first regardless of `preferDedicated`. */
   function explicitEndpoint(opts: ChromeLiveLaunchOptions): boolean {
-    if (opts.wsUrl || opts.port) return true
-    if (config.wsUrl || config.port) return true
-    const env = readChromeLiveEnv({ ...(config.env ?? process.env), ...opts.env })
-    return env.wsUrl !== undefined || env.port !== undefined
+    return pinnedEndpoint(config, opts)
   }
 
   function autoLaunchEnabled(opts: ChromeLiveLaunchOptions): boolean {
@@ -840,26 +893,32 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     }
   }
 
+  /** Reuse the dedicated Chrome this provider already launched (hot), else launch a fresh one and connect to it. */
+  async function launchDedicated(ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
+    const existing = autoEntry
+    if (existing && existing.state === "open" && !existing.conn.closed) return makeInstance(existing, true)
+    ctx.log?.(`[chrome-live] launching the dedicated Chrome (no attach attempted)`)
+    const launched = await launchDetachedChrome({ ...config.launchDeps, ...(ctx.log ? { log: ctx.log } : {}) })
+    try {
+      const instance = await connectEntry(launched.wsUrl, ctx, launched)
+      autoEntry = entries.get(launched.wsUrl)
+      return instance
+    } catch (connectErr) {
+      // We launched it, so we clean it up ourselves before surfacing the error.
+      await stopOwnedChrome(launched)
+      throw connectErr
+    }
+  }
+
   async function launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
+    if (!wantsAttachFirst(config, opts)) return await launchDedicated(ctx)
     try {
       return await connectEntry(await resolveUrl(opts), ctx)
     } catch (err) {
       if (!autoLaunchEnabled(opts) || !isAttachUnavailable(err)) throw err
-      // The toggle is not attachable: reuse the Chrome we already launched, else
-      // launch a dedicated one and connect to it via its advertised ws URL.
-      const existing = autoEntry
-      if (existing && existing.state === "open" && !existing.conn.closed) return makeInstance(existing, true)
+      // The toggle is not attachable: fall back to the dedicated Chrome.
       ctx.log?.(`[chrome-live] no attachable Chrome at the configured endpoint: auto-launching a dedicated instance`)
-      const launched = await launchDetachedChrome({ ...config.launchDeps, ...(ctx.log ? { log: ctx.log } : {}) })
-      try {
-        const instance = await connectEntry(launched.wsUrl, ctx, launched)
-        autoEntry = entries.get(launched.wsUrl)
-        return instance
-      } catch (connectErr) {
-        // We launched it, so we clean it up ourselves before surfacing the error.
-        await stopOwnedChrome(launched)
-        throw connectErr
-      }
+      return await launchDedicated(ctx)
     }
   }
 
