@@ -223,6 +223,60 @@ describe("start_browser — schema accepts manifest runtime knobs", () => {
     await cleanup()
   })
 
+  it("accepts profile: 'personal' | 'dedicated' and forwards it into ensure()", async () => {
+    let capturedProfile: "dedicated" | "personal" | undefined = undefined
+
+    const mockResolver: BrowserAdapterResolver = (id) => {
+      if (id !== "chrome-live") return undefined
+      return {
+        id: "chrome-live",
+        name: "Chrome (dedicated or personal)",
+        description: "chrome-live mock",
+        defaultPort: 9222,
+        healthPath: "/json/version",
+        location: "local",
+        ensure: async (opts) => {
+          capturedProfile = opts.profile
+          return {
+            id: "chrome-live",
+            port: opts.port ?? 9222,
+            baseUrl: "http://127.0.0.1:9222",
+            wasAlreadyRunning: false,
+            healthy: true,
+            stop: async () => {},
+          }
+        },
+      }
+    }
+
+    const { client, cleanup } = await makeSetup({ resolveBrowserAdapter: mockResolver })
+
+    const personal = await client.callTool({
+      name: "start_browser",
+      arguments: { adapter: "chrome-live", profile: "personal" },
+    })
+    expect(personal.isError).toBeFalsy()
+    expect(capturedProfile).toBe("personal")
+
+    const dedicated = await client.callTool({
+      name: "start_browser",
+      arguments: { adapter: "chrome-live", profile: "dedicated" },
+    })
+    expect(dedicated.isError).toBeFalsy()
+    expect(capturedProfile).toBe("dedicated")
+
+    // Omitted entirely: schema accepts it (optional), ensure() sees undefined.
+    capturedProfile = undefined
+    const omitted = await client.callTool({
+      name: "start_browser",
+      arguments: { adapter: "chrome-live" },
+    })
+    expect(omitted.isError).toBeFalsy()
+    expect(capturedProfile).toBeUndefined()
+
+    await cleanup()
+  })
+
   it("start_browser without new fields still works (backwards-compatible)", async () => {
     const mockResolver: BrowserAdapterResolver = (id) => {
       if (id !== "plain") return undefined

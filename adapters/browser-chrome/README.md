@@ -5,9 +5,10 @@ CDP:
 
 - `chrome`: the Chrome installed on the machine, **launched** on a fresh
   dedicated profile directory (never your profile).
-- `chrome-live`: **your own running Chrome**, attached through Chrome's remote
-  debugging toggle. When the toggle is off it auto-launches a dedicated headful
-  Chrome on its own persisted profile dir; see [chrome-live](#chrome-live-your-running-chrome).
+- `chrome-live`: a **dedicated headful Chrome** on its own persisted profile
+  dir by default (no consent click) — attaching to your own running Chrome
+  through its remote debugging toggle only happens on an explicit ask; see
+  [chrome-live](#chrome-live-your-running-chrome).
 
 ```ts
 import { chrome } from "@agentproto/adapter-browser-chrome"
@@ -60,50 +61,56 @@ real source in a later lane. Only the cookie count is logged, never a value.
 
 ## chrome-live: your running Chrome
 
-`chrome-live` attaches to the Chrome you already use, with your logged-in
-profile, so an agent can work on sites where you are signed in. Attach is
-preferred; when the remote debugging toggle is not attachable it auto-launches
-its **own** dedicated headful Chrome (a fresh persisted profile dir, never
-yours) and connects to it, so the user has nothing to click. It never touches
-your tabs, and it never closes your Chrome.
+`chrome-live` gives an agent a **dedicated headful Chrome**, on its own
+persisted profile dir, by default — launched (or reused, hot) immediately,
+with zero consent clicks and without ever dialing your own Chrome. Attaching
+to the Chrome you already use (your logged-in profile, so an agent can work on
+sites where you are signed in) only happens on an **explicit ask**: a pinned
+`wsUrl`/`port` (launch opts, provider config, or `CHROME_LIVE_*` env), or
+`attachIntent: true`. It never touches your tabs, and it never closes your
+Chrome.
 
 ```ts
 import { chromeLive } from "@agentproto/adapter-browser-chrome"
 
-const instance = await chromeLive.launch({}, { log: console.log }) // Chrome shows "Allow"
+// Default: a dedicated Chrome, launched or reused hot — no consent wait.
+const instance = await chromeLive.launch({}, { log: console.log })
 const driver = await instance.attach({ initialUrl: "https://mail.example.com" })
 await driver.evaluate({ expression: "document.title", awaitPromise: false, returnByValue: true, maxResultBytes: 10_000 })
 await instance.stop() // closes the agent's tabs and its socket, nothing else
+
+// Explicit ask: attach to the user's own, real Chrome instead.
+const mine = await chromeLive.launch({ attachIntent: true }, { log: console.log }) // Chrome shows "Allow"
 ```
 
 In the daemon it is the `chrome-live` browser adapter: `start_browser
-{ adapter: "chrome-live" }`.
+{ adapter: "chrome-live" }` (dedicated by default; pass `attachIntent: true`
+in the launch options to ask for the user's own Chrome instead).
 
-### Turn it on
+### Attaching to your own Chrome (explicit ask only)
 
 1. Use Chrome 144 or later and open `chrome://inspect/#remote-debugging`.
 2. Turn on the remote debugging toggle. Chrome then listens on
    `127.0.0.1:9222`.
-3. Start the agent. Chrome shows a dialog asking whether to allow the
-   debugging connection: click **Allow**. The provider waits up to
-   `consentTimeoutMs` (default 60s).
+3. Launch with `attachIntent: true` (or a pinned `wsUrl`/`port`). Chrome shows
+   a dialog asking whether to allow the debugging connection: click **Allow**.
+   The provider waits up to `consentTimeoutMs` (default 60s).
 
-Turn the toggle off again to cut every connection.
+Turn the toggle off again to cut every connection. Without `attachIntent` (or
+a pin), the toggle is never dialed at all — the dedicated Chrome comes first
+and the attach step doesn't run.
 
-### Auto-launch fallback
+### Falling back to the dedicated Chrome from the attach path
 
-You do not have to turn the toggle on. On the **default endpoint** (no explicit
-`wsUrl`/`port`, from `launch()`, the provider config, or `CHROME_LIVE_*` env),
-when the attach is not possible the provider **auto-launches a dedicated,
-headful Chrome** and connects to it — no Allow click:
+When `attachIntent`/a pinned endpoint asked for attach and it is not possible,
+the provider **auto-launches a dedicated, headful Chrome** and connects to it
+instead — no Allow click:
 
 - **No Chrome on the toggle** (`browser:remote-debugging-off`, nothing listens
   on 9222): a dedicated Chrome is launched.
 - **Consent never granted** (`browser:consent-timeout`: no Allow click within
   `consentTimeoutMs`, or Chrome rejected the connection): the provider stops
   waiting and launches the dedicated Chrome instead of leaving the agent stuck.
-  This IS a behavior change for the default endpoint — the fallback is
-  deliberate, not an error path.
 
 The launched Chrome listens on a free port and uses a **persisted** profile dir,
 `$CHROME_LIVE_LAUNCH_DATA_DIR` (default `~/.agentproto/browser/chrome/live`),
@@ -113,9 +120,10 @@ instance. `stop()` kills **only** that child (pid scissors, SIGTERM → grace �
 SIGKILL) — an attach-only session has no owned child and its `stop()` never
 signals your Chrome.
 
-An **explicit endpoint disables the fallback**: a pinned `wsUrl`/`port` (launch
-opts, config, or env) is taken literally. `autoLaunch: false` disables it
-globally.
+A pinned `wsUrl`/`port` (launch opts, config, or env) disables this fallback —
+it is taken literally, so a failure there surfaces instead of substituting the
+dedicated Chrome. `autoLaunch: false` disables dedicated launching globally
+(attach becomes the only path, including as the default).
 
 ### Configuration
 
@@ -125,7 +133,9 @@ globally.
 | `createChromeLiveProvider({ wsUrl })` / `CHROME_LIVE_WS_URL` | `ws://127.0.0.1:<port>/devtools/browser` | Full browser websocket URL; beats the port |
 | `consentTimeoutMs` | `60000` | How long to wait for the Allow click |
 | `discover` | `false` | Opt-in: try `GET /json/version` for a `webSocketDebuggerUrl` first |
-| `autoLaunch` | `true` | Auto-launch a dedicated Chrome when the default endpoint is not attachable (explicit endpoints disable it) |
+| `autoLaunch` | `true` | May the provider ever launch a dedicated Chrome at all (as the default, or as the attach path's fallback) |
+| `preferDedicated` | `true` | `false` restores the old attach-first default for every call on this provider instance |
+| `launch({ attachIntent })` | `false` | Per-call explicit ask to attach to the user's own Chrome instead of the dedicated default |
 | `CHROME_LIVE_LAUNCH_DATA_DIR` | `~/.agentproto/browser/chrome/live` | Persisted profile dir for the auto-launched Chrome |
 
 `launch({ wsUrl, port })` wins over the provider config, which wins over the

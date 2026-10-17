@@ -24,15 +24,18 @@ Requires a running daemon ([`serve.md`](./serve.md) or
 | `camofox` | Stealth Firefox headless                 | 9377        |
 | `bureau`  | Camofox + MCP capability server          | 8830        |
 | `chromium`| Chromium browser service                 | 3200        |
-| `chrome-live` | Your own running Chrome, attached through `chrome://inspect/#remote-debugging`; if the toggle is off, auto-launches a dedicated Chrome | 9222 |
+| `chrome-live` | A dedicated headful Chrome by default (no consent click); `attachIntent: true` attaches to your own running Chrome through `chrome://inspect/#remote-debugging` instead | 9222 |
 
-`chrome-live` prefers attaching to your running Chrome: turn on the remote
-debugging toggle and click **Allow** when the session starts. If the toggle is
-off (or the Allow click never comes), it **auto-launches its own dedicated
-headful Chrome** on a persisted profile dir (never yours) so the agent is never
-stuck — no click to give. The agent works in its own window and only touches
-tabs it opened; `stop` closes those tabs and its own connection, and kills only
-the Chrome it launched itself, never your Chrome. Cookies are read-only. See the
+`chrome-live` launches (or reuses, hot) a **dedicated headful Chrome** by
+default — no attach attempt, no consent wait, your own Chrome is never dialed.
+Pass `attachIntent: true` in the launch options (or pin a `wsUrl`/`port`) to
+ask for your own running Chrome instead: turn on the remote debugging toggle
+and click **Allow** when the session starts. If that attach is not possible
+(toggle off, or the Allow click never comes), it falls back to the dedicated
+Chrome so the agent is never stuck. The agent works in its own window and only
+touches tabs it opened; `stop` closes those tabs and its own connection, and
+kills only the Chrome it launched itself, never your Chrome. Cookies are
+read-only. See the
 [adapter README](../../../adapters/browser-chrome/README.md#chrome-live-your-running-chrome).
 
 `chrome-live` is also the only adapter that can screencast. The MCP tools

@@ -175,6 +175,14 @@ export interface BrowserAdapterStartOptions {
    * blocks up to `timeoutMs` (existing behaviour).
    */
   initialWaitMs?: number
+  /**
+   * `chrome-live` only; every other adapter ignores this. `"dedicated"`
+   * (default) launches/reuses the dedicated, zero-consent Chrome.
+   * `"personal"` attaches to the user's own, logged-in Chrome instead (the
+   * remote debugging toggle, consent click included) — maps to
+   * `attachIntent: true` on the chrome-live launch options.
+   */
+  profile?: "dedicated" | "personal"
 }
 
 // ─── Instance ─────────────────────────────────────────────────────────────────

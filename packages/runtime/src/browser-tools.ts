@@ -81,6 +81,8 @@ interface BrowserAdapterLike {
     baseUrl?: string
     /** Override the binary path for a local spawn. */
     binPath?: string
+    /** chrome-live only: "dedicated" (default) or "personal" (attachIntent). Every other adapter ignores this. */
+    profile?: "dedicated" | "personal"
   }): Promise<BrowserInstanceLike>
 }
 
@@ -286,7 +288,9 @@ export function registerBrowserTools(
     "start_browser",
     "Ensure a browser adapter service is running, then register it as a tracked session. " +
       "Idempotent: if the service is already healthy, returns wasAlreadyRunning=true without spawning. " +
-      "Returns the session descriptor (sessionId, browserBaseUrl, …) for subsequent calls.",
+      "Returns the session descriptor (sessionId, browserBaseUrl, …) for subsequent calls. " +
+      "For adapter 'chrome-live': `profile` picks a dedicated, zero-consent Chrome (default) or the " +
+      "user's own, logged-in Chrome — see `profile`'s own description for when to choose which.",
     {
       adapter: z
         .string()
@@ -294,6 +298,18 @@ export function registerBrowserTools(
         .describe(
           "Browser adapter id — one of the ids returned by `browser_adapter_list` " +
             "(e.g. 'camofox', 'bureau')."
+        ),
+      profile: z
+        .enum(["dedicated", "personal"])
+        .optional()
+        .describe(
+          "chrome-live only; every other adapter ignores this. 'dedicated' (default) launches or " +
+            "reuses a dedicated, zero-consent Chrome on its own profile — use this unless the task " +
+            "specifically needs it. 'personal' attaches to the user's own, logged-in Chrome instead " +
+            "(their real cookies/sessions, a consent click the first time) — choose 'personal' ONLY " +
+            "when the task needs to see something from the user's own accounts (their inbox, their " +
+            "logged-in dashboard, a site only their session can reach); never for a public page or a " +
+            "source you can read logged out."
         ),
       port: z
         .number()
@@ -371,6 +387,7 @@ export function registerBrowserTools(
           location: input.location,
           baseUrl: input.baseUrl,
           binPath: input.binPath,
+          profile: input.profile,
           // Non-blocking cold start: if the freshly spawned service isn't
           // healthy within this bounded window, register it as `starting`
           // and let health converge in the background instead of blocking
@@ -764,7 +781,8 @@ export function registerBrowserTools(
   )
 
   // ── browser_screencast_* ─────────────────────────────────────────────────────
-  // Live view + recording over the agent's OWN tab inside the user's Chrome.
+  // Live view + recording over the agent's OWN tab inside the chrome-live browser
+  // (dedicated by default, or the user's own Chrome on an explicit attachIntent ask).
   // CAPABILITY/STATE SPLIT — the same shape the liveInstances fix uses:
   //   • the long-lived frame buffer + CDP mechanics live on the chrome-live
   //     adapter instance (module-level `entries` in live.ts), reached through
@@ -823,7 +841,7 @@ export function registerBrowserTools(
 
   server.tool(
     "browser_screencast_start",
-    "chrome-live only. Start a live screencast of the agent's OWN tab inside the user's Chrome " +
+    "chrome-live only. Start a live screencast of the agent's OWN tab (the dedicated Chrome by default, or the user's own Chrome on an explicit attachIntent ask) " +
       "(CDP Page.startScreencast; never a foreign tab, never the desktop). " +
       "Frames stream to the daemon HTTP surface: open the daemon URL + viewPath " +
       "(`/sessions/<sessionId>/screencast`) in a browser, or expose it remotely with `tunnel_create` " +
@@ -852,7 +870,7 @@ export function registerBrowserTools(
       if (adapterId !== "chrome-live") {
         return errResult(
           `browser_screencast_start: adapter "${adapterId}" does not support screencast; ` +
-            "only the chrome-live adapter does (it attaches to the user's running Chrome)."
+            "only the chrome-live adapter does (a dedicated Chrome by default, or the user's running Chrome on an explicit attachIntent ask)."
         )
       }
       const inst = screencastInstance(desc)
