@@ -1,5 +1,12 @@
 # @agentproto/apps
 
+## 0.23.5
+
+### Patch Changes
+
+- Updated dependencies [cc7ba9f]
+  - @agentproto/app-kit@1.10.1
+
 ## 0.23.4
 
 ### Patch Changes
