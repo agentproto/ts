@@ -75,6 +75,15 @@ export interface WorktreeGcPlanEntryView {
   /** Set only when `class === "reclaim"` via the dep-bump exemption, the orphan scan, or the prunable signal. */
   reclaimReason?: WorktreeGcReclaimReason
   /**
+   * Set only when `class === "hold"`: WHY it held — `live-session-cwd`
+   * (its path is or contains a live session's cwd) or `recent-activity`
+   * (its own git index was written within the active window, so someone is
+   * working in it right now). The engine's other holds (open PR, dirty tree,
+   * unresolved verdict) leave it absent — those are already explained by the
+   * tree/integration/liveness axes this entry carries.
+   */
+  holdReason?: string
+  /**
    * `true` only for an orphan-scan entry: a directory physically present
    * under the repo's worktree pool with no `git worktree list` entry at all
    * (even after a prune). `tree`/`integration`/`liveness` carry no real axis
@@ -121,6 +130,12 @@ export interface WorktreeGcOutcomeView {
   from?: WorktreeGcClass
   /** Set only for `aborted-reclassified`. */
   to?: WorktreeGcClass
+  /**
+   * Set when the entry was held (or refused at apply time) because of a
+   * specific hold reason — `live-session-cwd` or `recent-activity` (the
+   * worktree's own git index was written within the active window).
+   */
+  holdReason?: string
   /** Set only for `failed`. */
   message?: string
 }
@@ -159,6 +174,14 @@ export interface WorktreeGcRunInput {
    * disables the allowlist.
    */
   noisePaths?: string[]
+  /**
+   * Recency window, in minutes, for the engine's recent-activity guard: a
+   * worktree whose own git index mtime is younger than this holds (reason
+   * `recent-activity`) instead of reclaiming/salvaging, at plan time and
+   * again at apply time. Omitted → the engine's default (60); `0` disables
+   * the guard.
+   */
+  activeMinutes?: number
 }
 
 /**

@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
-import { realpathSync } from "node:fs"
+import { realpathSync, utimesSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -64,6 +64,24 @@ function git(cwd: string, ...args: string[]): void {
   if (res.status !== 0) throw new Error(`git ${args.join(" ")}: ${res.stderr}`)
 }
 
+/**
+ * Ages a linked worktree's own git index past the gc engine's default
+ * recent-activity window (60 min). `git worktree add` writes a brand-new
+ * index, which the engine reads as "someone touched this worktree moments
+ * ago" and therefore holds — these fixtures are meant to model idle
+ * worktrees, the shape the reclaim/salvage classification is about.
+ */
+function backdateWorktreeIndex(wtPath: string): void {
+  const res = spawnSync(
+    "git",
+    ["-C", wtPath, "rev-parse", "--path-format=absolute", "--git-path", "index"],
+    { encoding: "utf8" },
+  )
+  if (res.status !== 0) throw new Error(`git rev-parse index: ${res.stderr}`)
+  const old = new Date(Date.now() - 61 * 60 * 1000)
+  utimesSync(res.stdout.trim(), old, old)
+}
+
 async function makeRepoWithLinkedWorktrees(): Promise<{ repo: string; worktrees: string[] }> {
   const repo = realpathSync(await mkdtemp(join(tmpdir(), "wt-gc-report-repo-")))
   cleanupPaths.push(repo)
@@ -80,6 +98,7 @@ async function makeRepoWithLinkedWorktrees(): Promise<{ repo: string; worktrees:
   for (const name of ["one", "two", "three"]) {
     const path = join(pool, name)
     git(repo, "worktree", "add", "-q", "-b", `wt/${name}`, path)
+    backdateWorktreeIndex(path)
     worktrees.push(path)
   }
   // One dirty worktree, so the plan isn't trivially uniform.
@@ -129,5 +148,52 @@ describe("worktree_gc dry run → maintain report", () => {
     const report = entry.buildReport({ input: {}, steps: { worktreeGcPlan: result } })
     expect(report).toContain("`plan` — 3 worktree(s) classified")
     expect(report).toContain(`reclaim=${expected.reclaim} salvage=${expected.salvage} hold=${expected.hold}`)
+  })
+
+  it("threads activeMinutes to the engine: a just-created worktree holds by default, reclaims with activeMinutes: 0", async () => {
+    const repo = realpathSync(await mkdtemp(join(tmpdir(), "wt-gc-recent-repo-")))
+    cleanupPaths.push(repo)
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@t.t")
+    git(repo, "config", "user.name", "t")
+    await writeFile(join(repo, "f"), "x")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "init")
+    // No real remote in a unit fixture — mint the ref the engine resolves as
+    // the default branch, so a tip==main worktree classifies `fresh` (and
+    // therefore reclaim when clean) rather than an offline/unknown verdict.
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+    const pool = realpathSync(await mkdtemp(join(tmpdir(), "wt-gc-recent-pool-")))
+    cleanupPaths.push(pool)
+    const path = join(pool, "fresh")
+    // Deliberately NOT backdated: a brand-new index is the point of this test.
+    git(repo, "worktree", "add", "-q", "-b", "wt/fresh", path)
+
+    const held = await makeWorktreeGcRunner()({
+      repoRoot: repo,
+      apply: false,
+      salvageDirty: false,
+      includeDetached: false,
+      protectedPaths: [],
+    })
+    expect(held.mode).toBe("plan")
+    const heldEntry = (held as { plan: Array<{ path: string; class: string; holdReason?: string }> }).plan
+      .find(e => e.path === path)
+    expect(heldEntry?.class).toBe("hold")
+    expect(heldEntry?.holdReason).toBe("recent-activity")
+
+    const ungated = await makeWorktreeGcRunner()({
+      repoRoot: repo,
+      apply: false,
+      salvageDirty: false,
+      includeDetached: false,
+      protectedPaths: [],
+      activeMinutes: 0,
+    })
+    expect(ungated.mode).toBe("plan")
+    const ungatedEntry = (ungated as { plan: Array<{ path: string; class: string }> }).plan
+      .find(e => e.path === path)
+    expect(ungatedEntry?.class).toBe("reclaim")
   })
 })
