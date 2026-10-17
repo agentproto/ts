@@ -1,5 +1,55 @@
 # @agentproto/cli
 
+## 1.26.0
+
+### Minor Changes
+
+- f1e23ad: Added an optional, empty-by-default observer seam on the browser tools (AIP-63 section 7). An operator registers an observer with `registerBrowserObserver` (or points `AGENTPROTO_BROWSER_OBSERVER_MODULE` at an absolute, user-owned, non-world-writable module that default-exports `(api) => void`) to receive `onAttach` / `onDetach` / `beforeCall` / `afterCall` for every `browser_*` call and to transform `browser_screenshot` images before they reach the caller. Observers fail open with a short time budget; only a `required` screenshot transform can fail a call (`browser:transform_failed`). Call arguments are redacted before the observer sees them: a `fill` value and an `evaluate` expression are never passed, not even their length. With no observer registered every tool behaves exactly as before.
+
+  `onAttach` also receives an optional `capture` handle (`screenshot`, `evaluate`) for providers that implement both, so an observer can take its own frames and probe the page without a tool call. `@agentproto/runtime/browser-screencast` is now a public subpath (`encodeScreencastFramesToMp4`, `hasFfmpeg`).
+
+- 8fee54b: Add --public flag to app tunnel, forwarded to the app_tunnel tool
+- 0939143: Imported MCPs can now authenticate with OAuth 2.1 (RFC 9728 discovery, RFC 7591 dynamic client registration, PKCE), so remote MCPs that accept no API key or static header (e.g. Qonto) become usable by daemon-spawned agents. New `agentproto mcp login <alias> [--url <url>] [--scope "a b"] [--no-open]` runs the consent on a one-shot 127.0.0.1 loopback listener, prints the authorization URL and the requested scopes before the click, stores the client + tokens as one keychain item per import (never in `imported-mcps.json`), verifies with `tools/list`, and only then records `auth: { type: "oauth" }` on the import (`--url` creates a manual http import). `mcp logout` forgets the stored state. The daemon refreshes tokens on its own and never starts an interactive flow: when credentials are missing or revoked it fails with `oauth login required … run: agentproto mcp login <alias>`. Stored state is bound to the server origin, so a live-repointed entry never receives tokens. `@agentproto/runtime` adds the `./mcp-oauth`, `./mcp-client-pool` and `./mcp-credential-deps` exports and an `oauth` field on `McpConnectionConfig`.
+- 6ec4039: `workspace/v2` (AIP-34 extended) reference implementation: `defineWorkspaceV2` plus `.ts ↔ .md` manifest round-trips backed by a single zod schema, the companion formats (`TYPES.md`, `agentproto.lock`, `EXPORT.md`), the cross-node `checkWorkspaceTree` verifier, and the `agentproto workspace check <dir>` CLI surface. This increment also exports pre-default input types (`TypesManifestFrontmatterInput`, `AgentprotoLockInput`, `ExportManifestFrontmatterInput`) so the `write*` helpers accept author input that omits schema-defaulted fields.
+- f1e23ad: `@agentproto/runtime`: adds an optional, empty-by-default observer seam over the `browser_*` MCP tools (AIP-63 section 7). New exports `registerBrowserObserver`, `unregisterBrowserObserver`, `loadBrowserObserverModule`, and `configureBrowserObservers` let an operator observe `onAttach` / `onDetach` / `beforeCall` / `afterCall` and transform `browser_screenshot` images. Observers fail open inside a short budget; only a `required` screenshot transform can fail a call (`browser:transform_failed`). Call arguments are redacted before observers see them: a `fill` value and an `evaluate` expression are never passed, not even their length. With no observer registered every tool behaves exactly as before.
+
+  `@agentproto/cli`: the `serve` daemon now loads an operator browser-observer module from `AGENTPROTO_BROWSER_OBSERVER_MODULE` (absolute, user-owned, non-world-writable path default-exporting `(api) => void`); `AGENTPROTO_BROWSER_OBSERVER_REQUIRED=1` makes a load failure fatal, otherwise the daemon boots without observers.
+
+- 0939143: Imported remote (http/sse) MCPs can now authenticate with OAuth 2.1 (RFC 9728 discovery, RFC 7591 dynamic client registration, PKCE). `@agentproto/runtime` exposes the generic `McpOAuthProvider` (plus the `mcp-client-pool` and `mcp-credential-deps` subpath exports) and a new `oauth` field on `McpConnectionConfig`; `@agentproto/cli` adds `agentproto mcp login <alias> [--url <url>] [--scope "a b"] [--no-open]` and `agentproto mcp logout <alias>`, storing client + tokens as one keychain item per import. The daemon refreshes tokens silently and never starts an interactive flow, failing with `oauth login required … run: agentproto mcp login <alias>` when credentials are missing or revoked.
+- 80fbfbe: Added a fleet-wide session stats report over a start-time window: `agentproto sessions report [--since 12h] [--topN 5] [--json]` and the equivalent `sessions_report` MCP tool / `GET /sessions/report` REST route. Reports session counts by harness and model, status + end-reason breakdown, total/average wall-clock duration, tokens and estimated cost (split subscription vs api-key billing when the session's resolved auth mode says so), PRs opened by in-window sessions, the top-N costliest and top-N longest-running sessions, every currently-active session, and every alive `keepAlive` "permanent" agent. Merges the live registry with cold on-disk session rows so a busy host's `HISTORY_CAP` doesn't undercount the window.
+- 6ec4039: **BREAKING**: `workspace/v2` (AIP-34, tree composition) replaces `workspace/v1` outright — there is no parallel v1 schema, no v1↔v2 mixed tree, and no legacy compatibility path. `defineWorkspace`, `WorkspaceDefinition`/`WorkspaceHandle`, `workspaceFrontmatterSchema`, `parseWorkspaceManifest`/`workspaceFromManifest`/`writeWorkspaceManifest` now mean v2: `schema` is `"workspace/v2"`, and `type` (a node kind resolved against a tree's `TYPES.md`) is a new REQUIRED field. A caller constructing `{ schema: "workspace/v1", ... }` or omitting `type` now fails validation — see AIP-34 §Migrating from workspace/v1 for the (small) field-by-field rewrite note.
+
+  One schema backs load, export, and verify: `writeWorkspaceManifest` (.ts → .md) and `parseWorkspaceManifest`/`workspaceFromManifest` (.md → object) both validate through `workspaceFrontmatterSchema`, so they can never drift from each other.
+
+  New optional fields: `wall` (four visibility levels: shared/isolated/sealed/hard — default isolated), `includes`/`exports` (two-sided consent doors), `agents`/`routines` (declared manifests this node hosts), `secrets`/`uses_secrets` (never-inherited secret grants, pairs with a new additive `workspace:` access-entry kind on AIP-19 SECRETS.md), `apps`/`accepted_apps` (versioned app attachments — crossing to another node needs that node's explicit `accepted_apps` consent, same two-sided shape as includes/exports), `work` (AIP-20 WORK.md reference — a project's status/board, not a flat status file), and `policy.limits` budget aggregation (most-restrictive-wins down the tree). Companion formats: `TYPES.md` (node-type registry), `agentproto.lock` (tree-wide app/pack lockfile), `EXPORT.md` (sealed/hard digest) — each with its own schema + parse/write pair.
+
+  Adds the first version of the cross-node verifier, `checkWorkspaceTree` (`@agentproto/workspace/checker`) and the CLI surface `agentproto workspace check <dir>`: validates node `type` against `TYPES.md` (allowed parents, wall floor, required files), two-sided `includes`/`exports` and `apps`/`accepted_apps` consent, `uses_secrets` grants against the provider's `SECRETS.md` (plus a no-literal-secret-values heuristic), `policy.limits` budget aggregation, and path confinement (tree-relative paths, no `..` traversal, no symlink escape — checked via realpath, not just the string) on every file reference the checker resolves.
+
+  `@agentproto/app-kit`'s `defineApp`/`WorkspaceShorthand`/`emitApp` migrate along with it: a `WorkspaceShorthand` now accepts an optional `type` (defaulting to `"app"` — an app-kit workspace is a standalone root, not a node in anyone's `TYPES.md` tree), and `emitApp` writes `schema: "workspace/v2"` to the WORKSPACE.md it generates. A caller reading an emitted WORKSPACE.md and asserting `schema === "workspace/v1"` needs updating.
+
+### Patch Changes
+
+- 65c31b6: `agentproto serve` now re-ensures every installed app's `services:` owners at boot, right after the eager-resume and continue-on-boot passes. Previously `ensureAppServiceOwners` only ran from `app_install`, so an owner session killed by a daemon restart (`endedReason: "daemon-restart"`, not covered by its `crashed`/`error` restartPolicy) stayed down until the next reinstall. The boot pass force-replaces every recorded owner — signalling any pid left in its pid file first, so an orphaned child doesn't hold the port — gated by the same `daemon.resumeSessionsOnBoot` knob as the other boot-automation passes.
+- cc7ba9f: Docs sync for features already shipped: the `agentproto app tunnel` verb (`@agentproto/cli` README) and the AIP-53 `services:` production-hosting block (`@agentproto/app-kit` README). README-only changes; no source behavior changed.
+- 65c31b6: `agentproto serve` now re-ensures every installed app's `services:` owners at boot, after the resume and continue-on-boot passes. `ensureServices` previously ran only on the install path, so an app-service owner killed by a daemon restart (`endedReason: "daemon-restart"`, not covered by its `crashed`/`error` restartPolicy) stayed down until the next reinstall. The boot pass force-replaces every recorded owner — signalling any pid left in its pid file first so an orphaned child does not hold the port — gated by the same `daemon.resumeSessionsOnBoot` knob as the other boot-automation passes. Runtime gains the internal `reensureAppServiceOwners` / `buildAppServiceEnsurer` helpers (not re-exported from the package root); the CLI invokes and reports the new pass.
+- Updated dependencies [345cf99]
+- Updated dependencies [28a2949]
+- Updated dependencies [350e966]
+- Updated dependencies [6e75183]
+- Updated dependencies [cc7ba9f]
+- Updated dependencies [c265752]
+- Updated dependencies [345cf99]
+- Updated dependencies [350e966]
+- Updated dependencies [6ec4039]
+- Updated dependencies [f0a0d89]
+- Updated dependencies [6ec4039]
+  - @agentproto/adapter-browser@0.7.0
+  - @agentproto/model-catalog@0.12.7
+  - @agentproto/app-kit@2.0.0
+  - @agentproto/workspace@1.0.0
+  - @agentproto/apps@0.23.5
+  - @agentproto/llm-endpoint@0.11.12
+
 ## 1.25.0
 
 ### Minor Changes
