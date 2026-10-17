@@ -38,6 +38,7 @@ export const agentprotoLockSchema = z
   .strict()
 
 export type AgentprotoLock = z.infer<typeof agentprotoLockSchema>
+export type AgentprotoLockInput = z.input<typeof agentprotoLockSchema>
 export type LockedApp = z.infer<typeof lockedAppSchema>
 export type LockedPack = z.infer<typeof lockedPackSchema>
 
@@ -53,7 +54,7 @@ export function parseLock(source: string): AgentprotoLock {
   return result.data
 }
 
-export function writeLock(lock: AgentprotoLock): string {
+export function writeLock(lock: AgentprotoLockInput): string {
   const parsed = agentprotoLockSchema.parse(lock)
   return stringify(parsed)
 }

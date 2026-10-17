@@ -34,6 +34,7 @@ export const typesManifestSchema = z
   .strict()
 
 export type TypesManifestFrontmatter = z.infer<typeof typesManifestSchema>
+export type TypesManifestFrontmatterInput = z.input<typeof typesManifestSchema>
 export type TypeEntry = z.infer<typeof typeEntrySchema>
 
 export function parseTypesManifest(source: string): TypesManifestFrontmatter {
@@ -49,7 +50,10 @@ export function parseTypesManifest(source: string): TypesManifestFrontmatter {
   return result.data
 }
 
-export function writeTypesManifest(def: TypesManifestFrontmatter, body = ""): string {
+// Accepts the pre-default INPUT shape (e.g. `requires_files` omitted) —
+// same input/output split as `types-v2.ts`'s WorkspaceDefinitionV2, so an
+// author doesn't have to spell out every zod default by hand.
+export function writeTypesManifest(def: TypesManifestFrontmatterInput, body = ""): string {
   const parsed = typesManifestSchema.parse(def)
   return matter.stringify(body, parsed)
 }

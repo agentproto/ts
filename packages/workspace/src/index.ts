@@ -42,14 +42,14 @@ export {
   writeTypesManifest,
   resolveTypeEntry,
 } from "./types-registry.js"
-export type { TypesManifestFrontmatter, TypeEntry } from "./types-registry.js"
+export type { TypesManifestFrontmatter, TypesManifestFrontmatterInput, TypeEntry } from "./types-registry.js"
 
 export { agentprotoLockSchema, parseLock, writeLock } from "./lock.js"
-export type { AgentprotoLock, LockedApp, LockedPack } from "./lock.js"
+export type { AgentprotoLock, AgentprotoLockInput, LockedApp, LockedPack } from "./lock.js"
 
 export {
   exportManifestSchema,
   parseExportManifest,
   writeExportManifest,
 } from "./export-manifest.js"
-export type { ExportManifestFrontmatter, ExportManifest } from "./export-manifest.js"
+export type { ExportManifestFrontmatter, ExportManifestFrontmatterInput, ExportManifest } from "./export-manifest.js"

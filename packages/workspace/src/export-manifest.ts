@@ -20,6 +20,7 @@ export const exportManifestSchema = z
   .strict()
 
 export type ExportManifestFrontmatter = z.infer<typeof exportManifestSchema>
+export type ExportManifestFrontmatterInput = z.input<typeof exportManifestSchema>
 
 export interface ExportManifest {
   frontmatter: ExportManifestFrontmatter
@@ -39,7 +40,7 @@ export function parseExportManifest(source: string): ExportManifest {
   return { frontmatter: result.data, body: parsed.content }
 }
 
-export function writeExportManifest(frontmatter: ExportManifestFrontmatter, body: string): string {
+export function writeExportManifest(frontmatter: ExportManifestFrontmatterInput, body: string): string {
   const parsed = exportManifestSchema.parse(frontmatter)
   return matter.stringify(body, parsed)
 }
