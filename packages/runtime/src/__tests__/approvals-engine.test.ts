@@ -205,6 +205,57 @@ describe("ApprovalsEngine: web_click channel gating", () => {
   })
 })
 
+describe("ApprovalsEngine: telegram channel gating", () => {
+  it("telegram is excluded from enabledChannels when no telegramBotSecret is configured", () => {
+    expect(engine.enabledChannels).not.toContain("telegram")
+  })
+
+  it("telegram joins enabledChannels once telegramBotSecret is configured", () => {
+    const bus = createSessionEventBus()
+    const tgEngine = createApprovalsEngine({
+      homeDir: home + "-tg-on",
+      sessionEvents: bus,
+      telegramBotSecret: "tg-secret",
+    })
+    expect(tgEngine.enabledChannels).toContain("telegram")
+    tgEngine.dispose()
+  })
+
+  it("decideTelegram refuses a channel the request didn't declare", async () => {
+    const bus = createSessionEventBus()
+    const tgEngine = createApprovalsEngine({
+      homeDir: home + "-tg-gate",
+      sessionEvents: bus,
+      telegramBotSecret: "tg-secret",
+    })
+    const payload = { to: "a@example.invalid", subject: "hi" }
+    const record = tgEngine.request(
+      { kind: "send", title: "Send", preview, payload, channels: ["ui_card"] },
+      requester,
+    )
+    await expect(
+      tgEngine.decideTelegram(record.id, "approve", { ipAddress: "1.2.3.4", userAgent: "test" }),
+    ).rejects.toThrow('channel "telegram" is not allowed')
+    tgEngine.dispose()
+  })
+
+  it("decideTelegram approves and signs on the pinned payload, same as decideWeb", async () => {
+    const bus = createSessionEventBus()
+    const tgHome = home + "-tg-approve"
+    const tgEngine = createApprovalsEngine({ homeDir: tgHome, sessionEvents: bus, telegramBotSecret: "tg-secret" })
+    const payload = { to: "a@example.invalid", subject: "hi" }
+    const record = tgEngine.request({ kind: "send", title: "Send", preview, payload }, requester)
+    const decided = await tgEngine.decideTelegram(record.id, "approve", {
+      ipAddress: "9.9.9.9",
+      userAgent: "telegram-bridge",
+    })
+    expect(decided.status).toBe("approved")
+    expect(decided.decision?.channel).toBe("telegram")
+    expect(decided.decision?.signaturePath).toBeDefined()
+    tgEngine.dispose()
+  })
+})
+
 describe("ApprovalsEngine: card tickets (ui_card channel)", () => {
   afterEach(() => {
     vi.useRealTimers()

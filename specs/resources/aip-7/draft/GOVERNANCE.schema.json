@@ -272,8 +272,8 @@
       ]
     },
     "approvalChannel": {
-      "enum": ["web_click", "ui_card"],
-      "description": "A declared human channel. web_click: bearer credential plus an Origin on a configured allowlist. ui_card: one-time ticket minted per card render, app-only decide action, served on a surface agent sessions cannot reach. Further channels MAY be registered; each MUST satisfy the AIP-7 human channel rule."
+      "enum": ["web_click", "ui_card", "telegram"],
+      "description": "A declared human channel. web_click: bearer credential plus an Origin on a configured allowlist. ui_card: one-time ticket minted per card render, app-only decide action, served on a surface agent sessions cannot reach. telegram: a shared bot-bridge bearer secret, in place of an Origin (a Telegram webhook callback has none). Further channels MAY be registered; each MUST satisfy the AIP-7 human channel rule."
     },
     "auditEvent": {
       "type": "object",

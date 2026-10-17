@@ -60,6 +60,17 @@ never a model-callable tool.
   burned on any attempt (valid or not) so a wrong guess kills the real one
   too. Evidence's `signedUrlToken` holds the ticket's hash, not the raw
   ticket — the raw value never touches the audit log or the signature file.
+- **`telegram`**: `POST /approvals/:id/decision/telegram`. A Telegram
+  webhook callback carries no browser `Origin` to check, so the channel's
+  one gate is a single shared bearer secret (`approvals.telegramBotSecret`,
+  config, default unset = channel off) held only by the trusted bot-bridge
+  service that relays the chat's button tap. Structurally identical to
+  `decideWeb` otherwise (same `ApprovalDecideEvidence` shape, same
+  `click_through` signing method) — the bridge is responsible for binding
+  the tap to the right chat/approval before ever calling this route; the
+  engine itself only checks "is this approval still pending" and "was the
+  secret right", same as `web_click` only checks "is the Origin allowed" and
+  "was the token right".
 
 Either way, an approve calls `signArtifact` (`signerKind: "user"`,
 `signer: "user:local"`, `method: "click_through"`) on `payload.json`; a
@@ -158,10 +169,10 @@ decide tool or the resources.
   `approval:*` event today but nothing reads it back. E1b wires
   `awaiting_approval`, `approvalIds`, and the `approval:decided` →
   `in_progress`/`cancelled` transition into `task-ledger.ts`.
-- **`phone_button` / `signed_link` channels** — the `ApprovalChannel` union
-  and the `channels` field on every request are already shaped to add
-  more declared human channels later without touching the state machine;
-  neither is built here.
+- **`signed_link` channel** — the `ApprovalChannel` union and the
+  `channels` field on every request are already shaped to add more
+  declared human channels later without touching the state machine
+  (`telegram` landed this way — see §3); `signed_link` isn't built here.
 - **Multi-user** — `signer: "user:local"` is hardcoded. A real multi-user
   deployment needs the decision routes to carry an actual signer identity
   instead of a single local placeholder.

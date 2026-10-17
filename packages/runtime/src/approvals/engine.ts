@@ -13,9 +13,12 @@
  *
  * Nothing exported here can decide, mint a ticket, or sign — `decideWeb`
  * is reachable only from the HTTP route `POST /approvals/:id/decision`,
- * `mintCardTicket`/`decideByCard` only from the card resource's HTML /
- * the `approval_card_decide` tool. The MCP tools facing an agent
- * (`approvals/tools.ts`) expose only `request` / `get` / `wait` / `consume`.
+ * `decideTelegram` only from `POST /approvals/:id/decision/telegram` (gated
+ * by a bot-bridge shared secret instead of an Origin — a webhook callback
+ * has no browser Origin to check), `mintCardTicket`/`decideByCard` only
+ * from the card resource's HTML / the `approval_card_decide` tool. The MCP
+ * tools facing an agent (`approvals/tools.ts`) expose only `request` /
+ * `get` / `wait` / `consume`.
  *
  * No task-board coupling here — that lands in a later lane (E1b). A
  * request's `taskId` is recorded verbatim and rides the `approval:*`
@@ -78,6 +81,12 @@ export interface ApprovalsEngineOptions {
    *  new request's `channels` omits it, and the HTTP decision route always
    *  403s. `ui_card` has no such gate (its own ticket IS the credential). */
   webOrigins?: readonly string[]
+  /** Shared secret gating the `telegram` channel's decide route (`POST
+   *  /approvals/:id/decision/telegram`) — a trusted bot-bridge service
+   *  presents this bearer token in place of `web_click`'s browser Origin
+   *  check (a Telegram webhook callback has no Origin to verify). Absent ⇒
+   *  `telegram` is OFF, same convention as `webOrigins` for `web_click`. */
+  telegramBotSecret?: string
 }
 
 /** Same requester? Used by `consume`'s `not_requester` check — the
@@ -107,6 +116,7 @@ export interface ApprovalsEngine {
    *  pending, most likely). Resolves immediately if already decided. */
   wait(id: string, timeoutMs: number): Promise<ApprovalRecord | undefined>
   decideWeb(id: string, decision: ApprovalDecision, evidence: ApprovalDecideEvidence): Promise<ApprovalRecord>
+  decideTelegram(id: string, decision: ApprovalDecision, evidence: ApprovalDecideEvidence): Promise<ApprovalRecord>
   mintCardTicket(id: string): { ticket: string; expiresAt: string }
   decideByCard(
     id: string,
@@ -122,7 +132,10 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
   const homeDir = opts.homeDir ?? defaultApprovalsHomeDir()
   const { sessionEvents } = opts
   const webOrigins = opts.webOrigins ?? []
-  const enabledChannels: ApprovalChannel[] = webOrigins.length > 0 ? ["web_click", "ui_card"] : ["ui_card"]
+  const telegramBotSecret = opts.telegramBotSecret
+  const enabledChannels: ApprovalChannel[] = ["ui_card"]
+  if (webOrigins.length > 0) enabledChannels.push("web_click")
+  if (telegramBotSecret) enabledChannels.push("telegram")
 
   const approvals = loadAllApprovals(homeDir)
   const cardTickets = loadAllCardTickets(homeDir)
@@ -314,6 +327,20 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
     return finishDecide(record, evidence, randomBytes(16).toString("hex"))
   }
 
+  /** `telegram` channel: same shape as `decideWeb` — the trust boundary is
+   *  the shared bot secret the HTTP route checks before this ever runs, not
+   *  anything checked here. `evidence` is the (truthful) ip/UA of the
+   *  webhook request that carried the human's tap, same convention as
+   *  `decideWeb`'s evidence being the browser request's. */
+  const decideTelegram = async (
+    id: string,
+    decision: ApprovalDecision,
+    evidence: ApprovalDecideEvidence,
+  ): Promise<ApprovalRecord> => {
+    const record = decideCore(id, decision, "telegram")
+    return finishDecide(record, evidence, randomBytes(16).toString("hex"))
+  }
+
   const mintCardTicket = (id: string): { ticket: string; expiresAt: string } => {
     const existing = liveGet(id)
     if (!existing) throw new ApprovalError("approval_not_found", `no approval ${id}`)
@@ -393,6 +420,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
     list,
     wait,
     decideWeb,
+    decideTelegram,
     mintCardTicket,
     decideByCard,
     consume,
