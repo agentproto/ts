@@ -75,6 +75,29 @@ async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<Brows
         ...(shot.height !== undefined ? { height: shot.height } : {}),
       }
     },
+    navigate: (url, tabId) => instance.navigateOwnedTarget(url, tabId),
+    getDom: (tabId) => instance.domOwnedTarget(tabId),
+    // Control (click/fill/evaluate/scroll) — pass straight through to the
+    // owned-target methods; the kit's option shapes require fields (e.g.
+    // `trusted`, `clear`) this facade's own, simpler surface leaves optional.
+    click: (options, tabId) =>
+      instance.clickOwnedTarget(
+        { selector: options.selector, button: options.button ?? "left", clickCount: options.clickCount ?? 1, trusted: true },
+        tabId
+      ),
+    fill: (options, tabId) =>
+      instance.fillOwnedTarget({ selector: options.selector, value: options.value, clear: options.clear ?? true }, tabId),
+    evaluate: (options, tabId) =>
+      instance.evaluateOwnedTarget(
+        {
+          expression: options.expression,
+          awaitPromise: options.awaitPromise ?? true,
+          returnByValue: options.returnByValue ?? true,
+          maxResultBytes: options.maxResultBytes ?? 64_000,
+        },
+        tabId
+      ),
+    scroll: (options, tabId) => instance.scrollOwnedTarget(options, tabId),
     stop: () => instance.stop(),
   }
 }

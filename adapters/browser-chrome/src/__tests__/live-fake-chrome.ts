@@ -15,6 +15,14 @@ export interface FakeChromeOptions {
   consent?: "allow" | "hold" | "reject" | "silent"
   /** After Target.activateTarget, focus jumps back to the user's window (a user clicking elsewhere). */
   stealFocus?: boolean
+  /** `Runtime.evaluate("document.documentElement.outerHTML")` answers with this. Default a minimal page. */
+  domHtml?: string
+  /** `Runtime.evaluate("document.title")` answers with this. Default "". */
+  domTitle?: string
+  /** Simulate "no element matches selector" for click/fill/scroll's generated `querySelector` expressions. */
+  selectorMissing?: boolean
+  /** `Runtime.evaluate("document.location.href")` answers with this (simulating a committed URL that differs from the requested one, e.g. a redirect). Unset: falls through to the generic unmatched-expression default. */
+  locationHref?: string
 }
 
 export interface FakeChrome {
@@ -172,8 +180,40 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
           if (!targetId || !fake.targets.delete(targetId)) return fail(msg.id, "No target with given id found")
           reply(msg.id, undefined, { success: true })
           return emit("Target.detachedFromTarget", { sessionId: `session-${targetId}`, targetId })
-        case "Runtime.evaluate":
+        case "Page.navigate": {
+          const navUrl = String(msg.params?.url ?? "")
+          const navTargetId = msg.sessionId?.replace(/^session-/, "")
+          const t = navTargetId ? fake.targets.get(navTargetId) : undefined
+          if (t) t.url = navUrl
+          reply(msg.id, msg.sessionId, {})
+          return emit("Page.lifecycleEvent", { name: "load" }, msg.sessionId)
+        }
+        case "Runtime.evaluate": {
+          const expression = String(msg.params?.expression ?? "")
+          if (expression === "document.documentElement.outerHTML") {
+            return reply(msg.id, msg.sessionId, { result: { type: "string", value: fake.options.domHtml ?? "<html><body>hi</body></html>" } })
+          }
+          if (expression === "document.title") {
+            return reply(msg.id, msg.sessionId, { result: { type: "string", value: fake.options.domTitle ?? "" } })
+          }
+          if (expression === "document.location.href" && fake.options.locationHref !== undefined) {
+            return reply(msg.id, msg.sessionId, { result: { type: "string", value: fake.options.locationHref } })
+          }
+          // click's centerOf: the selector's bounding-box center.
+          if (expression.includes("r.width / 2")) {
+            return reply(msg.id, msg.sessionId, {
+              result: fake.options.selectorMissing
+                ? { type: "object", value: null }
+                : { type: "object", value: { x: 10, y: 20 } },
+            })
+          }
+          // fill's focus-and-select, and scroll's scrollIntoView: both are
+          // IIFEs that return false when the selector matches nothing.
+          if (expression.includes("el.focus()") || expression.includes("scrollIntoView")) {
+            return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: !fake.options.selectorMissing } })
+          }
           return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: false } })
+        }
         case "Page.getLayoutMetrics":
           return reply(msg.id, msg.sessionId, { cssVisualViewport: { clientWidth: 1, clientHeight: 1 } })
         case "Page.captureScreenshot":

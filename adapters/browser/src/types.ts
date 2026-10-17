@@ -209,6 +209,24 @@ export interface BrowserAdapterInstance {
   health?(): Promise<{ ok: boolean; reason?: string }>
   /** Optional capture on a provider-owned target. */
   screenshot?(tabId?: string): Promise<{ data: string; format: "png" | "jpeg"; width?: number; height?: number }>
+  /** Optional navigate on a provider-owned target (chrome-live): reuses an existing owned tab, or opens one. */
+  navigate?(url: string, tabId?: string): Promise<{ targetId: string; url: string }>
+  /** Optional serialized DOM of a provider-owned target (chrome-live). Throws when no owned tab is open yet. */
+  getDom?(tabId?: string): Promise<{ targetId: string; url: string; html: string }>
+  /** Optional click by CSS selector on a provider-owned target (chrome-live). Throws when no owned tab is open yet, or no element matches. */
+  click?(
+    options: { selector: string; button?: "left" | "middle" | "right"; clickCount?: number },
+    tabId?: string
+  ): Promise<void>
+  /** Optional fill (focus + type) by CSS selector on a provider-owned target (chrome-live). Throws when no owned tab is open yet, or no element matches. */
+  fill?(options: { selector: string; value: string; clear?: boolean }, tabId?: string): Promise<void>
+  /** Optional JS evaluate on a provider-owned target (chrome-live). */
+  evaluate?<T = unknown>(
+    options: { expression: string; awaitPromise?: boolean; returnByValue?: boolean; maxResultBytes?: number },
+    tabId?: string
+  ): Promise<{ value: T | undefined; truncated: boolean }>
+  /** Optional scroll on a provider-owned target (chrome-live): a CSS selector into view, or the window to an absolute `{x, y}`. */
+  scroll?(options: { selector?: string; x?: number; y?: number }, tabId?: string): Promise<{ targetId: string }>
   /** Optional CDP screencast over a provider-owned tab (chrome-live). Frames come base64-encoded. */
   screencastStart?(opts?: { format?: "jpeg" | "png"; quality?: number; everyNthFrame?: number; maxWidth?: number; maxHeight?: number }): Promise<{ targetId: string; index: number }>
   screencastFrame?(): Promise<{ data: string; format: "jpeg" | "png"; timestampMs: number; index: number; width?: number; height?: number } | null>

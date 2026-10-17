@@ -1,19 +1,31 @@
 /**
  * `projectBrowserTools`: project a kit `BrowserInstance` (from
- * `@agentproto/driver-browser`) onto the page-level `browser_*` MCP tools.
+ * `@agentproto/driver-browser`) onto the page-level `browser_kit_*` MCP tools.
  *
  * MCP only. The SDK stays the existing typed client. The lifecycle tools
  * (`start_browser`, `browser_status`, ...) live in `browser-tools.ts` and are
  * untouched; this module adds the page-control set on top of an instance:
  *
- *   browser_navigate, browser_evaluate, browser_click, browser_fill,
- *   browser_screenshot, browser_get_dom, browser_list_requests,
- *   browser_get_request_body, browser_cdp_send
+ *   browser_kit_navigate, browser_kit_evaluate, browser_kit_click,
+ *   browser_kit_fill, browser_kit_screenshot, browser_kit_get_dom,
+ *   browser_kit_list_requests, browser_kit_get_request_body,
+ *   browser_kit_cdp_send
+ *
+ * `kit_` marks this as the OTHER model from `browser-tools.ts`'s
+ * `browser_navigate`/`browser_click`/`browser_fill`/`browser_evaluate`/
+ * `browser_get_dom`/`browser_scroll`: those address one agent-OWNED tab on
+ * chrome-live specifically; this module projects ONE whole attached
+ * `BrowserInstance` with no per-agent tab ownership, for any kit provider.
+ * Currently unused (no caller mounts it) — the prefix exists so the two
+ * surfaces can never collide by tool name if that changes.
  *
  * Capability gating is declarative (`BROWSER_TOOL_GATES` in the kit, AIP-14
  * capability gate): a tool whose capability the provider lacks answers with a
  * typed `browser:unsupported` error result naming the capability, before any
- * driver is attached. It is never a crash and never an empty success.
+ * driver is attached. It is never a crash and never an empty success. Gate
+ * ids are the kit's fixed dotted strings (`browser.list_requests`, ...) and
+ * are independent of the `browser_kit_*` MCP name — each `ToolSpec` carries
+ * its own `gateId` rather than deriving one from `name`.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -94,6 +106,8 @@ const cdpSendSchema = z.object({ method: z.string(), params: z.unknown().optiona
 interface ToolSpec {
   name: string
   description: string
+  /** Kit capability-gate id (`BROWSER_TOOL_GATES` key) — fixed, independent of `name`. */
+  gateId: string
   schema: z.ZodObject<z.ZodRawShape>
   run(input: unknown, driver: BrowserDriver, opts: ProjectBrowserToolsOptions): Promise<unknown>
 }
@@ -107,8 +121,9 @@ function requireWriter(tool: string, opts: ProjectBrowserToolsOptions): NonNulla
 
 const SPECS: readonly ToolSpec[] = [
   {
-    name: "browser_navigate",
+    name: "browser_kit_navigate",
     description: "Navigate the attached tab to a URL and wait for the chosen lifecycle event.",
+    gateId: "browser.navigate",
     schema: navigateOptionsSchema,
     async run(input, driver) {
       const o = navigateOptionsSchema.parse(input)
@@ -117,14 +132,16 @@ const SPECS: readonly ToolSpec[] = [
     },
   },
   {
-    name: "browser_evaluate",
+    name: "browser_kit_evaluate",
     description: "Evaluate a JavaScript expression in the page and return the value.",
+    gateId: "browser.evaluate",
     schema: evaluateOptionsSchema,
     run: (input, driver) => driver.evaluate(evaluateOptionsSchema.parse(input)),
   },
   {
-    name: "browser_click",
+    name: "browser_kit_click",
     description: "Click an element by CSS selector.",
+    gateId: "browser.click",
     schema: clickOptionsSchema,
     async run(input, driver) {
       const o = clickOptionsSchema.parse(input)
@@ -133,8 +150,9 @@ const SPECS: readonly ToolSpec[] = [
     },
   },
   {
-    name: "browser_fill",
+    name: "browser_kit_fill",
     description: "Fill an input element by CSS selector.",
+    gateId: "browser.fill",
     schema: fillOptionsSchema,
     async run(input, driver) {
       const o = fillOptionsSchema.parse(input)
@@ -143,49 +161,54 @@ const SPECS: readonly ToolSpec[] = [
     },
   },
   {
-    name: "browser_screenshot",
+    name: "browser_kit_screenshot",
     description:
       "Capture a screenshot of the page or a CSS-selected region. Returns base64 by default; " +
       "pass `path` to write the image to a file and return its path instead.",
+    gateId: "browser.screenshot",
     schema: screenshotOptionsSchema,
     async run(input, driver, opts) {
       const o = screenshotOptionsSchema.parse(input)
       const shot = await driver.screenshot(o)
       if (!o.path) return shot
       const bytes = Buffer.from(shot.base64, "base64")
-      const path = requireWriter("browser_screenshot", opts)(o.path, bytes)
+      const path = requireWriter("browser_kit_screenshot", opts)(o.path, bytes)
       return { path, format: shot.format, bytes: bytes.length, width: shot.width, height: shot.height }
     },
   },
   {
-    name: "browser_get_dom",
+    name: "browser_kit_get_dom",
     description: "Return serialized DOM (outerHTML) of the page or a selector.",
+    gateId: "browser.get_dom",
     schema: getDomSchema,
     async run(input, driver, opts) {
       const o = getDomSchema.parse(input)
       const html = await driver.getDom(o.selector)
       if (!o.path) return { html }
       const bytes = Buffer.from(html, "utf-8")
-      return { path: requireWriter("browser_get_dom", opts)(o.path, bytes), bytes: bytes.length }
+      return { path: requireWriter("browser_kit_get_dom", opts)(o.path, bytes), bytes: bytes.length }
     },
   },
   {
-    name: "browser_list_requests",
+    name: "browser_kit_list_requests",
     description: "List recent network requests captured by the driver's ring buffer. Needs the `cdp` capability.",
+    gateId: "browser.list_requests",
     schema: listRequestsSchema,
     async run(input, driver) {
       return { requests: await driver.listRequests(listRequestsSchema.parse(input)) }
     },
   },
   {
-    name: "browser_get_request_body",
+    name: "browser_kit_get_request_body",
     description: "Fetch a captured response body by requestId. Needs the `cdp` capability.",
+    gateId: "browser.get_request_body",
     schema: getRequestBodySchema,
     run: (input, driver) => driver.getRequestBody(getRequestBodySchema.parse(input).requestId),
   },
   {
-    name: "browser_cdp_send",
+    name: "browser_kit_cdp_send",
     description: "Send a raw Chrome DevTools Protocol command. Needs the `cdp` capability.",
+    gateId: "browser.cdp_send",
     schema: cdpSendSchema,
     async run(input, driver) {
       const o = cdpSendSchema.parse(input)
@@ -210,9 +233,6 @@ function toResult(value: unknown, thrown: unknown): ProjectedToolResult {
   }
 }
 
-/** kit tool ids are dotted (`browser.list_requests`); MCP names are snake (`browser_list_requests`). */
-const gateIdFor = (name: string): string => name.replace(/^browser_/, "browser.")
-
 export function projectBrowserTools(
   instance: BrowserInstance,
   opts: ProjectBrowserToolsOptions,
@@ -221,16 +241,15 @@ export function projectBrowserTools(
   const driver = (): Promise<BrowserDriver> => (driverPromise ??= instance.attach(opts.attach))
 
   const tools: ProjectedBrowserTool[] = SPECS.map((spec) => {
-    const gateId = gateIdFor(spec.name)
     return {
       name: spec.name,
       description: spec.description,
-      gateId,
+      gateId: spec.gateId,
       inputSchema: spec.schema,
       async call(input: unknown): Promise<ProjectedToolResult> {
         try {
           // Gate before attaching: a provider without the capability never gets a driver.
-          assertToolSupported(opts.provider.capabilities, gateId, opts.provider.id)
+          assertToolSupported(opts.provider.capabilities, spec.gateId, opts.provider.id)
           const result = await spec.run(input, await driver(), opts)
           return toResult(result, undefined)
         } catch (err) {

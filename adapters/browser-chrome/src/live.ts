@@ -12,6 +12,10 @@ import {
   type BrowserProvider,
   type CDPCommand,
   type CDPEventListener,
+  type ClickOptions,
+  type EvaluateOptions,
+  type EvaluateResult,
+  type FillOptions,
   type Unsubscribe,
 } from "@agentproto/driver-browser"
 import { ToolError } from "@agentproto/tool"
@@ -45,6 +49,17 @@ import { launchDetachedChrome, type LaunchedChrome, type LiveLaunchDeps } from "
  * `Browser.close`. The F11 guard of the `chrome` provider (no LAUNCH on the
  * default profile) is untouched — the dedicated Chrome launches on its own
  * profile, never the user's default one.
+ *
+ * `navigateOwnedTarget`/`domOwnedTarget` are the read path for an owned tab:
+ * navigate reuses an existing owned tab (or opens one via `attach`) and
+ * `ChromeCdpDriver.navigate` under the hood; `domOwnedTarget` serializes it
+ * with `driver.getDom()`. `clickOwnedTarget`/`fillOwnedTarget`/
+ * `evaluateOwnedTarget`/`scrollOwnedTarget` are the control path, each a thin
+ * dispatch onto the same owned driver's `click`/`fill`/`evaluate` (scroll has
+ * no driver primitive of its own — it's an `evaluate` of a generated
+ * `scrollIntoView`/`scrollTo` expression). All six go through the same
+ * `requireOwnedDriver` ownership guard as `screenshotOwnedTarget` — never a
+ * foreign tab.
  */
 
 export const CHROME_LIVE_PROVIDER_ID = "chrome-live"
@@ -213,12 +228,44 @@ export type ChromeLiveProvider = Omit<BrowserProvider, "launch"> & {
 
 export interface ChromeLiveInstance extends BrowserInstance {
   screenshotOwnedTarget(targetId?: string): Promise<Awaited<ReturnType<BrowserDriver["screenshot"]>>>
+  /**
+   * Navigate one OWNED agent tab to `url` — reuses an existing owned tab
+   * (any one, or the one named by `targetId`) via `driver.navigate()`, or
+   * opens a fresh one via `attach({ initialUrl: url })` when none exists yet.
+   * Never addresses a tab this instance didn't create.
+   */
+  navigateOwnedTarget(url: string, targetId?: string): Promise<{ targetId: string; url: string }>
+  /**
+   * Serialized DOM (`driver.getDom()`) of one OWNED agent tab — the same
+   * "first active agent tab, or `targetId`" anchor rule as
+   * `screenshotOwnedTarget`. Throws when no owned tab is open yet (navigate
+   * first).
+   */
+  domOwnedTarget(targetId?: string): Promise<{ targetId: string; url: string; html: string }>
+  /** Click an element by CSS selector on one OWNED agent tab — trusted CDP input at the element's center. */
+  clickOwnedTarget(options: ClickOptions, targetId?: string): Promise<void>
+  /** Fill an input element by CSS selector on one OWNED agent tab (focus + CDP `Input.insertText`). */
+  fillOwnedTarget(options: FillOptions, targetId?: string): Promise<void>
+  /** Evaluate a JS expression on one OWNED agent tab and return its value. */
+  evaluateOwnedTarget<T = unknown>(options: EvaluateOptions, targetId?: string): Promise<EvaluateResult<T>>
+  /** Scroll one OWNED agent tab: a CSS selector into view, or the window to an absolute `{x, y}`. */
+  scrollOwnedTarget(options: ChromeLiveScrollOptions, targetId?: string): Promise<{ targetId: string }>
   /** Start Page.startScreencast on one OWNED agent tab (reused if one exists; attach() opens a fresh one otherwise). Idempotent per driver. */
   screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }>
   /** Latest buffered frame, or null before the first frame lands / after a stop. */
   screencastFrame(): Promise<ChromeLiveScreencastFrame | null>
   /** Stop the screencast and hand back every frame buffered since start (for the runtime's mp4 encoder). */
   screencastStop(): Promise<{ targetId: string | undefined; frameCount: number; total: number; frames: ChromeLiveScreencastFrame[] }>
+}
+
+/** `scrollOwnedTarget` options: either a selector to scroll into view, or an absolute window position. */
+export interface ChromeLiveScrollOptions {
+  /** CSS selector to scroll into view (centered). Takes precedence over `x`/`y` when both are given. */
+  selector?: string
+  /** Absolute horizontal scroll position in CSS px, when no `selector` is given. Default 0. */
+  x?: number
+  /** Absolute vertical scroll position in CSS px, when no `selector` is given. Default 0. */
+  y?: number
 }
 
 /** Parameters of `Page.startScreencast` the provider exposes. */
@@ -723,6 +770,17 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
 
   function makeInstance(entry: LiveEntry, wasAlreadyRunning: boolean): ChromeLiveInstance {
     const mine = new Set<ChromeLiveDriver>()
+
+    /** The same "named targetId, else the first active agent tab" anchor rule as `screenshotOwnedTarget`/`domOwnedTarget`. */
+    function requireOwnedDriver(targetId: string | undefined, verb: string): ChromeLiveDriver {
+      const ownedTargetId = targetId ?? entry.targets.values().next().value
+      if (!ownedTargetId) throw new Error(`[chrome-live] no agent-owned tab is open to ${verb}`)
+      if (!entry.targets.has(ownedTargetId)) throw new Error(`[chrome-live] target "${ownedTargetId}" is not owned by this provider instance`)
+      const driver = [...entry.drivers].find(candidate => candidate.target.id === ownedTargetId)
+      if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${ownedTargetId}" has no active driver`)
+      return driver
+    }
+
     const instance: ChromeLiveInstance = {
       id: `${CHROME_LIVE_PROVIDER_ID}:${new URL(entry.url).host}`,
       endpoints: { cdp: entry.url },
@@ -748,6 +806,71 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         const driver = [...entry.drivers].find(candidate => candidate.target.id === ownedTargetId)
         if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${ownedTargetId}" has no active driver`)
         return driver.screenshot({ format: "png", fullPage: false })
+      },
+
+      async navigateOwnedTarget(url: string, targetId?: string): Promise<{ targetId: string; url: string }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        let driver: ChromeLiveDriver | undefined
+        if (targetId) {
+          if (!entry.targets.has(targetId)) throw new Error(`[chrome-live] target "${targetId}" is not owned by this provider instance`)
+          driver = [...entry.drivers].find(candidate => candidate.target.id === targetId)
+          if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${targetId}" has no active driver`)
+        } else {
+          // Reuse any live owned tab rather than opening a second one — the
+          // same "first active agent tab" anchor as screenshotOwnedTarget.
+          driver = [...entry.drivers].find(candidate => !candidate.closed)
+        }
+        if (driver) await driver.navigate({ url, waitUntil: "load" })
+        else driver = (await this.attach({ initialUrl: url })) as ChromeLiveDriver
+        // `driver.navigate`/`attach` only ever record the REQUESTED url on
+        // `target.url` — a redirect (http->https, a canonical-url bounce,
+        // ?slug params stripped) leaves it stale. Read back the committed
+        // location; best-effort, since a page that navigates away again
+        // immediately (or blocks script execution) can still fail this.
+        try {
+          const loc = await driver.evaluate<string>({ expression: "document.location.href", awaitPromise: false, returnByValue: true, maxResultBytes: 10_000 })
+          if (typeof loc.value === "string" && loc.value) driver.target.url = loc.value
+        } catch {
+          // Keep the requested url below rather than fail the navigation over this.
+        }
+        return { targetId: driver.target.id, url: driver.target.url ?? url }
+      },
+
+      async domOwnedTarget(targetId?: string): Promise<{ targetId: string; url: string; html: string }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const ownedTargetId = targetId ?? entry.targets.values().next().value
+        if (!ownedTargetId) throw new Error("[chrome-live] no agent-owned tab is open to read")
+        if (!entry.targets.has(ownedTargetId)) throw new Error(`[chrome-live] target "${ownedTargetId}" is not owned by this provider instance`)
+        const driver = [...entry.drivers].find(candidate => candidate.target.id === ownedTargetId)
+        if (!driver || driver.closed) throw new Error(`[chrome-live] agent-owned tab "${ownedTargetId}" has no active driver`)
+        const html = await driver.getDom()
+        return { targetId: driver.target.id, url: driver.target.url ?? "", html }
+      },
+
+      async clickOwnedTarget(options: ClickOptions, targetId?: string): Promise<void> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        await requireOwnedDriver(targetId, "click").click(options)
+      },
+
+      async fillOwnedTarget(options: FillOptions, targetId?: string): Promise<void> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        await requireOwnedDriver(targetId, "fill").fill(options)
+      },
+
+      async evaluateOwnedTarget<T = unknown>(options: EvaluateOptions, targetId?: string): Promise<EvaluateResult<T>> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        return requireOwnedDriver(targetId, "evaluate").evaluate<T>(options)
+      },
+
+      async scrollOwnedTarget(options: ChromeLiveScrollOptions, targetId?: string): Promise<{ targetId: string }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const driver = requireOwnedDriver(targetId, "scroll")
+        const expression = options.selector
+          ? `(() => { const el = document.querySelector(${JSON.stringify(options.selector)}); if (!el) return false; el.scrollIntoView({ behavior: "instant", block: "center", inline: "center" }); return true })()`
+          : `(() => { window.scrollTo({ left: ${Number(options.x ?? 0)}, top: ${Number(options.y ?? 0)}, behavior: "instant" }); return true })()`
+        const result = await driver.evaluate<boolean>({ expression, awaitPromise: false, returnByValue: true, maxResultBytes: 1_000 })
+        if (options.selector && result.value !== true) throw new Error(`[chrome-live] no element matches selector ${options.selector}`)
+        return { targetId: driver.target.id }
       },
 
       async screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }> {
