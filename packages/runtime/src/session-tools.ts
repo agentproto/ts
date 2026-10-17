@@ -83,6 +83,7 @@ import { computeCapabilitiesInventory } from "./capabilities-inventory.js"
 import { projectSessionUsage } from "./usage.js"
 import { rollupSessionSubtree } from "./usage-subtree.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
+import { buildSessionReportFromRegistry } from "./session-report-service.js"
 import {
   computeContextContinuityStatus,
   computeContextPct,
@@ -1703,6 +1704,64 @@ export function registerSessionTools(
         ...(input.fresh ? { fresh: true } : {}),
         ...(visible ? { visible } : {}),
         ...(opts.processStats ? { service: opts.processStats } : {}),
+      })
+    },
+    transformers: [catchErrors()],
+  })
+
+  // ── sessions_report ──────────────────────────────────────────────
+  // "How did the fleet behave over the last 12h" — counts by harness/model,
+  // status + end-reason breakdown, total/average wall-clock duration,
+  // tokens/cost (subscription vs api-key when resolvable), PRs opened,
+  // top-N costliest/longest sessions, currently-active sessions, and
+  // keepAlive "permanent" agents. Merges the live registry with cold
+  // on-disk rows (`session-cold-list.ts`) so a busy host's `HISTORY_CAP`
+  // doesn't silently undercount. Same report `GET /sessions/report` returns.
+  registerBuiltinTool<
+    { since?: string; topN?: number },
+    ReturnType<typeof buildSessionReportFromRegistry>
+  >(server, {
+    id: "sessions_report",
+    description:
+      "Fleet-wide session stats over a start-time window (default last 12h): " +
+      "counts by harness and model, status + end-reason breakdown, total/average " +
+      "wall-clock duration, tokens and estimated cost (split subscription vs " +
+      "api-key billing when the session's resolved auth mode says so), PRs opened " +
+      "by in-window sessions, the top-N costliest and top-N longest-running " +
+      "sessions, every currently-active session, and every alive `keepAlive` " +
+      "\"permanent\" agent (the latter two are NOT window-filtered — they answer " +
+      "\"what's true right now\"). On the scoped orchestrator gateway it is " +
+      "subtree-scoped — a child orchestrator only sees sessions it (transitively) " +
+      "spawned.",
+    inputSchema: z.object({
+      since: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Window start: ISO-8601 instant or a relative age like \"30m\", \"12h\", " +
+            "\"7d\", \"2w\". Default \"12h\".",
+        ),
+      topN: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("How many rows in `topByCost`/`topByDuration`. Default 5."),
+    }),
+    handler: async input => {
+      let onlyIds: Set<string> | undefined
+      if (callerScope) {
+        onlyIds = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+      }
+      return buildSessionReportFromRegistry(registry, {
+        since: input.since ?? "12h",
+        ...(input.topN !== undefined ? { topN: input.topN } : {}),
+        ...(onlyIds ? { onlyIds } : {}),
       })
     },
     transformers: [catchErrors()],

@@ -875,6 +875,18 @@ export {
   enrichRollupWithProviderQuota,
 } from "./usage-rollup-service.js"
 export { readUsageSnapshots } from "./usage-snapshot-log.js"
+export { buildSessionReport } from "./session-report.js"
+export type {
+  SessionReport,
+  SessionReportInput,
+  SessionReportOpenedPr,
+  SessionReportCountEntry,
+  SessionReportCostBucket,
+  SessionReportTopEntry,
+  SessionReportPrEntry,
+  SessionReportActiveEntry,
+} from "./session-report.js"
+export { collectSessionReportInputs, buildSessionReportFromRegistry } from "./session-report-service.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
