@@ -152,8 +152,8 @@ export class McpProxyRegistry {
         // different command). Detect by comparing serialised
         // snapshots; on mismatch, force reconnect.
         if (
-          JSON.stringify([existing.entry.snapshot, existing.entry.secretRefs, existing.entry.resolve]) !==
-          JSON.stringify([entry.snapshot, entry.secretRefs, entry.resolve])
+          JSON.stringify([existing.entry.snapshot, existing.entry.secretRefs, existing.entry.resolve, existing.entry.auth]) !==
+          JSON.stringify([entry.snapshot, entry.secretRefs, entry.resolve, entry.auth])
         ) {
           await safeClose(existing.client)
           this.clients.set(entry.id, freshPlaceholder(entry))

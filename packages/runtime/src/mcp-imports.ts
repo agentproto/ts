@@ -69,6 +69,15 @@ export interface ImportedMcpEntry {
   origin?: ImportedMcpOrigin
   resolve?: ImportedMcpResolve
   secretRefs?: ImportedMcpSecretRefs
+  /** http/sse only: the server authenticates with OAuth. Tokens live in the
+   *  keychain (`mcpOAuthRef`), never in this file. Set by `mcp login`. */
+  auth?: ImportedMcpAuth
+}
+
+export interface ImportedMcpAuth {
+  type: "oauth"
+  /** Scope to request; omitted = the server's advertised default. */
+  scope?: string
 }
 
 /** Value written into `snapshot.headers[K]` / `snapshot.env[K]` in place of a
@@ -342,10 +351,19 @@ function normalize(parsed: unknown): ImportedMcpsConfig {
       if (e.resolve === "live" || e.resolve === "snapshot") extra.resolve = e.resolve
       const secretRefs = parseSecretRefs(e.secretRefs)
       if (secretRefs) extra.secretRefs = secretRefs
+      const auth = parseAuth(e.auth)
+      if (auth) extra.auth = auth
       imports.push({ id, alias, addedAt, snapshot, ...extra })
     }
   }
   return { version: IMPORTED_MCPS_VERSION, imports }
+}
+
+function parseAuth(v: unknown): ImportedMcpAuth | undefined {
+  if (!v || typeof v !== "object") return undefined
+  const o = v as Record<string, unknown>
+  if (o.type !== "oauth") return undefined
+  return { type: "oauth", ...(typeof o.scope === "string" && o.scope ? { scope: o.scope } : {}) }
 }
 
 function parseOrigin(v: unknown): ImportedMcpOrigin | undefined {

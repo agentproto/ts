@@ -205,6 +205,15 @@ export async function resolveImportConnection(
   }
 
   const config = { ...connectionOf(base) }
+  if (entry.auth?.type === "oauth" && (config.type === "http" || config.type === "sse")) {
+    // The stored OAuth state is bound to its origin (checked by the provider),
+    // so a re-pointed live entry cannot receive these tokens.
+    config.oauth = {
+      importId: entry.id,
+      alias: entry.alias,
+      ...(entry.auth.scope ? { scope: entry.auth.scope } : {}),
+    }
+  }
   const refs = entry.secretRefs
   if (refs && upstreamChanged) {
     // Secrets are bound to the upstream they were imported for: never inject
