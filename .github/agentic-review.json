@@ -1,6 +1,6 @@
 {
   "blocking": true,
-  "model": "opencode/mimo-v2.6-flash-free",
+  "model": "opencode/deepseek-v4.1-flash-free",
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
@@ -107,9 +107,11 @@
     "review": {
       "env": "AGENT_REVIEW_PRESETS",
       "presets": [
-        "opencode-go-deepseek-flash",
+        "opencode-deepseek-free",
         "opencode-mimo-free",
+        "opencode-go-longcat-free",
         "opencode-step5-free",
+        "opencode-go-deepseek-flash",
         "claude-cloud"
       ]
     },
