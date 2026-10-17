@@ -25,6 +25,17 @@
  *      the registry on every run instead of only when someone happens to
  *      remember.
  *
+ * Also guards README.md's "Key specs implemented here" table against going
+ * stale in the OTHER direction: for each row already listed, the package
+ * cell must still name the package the canonical spec's frontmatter
+ * actually declares. This does NOT verify the table is exhaustive — the
+ * table is a deliberately curated highlight list (most AIPs have a real
+ * ref-impl package and are not in it on purpose), and no frontmatter field
+ * cleanly reconstructs that editorial boundary without heavy false-positive
+ * noise (checked empirically: ~40 cited, Schema-typed AIPs would still
+ * trigger). Catching a row that's there but wrong is the honest, zero-noise
+ * half of "keep the table correct."
+ *
  * Usage:
  *   node scripts/check-aip-refs.mjs --source <agentproto checkout root>
  */
@@ -109,14 +120,57 @@ export function checkAipRefs({ sourceRoot = DEFAULT_SOURCE, scanRoot = ROOT, sca
   return { ok: unresolved.length === 0, unresolved, warnings }
 }
 
+const README_ROW_RE = /^\|\s*AIP-(\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*$/
+
+function readCanonicalPackage(sourceRoot, n) {
+  let text
+  try {
+    text = readFileSync(path.join(sourceRoot, "specs", `aip-${n}.mdx`), "utf8")
+  } catch {
+    return null
+  }
+  const m = /^package:\s*"([^"]+)"/m.exec(text)
+  return m ? m[1] : null
+}
+
+/** README.md's AIP table rows whose package cell no longer matches what
+ *  the canonical spec's frontmatter declares (does NOT check for missing
+ *  rows — see the file header). */
+export function checkReadmeTable({ scanRoot = ROOT, sourceRoot = DEFAULT_SOURCE } = {}) {
+  let lines
+  try {
+    lines = readFileSync(path.join(scanRoot, "README.md"), "utf8").split("\n")
+  } catch {
+    return []
+  }
+  const mismatches = []
+  lines.forEach((line, i) => {
+    const m = README_ROW_RE.exec(line)
+    if (!m) return
+    const [, n, , packageCell] = m
+    const canonicalPkg = readCanonicalPackage(sourceRoot, n)
+    if (canonicalPkg && !packageCell.includes(canonicalPkg)) {
+      mismatches.push(
+        `README.md:${i + 1}: AIP-${n} table row lists "${packageCell}" but the canonical spec names package "${canonicalPkg}"`,
+      )
+    }
+  })
+  return mismatches
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2))
   const sourceRoot = args.source ? path.resolve(args.source) : DEFAULT_SOURCE
   const { ok, unresolved, warnings } = checkAipRefs({ sourceRoot })
+  const readmeMismatches = checkReadmeTable({ sourceRoot })
 
   if (warnings.length > 0) {
     console.log(`check-aip-refs: ${warnings.length} "no AIP" phrase(s) to re-verify against the canonical registry:`)
     for (const w of warnings) console.log(`  ${w}`)
+  }
+  if (readmeMismatches.length > 0) {
+    console.log(`check-aip-refs: ${readmeMismatches.length} README.md table row(s) out of sync with canonical:`)
+    for (const r of readmeMismatches) console.log(`  ${r}`)
   }
   if (!ok) {
     console.error(`check-aip-refs: ${unresolved.length} dangling AIP-N reference(s):`)
