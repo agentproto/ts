@@ -37,6 +37,11 @@
       "import": "./dist/app-mcp-server.mjs",
       "default": "./dist/app-mcp-server.mjs"
     },
+    "./browser-screencast": {
+      "types": "./dist/browser-screencast.d.ts",
+      "import": "./dist/browser-screencast.mjs",
+      "default": "./dist/browser-screencast.mjs"
+    },
     "./catalog-models": {
       "types": "./dist/catalog-models.d.ts",
       "import": "./dist/catalog-models.mjs",

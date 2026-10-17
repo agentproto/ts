@@ -97,6 +97,7 @@ import {
   makeSandboxResolver,
   makeSandboxCredsStore,
   defaultBrowserAdapterResolution,
+  loadBrowserObserverModule,
   resolveEffectiveLlmEndpointFlag,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
@@ -623,6 +624,21 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   // ── browser adapter resolver + lister (powers MCP start_browser / browser_adapter_list) ──
   const { resolveBrowserAdapter, listBrowserAdapters } = defaultBrowserAdapterResolution()
+
+  // ── optional operator browser-observer module (AIP-63 section 7) ──
+  // Operator environment only: never a tool argument, never a workspace file.
+  // A failed load is logged loudly and the daemon boots without observers,
+  // unless AGENTPROTO_BROWSER_OBSERVER_REQUIRED=1, which makes it fatal.
+  const observerModule = process.env.AGENTPROTO_BROWSER_OBSERVER_MODULE?.trim()
+  if (observerModule) {
+    try {
+      await loadBrowserObserverModule(observerModule, { log: msg => console.log(msg) })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[agentproto serve] browser observer module NOT loaded: ${message}`)
+      if (process.env.AGENTPROTO_BROWSER_OBSERVER_REQUIRED === "1") throw err
+    }
+  }
 
   // ── MCP credential broker (dependency-injected into runtime) ──
   // Runtime is intentionally auth-free; the CLI wires the broker here
