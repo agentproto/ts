@@ -231,6 +231,8 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "session_rename",
   "session_reorder_pinned",
   "session_restart",
+  "session_role_refresh",
+  "session_role_watch",
   "session_search",
   "session_set_keepalive",
   "session_set_pinned",
