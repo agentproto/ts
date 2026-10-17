@@ -129,6 +129,16 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "key", "allow"],
+          "properties": {
+            "kind": { "const": "qualify" },
+            "key": { "type": "string", "minLength": 1, "description": "Qualifier name looked up in the spend context's `qualifiers` (e.g. `channel`)." },
+            "allow": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Qualifier values that may spend this value. `*` = any value, but the qualifier must still be present. A spend that omits the qualifier is ineligible; a pure balance read is unaffected." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "tags"],
           "properties": {
             "kind": { "const": "restrict" },
