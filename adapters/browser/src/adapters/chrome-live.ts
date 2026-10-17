@@ -1,8 +1,10 @@
 import {
   CHROME_LIVE_DEFAULT_PORT,
   chromeLive,
+  createChromeLiveProvider,
   type ChromeLiveLaunchOptions,
   type ChromeLiveProvider,
+  type ChromeLiveProviderConfig,
 } from "@agentproto/adapter-browser-chrome"
 import { toAdapterHandle } from "../providers/to-adapter-handle.js"
 import type { BrowserAdapterHandle, BrowserAdapterInstance, BrowserAdapterStartOptions } from "../types.js"
@@ -13,6 +15,13 @@ import type { BrowserAdapterHandle, BrowserAdapterInstance, BrowserAdapterStartO
  * own running Chrome through its remote debugging toggle only happens on an
  * explicit ask (`attachIntent: true`, or a pinned endpoint). `stop` closes
  * only the tabs it opened and its own websocket, never the user's Chrome.
+ *
+ * This default instance has no `cookieSource` configured — ship it as-is and
+ * `chromeProfile`/`domains` on `start_browser` are accepted but have nothing
+ * to inject into. A host that wants cookie injection builds its own provider
+ * with `createChromeLiveAdapter({ cookieSource })` below instead (this
+ * package takes no position on where cookies come from or who may grant
+ * them — see `ChromeLiveProviderConfig.cookieSource`'s own doc).
  */
 export const chromeLiveProvider: ChromeLiveProvider = chromeLive
 
@@ -38,15 +47,17 @@ export function chromeLiveLaunchOptionsFrom(opts: BrowserAdapterStartOptions): C
     ...(opts.port !== undefined ? { port: opts.port } : {}),
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.profile === "personal" ? { attachIntent: true } : {}),
+    ...(opts.chromeProfile !== undefined ? { chromeProfile: opts.chromeProfile } : {}),
+    ...(opts.domains !== undefined ? { domains: opts.domains } : {}),
   }
 }
 
-async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<BrowserAdapterInstance> {
+async function ensureChromeLive(provider: ChromeLiveProvider, opts: BrowserAdapterStartOptions): Promise<BrowserAdapterInstance> {
   if (opts.location === "cloud") {
     throw new Error("[chrome-live] chrome-live attaches to a Chrome on this machine; it has no cloud location")
   }
   const launchOpts = chromeLiveLaunchOptionsFrom(opts)
-  const instance = await chromeLiveProvider.launch(launchOpts, opts.log ? { log: opts.log } : {})
+  const instance = await provider.launch(launchOpts, opts.log ? { log: opts.log } : {})
   const cdp = instance.endpoints.cdp
   if (!cdp) throw new Error("[chrome-live] the provider returned no CDP endpoint")
   const url = new URL(cdp)
@@ -104,5 +115,21 @@ async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<Brows
 
 export const chromeLiveAdapter: BrowserAdapterHandle = {
   ...toAdapterHandle(chromeLiveProvider, CHROME_LIVE_META),
-  ensure: ensureChromeLive,
+  ensure: opts => ensureChromeLive(chromeLiveProvider, opts),
+}
+
+/**
+ * Build a `chrome-live` adapter handle over a CUSTOM provider config — the
+ * injection point for a host that wants cookie injection (`cookieSource`) or
+ * any other `ChromeLiveProviderConfig` knob without touching the default
+ * `chromeLiveAdapter` singleton above. This package supplies no `cookieSource`
+ * itself and takes no position on where one would come from (grants, consent,
+ * approvals, …) — that is entirely the caller's `config`.
+ */
+export function createChromeLiveAdapter(config: ChromeLiveProviderConfig = {}): BrowserAdapterHandle {
+  const provider = createChromeLiveProvider(config)
+  return {
+    ...toAdapterHandle(provider, CHROME_LIVE_META),
+    ensure: opts => ensureChromeLive(provider, opts),
+  }
 }

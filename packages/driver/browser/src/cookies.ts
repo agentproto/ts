@@ -26,4 +26,8 @@ export function cookiesFromSessionPayload(payload: unknown): BrowserCookie[] {
 export type BrowserCookieSource = (request: {
   providerId: string
   profile: string
+  /** Narrow the result to these domains (and their subdomains) on top of whatever the source already scopes to. Optional, additive. */
+  domains?: readonly string[]
+  /** The real Chrome profile directory (`Default`, `Profile 1`, …) the cookies should trace back to, when the source can tell. */
+  chromeProfile?: string
 }) => Promise<readonly BrowserCookie[]> | readonly BrowserCookie[]

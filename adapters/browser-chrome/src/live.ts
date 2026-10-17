@@ -1,8 +1,10 @@
 import { connect as tcpConnect } from "node:net"
 import {
+  cookiesFromSessionPayload,
   defineBrowser,
   type BrowserAttachOptions,
   type BrowserCookie,
+  type BrowserCookieSource,
   type BrowserDriver,
   type BrowserDriverCapabilities,
   type BrowserHealth,
@@ -21,8 +23,8 @@ import {
 import { ToolError } from "@agentproto/tool"
 import { z } from "zod"
 import { CdpConnection } from "./cdp.js"
-import { ChromeCdpDriver, chromeDriverCapabilities } from "./driver.js"
-import { launchDetachedChrome, type LaunchedChrome, type LiveLaunchDeps } from "./live-launch.js"
+import { ChromeCdpDriver, chromeDriverCapabilities, toCdpCookieParams } from "./driver.js"
+import { CHROME_LIVE_LAUNCH_PROFILE, launchDetachedChrome, type LaunchedChrome, type LiveLaunchDeps } from "./live-launch.js"
 
 /**
  * `chrome-live`: either a DEDICATED, headful Chrome this provider launches
@@ -172,6 +174,15 @@ export interface ChromeLiveProviderConfig {
   preferDedicated?: boolean
   /** Seams for the auto-launched Chrome (binary, spawn, free port, `/json/version`, dir, timeout). */
   launchDeps?: LiveLaunchDeps
+  /**
+   * Supplies cookies injected through `Network.setCookies` into the DEDICATED
+   * Chrome this provider auto-launches — never the user's own, attached-to
+   * Chrome (that path stays read-only, see `ChromeLiveDriver.setCookies`).
+   * Called on every `attach()` of a dedicated instance; purely a seam — this
+   * package has no opinion on where cookies come from or who may grant them.
+   * `@agentproto/browser-profiles` builds a consent-gated implementation.
+   */
+  cookieSource?: BrowserCookieSource
 }
 
 export interface ChromeLiveLaunchOptions extends BrowserLaunchOptions {
@@ -190,6 +201,26 @@ export interface ChromeLiveLaunchOptions extends BrowserLaunchOptions {
    * Chrome (gated by `autoLaunch`, same as a pinned endpoint's fallback).
    */
   attachIntent?: boolean
+  /**
+   * The real Chrome profile directory (`Default`, `Profile 1`, …) the
+   * injected cookies should trace back to — forwarded verbatim to
+   * `config.cookieSource`'s `chromeProfile` field. Purely a passthrough:
+   * this package does not read or validate it itself.
+   */
+  chromeProfile?: string
+  /**
+   * Narrow which domains' cookies get injected into the dedicated Chrome on
+   * top of whatever `config.cookieSource` already scopes to — an AND, never
+   * a widening. Omit to take everything the source returns.
+   */
+  domains?: readonly string[]
+}
+
+/** True when `host` is `domain` or one of its subdomains (same rule AIP-63 grants use). */
+function cookieDomainMatches(host: string, domain: string): boolean {
+  const h = host.replace(/^\./, "").toLowerCase()
+  const d = domain.toLowerCase()
+  return h === d || h.endsWith(`.${d}`)
 }
 
 /** True when an endpoint was pinned (launch opts, provider config, or `CHROME_LIVE_*` env) — a literal ask to use THAT endpoint. */
@@ -337,14 +368,35 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     sessionId: string,
     private readonly wsUrl: string,
     private readonly onClosed: (targetId: string) => void,
+    /**
+     * Set once, at construction, from `entry.ownedChrome !== undefined` —
+     * never from anything a caller passes later. This is the ONE thing
+     * `setCookies` below trusts to tell the DEDICATED, zero-consent Chrome
+     * this provider itself launched apart from the user's own, attached-to
+     * Chrome: there is no public setter, and no other method ever flips it.
+     */
+    private readonly dedicated: boolean = false,
   ) {
     super(conn, targetId, sessionId)
   }
 
-  /** Cookies are read-only here: nothing is written into the user's real profile. */
+  /**
+   * Writable ONLY on the dedicated Chrome this provider itself auto-launched
+   * (`dedicated` — set once at construction, never by a caller). On an
+   * attach to the user's own Chrome it stays exactly what it always was:
+   * refused, nothing written into their real profile. Note this goes
+   * straight to `this.conn.send`, not `this.send` — the `send` override's
+   * `isRefusedLiveCommand` guard below exists to stop an AGENT writing
+   * cookies through `cdp_send` on ANY chrome-live driver; it would refuse
+   * `Network.setCookies` here too if routed through it, dedicated or not.
+   * Values are never logged, only a count (by `attach()`'s caller).
+   */
   override async setCookies(cookies: readonly BrowserCookie[]): Promise<void> {
     if (cookies.length === 0) return
-    throw new ToolError({ code: "unauthorised", message: "[chrome-live] cookies are read-only on the user's own Chrome profile" })
+    if (!this.dedicated) {
+      throw new ToolError({ code: "unauthorised", message: "[chrome-live] cookies are read-only on the user's own Chrome profile" })
+    }
+    await this.conn.send<void>("Network.setCookies", { cookies: toCdpCookieParams(cookies) }, this.sessionId)
   }
 
   override async send<TResult = unknown, TParams = unknown>(command: CDPCommand<TParams>): Promise<TResult> {
@@ -768,8 +820,14 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     throw new Error("[chrome-live] the new tab kept opening outside the agent window (another Chrome window has focus); it was closed again, retry")
   }
 
-  function makeInstance(entry: LiveEntry, wasAlreadyRunning: boolean): ChromeLiveInstance {
+  function makeInstance(entry: LiveEntry, wasAlreadyRunning: boolean, launchOpts: ChromeLiveLaunchOptions = {}): ChromeLiveInstance {
     const mine = new Set<ChromeLiveDriver>()
+    // Captured once per `makeInstance` call (i.e. per `start_browser`), not
+    // mutated on a hot-reused entry — a later caller that asks for different
+    // domains/chromeProfile gets its OWN scoped view of the shared dedicated
+    // Chrome, without touching what an earlier caller already injected.
+    const cookieDomains = launchOpts.domains
+    const cookieChromeProfile = launchOpts.chromeProfile
 
     /** The same "named targetId, else the first active agent tab" anchor rule as `screenshotOwnedTarget`/`domOwnedTarget`. */
     function requireOwnedDriver(targetId: string | undefined, verb: string): ChromeLiveDriver {
@@ -911,20 +969,56 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       async attach(attachOpts?: BrowserAttachOptions): Promise<BrowserDriver> {
         if (entry.state === "stopped") throw new Error(`[chrome-live] instance ${instance.id} is stopped`)
         if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        // Injection only ever applies to the DEDICATED Chrome this provider
+        // auto-launched (`entry.ownedChrome` set) — an attach-to-the-user's-
+        // own-Chrome entry has none, so it keeps the read-only behaviour
+        // below unconditionally, same as before this option existed.
+        const dedicated = entry.ownedChrome !== undefined
         const offered = attachOpts?.sessionPayload !== undefined
-        if (offered) entry.log?.("[chrome-live] ignoring the session payload: cookies are read-only on your own Chrome profile")
+        if (offered && !dedicated) entry.log?.("[chrome-live] ignoring the session payload: cookies are read-only on your own Chrome profile")
         const run = entry.lock.then(async () => {
           const url = attachOpts?.initialUrl ?? "about:blank"
           const targetId = await createTab(entry, url)
           let driver: ChromeLiveDriver | undefined
           try {
             const { sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true })
-            driver = new ChromeLiveDriver(entry.conn, targetId, sessionId, entry.url, (id) => {
-              forget(entry, id)
-              entry.drivers.delete(driver as ChromeLiveDriver)
-              mine.delete(driver as ChromeLiveDriver)
-            })
+            driver = new ChromeLiveDriver(
+              entry.conn,
+              targetId,
+              sessionId,
+              entry.url,
+              (id) => {
+                forget(entry, id)
+                entry.drivers.delete(driver as ChromeLiveDriver)
+                mine.delete(driver as ChromeLiveDriver)
+              },
+              dedicated,
+            )
             await driver.bootstrap()
+            if (dedicated) {
+              // `config.cookieSource` may be unset (e.g. the default
+              // `chromeLiveAdapter` singleton) — that's zero source cookies,
+              // NOT a reason to also drop a session payload the caller
+              // explicitly offered; a dedicated instance honors one either way.
+              const sourced = config.cookieSource
+                ? await config.cookieSource({
+                    providerId: CHROME_LIVE_PROVIDER_ID,
+                    profile: CHROME_LIVE_LAUNCH_PROFILE,
+                    ...(cookieChromeProfile !== undefined ? { chromeProfile: cookieChromeProfile } : {}),
+                    ...(cookieDomains !== undefined ? { domains: cookieDomains } : {}),
+                  })
+                : []
+              const combined = [...sourced, ...cookiesFromSessionPayload(attachOpts?.sessionPayload)]
+              // Belt and suspenders: narrow to `cookieDomains` ourselves too
+              // (regardless of whether the source already did), and apply the
+              // SAME ceiling to the session payload — `domains` is a hard cap
+              // on what reaches the dedicated Chrome, not just on the source.
+              const granted = cookieDomains ? combined.filter((c) => cookieDomains.some((d) => cookieDomainMatches(c.domain, d))) : combined
+              if (granted.length > 0) {
+                entry.log?.(`[chrome-live] injecting ${granted.length} granted cookie(s) via Network.setCookies (dedicated profile)`)
+                await driver.setCookies(granted)
+              }
+            }
             if (attachOpts?.initialUrl) driver.target.url = attachOpts.initialUrl
           } catch (err) {
             if (driver) await driver.close()
@@ -998,18 +1092,18 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     }
   }
 
-  async function connectEntry(url: string, ctx: BrowserHostContext, owned?: LaunchedChrome): Promise<ChromeLiveInstance> {
+  async function connectEntry(url: string, ctx: BrowserHostContext, owned?: LaunchedChrome, launchOpts: ChromeLiveLaunchOptions = {}): Promise<ChromeLiveInstance> {
     const live = entries.get(url)
-    if (live && live.state === "open" && !live.conn.closed) return makeInstance(live, true)
+    if (live && live.state === "open" && !live.conn.closed) return makeInstance(live, true, launchOpts)
     const pending = connecting.get(url)
-    if (pending) return makeInstance(await pending, true)
+    if (pending) return makeInstance(await pending, true, launchOpts)
 
     const promise = open(url, ctx, owned)
     connecting.set(url, promise)
     try {
       const entry = await promise
       entries.set(url, entry)
-      entry.owner = makeInstance(entry, false)
+      entry.owner = makeInstance(entry, false, launchOpts)
       return entry.owner
     } finally {
       connecting.delete(url)
@@ -1017,13 +1111,13 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   }
 
   /** Reuse the dedicated Chrome this provider already launched (hot), else launch a fresh one and connect to it. */
-  async function launchDedicated(ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
+  async function launchDedicated(ctx: BrowserHostContext, launchOpts: ChromeLiveLaunchOptions = {}): Promise<ChromeLiveInstance> {
     const existing = autoEntry
-    if (existing && existing.state === "open" && !existing.conn.closed) return makeInstance(existing, true)
+    if (existing && existing.state === "open" && !existing.conn.closed) return makeInstance(existing, true, launchOpts)
     ctx.log?.(`[chrome-live] launching the dedicated Chrome`)
     const launched = await launchDetachedChrome({ ...config.launchDeps, ...(ctx.log ? { log: ctx.log } : {}) })
     try {
-      const instance = await connectEntry(launched.wsUrl, ctx, launched)
+      const instance = await connectEntry(launched.wsUrl, ctx, launched, launchOpts)
       autoEntry = entries.get(launched.wsUrl)
       return instance
     } catch (connectErr) {
@@ -1034,14 +1128,14 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   }
 
   async function launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
-    if (!wantsAttachFirst(config, opts)) return await launchDedicated(ctx)
+    if (!wantsAttachFirst(config, opts)) return await launchDedicated(ctx, opts)
     try {
       return await connectEntry(await resolveUrl(opts), ctx)
     } catch (err) {
       if (!autoLaunchEnabled(opts) || !isAttachUnavailable(err)) throw err
       // The toggle is not attachable: fall back to the dedicated Chrome.
       ctx.log?.(`[chrome-live] no attachable Chrome at the configured endpoint: auto-launching a dedicated instance`)
-      return await launchDedicated(ctx)
+      return await launchDedicated(ctx, opts)
     }
   }
 

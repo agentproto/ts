@@ -1,10 +1,10 @@
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import { BROWSER_REMOTE_DEBUGGING_OFF_CODE, chromeLive } from "@agentproto/adapter-browser-chrome"
 import { browserAdapters, getBrowserAdapter } from "../index.js"
-import { chromeLiveLaunchOptionsFrom, chromeLiveProvider } from "../adapters/chrome-live.js"
+import { chromeLiveLaunchOptionsFrom, chromeLiveProvider, createChromeLiveAdapter } from "../adapters/chrome-live.js"
 
 const servers: Server[] = []
 
@@ -105,6 +105,23 @@ describe("chrome-live facade", () => {
   })
 })
 
+describe("createChromeLiveAdapter (injectable provider config)", () => {
+  it("builds its own provider, independent of the default chromeLiveAdapter singleton", () => {
+    const handle = createChromeLiveAdapter()
+    expect(handle.id).toBe("chrome-live")
+    expect(handle).not.toBe(chromeLiveProvider)
+  })
+
+  it("never calls a configured cookieSource on a bare attach (no tab was opened to inject into)", async () => {
+    const chrome = await toggleChrome()
+    const cookieSource = vi.fn().mockReturnValue([])
+    const handle = createChromeLiveAdapter({ cookieSource })
+    const instance = await handle.ensure({ port: chrome.port, env: {} })
+    expect(cookieSource).not.toHaveBeenCalled()
+    await instance.stop()
+  })
+})
+
 describe("chromeLiveLaunchOptionsFrom (pure mapping, no network)", () => {
   it("profile: \"personal\" maps to attachIntent: true", () => {
     expect(chromeLiveLaunchOptionsFrom({ profile: "personal" })).toMatchObject({ attachIntent: true })
@@ -124,5 +141,18 @@ describe("chromeLiveLaunchOptionsFrom (pure mapping, no network)", () => {
       env: { FOO: "bar" },
       attachIntent: true,
     })
+  })
+
+  it("forwards chromeProfile and domains verbatim — pure passthrough, no validation", () => {
+    expect(chromeLiveLaunchOptionsFrom({ chromeProfile: "Profile 3", domains: ["example.com", "sub.example.org"] })).toEqual({
+      chromeProfile: "Profile 3",
+      domains: ["example.com", "sub.example.org"],
+    })
+  })
+
+  it("omits chromeProfile and domains when absent from the start options", () => {
+    const opts = chromeLiveLaunchOptionsFrom({})
+    expect(opts).not.toHaveProperty("chromeProfile")
+    expect(opts).not.toHaveProperty("domains")
   })
 })

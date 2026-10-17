@@ -114,6 +114,10 @@ interface BrowserAdapterLike {
     binPath?: string
     /** chrome-live only: "dedicated" (default) or "personal" (attachIntent). Every other adapter ignores this. */
     profile?: "dedicated" | "personal"
+    /** chrome-live only: the real Chrome profile directory a configured cookie source should trace injected cookies back to. Every other adapter ignores this. */
+    chromeProfile?: string
+    /** chrome-live only: narrows which domains' cookies a configured cookie source injects. Every other adapter ignores this. */
+    domains?: readonly string[]
   }): Promise<BrowserInstanceLike>
 }
 
@@ -379,6 +383,22 @@ export function registerBrowserTools(
           "Override the binary path used for the local spawn. " +
             "When unset, the adapter resolves its own default binary."
         ),
+      chromeProfile: z
+        .string()
+        .optional()
+        .describe(
+          "chrome-live only; every other adapter ignores this. The real Chrome profile directory " +
+            "(e.g. 'Default', 'Profile 1') a configured cookie source should trace injected cookies " +
+            "back to. Has no effect unless the running daemon configured chrome-live with a cookie source."
+        ),
+      domains: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          "chrome-live only; every other adapter ignores this. Narrows which domains' cookies a " +
+            "configured cookie source injects into the dedicated Chrome — never a widening beyond " +
+            "what the source already grants. Has no effect unless a cookie source is configured."
+        ),
     },
     async input => {
       if (!resolveBrowserAdapter) {
@@ -419,6 +439,8 @@ export function registerBrowserTools(
           baseUrl: input.baseUrl,
           binPath: input.binPath,
           profile: input.profile,
+          chromeProfile: input.chromeProfile,
+          domains: input.domains,
           // Non-blocking cold start: if the freshly spawned service isn't
           // healthy within this bounded window, register it as `starting`
           // and let health converge in the background instead of blocking
