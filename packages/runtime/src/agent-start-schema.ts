@@ -122,12 +122,17 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Workspace slug from `agentproto workspace list`, resolved to a path. " +
+        "With `sandbox`, its remote is cloned into the box. " +
         "Omit to use `cwd` or the active workspace."
     ),
   cwd: z
     .string()
     .optional()
-    .describe("Absolute path to spawn the agent in. Wins over `workspaceSlug` when both are set."),
+    .describe(
+      "Absolute path to spawn the agent in. Wins over `workspaceSlug`, except with `sandbox` + " +
+        "`workspaceSlug`: then it is a path inside the box. " +
+        help("cwd")
+    ),
   prompt: promptInputSchema
     .optional()
     .describe(

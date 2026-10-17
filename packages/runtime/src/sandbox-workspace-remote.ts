@@ -17,6 +17,7 @@
  * open pull requests with it.
  */
 
+import { posix } from "node:path"
 import type { SandboxExecOpts, SandboxExecResult, SandboxSpec } from "@agentproto/sandbox"
 import { DEFAULT_REMOTE_BRANCH, validateRemoteBranch, type WorkspaceRemote } from "./workspaces-config.js"
 
@@ -280,6 +281,51 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
     })
   }
   return { homeDir: home, checkoutDir, ...(branch !== undefined ? { branch } : {}), baseRef, authenticated, steps }
+}
+
+/** Host-only absolute-path shapes that can never resolve inside a remote
+ *  sandbox's own (Linux) filesystem: macOS's `/Volumes/…` and `/Users/…`, and
+ *  a Windows drive letter. Deliberately narrow — `/home/user` or `/workspace`
+ *  might be exactly the box path the caller meant. */
+const HOST_ONLY_PATH_PATTERNS: readonly RegExp[] = [/^\/Volumes\//, /^\/Users\//, /^[A-Za-z]:[\\/]/]
+
+export function looksLikeHostOnlyPath(p: string): boolean {
+  return HOST_ONLY_PATH_PATTERNS.some(re => re.test(p))
+}
+
+export interface BoxCwdResolution {
+  /** Where the session should start inside the box. */
+  cwd: string
+  /** Set when the requested cwd was ignored; says why and where it landed. */
+  warning?: string
+}
+
+/**
+ * Interpret an `agent_start.cwd` for a sandbox spawn that also named a
+ * workspace: it is a path INSIDE the box. A relative path is resolved against
+ * `base` (the checkout); an absolute one must lie under the box `homeDir`.
+ * The home dir itself is the provider's default and carries no preference, so
+ * it resolves to `base`. Anything else — a host path (`/Users/…`), a path
+ * outside the box home, a `..` escape — is ignored with a warning and the
+ * session lands in `base`.
+ */
+export function resolveBoxCwdRequest(req: { requested: string; base: string; homeDir: string }): BoxCwdResolution {
+  const home = posix.normalize(req.homeDir.replace(/\/+$/, "") || "/")
+  const ignore = (why: string): BoxCwdResolution => ({
+    cwd: req.base,
+    warning: `agent_start: cwd "${req.requested}" ignored — ${why}; the session starts in ${req.base}.`,
+  })
+  if (looksLikeHostOnlyPath(req.requested)) {
+    return ignore(
+      `it looks like a HOST path and the sandbox has its own filesystem (pass a path relative to the checkout, or absolute under ${home})`,
+    )
+  }
+  const resolved = posix.resolve(req.base, req.requested)
+  if (resolved === home) return { cwd: req.base }
+  if (!resolved.startsWith(home === "/" ? "/" : `${home}/`)) {
+    return ignore(`it is outside the box home ${home}`)
+  }
+  return { cwd: resolved }
 }
 
 export type SandboxExec = (opts: SandboxExecOpts) => Promise<SandboxExecResult>
