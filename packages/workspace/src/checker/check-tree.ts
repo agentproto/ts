@@ -98,6 +98,10 @@ function walkForManifests(root: string): string[] {
   return found
 }
 
+// Same traversal exclusions as `walkForManifests` (SKIP_DIRS + `.apps*`) —
+// an app's own data directory is reviewed through AIP-53's install/apply
+// path, not this tree checker, and scanning it here was flagged as
+// surfacing noisy findings unrelated to the WORKSPACE.md tree itself.
 function walkAllFiles(root: string): string[] {
   const found: string[] = []
   const stack = [root]
@@ -112,7 +116,7 @@ function walkAllFiles(root: string): string[] {
     for (const entry of entries) {
       const full = join(dir, entry.name)
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) stack.push(full)
+        if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".apps")) stack.push(full)
       } else if (entry.isFile()) {
         found.push(full)
       }
@@ -201,15 +205,20 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
   // Resolve implicit parent: nearest ancestor directory that is ALSO a
   // collected v2 node (shorter manifestPaths were inserted first, so
   // byDir is already populated top-down by the time we reach a child).
+  // Bounded by `isDescendant(rootDir, cursor)` rather than a string-length
+  // comparison — length is not a reliable proxy for "under root" (a
+  // trailing slash or an unnormalized `rootDir` breaks it); `relative()`
+  // is.
   for (const [dir, node] of byDir) {
     let cursor = dirname(dir)
-    while (cursor.length >= rootDir.length) {
+    while (isDescendant(rootDir, cursor)) {
       if (byDir.has(cursor)) {
         node.parentDir = cursor
         break
       }
-      if (cursor === dirname(cursor)) break
-      cursor = dirname(cursor)
+      const next = dirname(cursor)
+      if (next === cursor) break
+      cursor = next
     }
   }
 

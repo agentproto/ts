@@ -2,7 +2,9 @@
  * AIP-34 TYPES.md — the node-type registry a `workspace/v2` tree reads
  * once, at the root, to know which `type` values are legal and what
  * each one implies (allowed parents, default wall, required sibling
- * files). Mirrors `resources/aip-34/draft/TYPES.schema.json`.
+ * files). Mirrors `specs/resources/aip-34/draft/TYPES.schema.json` in
+ * agentproto/agentproto (agentproto/agentproto#69, not yet merged — not
+ * vendored into this repo's own `specs/resources/` yet).
  */
 
 import matter from "gray-matter"

@@ -123,7 +123,16 @@ async function runCheck(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto workspace check: "${dir}" doesn't exist.\n`)
     return 2
   }
-  const maxReportAgeHours = values["max-report-age-hours"] ? Number(values["max-report-age-hours"]) : undefined
+  let maxReportAgeHours: number | undefined
+  if (values["max-report-age-hours"] !== undefined) {
+    maxReportAgeHours = Number(values["max-report-age-hours"])
+    if (!Number.isFinite(maxReportAgeHours) || maxReportAgeHours <= 0) {
+      process.stderr.write(
+        `agentproto workspace check: --max-report-age-hours must be a positive number, got "${values["max-report-age-hours"]}".\n`,
+      )
+      return 2
+    }
+  }
   const report = checkWorkspaceTree(dir, maxReportAgeHours !== undefined ? { maxReportAgeHours } : {})
   if (values.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + "\n")

@@ -1,6 +1,8 @@
 /**
  * AIP-34 agentproto.lock — plain YAML (no frontmatter, no body) at the
- * tree root. Mirrors `resources/aip-34/draft/LOCK.schema.json`.
+ * tree root. Mirrors `specs/resources/aip-34/draft/LOCK.schema.json` in
+ * agentproto/agentproto (agentproto/agentproto#69, not yet merged — not
+ * vendored into this repo's own `specs/resources/` yet).
  */
 
 import { parse, stringify } from "yaml"

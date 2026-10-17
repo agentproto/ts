@@ -1,10 +1,11 @@
 /**
  * AIP-34 WORKSPACE.md v2 frontmatter zod schema.
  *
- * Hand-authored to mirror `resources/aip-34/draft/WORKSPACE.v2.schema.json`
- * one-for-one (this package predates `workspace/v2` being wired into
- * scaffold-aip's registry, so there's no generator pass yet — see
- * `../CHANGESET-NOTE.md` / the PR description for the follow-up).
+ * Hand-authored to mirror `specs/resources/aip-34/draft/WORKSPACE.v2.schema.json`
+ * in agentproto/agentproto (proposed in agentproto/agentproto#69, not yet
+ * merged — this package predates `workspace/v2` being wired into
+ * scaffold-aip's registry, so there's no generator pass yet; follow-up once
+ * that spec PR lands and `scaffold-aip` learns the doctype).
  * Imported by `define-workspace-v2.ts` (TS path) and `manifest/v2.ts`
  * (.md path) so every field-level constraint runs in both authoring
  * paths from this ONE source of truth, same posture as `schema.ts` for

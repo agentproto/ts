@@ -1,6 +1,8 @@
 /**
  * AIP-34 EXPORT.md — the only file an ancestor of a `sealed`/`hard`
- * node may read from it. Mirrors `resources/aip-34/draft/EXPORT.schema.json`.
+ * node may read from it. Mirrors `specs/resources/aip-34/draft/EXPORT.schema.json`
+ * in agentproto/agentproto (agentproto/agentproto#69, not yet merged — not
+ * vendored into this repo's own `specs/resources/` yet).
  * Frontmatter is a thin pointer (from, generated_at); the body is free
  * prose and is NEVER validated — that's the point of the format.
  */
