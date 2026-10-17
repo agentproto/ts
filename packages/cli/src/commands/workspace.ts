@@ -9,10 +9,15 @@
  *   remote set <slug> --url <https-url> [--branch <b>] [--credential-ref <ref>] [--token-stdin]
  *   remote show <slug> [--json]                   print the workspace's git remote
  *   remote unset <slug>                           drop the git remote
+ *   check <dir> [--json] [--max-report-age-hours <n>]   AIP-34 workspace/v2 tree verifier
  *
- * Reads/writes `~/.agentproto/workspaces.json` via @agentproto/runtime.
- * Pure CLI shell — no daemon needed; the daemon picks up the file on
- * its next read (boot for now, hot reload TBD).
+ * `add`/`list`/`remove`/`use`/`remote` read/write `~/.agentproto/workspaces.json`
+ * via @agentproto/runtime — the daemon's OWN workspace registry (a folder the
+ * daemon can spawn agent-cli sessions against). `check` is unrelated state: it
+ * validates an AIP-34 `workspace/v2` TREE on disk (WORKSPACE.md nodes, TYPES.md,
+ * includes/exports, secrets, budgets) via @agentproto/workspace. Same noun,
+ * two different "workspace" concepts that are expected to converge once the
+ * daemon's registry buckets become tree nodes (see the AIP-34 v2 spec).
  */
 import { parseArgs } from "node:util"
 import { resolve, basename } from "node:path"
@@ -33,6 +38,7 @@ import {
   type WorkspaceEntry,
   type WorkspaceRemote,
 } from "@agentproto/runtime/workspaces-config"
+import { checkWorkspaceTree, type CheckLevel } from "@agentproto/workspace/checker"
 import { readSecretFromStdin } from "./auth.js"
 
 const USAGE = `agentproto workspace — manage local workspaces
@@ -46,6 +52,12 @@ Usage:
                                  [--credential-ref <ref> | --token-stdin]
   agentproto workspace remote show <slug> [--json]
   agentproto workspace remote unset <slug>
+  agentproto workspace check <dir> [--json] [--max-report-age-hours <n>]
+                                 verify an AIP-34 workspace/v2 tree:
+                                 node types vs TYPES.md, wall floors,
+                                 includes/exports consent, secret grants,
+                                 budget aggregation, report freshness,
+                                 no literal secret values.
   agentproto workspace --help
 
 A workspace "remote" is the off-machine clone source a sandbox spawn
@@ -79,12 +91,59 @@ export async function runWorkspace(args: readonly string[]): Promise<number> {
       return runUse(rest)
     case "remote":
       return runRemote(rest)
+    case "check":
+      return runCheck(rest)
     default:
       process.stderr.write(
         `agentproto workspace: unknown subcommand '${sub}'\n\n${USAGE}`
       )
       return 2
   }
+}
+
+const LEVEL_MARKER: Record<CheckLevel, string> = { error: "✗", warning: "!", info: "·" }
+
+async function runCheck(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+      "max-report-age-hours": { type: "string" },
+    },
+  })
+  const rawDir = positionals[0]
+  if (!rawDir) {
+    process.stderr.write("agentproto workspace check: missing <dir>. Try: agentproto workspace check ~/agentproto\n")
+    return 2
+  }
+  const dir = resolve(rawDir.replace(/^~/, process.env.HOME ?? "~"))
+  if (!existsSync(dir)) {
+    process.stderr.write(`agentproto workspace check: "${dir}" doesn't exist.\n`)
+    return 2
+  }
+  const maxReportAgeHours = values["max-report-age-hours"] ? Number(values["max-report-age-hours"]) : undefined
+  const report = checkWorkspaceTree(dir, maxReportAgeHours !== undefined ? { maxReportAgeHours } : {})
+  if (values.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n")
+    return report.ok ? 0 : 1
+  }
+  process.stdout.write(`${report.ok ? "✓" : "✗"} ${report.root}  (${report.nodeCount} node${report.nodeCount === 1 ? "" : "s"})\n\n`)
+  for (const node of report.nodes) {
+    const budget = node.effectiveBudgetUsdPerMonth !== undefined ? `  budget≤$${node.effectiveBudgetUsdPerMonth}/mo` : ""
+    process.stdout.write(`  ${node.id}  [${node.type}, wall:${node.wall}]${node.parentId ? `  ← ${node.parentId}` : ""}${budget}\n`)
+  }
+  if (report.findings.length > 0) {
+    process.stdout.write("\n")
+    for (const f of report.findings) {
+      process.stdout.write(`${LEVEL_MARKER[f.level]} [${f.level}] ${f.nodeId ? `${f.nodeId}: ` : ""}${f.message}\n    ${f.path}\n`)
+    }
+  }
+  const errors = report.findings.filter((f) => f.level === "error").length
+  const warnings = report.findings.filter((f) => f.level === "warning").length
+  process.stdout.write(`\n${errors} error${errors === 1 ? "" : "s"}, ${warnings} warning${warnings === 1 ? "" : "s"}\n`)
+  return report.ok ? 0 : 1
 }
 
 async function runAdd(args: readonly string[]): Promise<number> {

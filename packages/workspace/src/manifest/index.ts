@@ -51,3 +51,12 @@ export function workspaceFromManifest(manifest: WorkspaceManifest): WorkspaceHan
   // a literal config doesn't carry yet).
   return defineWorkspace(manifest.frontmatter as unknown as WorkspaceDefinition)
 }
+
+export {
+  workspaceV2FrontmatterSchema,
+  parseWorkspaceV2Manifest,
+  workspaceV2FromManifest,
+  writeWorkspaceV2Manifest,
+  type WorkspaceV2Frontmatter,
+  type WorkspaceV2Manifest,
+} from "./v2.js"

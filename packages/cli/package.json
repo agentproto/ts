@@ -95,6 +95,7 @@
     "@agentproto/sandbox-e2b": "workspace:*",
     "@agentproto/secrets": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",
+    "@agentproto/workspace": "workspace:*",
     "@agentproto/worktree": "workspace:*",
     "@ast-grep/napi": "^0.45.3",
     "@clack/prompts": "^1.8.1",

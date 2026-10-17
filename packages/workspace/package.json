@@ -35,6 +35,11 @@
       "import": "./dist/manifest/index.mjs",
       "default": "./dist/manifest/index.mjs"
     },
+    "./checker": {
+      "types": "./dist/checker/index.d.ts",
+      "import": "./dist/checker/index.mjs",
+      "default": "./dist/checker/index.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -56,6 +61,7 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
+    "yaml": "^2.9.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
