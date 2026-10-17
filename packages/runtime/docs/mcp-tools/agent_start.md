@@ -387,9 +387,20 @@ the scheduled move actually runs.
 
 ## turnRetry
 
-Opt-in retry of a turn that failed for a TRANSIENT provider reason. Off by
-default: without it, a turn that hits a 429 or a 5xx just stops, as before.
-When set, the daemon waits an exponential backoff and then sends the SAME
+Graceful retry of a turn that failed for a TRANSIENT provider reason. ON by
+default for executor agents and for sessions that run in a `sandbox` box: a
+spawn that names no `turnRetry` gets the default policy (retry on
+`rate-limit`, `upstream-5xx` and `no-output-stall`, `maxRetries: 6`, default
+backoff). A free OpenCode current model also rotates by default: `rotateOn`
+covers all three classes, and `rotate` lists the other free ids only (the
+"free stays free" rule), so a throttled free model moves onto another free
+model instead of banging on the same one. A paid current model never rotates
+by default. Interactive supervisor sessions keep the old opt-in behaviour:
+without `turnRetry`, a turn that hits a 429 or a 5xx just stops, as before.
+
+An explicit `turnRetry` wins over the default. Setting it to `null`, or to an
+object whose `on` list is empty, disables retrying for the session. When set,
+the daemon waits an exponential backoff and then sends the SAME
 live session a short continuation prompt:
 
 > Continue where you stopped; the previous turn failed with: <error>
@@ -494,7 +505,8 @@ Cooldowns are daemon-wide: a model that rate-limits one session is skipped by
 rotation for every session until the cooldown expires. A retry-after hint wins
 over `cooldownMs`. They are read-only via `daemon_health` (`modelCooldowns`)
 and `GET /health`, and are in-memory (a daemon restart clears them). They are
-learned only from sessions that opted into `turnRetry`.
+learned from every session whose policy rotates, including executor sessions
+that use the default policy.
 
 A target is skipped, with the reason in the notice, when it:
 

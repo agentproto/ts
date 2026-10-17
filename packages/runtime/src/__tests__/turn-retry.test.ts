@@ -121,7 +121,8 @@ describe("parseTurnRetryPolicy", () => {
   })
   it("rejects invalid input whole", () => {
     expect(parseTurnRetryPolicy("crashed")).toBeUndefined()
-    expect(parseTurnRetryPolicy({ on: [] })).toBeUndefined()
+    // An empty `on` is the explicit opt-out (kept, not invalid)...
+    expect(parseTurnRetryPolicy({ on: [] })).toMatchObject({ on: [] })
     expect(parseTurnRetryPolicy({ on: ["rate-limit"], maxRetries: -1 })).toBeUndefined()
     expect(parseTurnRetryPolicy({ on: ["rate-limit"], maxMigrations: -1 })).toBeUndefined()
     expect(parseTurnRetryPolicy("{bad")).toBeUndefined()
@@ -567,7 +568,19 @@ function stubHarness(opts: {
       error,
       ts: new Date().toISOString(),
     })
-  return { row, events, notices, enqueued, controller, turnEnd, phases: () => events.map(e => e.phase) }
+  const emit = (ev: Parameters<typeof sessionEvents.emit>[0]) => sessionEvents.emit(ev)
+  return { row, events, notices, enqueued, controller, turnEnd, emit, phases: () => events.map(e => e.phase) }
+}
+
+/** Emit a clean turn-end (a manual prompt completed) through the bus. */
+function emitCleanTurnEnd(h: ReturnType<typeof stubHarness>): void {
+  h.emit({
+    type: "session:turn-end",
+    sessionId: h.row.id,
+    awaitingInput: false,
+    reason: "completed",
+    ts: new Date().toISOString(),
+  })
 }
 
 describe("turn retry — admission decides the `sent` transition", () => {
@@ -633,6 +646,49 @@ describe("turn retry — admission decides the `sent` transition", () => {
     )
     h.controller.dispose()
   })
+
+  describe("a manual prompt sent during a pending retry backoff", () => {
+    it("a newer turn-end cancels the pending retry, and a clean one resets the counter", async () => {
+      const h = stubHarness({ enqueuePrompt: async () => ({}), row: { turnsCompleted: 0 } })
+      h.turnEnd("429 status code")
+      await until(() => h.phases().includes("scheduled"), "retry scheduled")
+
+      // The user typed "go on" and the turn ran — its turn-end (clean)
+      // supersedes the pending retry: the timer is cancelled, no prompt is
+      // enqueued underneath the user's, and the booked attempt (only booked
+      // on `sent`, never here) is not double-counted: the counter is REset.
+      h.row.turnsCompleted = 1
+      emitCleanTurnEnd(h)
+      await until(() => h.phases().includes("cancelled"), "pending retry cancelled")
+      expect(h.enqueued).toHaveLength(0)
+      expect(h.row.turnRetryAttempts).toBeUndefined()
+
+      // A next failure counts from 1 again.
+      h.turnEnd("429 status code")
+      await until(() => h.phases().filter(x => x === "scheduled").length === 2, "re-scheduled")
+      expect(h.events.at(-1)).toMatchObject({ phase: "scheduled", attempt: 1 })
+      h.controller.dispose()
+    })
+
+    it("a manual turn that fails while a retry is pending re-schedules the SAME attempt, not a second one", async () => {
+      const h = stubHarness({ enqueuePrompt: async () => ({}), row: { turnsCompleted: 0 } })
+      h.turnEnd("429 status code")
+      await until(() => h.phases().includes("scheduled"), "retry scheduled")
+
+      // The manual "go on" turn itself failed for a transient reason: the
+      // pending retry for the OLDER turn is cancelled, the failed manual turn
+      // gets its own decision — still the FIRST attempt of this budget.
+      h.row.turnsCompleted = 1
+      h.turnEnd("429 status code")
+      await until(() => h.phases().includes("cancelled"), "stale pending retry cancelled")
+      const scheduled = h.events.filter(e => e.phase === "scheduled")
+      expect(scheduled).toHaveLength(2)
+      expect(scheduled[0]).toMatchObject({ attempt: 1 })
+      expect(scheduled[1]).toMatchObject({ attempt: 1 })
+      expect(h.row.turnRetryAttempts).toBeUndefined()
+      h.controller.dispose()
+    })
+  })
 })
 
 describe("turn-end event fields the controller relies on", () => {
@@ -668,6 +724,10 @@ describe("turnRetry plumbing", () => {
       buildSpawnSessionHttpArgs({ turnRetry: { on: ["upstream-5xx"], maxRetries: 1 } }, "x").turnRetry,
     ).toMatchObject({ on: ["upstream-5xx"], maxRetries: 1 })
     expect(buildSpawnSessionHttpArgs({ turnRetry: { on: ["crashed"] } }, "x").turnRetry).toBeUndefined()
+    // An empty `on` (or a null body) is the explicit opt-out — kept, not dropped.
+    expect(buildSpawnSessionHttpArgs({ turnRetry: { on: [] } }, "x").turnRetry).toMatchObject({ on: [] })
+    expect(buildSpawnSessionHttpArgs({ turnRetry: null }, "x").turnRetry).toMatchObject({ on: [] })
+    expect(buildSpawnSessionHttpArgs({ turnRetry: "off" }, "x").turnRetry).toMatchObject({ on: [] })
     expect(buildSpawnSessionHttpArgs({}, "x").turnRetry).toBeUndefined()
   })
 
@@ -676,7 +736,10 @@ describe("turnRetry plumbing", () => {
     expect(userPresetSchema.parse({ id: "free-zen", label: "Free Zen", turnRetry: { on: ["rate-limit"] } }).turnRetry).toEqual({
       on: ["rate-limit"],
     })
-    expect(() => userPresetSchema.parse({ id: "x", label: "x", turnRetry: { on: [] } })).toThrow()
+    expect(() => userPresetSchema.parse({ id: "x", label: "x", turnRetry: { on: ["nope"] } })).toThrow()
+    // An explicit opt-out is stored as-is (empty `on`, or a JSON null).
+    expect(userPresetSchema.parse({ id: "x", label: "x", turnRetry: { on: [] } }).turnRetry).toEqual({ on: [] })
+    expect(userPresetSchema.parse({ id: "x", label: "x", turnRetry: null }).turnRetry).toBeNull()
     expect(
       userPresetSchema.parse({ id: "x", label: "x", turnRetry: { on: ["rate-limit"], action: "migrate", maxMigrations: 4 } })
         .turnRetry,

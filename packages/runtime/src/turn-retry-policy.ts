@@ -5,9 +5,11 @@
  * preset store can all share it without an import cycle. The behaviour lives
  * in `turn-retry.ts`.
  *
- * Opt-in and off by default: a session without `turnRetry` behaves exactly as
- * before (a turn that fails on a 429/5xx, or stalls silently while the
- * provider retries internally, just stops). DISTINCT from `restartPolicy`,
+ * OFF by default for interactive supervisor sessions and ON by default for
+ * executor / sandbox spawns: a spawn without `turnRetry` gets the DEFAULT
+ * policy below (see {@link defaultTurnRetryForSpawn}), while a supervisor
+ * turn that fails on a 429/5xx, or stalls silently while the provider
+ * retries internally, just stops. DISTINCT from `restartPolicy`,
  * which revives a DEAD process; `turnRetry` re-prompts a LIVE session whose
  * last turn failed for a transient provider reason.
  */
@@ -93,6 +95,49 @@ export const TURN_ROTATE_DEFAULTS = {
   cooldownMs: 10 * 60_000,
 } as const
 
+/** Failure classes the DEFAULT always-on policy covers (executor / sandbox
+ *  spawns that gave no explicit `turnRetry`). */
+export const TURN_RETRY_DEFAULT_ON: TurnRetryClass[] = ["rate-limit", "upstream-5xx", "no-output-stall"]
+
+/** Consecutive retries the default policy allows. */
+export const TURN_RETRY_DEFAULT_MAX_RETRIES = 6
+
+/** Free OpenCode ids the DEFAULT rotation may move a free session onto. All
+ *  exist in the model catalog; the session's CURRENT model is subtracted, so
+ *  a session never "rotates" onto itself. Free stays free: every entry ends
+ *  in `-free`, so a free session rotating by default never lands on a paid
+ *  id (and paid sessions get NO default rotate list at all). */
+export const OPENCODE_FREE_ROTATE_MODELS: readonly TurnRetryRotateTarget[] = [
+  { model: "opencode/mimo-v2.6-flash-free" },
+  { model: "opencode/deepseek-v4.1-flash-free" },
+  { model: "opencode/glm-5.3-flash-free" },
+]
+
+function opencodeFreeModelKey(model: string): string {
+  return (model.split("@")[0] ?? model).split("/").pop()?.toLowerCase() ?? ""
+}
+
+/** Build the turnRetry INPUT a spawn with no explicit `turnRetry` (explicit
+ *  or via a preset) receives when the default is ON, i.e. for an executor
+ *  role or a `sandbox` spawn. For a free OpenCode current model the default
+ *  also ROTATES on every covered class (rate limits and 5xx alike), onto
+ *  the other free ids in {@link OPENCODE_FREE_ROTATE_MODELS}; a paid
+ *  current model never gets a rotate list and so never rotates by default. */
+export function defaultTurnRetryForSpawn(currentModel?: string): Exclude<TurnRetryInput, null> {
+  const base: Exclude<TurnRetryInput, null> = {
+    on: [...TURN_RETRY_DEFAULT_ON],
+    maxRetries: TURN_RETRY_DEFAULT_MAX_RETRIES,
+  }
+  if (!currentModel || !isOpencodeFreeModel(currentModel)) return base
+  const key = opencodeFreeModelKey(currentModel)
+  const rotate = OPENCODE_FREE_ROTATE_MODELS.filter(t => opencodeFreeModelKey(t.model) !== key)
+  return {
+    ...base,
+    rotate: rotate.map(t => ({ model: t.model })),
+    rotateOn: [...TURN_RETRY_DEFAULT_ON],
+  }
+}
+
 /** OpenCode free-tier ids: `…-free`, or `big-pickle`, with or without the
  *  `opencode/` / `opencode-go/` route prefix. */
 export function isOpencodeFreeModel(model: string): boolean {
@@ -117,9 +162,12 @@ export function validateTurnRetryRotate(
 
 /** Input shape (agent_start / user preset): only `on` is required; the
  *  numeric knobs default to {@link TURN_RETRY_DEFAULTS}, `action` to `retry`
- *  and `maxMigrations` to {@link TURN_MIGRATE_DEFAULTS}. */
-export const turnRetryInputSchema = z.object({
-  on: z.array(z.enum(TURN_RETRY_CLASSES)).min(1),
+ *  and `maxMigrations` to {@link TURN_MIGRATE_DEFAULTS}. Opt-OUT stays an
+ *  explicit choice: `null`, or an object whose `on` list is empty, resolves
+ *  to a session that never retries (the spawn-time default is skipped for
+ *  an explicit `turnRetry`, even a disabling one). */
+export const turnRetryObjectSchema = z.object({
+  on: z.array(z.enum(TURN_RETRY_CLASSES)),
   action: z.enum(TURN_RETRY_ACTIONS).optional(),
   maxRetries: z.number().int().positive().optional(),
   baseDelayMs: z.number().int().nonnegative().optional(),
@@ -135,11 +183,15 @@ export const turnRetryInputSchema = z.object({
   cooldownMs: z.number().int().positive().optional(),
 })
 
-export type TurnRetryInput = z.infer<typeof turnRetryInputSchema>
+export const turnRetryInputSchema = z.union([turnRetryObjectSchema, z.null()])
+
+export type TurnRetryPolicyInput = z.infer<typeof turnRetryObjectSchema>
+export type TurnRetryInput = TurnRetryPolicyInput | null
 
 /** Fill defaults and dedupe `on`. `maxDelayMs` is raised to `baseDelayMs`
- *  when given lower, so the curve is never inverted. */
-export function resolveTurnRetryPolicy(input: TurnRetryInput): TurnRetryPolicy {
+ *  when given lower, so the curve is never inverted. An empty `on` resolves
+ *  to a policy that matches nothing — the explicit "never retry" shape. */
+export function resolveTurnRetryPolicy(input: TurnRetryPolicyInput): TurnRetryPolicy {
   const baseDelayMs = input.baseDelayMs ?? TURN_RETRY_DEFAULTS.baseDelayMs
   return {
     on: [...new Set(input.on)],
@@ -162,8 +214,9 @@ export function resolveTurnRetryPolicy(input: TurnRetryInput): TurnRetryPolicy {
 
 /** Tolerant parser for the HTTP body / CLI: accepts the object, a
  *  JSON-stringified object, or a shorthand string — a comma list of classes
- *  (`"rate-limit,upstream-5xx"`) or `"all"` for every class. Returns
- *  `undefined` for anything that does not validate (never a partial policy). */
+ *  (`"rate-limit,upstream-5xx"`), `"all"` for every class, or `"off"` for an
+ *  explicit opt-out (a policy that matches nothing). Returns `undefined` for
+ *  anything else that does not validate (never a partial policy). */
 export function parseTurnRetryPolicy(raw: unknown): TurnRetryPolicy | undefined {
   let value: unknown = raw
   if (typeof raw === "string") {
@@ -176,10 +229,14 @@ export function parseTurnRetryPolicy(raw: unknown): TurnRetryPolicy | undefined 
       }
     } else if (trimmed === "all") {
       value = { on: [...TURN_RETRY_CLASSES] }
+    } else if (trimmed === "off") {
+      value = { on: [] }
     } else {
       value = { on: trimmed.split(",").map(s => s.trim()).filter(Boolean) }
     }
+  } else if (raw === null) {
+    value = { on: [] }
   }
-  const parsed = turnRetryInputSchema.safeParse(value)
+  const parsed = turnRetryObjectSchema.safeParse(value)
   return parsed.success ? resolveTurnRetryPolicy(parsed.data) : undefined
 }
