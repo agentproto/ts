@@ -137,6 +137,7 @@ describe("service-owner launcher via app_install", () => {
     const desc = registry.get(web.sessionId)!
     expect(desc.keepAlive).toBe(true)
     expect(desc.label).toBe(`app:${APP_ID}:service:web`)
+    expect(desc.origin).toBe(`app-service:${APP_ID}`)
     expect(desc.restartPolicy?.on).toEqual(["crashed", "error"])
     expect(desc.status).toBe("running")
 

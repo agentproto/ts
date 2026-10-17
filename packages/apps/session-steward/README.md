@@ -64,7 +64,15 @@ the `userOrigins` / `closableOrigins` inputs:
 - **Close allowed:** every origin a harness or scheduler stamps — `cron` /
   `cron:*`, `routine:*`, `gate`, `workflow` (step sessions), `review`
   (reviewer lanes), `webhook`, `model-bench*` (the bench harness and its
-  smoketest) — and executors (a session with a `parentSessionId`).
+  smoketest), `pygmalion` / `pygmalion:*`, `app-service:*` — and executors (a
+  session with a `parentSessionId`). Pygmalion and app service owners stamp
+  those origins at spawn; display labels are never used as authorization
+  evidence.
+
+An origin-less root remains flag-only. That is a legacy/fail-safe state, not
+proof that a human created it: machine launchers must stamp `origin` when they
+spawn. Already-running legacy sessions keep their missing provenance until
+they are replaced; the steward will not guess ownership and close them.
 
 A trailing `*` in either list is a prefix wildcard. The report carries the
 origin column and the retained action in dry run as well as apply.

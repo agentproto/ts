@@ -1694,6 +1694,10 @@ export function buildAppServiceEnsurer(
         ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
         prompt: buildServiceOwnerPrompt(input.service, servicePidFilePath(input.stateDir, input.service.name)),
         label: serviceOwnerLabel(input.appId, input.service.name),
+        // Service owners are app-managed roots, not human-launched sessions.
+        // Lifecycle policy must be able to tell the two apart without
+        // inferring ownership from a mutable display label.
+        origin: `app-service:${input.appId}`,
         appId: input.appId,
         keepAlive: true,
         restartPolicy: {

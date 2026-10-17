@@ -14,7 +14,9 @@ export const DEFAULT_USER_ORIGINS = ["chat-starter", "vscode"]
  *  cron-spawned job (`origin: "cron:<jobId>"`) and bare `cron` the scheduler's
  *  command sessions; `routine:*` routine-registrar fires; `gate` supervision
  *  gates; `webhook` the inbound watcher; `model-bench*` the model-bench
- *  harness (and its smoketest). A root with NO origin, or `cli`/`vscode`/
+ *  harness (and its smoketest); `pygmalion` / `pygmalion:*` and
+ *  `app-service:*` are roots
+ *  owned by their respective runtimes. A root with NO origin, or `cli`/`vscode`/
  *  `chat-starter`, is a human at a keyboard and stays flag-only. */
 export const DEFAULT_CLOSABLE_ORIGINS = [
   "cron",
@@ -25,6 +27,9 @@ export const DEFAULT_CLOSABLE_ORIGINS = [
   "review",
   "webhook",
   "model-bench*",
+  "pygmalion",
+  "pygmalion:*",
+  "app-service:*",
 ]
 
 /** The reason shown (and recorded) when a would-be close is bounded by origin. */

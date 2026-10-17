@@ -89,6 +89,29 @@ escalation | default`), `reason`, `matchedRules`, `probabilities` /
 `policyHash` / `evidenceHash` / `classifierConfigHash` provenance triple.
 Only declared choices can appear.
 
+## Decision vs action authorization
+
+A classifier answers a semantic question; it does not authorize a mutation.
+Consumers must apply a deterministic authorization policy after the typed
+choice and before acting. For session maintenance, Jev may classify an idle
+session as `done`, but closing it is allowed only when immutable provenance
+identifies a machine-owned root (`origin`) or an executor
+(`parentSessionId`). A label, cwd, model name, or workspace slug is display or
+context evidence, never ownership authority.
+
+Provenance must therefore be stamped by the producer at spawn time. Missing
+`origin` on a root means incomplete authorization evidence, not “human” and
+not “machine”: the safe action is to flag/keep it and surface the provenance
+gap. The session steward follows this contract. Pygmalion roots use
+`pygmalion` / `pygmalion:*`; installed app service owners use
+`app-service:*`; workflow, review, routine, cron and bench producers keep their
+existing explicit origins. Legacy origin-less roots are not retroactively
+inferred from labels.
+
+This separation also explains why a confident classifier result may produce
+no close: confidence gates the verdict, while provenance independently gates
+the side effect. Both must pass.
+
 ## Evidence/export policy
 
 Defaults export no code, paths or messages to the classifier: the tier-1
