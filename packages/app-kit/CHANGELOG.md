@@ -1,5 +1,11 @@
 # @agentproto/app-kit
 
+## 1.10.1
+
+### Patch Changes
+
+- cc7ba9f: Docs sync for features already shipped: the `agentproto app tunnel` verb (`@agentproto/cli` README) and the AIP-53 `services:` production-hosting block (`@agentproto/app-kit` README). README-only changes; no source behavior changed.
+
 ## 1.10.0
 
 ### Minor Changes

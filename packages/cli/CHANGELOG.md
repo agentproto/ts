@@ -1,5 +1,28 @@
 # @agentproto/cli
 
+## 1.26.0
+
+### Minor Changes
+
+- 8fee54b: Add --public flag to app tunnel, forwarded to the app_tunnel tool
+- 80fbfbe: Added a fleet-wide session stats report over a start-time window: `agentproto sessions report [--since 12h] [--topN 5] [--json]` and the equivalent `sessions_report` MCP tool / `GET /sessions/report` REST route. Reports session counts by harness and model, status + end-reason breakdown, total/average wall-clock duration, tokens and estimated cost (split subscription vs api-key billing when the session's resolved auth mode says so), PRs opened by in-window sessions, the top-N costliest and top-N longest-running sessions, every currently-active session, and every alive `keepAlive` "permanent" agent. Merges the live registry with cold on-disk session rows so a busy host's `HISTORY_CAP` doesn't undercount the window.
+
+### Patch Changes
+
+- 65c31b6: `agentproto serve` now re-ensures every installed app's `services:` owners at boot, right after the eager-resume and continue-on-boot passes. Previously `ensureAppServiceOwners` only ran from `app_install`, so an owner session killed by a daemon restart (`endedReason: "daemon-restart"`, not covered by its `crashed`/`error` restartPolicy) stayed down until the next reinstall. The boot pass force-replaces every recorded owner — signalling any pid left in its pid file first, so an orphaned child doesn't hold the port — gated by the same `daemon.resumeSessionsOnBoot` knob as the other boot-automation passes.
+- cc7ba9f: Docs sync for features already shipped: the `agentproto app tunnel` verb (`@agentproto/cli` README) and the AIP-53 `services:` production-hosting block (`@agentproto/app-kit` README). README-only changes; no source behavior changed.
+- 65c31b6: `agentproto serve` now re-ensures every installed app's `services:` owners at boot, after the resume and continue-on-boot passes. `ensureServices` previously ran only on the install path, so an app-service owner killed by a daemon restart (`endedReason: "daemon-restart"`, not covered by its `crashed`/`error` restartPolicy) stayed down until the next reinstall. The boot pass force-replaces every recorded owner — signalling any pid left in its pid file first so an orphaned child does not hold the port — gated by the same `daemon.resumeSessionsOnBoot` knob as the other boot-automation passes. Runtime gains the internal `reensureAppServiceOwners` / `buildAppServiceEnsurer` helpers (not re-exported from the package root); the CLI invokes and reports the new pass.
+- Updated dependencies [345cf99]
+- Updated dependencies [350e966]
+- Updated dependencies [6e75183]
+- Updated dependencies [cc7ba9f]
+- Updated dependencies [c265752]
+- Updated dependencies [345cf99]
+- Updated dependencies [350e966]
+  - @agentproto/adapter-browser@0.7.0
+  - @agentproto/app-kit@1.10.1
+  - @agentproto/apps@0.23.5
+
 ## 1.25.0
 
 ### Minor Changes
