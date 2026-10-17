@@ -182,7 +182,7 @@ import {
   writeSessionIndex,
   type TranscriptPrompt,
 } from "./session-index.js"
-import { dirname, join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
@@ -13029,7 +13029,14 @@ export function createSessionsRegistry(opts?: {
       }
       const diff = await computeAgentRoleRefresh({
         agentManifestPath,
-        adapter: rt.desc.adapterSlug ?? "",
+        // Mirrors spawn's OWN resolution (`input.harness ?? input.adapter`,
+        // session-spawn.ts) exactly — `harness` is the canonical axis name,
+        // falling back to `adapterSlug` for a row that never set it
+        // (session-spawn.ts's own doc on `SessionDescriptor.harness`).
+        // Re-rendering with a DIFFERENT adapter slug than the one spawn used
+        // could project the manifest through a different system-prompt
+        // channel / skill-delivery capability and report a spurious change.
+        adapter: rt.desc.harness ?? rt.desc.adapterSlug ?? "",
         ...(rt.desc.model !== undefined ? { model: rt.desc.model } : {}),
         ...(rt.desc.meta?.agentRoleHash !== undefined ? { previousRoleHash: rt.desc.meta.agentRoleHash } : {}),
         ...(rt.desc.meta?.agentToolsHash !== undefined ? { previousToolsHash: rt.desc.meta.agentToolsHash } : {}),
@@ -13092,21 +13099,48 @@ export function createSessionsRegistry(opts?: {
       if (!agentManifestPath) return false
       // Starting twice replaces the first watcher rather than stacking two.
       stopAgentRoleWatch(id)
-      const state: AgentRoleWatchState = {
-        watcher: watchFsPath(agentManifestPath, () => {
-          if (state.debounce) clearTimeout(state.debounce)
-          state.debounce = setTimeout(() => {
-            state.debounce = null
-            void registry.refreshAgentRole(id).catch(err => {
-              console.warn(
-                `[sessions] agent-role-watch refresh failed for ${id}: ${
-                  err instanceof Error ? err.message : String(err)
-                }`
-              )
-            })
-          }, AGENT_ROLE_WATCH_DEBOUNCE_MS)
-        }),
-        debounce: null,
+      // Watch the PARENT DIRECTORY, not the file itself: most editors
+      // (VS Code, vim, emacs) save via write-temp + rename, which replaces
+      // the file's inode. A watch on the file's own path dies silently at
+      // that rename (no `error` event — it's just detached from an inode
+      // nothing points to anymore), so every edit after the FIRST save
+      // would otherwise go unnoticed. A directory watch survives the
+      // file being replaced underneath it; `filename` filters out every
+      // other entry in the directory.
+      const dir = dirname(agentManifestPath)
+      const base = basename(agentManifestPath)
+      const state: AgentRoleWatchState = { watcher: null as unknown as FSWatcher, debounce: null }
+      const scheduleRefresh = (): void => {
+        if (state.debounce) clearTimeout(state.debounce)
+        state.debounce = setTimeout(() => {
+          state.debounce = null
+          void registry.refreshAgentRole(id).catch(err => {
+            console.warn(
+              `[sessions] agent-role-watch refresh failed for ${id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            )
+          })
+        }, AGENT_ROLE_WATCH_DEBOUNCE_MS)
+      }
+      try {
+        // `fs.watch` throws synchronously (ENOENT) when `dir` doesn't exist
+        // (e.g. the manifest's directory was removed after spawn) — caught
+        // so this returns the documented `false` instead of throwing out of
+        // the MCP tool.
+        state.watcher = watchFsPath(dir, (_event, filename) => {
+          // `filename` is `null` on a platform/fs that can't report it
+          // (rare) — treat that as "might be ours" rather than miss it.
+          if (filename !== null && String(filename) !== base) return
+          scheduleRefresh()
+        })
+      } catch (err) {
+        console.warn(
+          `[sessions] agent-role-watch: could not watch "${dir}" for ${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+        return false
       }
       state.watcher.on("error", err => {
         console.warn(

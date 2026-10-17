@@ -6346,9 +6346,21 @@ export function registerSessionTools(
           }
         }
       }
-      const started = registry.setAgentRoleWatch(prev.id, input.enabled)
-      return {
-        content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, watching: started }) }],
+      try {
+        const started = registry.setAgentRoleWatch(prev.id, input.enabled)
+        return {
+          content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, watching: started }) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_role_watch: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
       }
     }
   )

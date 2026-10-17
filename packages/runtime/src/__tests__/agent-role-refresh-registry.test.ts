@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, rename, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -44,6 +44,30 @@ async function writeAgentMd(dir: string, body: string): Promise<string> {
     ].join("\n"),
     "utf8",
   )
+  return path
+}
+
+/** write-temp + rename, the atomic-save pattern VS Code/vim/emacs use —
+ *  replaces the file's inode instead of writing into the existing one. */
+async function writeAgentMdAtomically(dir: string, body: string): Promise<string> {
+  await mkdir(dir, { recursive: true })
+  const path = join(dir, "AGENT.md")
+  const tmpPath = `${path}.tmp-${Date.now()}`
+  await writeFile(
+    tmpPath,
+    [
+      "---",
+      "schema: agent/v1",
+      "id: coach",
+      "description: Agent coach",
+      "model: test-model",
+      "---",
+      "",
+      body,
+    ].join("\n"),
+    "utf8",
+  )
+  await rename(tmpPath, path)
   return path
 }
 
@@ -214,6 +238,26 @@ describe("setAgentRoleWatch", () => {
     reg.shutdown()
   })
 
+  it("returns false (never throws) when the manifest's directory no longer exists", () => {
+    const reg = createSessionsRegistry({ persistPath, persist: false })
+    const fp = fingerprintAgentRole({ instructions: "You are a coach." })
+    const goneDir = join(tmp, ".agents", "ghost")
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: tmp,
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      meta: {
+        agentManifestPath: join(goneDir, "AGENT.md"),
+        agentRoleHash: fp.roleHash,
+        agentToolsHash: fp.toolsHash,
+      },
+    })
+    expect(() => reg.setAgentRoleWatch(desc.id, true)).not.toThrow()
+    expect(reg.setAgentRoleWatch(desc.id, true)).toBe(false)
+    reg.shutdown()
+  })
+
   it("auto-refreshes on a file change once watching, and stops reacting after disabling", async () => {
     const reg = createSessionsRegistry({ persistPath, persist: false })
     const fp = fingerprintAgentRole({ instructions: "You are a coach." })
@@ -243,4 +287,45 @@ describe("setAgentRoleWatch", () => {
     expect(reg.setAgentRoleWatch(desc.id, false)).toBe(true)
     reg.shutdown()
   }, 10_000)
+
+  it("survives an atomic write-temp+rename save, AND the edit after it", async () => {
+    const reg = createSessionsRegistry({ persistPath, persist: false })
+    const fp = fingerprintAgentRole({ instructions: "You are a coach." })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: tmp,
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      meta: { agentManifestPath: manifestPath, agentRoleHash: fp.roleHash, agentToolsHash: fp.toolsHash },
+    })
+
+    expect(reg.setAgentRoleWatch(desc.id, true)).toBe(true)
+
+    const pollFor = async (notHash: string): Promise<string | undefined> => {
+      const deadline = Date.now() + 5_000
+      let hash = reg.get(desc.id)?.meta?.agentRoleHash
+      while (hash === notHash && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 100))
+        hash = reg.get(desc.id)?.meta?.agentRoleHash
+      }
+      return hash
+    }
+
+    // Save #1: atomic replace (the editor pattern that detaches a FILE
+    // watch from its inode). A watch on the file itself would still catch
+    // this one — the regression is specifically about what happens next.
+    await writeAgentMdAtomically(manifestDir, "You are a stern coach now.")
+    const afterFirstSave = await pollFor(fp.roleHash)
+    expect(afterFirstSave).not.toBe(fp.roleHash)
+
+    // Save #2: a second atomic replace. A watch on the ORIGINAL file's
+    // inode would have died silently at save #1 and never fire this one —
+    // the directory watch must still be live.
+    await writeAgentMdAtomically(manifestDir, "You are a very stern coach now.")
+    const afterSecondSave = await pollFor(afterFirstSave!)
+    expect(afterSecondSave).not.toBe(afterFirstSave)
+
+    reg.setAgentRoleWatch(desc.id, false)
+    reg.shutdown()
+  }, 15_000)
 })
