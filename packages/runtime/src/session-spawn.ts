@@ -29,7 +29,13 @@ import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
 } from "./sandbox-adapter-store.js"
-import { resolveTurnRetryPolicy, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
+import {
+  resolveTurnRetryPolicy,
+  validateTurnRetryRotate,
+  defaultTurnRetryForSpawn,
+  type TurnRetryPolicyInput,
+  type TurnRetryInput,
+} from "./turn-retry-policy.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
@@ -2729,6 +2735,24 @@ export async function spawnAgentSession(
     }
   }
   const delegationDenied = role.toolPolicy.delegation === "deny"
+  // Graceful retry BY DEFAULT for executor / sandbox spawns: a spawn that
+  // gave no `turnRetry` (explicit, or from a preset — both are already
+  // folded into `input.turnRetry` above) gets the default policy (rate
+  // limit, upstream 5xx, no-output stall; 6 retries; default backoff) so a
+  // transient provider failure re-prompts instead of just stopping the turn.
+  // Interactive supervisor sessions keep the old opt-in behaviour. An
+  // explicit opt-out (`turnRetry: null`, or an empty `on`) is honoured: any
+  // non-nullish explicit input wins over the default. A free OpenCode
+  // current model also rotates on 5xx by default — `defaultTurnRetryForSpawn`
+  // builds that list from other free ids only, so `validateTurnRetryRotate`'s
+  // "free stays free" rule below still passes for it.
+  const explicitTurnRetry = input.turnRetry
+  const turnRetryInput: TurnRetryPolicyInput | undefined =
+    explicitTurnRetry !== undefined && explicitTurnRetry !== null
+      ? explicitTurnRetry
+      : role.name === "executor" || input.sandbox !== undefined
+        ? defaultTurnRetryForSpawn(input.model)
+        : undefined
   // Deferred/lazy tool loading override for the self-mount (harness-parity
   // item 3): per-spawn `input.deferredTools` > harness with native MCP tool
   // search (manifest `capabilities.nativeToolSearch` ⇒ eager, so the daemon
@@ -4109,7 +4133,7 @@ export async function spawnAgentSession(
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
         contextContinuity: resolvedContextContinuity,
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
-        ...(input.turnRetry ? { turnRetry: resolveTurnRetryPolicy(input.turnRetry) } : {}),
+        ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
         ...(input.trace !== undefined ? { trace: input.trace } : {}),
         ...(authEcho?.fingerprint
           ? {
@@ -4791,7 +4815,7 @@ export async function spawnAgentSession(
       ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
       contextContinuity: resolvedContextContinuity,
       ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
-      ...(input.turnRetry ? { turnRetry: resolveTurnRetryPolicy(input.turnRetry) } : {}),
+      ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       // Verifiability: record the OBSERVABLE echo — resolved provider, mode,
