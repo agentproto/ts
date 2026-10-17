@@ -43,6 +43,8 @@ export type { AgentManifestLayout, RenderAgentManifestTarget, RenderedAgentManif
 export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFromMarkdownText } from "./load-app.js"
 export type { AppUiPeek } from "./load-app.js"
 export { loadAppBundledTools } from "./load-app-tools.js"
+export { parseServiceList } from "./manifest-fields.js"
+export type { ServiceListResult } from "./manifest-fields.js"
 export {
   packApp,
   unpackApp,

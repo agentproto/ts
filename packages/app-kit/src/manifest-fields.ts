@@ -168,6 +168,31 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
   })
 }
 
+/** `parseServiceList`'s return shape — accumulated services + a fail-fast
+ *  (single-element) error list, mirroring the runtime install-time caller's
+ *  expected `{ services, errors }` shape. */
+export interface ServiceListResult {
+  readonly services: readonly AppService[]
+  readonly errors: readonly string[]
+}
+
+/**
+ * Public, non-throwing wrapper around `serviceList` for callers outside the
+ * `normalizeManifestFields` throw-based flow (e.g. the runtime's install-time
+ * `services:` validation). `undefined` AND `null` are both the no-op case
+ * (`serviceList` itself only treats `undefined` as absent); any validation
+ * problem is caught and surfaced as the sole entry of `errors`, matching
+ * `serviceList`'s fail-fast-on-first-bad-entry behavior.
+ */
+export function parseServiceList(raw: unknown, key = "services"): ServiceListResult {
+  if (raw === undefined || raw === null) return { services: [], errors: [] }
+  try {
+    return { services: serviceList(raw, key) ?? [], errors: [] }
+  } catch (err) {
+    return { services: [], errors: [err instanceof Error ? err.message : String(err)] }
+  }
+}
+
 export function normalizeManifestFields(
   input: ManifestFieldsInput,
   declared: DeclaredIds,
