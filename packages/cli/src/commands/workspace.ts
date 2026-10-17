@@ -57,7 +57,8 @@ Usage:
                                  node types vs TYPES.md, wall floors,
                                  includes/exports consent, secret grants,
                                  budget aggregation, report freshness,
-                                 no literal secret values.
+                                 no literal secret values, effective
+                                 status (paused/archived inheritance).
   agentproto workspace --help
 
 A workspace "remote" is the off-machine clone source a sandbox spawn
@@ -141,7 +142,11 @@ async function runCheck(args: readonly string[]): Promise<number> {
   process.stdout.write(`${report.ok ? "✓" : "✗"} ${report.root}  (${report.nodeCount} node${report.nodeCount === 1 ? "" : "s"})\n\n`)
   for (const node of report.nodes) {
     const budget = node.effectiveBudgetUsdPerMonth !== undefined ? `  budget≤$${node.effectiveBudgetUsdPerMonth}/mo` : ""
-    process.stdout.write(`  ${node.id}  [${node.type}, wall:${node.wall}]${node.parentId ? `  ← ${node.parentId}` : ""}${budget}\n`)
+    const status =
+      node.effectiveStatus === "active"
+        ? ""
+        : `, ${node.effectiveStatus}${node.statusInheritedFrom ? ` (inherited from ${node.statusInheritedFrom})` : ""}`
+    process.stdout.write(`  ${node.id}  [${node.type}, wall:${node.wall}${status}]${node.parentId ? `  ← ${node.parentId}` : ""}${budget}\n`)
   }
   if (report.findings.length > 0) {
     process.stdout.write("\n")

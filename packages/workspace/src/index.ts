@@ -26,8 +26,11 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineWorkspace } from "./define-workspace.js"
 export type { WorkspaceDefinition, WorkspaceHandle } from "./types.js"
-export { workspaceFrontmatterSchema } from "./schema.js"
-export type { WorkspaceFrontmatter } from "./schema.js"
+export { workspaceFrontmatterSchema, workspaceStatusSchema } from "./schema.js"
+export type { WorkspaceFrontmatter, WorkspaceStatus } from "./schema.js"
+
+export { computeEffectiveStatus } from "./effective-status.js"
+export type { EffectiveStatusAncestor, EffectiveStatusResult } from "./effective-status.js"
 
 export {
   typesManifestSchema,

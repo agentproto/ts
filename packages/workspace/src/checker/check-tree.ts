@@ -21,6 +21,8 @@ import { dirname, join, relative, sep } from "node:path"
 import matter from "gray-matter"
 import { parseWorkspaceManifest, type WorkspaceManifest } from "../manifest/index.js"
 import { parseTypesManifest, resolveTypeEntry, type TypesManifestFrontmatter } from "../types-registry.js"
+import { computeEffectiveStatus } from "../effective-status.js"
+import type { WorkspaceStatus } from "../schema.js"
 import { parseWorkManifest, workFrontmatterSchema } from "@agentproto/work/manifest"
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".turbo", ".turbo-cache", ".turbo-shared-cache", "dist", ".next", ".pnpm-vstores"])
@@ -54,6 +56,12 @@ export interface CheckedNode {
   parentId?: string
   wall?: string
   effectiveBudgetUsdPerMonth?: number
+  /** As written in the node's own WORKSPACE.md (schema default: "active"). */
+  status: WorkspaceStatus
+  /** Most restrictive status along the ancestor chain (archived > paused > active). */
+  effectiveStatus: WorkspaceStatus
+  /** Set only when `effectiveStatus` differs from `status` — the ancestor id it's inherited from. */
+  statusInheritedFrom?: string
 }
 
 export interface CheckReport {
@@ -259,12 +267,25 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
     const workspacePath = join(dir, "WORKSPACE.md")
     countByType.set(fm.type, (countByType.get(fm.type) ?? 0) + 1)
 
+    // Ancestor chain, nearest parent first, for the most-restrictive-wins
+    // status walk below — same `parentDir` walk the budget aggregation uses.
+    const ancestors: Array<{ id: string; status: WorkspaceStatus | undefined }> = []
+    for (let cursor = node.parentDir; cursor; cursor = byDir.get(cursor)?.parentDir) {
+      const ancestor = byDir.get(cursor)
+      if (!ancestor) break
+      ancestors.push({ id: ancestor.manifest.frontmatter.id, status: ancestor.manifest.frontmatter.status })
+    }
+    const { effectiveStatus, statusInheritedFrom } = computeEffectiveStatus(fm.status, ancestors)
+
     const checked: CheckedNode = {
       id: fm.id,
       type: fm.type,
       schema: "workspace/v2",
       dir,
       wall: fm.wall,
+      status: fm.status,
+      effectiveStatus,
+      ...(statusInheritedFrom ? { statusInheritedFrom } : {}),
     }
     if (node.parentDir) checked.parentId = byDir.get(node.parentDir)?.manifest.frontmatter.id
     nodes.push(checked)

@@ -108,6 +108,17 @@ const policyRefBlockSchema = z
   .catchall(z.unknown())
   .optional()
 
+/**
+ * `status` (AIP-34 §Status — paused/archived nodes): `paused` keeps
+ * declarations/data but runs nothing (no agent started, no routine fired at
+ * or below it; excluded from budget/heartbeat checks; still writable).
+ * `archived` is read-only and excluded. Exported so `effective-status.ts`
+ * (whole-tree, ancestor-chain logic — a single node's schema can't see its
+ * ancestors) can share the exact literal union instead of re-declaring it.
+ */
+export const workspaceStatusSchema = z.enum(["active", "paused", "archived"])
+export type WorkspaceStatus = z.infer<typeof workspaceStatusSchema>
+
 export const workspaceFrontmatterSchema = z
   .object({
     schema: z.literal("workspace/v2"),
@@ -119,7 +130,7 @@ export const workspaceFrontmatterSchema = z
       .string()
       .regex(/^[a-z][a-z0-9-]*$/)
       .describe("Node kind — MUST resolve in the nearest ancestor TYPES.md."),
-    status: z.enum(["active", "paused", "archived"]).default("active"),
+    status: workspaceStatusSchema.default("active"),
     owner: z
       .object({
         type: z.enum(["guild", "user", "org"]),

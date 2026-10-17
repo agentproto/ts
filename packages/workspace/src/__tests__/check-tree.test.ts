@@ -114,6 +114,74 @@ describe("checkWorkspaceTree — valid tree", () => {
     expect(chatcommerce?.effectiveBudgetUsdPerMonth).toBe(60)
     expect(chatcommerce?.parentId).toBe("@test/agentik")
   })
+
+  it("defaults every node's status/effectiveStatus to active with no statusInheritedFrom", () => {
+    buildValidTree(root)
+    const report = checkWorkspaceTree(root)
+    for (const node of report.nodes) {
+      expect(node.status).toBe("active")
+      expect(node.effectiveStatus).toBe("active")
+      expect(node.statusInheritedFrom).toBeUndefined()
+    }
+  })
+})
+
+describe("checkWorkspaceTree — status inheritance is reported, never an error or warning", () => {
+  it("a paused company still reports 0 errors/warnings, with its active children effectively paused", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "WORKSPACE.md"),
+      writeWorkspaceManifest({
+        schema: "workspace/v2",
+        id: "@test/agentik",
+        version: "1.0.0",
+        name: "Agentik",
+        type: "company",
+        status: "paused",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        secrets: { file: ".secrets/SECRETS.md" },
+        policy: { limits: [{ kind: "budget-usd-per-month", value: 250 }] },
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(true)
+    expect(report.findings.filter((f) => f.level === "error" || f.level === "warning")).toHaveLength(0)
+
+    const agentik = report.nodes.find((n) => n.id === "@test/agentik")
+    expect(agentik?.status).toBe("paused")
+    expect(agentik?.effectiveStatus).toBe("paused")
+    expect(agentik?.statusInheritedFrom).toBeUndefined()
+
+    const simone = report.nodes.find((n) => n.id === "@test/simone")
+    expect(simone?.status).toBe("active")
+    expect(simone?.effectiveStatus).toBe("paused")
+    expect(simone?.statusInheritedFrom).toBe("@test/agentik")
+  })
+
+  it("an active child under an archived root is effectively archived, and that is not an error", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "WORKSPACE.md"),
+      writeWorkspaceManifest({
+        schema: "workspace/v2",
+        id: "@test/root",
+        version: "1.0.0",
+        name: "Root",
+        type: "root",
+        status: "archived",
+        owner: { type: "user", id: "jeremy", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        policy: { limits: [{ kind: "budget-usd-per-month", value: 400 }] },
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(true)
+    expect(report.findings.filter((f) => f.level === "error")).toHaveLength(0)
+    const chatcommerce = report.nodes.find((n) => n.id === "@test/chatcommerce")
+    expect(chatcommerce?.effectiveStatus).toBe("archived")
+    expect(chatcommerce?.statusInheritedFrom).toBe("@test/root")
+  })
 })
 
 describe("checkWorkspaceTree — broken trees", () => {
