@@ -172,6 +172,24 @@ hand-tuned parts). A spec change means: edit the JSON draft, then re-run
 --schema-only` and paste the result. CI fails on drift
 (`pnpm check:spec-drift`, `scripts/check-spec-drift.mjs`).
 
+**Before concluding "no AIP covers X", check the real canonical registry —
+not just this repo.** `specs/resources/` is schema-only by design (JSON
+Schemas for scaffolded doctypes); a prose-only AIP (e.g. AIP-65, DECISION.md)
+has nothing there, and `scripts/check-aip-refs.mjs` only catches a reference
+that's already wrong, not one you're about to make up. README.md's AIP table
+is a curated highlight list, not exhaustive — most AIPs have a real ref-impl
+package and are deliberately not in it. Before stating an AIP doesn't exist:
+
+- grep the canonical prose — `specs/aip-*.mdx` in a sibling
+  `agentproto/agentproto` checkout (`git clone
+  https://github.com/agentproto/agentproto ../agentproto`), or
+  `gh api repos/agentproto/agentproto/contents/specs` — not `specs/resources`
+  or the README table alone;
+- if gbrain is mounted (`mcp_imported_call(alias:"gbrain", toolName:"query",
+  args:{query:"...", source_id:"agentproto-specs"})`), query it — it indexes
+  the canonical prose and tends to surface the right AIP by topic faster than
+  a manual grep.
+
 ## Recipes: gates you can declare today
 
 These are already possible through the supervisor's completion-policy engine
