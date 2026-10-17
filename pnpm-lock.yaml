@@ -4498,6 +4498,9 @@ importers:
       '@agentproto/define-doctype':
         specifier: workspace:*
         version: link:../define-doctype
+      '@agentproto/work':
+        specifier: workspace:*
+        version: link:../work
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3

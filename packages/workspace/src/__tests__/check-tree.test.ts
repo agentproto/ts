@@ -14,12 +14,16 @@ function node(dir: string, def: WorkspaceDefinitionV2, body = ""): void {
   writeFileSync(join(dir, "WORKSPACE.md"), writeWorkspaceV2Manifest(def, body))
 }
 
+function minimalWorkMd(name: string, title: string): string {
+  return `---\nschema: work.workspace/v2\nname: ${name}\ntitle: ${title}\ndescription: Tracks ${title}'s work items.\nversion: 1.0.0\n---\n`
+}
+
 const TYPES = {
   schema: "workspace-types/v1" as const,
   types: {
     root: { parents: [], max_per_tree: 1 },
-    company: { parents: ["root"], default_wall: "isolated" as const },
-    project: { parents: ["company"], default_wall: "isolated" as const, requires_files: ["RAPPORT.md"] },
+    company: { parents: ["root"], default_wall: "isolated" as const, requires_files: ["COMPANY.md"] },
+    project: { parents: ["company"], default_wall: "isolated" as const },
     perso: { parents: ["root"], default_wall: "sealed" as const },
   },
 }
@@ -49,6 +53,7 @@ function buildValidTree(base: string): void {
     secrets: { file: ".secrets/SECRETS.md" },
     policy: { limits: [{ kind: "budget-usd-per-month", value: 250 }] },
   })
+  writeFileSync(join(agentikDir, "COMPANY.md"), "---\nschema: agentcompanies/v1\nkind: company\nslug: agentik\nname: Agentik\nversion: '1.0.0'\n---\n")
   mkdirSync(join(agentikDir, ".secrets"), { recursive: true })
   writeFileSync(
     join(agentikDir, ".secrets", "SECRETS.md"),
@@ -66,11 +71,12 @@ function buildValidTree(base: string): void {
       type: "project",
       owner: { type: "org", id: "agentik", slug: "jeremy" },
       storage: { inline: { provider: "local-fs", config: {} } },
+      work: { file: "WORK.md" },
       exports: [{ path: "docs/whatsapp-flows", to: "@test/chatcommerce", mode: "read" }],
       policy: { limits: [{ kind: "budget-usd-per-month", value: 80 }] },
     },
   )
-  writeFileSync(join(simoneDir, "RAPPORT.md"), "# Simone\n\nOn track.\n")
+  writeFileSync(join(simoneDir, "WORK.md"), minimalWorkMd("simone", "Simone"))
 
   const ccDir = join(agentikDir, "chatcommerce")
   node(ccDir, {
@@ -81,11 +87,12 @@ function buildValidTree(base: string): void {
     type: "project",
     owner: { type: "org", id: "agentik", slug: "jeremy" },
     storage: { inline: { provider: "local-fs", config: {} } },
+    work: { file: "WORK.md" },
     includes: [{ ref: "ws://workspaces/@test/simone#docs/whatsapp-flows", mode: "read" }],
     uses_secrets: [{ from: "@test/agentik", slug: "stripe-key", mode: "bind" }],
     policy: { limits: [{ kind: "budget-usd-per-month", value: 60 }] },
   })
-  writeFileSync(join(ccDir, "RAPPORT.md"), "# ChatCommerce\n\nOn track.\n")
+  writeFileSync(join(ccDir, "WORK.md"), minimalWorkMd("chatcommerce", "ChatCommerce"))
 }
 
 beforeEach(() => {
@@ -170,16 +177,58 @@ describe("checkWorkspaceTree — broken trees", () => {
     ).toBe(true)
   })
 
-  it("flags a missing required file (RAPPORT.md) for type project", () => {
+  it("flags a missing required file (COMPANY.md) for type company", () => {
     buildValidTree(root)
-    rmSync(join(root, "agentik", "simone", "RAPPORT.md"))
+    rmSync(join(root, "agentik", "COMPANY.md"))
     const report = checkWorkspaceTree(root)
     expect(report.ok).toBe(false)
     expect(
       report.findings.some(
-        (f) => f.level === "error" && f.message.includes("required file RAPPORT.md is missing"),
+        (f) => f.level === "error" && f.message.includes("required file COMPANY.md is missing"),
       ),
     ).toBe(true)
+  })
+
+  it("flags a work: file that doesn't resolve to a valid WORK.md", () => {
+    buildValidTree(root)
+    writeFileSync(join(root, "agentik", "simone", "WORK.md"), "not frontmatter at all")
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(
+      report.findings.some(
+        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("work.file does not resolve to a valid WORK.md"),
+      ),
+    ).toBe(true)
+  })
+
+  it("flags a work: file that is simply missing", () => {
+    buildValidTree(root)
+    rmSync(join(root, "agentik", "chatcommerce", "WORK.md"))
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(
+      report.findings.some(
+        (f) => f.level === "error" && f.nodeId === "@test/chatcommerce" && f.message.includes("work.file does not resolve"),
+      ),
+    ).toBe(true)
+  })
+
+  it("does not require work: at all — a project without one is not an error", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceV2Manifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.findings.some((f) => f.nodeId === "@test/simone" && f.level === "error")).toBe(false)
   })
 
   it("warns (does not error) when a child's declared budget exceeds its resolved ancestor ceiling", () => {
@@ -222,16 +271,12 @@ describe("checkWorkspaceTree — broken trees", () => {
     ).toBe(true)
   })
 
-  it("stays quiet about report freshness under the threshold, loud over it", () => {
+  it("stays quiet about required-file freshness under the threshold, loud over it", () => {
     buildValidTree(root)
-    const rapportPath = join(root, "agentik", "simone", "RAPPORT.md")
+    const companyPath = join(root, "agentik", "COMPANY.md")
     const old = new Date(Date.now() - 1000 * 3600 * 100) // 100h ago
-    utimesSync(rapportPath, old, old)
+    utimesSync(companyPath, old, old)
     const report = checkWorkspaceTree(root, { maxReportAgeHours: 48 })
     expect(report.findings.some((f) => f.level === "warning" && f.message.includes("is stale"))).toBe(true)
-    // A fresh RAPPORT.md (chatcommerce's) shouldn't trip the same check.
-    expect(
-      report.findings.some((f) => f.level === "warning" && f.path.includes("chatcommerce") && f.message.includes("is stale")),
-    ).toBe(false)
   })
 })

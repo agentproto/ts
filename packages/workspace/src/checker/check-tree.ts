@@ -21,6 +21,7 @@ import { dirname, join, relative, sep } from "node:path"
 import matter from "gray-matter"
 import { parseWorkspaceV2Manifest, type WorkspaceV2Manifest } from "../manifest/v2.js"
 import { parseTypesManifest, resolveTypeEntry, type TypesManifestFrontmatter } from "../types-registry.js"
+import { parseWorkManifest, workFrontmatterSchema } from "@agentproto/work/manifest"
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".turbo", ".turbo-cache", ".turbo-shared-cache", "dist", ".next", ".pnpm-vstores"])
 const WALL_ORDER = ["shared", "isolated", "sealed", "hard"] as const
@@ -300,6 +301,45 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
             findings.push({ level: "error", nodeId: fm.id, path: p, message: `required file ${required} is missing (type "${fm.type}").` })
           }
         }
+      }
+    }
+
+    // work: (AIP-20) — a project's status/board, replacing a flat status
+    // file. Only validated when declared (rule 14 in AIP-34 v2): no
+    // freshness check yet, that's deferred alongside the task-ledger
+    // alignment question.
+    if (fm.work && typeof fm.work === "object") {
+      const work = fm.work as { inline?: unknown; ref?: string; file?: string }
+      const workPath = join(dir, "WORKSPACE.md")
+      if (work.file) {
+        const p = join(dir, work.file)
+        try {
+          parseWorkManifest(readFileSync(p, "utf8"))
+        } catch (err) {
+          findings.push({
+            level: "error",
+            nodeId: fm.id,
+            path: p,
+            message: `work.file does not resolve to a valid WORK.md: ${err instanceof Error ? err.message : String(err)}`,
+          })
+        }
+      } else if (work.inline) {
+        const result = workFrontmatterSchema.safeParse(work.inline)
+        if (!result.success) {
+          findings.push({
+            level: "error",
+            nodeId: fm.id,
+            path: workPath,
+            message: `work.inline is not a valid WORK.md frontmatter: ${result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+          })
+        }
+      } else if (work.ref) {
+        findings.push({
+          level: "info",
+          nodeId: fm.id,
+          path: workPath,
+          message: `work.ref "${work.ref}" is a registry/path reference — not resolved by this standalone tree check.`,
+        })
       }
     }
 

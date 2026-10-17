@@ -60,10 +60,13 @@ describe("defineWorkspaceV2 (AIP-34 workspace/v2)", () => {
       apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", expose: ["agents", "tools"] }],
       policy: { limits: [{ kind: "budget-usd-per-month", value: 80 }] },
       secrets: { file: ".secrets/SECRETS.md" },
+      code: { file: "CODE.md" },
+      work: { file: "WORK.md" },
     })
     expect(ws.includes).toHaveLength(1)
     expect(ws.exports?.[0]?.to).toBe("@jeremy/chatcommerce")
     expect(ws.apps?.[0]?.attach).toBe("self")
     expect(ws.policy?.limits?.[0]?.value).toBe(80)
+    expect(ws.work).toEqual({ file: "WORK.md" })
   })
 })

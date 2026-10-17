@@ -104,6 +104,12 @@ export const workspaceV2FrontmatterSchema = z
     storage: z.any().describe("AIP-35 STORAGE block. Required. Inline / ref / file."),
     sandbox: z.any().optional(),
     code: z.any().optional(),
+    work: z
+      .any()
+      .optional()
+      .describe(
+        "AIP-20 WORK.md block (inline/ref/file, same union shape as `code`). A project node's status/board lives here — items are AIP-18 ITEM.md records — not in a flat status file.",
+      ),
     identity: z.any().optional(),
     wall: z.enum(["shared", "isolated", "sealed", "hard"]).default("isolated"),
     includes: z.array(includeEntrySchema).default([]),
