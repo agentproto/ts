@@ -1,5 +1,5 @@
 ---
-"@agentproto/app-kit": patch
+"@agentproto/app-kit": minor
 "@agentproto/runtime": patch
 ---
 
