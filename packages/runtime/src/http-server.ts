@@ -3318,6 +3318,18 @@ export async function startHttpServer(
           const includeDetached =
             "includeDetached" in obj &&
             (obj.includeDetached === true || obj.includeDetached === "true")
+          // Numeric, lenient like the MCP tool's `mcpNumber`: a real number or
+          // its string form; anything else is dropped (the engine's default
+          // window applies).
+          const rawActiveMinutes = "activeMinutes" in obj ? obj.activeMinutes : undefined
+          const activeMinutes =
+            typeof rawActiveMinutes === "number" && Number.isFinite(rawActiveMinutes)
+              ? rawActiveMinutes
+              : typeof rawActiveMinutes === "string" &&
+                  rawActiveMinutes.trim() !== "" &&
+                  Number.isFinite(Number(rawActiveMinutes))
+                ? Number(rawActiveMinutes)
+                : undefined
           const resolved = await resolveWorktreeQueryRoot({
             repoRoot,
             workspaceSlug,
@@ -3341,6 +3353,7 @@ export async function startHttpServer(
               ...("noisePaths" in obj && Array.isArray(obj.noisePaths)
                 ? { noisePaths: obj.noisePaths.filter((p): p is string => typeof p === "string") }
                 : {}),
+              ...(activeMinutes !== undefined ? { activeMinutes } : {}),
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))

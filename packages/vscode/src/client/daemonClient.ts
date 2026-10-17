@@ -438,15 +438,17 @@ export class DaemonClient {
    * daemon resolves it to the git root) or `workspaceSlug`. Engine safety is
    * server-side: only merged, clean, no-open-PR, no-live-session worktrees are
    * `reclaim`; dirty ones are `salvage` (removed only with `salvageDirty`); an
-   * open PR or a live session is `hold` (kept). Throws when the daemon has no
-   * gc runner wired (`501 worktree_gc_not_configured`).
-   */
+    * open PR or a live session is `hold` (kept). Throws when the daemon has no
+    * gc runner wired (`501 worktree_gc_not_configured`).
+    */
   async gcWorktrees(opts: {
     repoRoot?: string
     workspaceSlug?: string
     apply?: boolean
     salvageDirty?: boolean
     includeDetached?: boolean
+    /** Recency window in minutes for the recent-activity guard; 0 disables it. */
+    activeMinutes?: number
   }): Promise<WorktreeGcResult> {
     return this.postJson("/worktrees/gc", {
       ...(opts.repoRoot ? { repoRoot: opts.repoRoot } : {}),
@@ -454,6 +456,7 @@ export class DaemonClient {
       apply: opts.apply === true,
       salvageDirty: opts.salvageDirty === true,
       includeDetached: opts.includeDetached === true,
+      ...(opts.activeMinutes !== undefined ? { activeMinutes: opts.activeMinutes } : {}),
     })
   }
 

@@ -37,6 +37,15 @@
  * function's doc). It's applied identically at plan time and re-verified at
  * apply time (layer 2), so a worktree that grew a real commit in between is
  * still caught.
+ *
+ * Two holds this module layers ON TOP of `classify`, both read before the
+ * classification rather than folded into it (a hold reason must survive to
+ * the plan entry / apply outcome, which `classify`'s return type can't
+ * carry): `protectedPaths` (a live session's cwd — see its section below)
+ * and the recent-activity guard (`activeMinutes`, git index mtime — see
+ * that section). Either one wins unconditionally: the worktree is `hold`,
+ * never `reclaim`/`salvage`, at plan time and again in apply's layer-2
+ * re-check.
  */
 
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
@@ -202,7 +211,7 @@ export const DEFAULT_GC_NOISE_PATHS: readonly string[] = [
 // dep-bump exemption's extra git spawns either).
 
 /** The hold reasons this module can attach, distinct from `classify`'s snapshot-based holds. */
-export type GcHoldReason = "live-session-cwd"
+export type GcHoldReason = "live-session-cwd" | "recent-activity"
 
 /**
  * `true` iff `worktreePath` itself, or a subdirectory of it, is named by
@@ -216,6 +225,88 @@ export type GcHoldReason = "live-session-cwd"
 function isProtectedPath(worktreePath: string, protectedPaths: readonly string[] | undefined): boolean {
   if (!protectedPaths || protectedPaths.length === 0) return false
   return protectedPaths.some((p) => p === worktreePath || p.startsWith(worktreePath + sep))
+}
+
+// ── recent-activity guard (git index mtime) ─────────────────────────────
+//
+// Every hold above needs a source of truth `classify` can read: a bound
+// session (`computeLiveness`), dirt on disk (`computeTreeState`), a forge
+// verdict. A worktree being edited by a human with an editor or a
+// non-agentproto CLI has NONE of them — no bound session, its branch's PR
+// already merged, tree whatever it is — yet it is being used right now, and
+// `reclaim` would delete it out from under them. This is exactly the case
+// the older `scripts/maintenance/branch-hygiene.mjs` guarded with one cheap
+// filesystem signal: the worktree's own git index file.
+//
+// Why the index: every real interaction with a worktree rewrites
+// `<gitdir>/index` — checkout, add, commit, and even a plain `git status`
+// (which opportunistically refreshes it). So a young index mtime means
+// "someone was in here within the window" regardless of what any session
+// registry knows. It is deliberately a one-signal guard: it can only ever
+// HOLD (never promote anything toward reclaim), and `activeMinutes <= 0`
+// turns it off entirely.
+//
+// Ordering is load-bearing: `git status` WITH optional locks rewrites the
+// index, so every call site below reads the mtime BEFORE it spawns
+// `computeWorktreeStatus` — otherwise a sweep's own status read would make
+// every worktree look freshly active forever. (`computeTreeState` already
+// passes `--no-optional-locks` so a read must not write; the early read is
+// the belt to that suspenders.)
+
+/** Default recency window for the index-mtime guard, in minutes — `activeMinutes`, `0` disables it. */
+export const DEFAULT_GC_ACTIVE_MINUTES = 60
+
+/**
+ * mtime (epoch ms) of `worktreePath`'s own git index — the path resolved by
+ * git itself (`rev-parse --path-format=absolute --git-path index` run with
+ * `-C worktreePath`, so GIT_DIR is that worktree's private gitdir — a linked
+ * worktree keeps its index under `<common>/worktrees/<name>/index`, and a
+ * relocated/alternate layout still resolves correctly rather than assuming
+ * `.git/index` by hand). `null` when git or the filesystem can't answer: no
+ * signal, no hold.
+ */
+async function worktreeIndexMtimeMs(repoRoot: string, worktreePath: string): Promise<number | null> {
+  let indexPath: string | null
+  try {
+    const res = await execArgv(
+      "git",
+      ["-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-path", "index"],
+      repoRoot,
+    )
+    if (res.exitCode !== 0) return null
+    indexPath = res.stdout.trim() || null
+  } catch {
+    // Spawn-level failure (worktree vanished under us) proves nothing — no hold.
+    return null
+  }
+  if (!indexPath) return null
+  try {
+    return (await stat(indexPath)).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `true` iff `worktreePath`'s own git index was written within the last
+ * `activeMinutes` (default {@link DEFAULT_GC_ACTIVE_MINUTES}; `<= 0`
+ * disables the guard entirely). Best-effort by design: an unreadable index
+ * or a worktree that vanished mid-sweep yields `false`, never a throw — a
+ * missing signal must not take a whole plan down, and must not hold either.
+ * An mtime in the future (clock skew) reads as "just now", i.e. holds — the
+ * conservative direction for a guard whose failure mode is a delayed gc.
+ */
+async function isRecentlyActive(
+  repoRoot: string,
+  worktreePath: string,
+  activeMinutes: number | undefined,
+  nowMs: number,
+): Promise<boolean> {
+  const windowMs = (activeMinutes ?? DEFAULT_GC_ACTIVE_MINUTES) * 60_000
+  if (!(windowMs > 0)) return false
+  const mtimeMs = await worktreeIndexMtimeMs(repoRoot, worktreePath)
+  if (mtimeMs === null) return false
+  return nowMs - mtimeMs < windowMs
 }
 
 /**
@@ -379,7 +470,7 @@ export interface GcPlanEntry {
   class: GcClass
   /** Set only when `class === "reclaim"` via the dep-bump exemption, the orphan reclaim path, or the prunable reclaim path — see `resolveGcClass` / `scanOrphanWorktreePaths` / `toPlanEntry`. */
   reclaimReason?: GcReclaimReason
-  /** Set only when `class === "hold"` via `protectedPaths` (`isProtectedPath`) — distinguishes this from an ordinary snapshot-based hold. */
+  /** Set only when `class === "hold"` via `protectedPaths` (`isProtectedPath`) or the recent-activity guard (`activeMinutes`) — distinguishes this from an ordinary snapshot-based hold. */
   holdReason?: GcHoldReason
   /**
    * `true` only for a directory the orphan scan found: physically present
@@ -430,6 +521,14 @@ export interface PlanGcInput {
   protectedPaths?: string[]
   /** Noise allowlist (see "noise allowlist" above). Default `DEFAULT_GC_NOISE_PATHS`; `[]` disables it. */
   noisePaths?: readonly string[]
+  /**
+   * Minutes since the worktree's own git index was last written for the
+   * recent-activity guard to hold it (see that section): younger than this
+   * ⇒ `hold` with `holdReason: "recent-activity"`, never
+   * `reclaim`/`salvage`. Default `DEFAULT_GC_ACTIVE_MINUTES` (60);
+   * `0` disables the guard entirely.
+   */
+  activeMinutes?: number
 }
 
 /** Every linked worktree of `repoRoot` except the main checkout itself — see the module docblock. */
@@ -718,6 +817,7 @@ async function toPlanEntry(
   status: { tree: TreeState; integration: IntegrationState; liveness: LivenessState },
   includeDetached: boolean,
   nowMs: number,
+  recentlyActive: boolean,
   protectedPaths?: readonly string[],
 ): Promise<GcPlanEntry> {
   if (isProtectedPath(worktree.path, protectedPaths)) {
@@ -730,6 +830,22 @@ async function toPlanEntry(
       liveness: status.liveness,
       class: "hold",
       holdReason: "live-session-cwd",
+    }
+  }
+  // Recent activity wins before classification even runs — it can only ever
+  // hold, so there is no point paying the dep-bump/in-base git spawns for a
+  // worktree that isn't leaving either way (same shape as the protectedPaths
+  // check above it).
+  if (recentlyActive) {
+    return {
+      path: worktree.path,
+      branch: worktree.branch,
+      head: worktree.head,
+      tree: status.tree,
+      integration: status.integration,
+      liveness: status.liveness,
+      class: "hold",
+      holdReason: "recent-activity",
     }
   }
   const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
@@ -770,6 +886,15 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
       entries.push(makePrunablePlanEntry(worktree, input.protectedPaths))
       continue
     }
+    // Index mtime FIRST: `computeWorktreeStatus`'s `git status` rewrites the
+    // index, so reading it after would report this sweep's own read as
+    // recent activity. See the "recent-activity guard" section.
+    const recentlyActive = await isRecentlyActive(
+      input.repoRoot,
+      worktree.path,
+      input.activeMinutes,
+      nowMs,
+    )
     const status = await computeWorktreeStatus({
       repoRoot: input.repoRoot,
       repoName: input.repoName,
@@ -789,6 +914,7 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
         status,
         includeDetached,
         nowMs,
+        recentlyActive,
         input.protectedPaths,
       ),
     )
@@ -821,6 +947,13 @@ export interface ApplyGcOptions {
   protectedPaths?: string[]
   /** See `PlanGcInput.noisePaths`. */
   noisePaths?: readonly string[]
+  /**
+   * See `PlanGcInput.activeMinutes` — re-read here at apply time (layer 2),
+   * immediately before the status re-classification, so a worktree whose
+   * index was touched between plan and apply is held instead of removed.
+   * Default `DEFAULT_GC_ACTIVE_MINUTES` (60); `0` disables the guard.
+   */
+  activeMinutes?: number
   /**
    * The bucket directory this repo's worktrees are provisioned under — the
    * same value `planGc` takes. When passed, apply first fires
@@ -997,12 +1130,26 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
     return reclaimPrunable(entry, options)
   }
   if (entry.class === "hold") {
-    return { path: entry.path, branch: entry.branch, result: "held" }
+    // Already held by the plan — nothing to re-check (a hold never removes
+    // anything), but carry the plan's reason through to the outcome so a
+    // reader of the apply run sees WHY (live-session-cwd / recent-activity).
+    return { path: entry.path, branch: entry.branch, result: "held", ...(entry.holdReason ? { holdReason: entry.holdReason } : {}) }
   }
   if (entry.class === "salvage" && !options.salvageDirty) {
     return { path: entry.path, branch: entry.branch, result: "skipped-dirty" }
   }
 
+  // Recent-activity re-check (layer 2): the index mtime is read HERE, ahead
+  // of the `git status` below it — a status read with optional locks would
+  // rewrite the index and report this sweep's own read as fresh activity.
+  // The verdict is applied after `resolveGcClass`, so an entry that
+  // reclassified for its own reason still reports that reason first.
+  const recentlyActive = await isRecentlyActive(
+    options.repoRoot,
+    entry.path,
+    options.activeMinutes,
+    options.nowMs ?? Date.now(),
+  )
   // Layer 2 (PLAN.md §5.2): re-check immediately before touching anything.
   // Re-derive the worktree ref itself, not just its status — a branch can
   // flip between plan and apply (the rendezvous-deploy branch-flip mid-
@@ -1035,6 +1182,19 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
     includeDetached: Boolean(options.includeDetached),
     nowMs: options.nowMs,
   })
+  // Recent activity beats everything but an already-`hold` verdict: a
+  // worktree someone is in right now is never reclaimed OR salvaged, however
+  // fresh the plan was when it said otherwise.
+  if (recentlyActive && resolved.class !== "hold") {
+    return {
+      path: entry.path,
+      branch: fresh.branch,
+      result: "aborted-reclassified",
+      from: entry.class,
+      to: "hold",
+      holdReason: "recent-activity",
+    }
+  }
   if (resolved.class !== entry.class) {
     return {
       path: entry.path,
@@ -1105,6 +1265,13 @@ export async function reclaimOneWorktree(
   if (worktree.prunable) {
     return applyOne(makePrunablePlanEntry(worktree, options.protectedPaths), options)
   }
+  // Index mtime before the status read below — see "recent-activity guard".
+  const recentlyActive = await isRecentlyActive(
+    options.repoRoot,
+    worktree.path,
+    options.activeMinutes,
+    options.nowMs ?? Date.now(),
+  )
   const status = await computeWorktreeStatus({
     repoRoot: options.repoRoot,
     repoName: options.repoName,
@@ -1123,6 +1290,7 @@ export async function reclaimOneWorktree(
     status,
     Boolean(options.includeDetached),
     options.nowMs ?? Date.now(),
+    recentlyActive,
     options.protectedPaths,
   )
   return applyOne(entry, options)

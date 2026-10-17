@@ -8,7 +8,8 @@ agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch]
                                    [--discard-untracked] [--discard-modified] [--json]
 agentproto worktree archive <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--json]
 agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
-                                   [--include-detached] [--noise <path,...>] [--json]
+                                   [--include-detached] [--noise <path,...>]
+                                   [--active-minutes <n>] [--json]
 ```
 
 Create, inspect, and tear down git worktrees. A pure local shell over
@@ -98,7 +99,7 @@ nothing is touched without `--apply`.**
 |-------|-----------|----------------|
 | `reclaim` | `(merged or fresh) + clean + idle`, **or** a clean `unpushed` worktree whose only commits are mechanical dependency bumps (`chore(deps)` / `fix(deps)` subjects and the diff touches only lockfiles + `package.json`), **or** a clean, idle worktree whose branch content is provably in base by the [`branch gc`](./branch.md) ladder (squash-, patch- or content-merged — never for an open PR or an offline forge) | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
 | `salvage` | merged + dirty, and not written to in the last 15 minutes | Nothing, unless `--salvage-dirty` — then archives it (snapshot, then remove). |
-| `hold` | everything else, including a fresh or merged branch with uncommitted work | **Never touched**, with or without flags. |
+| `hold` | everything else, including a fresh or merged branch with uncommitted work, and any worktree whose own git index was written within the last `--active-minutes` (recent activity — someone is working in it) | **Never touched**, with or without flags. |
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -107,10 +108,11 @@ nothing is touched without `--apply`.**
 | `--salvage-dirty` | `false` | Also archive salvage-class worktrees. |
 | `--include-detached` | `false` | Also reclaim clean, idle detached worktrees. |
 | `--noise <path,...>` | `.opencode/package-lock.json` | Worktree-relative paths whose dirt is known noise: a worktree dirty only on these counts as clean, and removal restores them before a plain non-force remove. `--noise ""` disables. |
+| `--active-minutes <n>` | `60` | Recent-activity window in minutes: a worktree whose own git index mtime is younger than this holds with reason `recent-activity` instead of reclaiming/salvaging. `0` disables the guard. |
 | `--json` | `false` | Emit the plan (or the outcomes, with `--apply`) as JSON. |
 
-Between plan and apply, each entry is re-checked: one that reclassified or
-vanished is aborted rather than acted on stale.
+Between plan and apply, each entry is re-checked: one that reclassified,
+became recently active, or vanished is aborted rather than acted on stale.
 
 ## Examples
 

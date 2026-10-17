@@ -4047,7 +4047,8 @@ export function registerSessionTools(
       "RUN: with `apply` false (the default) it returns the plan — each " +
       "worktree classified as `reclaim` (merged/fresh + clean → safe to " +
       "remove), `salvage` (integrated but dirty), or `hold` (open PR, live " +
-      "sessions, or anything unresolved) — and mutates nothing. Pass " +
+      "sessions, a recently-touched git index, or anything unresolved) — " +
+      "and mutates nothing. Pass " +
       "`apply: true` to execute: `reclaim` entries are removed and their " +
       "branch deleted, and `salvage` entries are archived first (only when " +
       "`salvageDirty` is also true), never silently discarded. `hold` " +
@@ -4100,6 +4101,15 @@ export function registerSessionTools(
           "Worktree-relative paths whose dirt is known noise (a worktree dirty " +
             "ONLY on these counts as clean). Default `.opencode/package-lock.json`; " +
             "pass [] to disable."
+        ),
+      activeMinutes: mcpNumber
+        .optional()
+        .describe(
+          "Recency window, in minutes, for the recent-activity guard: a " +
+            "worktree whose own git index was written within it holds with " +
+            "reason `recent-activity` instead of reclaiming/salvaging (plan " +
+            "time and again immediately before apply touches anything). " +
+            "Default 60. Pass 0 to disable the guard."
         ),
       wait: mcpBool
         .optional()
@@ -4158,6 +4168,7 @@ export function registerSessionTools(
             // see `livingSessionCwds`'s doc.
             protectedPaths: livingSessionCwds(registry),
             ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
+            ...(typeof input.activeMinutes === "number" ? { activeMinutes: input.activeMinutes } : {}),
           })
         )
         if (input.wait === false) {

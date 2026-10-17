@@ -58,8 +58,26 @@ async function headSha(repoRoot: string, ref = "HEAD"): Promise<string> {
   return res.stdout.trim()
 }
 
+/**
+ * Ages `wtPath`'s own git index past the recent-activity guard's window
+ * (`DEFAULT_GC_ACTIVE_MINUTES`, gc.ts) — i.e. "nobody has been in this
+ * worktree for an hour". `git worktree add`, `git add` and `git checkout`
+ * all write a brand-new index, which the guard reads as "touched moments
+ * ago" and therefore holds; every fixture below is written to model the IDLE
+ * worktree its assertion is about, so the fixtures age the index here rather
+ * than each call site opting the guard off (`activeMinutes: 0`) and losing
+ * the default-on coverage. The guard's own fresh-vs-old behavior is tested
+ * explicitly in the "recent-activity" block at the end of this file.
+ */
+async function backdateIndex(wtPath: string, ageMs = 61 * 60 * 1000): Promise<void> {
+  const res = await execGit(wtPath, ["rev-parse", "--path-format=absolute", "--git-path", "index"])
+  const old = new Date(Date.now() - ageMs)
+  await utimes(res.stdout.trim(), old, old)
+}
+
 async function addWorktree(repoRoot: string, path: string, opts: readonly string[], commitish: string): Promise<void> {
   await execGit(repoRoot, ["worktree", "add", ...opts, path, commitish])
+  await backdateIndex(path)
 }
 
 class FakeForgeClient implements ForgeClient {
@@ -844,6 +862,7 @@ describe("gc — dep-bump reclaim exemption", () => {
     await execGit(repo, ["branch", branch, "origin/main"])
     const wtPath = join(repo, "..", `dep-bump-${Math.random().toString(36).slice(2)}`)
     await execGit(repo, ["worktree", "add", wtPath, branch])
+    await backdateIndex(wtPath)
     return wtPath
   }
 
@@ -860,6 +879,7 @@ describe("gc — dep-bump reclaim exemption", () => {
     }
     await execGit(wtPath, ["add", "."])
     await execGit(wtPath, ["commit", "-m", message])
+    await backdateIndex(wtPath)
   }
 
   async function planFor(repo: string, wtPath: string, forge: ForgeClient) {
@@ -1793,5 +1813,154 @@ describe("gc — the wider default noise list (lockfile + launch.json churn)", (
     }
     const plan2 = await planGc(gcInput)
     expect(plan2.find((e) => e.path === wtPath)?.class).toBe("salvage")
+  })
+})
+
+describe("gc — recent-activity guard (git index mtime)", () => {
+  /**
+   * Merged + clean + idle: the shape every test below starts from `reclaim`
+   * on, so each test perturbs exactly one thing (the index mtime, or the
+   * `activeMinutes` knob) and nothing else. `addWorktree` ages the index past
+   * the default window — tests that need a "someone is in there right now"
+   * index put it back to the present themselves.
+   */
+  async function mergedCleanWorktree(label: string): Promise<{ repo: string; wtPath: string }> {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", `feat/recent-${label}`])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", `feat/recent-${label}`])
+    const wtPath = join(repo, "..", `recent-${label}-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], `feat/recent-${label}`)
+    return { repo, wtPath }
+  }
+
+  async function stillRegistered(repo: string, wtPath: string): Promise<boolean> {
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    return wtList.stdout.includes(wtPath)
+  }
+
+  it("a just-touched worktree plans as hold/recent-activity, and applyGc reports held — never reclaimed", async () => {
+    const { repo, wtPath } = await mergedCleanWorktree("fresh")
+    // `git worktree add` wrote the index moments ago: "someone is in there".
+    await backdateIndex(wtPath, 0)
+
+    const forge = new UnreachableForgeClient("must not be called — the hold wins before classification runs")
+    const memo = new InMemoryVerdictMemoStore()
+    const gcInput = { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW }
+    const plan = await planGc(gcInput)
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("hold")
+    expect(entry?.holdReason).toBe("recent-activity")
+
+    // Even with --salvage-dirty (the most aggressive apply mode), a hold
+    // entry is never touched.
+    const outcomes = await applyGc(plan, { ...gcInput, salvageDirty: true })
+    const outcome = outcomes.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "held" }>
+    expect(outcome?.result).toBe("held")
+    expect(outcome?.holdReason).toBe("recent-activity")
+    expect(await stillRegistered(repo, wtPath)).toBe(true)
+    expect(worktreeRemoveCalls()).toHaveLength(0)
+  })
+
+  it("a dirty worktree with a just-touched index is held, never salvaged, even with --salvage-dirty", async () => {
+    const { repo, wtPath } = await mergedCleanWorktree("dirty")
+    await writeFile(join(wtPath, "scratch.txt"), "unmerged scratch\n")
+    await backdateIndex(wtPath, 0)
+
+    const forge = new UnreachableForgeClient("must not be called — the hold wins before classification runs")
+    const memo = new InMemoryVerdictMemoStore()
+    const gcInput = { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW }
+    const plan = await planGc(gcInput)
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("hold")
+    expect(entry?.holdReason).toBe("recent-activity")
+
+    const outcomes = await applyGc(plan, { ...gcInput, salvageDirty: true })
+    const outcome = outcomes.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "held" }>
+    expect(outcome?.result).toBe("held")
+    expect(outcome?.holdReason).toBe("recent-activity")
+    expect(await readFile(join(wtPath, "scratch.txt"), "utf8")).toBe("unmerged scratch\n")
+    expect(await stillRegistered(repo, wtPath)).toBe(true)
+    expect(worktreeRemoveCalls()).toHaveLength(0)
+  })
+
+  it("an index older than the window is plain reclaim, and applyGc removes it", async () => {
+    const { repo, wtPath } = await mergedCleanWorktree("idle")
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies this")
+    const memo = new InMemoryVerdictMemoStore()
+    const gcInput = { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW }
+    const plan = await planGc(gcInput)
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("reclaim")
+    expect(entry?.holdReason).toBeUndefined()
+
+    const outcomes = await applyGc(plan, gcInput)
+    const outcome = outcomes.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "reclaimed" }>
+    expect(outcome?.result).toBe("reclaimed")
+    expect(await stillRegistered(repo, wtPath)).toBe(false)
+  })
+
+  it("activeMinutes: 0 disables the guard — a just-touched worktree reclaims anyway", async () => {
+    const { repo, wtPath } = await mergedCleanWorktree("disabled")
+    await backdateIndex(wtPath, 0)
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies this")
+    const memo = new InMemoryVerdictMemoStore()
+    const gcInput = { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW }
+    const plan = await planGc({ ...gcInput, activeMinutes: 0 })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("reclaim")
+    expect(entry?.holdReason).toBeUndefined()
+
+    const outcomes = await applyGc(plan, { ...gcInput, activeMinutes: 0 })
+    expect(outcomes.find((o) => o.path === wtPath)?.result).toBe("reclaimed")
+    expect(await stillRegistered(repo, wtPath)).toBe(false)
+  })
+
+  it("activeMinutes is a real window: 61-min-old index holds under 120, reclaims under 5", async () => {
+    const { repo, wtPath } = await mergedCleanWorktree("window")
+    const forge = new UnreachableForgeClient("must not be called — the hold wins before classification runs")
+    const memo = new InMemoryVerdictMemoStore()
+    const gcInput = { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW }
+
+    const tooWide = await planGc({ ...gcInput, activeMinutes: 120 })
+    expect(tooWide.find((e) => e.path === wtPath)?.class).toBe("hold")
+    expect(tooWide.find((e) => e.path === wtPath)?.holdReason).toBe("recent-activity")
+
+    const narrowEnough = await planGc({ ...gcInput, activeMinutes: 5 })
+    expect(narrowEnough.find((e) => e.path === wtPath)?.class).toBe("reclaim")
+  })
+
+  it("TOCTOU: the index is touched between plan and apply — aborted-reclassified to hold, worktree untouched", async () => {
+    const { repo, wtPath } = await mergedCleanWorktree("toctou")
+    const memo = new InMemoryVerdictMemoStore()
+    const planForge = new UnreachableForgeClient("must not be called — ancestry alone classifies this")
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge: planForge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    expect(plan.find((e) => e.path === wtPath)?.class).toBe("reclaim")
+
+    // The plan is now stale: someone starts working in the worktree.
+    await backdateIndex(wtPath, 0)
+
+    spawnSpy.mockClear()
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge: new UnreachableForgeClient("must not be called — the hold wins before classification runs"),
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "aborted-reclassified" }>
+    expect(outcome?.result).toBe("aborted-reclassified")
+    expect(outcome.from).toBe("reclaim")
+    expect(outcome.to).toBe("hold")
+    expect(outcome.holdReason).toBe("recent-activity")
+    expect(await stillRegistered(repo, wtPath)).toBe(true)
+    expect(worktreeRemoveCalls()).toHaveLength(0)
   })
 })
