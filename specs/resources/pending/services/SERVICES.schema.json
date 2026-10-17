@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/pending/services/SERVICES.schema.json",
+  "title": "AppService list — app/v1 APP.md `services`",
+  "description": "Validates the `services` frontmatter array of an AIP-53 APP.md — the app's production hosting surface. One entry = one supervised service process the host runs for the app; there is NO dependency graph, NO scaling and NO scheduler behind it. Names MUST be unique across the array (the loader rejects a duplicate `name` as a load error; JSON Schema 2020-12 cannot express per-key uniqueness, hence the additional `uniqueItems` guard against exact duplicates). This is NOT `dev.launch`: `dev.launch` stays dev-only and is never executed by the loader.",
+  "type": "array",
+  "minItems": 1,
+  "uniqueItems": true,
+  "items": { "$ref": "#/$defs/service" },
+  "$defs": {
+    "service": {
+      "type": "object",
+      "required": ["name", "entry"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Service identifier — kebab-case slug, unique across the `services` array."
+        },
+        "entry": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty shell command line that starts the service, e.g. `pnpm --filter x start` or `node dist/server.js`. Carried verbatim; a launcher command, never executed by the loader/`defineApp`."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Optional TCP port the service listens on. Omitted = a service that does not listen (no port). One process per entry, one port."
+        }
+      }
+    }
+  }
+}
