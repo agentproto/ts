@@ -368,30 +368,34 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     sessionId: string,
     private readonly wsUrl: string,
     private readonly onClosed: (targetId: string) => void,
+    /**
+     * Set once, at construction, from `entry.ownedChrome !== undefined` —
+     * never from anything a caller passes later. This is the ONE thing
+     * `setCookies` below trusts to tell the DEDICATED, zero-consent Chrome
+     * this provider itself launched apart from the user's own, attached-to
+     * Chrome: there is no public setter, and no other method ever flips it.
+     */
+    private readonly dedicated: boolean = false,
   ) {
     super(conn, targetId, sessionId)
   }
 
-  /** Cookies are read-only here: nothing is written into the user's real profile. */
+  /**
+   * Writable ONLY on the dedicated Chrome this provider itself auto-launched
+   * (`dedicated` — set once at construction, never by a caller). On an
+   * attach to the user's own Chrome it stays exactly what it always was:
+   * refused, nothing written into their real profile. Note this goes
+   * straight to `this.conn.send`, not `this.send` — the `send` override's
+   * `isRefusedLiveCommand` guard below exists to stop an AGENT writing
+   * cookies through `cdp_send` on ANY chrome-live driver; it would refuse
+   * `Network.setCookies` here too if routed through it, dedicated or not.
+   * Values are never logged, only a count (by `attach()`'s caller).
+   */
   override async setCookies(cookies: readonly BrowserCookie[]): Promise<void> {
     if (cookies.length === 0) return
-    throw new ToolError({ code: "unauthorised", message: "[chrome-live] cookies are read-only on the user's own Chrome profile" })
-  }
-
-  /**
-   * Provider-only cookie injection for the DEDICATED, zero-consent Chrome
-   * this provider auto-launches — never the user's own, attached-to Chrome
-   * (that path never constructs a driver with cookies to inject in the
-   * first place). Goes straight to `this.conn.send` on this driver's own
-   * flat session, bypassing both the `setCookies` override above AND the
-   * `send` override's `isRefusedLiveCommand` guard — both stay in full
-   * effect for any caller going through the public `BrowserDriver` surface
-   * (an agent's `driver.setCookies()`/`driver.send()`). Only ever invoked by
-   * `attach()` itself, right after bootstrap, before the driver is handed to
-   * a caller. Values are never logged.
-   */
-  async injectGrantedCookies(cookies: readonly BrowserCookie[]): Promise<void> {
-    if (cookies.length === 0) return
+    if (!this.dedicated) {
+      throw new ToolError({ code: "unauthorised", message: "[chrome-live] cookies are read-only on the user's own Chrome profile" })
+    }
     await this.conn.send<void>("Network.setCookies", { cookies: toCdpCookieParams(cookies) }, this.sessionId)
   }
 
@@ -978,26 +982,41 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
           let driver: ChromeLiveDriver | undefined
           try {
             const { sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true })
-            driver = new ChromeLiveDriver(entry.conn, targetId, sessionId, entry.url, (id) => {
-              forget(entry, id)
-              entry.drivers.delete(driver as ChromeLiveDriver)
-              mine.delete(driver as ChromeLiveDriver)
-            })
+            driver = new ChromeLiveDriver(
+              entry.conn,
+              targetId,
+              sessionId,
+              entry.url,
+              (id) => {
+                forget(entry, id)
+                entry.drivers.delete(driver as ChromeLiveDriver)
+                mine.delete(driver as ChromeLiveDriver)
+              },
+              dedicated,
+            )
             await driver.bootstrap()
-            if (dedicated && config.cookieSource) {
-              const sourced = await config.cookieSource({
-                providerId: CHROME_LIVE_PROVIDER_ID,
-                profile: CHROME_LIVE_LAUNCH_PROFILE,
-                ...(cookieChromeProfile !== undefined ? { chromeProfile: cookieChromeProfile } : {}),
-                ...(cookieDomains !== undefined ? { domains: cookieDomains } : {}),
-              })
-              // Belt and suspenders: narrow to `cookieDomains` ourselves too,
-              // regardless of whether the source already did.
-              const scoped = cookieDomains ? sourced.filter((c) => cookieDomains.some((d) => cookieDomainMatches(c.domain, d))) : sourced
-              const granted = [...scoped, ...cookiesFromSessionPayload(attachOpts?.sessionPayload)]
+            if (dedicated) {
+              // `config.cookieSource` may be unset (e.g. the default
+              // `chromeLiveAdapter` singleton) — that's zero source cookies,
+              // NOT a reason to also drop a session payload the caller
+              // explicitly offered; a dedicated instance honors one either way.
+              const sourced = config.cookieSource
+                ? await config.cookieSource({
+                    providerId: CHROME_LIVE_PROVIDER_ID,
+                    profile: CHROME_LIVE_LAUNCH_PROFILE,
+                    ...(cookieChromeProfile !== undefined ? { chromeProfile: cookieChromeProfile } : {}),
+                    ...(cookieDomains !== undefined ? { domains: cookieDomains } : {}),
+                  })
+                : []
+              const combined = [...sourced, ...cookiesFromSessionPayload(attachOpts?.sessionPayload)]
+              // Belt and suspenders: narrow to `cookieDomains` ourselves too
+              // (regardless of whether the source already did), and apply the
+              // SAME ceiling to the session payload — `domains` is a hard cap
+              // on what reaches the dedicated Chrome, not just on the source.
+              const granted = cookieDomains ? combined.filter((c) => cookieDomains.some((d) => cookieDomainMatches(c.domain, d))) : combined
               if (granted.length > 0) {
                 entry.log?.(`[chrome-live] injecting ${granted.length} granted cookie(s) via Network.setCookies (dedicated profile)`)
-                await driver.injectGrantedCookies(granted)
+                await driver.setCookies(granted)
               }
             }
             if (attachOpts?.initialUrl) driver.target.url = attachOpts.initialUrl

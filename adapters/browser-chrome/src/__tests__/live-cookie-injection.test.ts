@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { CHROME_LIVE_LAUNCH_PROFILE, CHROME_LIVE_PROVIDER_ID, createChromeLiveProvider, type ChromeProcess } from "../index.js"
+import { CHROME_LIVE_LAUNCH_PROFILE, CHROME_LIVE_PROVIDER_ID, ChromeLiveDriver, createChromeLiveProvider, type ChromeProcess } from "../index.js"
 import { startFakeChrome, type FakeChrome } from "./live-fake-chrome.js"
 
 const dirs: string[] = []
@@ -171,6 +171,37 @@ describe("chrome-live: cookieSource injection into the DEDICATED Chrome only", (
     expect(setCookiesCommands(f)).toHaveLength(0)
     await instance.stop()
   })
+
+  it("still injects a session payload's cookies even with no cookieSource configured at all", async () => {
+    const f = await fake()
+    const provider = dedicatedProvider({}, f)
+    const instance = await provider.launch({}, {})
+    await instance.attach({ sessionPayload: { cookies: [{ name: "a", value: "va", domain: "example.com", path: "/" }] } })
+
+    const cookies = setCookiesCommands(f)[0]?.params?.cookies as Array<{ name: string }>
+    expect(cookies.map((c) => c.name)).toEqual(["a"])
+
+    await instance.stop()
+  })
+
+  it("applies the domains ceiling to a session payload too, not just to the source", async () => {
+    const f = await fake()
+    const provider = dedicatedProvider({ cookieSource: () => [{ name: "src", value: "v", domain: "keep.example", path: "/" }] }, f)
+    const instance = await provider.launch({ domains: ["keep.example"] }, {})
+    await instance.attach({
+      sessionPayload: {
+        cookies: [
+          { name: "payload-keep", value: "v", domain: "keep.example", path: "/" },
+          { name: "payload-drop", value: "v", domain: "drop.example", path: "/" },
+        ],
+      },
+    })
+
+    const cookies = setCookiesCommands(f)[0]?.params?.cookies as Array<{ name: string }>
+    expect(cookies.map((c) => c.name).sort()).toEqual(["payload-keep", "src"])
+
+    await instance.stop()
+  })
 })
 
 describe("chrome-live: cookieSource never applies to the user's own (attach-to-real-Chrome) profile", () => {
@@ -190,6 +221,18 @@ describe("chrome-live: cookieSource never applies to the user's own (attach-to-r
     await instance.attach()
 
     expect(calls).toBe(0)
+    expect(setCookiesCommands(f)).toHaveLength(0)
+
+    await instance.stop()
+  })
+
+  it("refuses setCookies on an attach driver even when called directly with a non-empty array — driver-level, not caller-classification-level", async () => {
+    const f = await fake()
+    const provider = createChromeLiveProvider({ env: {} })
+    const instance = await provider.launch({ port: f.port }, {})
+    const driver = (await instance.attach()) as ChromeLiveDriver
+
+    await expect(driver.setCookies([{ name: "x", value: "y", domain: "example.com", path: "/" }])).rejects.toThrow(/read-only/)
     expect(setCookiesCommands(f)).toHaveLength(0)
 
     await instance.stop()
