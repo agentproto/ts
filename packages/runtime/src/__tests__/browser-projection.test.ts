@@ -142,18 +142,18 @@ interface ToolEnvelope {
 
 describe("projectBrowserTools", () => {
   const EXPECTED = [
-    "browser_cdp_send",
-    "browser_click",
-    "browser_evaluate",
-    "browser_fill",
-    "browser_get_dom",
-    "browser_get_request_body",
-    "browser_list_requests",
-    "browser_navigate",
-    "browser_screenshot",
+    "browser_kit_cdp_send",
+    "browser_kit_click",
+    "browser_kit_evaluate",
+    "browser_kit_fill",
+    "browser_kit_get_dom",
+    "browser_kit_get_request_body",
+    "browser_kit_list_requests",
+    "browser_kit_navigate",
+    "browser_kit_screenshot",
   ]
 
-  it("full-capability provider exposes the existing browser_* tool set and every tool works", async () => {
+  it("full-capability provider exposes the existing browser_kit_* tool set and every tool works", async () => {
     const { provider, calls } = makeFake({ capabilities: { cdp: true, downloads: true, canAiActions: true } })
     const instance = await provider.launch({}, {})
     const projected = projectBrowserTools(instance, { provider })
@@ -162,17 +162,17 @@ describe("projectBrowserTools", () => {
     const listed = (await client.listTools()).tools.map((t) => t.name).sort()
     expect(listed).toEqual(EXPECTED)
 
-    const nav = await client.callTool({ name: "browser_navigate", arguments: { url: "https://example.test/" } })
+    const nav = await client.callTool({ name: "browser_kit_navigate", arguments: { url: "https://example.test/" } })
     expect(nav.isError).toBeFalsy()
     expect(nav.structuredContent).toEqual({ url: "https://example.test/" })
 
-    const reqs = await client.callTool({ name: "browser_list_requests", arguments: {} })
+    const reqs = await client.callTool({ name: "browser_kit_list_requests", arguments: {} })
     expect(reqs.isError).toBeFalsy()
     expect((reqs.structuredContent as { requests: unknown[] }).requests).toHaveLength(1)
 
-    const cdpRes = await client.callTool({ name: "browser_cdp_send", arguments: { method: "Page.enable" } })
+    const cdpRes = await client.callTool({ name: "browser_kit_cdp_send", arguments: { method: "Page.enable" } })
     expect(cdpRes.isError).toBeFalsy()
-    const shot = await client.callTool({ name: "browser_screenshot", arguments: {} })
+    const shot = await client.callTool({ name: "browser_kit_screenshot", arguments: {} })
     expect(shot.structuredContent).toMatchObject({ base64: "AAAA", format: "png" })
 
     // one lazy attach shared by every call, closed once
@@ -183,13 +183,13 @@ describe("projectBrowserTools", () => {
     await client.close()
   })
 
-  it("browser_list_requests on a cdp:false provider returns typed unsupported naming cdp, without attaching", async () => {
+  it("browser_kit_list_requests on a cdp:false provider returns typed unsupported naming cdp, without attaching", async () => {
     const { provider, calls } = makeFake({ capabilities: { cdp: false } })
     const instance = await provider.launch({}, {})
     const projected = projectBrowserTools(instance, { provider })
     const client = await connect((s) => projected.register(s))
 
-    const res = await client.callTool({ name: "browser_list_requests", arguments: {} })
+    const res = await client.callTool({ name: "browser_kit_list_requests", arguments: {} })
     expect(res.isError).toBe(true)
     const body = res.structuredContent as unknown as ToolEnvelope
     expect(body.ok).toBe(false)
@@ -200,15 +200,15 @@ describe("projectBrowserTools", () => {
     expect(calls.attaches).toBe(0)
     expect(calls.driverCalls).toEqual([])
 
-    for (const name of ["browser_get_request_body", "browser_cdp_send"]) {
-      const args = name === "browser_get_request_body" ? { requestId: "r1" } : { method: "Page.enable" }
+    for (const name of ["browser_kit_get_request_body", "browser_kit_cdp_send"]) {
+      const args = name === "browser_kit_get_request_body" ? { requestId: "r1" } : { method: "Page.enable" }
       const r = await client.callTool({ name, arguments: args })
       expect(r.isError).toBe(true)
       expect((r.structuredContent as unknown as ToolEnvelope).error.cause?.capability).toBe("cdp")
     }
 
     // ungated tools still work on the same provider
-    const nav = await client.callTool({ name: "browser_navigate", arguments: { url: "https://example.test/" } })
+    const nav = await client.callTool({ name: "browser_kit_navigate", arguments: { url: "https://example.test/" } })
     expect(nav.isError).toBeFalsy()
     await projected.close()
     await client.close()
@@ -228,7 +228,7 @@ describe("projectBrowserTools", () => {
       return d
     }
     const projected = projectBrowserTools(instance, { provider })
-    const res = (await projected.tools.find((t) => t.name === "browser_list_requests")!.call({}))
+    const res = (await projected.tools.find((t) => t.name === "browser_kit_list_requests")!.call({}))
     expect(res.isError).toBe(true)
     expect((res.structuredContent as unknown as ToolEnvelope).error).toMatchObject({
       code: "browser:unsupported",
@@ -243,7 +243,7 @@ describe("projectBrowserTools", () => {
       throw new Error("no page")
     }
     const projected = projectBrowserTools(instance, { provider })
-    const res = await projected.tools.find((t) => t.name === "browser_navigate")!.call({ url: "https://example.test/" })
+    const res = await projected.tools.find((t) => t.name === "browser_kit_navigate")!.call({ url: "https://example.test/" })
     expect(res.isError).toBe(true)
     expect((res.structuredContent as unknown as ToolEnvelope).error.message).toBe("no page")
   })
@@ -252,7 +252,7 @@ describe("projectBrowserTools", () => {
     const { provider } = makeFake({ capabilities: { cdp: true } })
     const instance = await provider.launch({}, {})
     const noWriter = projectBrowserTools(instance, { provider })
-    const denied = await noWriter.tools.find((t) => t.name === "browser_screenshot")!.call({ path: "x.png" })
+    const denied = await noWriter.tools.find((t) => t.name === "browser_kit_screenshot")!.call({ path: "x.png" })
     expect(denied.isError).toBe(true)
 
     const written: string[] = []
@@ -263,7 +263,7 @@ describe("projectBrowserTools", () => {
         return `/artifacts/${p}`
       },
     })
-    const ok = await withWriter.tools.find((t) => t.name === "browser_screenshot")!.call({ path: "x.png" })
+    const ok = await withWriter.tools.find((t) => t.name === "browser_kit_screenshot")!.call({ path: "x.png" })
     expect(ok.isError).toBeUndefined()
     expect(ok.structuredContent).toMatchObject({ path: "/artifacts/x.png", bytes: 3 })
     expect(written).toEqual(["x.png:3"])

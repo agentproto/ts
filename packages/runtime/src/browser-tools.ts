@@ -4,15 +4,30 @@
  * inspect browser service sessions through the same MCP connection it uses
  * for fs/exec/agent-cli.
  *
- * Eight tools:
- *   browser_adapter_list   discover available browser adapter ids + metadata
+ * Seventeen tools:
+ *   browser_adapter_list    discover available browser adapter ids + metadata
  *   start_browser           ensure a browser adapter is up, register as a session
  *   stop_browser            kill a running browser session
  *   list_browsers           browse alive/recent browser sessions
  *   browser_status          descriptor + live health probe for one session
+ *   browser_screenshot      capture what an agent's browser session is showing
  *   fetch_page              plain HTTP read (no browser) → { title, text, url, blocked }
  *   browser_navigate        chrome-live only: open/reuse an owned tab at a URL
  *   browser_extract_text    chrome-live only: purify an owned tab's DOM → { title, text, url }
+ *   browser_get_dom         chrome-live only: raw serialized DOM of an owned tab
+ *   browser_click           chrome-live only: click a CSS selector on an owned tab
+ *   browser_fill            chrome-live only: fill a CSS selector on an owned tab
+ *   browser_evaluate        chrome-live only: run JS in an owned tab, return the value
+ *   browser_scroll          chrome-live only: scroll an owned tab (selector into view, or x/y)
+ *   browser_screencast_*    chrome-live only: live view + mp4 recording of an owned tab (start/frame/stop)
+ *
+ * ONE model for chrome-live: every one of these addresses the agent's OWN
+ * tab (opened by `browser_navigate`, never a foreign one) — there is no
+ * second, instance-wide control surface for chrome-live. (The generic,
+ * unused `projectBrowserTools` in `browser-projection.ts` is a DIFFERENT
+ * model — one whole attached instance, no per-agent tab ownership — and its
+ * tool names are deliberately prefixed `browser_kit_*` so the two can never
+ * collide if both ever get mounted on the same server.)
  *
  * Auth: same as every other daemon tool — gated by the gateway's auth source.
  *
@@ -49,6 +64,16 @@ interface BrowserInstanceLike {
   wasAlreadyRunning: boolean
   navigate?(url: string, tabId?: string): Promise<{ targetId: string; url: string }>
   getDom?(tabId?: string): Promise<{ targetId: string; url: string; html: string }>
+  click?(
+    options: { selector: string; button?: "left" | "middle" | "right"; clickCount?: number },
+    tabId?: string
+  ): Promise<void>
+  fill?(options: { selector: string; value: string; clear?: boolean }, tabId?: string): Promise<void>
+  evaluate?<T = unknown>(
+    options: { expression: string; awaitPromise?: boolean; returnByValue?: boolean; maxResultBytes?: number },
+    tabId?: string
+  ): Promise<{ value: T | undefined; truncated: boolean }>
+  scroll?(options: { selector?: string; x?: number; y?: number }, tabId?: string): Promise<{ targetId: string }>
   /** False when a non-blocking cold start returned before the service
    *  finished converging (background health-wait still running). */
   healthy: boolean
@@ -794,8 +819,10 @@ export function registerBrowserTools(
       "`blocked: true` means the response looks anti-bot-gated (403/429/503, or a " +
       "known challenge page from Cloudflare/Akamai/PerimeterX/Datadome/Incapsula) — " +
       "`text` is omitted in that case; escalate to `start_browser` + `browser_navigate` " +
-      "+ `browser_extract_text` instead of retrying the same fetch. Try this FIRST for " +
-      "any public page: it is seconds faster than a browser, and most sites are not gated.",
+      "+ `browser_extract_text` (or `browser_click`/`browser_fill`/`browser_scroll` if the " +
+      "page needs interaction first) instead of retrying the same fetch. Try this FIRST for " +
+      "any public page — instant, no browser — and only reach for the browser tools when " +
+      "`blocked: true` or the content needs JS/interaction to appear.",
     {
       url: z.string().min(1).describe("URL to fetch."),
       timeoutMs: z.number().int().positive().max(60_000).optional().describe("Default 15000."),
@@ -826,8 +853,10 @@ export function registerBrowserTools(
     "chrome-live only. Navigate to `url` on an agent-OWNED tab — reuses the " +
       "existing owned tab (any one, or the one named by `tabId`) if there is " +
       "one, else opens a fresh one. Never addresses a tab the agent did not " +
-      "open. Returns { targetId, url } (the url after redirects). Follow with " +
-      "`browser_extract_text` to read the page, or `browser_screenshot` to see it.",
+      "open. Returns { targetId, url } (the url after redirects, best-effort). Follow with " +
+      "`browser_extract_text`/`browser_get_dom` to read the page, " +
+      "`browser_click`/`browser_fill`/`browser_scroll` to interact, or " +
+      "`browser_screenshot` to see it.",
     {
       sessionId: z
         .string()
@@ -864,7 +893,8 @@ export function registerBrowserTools(
     "chrome-live only. Read the agent-OWNED tab's current page as clean text: " +
       "strips boilerplate (nav/ads/scripts) and returns { title, text (markdown), url }. " +
       "Call `browser_navigate` first — this never opens a tab itself, same " +
-      "ownership rule as `browser_screenshot`.",
+      "ownership rule as `browser_screenshot`. Prefer this over `browser_get_dom` unless " +
+      "you specifically need raw HTML (e.g. to find a CSS selector for `browser_click`/`browser_fill`).",
     {
       sessionId: z
         .string()
@@ -892,6 +922,209 @@ export function registerBrowserTools(
         return okResult({ title, text, url })
       } catch (err) {
         return errResult(`browser_extract_text: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_get_dom ───────────────────────────────────────────────────────────
+  server.tool(
+    "browser_get_dom",
+    "chrome-live only. Read the agent-OWNED tab's current page as RAW serialized DOM " +
+      "(outerHTML) — returns { targetId, url, html }. Use `browser_extract_text` instead " +
+      "for reading content; reach for this when you need exact markup (e.g. to find a " +
+      "CSS selector for `browser_click`/`browser_fill`). Same ownership rule as " +
+      "`browser_screenshot` — call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z
+        .string()
+        .optional()
+        .describe("Provider-owned target id to read (default: the first active agent tab)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_get_dom: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_get_dom: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_get_dom: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.getDom)
+        return errResult("browser_get_dom: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(await liveInstance.getDom(input.tabId))
+      } catch (err) {
+        return errResult(`browser_get_dom: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_click ──────────────────────────────────────────────────────────────
+  server.tool(
+    "browser_click",
+    "chrome-live only. Click a CSS selector on the agent-OWNED tab — dispatches trusted " +
+      "CDP mouse events at the element's center, scrolling it into view first. Same " +
+      "ownership rule as `browser_screenshot` — call `browser_navigate` first. Find a " +
+      "selector with `browser_get_dom` if you don't already know one.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      selector: z.string().min(1).describe("CSS selector of the element to click."),
+      button: z.enum(["left", "middle", "right"]).optional().describe("Default left."),
+      clickCount: z.number().int().min(1).max(3).optional().describe("Default 1 (2 for a double-click)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_click: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_click: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_click: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.click)
+        return errResult("browser_click: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        await liveInstance.click(
+          { selector: input.selector, ...(input.button ? { button: input.button } : {}), ...(input.clickCount ? { clickCount: input.clickCount } : {}) },
+          input.tabId
+        )
+        return okResult({ ok: true, selector: input.selector })
+      } catch (err) {
+        return errResult(`browser_click: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_fill ───────────────────────────────────────────────────────────────
+  server.tool(
+    "browser_fill",
+    "chrome-live only. Fill a CSS selector on the agent-OWNED tab — focuses the element " +
+      "and types `value` via trusted CDP input (clearing the existing value first by " +
+      "default). Same ownership rule as `browser_screenshot` — call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      selector: z.string().min(1).describe("CSS selector of the input/textarea element."),
+      value: z.string().describe("Text to type."),
+      clear: z.boolean().optional().describe("Clear the existing value first. Default true."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_fill: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_fill: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_fill: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.fill)
+        return errResult("browser_fill: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        await liveInstance.fill(
+          { selector: input.selector, value: input.value, ...(input.clear !== undefined ? { clear: input.clear } : {}) },
+          input.tabId
+        )
+        return okResult({ ok: true, selector: input.selector })
+      } catch (err) {
+        return errResult(`browser_fill: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_evaluate ───────────────────────────────────────────────────────────
+  server.tool(
+    "browser_evaluate",
+    "chrome-live only. Run a JavaScript expression on the agent-OWNED tab and return its " +
+      "value (JSON-serialized; `truncated: true` if it exceeded `maxResultBytes`). Same " +
+      "ownership rule as `browser_screenshot` — call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      expression: z.string().min(1).describe("JavaScript expression to evaluate."),
+      awaitPromise: z.boolean().optional().describe("Await the expression if it returns a promise. Default true."),
+      returnByValue: z.boolean().optional().describe("Serialize the result by value. Default true."),
+      maxResultBytes: z.number().int().positive().optional().describe("Cap on the serialized result size. Default 64000."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_evaluate: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_evaluate: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_evaluate: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.evaluate)
+        return errResult("browser_evaluate: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(
+          await liveInstance.evaluate({
+            expression: input.expression,
+            ...(input.awaitPromise !== undefined ? { awaitPromise: input.awaitPromise } : {}),
+            ...(input.returnByValue !== undefined ? { returnByValue: input.returnByValue } : {}),
+            ...(input.maxResultBytes !== undefined ? { maxResultBytes: input.maxResultBytes } : {}),
+          }, input.tabId)
+        )
+      } catch (err) {
+        return errResult(`browser_evaluate: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_scroll ─────────────────────────────────────────────────────────────
+  server.tool(
+    "browser_scroll",
+    "chrome-live only. Scroll the agent-OWNED tab — pass `selector` to scroll that element " +
+      "into view (centered), or `x`/`y` to scroll the window to an absolute position. Same " +
+      "ownership rule as `browser_screenshot` — call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      selector: z.string().optional().describe("CSS selector to scroll into view. Takes precedence over x/y."),
+      x: z.number().optional().describe("Absolute horizontal scroll position in CSS px. Default 0. Ignored if `selector` is set."),
+      y: z.number().optional().describe("Absolute vertical scroll position in CSS px. Default 0. Ignored if `selector` is set."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_scroll: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_scroll: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_scroll: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.scroll)
+        return errResult("browser_scroll: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(
+          await liveInstance.scroll(
+            {
+              ...(input.selector !== undefined ? { selector: input.selector } : {}),
+              ...(input.x !== undefined ? { x: input.x } : {}),
+              ...(input.y !== undefined ? { y: input.y } : {}),
+            },
+            input.tabId
+          )
+        )
+      } catch (err) {
+        return errResult(`browser_scroll: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
   )

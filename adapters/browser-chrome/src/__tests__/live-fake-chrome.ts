@@ -19,6 +19,10 @@ export interface FakeChromeOptions {
   domHtml?: string
   /** `Runtime.evaluate("document.title")` answers with this. Default "". */
   domTitle?: string
+  /** Simulate "no element matches selector" for click/fill/scroll's generated `querySelector` expressions. */
+  selectorMissing?: boolean
+  /** `Runtime.evaluate("document.location.href")` answers with this (simulating a committed URL that differs from the requested one, e.g. a redirect). Unset: falls through to the generic unmatched-expression default. */
+  locationHref?: string
 }
 
 export interface FakeChrome {
@@ -191,6 +195,22 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
           }
           if (expression === "document.title") {
             return reply(msg.id, msg.sessionId, { result: { type: "string", value: fake.options.domTitle ?? "" } })
+          }
+          if (expression === "document.location.href" && fake.options.locationHref !== undefined) {
+            return reply(msg.id, msg.sessionId, { result: { type: "string", value: fake.options.locationHref } })
+          }
+          // click's centerOf: the selector's bounding-box center.
+          if (expression.includes("r.width / 2")) {
+            return reply(msg.id, msg.sessionId, {
+              result: fake.options.selectorMissing
+                ? { type: "object", value: null }
+                : { type: "object", value: { x: 10, y: 20 } },
+            })
+          }
+          // fill's focus-and-select, and scroll's scrollIntoView: both are
+          // IIFEs that return false when the selector matches nothing.
+          if (expression.includes("el.focus()") || expression.includes("scrollIntoView")) {
+            return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: !fake.options.selectorMissing } })
           }
           return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: false } })
         }

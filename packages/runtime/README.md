@@ -225,19 +225,21 @@ Only `permission-resolved` (the final decision) transits the chat stream today. 
 
 The daemon, `POST /sessions/browser` and the CLI resolve browser adapters (`camofox`, `bureau`, `chromium`, `chrome-live`) through one table, `defaultBrowserAdapterResolution()`, backed by the `@agentproto/adapter-browser` facade.
 
-`projectBrowserTools(instance, { provider })` projects a `@agentproto/driver-browser` `BrowserInstance` onto page-level MCP tools (MCP only; the SDK stays the typed client):
+chrome-live additionally exposes ONE model — the agent's own, OWNED tab — through `registerBrowserTools`' `browser_navigate` / `browser_extract_text` / `browser_get_dom` / `browser_click` / `browser_fill` / `browser_evaluate` / `browser_scroll` (plus `browser_screenshot` / `browser_screencast_*`, which predate this set). `fetch_page` is the zero-browser fast path: a plain HTTP read, use it first for any public page and escalate to `start_browser` + these only on `blocked: true` or when the page needs JS/interaction.
+
+`projectBrowserTools(instance, { provider })` is a DIFFERENT, currently-unused model: it projects a whole `@agentproto/driver-browser` `BrowserInstance` (no per-agent tab ownership) onto its own `browser_kit_*` MCP tools, for any kit provider — not just chrome-live. The `kit_` prefix exists so the two surfaces can never collide by tool name if this ever gets mounted:
 
 ```ts
 import { projectBrowserTools } from "@agentproto/runtime"
 
 const projected = projectBrowserTools(instance, { provider: { id: "camofox", capabilities: provider.manifest.capabilities } })
-projected.register(mcpServer) // browser_navigate, browser_evaluate, browser_click, browser_fill,
-                              // browser_screenshot, browser_get_dom, browser_list_requests,
-                              // browser_get_request_body, browser_cdp_send
+projected.register(mcpServer) // browser_kit_navigate, browser_kit_evaluate, browser_kit_click, browser_kit_fill,
+                              // browser_kit_screenshot, browser_kit_get_dom, browser_kit_list_requests,
+                              // browser_kit_get_request_body, browser_kit_cdp_send
 await projected.close()
 ```
 
-Tools are gated by capability before any driver is attached. A tool the provider cannot serve returns an error result with `structuredContent.error.code === "browser:unsupported"` and `error.cause.capability` naming the missing capability (for example `cdp` for `browser_list_requests` on a `cdp:false` provider). `browser_download` and `browser_act` are Bureau session-pool features, not driver-port verbs, so they are not projected. `path` on `browser_screenshot` and `browser_get_dom` needs the `writeArtifact` option; without it the call fails with a clear message.
+Tools are gated by capability before any driver is attached. A tool the provider cannot serve returns an error result with `structuredContent.error.code === "browser:unsupported"` and `error.cause.capability` naming the missing capability (for example `cdp` for `browser_kit_list_requests` on a `cdp:false` provider). `browser_download` and `browser_act` are Bureau session-pool features, not driver-port verbs, so they are not projected. `path` on `browser_kit_screenshot` and `browser_kit_get_dom` needs the `writeArtifact` option; without it the call fails with a clear message.
 
 ## License
 

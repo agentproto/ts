@@ -33,17 +33,26 @@ export async function extractPageText(html: string, url: string): Promise<PageTe
   }
 }
 
-/** Anti-bot vendor fingerprints in challenge-page bodies — the same signals
- *  `@agentproto/bureau-router` detects, trimmed to what `fetch_page` needs:
- *  just "is this tier blocked", not the router's full escalation signal set
- *  (empty_body / spa_shell / missing_field don't apply to a single read). */
+/**
+ * Anti-bot CHALLENGE-PAGE fingerprints — narrower than
+ * `@agentproto/bureau-router`'s `detectSignals` on purpose. That router
+ * scores "blocked" as one signal among several feeding a weighted escalation
+ * decision; `fetch_page` uses it as a hard gate that drops `text` entirely,
+ * so a false positive is much costlier here. Every pattern below is a
+ * challenge-platform-specific marker (script path, cookie/class name, or the
+ * exact Cloudflare interstitial phrase) — deliberately NOT the broader
+ * vendor-name/generic-copy matches bureau's router uses (`/cdn-cgi/` alone
+ * appears on ordinary Cloudflare-fronted pages via email-obfuscation and
+ * Rocket Loader; "akamai"/"access denied"/"are you a robot" appear in
+ * ordinary articles about bot detection). A normal 200 page must never trip
+ * this.
+ */
 const BLOCK_FINGERPRINTS: RegExp[] = [
-  /cf-browser-verification|cf-challenge|\/cdn-cgi\/|just a moment\.\.\./i, // cloudflare
-  /_incapsula_|incap_ses_|x-iinfo/i, // imperva/incapsula
-  /perimeterx|_px(2|3)?=|px-captcha/i, // perimeterx
-  /datadome|dd_cookie|x-datadome/i, // datadome
-  /ak_bmsc|akamai|reference #\d+\.\w+/i, // akamai
-  /attention required|access denied|are you a robot/i, // generic challenge copy
+  /cf-browser-verification|cf_chl_|__cf_chl_rt_tk|chl_page|cdn-cgi\/challenge-platform|just a moment\.\.\./i, // cloudflare
+  /incap_ses_|_incapsula_resource/i, // imperva/incapsula
+  /px-captcha|_pxCaptcha/i, // perimeterx
+  /captcha-delivery\.com/i, // datadome
+  /ak_bmsc=/i, // akamai bot manager (cookie)
 ]
 
 const BLOCKED_STATUSES = new Set([401, 403, 407, 429, 503])

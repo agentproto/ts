@@ -61,12 +61,16 @@ describe("chrome-live facade", () => {
     expect(chromeLiveProvider.capabilities).toMatchObject({ cdp: true, headless: false, persistentProfile: false })
   })
 
-  it("ensure's instance exposes navigate/getDom, wired to the provider's owned-target methods", async () => {
+  it("ensure's instance exposes navigate/getDom/click/fill/evaluate/scroll, wired to the provider's owned-target methods", async () => {
     const chrome = await toggleChrome()
     const handle = getBrowserAdapter("chrome-live")!
     const instance = await handle.ensure({ port: chrome.port, env: {} })
     expect(typeof instance.navigate).toBe("function")
     expect(typeof instance.getDom).toBe("function")
+    expect(typeof instance.click).toBe("function")
+    expect(typeof instance.fill).toBe("function")
+    expect(typeof instance.evaluate).toBe("function")
+    expect(typeof instance.scroll).toBe("function")
     await instance.stop()
   })
 
