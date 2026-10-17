@@ -277,6 +277,53 @@ describe("start_browser — schema accepts manifest runtime knobs", () => {
     await cleanup()
   })
 
+  it("accepts chromeProfile/domains and forwards them into ensure() unchanged", async () => {
+    let captured: { chromeProfile?: string; domains?: readonly string[] } = {}
+
+    const mockResolver: BrowserAdapterResolver = (id) => {
+      if (id !== "chrome-live") return undefined
+      return {
+        id: "chrome-live",
+        name: "Chrome (dedicated or personal)",
+        description: "chrome-live mock",
+        defaultPort: 9222,
+        healthPath: "/json/version",
+        location: "local",
+        ensure: async (opts) => {
+          captured = { chromeProfile: opts.chromeProfile, domains: opts.domains }
+          return {
+            id: "chrome-live",
+            port: opts.port ?? 9222,
+            baseUrl: "http://127.0.0.1:9222",
+            wasAlreadyRunning: false,
+            healthy: true,
+            stop: async () => {},
+          }
+        },
+      }
+    }
+
+    const { client, cleanup } = await makeSetup({ resolveBrowserAdapter: mockResolver })
+
+    const withBoth = await client.callTool({
+      name: "start_browser",
+      arguments: { adapter: "chrome-live", chromeProfile: "Profile 3", domains: ["example.com", "sub.example.org"] },
+    })
+    expect(withBoth.isError).toBeFalsy()
+    expect(captured).toEqual({ chromeProfile: "Profile 3", domains: ["example.com", "sub.example.org"] })
+
+    captured = {}
+    const omitted = await client.callTool({
+      name: "start_browser",
+      arguments: { adapter: "chrome-live" },
+    })
+    expect(omitted.isError).toBeFalsy()
+    expect(captured.chromeProfile).toBeUndefined()
+    expect(captured.domains).toBeUndefined()
+
+    await cleanup()
+  })
+
   it("start_browser without new fields still works (backwards-compatible)", async () => {
     const mockResolver: BrowserAdapterResolver = (id) => {
       if (id !== "plain") return undefined

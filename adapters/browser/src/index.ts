@@ -13,7 +13,7 @@ export type { FacadeLaunchOptions } from "./providers/facade-options.js"
 export { camofoxAdapter } from "./adapters/camofox.js"
 export { bureauAdapter, bureauProvider } from "./adapters/bureau.js"
 export { chromiumAdapter, chromiumProvider } from "./adapters/chromium.js"
-export { chromeLiveAdapter, chromeLiveProvider } from "./adapters/chrome-live.js"
+export { chromeLiveAdapter, chromeLiveLaunchOptionsFrom, chromeLiveProvider, createChromeLiveAdapter } from "./adapters/chrome-live.js"
 
 import { camofoxAdapter } from "./adapters/camofox.js"
 import { bureauAdapter } from "./adapters/bureau.js"

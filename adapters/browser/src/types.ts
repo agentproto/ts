@@ -183,6 +183,20 @@ export interface BrowserAdapterStartOptions {
    * `attachIntent: true` on the chrome-live launch options.
    */
   profile?: "dedicated" | "personal"
+  /**
+   * `chrome-live` only; every other adapter ignores this. The real Chrome
+   * profile directory (`Default`, `Profile 1`, …) a configured
+   * `cookieSource` should trace injected cookies back to. Pure passthrough —
+   * this package has no opinion on what it means or who may set it.
+   */
+  chromeProfile?: string
+  /**
+   * `chrome-live` only; every other adapter ignores this. Narrows which
+   * domains' cookies a configured `cookieSource` injects into the dedicated
+   * Chrome — an AND on top of whatever the source already scopes to, never
+   * a widening. Pure passthrough.
+   */
+  domains?: readonly string[]
 }
 
 // ─── Instance ─────────────────────────────────────────────────────────────────

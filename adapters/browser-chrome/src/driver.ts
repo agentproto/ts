@@ -71,7 +71,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   constructor(
     protected readonly conn: CdpConnection,
     targetId: string,
-    private readonly sessionId: string,
+    protected readonly sessionId: string,
   ) {
     this.target = { id: targetId }
     this.unsubscribe = conn.onEvent((event) => {
