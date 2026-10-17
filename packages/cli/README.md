@@ -24,8 +24,8 @@ agentproto chat-tui     <adapter> [--model <id>] [--cwd <dir>]      interactive 
 agentproto models       [adapter] [--json]                          runnable models + provider-key status
 agentproto run-swarm    --manifest <path> [--once] [--interval ...]  run a swarm manifest
 agentproto serve        [--port <n>] [--workspace <dir>] [--connect <wss>]  local daemon
-agentproto workspace    <add|list|remove|use|remote>                register spawn workspaces
-agentproto sessions     [start|terminal|mirror|prompt|stop|...]     browse / control live sessions
+agentproto workspace    <add|list|remove|use|remote|check>          register spawn workspaces; check a workspace/v2 tree
+agentproto sessions     [start|terminal|mirror|prompt|stop|report|...]     browse / control live sessions
 agentproto browser      <install|start|list|stop|status>            manage browser sessions
 agentproto tunnel       <create|list|stop|revoke|status>                   public URL tunnels
 agentproto provider-preset list [--json]                            provider gateway definitions

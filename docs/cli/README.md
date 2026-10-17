@@ -55,7 +55,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto install-mcp`](./verbs/install-mcp.md) — register the daemon's MCP server with installed coding CLIs
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
 - [`agentproto mcp-app`](./verbs/mcp-app.md) — stdio MCP server scoped to one installed app's tools
-- [`agentproto mcp`](./verbs/mcp.md) — imported-MCP maintenance: move secrets to the keychain, mount imports natively per adapter
+- [`agentproto mcp`](./verbs/mcp.md) — imported-MCP maintenance: OAuth login for remote MCPs, move secrets to the keychain, mount imports natively per adapter
 - [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
 - [`agentproto onboard`](./verbs/onboard.md) — alias of the `setup` wizard
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
@@ -78,7 +78,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto tunnel`](./verbs/tunnel.md) — manage public Cloudflare/Ngrok tunnels
 - [`agentproto usage`](./verbs/usage.md) — local-derived, provider-agnostic spend estimate over a rolling window
 - [`agentproto workflow`](./verbs/workflow.md) — start, inspect, and cancel background workflow runs on the daemon
-- [`agentproto workspace`](./verbs/workspace.md) — register local workspaces
+- [`agentproto workspace`](./verbs/workspace.md) — register local workspaces; `check` verifies an AIP-34 workspace/v2 tree
 - [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
 - [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue
 - [`agentproto maintain`](./verbs/maintain.md) — plan/review (and optionally apply) branch + worktree gc for a repo, via the built-in `repo-maintenance` app's workflow
