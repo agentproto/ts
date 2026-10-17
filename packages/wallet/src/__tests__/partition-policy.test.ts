@@ -188,6 +188,172 @@ describe("spendableBalanceUnderPolicy — policy-aware fold", () => {
   })
 })
 
+describe("qualify — caller-asserted spend qualifier", () => {
+  const APP_ONLY: PartitionPolicy = [
+    { kind: "qualify", key: "channel", allow: ["app"] },
+  ]
+
+  it("an allowed qualifier is eligible and leaves the quantity untouched", () => {
+    const ev = evaluatePolicy(
+      APP_ONLY,
+      ctx({ category: "chat", qualifiers: { channel: "app" } }),
+    )
+    expect(ev.eligible).toBe(true)
+    expect(ev.spendable).toBe(1000)
+    expect(ev.restriction).toEqual(UNRESTRICTED)
+    expect(ev.nextTransitionAt).toBeUndefined()
+  })
+
+  it("another value is ineligible", () => {
+    const ev = evaluatePolicy(
+      APP_ONLY,
+      ctx({ category: "chat", qualifiers: { channel: "telegram" } }),
+    )
+    expect(ev.eligible).toBe(false)
+    expect(ev.spendable).toBe(1000) // gate only — never a quantity transform
+  })
+
+  it("fails closed: a spend with no qualifiers, or without the key, is ineligible", () => {
+    expect(evaluatePolicy(APP_ONLY, ctx({ category: "chat" })).eligible).toBe(false)
+    expect(
+      evaluatePolicy(APP_ONLY, ctx({ category: "chat", qualifiers: {} })).eligible,
+    ).toBe(false)
+    expect(
+      evaluatePolicy(APP_ONLY, ctx({ category: "chat", qualifiers: { region: "eu" } }))
+        .eligible,
+    ).toBe(false)
+  })
+
+  it("does not read inherited object properties as qualifiers", () => {
+    const policy: PartitionPolicy = [
+      { kind: "qualify", key: "constructor", allow: ["*"] },
+    ]
+    expect(
+      evaluatePolicy(policy, ctx({ category: "chat", qualifiers: {} })).eligible,
+    ).toBe(false)
+  })
+
+  it("qualifiers alone (no category) also count as a spend context", () => {
+    expect(
+      evaluatePolicy(APP_ONLY, ctx({ qualifiers: { channel: "web" } })).eligible,
+    ).toBe(false)
+    expect(
+      evaluatePolicy(APP_ONLY, ctx({ qualifiers: { channel: "app" } })).eligible,
+    ).toBe(true)
+  })
+
+  it("a pure balance read is neutral", () => {
+    const ev = evaluatePolicy(APP_ONLY, ctx())
+    expect(ev.eligible).toBe(true)
+    expect(ev.spendable).toBe(1000)
+  })
+
+  it('"*" allows any value but the qualifier must still be present', () => {
+    const policy: PartitionPolicy = [{ kind: "qualify", key: "channel", allow: ["*"] }]
+    expect(
+      evaluatePolicy(policy, ctx({ category: "chat", qualifiers: { channel: "whatsapp" } }))
+        .eligible,
+    ).toBe(true)
+    expect(evaluatePolicy(policy, ctx({ category: "chat" })).eligible).toBe(false)
+    expect(evaluatePolicy(policy, ctx()).eligible).toBe(true) // balance read
+  })
+
+  it("an empty allow list admits no spend", () => {
+    const policy: PartitionPolicy = [{ kind: "qualify", key: "channel", allow: [] }]
+    expect(
+      evaluatePolicy(policy, ctx({ qualifiers: { channel: "app" } })).eligible,
+    ).toBe(false)
+  })
+
+  it("composes (AND) with spendOn and expire", () => {
+    const policy: PartitionPolicy = [
+      { kind: "spendOn", categories: ["chat"] },
+      { kind: "qualify", key: "channel", allow: ["app", "web"] },
+      { kind: "expire", at: { kind: "afterGrant", ms: 10 * DAY } },
+    ]
+    const live = (p: Partial<PolicyContext>) =>
+      evaluatePolicy(policy, ctx({ now: GRANT + 5 * DAY, ...p }))
+
+    expect(live({ category: "chat", qualifiers: { channel: "web" } }).eligible).toBe(true)
+    expect(live({ category: "image", qualifiers: { channel: "web" } }).eligible).toBe(false)
+    expect(live({ category: "chat", qualifiers: { channel: "telegram" } }).eligible).toBe(false)
+    expect(live({ category: "chat" }).eligible).toBe(false)
+
+    const expired = evaluatePolicy(
+      policy,
+      ctx({ now: GRANT + 11 * DAY, category: "chat", qualifiers: { channel: "web" } }),
+    )
+    expect(expired.eligible).toBe(false)
+    expect(expired.spendable).toBe(0)
+  })
+
+  it("round-trips through JSON and still evaluates", () => {
+    const revived = JSON.parse(JSON.stringify(APP_ONLY)) as PartitionPolicy
+    expect(revived).toEqual(APP_ONLY)
+    expect(
+      evaluatePolicy(revived, ctx({ category: "chat", qualifiers: { channel: "app" } }))
+        .eligible,
+    ).toBe(true)
+  })
+
+  it("flows through the fold helpers", () => {
+    const l = lot({ remaining: 500, partitionId: "GUILDE_CREDITS:app-only" })
+    expect(spendableLotUnderPolicy(l, APP_ONLY, GRANT, "chat", { channel: "app" })).toBe(500)
+    expect(spendableLotUnderPolicy(l, APP_ONLY, GRANT, "chat", { channel: "web" })).toBe(0)
+    expect(spendableLotUnderPolicy(l, APP_ONLY, GRANT, "chat")).toBe(0)
+    expect(spendableLotUnderPolicy(l, APP_ONLY, GRANT)).toBe(500) // balance read
+
+    const resolve: PolicyResolver = () => APP_ONLY
+    const lots = [l]
+    expect(
+      spendableBalanceUnderPolicy(lots, "GUILDE_CREDITS", GRANT, resolve, "chat", {
+        channel: "app",
+      }),
+    ).toBe(500)
+    expect(
+      spendableBalanceUnderPolicy(lots, "GUILDE_CREDITS", GRANT, resolve, "chat", {
+        channel: "web",
+      }),
+    ).toBe(0)
+    expect(spendableBalanceUnderPolicy(lots, "GUILDE_CREDITS", GRANT, resolve)).toBe(500)
+  })
+
+  it("is accepted by defineAsset's schema; malformed rules are rejected", () => {
+    const base = {
+      ref: "SIMONE_CREDITS",
+      name: "Simone Credits",
+      symbol: "SMC",
+      decimals: 2,
+      standard: "internal" as const,
+      ruleSet: {
+        settleOut: false as const,
+        spendableOn: ["*"],
+        convertEdges: [],
+        transfer: "none" as const,
+      },
+    }
+    const withPolicy = (policy: unknown) =>
+      defineAsset({
+        ...base,
+        partitions: [
+          { id: "SIMONE_CREDITS:app", asset: "SIMONE_CREDITS", restriction: [], policy },
+        ],
+      } as never)
+
+    const ok = withPolicy([{ kind: "qualify", key: "channel", allow: ["app"] }])
+    expect(ok.partitions?.[0]?.policy?.[0]).toEqual({
+      kind: "qualify",
+      key: "channel",
+      allow: ["app"],
+    })
+    expect(() => withPolicy([{ kind: "qualify", key: "", allow: ["app"] }])).toThrow()
+    expect(() => withPolicy([{ kind: "qualify", key: "channel" }])).toThrow()
+    expect(() =>
+      withPolicy([{ kind: "qualify", key: "channel", allow: ["app"], extra: 1 }]),
+    ).toThrow()
+  })
+})
+
 // ── GUILD_X end-to-end: a guild-minted token with a decaying loyalty tranche ──
 
 describe("GUILD_X — guild-minted token, decay + collateralized convert", () => {

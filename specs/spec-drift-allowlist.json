@@ -50,6 +50,11 @@
       "file": "aip-7/draft/GOVERNANCE.schema.json",
       "field": "$defs.approvalChannel",
       "reason": "approvals: telegram joins web_click/ui_card as a declared human decide channel, gated by a shared bot-bridge bearer secret instead of an Origin check; pending upstream spec PR"
+    },
+    {
+      "file": "aip-49/draft/ASSET.schema.json",
+      "field": "$defs.partitionRule.oneOf",
+      "reason": "partition policy: `qualify` rule (eligible only when a caller-asserted spend qualifier, e.g. channel, is in `allow`; fail-closed on a spend, neutral on a balance read); pending upstream spec PR"
     }
   ]
 }

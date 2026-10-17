@@ -12,6 +12,12 @@
  * for what only general can pay) then **expiring-first** (use soonest-to-expire
  * before it's swept) then oldest. Coalescing NEVER crosses an asset boundary —
  * that is `convert`'s job, and only `convert` may cross a peg.
+ *
+ * Eligibility here consults the legacy `spendableOn` shorthand only. Policy
+ * rules that gate a spend (`spendOn`, `qualify`) are NOT applied by
+ * `selectLotsForSpend`: callers pre-filter lots with `evaluatePolicy` (or
+ * `spendableLotUnderPolicy`), passing the spend's `category` and caller-derived
+ * `qualifiers`, and hand only the surviving lots to this planner.
  */
 
 import type { AssetDeclaration, AssetRef } from "./asset.js"

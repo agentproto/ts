@@ -34,6 +34,13 @@ const partitionRuleSchema = z.union([
   z
     .object({ kind: z.literal("spendOn"), categories: z.array(z.string().min(1)) })
     .strict(),
+  z
+    .object({
+      kind: z.literal("qualify"),
+      key: z.string().min(1),
+      allow: z.array(z.string().min(1)),
+    })
+    .strict(),
   z.object({ kind: z.literal("restrict"), tags: restrictionSchema }).strict(),
   z.object({ kind: z.literal("expire"), at: timeSpecSchema }).strict(),
   z
