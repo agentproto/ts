@@ -65,7 +65,7 @@ export interface CheckReport {
 }
 
 export interface CheckOptions {
-  /** RAPPORT.md (and similar `requires_files`) older than this is "stale". Default 48h. */
+  /** A `requires_files` entry (e.g. COMPANY.md) older than this is "stale". Default 48h. */
   maxReportAgeHours?: number
 }
 
@@ -307,39 +307,75 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
     // work: (AIP-20) — a project's status/board, replacing a flat status
     // file. Only validated when declared (rule 14 in AIP-34 v2): no
     // freshness check yet, that's deferred alongside the task-ledger
-    // alignment question.
-    if (fm.work && typeof fm.work === "object") {
-      const work = fm.work as { inline?: unknown; ref?: string; file?: string }
-      const workPath = join(dir, "WORKSPACE.md")
-      if (work.file) {
-        const p = join(dir, work.file)
-        try {
-          parseWorkManifest(readFileSync(p, "utf8"))
-        } catch (err) {
-          findings.push({
-            level: "error",
-            nodeId: fm.id,
-            path: p,
-            message: `work.file does not resolve to a valid WORK.md: ${err instanceof Error ? err.message : String(err)}`,
-          })
-        }
-      } else if (work.inline) {
-        const result = workFrontmatterSchema.safeParse(work.inline)
-        if (!result.success) {
+    // alignment question. `work` is `z.any()` at the frontmatter-schema
+    // level (cross-AIP refs aren't typed there), so EVERY branch below
+    // narrows with `typeof` before use — a malformed-but-schema-permitted
+    // shape (`work: { file: 123 }`, `work: "oops"`, `work: {}`) must
+    // become a finding, never a thrown TypeError out of `path.join`/co.
+    const workPath = join(dir, "WORKSPACE.md")
+    if (fm.work !== undefined) {
+      if (fm.work === null || typeof fm.work !== "object" || Array.isArray(fm.work)) {
+        findings.push({
+          level: "error",
+          nodeId: fm.id,
+          path: workPath,
+          message: `work: must be an object with one of inline/ref/file, got ${Array.isArray(fm.work) ? "array" : typeof fm.work}.`,
+        })
+      } else {
+        const work = fm.work as { inline?: unknown; ref?: unknown; file?: unknown }
+        if (typeof work.file === "string") {
+          const p = join(dir, work.file)
+          try {
+            parseWorkManifest(readFileSync(p, "utf8"))
+          } catch (err) {
+            findings.push({
+              level: "error",
+              nodeId: fm.id,
+              path: p,
+              message: `work.file does not resolve to a valid WORK.md: ${err instanceof Error ? err.message : String(err)}`,
+            })
+          }
+        } else if (work.file !== undefined) {
           findings.push({
             level: "error",
             nodeId: fm.id,
             path: workPath,
-            message: `work.inline is not a valid WORK.md frontmatter: ${result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+            message: `work.file must be a string path, got ${typeof work.file}.`,
+          })
+        } else if (work.inline !== undefined) {
+          if (work.inline === null || typeof work.inline !== "object") {
+            findings.push({
+              level: "error",
+              nodeId: fm.id,
+              path: workPath,
+              message: `work.inline must be an object, got ${typeof work.inline}.`,
+            })
+          } else {
+            const result = workFrontmatterSchema.safeParse(work.inline)
+            if (!result.success) {
+              findings.push({
+                level: "error",
+                nodeId: fm.id,
+                path: workPath,
+                message: `work.inline is not a valid WORK.md frontmatter: ${result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+              })
+            }
+          }
+        } else if (typeof work.ref === "string") {
+          findings.push({
+            level: "info",
+            nodeId: fm.id,
+            path: workPath,
+            message: `work.ref "${work.ref}" is a registry/path reference — not resolved by this standalone tree check.`,
+          })
+        } else {
+          findings.push({
+            level: "error",
+            nodeId: fm.id,
+            path: workPath,
+            message: "work: declared but has none of inline/ref/file (or ref is not a string).",
           })
         }
-      } else if (work.ref) {
-        findings.push({
-          level: "info",
-          nodeId: fm.id,
-          path: workPath,
-          message: `work.ref "${work.ref}" is a registry/path reference — not resolved by this standalone tree check.`,
-        })
       }
     }
 

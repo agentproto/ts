@@ -213,6 +213,133 @@ describe("checkWorkspaceTree — broken trees", () => {
     ).toBe(true)
   })
 
+  it("reports a finding, never throws, when work.file is not a string", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceV2Manifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        work: { file: 123 },
+      }),
+    )
+    let report: ReturnType<typeof checkWorkspaceTree> | undefined
+    expect(() => {
+      report = checkWorkspaceTree(root)
+    }).not.toThrow()
+    expect(
+      report?.findings.some(
+        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("work.file must be a string path, got number"),
+      ),
+    ).toBe(true)
+  })
+
+  it("reports a finding, never throws, when work: itself is not an object", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceV2Manifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        work: "not-an-object",
+      }),
+    )
+    let report: ReturnType<typeof checkWorkspaceTree> | undefined
+    expect(() => {
+      report = checkWorkspaceTree(root)
+    }).not.toThrow()
+    expect(
+      report?.findings.some(
+        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("must be an object with one of inline/ref/file, got string"),
+      ),
+    ).toBe(true)
+  })
+
+  it("validates work.inline directly against workFrontmatterSchema", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceV2Manifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        work: {
+          inline: {
+            schema: "work.workspace/v2",
+            name: "simone",
+            title: "Simone",
+            description: "Simone's board.",
+            version: "1.0.0",
+          },
+        },
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.findings.some((f) => f.nodeId === "@test/simone" && f.level === "error")).toBe(false)
+  })
+
+  it("flags an invalid work.inline frontmatter", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceV2Manifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        work: { inline: { schema: "work.workspace/v2", name: "simone" } }, // missing title/description/version
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(
+      report.findings.some(
+        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("work.inline is not a valid WORK.md frontmatter"),
+      ),
+    ).toBe(true)
+  })
+
+  it("reports work.ref as an info-level, unresolved-by-this-check finding", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceV2Manifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        work: { ref: "@agentik/simone-board" },
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.findings.some((f) => f.nodeId === "@test/simone" && f.level === "error")).toBe(false)
+    expect(
+      report.findings.some(
+        (f) => f.level === "info" && f.nodeId === "@test/simone" && f.message.includes('work.ref "@agentik/simone-board"'),
+      ),
+    ).toBe(true)
+  })
+
   it("does not require work: at all — a project without one is not an error", () => {
     buildValidTree(root)
     writeFileSync(
