@@ -55,6 +55,11 @@
       "file": "aip-62/draft/ATTESTATION.schema.json",
       "field": "$defs.lane.properties.sharedExecution",
       "reason": "review fallback dedup: marks lanes that share one reviewer execution so they are not read as independent agreement; pending upstream spec PR"
+    },
+    {
+      "file": "aip-7/draft/GOVERNANCE.schema.json",
+      "field": "$defs.approvalChannel",
+      "reason": "approvals: telegram joins web_click/ui_card as a declared human decide channel, gated by a shared bot-bridge bearer secret instead of an Origin check; pending upstream spec PR"
     }
   ]
 }
