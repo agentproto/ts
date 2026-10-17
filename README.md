@@ -306,6 +306,10 @@ Key specs implemented here:
 | AIP-41 | ROUTINE.md | `@agentproto/routine` |
 | AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/mastra` |
 | AIP-45 | Agent CLI adapter | `adapters/{claude-code,claude-sdk,hermes,opencode,codex,openclaw,mastra-agent,antigravity,jcode}` |
+| AIP-57 | Model resolution primitive | `@agentproto/model-routing` |
+| AIP-62 | REVIEW.md | `@agentproto/review` |
+| AIP-65 | DECISION.md | `@agentproto/runtime` |
+| AIP-66 | Managed cloud agents (`cloud:<vendor>` target) | `@agentproto/runtime`, `adapters/claude-code-cloud` |
 
 ## Building from source
 
