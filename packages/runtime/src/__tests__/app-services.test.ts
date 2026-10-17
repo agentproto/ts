@@ -299,6 +299,10 @@ describe("readServicePidFile", () => {
     expect(readServicePidFile(file)).toBe(4242)
     writeFileSync(file, "  not-a-pid  ")
     expect(readServicePidFile(file)).toBeUndefined()
+    // A trailing-garbage pid must read as absent, not as the leading digits
+    // (`Number.parseInt("42junk")` is 42 — strict digits-only guards this).
+    writeFileSync(file, "42junk")
+    expect(readServicePidFile(file)).toBeUndefined()
     writeFileSync(file, "0")
     expect(readServicePidFile(file)).toBeUndefined()
     writeFileSync(file, "-3")

@@ -184,8 +184,12 @@ export function killServicePid(pid: number | undefined, signal: NodeJS.Signals =
  */
 export function readServicePidFile(pidFile: string): number | undefined {
   try {
-    const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10)
-    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+    const raw = readFileSync(pidFile, "utf8").trim()
+    // Strict digits-only: `Number.parseInt` alone would read "42junk" as 42
+    // and signal it — a malformed file must read as absent, not as a pid.
+    if (!/^\d+$/.test(raw)) return undefined
+    const pid = Number.parseInt(raw, 10)
+    return pid > 0 ? pid : undefined
   } catch {
     return undefined
   }

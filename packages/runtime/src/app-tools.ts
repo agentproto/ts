@@ -1776,6 +1776,19 @@ export function buildAppServiceEnsurer(
  * an `isOwnerAlive` check). Best-effort: a per-app failure is collected, never
  * thrown. The daemon boot path (serve.ts) calls this AFTER the session resume
  * passes, so it never races them for an owner session id.
+ *
+ * Deliberately NOT bucket-scoped, unlike the three sibling boot passes it
+ * runs after (`reattachSandboxSessionsOnBoot` / `resumeSessionsOnBoot` /
+ * `continueInterruptedOnBoot`, each threading an `isServed` predicate so a
+ * daemon never touches another bucket's sessions): `deps.appRegistry` (the
+ * installed-app registry, `~/.agentproto/apps.json`) and the app-service
+ * store (`~/.agentproto/app-services.json`) carry no workspace/bucket field
+ * to filter on — `InstalledApp` never has, and `ensureServices` already
+ * iterates every installed app unfiltered on the pre-existing `app_install`
+ * path this re-ensure mirrors. Apps and their declared services are
+ * machine-global, single-daemon-owned state; running two daemons for
+ * different buckets of the SAME machine against the same shared apps.json
+ * would double-own a service's owner regardless of this pass.
  */
 export async function reensureInstalledAppServicesOnBoot(
   deps: AppServiceEnsurerDeps & { appRegistry: AppRegistry },
