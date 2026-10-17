@@ -24,28 +24,17 @@
  *
  * Scope note: this module is the whole SERVICE-LAUNCHER behaviour, lifted out
  * of app-tools.ts so it is unit-testable without an MCP server or a real
- * spawn. The `AppService` type is intentionally defined here with EXACTLY the
- * frozen keys (`name`, `entry`, `port`) so that when the app-kit
- * `services:`-parsing PR lands, swapping to the app-kit type is a one-line
- * change.
+ * spawn. `services:` validation itself now delegates to app-kit's
+ * `parseServiceList` — the single validator for the manifest `services:`
+ * array, shared with `defineApp`/`loadAppHandle`.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { parseServiceList, type AppService } from "@agentproto/app-kit"
 
-/**
- * One declared service (frozen semantics): a kebab-slug `name`, the shell
- * `entry` command to run, and an optional `port` (1..65535) kept as
- * bookkeeping + a health touchpoint — the child binds whatever port its entry
- * decides; the daemon never probes it today (acceptance is ownership +
- * restart).
- */
-export interface AppService {
-  name: string
-  entry: string
-  port?: number
-}
+export type { AppService }
 
 /** The manifest's `services:` list. */
 export type AppServices = readonly AppService[]
@@ -57,57 +46,17 @@ export interface AppServiceValidation {
   errors: string[]
 }
 
-const KEBAB_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-
 /**
- * Validate a raw APP.md `services` frontmatter value against the frozen
- * semantics. `undefined` (no block) yields `{ services: [], errors: [] }` —
- * the launcher's no-op case, so an app WITHOUT `services` is byte-for-byte
- * unaffected. Any other malformed value returns one or more `errors` and the
- * caller refuses the install.
+ * Validate a raw APP.md `services` frontmatter value — delegates to
+ * app-kit's `parseServiceList`, the single validator shared with
+ * `defineApp`/`loadAppHandle`. `undefined`/`null` (no block) yields
+ * `{ services: [], errors: [] }` — the launcher's no-op case, so an app
+ * WITHOUT `services` is byte-for-byte unaffected. Any other malformed value
+ * returns an `errors` entry and the caller refuses the install.
  */
 export function parseAppServices(raw: unknown): AppServiceValidation {
-  if (raw === undefined || raw === null) return { services: [], errors: [] }
-  if (!Array.isArray(raw)) {
-    return { services: [], errors: ["frontmatter 'services' must be an array."] }
-  }
-  const services: AppService[] = []
-  const errors: string[] = []
-  const seen = new Set<string>()
-  raw.forEach((entry, i) => {
-    const at = `services[${i}]`
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      errors.push(`${at} must be an object with { name, entry, port? }.`)
-      return
-    }
-    const e = entry as Record<string, unknown>
-    const name = e.name
-    const entryCmd = e.entry
-    const port = e.port
-    if (typeof name !== "string" || !KEBAB_SLUG.test(name)) {
-      errors.push(`${at}.name must be a kebab-case slug (got ${JSON.stringify(name)}).`)
-      return
-    }
-    if (seen.has(name)) {
-      errors.push(`${at}.name "${name}" is duplicated — service names must be unique per app.`)
-      return
-    }
-    if (typeof entryCmd !== "string" || entryCmd.trim() === "") {
-      errors.push(`${at}.entry must be a non-empty shell command.`)
-      return
-    }
-    let validatedPort: number | undefined
-    if (port !== undefined) {
-      if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
-        errors.push(`${at}.port must be an integer in 1..65535 (got ${JSON.stringify(port)}).`)
-        return
-      }
-      validatedPort = port
-    }
-    seen.add(name)
-    services.push({ name, entry: entryCmd, ...(validatedPort !== undefined ? { port: validatedPort } : {}) })
-  })
-  return { services, errors }
+  const { services, errors } = parseServiceList(raw)
+  return { services: [...services], errors: [...errors] }
 }
 
 /** One service owner: the persisted ownership record — `appId` + the service
