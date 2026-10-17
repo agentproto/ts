@@ -17,17 +17,20 @@ import {
   loadBrowserObserverModule,
   registerBrowserObserver,
   resetBrowserObservers,
+  type BrowserAttachEvent,
   type BrowserObserver,
 } from "../browser-observers.js"
 
 let tmp: string
 let registry: SessionsRegistry
 let filled: unknown[]
+let evaluated: unknown[]
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "browser-observers-test-"))
   registry = createSessionsRegistry({ persistPath: join(tmp, "sessions.json") })
   filled = []
+  evaluated = []
   configureBrowserObservers({ log: () => {} })
 })
 
@@ -61,6 +64,10 @@ async function setup() {
                 filled.push(options)
               },
               click: async () => {},
+              evaluate: async options => {
+                evaluated.push(options)
+                return { value: "page-value" as never, truncated: false }
+              },
             }),
           }
         : undefined,
@@ -103,6 +110,18 @@ describe("O5: attach, detach, calls", () => {
     expect(before.split(":")[2]).toBe(after.split(":")[2])
     expect(after.endsWith(":true")).toBe(true)
     expect(events.filter(e => e.startsWith("detach"))).toEqual(["detach:stop"])
+  })
+})
+
+describe("O5: capture handle on attach", () => {
+  it("lets the observer screenshot and evaluate on the owned tab", async () => {
+    let handle: BrowserAttachEvent["capture"]
+    registerBrowserObserver("t", { onAttach: e => void (handle = e.capture) })
+    await setup()
+    expect(handle).toBeDefined()
+    expect(await handle!.screenshot("tab-1")).toMatchObject({ data: "AAAA", format: "png" })
+    expect(await handle!.evaluate("1+1", "tab-1")).toBe("page-value")
+    expect(evaluated).toEqual([{ expression: "1+1", returnByValue: true }])
   })
 })
 

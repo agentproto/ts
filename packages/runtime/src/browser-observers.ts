@@ -13,10 +13,24 @@ import { promises as fs } from "node:fs"
 import { isAbsolute } from "node:path"
 import { pathToFileURL } from "node:url"
 
+/**
+ * Driver access an observer may use for its own captures (frames, page
+ * probes). It exists only on `onAttach`, only for providers that implement the
+ * owned-target `screenshot` and `evaluate` primitives, and only for observers
+ * the operator registered (O2). It is not reachable from a tool call.
+ */
+export interface BrowserCaptureHandle {
+  screenshot(tabId?: string): Promise<{ data: string; format: "png" | "jpeg"; width?: number; height?: number }>
+  /** Evaluates `expression` in the owned tab and returns its value. */
+  evaluate(expression: string, tabId?: string): Promise<unknown>
+}
+
 export interface BrowserAttachEvent {
   sessionId: string
   provider: string
   instanceId: string
+  /** Present when the provider can screenshot and evaluate. */
+  capture?: BrowserCaptureHandle
 }
 
 export interface BrowserDetachEvent {

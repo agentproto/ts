@@ -48,7 +48,12 @@ import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { encodeScreencastFramesToMp4, prepareScreencastOutDir } from "./browser-screencast.js"
 import { extractPageText, looksBlocked } from "./page-text.js"
-import { notifyBrowserAttach, notifyBrowserDetach, withBrowserObservers } from "./browser-observers.js"
+import {
+  notifyBrowserAttach,
+  notifyBrowserDetach,
+  withBrowserObservers,
+  type BrowserCaptureHandle,
+} from "./browser-observers.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -230,6 +235,14 @@ const errResult = (text: string) => ({
 // adapter-level singleton (`chromeLive`) survives because browsers hold their
 // own module-level entries map — this map must survive the same way.
 const liveInstances = new Map<string, BrowserInstanceLike>()
+
+function browserCaptureHandle(instance: BrowserInstanceLike): BrowserCaptureHandle {
+  return {
+    screenshot: tabId => instance.screenshot!(tabId),
+    evaluate: async (expression, tabId) =>
+      (await instance.evaluate!({ expression, returnByValue: true }, tabId)).value,
+  }
+}
 
 // Track the registry id an instance is stored under (the id only becomes
 // known after `registerBrowser` returns); the `start_browser` handler wires
@@ -476,6 +489,9 @@ export function registerBrowserTools(
           sessionId: desc.id,
           provider: desc.browserAdapterId ?? instance.id,
           instanceId: instance.id,
+          ...(instance.screenshot && instance.evaluate
+            ? { capture: browserCaptureHandle(instance) }
+            : {}),
         })
         const stillStarting = !instance.healthy
         return {
