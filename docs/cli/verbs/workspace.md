@@ -14,9 +14,13 @@ agentproto workspace remote set <slug> --url <https-url> [--branch <branch>]
                                [--credential-ref <ref> | --token-stdin]
 agentproto workspace remote show <slug> [--json]
 agentproto workspace remote unset <slug>
+agentproto workspace check <dir> [--json] [--max-report-age-hours <n>]
 ```
 
-Registry file: `~/.agentproto/workspaces.json` (mode 0600).
+`add` / `list` / `use` / `remove` / `remote` manage the registry file
+`~/.agentproto/workspaces.json` (mode 0600) — a folder the daemon can spawn
+sessions against. `check` is a different concern: it validates an AIP-34
+`workspace/v2` tree on disk (see below).
 
 ## Subverbs
 
@@ -110,6 +114,38 @@ can only be reused by that same workspace. At teardown the work branch is
 pushed to `origin` if it is ahead of its base, with a `git bundle` fallback
 saved to `~/.agentproto/sessions/<id>/delivery.bundle`; the outcome is
 recorded on the session descriptor as `sandboxDelivery`.
+
+### `check <dir>`
+
+```bash
+agentproto workspace check ~/agentproto
+agentproto workspace check ~/agentproto --json
+agentproto workspace check ~/agentproto --max-report-age-hours 24
+```
+
+Verifies an AIP-34 `workspace/v2` **tree** on disk — unrelated to the local
+registry above; it never reads or writes `workspaces.json`. Walks every
+`WORKSPACE.md` node under `<dir>` and validates:
+
+- each node's `type` against the tree's `TYPES.md` (allowed parents, wall
+  floor, required files, with report freshness via `--max-report-age-hours`,
+  default `48`);
+- two-sided `includes`/`exports` and `apps`/`accepted_apps` consent;
+- `uses_secrets` grants against the provider's `SECRETS.md`, plus a
+  no-literal-secret-values heuristic;
+- `policy.limits` budget aggregation (most-restrictive-wins down the tree);
+- path confinement on every resolved file reference (tree-relative, no `..`
+  traversal, no symlink escape — checked via realpath).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | off | Emit the full `CheckReport` (`ok`, `root`, `nodeCount`, `nodes[]`, `findings[]`). |
+| `--max-report-age-hours <n>` | `48` | Age threshold for stale required reports (`work.file`, …). |
+
+Human output lists each node (`id`, type, wall, inherited status, budget)
+then one line per finding (`error` `✗` / `warning` `!` / `info` `·`) with
+its path. Exit `0` when the tree has no errors, `1` when it has any
+(warnings alone still exit `0`), `2` for bad arguments.
 
 ## Where workspaces are used
 

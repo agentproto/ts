@@ -187,6 +187,26 @@ gateway → delete the daemon's `runtime.json`. The exit banner is
 Stale `runtime.json` files (dead PID) in registered workspaces are
 swept at boot — they confuse discovery otherwise.
 
+## Browser observer module (opt-in)
+
+An operator can observe (and transform) every `browser_*` MCP tool call by
+pointing `AGENTPROTO_BROWSER_OBSERVER_MODULE` at an absolute path to a
+user-owned, non-world-writable module that default-exports
+`(api) => void`. The module receives `onAttach` / `onDetach` /
+`beforeCall` / `afterCall` for every `browser_*` call, and can transform
+`browser_screenshot` images before they reach the caller. Call arguments
+are redacted before the observer sees them; with no observer registered
+every tool behaves exactly as before.
+
+| Env var | What it sets |
+|---------|-------------|
+| `AGENTPROTO_BROWSER_OBSERVER_MODULE` | Absolute path to the observer module. Unset (default): no observers. |
+| `AGENTPROTO_BROWSER_OBSERVER_REQUIRED` | `1` makes a load failure fatal; otherwise the daemon logs the failure and boots without observers. |
+
+Operators register observers in-process with `registerBrowserObserver` (see
+`@agentproto/runtime`); the env var is the CLI-only route for the `serve`
+daemon. Never a tool argument, never a workspace file.
+
 ## `AGENTPROTO_JOIN` — auto-register as a host at boot
 
 A box daemon (e.g. a CI reviewer sandbox or a cloud computer) can
