@@ -280,6 +280,18 @@ jobs:
           node --test scripts/sync-specs.test.mjs
           node scripts/sync-specs.mjs --check --source .canonical-specs/specs/resources
 
+      # specs/resources is schema-only by design (see sync-specs.mjs's
+      # docstring), so a prose-only AIP (e.g. AIP-65, DECISION.md) ships
+      # upstream with nothing for the drift check above to flag. This reads
+      # the canonical AIP registry (specs/meta.json's page list — titles/
+      # numbers only, same .canonical-specs checkout, no new checkout) and
+      # fails on a dangling `AIP-<N>` reference, warning (non-fatal) on any
+      # "no AIP ..."/"AIP ... yet" comment so a human re-checks it every run.
+      - name: Check AIP references
+        run: |
+          node --test scripts/check-aip-refs.test.mjs
+          node scripts/check-aip-refs.mjs --source .canonical-specs
+
       # Guard the e2b workstation template's derived artifacts: the generated
       # TS module, e2b.template.toml build args, marked doc blocks, and the
       # sandbox-e2b package.json description must all match
