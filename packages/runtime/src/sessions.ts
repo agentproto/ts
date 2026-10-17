@@ -25,8 +25,11 @@ import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 import type { SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
-import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync } from "node:fs"
+import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync, watch as watchFsPath } from "node:fs"
+import type { FSWatcher } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import { computeAgentRoleRefresh, renderRoleUpdateNotice } from "./agent-role-refresh.js"
+import type { AgentManifestRefError } from "./spawn-agent-manifest.js"
 import { encodeCloudSessionMeta, resolveCloudResumeId } from "./cloud-vendors.js"
 import {
   CONVERSATION_STORES,
@@ -179,7 +182,7 @@ import {
   writeSessionIndex,
   type TranscriptPrompt,
 } from "./session-index.js"
-import { dirname, join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
@@ -3883,6 +3886,25 @@ export type PermissionRespondResult =
       message: string
     }
 
+/** Result of `SessionsRegistry.refreshAgentRole` — see that method's doc. */
+export type AgentRoleRefreshOutcome =
+  | {
+      ok: true
+      roleChanged: boolean
+      toolsChanged: boolean
+      roleHash: string
+      toolsHash: string
+      /** How the role-update notice was delivered — present only when
+       *  `roleChanged` and not `dryRun`. */
+      delivered?: { via: MessageDeliveryVia }
+      warnings: string[]
+    }
+  | {
+      ok: false
+      code: "no_session" | "not_manifest_spawned" | "session_not_alive" | AgentManifestRefError["code"]
+      message: string
+    }
+
 /** Input to `SessionsRegistry.closeWithOutcome`. `verdict: "done" |
  *  "abandoned"` records the Level 2 fields onto the session's
  *  `SessionOutcome` and actually closes it; `"blocked" | "needs-input"`
@@ -4488,6 +4510,39 @@ export interface SessionsRegistry {
    *  same `schedulePersist` every descriptor mutation uses. Never touches
    *  the live agent. Throws when the id is unknown. */
   mergeMeta(id: string, patch: Record<string, string>): SessionDescriptor
+  /** AIP-42 hot role refresh (the `session_role_refresh` MCP verb) — reload
+   *  a manifest-spawned session's AGENT.md, re-render it through the SAME
+   *  projection the spawn used, and diff against the fingerprint recorded
+   *  at spawn (`meta.agentRoleHash`/`agentToolsHash`, agent-role-refresh.ts).
+   *  The session must carry `meta.agentManifestPath` (set only by a spawn
+   *  that named `agentId`/`agentPath`) — anything else resolves
+   *  `{ok:false, code:"not_manifest_spawned"}`.
+   *
+   *  A changed role is PUSHED into the live session as a `steer`-tier
+   *  system notice (busy ⇒ steered into the running turn; idle ⇒ a fresh
+   *  turn) and `meta.agentRoleHash` is advanced to the new value — the
+   *  session's live behavior and its recorded fingerprint move together.
+   *  A changed tool list is only REPORTED (`toolsChanged: true`): stdio MCP
+   *  servers are fixed at spawn, so it can't be applied without a restart
+   *  (`session_restart`) — `meta.agentToolsHash` is deliberately left at
+   *  its old value so a later refresh keeps reporting the drift until an
+   *  actual restart re-baselines it. `dryRun: true` computes the diff
+   *  without pushing anything or touching `meta`. Never mutates the live
+   *  agent's MCP servers or model — those are restart-only axes. */
+  refreshAgentRole(
+    id: string,
+    opts?: { dryRun?: boolean },
+  ): Promise<AgentRoleRefreshOutcome>
+  /** Opt-in, event-driven auto-refresh: watch a manifest-spawned session's
+   *  AGENT.md file (`fs.watch`, debounced — never polls) and call
+   *  `refreshAgentRole` on every change. `enabled: false` stops an existing
+   *  watch; starting one twice for the same session replaces the first.
+   *  Off by default — a session is only watched after an explicit
+   *  `session_role_watch` call. Watches are in-memory only (not persisted;
+   *  a daemon restart drops them, same as every other live-process-only
+   *  watcher in this codebase). Returns false when the session is unknown
+   *  or has no `meta.agentManifestPath` to watch. */
+  setAgentRoleWatch(id: string, enabled: boolean): boolean
   /** Set or clear a session's list-visibility pin (the `session_set_pinned`
    *  MCP verb / `POST /sessions/:id/pin`). `true` flips
    *  `SessionDescriptor.pinned` on — pure sort/display state for the CLI
@@ -6503,6 +6558,9 @@ export function createSessionsRegistry(opts?: {
     if (cause === "killed" && rt.desc.retiredAt === undefined) {
       rt.desc.retiredAt = new Date().toISOString()
     }
+    // A retired session's AGENT.md is no longer worth watching — stop the
+    // opt-in hot-role-refresh watch, if any (never leaked across retirement).
+    stopAgentRoleWatch(rt.desc.id)
     schedulePersist()
     const ev: SessionRetiredEvent = {
       sessionId: rt.desc.id,
@@ -8792,6 +8850,26 @@ export function createSessionsRegistry(opts?: {
   /** Ids already surfaced in an fyi digest (per daemon lifetime — a restart
    *  re-surfaces them once, which is harmless). */
   const digestedFyi = new Set<string>()
+
+  // ── AIP-42 hot role refresh: opt-in file watch ────────────────────────
+  // In-memory only (never persisted) — a daemon restart simply drops it,
+  // same as every other live-process-only watcher. Stopped explicitly via
+  // `setAgentRoleWatch(id, false)` or implicitly when the session retires
+  // (`retireRow`, below).
+  interface AgentRoleWatchState {
+    watcher: FSWatcher
+    debounce: ReturnType<typeof setTimeout> | null
+  }
+  const agentRoleWatchers = new Map<string, AgentRoleWatchState>()
+  const AGENT_ROLE_WATCH_DEBOUNCE_MS = 400
+  const stopAgentRoleWatch = (id: string): boolean => {
+    const state = agentRoleWatchers.get(id)
+    if (!state) return false
+    if (state.debounce) clearTimeout(state.debounce)
+    state.watcher.close()
+    agentRoleWatchers.delete(id)
+    return true
+  }
 
   const setInbox = (rt: SessionRuntime, next: SessionMessage[]): void => {
     rt.desc.inbox = next
@@ -12936,6 +13014,143 @@ export function createSessionsRegistry(opts?: {
       stampReadLiveness(rt.desc)
       return rt.desc
     },
+    async refreshAgentRole(id, opts) {
+      const rt = sessions.get(id)
+      if (!rt) return { ok: false, code: "no_session", message: `refreshAgentRole: no session "${id}"` }
+      const agentManifestPath = rt.desc.meta?.agentManifestPath
+      if (!agentManifestPath) {
+        return {
+          ok: false,
+          code: "not_manifest_spawned",
+          message:
+            `refreshAgentRole: session "${id}" was not spawned from an AGENT.md ` +
+            "(no `meta.agentManifestPath`) — nothing to refresh.",
+        }
+      }
+      const diff = await computeAgentRoleRefresh({
+        agentManifestPath,
+        // Mirrors spawn's OWN resolution (`input.harness ?? input.adapter`,
+        // session-spawn.ts) exactly — `harness` is the canonical axis name,
+        // falling back to `adapterSlug` for a row that never set it
+        // (session-spawn.ts's own doc on `SessionDescriptor.harness`).
+        // Re-rendering with a DIFFERENT adapter slug than the one spawn used
+        // could project the manifest through a different system-prompt
+        // channel / skill-delivery capability and report a spurious change.
+        adapter: rt.desc.harness ?? rt.desc.adapterSlug ?? "",
+        ...(rt.desc.model !== undefined ? { model: rt.desc.model } : {}),
+        ...(rt.desc.meta?.agentRoleHash !== undefined ? { previousRoleHash: rt.desc.meta.agentRoleHash } : {}),
+        ...(rt.desc.meta?.agentToolsHash !== undefined ? { previousToolsHash: rt.desc.meta.agentToolsHash } : {}),
+        ...(resolveAgentAdapter ? { resolveAgentAdapter } : {}),
+      })
+      if (!diff.ok) return diff
+      if (opts?.dryRun) {
+        return {
+          ok: true,
+          roleChanged: diff.roleChanged,
+          toolsChanged: diff.toolsChanged,
+          roleHash: diff.roleHash,
+          toolsHash: diff.toolsHash,
+          warnings: diff.warnings,
+        }
+      }
+      let delivered: { via: MessageDeliveryVia } | undefined
+      if (diff.roleChanged && diff.roleText !== undefined) {
+        if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+          return {
+            ok: false,
+            code: "session_not_alive",
+            message: `refreshAgentRole: session "${id}" is ${rt.desc.status}, not running — nothing to steer.`,
+          }
+        }
+        const result = await registry.sendMessage(
+          createSessionMessage({
+            to: id,
+            from: { relation: "system" },
+            kind: "notice",
+            urgency: "steer",
+            text: renderRoleUpdateNotice(diff.roleText),
+            data: { kind: "agent-role-refresh", roleHash: diff.roleHash },
+          }),
+          { source: "agent-role-refresh", origin: "agent-role-refresh" },
+        )
+        if (result.delivered) delivered = result.delivered
+        // The role is now live — advance the baseline. `agentToolsHash` is
+        // deliberately left at its PRIOR value when toolsChanged: the tools
+        // ask has NOT taken effect (stdio MCP servers are fixed at spawn),
+        // so a later refresh should keep reporting the drift until an
+        // actual restart re-baselines it.
+        registry.mergeMeta(id, { agentRoleHash: diff.roleHash })
+      }
+      return {
+        ok: true,
+        roleChanged: diff.roleChanged,
+        toolsChanged: diff.toolsChanged,
+        roleHash: diff.roleHash,
+        toolsHash: diff.toolsHash,
+        ...(delivered ? { delivered } : {}),
+        warnings: diff.warnings,
+      }
+    },
+    setAgentRoleWatch(id, enabled) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      if (!enabled) return stopAgentRoleWatch(id)
+      const agentManifestPath = rt.desc.meta?.agentManifestPath
+      if (!agentManifestPath) return false
+      // Starting twice replaces the first watcher rather than stacking two.
+      stopAgentRoleWatch(id)
+      // Watch the PARENT DIRECTORY, not the file itself: most editors
+      // (VS Code, vim, emacs) save via write-temp + rename, which replaces
+      // the file's inode. A watch on the file's own path dies silently at
+      // that rename (no `error` event — it's just detached from an inode
+      // nothing points to anymore), so every edit after the FIRST save
+      // would otherwise go unnoticed. A directory watch survives the
+      // file being replaced underneath it; `filename` filters out every
+      // other entry in the directory.
+      const dir = dirname(agentManifestPath)
+      const base = basename(agentManifestPath)
+      const state: AgentRoleWatchState = { watcher: null as unknown as FSWatcher, debounce: null }
+      const scheduleRefresh = (): void => {
+        if (state.debounce) clearTimeout(state.debounce)
+        state.debounce = setTimeout(() => {
+          state.debounce = null
+          void registry.refreshAgentRole(id).catch(err => {
+            console.warn(
+              `[sessions] agent-role-watch refresh failed for ${id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            )
+          })
+        }, AGENT_ROLE_WATCH_DEBOUNCE_MS)
+      }
+      try {
+        // `fs.watch` throws synchronously (ENOENT) when `dir` doesn't exist
+        // (e.g. the manifest's directory was removed after spawn) — caught
+        // so this returns the documented `false` instead of throwing out of
+        // the MCP tool.
+        state.watcher = watchFsPath(dir, (_event, filename) => {
+          // `filename` is `null` on a platform/fs that can't report it
+          // (rare) — treat that as "might be ours" rather than miss it.
+          if (filename !== null && String(filename) !== base) return
+          scheduleRefresh()
+        })
+      } catch (err) {
+        console.warn(
+          `[sessions] agent-role-watch: could not watch "${dir}" for ${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+        return false
+      }
+      state.watcher.on("error", err => {
+        console.warn(
+          `[sessions] agent-role-watch error for ${id}: ${err instanceof Error ? err.message : String(err)}`
+        )
+        stopAgentRoleWatch(id)
+      })
+      agentRoleWatchers.set(id, state)
+      return true
+    },
     setPinned(id, pinned) {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`setPinned: no session "${id}"`)
@@ -13326,6 +13541,9 @@ export function createSessionsRegistry(opts?: {
   function shutdownImpl(): void {
     if (shutdownDone) return
     shutdownDone = true
+    // In-memory-only fs watchers (agent-role-refresh opt-in watch) never
+    // outlive their registry.
+    for (const id of [...agentRoleWatchers.keys()]) stopAgentRoleWatch(id)
     if (persistTimer) clearTimeout(persistTimer)
     // Land any throttled index-sidecar writes before the final snapshot flush.
     flushDirtyIndexes()

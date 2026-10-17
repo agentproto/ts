@@ -85,6 +85,28 @@ still carries the session's identity/history pointer forward.
 { "tool": "session_continue_fresh", "args": { "sessionId": "sess_abc123" } }
 ```
 
+## MCP: hot role refresh (AIP-42 agents only)
+
+An AGENT.md is rendered ONCE at spawn — editing a live keepAlive session's
+AGENT.md otherwise has NO effect on it, ever, short of a restart.
+`session_role_refresh` re-reads the file and diffs it against the
+fingerprint recorded at spawn: a changed role (body/persona/boundaries/
+traits text) is pushed into the live session as a steer notice telling it
+to adopt the new text without replying to the user about it; a changed
+`tools` list is only reported (`toolsChanged: true`) — stdio MCP servers
+are fixed at spawn, so that half needs an actual `session_restart`.
+```json
+{ "tool": "session_role_refresh", "args": { "sessionId": "sess_abc123" } }
+```
+Pass `dryRun: true` to see what would change without pushing anything.
+
+`session_role_watch` is the opt-in, event-driven version: watch the
+AGENT.md file and call `session_role_refresh` automatically on every
+change, instead of calling it by hand. Off by default.
+```json
+{ "tool": "session_role_watch", "args": { "sessionId": "sess_abc123", "enabled": true } }
+```
+
 ## CLI
 
 ```bash

@@ -6212,6 +6212,159 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_role_refresh ──────────────────────────────────────────
+  // AIP-42 hot role refresh — the generic version of the ad-hoc "re-read
+  // AGENT.md and push a replace-your-role notice" mechanism an app like
+  // Pygmalion used to hand-roll for its own personas. Only works for a
+  // session spawned with `agentId`/`agentPath` (carries
+  // `meta.agentManifestPath`); modeled on session_set_keepalive: resolve +
+  // subtree-scope + delegate to the registry, which does the reload/diff/
+  // push. Changed role text is STEERED into the live session; a changed
+  // tool list is only reported — restarting is the caller's call, never
+  // automatic.
+  server.tool(
+    "session_role_refresh",
+    "Re-read a manifest-spawned session's AGENT.md and apply what changed, " +
+      "without a restart. AIP-42 agents are rendered ONCE at spawn — editing " +
+      "a live session's AGENT.md otherwise has no effect on it at all. This " +
+      "diffs a fresh render against the fingerprint recorded at spawn (or " +
+      "the last refresh): a changed ROLE (body/persona/boundaries/traits " +
+      "text) is pushed into the live session as a steer notice telling it " +
+      "to adopt the new text without replying to the user about it — " +
+      "`roleChanged` reports whether that happened. A changed `tools` list " +
+      "is only REPORTED (`toolsChanged: true`) and never applied: stdio MCP " +
+      "servers are fixed at spawn, so a tools change needs an actual " +
+      "`session_restart` to take effect. Pass `dryRun: true` to see what " +
+      "would change without pushing anything. Fails with " +
+      "`not_manifest_spawned` for a session that wasn't spawned with " +
+      "`agentId`/`agentPath`.",
+    {
+      ...sessionRefSchema(z),
+      dryRun: mcpBool
+        .optional()
+        .describe("true to compute the diff without pushing a notice or updating the recorded fingerprint."),
+    },
+    async input => {
+      const prev = resolveSessionDesc(registry, input)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_set_keepalive — a scoped
+      // orchestrator may only touch sessions it (transitively) spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_role_refresh: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only refresh sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const outcome = await registry.refreshAgentRole(prev.id, {
+        ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+      })
+      return { content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, ...outcome }) }] }
+    }
+  )
+
+  // ── session_role_watch ──────────────────────────────────────────
+  // Opt-in, event-driven companion to session_role_refresh: watches the
+  // manifest file (fs.watch, debounced — never polls) and refreshes
+  // automatically on every change. Off by default — a session is only
+  // watched after this is called explicitly.
+  server.tool(
+    "session_role_watch",
+    "Start or stop an automatic `session_role_refresh` on every change to a " +
+      "manifest-spawned session's AGENT.md file. Event-driven (a filesystem " +
+      "watch, debounced ~400ms), not a poll. `enabled: true` starts it " +
+      "(replacing any existing watch for this session); `false` stops it. " +
+      "Off by default and in-memory only — a daemon restart drops the " +
+      "watch; call this again after a restart if you still want it. " +
+      "Returns false for a session with no `meta.agentManifestPath` " +
+      "(not manifest-spawned) or an unknown session.",
+    {
+      ...sessionRefSchema(z),
+      enabled: mcpBool.describe("true to start watching, false to stop."),
+    },
+    async input => {
+      const prev = resolveSessionDesc(registry, input)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_role_watch: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only watch sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const started = registry.setAgentRoleWatch(prev.id, input.enabled)
+        return {
+          content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, watching: started }) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_role_watch: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
   // ── session_set_pinned ──────────────────────────────────────────
   // A quiet, structural list-visibility flag — lets an operator favorite a
   // session so it sorts to the top of the CLI table / VS Code webview list.

@@ -310,6 +310,7 @@ import {
 import { prefixPrompt } from "./agent-projection.js"
 import { stripOwner } from "@agentproto/app-kit"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
+import { fingerprintAgentRole } from "./agent-role-refresh.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -2446,6 +2447,13 @@ export async function spawnAgentSession(
   // the reviewer's spoofable-grant finding (PR #2003).
   let callerAgentId: string | undefined
   let callerAgentManifestPath: string | undefined
+  // The role/tools fingerprint this spawn rendered — recorded onto the
+  // descriptor `meta` below (`agentRoleHash`/`agentToolsHash`) so a later
+  // `session_role_refresh` call has a baseline to diff a re-render against
+  // (AIP-42 hot role refresh, agent-role-refresh.ts). Undefined for any
+  // spawn that didn't go through the agentId/agentPath branch.
+  let callerAgentRoleHash: string | undefined
+  let callerAgentToolsHash: string | undefined
   // AIP-42 manifest defaults (agentId / agentPath): load the AGENT.md and fold
   // its model/instructions/skills/tools into the spawn, WITHOUT overriding
   // anything the caller pinned. Resolved here — after `cwd` is final (agentId
@@ -2474,6 +2482,9 @@ export async function spawnAgentSession(
     const d = manifest.defaults
     callerAgentManifestPath = d.path
     callerAgentId = stripOwner(d.id)
+    const roleFingerprint = fingerprintAgentRole(d)
+    callerAgentRoleHash = roleFingerprint.roleHash
+    callerAgentToolsHash = roleFingerprint.toolsHash
     const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
     const manifestPrompt =
       d.instructions !== undefined ? prefixPrompt(d.instructions, callerPrompt) : callerPrompt
@@ -4764,6 +4775,12 @@ export async function spawnAgentSession(
               // to the caller session, never a caller-supplied payload field.
               ...(callerAgentId ? { agentId: callerAgentId } : {}),
               ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
+              // The fingerprint THIS spawn rendered — `session_role_refresh`'s
+              // baseline (agent-role-refresh.ts). Only present alongside
+              // `agentManifestPath`, which is what makes a session eligible
+              // for a hot role refresh at all.
+              ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
+              ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
             },
           }
         : {}),
