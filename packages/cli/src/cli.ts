@@ -100,7 +100,8 @@ Usage:
                        [--workspace <dir>] [--port <n>] [--bind <ip>]
                        [--connect <url> [--token <jwt>] [--label <name>]]
                        [--allow-origin <url> …] [--interactive | -i]
-  agentproto workspace <add|list|remove|use|remote> [args]
+  agentproto workspace <add|list|remove|use|remote|check> [args]
+                       check <dir>: AIP-34 workspace/v2 tree verifier
   agentproto sessions  [--watch] [--attach <id-or-name>] [--json]
   agentproto sessions  start <adapter> [--cwd <dir>] [--workspace <slug>]
                                        [--prompt <text>] [--label <text>] [--attach]
