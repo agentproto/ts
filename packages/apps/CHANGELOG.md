@@ -1,5 +1,17 @@
 # @agentproto/apps
 
+## 0.23.5
+
+### Patch Changes
+
+- f0a0d89: `@agentproto/runtime` now stamps installed app service-owner sessions with an explicit `origin` of `app-service:<appId>` at spawn time, so session lifecycle policy can distinguish app-managed roots from human-launched sessions without inferring ownership from a mutable display label.
+
+  `@agentproto/apps`' Session Steward now treats `app-service:*` and `pygmalion` / `pygmalion:*` origins as machine-owned roots eligible for origin-bounded lifecycle actions, and documents the separation between classifier verdicts and deterministic mutation authorization.
+
+- Updated dependencies [cc7ba9f]
+- Updated dependencies [6ec4039]
+  - @agentproto/app-kit@2.0.0
+
 ## 0.23.4
 
 ### Patch Changes

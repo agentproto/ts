@@ -1,5 +1,11 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.2.2
+
+### Patch Changes
+
+- @agentproto/adapter-claude-sdk@0.7.26
+
 ## 0.2.1
 
 ### Patch Changes

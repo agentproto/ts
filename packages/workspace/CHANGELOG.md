@@ -1,5 +1,23 @@
 # @agentproto/workspace
 
+## 1.0.0
+
+### Major Changes
+
+- 6ec4039: **BREAKING**: `workspace/v2` (AIP-34, tree composition) replaces `workspace/v1` outright — there is no parallel v1 schema, no v1↔v2 mixed tree, and no legacy compatibility path. `defineWorkspace`, `WorkspaceDefinition`/`WorkspaceHandle`, `workspaceFrontmatterSchema`, `parseWorkspaceManifest`/`workspaceFromManifest`/`writeWorkspaceManifest` now mean v2: `schema` is `"workspace/v2"`, and `type` (a node kind resolved against a tree's `TYPES.md`) is a new REQUIRED field. A caller constructing `{ schema: "workspace/v1", ... }` or omitting `type` now fails validation — see AIP-34 §Migrating from workspace/v1 for the (small) field-by-field rewrite note.
+
+  One schema backs load, export, and verify: `writeWorkspaceManifest` (.ts → .md) and `parseWorkspaceManifest`/`workspaceFromManifest` (.md → object) both validate through `workspaceFrontmatterSchema`, so they can never drift from each other.
+
+  New optional fields: `wall` (four visibility levels: shared/isolated/sealed/hard — default isolated), `includes`/`exports` (two-sided consent doors), `agents`/`routines` (declared manifests this node hosts), `secrets`/`uses_secrets` (never-inherited secret grants, pairs with a new additive `workspace:` access-entry kind on AIP-19 SECRETS.md), `apps`/`accepted_apps` (versioned app attachments — crossing to another node needs that node's explicit `accepted_apps` consent, same two-sided shape as includes/exports), `work` (AIP-20 WORK.md reference — a project's status/board, not a flat status file), and `policy.limits` budget aggregation (most-restrictive-wins down the tree). Companion formats: `TYPES.md` (node-type registry), `agentproto.lock` (tree-wide app/pack lockfile), `EXPORT.md` (sealed/hard digest) — each with its own schema + parse/write pair.
+
+  Adds the first version of the cross-node verifier, `checkWorkspaceTree` (`@agentproto/workspace/checker`) and the CLI surface `agentproto workspace check <dir>`: validates node `type` against `TYPES.md` (allowed parents, wall floor, required files), two-sided `includes`/`exports` and `apps`/`accepted_apps` consent, `uses_secrets` grants against the provider's `SECRETS.md` (plus a no-literal-secret-values heuristic), `policy.limits` budget aggregation, and path confinement (tree-relative paths, no `..` traversal, no symlink escape — checked via realpath, not just the string) on every file reference the checker resolves.
+
+  `@agentproto/app-kit`'s `defineApp`/`WorkspaceShorthand`/`emitApp` migrate along with it: a `WorkspaceShorthand` now accepts an optional `type` (defaulting to `"app"` — an app-kit workspace is a standalone root, not a node in anyone's `TYPES.md` tree), and `emitApp` writes `schema: "workspace/v2"` to the WORKSPACE.md it generates. A caller reading an emitted WORKSPACE.md and asserting `schema === "workspace/v1"` needs updating.
+
+### Minor Changes
+
+- 6ec4039: `workspace/v2` (AIP-34 extended) reference implementation: `defineWorkspaceV2` plus `.ts ↔ .md` manifest round-trips backed by a single zod schema, the companion formats (`TYPES.md`, `agentproto.lock`, `EXPORT.md`), the cross-node `checkWorkspaceTree` verifier, and the `agentproto workspace check <dir>` CLI surface. This increment also exports pre-default input types (`TypesManifestFrontmatterInput`, `AgentprotoLockInput`, `ExportManifestFrontmatterInput`) so the `write*` helpers accept author input that omits schema-defaulted fields.
+
 ## 0.1.4
 
 ### Patch Changes
