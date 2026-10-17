@@ -8,10 +8,11 @@ export default createTsupConfig({
   entry: {
     index: "src/index.ts",
     "manifest/index": "src/manifest/index.ts",
+    "checker/index": "src/checker/index.ts",
   },
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["zod", "gray-matter", "@agentproto/define-doctype"],
+  external: ["zod", "gray-matter", "yaml", "@agentproto/define-doctype", "@agentproto/work", "@agentproto/work/manifest"],
   noExternal: [],
 })

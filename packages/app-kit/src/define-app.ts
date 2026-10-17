@@ -319,18 +319,20 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
 /**
  * Normalize the `workspace` input to an AIP-34 `WorkspaceHandle`. A built
  * handle (already run through `defineWorkspace`) carries `schema:
- * "workspace/v1"` and passes straight through; a `WorkspaceShorthand` is
- * completed with a local-fs storage default and a `0.1.0` version, then
- * validated by `defineWorkspace` — so a malformed shorthand fails with the
- * same AIP-34 diagnostic as a malformed WORKSPACE.md.
+ * "workspace/v2"` and passes straight through; a `WorkspaceShorthand` is
+ * completed with a local-fs storage default, a `0.1.0` version, and a
+ * `type` default of `"app"` (see `WorkspaceShorthand.type`'s doc comment),
+ * then validated by `defineWorkspace` — so a malformed shorthand fails
+ * with the same AIP-34 diagnostic as a malformed WORKSPACE.md.
  */
 function toWorkspaceHandle(input: WorkspaceInput): WorkspaceHandle {
   if ("schema" in input) return input
   return defineWorkspace({
-    schema: "workspace/v1",
+    schema: "workspace/v2",
     version: input.version ?? "0.1.0",
     id: input.id,
     name: input.name,
+    type: input.type ?? "app",
     owner: input.owner,
     storage: input.storage ?? { inline: { provider: "local-fs", config: {} } },
     ...(input.description ? { description: input.description } : {}),

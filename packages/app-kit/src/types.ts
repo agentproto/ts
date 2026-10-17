@@ -63,12 +63,19 @@ export interface WorkspaceShorthand {
   readonly storage?: WorkspaceDefinition["storage"]
   readonly version?: string
   readonly description?: string
+  /**
+   * AIP-34 v2 node `type`. Defaults to `"app"` — app-kit workspaces are
+   * standalone roots (one app, one workspace), not nodes in anyone's
+   * `TYPES.md`-governed tree, so this is a fixed, sensible default rather
+   * than something a caller needs to pick from a registry.
+   */
+  readonly type?: string
 }
 
 /**
  * A home workspace for an app: either a full AIP-34 `WorkspaceHandle`
  * (from `defineWorkspace`) or the `WorkspaceShorthand` above. Discriminated
- * structurally — a built handle carries `schema: "workspace/v1"`.
+ * structurally — a built handle carries `schema: "workspace/v2"`.
  */
 export type WorkspaceInput = WorkspaceHandle | WorkspaceShorthand
 

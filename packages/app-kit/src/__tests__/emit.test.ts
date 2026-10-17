@@ -123,7 +123,8 @@ describe("emit — manifests round-trip through the loaders", () => {
     expect(agentPaths["@acme/reviewer"]).toMatch(/\.agentproto\/agents\/reviewer\/AGENT\.md$/)
 
     const ws = parseWorkspaceManifest(await readFile(workspacePath!, "utf8"))
-    expect(ws.frontmatter.schema).toBe("workspace/v1")
+    expect(ws.frontmatter.schema).toBe("workspace/v2")
+    expect(ws.frontmatter.type).toBe("app")
     expect(ws.frontmatter.id).toBe("@acme/reviewers")
     expect(ws.frontmatter.owner.type).toBe("guild")
     expect(ws.frontmatter.storage).toEqual({ inline: { provider: "local-fs", config: {} } })
