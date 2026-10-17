@@ -8,9 +8,11 @@ import { toAdapterHandle } from "../providers/to-adapter-handle.js"
 import type { BrowserAdapterHandle, BrowserAdapterInstance, BrowserAdapterStartOptions } from "../types.js"
 
 /**
- * The kit `chrome-live` provider: the user's own running Chrome, attached
- * through its remote debugging toggle. Launches nothing; `stop` closes only the
- * tabs it opened and its own websocket, never the user's Chrome.
+ * The kit `chrome-live` provider: a dedicated headful Chrome on its own
+ * persisted profile by default (no consent click); attaching to the user's
+ * own running Chrome through its remote debugging toggle only happens on an
+ * explicit ask (`attachIntent: true`, or a pinned endpoint). `stop` closes
+ * only the tabs it opened and its own websocket, never the user's Chrome.
  */
 export const chromeLiveProvider: ChromeLiveProvider = chromeLive
 
@@ -20,19 +22,30 @@ const CHROME_LIVE_META = {
   healthPath: "/json/version",
   name: "Chrome (your running browser)",
   description:
-    "Your own running Chrome (logged-in profile), attached through chrome://inspect/#remote-debugging. " +
-    "If the toggle is off it auto-launches a dedicated headful Chrome on its own persisted profile (no consent click). " +
-    "The agent works in its own window and never touches your tabs.",
+    "A dedicated headful Chrome on its own persisted profile by default (no consent click). " +
+    "Pass attachIntent: true (or pin an endpoint) to attach to your own running Chrome through " +
+    "chrome://inspect/#remote-debugging instead. The agent works in its own window and never touches your tabs.",
 } as const
+
+/**
+ * Pure mapping, exported for testing without touching a real Chrome:
+ * `profile: "personal"` is the one explicit ask that maps to `attachIntent`;
+ * `"dedicated"` (or unset) leaves it unset so the provider's own default
+ * (dedicated-first) decides.
+ */
+export function chromeLiveLaunchOptionsFrom(opts: BrowserAdapterStartOptions): ChromeLiveLaunchOptions {
+  return {
+    ...(opts.port !== undefined ? { port: opts.port } : {}),
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+    ...(opts.profile === "personal" ? { attachIntent: true } : {}),
+  }
+}
 
 async function ensureChromeLive(opts: BrowserAdapterStartOptions): Promise<BrowserAdapterInstance> {
   if (opts.location === "cloud") {
     throw new Error("[chrome-live] chrome-live attaches to a Chrome on this machine; it has no cloud location")
   }
-  const launchOpts: ChromeLiveLaunchOptions = {
-    ...(opts.port !== undefined ? { port: opts.port } : {}),
-    ...(opts.env !== undefined ? { env: opts.env } : {}),
-  }
+  const launchOpts = chromeLiveLaunchOptionsFrom(opts)
   const instance = await chromeLiveProvider.launch(launchOpts, opts.log ? { log: opts.log } : {})
   const cdp = instance.endpoints.cdp
   if (!cdp) throw new Error("[chrome-live] the provider returned no CDP endpoint")

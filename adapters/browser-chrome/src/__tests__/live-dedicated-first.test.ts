@@ -47,29 +47,33 @@ function stubChild(pid = 9090): { process: ChromeProcess; signal: () => NodeJS.S
 }
 
 describe("wantsAttachFirst (pure decision, no network)", () => {
+  // `env: {}` everywhere below: `pinnedEndpoint` falls back to the REAL
+  // `process.env` when `config.env` is unset, so a CI runner or a dev shell
+  // that happens to export CHROME_LIVE_PORT/CHROME_LIVE_WS_URL would flip
+  // these expectations. Pinning an empty env keeps the decision hermetic.
   it("defaults to the dedicated Chrome: nothing pinned, no explicit ask", () => {
-    expect(wantsAttachFirst({}, {})).toBe(false)
+    expect(wantsAttachFirst({ env: {} }, {})).toBe(false)
   })
 
   it("attachIntent forces attach-first even with nothing pinned", () => {
-    expect(wantsAttachFirst({}, { attachIntent: true })).toBe(true)
+    expect(wantsAttachFirst({ env: {} }, { attachIntent: true })).toBe(true)
   })
 
   it("preferDedicated: false restores the old global default for every call", () => {
-    expect(wantsAttachFirst({ preferDedicated: false }, {})).toBe(true)
+    expect(wantsAttachFirst({ env: {}, preferDedicated: false }, {})).toBe(true)
   })
 
   it("autoLaunch: false makes attach the only path (nothing to prefer)", () => {
-    expect(wantsAttachFirst({ autoLaunch: false }, {})).toBe(true)
+    expect(wantsAttachFirst({ env: {}, autoLaunch: false }, {})).toBe(true)
   })
 
   it("a pinned endpoint (opts.port) is a literal ask: attach-first regardless of preferDedicated", () => {
-    expect(wantsAttachFirst({}, { port: 1234 })).toBe(true)
-    expect(pinnedEndpoint({}, { port: 1234 })).toBe(true)
+    expect(wantsAttachFirst({ env: {} }, { port: 1234 })).toBe(true)
+    expect(pinnedEndpoint({ env: {} }, { port: 1234 })).toBe(true)
   })
 
   it("a pinned endpoint (config.wsUrl) is a literal ask: attach-first", () => {
-    expect(wantsAttachFirst({ wsUrl: "ws://127.0.0.1:1234/devtools/browser" }, {})).toBe(true)
+    expect(wantsAttachFirst({ env: {}, wsUrl: "ws://127.0.0.1:1234/devtools/browser" }, {})).toBe(true)
   })
 
   it("a pinned endpoint via CHROME_LIVE_PORT env is a literal ask: attach-first", () => {

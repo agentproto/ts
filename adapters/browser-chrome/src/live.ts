@@ -897,7 +897,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   async function launchDedicated(ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
     const existing = autoEntry
     if (existing && existing.state === "open" && !existing.conn.closed) return makeInstance(existing, true)
-    ctx.log?.(`[chrome-live] launching the dedicated Chrome (no attach attempted)`)
+    ctx.log?.(`[chrome-live] launching the dedicated Chrome`)
     const launched = await launchDetachedChrome({ ...config.launchDeps, ...(ctx.log ? { log: ctx.log } : {}) })
     try {
       const instance = await connectEntry(launched.wsUrl, ctx, launched)

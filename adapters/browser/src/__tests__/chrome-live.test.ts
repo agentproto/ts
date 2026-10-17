@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { WebSocketServer } from "ws"
 import { BROWSER_REMOTE_DEBUGGING_OFF_CODE, chromeLive } from "@agentproto/adapter-browser-chrome"
 import { browserAdapters, getBrowserAdapter } from "../index.js"
-import { chromeLiveProvider } from "../adapters/chrome-live.js"
+import { chromeLiveLaunchOptionsFrom, chromeLiveProvider } from "../adapters/chrome-live.js"
 
 const servers: Server[] = []
 
@@ -80,5 +80,36 @@ describe("chrome-live facade", () => {
     const handle = getBrowserAdapter("chrome-live")!
     await expect(handle.ensure({ port: await closedPort(), env: {} })).rejects.toMatchObject({ code: BROWSER_REMOTE_DEBUGGING_OFF_CODE })
     await expect(handle.ensure({ location: "cloud", baseUrl: "https://example.test" })).rejects.toThrow(/no cloud location/)
+  })
+
+  it("ensure with profile: \"personal\" still attaches to a reachable toggle-mode Chrome", async () => {
+    const chrome = await toggleChrome()
+    const handle = getBrowserAdapter("chrome-live")!
+    const instance = await handle.ensure({ port: chrome.port, profile: "personal", env: {} })
+    expect(instance).toMatchObject({ id: "chrome-live", port: chrome.port, wasAlreadyRunning: false, healthy: true })
+    expect(instance.pid).toBeUndefined()
+    await instance.stop()
+  })
+})
+
+describe("chromeLiveLaunchOptionsFrom (pure mapping, no network)", () => {
+  it("profile: \"personal\" maps to attachIntent: true", () => {
+    expect(chromeLiveLaunchOptionsFrom({ profile: "personal" })).toMatchObject({ attachIntent: true })
+  })
+
+  it("profile: \"dedicated\" leaves attachIntent unset (the provider's own dedicated-first default decides)", () => {
+    expect(chromeLiveLaunchOptionsFrom({ profile: "dedicated" })).not.toHaveProperty("attachIntent")
+  })
+
+  it("no profile at all leaves attachIntent unset", () => {
+    expect(chromeLiveLaunchOptionsFrom({})).not.toHaveProperty("attachIntent")
+  })
+
+  it("passes port and env through unchanged alongside profile", () => {
+    expect(chromeLiveLaunchOptionsFrom({ port: 1234, env: { FOO: "bar" }, profile: "personal" })).toEqual({
+      port: 1234,
+      env: { FOO: "bar" },
+      attachIntent: true,
+    })
   })
 })

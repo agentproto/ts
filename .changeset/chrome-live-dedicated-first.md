@@ -1,5 +1,9 @@
 ---
 "@agentproto/adapter-browser-chrome": minor
+"@agentproto/adapter-browser": patch
+"@agentproto/runtime": patch
 ---
 
 chrome-live now prefers the dedicated, zero-consent Chrome by DEFAULT: a bare `launch({})` launches (or reuses, hot) its own headful Chrome immediately, with no attempt to attach to the user's own Chrome and no consent wait. Attaching to the user's real, logged-in Chrome through the remote debugging toggle (port 9222) now requires an explicit ask — a pinned `wsUrl`/`port` (launch opts, provider config, or `CHROME_LIVE_*` env), or the new `attachIntent: true` launch option — and, as before, falls back to the dedicated Chrome if that attach is not possible. The new `preferDedicated` provider-config flag (`false` restores the old attach-first default for every call on that provider instance) and the new `attachIntent` launch option are both opt-in surfaces; existing callers that already pin an endpoint are unaffected. Two new pure helpers, `pinnedEndpoint` and `wantsAttachFirst`, are exported for testing the routing decision without touching a real Chrome.
+
+`@agentproto/adapter-browser` (the kit's `chrome-live` adapter description, `browser_adapter_list`) and `@agentproto/runtime` (the `browser_screencast_*` MCP tool descriptions and error messages) get a doc-only patch to stop advertising the old attach-first default.
