@@ -81,6 +81,13 @@ describe("mcp login / logout", () => {
     await expect(mcpLogin("s", {}, stdio.deps)).rejects.toThrow(/not a remote/)
   })
 
+  it("logout by id cleans the keychain even when the import is gone", async () => {
+    const h = harness()
+    h.secrets.set("agentproto/mcp-import/manual:cli:gone#oauth:state", "{}")
+    await mcpLogout("manual:cli:gone", h.deps)
+    expect(h.secrets.get("agentproto/mcp-import/manual:cli:gone#oauth:state")).toBe("")
+  })
+
   it("logout clears the keychain slot", async () => {
     const h = harness()
     await mcpLogin("x", { url: URL_RO }, h.deps)

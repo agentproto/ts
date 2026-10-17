@@ -312,12 +312,14 @@ export async function mcpLogout(
   deps: Pick<McpLoginDeps, "load" | "io">
 ): Promise<{ alias: string }> {
   const entry = findEntry(await deps.load(), key)
-  if (!entry) throw new Error(`unknown import '${key}'`)
-  await deps.io.write(mcpOAuthRef(entry.id), "")
-  return { alias: entry.alias }
+  // An import removed from the file must still be cleanable by its id.
+  const id = entry?.id ?? key
+  await deps.io.write(mcpOAuthRef(id), "")
+  return { alias: entry?.alias ?? key }
 }
 
 function openInBrowser(url: string): void {
+  if (!/^https?:\/\//i.test(url)) return
   const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open"
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url]
   try {
