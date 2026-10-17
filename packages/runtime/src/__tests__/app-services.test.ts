@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -16,6 +17,8 @@ import {
   ensureAppServiceOwners,
   killServicePid,
   parseAppServices,
+  readServicePidFile,
+  reensureAppServiceOwners,
   removeAppServiceOwners,
   serviceOwnerLabel,
   servicePidFilePath,
@@ -276,6 +279,76 @@ describe("killServicePid", () => {
       throw err
     })
     expect(() => killServicePid(999)).not.toThrow()
+  })
+})
+
+describe("readServicePidFile", () => {
+  let base: string
+  beforeEach(async () => {
+    base = await mkdtemp(join(tmpdir(), "app-services-pidfile-"))
+  })
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true })
+  })
+
+  it("reads a written pid; undefined for a missing, malformed or non-positive file", () => {
+    const file = join(base, "services", "web.pid")
+    expect(readServicePidFile(file)).toBeUndefined()
+    mkdirSync(join(base, "services"), { recursive: true })
+    writeFileSync(file, "4242\n")
+    expect(readServicePidFile(file)).toBe(4242)
+    writeFileSync(file, "  not-a-pid  ")
+    expect(readServicePidFile(file)).toBeUndefined()
+    writeFileSync(file, "0")
+    expect(readServicePidFile(file)).toBeUndefined()
+    writeFileSync(file, "-3")
+    expect(readServicePidFile(file)).toBeUndefined()
+  })
+})
+
+describe("reensureAppServiceOwners (boot)", () => {
+  const svc = (name: string) => ({ name, entry: `run ${name}` })
+
+  it("signals each pid-file pid, then force-replaces every owner (never keeps a live one)", async () => {
+    const store = createAppServiceStore({ persist: false })
+    store.upsert({
+      appId: "@a/app",
+      name: "web",
+      entry: "run web",
+      sessionId: "old_web",
+      pid: 9,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    })
+    const killedPids: (number | undefined)[] = []
+    const killOwner = vi.fn()
+    const spawn = vi.fn(async (s: { name: string }) => ({
+      ok: true as const,
+      sessionId: `new_${s.name}`,
+      pid: 1234,
+    }))
+    const result = await reensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web"), svc("worker")],
+      stateDir: "/state/app",
+      spawn,
+      killOwner,
+      readPidFile: pidFile => (pidFile.endsWith("web.pid") ? 777 : undefined),
+      killPid: pid => {
+        killedPids.push(pid)
+      },
+    })
+    // The pid-file pid of `web` is signalled; `worker` had left none.
+    expect(killedPids).toEqual([777, undefined])
+    // The pre-boot owner is killed even though a liveness check might call it
+    // alive — force never keeps.
+    expect(killOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ appId: "@a/app", name: "web", sessionId: "old_web" }),
+    )
+    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(result.kept).toEqual([])
+    expect(result.spawned.map(o => o.sessionId).sort()).toEqual(["new_web", "new_worker"])
+    expect(store.listForApp("@a/app").map(o => o.sessionId).sort()).toEqual(["new_web", "new_worker"])
   })
 })
 

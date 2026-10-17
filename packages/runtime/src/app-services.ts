@@ -174,6 +174,23 @@ export function killServicePid(pid: number | undefined, signal: NodeJS.Signals =
   }
 }
 
+/**
+ * Read the pid an owner wrote to its pid file (`servicePidFilePath`), or
+ * `undefined` when the file is absent or malformed. This is the ONLY handle to
+ * the `entry` CHILD process: the owner record's own `pid` is the owner
+ * session's, and the owner session is gone by the time the boot re-ensure runs
+ * (`reensureAppServiceOwners`) — so a child that outlived the daemon would
+ * otherwise hold its port against the replacement.
+ */
+export function readServicePidFile(pidFile: string): number | undefined {
+  try {
+    const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10)
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // ── persistence ────────────────────────────────────────────────────────────
 
 interface AppServiceStoreState {
@@ -358,6 +375,44 @@ export async function ensureAppServiceOwners(
   }
 
   return { spawned, kept, errors }
+}
+
+/**
+ * Boot counterpart of `ensureAppServiceOwners` (Pygmalion phase 1b item 2):
+ * the previous daemon's owner sessions are gone by definition, so every
+ * recorded owner is treated as stale and replaced — liveness is NOT consulted.
+ * That is the whole point: a rehydrated (or eagerly re-resumed) owner session
+ * reports `running` while its `entry` child is dead, the exact state an
+ * `isOwnerAlive`-gated re-ensure would KEEP and never fix. Before spawning,
+ * signal the pid the owner left in its pid file, so a child that outlived the
+ * daemon does not hold its port against the fresh owner.
+ */
+export async function reensureAppServiceOwners(
+  deps: ReensureAppServiceOwnersDeps,
+): Promise<EnsureAppServiceOwnersResult> {
+  const readPid = deps.readPidFile ?? readServicePidFile
+  const killPid = deps.killPid ?? killServicePid
+  for (const service of deps.services) {
+    killPid(readPid(servicePidFilePath(deps.stateDir, service.name)))
+  }
+  return ensureAppServiceOwners({
+    store: deps.store,
+    appId: deps.appId,
+    services: deps.services,
+    isOwnerAlive: () => false,
+    spawn: deps.spawn,
+    killOwner: deps.killOwner,
+    ...(deps.now ? { now: deps.now } : {}),
+  })
+}
+
+export interface ReensureAppServiceOwnersDeps extends Omit<EnsureAppServiceOwnersDeps, "isOwnerAlive"> {
+  /** Per-app state dir the owner writes its `<name>.pid` under (the same dir
+   *  `ensureServices` derives: `stateDir ?? dataDir ?? dir`). */
+  stateDir: string
+  /** Test seams — default to the real pid-file read + `killServicePid`. */
+  readPidFile?: (pidFile: string) => number | undefined
+  killPid?: (pid: number | undefined) => void
 }
 
 /**
