@@ -2,11 +2,17 @@
  * HTTP twins over the approvals engine — for non-MCP clients (a product
  * like Pygmalion's core): `POST /approvals`, `GET /approvals?status=`,
  * `GET /approvals/:id`, `GET /approvals/:id/wait`,
- * `POST /approvals/:id/consume`, plus the ONE decide route reachable over
- * HTTP: `web_click` (`POST /approvals/:id/decision`). There is no HTTP
+ * `POST /approvals/:id/consume`, plus the two decide routes reachable over
+ * HTTP: `web_click` (`POST /approvals/:id/decision`) and `telegram`
+ * (`POST /approvals/:id/decision/telegram`). There is no HTTP
  * ticket-minting or `ui_card` decide route — those live only inside the
  * card's `ui://` resource (`card.ts`) and the app-only
  * `approval_card_decide` MCP tool (`card-tool.ts`).
+ *
+ * `telegram` trusts a shared bearer secret instead of `web_click`'s
+ * Origin check — a Telegram webhook callback has no browser Origin to
+ * verify, so the bridge service holding `approvals.telegramBotSecret` IS
+ * the credential, the same way `web_click`'s Origin+token pair is.
  *
  * Mirrors `handleTasks`/`handlePermissions`'s shape in `http-server.ts`.
  * An HTTP caller has no MCP session identity, so every request/consume
@@ -26,6 +32,9 @@ export interface ApprovalsHttpAuth {
   /** `approvals.webOrigins` — exact-match allowlist for the `web_click`
    *  decision route. Empty ⇒ the channel is off; the route always 403s. */
   webOrigins: readonly string[]
+  /** `approvals.telegramBotSecret` — shared secret gating the `telegram`
+   *  decision route. Absent ⇒ the channel is off; the route always 403s. */
+  telegramBotSecret?: string
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -152,6 +161,43 @@ export async function handleApprovals(
     return true
   }
 
+  // POST /approvals/:id/decision/telegram — the `telegram` decide route.
+  // Gated by a single shared-secret bearer token (`auth.telegramBotSecret`)
+  // instead of `web_click`'s Origin+token pair: a Telegram webhook callback
+  // carries no browser Origin, so the bridge service holding the secret IS
+  // the credential. Absent secret ⇒ always 403, same convention as an
+  // empty `webOrigins`.
+  const telegramDecisionMatch = path.match(/^\/approvals\/([^/]+)\/decision\/telegram$/)
+  if (telegramDecisionMatch && req.method === "POST") {
+    const id = decodeURIComponent(telegramDecisionMatch[1] ?? "")
+    const header = req.headers.authorization
+    if (!auth.telegramBotSecret || header !== `Bearer ${auth.telegramBotSecret}`) {
+      json(res, 403, {
+        error: "forbidden_channel",
+        message: "telegram decisions require the configured approvals.telegramBotSecret bearer token.",
+      })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const decision = isJsonRecord(body) ? body.decision : undefined
+    if (decision !== "approve" && decision !== "deny") {
+      json(res, 400, { error: "invalid_decision", message: 'body.decision must be "approve" or "deny"' })
+      return true
+    }
+    const ipAddress = req.socket.remoteAddress ?? "unknown"
+    const userAgentHeader = req.headers["user-agent"]
+    const userAgent = typeof userAgentHeader === "string" ? userAgentHeader : "unknown"
+    try {
+      const record = await engine.decideTelegram(id, decision, { ipAddress, userAgent })
+      json(res, 200, record)
+    } catch (err) {
+      if (err instanceof ApprovalError) json(res, errorStatus(err.code), { error: err.code, message: err.message })
+      else if (err instanceof ApprovalNotPendingError) json(res, 409, { error: "not_pending", message: err.message })
+      else json(res, 400, { error: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
   const waitMatch = path.match(/^\/approvals\/([^/]+)\/wait$/)
   if (waitMatch && req.method === "GET") {
     const id = decodeURIComponent(waitMatch[1] ?? "")
@@ -198,7 +244,7 @@ export async function handleApprovals(
     return true
   }
 
-  if (path === "/approvals" || idMatch || decisionMatch || waitMatch || consumeMatch) {
+  if (path === "/approvals" || idMatch || decisionMatch || telegramDecisionMatch || waitMatch || consumeMatch) {
     json(res, 405, { error: "method_not_allowed" })
     return true
   }

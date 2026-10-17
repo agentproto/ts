@@ -3,9 +3,9 @@
  *
  * An `ApprovalRequest` pins an exact payload (sha256 of its canonical JSON)
  * behind a human decision. Only a declared human channel (`web_click`,
- * `ui_card`) may decide it — never a model-callable MCP tool. An approve
- * writes an AIP-7 `signature` on the pinned payload bytes and appends a
- * hash-chained audit event; a deny appends an audit event with no
+ * `ui_card`, `telegram`) may decide it — never a model-callable MCP tool.
+ * An approve writes an AIP-7 `signature` on the pinned payload bytes and
+ * appends a hash-chained audit event; a deny appends an audit event with no
  * signature. See `.plans/pygmalion/lanes/E1a.md` for the spec this
  * implements and `./AIP-7-AMENDMENT.md` for the AIP-7 amendment draft.
  */
@@ -25,7 +25,7 @@ export function parseApprovalStatus(raw: string | null | undefined): ApprovalSta
   return APPROVAL_STATUSES.find(s => s === raw)
 }
 
-export const APPROVAL_CHANNELS = ["web_click", "ui_card"] as const
+export const APPROVAL_CHANNELS = ["web_click", "ui_card", "telegram"] as const
 export type ApprovalChannel = (typeof APPROVAL_CHANNELS)[number]
 
 export type ApprovalDecision = "approve" | "deny"
@@ -83,9 +83,10 @@ export class ApprovalError extends Error {
   }
 }
 
-/** Thrown by `decideWeb` / `decideByCard` when the approval isn't `pending`
- *  any more — not an `ApprovalErrorCode` (that vocabulary is about
- *  consuming, not deciding); the HTTP layer maps this to 409. */
+/** Thrown by `decideWeb` / `decideByCard` / `decideTelegram` when the
+ *  approval isn't `pending` any more — not an `ApprovalErrorCode` (that
+ *  vocabulary is about consuming, not deciding); the HTTP layer maps this
+ *  to 409. */
 export class ApprovalNotPendingError extends Error {
   readonly name = "ApprovalNotPendingError" as const
   constructor(readonly status: ApprovalStatus) {

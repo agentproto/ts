@@ -251,7 +251,10 @@ const provenanceConfigSchema: z.ZodType<ProvenanceConfig> = z
   .passthrough()
 
 const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
-  .object({ webOrigins: z.array(z.string()).optional() })
+  .object({
+    webOrigins: z.array(z.string()).optional(),
+    telegramBotSecret: z.string().optional(),
+  })
   .passthrough()
 
 const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
@@ -529,6 +532,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Approval web-click origins",
     help: "Origins allowed to decide a pending approval via POST /approvals/:id/decision (web_click channel). Empty (default) turns the channel off entirely. A SEPARATE allowlist from daemon.allowedOrigins, which is not automatically trusted to decide approvals. Lockout: a bad value can lock the web decision UI out.",
     default: [],
+  },
+  {
+    path: "approvals.telegramBotSecret",
+    schema: str,
+    apply: "restart",
+    secret: true,
+    writable: false,
+    section: "daemon",
+    label: "Approval telegram bot secret",
+    help: "Shared bearer secret gating POST /approvals/:id/decision/telegram (telegram channel). A Telegram webhook callback has no browser Origin to check, so this secret IS the credential, held only by the trusted bot-bridge service. Unset (default) turns the channel off entirely.",
   },
   {
     path: "daemon.strictOrigins",

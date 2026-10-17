@@ -39,9 +39,15 @@ const ALLOWED_ORIGIN = "https://approve.example.invalid"
 async function withServer(
   webOrigins: readonly string[],
   fn: (base: string, engine: ApprovalsEngine) => Promise<void>,
+  telegramBotSecret?: string,
 ): Promise<void> {
   const bus = createSessionEventBus()
-  engine = createApprovalsEngine({ homeDir: home, sessionEvents: bus, webOrigins })
+  engine = createApprovalsEngine({
+    homeDir: home,
+    sessionEvents: bus,
+    webOrigins,
+    ...(telegramBotSecret !== undefined ? { telegramBotSecret } : {}),
+  })
   const registry = createSessionsRegistry({ persist: false, transcriptDir: join(home, "sessions") })
   const port = await freePort()
   const http = await startHttpServer({
@@ -56,6 +62,7 @@ async function withServer(
     meta: { workspace: process.cwd(), registered: [] },
     approvals: engine,
     approvalsWebOrigins: webOrigins,
+    ...(telegramBotSecret !== undefined ? { approvalsTelegramBotSecret: telegramBotSecret } : {}),
   })
   try {
     await fn(`http://127.0.0.1:${port}`, engine)
@@ -222,6 +229,68 @@ describe("Approvals HTTP: web_click decision route — origin AND token required
       expect(body.status).toBe("approved")
       expect(body.decision.channel).toBe("web_click")
     })
+  })
+})
+
+const TELEGRAM_SECRET = "test-telegram-bridge-secret"
+
+describe("Approvals HTTP: telegram decision route — shared secret required, no Origin check", () => {
+  it("no secret configured -> 403, approval stays pending", async () => {
+    await withServer([], async (base, engine) => {
+      const record = engine.request(
+        { kind: "send", title: "Send", preview: {}, payload: { x: 1 } },
+        { operator: true },
+      )
+      const res = await fetch(`${base}/approvals/${record.id}/decision/telegram`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${TELEGRAM_SECRET}` },
+        body: JSON.stringify({ decision: "approve" }),
+      })
+      expect(res.status).toBe(403)
+      expect(engine.get(record.id)?.status).toBe("pending")
+    })
+  })
+
+  it("configured secret but missing/wrong bearer -> 403, approval stays pending", async () => {
+    await withServer(
+      [],
+      async (base, engine) => {
+        const record = engine.request(
+          { kind: "send", title: "Send", preview: {}, payload: { x: 1 } },
+          { operator: true },
+        )
+        const res = await fetch(`${base}/approvals/${record.id}/decision/telegram`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer wrong-secret" },
+          body: JSON.stringify({ decision: "approve" }),
+        })
+        expect(res.status).toBe(403)
+        expect(engine.get(record.id)?.status).toBe("pending")
+      },
+      TELEGRAM_SECRET,
+    )
+  })
+
+  it("no Origin header needed — the correct bearer secret alone decides", async () => {
+    await withServer(
+      [],
+      async (base, engine) => {
+        const record = engine.request(
+          { kind: "send", title: "Send", preview: {}, payload: { x: 1 } },
+          { operator: true },
+        )
+        const res = await fetch(`${base}/approvals/${record.id}/decision/telegram`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${TELEGRAM_SECRET}` },
+          body: JSON.stringify({ decision: "approve" }),
+        })
+        expect(res.status).toBe(200)
+        const body = (await res.json()) as { status: string; decision: { channel: string } }
+        expect(body.status).toBe("approved")
+        expect(body.decision.channel).toBe("telegram")
+      },
+      TELEGRAM_SECRET,
+    )
   })
 })
 

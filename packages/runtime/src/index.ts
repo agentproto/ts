@@ -2972,6 +2972,9 @@ export async function createGateway(
     sessionEvents,
     ...(approvalsHomeDir ? { homeDir: approvalsHomeDir } : {}),
     webOrigins: daemonConfig.approvals?.webOrigins ?? [],
+    ...(daemonConfig.approvals?.telegramBotSecret
+      ? { telegramBotSecret: daemonConfig.approvals.telegramBotSecret }
+      : {}),
   })
 
   // Supervisor crash-notification (crash-detect PR-4). Opt-in per child
@@ -4123,6 +4126,9 @@ export async function createGateway(
     taskLedger,
     approvals: approvalsEngine,
     approvalsWebOrigins: daemonConfig.approvals?.webOrigins ?? [],
+    ...(daemonConfig.approvals?.telegramBotSecret
+      ? { approvalsTelegramBotSecret: daemonConfig.approvals.telegramBotSecret }
+      : {}),
     ...(workflowRunner ? { workflowRunner } : {}),
     appRegistry,
     performAppInstall: performInstall,

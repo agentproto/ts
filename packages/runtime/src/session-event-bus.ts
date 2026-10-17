@@ -1103,8 +1103,8 @@ export interface ApprovalRequestedEvent {
 
 /**
  * Emitted once a human decides a pending approval through a declared
- * channel (`web_click`, `ui_card`) — never for anything else. The task
- * ledger subscribes to this: a task in `awaiting_approval` whose
+ * channel (`web_click`, `ui_card`, `telegram`) — never for anything else.
+ * The task ledger subscribes to this: a task in `awaiting_approval` whose
  * `approvalIds` contains `approvalId` moves to `in_progress` on
  * `decision:"approved"`, or `cancelled` (`meta.reason:"denied"`) on
  * `decision:"denied"`.
@@ -1113,7 +1113,7 @@ export interface ApprovalDecidedEvent {
   type: "approval:decided"
   approvalId: string
   decision: "approved" | "denied"
-  channel: "web_click" | "ui_card"
+  channel: "web_click" | "ui_card" | "telegram"
   taskId?: string
   ts: string
 }

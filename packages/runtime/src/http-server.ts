@@ -1259,16 +1259,22 @@ export interface RuntimeHttpServerOptions {
   /** Optional — the approvals engine (`approvals/engine.ts`). When wired,
    *  enables the `/approvals` routes — `POST /approvals`, `GET
    *  /approvals?status=`, `GET /approvals/:id`, `GET /approvals/:id/wait`,
-   *  `POST /approvals/:id/consume`, and the `web_click` decision route
+   *  `POST /approvals/:id/consume`, the `web_click` decision route
    *  `POST /approvals/:id/decision` (gated by BOTH the per-boot token and
-   *  `approvalsWebOrigins`). HTTP callers are OPERATOR context, same as
-   *  `/tasks` and `/policies`. Without it the routes 404. */
+   *  `approvalsWebOrigins`), and the `telegram` decision route
+   *  `POST /approvals/:id/decision/telegram` (gated by
+   *  `approvalsTelegramBotSecret`). HTTP callers are OPERATOR context,
+   *  same as `/tasks` and `/policies`. Without it the routes 404. */
   approvals?: import("./approvals/engine.js").ApprovalsEngine
   /** Origins allowed to decide through the `web_click` channel
    *  (`approvals.webOrigins` in config). Empty/absent ⇒ the channel is off
    *  — the decision route always 403s regardless of token. Only read when
    *  `approvals` is wired. */
   approvalsWebOrigins?: readonly string[]
+  /** Shared secret gating the `telegram` decision route
+   *  (`approvals.telegramBotSecret` in config). Absent ⇒ the channel is
+   *  off — the route always 403s. Only read when `approvals` is wired. */
+  approvalsTelegramBotSecret?: string
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -4567,23 +4573,31 @@ export async function startHttpServer(
         // Approvals routes — HTTP twins over the approvals engine
         // (approvals/engine.ts): POST /approvals, GET /approvals?status=,
         // GET /approvals/:id, GET /approvals/:id/wait, POST
-        // /approvals/:id/consume, plus the web_click decision route POST
-        // /approvals/:id/decision. HTTP callers are OPERATOR context, same
-        // split as /tasks and /policies. The decision route does NOT go
-        // through the general `guardBrowserOrigin` gate — it enforces its
-        // own, stricter Origin check against `approvalsWebOrigins` (a
-        // DIFFERENT allowlist than `daemon.allowedOrigins`), plus the
-        // per-boot token; applying both would reject an origin that's
-        // correctly listed in one but not the other.
+        // /approvals/:id/consume, plus two decide routes: web_click
+        // (POST /approvals/:id/decision) and telegram
+        // (POST /approvals/:id/decision/telegram). HTTP callers are
+        // OPERATOR context, same split as /tasks and /policies. Neither
+        // decide route goes through the general `guardBrowserOrigin` gate:
+        // web_click enforces its own, stricter Origin check against
+        // `approvalsWebOrigins` (a DIFFERENT allowlist than
+        // `daemon.allowedOrigins`) plus the per-boot token — applying both
+        // gates would reject an origin that's correctly listed in one but
+        // not the other; telegram has no Origin at all (a webhook callback
+        // isn't a browser) and is gated solely by `approvalsTelegramBotSecret`.
         if (
           opts.approvals &&
           (path === "/approvals" || path.startsWith("/approvals/"))
         ) {
-          const isDecisionRoute = /^\/approvals\/[^/]+\/decision$/.test(path)
+          const isDecisionRoute =
+            /^\/approvals\/[^/]+\/decision$/.test(path) ||
+            /^\/approvals\/[^/]+\/decision\/telegram$/.test(path)
           if (!isDecisionRoute && guardBrowserOrigin(req, res)) return
           const handled = await handleApprovals(req, res, path, opts.approvals, {
             ...(opts.token !== undefined ? { token: opts.token } : {}),
             webOrigins: opts.approvalsWebOrigins ?? [],
+            ...(opts.approvalsTelegramBotSecret !== undefined
+              ? { telegramBotSecret: opts.approvalsTelegramBotSecret }
+              : {}),
           })
           if (handled) return
         }

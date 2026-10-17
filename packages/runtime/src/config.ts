@@ -450,6 +450,13 @@ export interface ApprovalsConfig {
    * automatically trusted to decide approvals.
    */
   webOrigins?: string[]
+  /**
+   * Shared secret gating the `telegram` decide route (`POST
+   * /approvals/:id/decision/telegram`) — presented by a trusted bot-bridge
+   * service in place of `web_click`'s browser Origin (a Telegram webhook
+   * callback has none). Default absent — `telegram` is OFF until set.
+   */
+  telegramBotSecret?: string
 }
 
 /**
