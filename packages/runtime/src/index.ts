@@ -535,6 +535,20 @@ export {
 } from "./catalog-provider-models.js"
 export type { BrowserAdapterResolver, BrowserAdapterLister, BrowserAdapterInfo } from "./browser-tools.js"
 export {
+  registerBrowserObserver,
+  unregisterBrowserObserver,
+  loadBrowserObserverModule,
+  configureBrowserObservers,
+  type BrowserObserver,
+  type BrowserObserverRegistration,
+  type BrowserAttachEvent,
+  type BrowserDetachEvent,
+  type BrowserCallEvent,
+  type BrowserCallResultEvent,
+  type BrowserScreenshotImage,
+  type BrowserObserverModuleApi,
+} from "./browser-observers.js"
+export {
   makeBrowserAdapterLister,
   defaultBrowserAdapterResolution,
   defaultBrowserAdapterIds,

@@ -48,6 +48,7 @@ import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { encodeScreencastFramesToMp4, prepareScreencastOutDir } from "./browser-screencast.js"
 import { extractPageText, looksBlocked } from "./page-text.js"
+import { notifyBrowserAttach, notifyBrowserDetach, withBrowserObservers } from "./browser-observers.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -269,9 +270,10 @@ interface RegisterBrowserToolsOptions {
 }
 
 export function registerBrowserTools(
-  server: McpServer,
+  rawServer: McpServer,
   opts: RegisterBrowserToolsOptions
 ): void {
+  const server = withBrowserObservers(rawServer)
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
 
   // ── browser_adapter_list ────────────────────────────────────────────────────
@@ -461,13 +463,20 @@ export function registerBrowserTools(
           wasAlreadyRunning: instance.wasAlreadyRunning,
           status: instance.healthy ? "running" : "starting",
           stop: async () => {
-            if (pendingId.current) liveInstances.delete(pendingId.current)
+            const sid = pendingId.current
+            if (sid) liveInstances.delete(sid)
             await stopInstance()
+            if (sid) await notifyBrowserDetach({ sessionId: sid, reason: "stop" })
           },
           label: input.label,
         })
         pendingId.current = desc.id
         setLiveBrowserInstance(desc.id, instance)
+        await notifyBrowserAttach({
+          sessionId: desc.id,
+          provider: desc.browserAdapterId ?? instance.id,
+          instanceId: instance.id,
+        })
         const stillStarting = !instance.healthy
         return {
           content: [
