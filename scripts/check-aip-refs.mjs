@@ -25,6 +25,24 @@
  *      the registry on every run instead of only when someone happens to
  *      remember.
  *
+ * Also WARNS (non-fatal, same as the "no AIP" phrase check above — printed
+ * every run, never fails CI) when a row already in README.md's "Key specs
+ * implemented here" table names a package that doesn't match the canonical
+ * spec's frontmatter. This does NOT verify the table is exhaustive — the
+ * table is a deliberately curated highlight list (most AIPs have a real
+ * ref-impl package and are not in it on purpose), and no frontmatter field
+ * cleanly reconstructs that editorial boundary without heavy false-positive
+ * noise (checked empirically: ~40 cited, Schema-typed AIPs would still
+ * trigger if "should be in the table" were the bar).
+ *
+ * It's advisory, not enforced, on purpose: a literal string mismatch is NOT
+ * always wrong — a table row legitimately names an umbrella package that
+ * composes the canonical one (e.g. `@agentproto/corpus` depends on
+ * `@agentproto/knowledge`/`playbook`/`collection` and is what the table
+ * lists for AIP-10/12/18; `packageDependsOn` below treats that as a pass,
+ * not a mismatch). What's left after that exception is still a judgment
+ * call a human should make, not something safe to fail a PR over.
+ *
  * Usage:
  *   node scripts/check-aip-refs.mjs --source <agentproto checkout root>
  */
@@ -109,15 +127,83 @@ export function checkAipRefs({ sourceRoot = DEFAULT_SOURCE, scanRoot = ROOT, sca
   return { ok: unresolved.length === 0, unresolved, warnings }
 }
 
+const README_ROW_RE = /^\|\s*AIP-(\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*$/
+const PACKAGE_NAME_RE = /@agentproto\/[\w-]+/g
+
+function readCanonicalPackage(sourceRoot, n) {
+  let text
+  try {
+    text = readFileSync(path.join(sourceRoot, "specs", `aip-${n}.mdx`), "utf8")
+  } catch {
+    return null
+  }
+  const m = /^package:\s*"([^"]+)"/m.exec(text)
+  return m ? m[1] : null
+}
+
+/** True when `pkgName`'s own package.json depends on `targetPkg` — the
+ *  umbrella-package exception (see file header): a table row naming the
+ *  umbrella is not a mismatch against the canonical piece it composes. */
+function packageDependsOn(scanRoot, pkgName, targetPkg) {
+  const bare = pkgName.replace(/^@agentproto\//, "")
+  for (const base of ["packages", "adapters"]) {
+    let pkg
+    try {
+      pkg = JSON.parse(readFileSync(path.join(scanRoot, base, bare, "package.json"), "utf8"))
+    } catch {
+      continue
+    }
+    if (targetPkg in (pkg.dependencies ?? {}) || targetPkg in (pkg.peerDependencies ?? {})) return true
+  }
+  return false
+}
+
+/** README.md's AIP table rows whose package cell no longer matches what
+ *  the canonical spec's frontmatter declares (does NOT check for missing
+ *  rows — see the file header). Advisory only; see checkAipRefs's caller
+ *  for how this is reported without affecting the process exit code. */
+export function checkReadmeTable({ scanRoot = ROOT, sourceRoot = DEFAULT_SOURCE } = {}) {
+  let lines
+  try {
+    lines = readFileSync(path.join(scanRoot, "README.md"), "utf8").split("\n")
+  } catch {
+    return []
+  }
+  const mismatches = []
+  lines.forEach((line, i) => {
+    const m = README_ROW_RE.exec(line)
+    if (!m) return
+    const [, n, , packageCell] = m
+    const canonicalPkg = readCanonicalPackage(sourceRoot, n)
+    if (!canonicalPkg || packageCell.includes(canonicalPkg)) return
+    const listedPkgs = packageCell.match(PACKAGE_NAME_RE) ?? []
+    if (listedPkgs.some((p) => packageDependsOn(scanRoot, p, canonicalPkg))) return
+    mismatches.push(
+      `README.md:${i + 1}: AIP-${n} table row lists "${packageCell}" but the canonical spec names package "${canonicalPkg}"`,
+    )
+  })
+  return mismatches
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2))
   const sourceRoot = args.source ? path.resolve(args.source) : DEFAULT_SOURCE
-  const { ok, unresolved, warnings } = checkAipRefs({ sourceRoot })
+  // Test-only override (mirrors --source) — production runs always want the
+  // real repo root, which ROOT already resolves from this file's location.
+  const scanRoot = args["scan-root"] ? path.resolve(args["scan-root"]) : ROOT
+  const { ok, unresolved, warnings } = checkAipRefs({ sourceRoot, scanRoot })
+  const readmeMismatches = checkReadmeTable({ sourceRoot, scanRoot })
 
   if (warnings.length > 0) {
     console.log(`check-aip-refs: ${warnings.length} "no AIP" phrase(s) to re-verify against the canonical registry:`)
     for (const w of warnings) console.log(`  ${w}`)
   }
+  if (readmeMismatches.length > 0) {
+    console.log(`check-aip-refs: ${readmeMismatches.length} README.md table row(s) out of sync with canonical:`)
+    for (const r of readmeMismatches) console.log(`  ${r}`)
+  }
+  // readmeMismatches is advisory (see checkReadmeTable's docstring) and is
+  // deliberately excluded from `ok` — it never affects the exit code below.
   if (!ok) {
     console.error(`check-aip-refs: ${unresolved.length} dangling AIP-N reference(s):`)
     for (const u of unresolved) console.error(`  ${u}`)
