@@ -109,6 +109,21 @@
       "import": "./dist/mcp-imports.mjs",
       "default": "./dist/mcp-imports.mjs"
     },
+    "./mcp-oauth": {
+      "types": "./dist/mcp-oauth.d.ts",
+      "import": "./dist/mcp-oauth.mjs",
+      "default": "./dist/mcp-oauth.mjs"
+    },
+    "./mcp-client-pool": {
+      "types": "./dist/mcp-client-pool.d.ts",
+      "import": "./dist/mcp-client-pool.mjs",
+      "default": "./dist/mcp-client-pool.mjs"
+    },
+    "./mcp-credential-deps": {
+      "types": "./dist/mcp-credential-deps.d.ts",
+      "import": "./dist/mcp-credential-deps.mjs",
+      "default": "./dist/mcp-credential-deps.mjs"
+    },
     "./skill-imports": {
       "types": "./dist/skill-imports.d.ts",
       "import": "./dist/skill-imports.mjs",

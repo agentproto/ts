@@ -31,6 +31,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/app-bridge"
 import { EXTENSION_ID } from "@modelcontextprotocol/ext-apps/server"
 import type { DiscoveredMcp } from "./mcp-discovery.js"
+import { createDaemonOAuthProvider, type McpOAuthConfig } from "./mcp-oauth.js"
 
 /** The connection-relevant slice of a server config — what a transport
  *  needs, nothing about where it was found. `DiscoveredMcp` (and so an
@@ -42,6 +43,8 @@ export interface McpConnectionConfig {
   env?: Record<string, string>
   url?: string
   headers?: Record<string, string>
+  /** http/sse only: authenticate with the OAuth state stored for this import. */
+  oauth?: McpOAuthConfig
 }
 
 export interface OpenMcpClientOptions {
@@ -149,6 +152,7 @@ export async function openMcpClient(
     if (!config.url) throw new Error(`${opts.label} has no url`)
     const transport = new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit: { headers },
+      ...(config.oauth ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url) } : {}),
     })
     await client.connect(transport)
     return client
@@ -157,6 +161,7 @@ export async function openMcpClient(
     if (!config.url) throw new Error(`${opts.label} has no url`)
     const transport = new SSEClientTransport(new URL(config.url), {
       requestInit: { headers },
+      ...(config.oauth ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url) } : {}),
     })
     await client.connect(transport)
     return client
