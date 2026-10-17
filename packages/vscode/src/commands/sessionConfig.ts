@@ -37,6 +37,7 @@ import {
   type RestartOverride,
 } from "./sessionConfigDispatch.logic.js"
 import { describeRestart, type RestartResult } from "./sessionRestart.logic.js"
+import { withEligibleAccess } from "./sessionAccessProfile.logic.js"
 
 interface ChipItem extends vscode.QuickPickItem {
   chip: ConfigChip
@@ -278,7 +279,13 @@ async function applyRestart(
   )
   if (go !== "Restart & switch") return
   try {
-    const result = await client.restartSessionWithOverride(session.id, override as RestartOverridePayload)
+    const catalog = await client.catalogModels().catch(() => undefined)
+    const atomic = withEligibleAccess(override as RestartOverridePayload, session, catalog)
+    if (atomic.error) {
+      vscode.window.showErrorMessage(`agentproto: ${atomic.error}.`)
+      return
+    }
+    const result = await client.restartSessionWithOverride(session.id, atomic.override)
     await store.refreshAll()
     // Rebind: the restart minted a NEW session id — follow it, don't leave the
     // view on the dead session.

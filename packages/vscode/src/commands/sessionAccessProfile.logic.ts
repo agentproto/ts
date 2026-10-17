@@ -15,6 +15,8 @@ import type {
   CatalogModelsResponse,
   SessionDescriptor,
 } from "../client/types.js"
+import { resolveEffectiveRoute } from "@agentproto/runtime/catalog-models"
+
 import type { AccessRow } from "./sessionConfig.logic.js"
 import { currentRouteOf, resolveAccessRows } from "./sessionConfig.logic.js"
 
@@ -69,4 +71,49 @@ export function planAccessChange(input: {
   if (!profileRef) return { kind: "noop" }
   if (profileRef === input.currentProfileRef) return { kind: "noop" }
   return { kind: "attach", profileRef, killFirst: input.isLive }
+}
+
+/**
+ * Make a model switch atomic with its wallet. `model` and `access` are
+ * independent axes, but the daemon validates the pair on restart: moving to a
+ * model on another route (e.g. `opencode/x` → `opencode-go/x`) with the old
+ * profile carried forward is a 400 ("not eligible … on route …"). So when a
+ * restart override changes the model, resolve the TARGET route's eligible
+ * profiles and, if the attached one isn't among them, ship the first eligible
+ * profile in the SAME request. The daemon's eligibility rule is untouched.
+ *
+ *  - override has no `model`, or already carries `access` → unchanged;
+ *  - attached profile still eligible on the target route → unchanged;
+ *  - another eligible profile exists → `access` auto-picked (first listed);
+ *  - none eligible (or the catalog knows no route) → unchanged for the unknown
+ *    case (the daemon stays the judge), `error` for a known route with no profile.
+ */
+export function withEligibleAccess<O extends { model?: string; access?: { profileRef: string } }>(
+  override: O,
+  session: Pick<SessionDescriptor, "route" | "accessProfile" | "model">,
+  catalog: CatalogModelsResponse | undefined,
+): { override: O; autoPickedProfile?: string; error?: string } {
+  const model = override.model
+  if (!model || override.access) return { override }
+  const attached = session.accessProfile?.profileRef
+  if (!attached) return { override }
+
+  // A model that pins its own route (`opencode-go/…`, `…@route`) must not
+  // inherit the OLD session's gateway when resolving the target route.
+  const gateway = resolveEffectiveRoute(model, undefined) ? undefined : session.route?.gateway
+  const target = currentRouteOf(
+    { model, ...(gateway ? { route: { gateway } } : {}) } as Pick<SessionDescriptor, "route" | "model">,
+    catalog,
+  )
+  if (!target) return { override }
+  const eligible = target.eligibleProfiles ?? []
+  if (eligible.includes(attached)) return { override }
+  const first = eligible[0]
+  if (!first) {
+    return {
+      override,
+      error: `no auth profile is eligible for "${model}" on route "${target.value}" — add one first`,
+    }
+  }
+  return { override: { ...override, access: { profileRef: first } }, autoPickedProfile: first }
 }
