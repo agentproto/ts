@@ -407,9 +407,9 @@ async function runLoginLogout(verb: "login" | "logout", rest: readonly string[])
                 ...(entry.auth?.scope ? { scope: entry.auth.scope } : {}),
               },
             },
-            // `openMcpClient` lives in a different tsup entry than
-            // `setMcpCredentialDeps` above — its own ambient-global
-            // fallback would see an empty store (see
+            // `openMcpClient` lives in a different tsup entry than the
+            // daemon's own `setMcpCredentialDeps` call in `serve.ts` — its
+            // ambient-global fallback would see an empty store here (see
             // `createDaemonOAuthProvider`). Pass `io` explicitly instead.
             { label: `import "${entry.alias}"`, oauthSecrets: io }
           )

@@ -212,7 +212,6 @@ describe("mcp login / logout", () => {
     expect(config.imports[0]!.id).toBe("manual:cli:qonto-ro")
   })
 
-
   it("creates a manual http import from --url and marks it oauth", async () => {
     const h = harness()
     const r = await mcpLogin("qonto-ro", { url: URL_RO, scope: "a.read" }, h.deps)

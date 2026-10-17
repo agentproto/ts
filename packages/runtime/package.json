@@ -124,6 +124,11 @@
       "import": "./dist/mcp-client-pool.mjs",
       "default": "./dist/mcp-client-pool.mjs"
     },
+    "./mcp-credential-deps": {
+      "types": "./dist/mcp-credential-deps.d.ts",
+      "import": "./dist/mcp-credential-deps.mjs",
+      "default": "./dist/mcp-credential-deps.mjs"
+    },
     "./skill-imports": {
       "types": "./dist/skill-imports.d.ts",
       "import": "./dist/skill-imports.mjs",

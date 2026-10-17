@@ -20,6 +20,7 @@ export default createTsupConfig({
     "mcp-imports": "src/mcp-imports.ts",
     "mcp-oauth": "src/mcp-oauth.ts",
     "mcp-client-pool": "src/mcp-client-pool.ts",
+    "mcp-credential-deps": "src/mcp-credential-deps.ts",
     "skill-imports": "src/skill-imports.ts",
     "resume-strategies": "src/resume-strategies.ts",
     "session-presence": "src/session-presence.ts",
