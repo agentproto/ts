@@ -48,6 +48,12 @@ import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { encodeScreencastFramesToMp4, prepareScreencastOutDir } from "./browser-screencast.js"
 import { extractPageText, looksBlocked } from "./page-text.js"
+import {
+  notifyBrowserAttach,
+  notifyBrowserDetach,
+  withBrowserObservers,
+  type BrowserCaptureHandle,
+} from "./browser-observers.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -230,6 +236,14 @@ const errResult = (text: string) => ({
 // own module-level entries map — this map must survive the same way.
 const liveInstances = new Map<string, BrowserInstanceLike>()
 
+function browserCaptureHandle(instance: BrowserInstanceLike): BrowserCaptureHandle {
+  return {
+    screenshot: tabId => instance.screenshot!(tabId),
+    evaluate: async (expression, tabId) =>
+      (await instance.evaluate!({ expression, returnByValue: true }, tabId)).value,
+  }
+}
+
 // Track the registry id an instance is stored under (the id only becomes
 // known after `registerBrowser` returns); the `start_browser` handler wires
 // the registry's `stop` to drop the entry.
@@ -269,9 +283,10 @@ interface RegisterBrowserToolsOptions {
 }
 
 export function registerBrowserTools(
-  server: McpServer,
+  rawServer: McpServer,
   opts: RegisterBrowserToolsOptions
 ): void {
+  const server = withBrowserObservers(rawServer)
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
 
   // ── browser_adapter_list ────────────────────────────────────────────────────
@@ -461,13 +476,23 @@ export function registerBrowserTools(
           wasAlreadyRunning: instance.wasAlreadyRunning,
           status: instance.healthy ? "running" : "starting",
           stop: async () => {
-            if (pendingId.current) liveInstances.delete(pendingId.current)
+            const sid = pendingId.current
+            if (sid) liveInstances.delete(sid)
             await stopInstance()
+            if (sid) await notifyBrowserDetach({ sessionId: sid, reason: "stop" })
           },
           label: input.label,
         })
         pendingId.current = desc.id
         setLiveBrowserInstance(desc.id, instance)
+        await notifyBrowserAttach({
+          sessionId: desc.id,
+          provider: desc.browserAdapterId ?? instance.id,
+          instanceId: instance.id,
+          ...(instance.screenshot && instance.evaluate
+            ? { capture: browserCaptureHandle(instance) }
+            : {}),
+        })
         const stillStarting = !instance.healthy
         return {
           content: [

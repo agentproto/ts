@@ -7,6 +7,7 @@ export default createTsupConfig({
  */`,
   entry: {
     index: "src/index.ts",
+    "browser-screencast": "src/browser-screencast.ts",
     "catalog-models": "src/catalog-models.ts",
     "command-allowlist": "src/command-allowlist.ts",
     conversations: "src/conversations.ts",
