@@ -2,17 +2,29 @@
   "opencode-go": {
     "id": "opencode-go",
     "name": "OpenCode Go",
-    "api": "https://opencode.ai/inference/go/v1",
+    "api": "https://opencode.ai/inference/go/openai/v1",
     "doc": "https://opencode.ai/v2/docs/console/go/",
     "env": [
       "OPENCODE_API_KEY"
     ],
     "npm": "@ai-sdk/openai-compatible",
     "models": {
+      "beam-free": {
+        "id": "beam-free",
+        "name": "Beam Free",
+        "family": "beam",
+        "release_date": "2026-10-05",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "cat-jam-free": {
         "id": "cat-jam-free",
         "name": "Cat Jam Free",
         "release_date": "2026-10-12",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
@@ -32,30 +44,6 @@
           "output": 0.5,
           "cache_read": 0.01,
           "cache_write": 0.125
-        }
-      },
-      "deepseek-v4-flash": {
-        "id": "deepseek-v4-flash",
-        "name": "DeepSeek V4 Flash",
-        "family": "deepseek-flash",
-        "release_date": "2026-07-31",
-        "status": "deprecated",
-        "cost": {
-          "input": 0.15,
-          "output": 0.6,
-          "cache_read": 0.003
-        }
-      },
-      "deepseek-v4-flash-vision-exp": {
-        "id": "deepseek-v4-flash-vision-exp",
-        "name": "DeepSeek V4 Flash Vision Exp",
-        "family": "deepseek-flash",
-        "release_date": "2026-08-21",
-        "status": "deprecated",
-        "cost": {
-          "input": 0.15,
-          "output": 0.6,
-          "cache_read": 0.003
         }
       },
       "deepseek-v4-pro": {
@@ -157,35 +145,6 @@
           "cache_write": 0.125
         }
       },
-      "grok-4.5": {
-        "id": "grok-4.5",
-        "name": "Grok 4.5",
-        "family": "grok",
-        "release_date": "2026-07-08",
-        "status": "deprecated",
-        "provider": {
-          "npm": "@ai-sdk/openai"
-        },
-        "cost": {
-          "input": 2,
-          "output": 6,
-          "cache_read": 0.3
-        }
-      },
-      "grok-4.6": {
-        "id": "grok-4.6",
-        "name": "Grok 4.6",
-        "family": "grok",
-        "release_date": "2026-08-12",
-        "provider": {
-          "npm": "@ai-sdk/openai"
-        },
-        "cost": {
-          "input": 2,
-          "output": 6,
-          "cache_read": 0.5
-        }
-      },
       "grok-4.7": {
         "id": "grok-4.7",
         "name": "Grok 4.7",
@@ -220,18 +179,6 @@
           "input": 0.834,
           "output": 2.501,
           "cache_read": 0.042
-        }
-      },
-      "kimi-k2.6": {
-        "id": "kimi-k2.6",
-        "name": "Kimi K2.6",
-        "family": "kimi-k2",
-        "release_date": "2026-04-21",
-        "status": "deprecated",
-        "cost": {
-          "input": 0.95,
-          "output": 4,
-          "cache_read": 0.16
         }
       },
       "kimi-k2.7-code": {
@@ -327,6 +274,7 @@
         "name": "MiniMax-M2.7",
         "family": "minimax-m2.7",
         "release_date": "2026-03-18",
+        "status": "deprecated",
         "provider": {
           "npm": "@ai-sdk/anthropic"
         },
@@ -377,32 +325,6 @@
           "input": 0.1,
           "output": 0.2,
           "cache_read": 0.002
-        }
-      },
-      "qwen3.6-plus": {
-        "id": "qwen3.6-plus",
-        "name": "Qwen3.6 Plus",
-        "family": "qwen3.6",
-        "release_date": "2026-04-02",
-        "status": "deprecated",
-        "cost": {
-          "input": 0.5,
-          "output": 3,
-          "cache_read": 0.05,
-          "cache_write": 0.625
-        }
-      },
-      "qwen3.7-max": {
-        "id": "qwen3.7-max",
-        "name": "Qwen3.7 Max",
-        "family": "qwen3.7-max",
-        "release_date": "2026-05-21",
-        "status": "deprecated",
-        "cost": {
-          "input": 2.5,
-          "output": 7.5,
-          "cache_read": 0.5,
-          "cache_write": 3.125
         }
       },
       "qwen3.7-plus": {
@@ -461,22 +383,21 @@
           "cache_write": 0
         }
       },
-      "space-bunny-free": {
-        "id": "space-bunny-free",
-        "name": "Space Bunny Free",
-        "release_date": "2026-09-23",
-        "status": "deprecated",
+      "step-5-preview": {
+        "id": "step-5-preview",
+        "name": "Step 5 Preview",
+        "release_date": "2026-09-16",
         "cost": {
-          "input": 0,
-          "output": 0,
-          "cache_read": 0,
-          "cache_write": 0
+          "input": 1,
+          "output": 2.7,
+          "cache_read": 0.1
         }
       },
       "step-5-preview-free": {
         "id": "step-5-preview-free",
         "name": "Step 5 Preview Free",
         "release_date": "2026-09-16",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
