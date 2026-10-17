@@ -165,6 +165,12 @@ runtime app registry:
   --data-dir` override it, and the resolved absolute path is persisted on the
   installed-app record. Reserved for later: a `store.sqlite` inside that dir
   behind an `app_data_query` tool.
+- **`services`** — the AIP-53 production-hosting surface: `[{ name, entry,
+  port? }]` entries (`name` unique kebab-case, non-empty `entry`, optional
+  `port` 1..65535, no extra keys), carried verbatim and frozen like the other
+  optional surfaces. app-kit never executes a service `entry`; the host (the
+  daemon) spawns one keep-alive service-owner session per entry at install
+  time, and `app_uninstall` tears those owners down.
 
 An app can also be **UI-only**: omit `agents` (or pass `agents: []`) when the
 app is a pure UI panel with no agent behavior of its own. In that case `ui`
@@ -359,9 +365,9 @@ refs (relative to `dir`), plus the app's own optional `id` / `name` / `version`
 (defaults to `"0.1.0"` when `id` is set) / `description`, an optional `requires`
 array of app ids it depends on, and, when the app has a home workspace, that
 workspace's `id`. When declared, `ui` metadata, `artifacts`, `dev` launch
-configs, and the `data: { dir }` data-dir hint are also carried in the
-frontmatter (the `ui.html` document is written next to `APP.md` and referenced
-by path). Nothing reads `AGENT.md`/`WORKFLOW.md`
+configs, the `data: { dir }` data-dir hint, and `services` are also carried
+in the frontmatter (the `ui.html` document is written next to `APP.md` and
+referenced by path). Nothing reads `AGENT.md`/`WORKFLOW.md`
 files on their own today — `APP.md` is the thing a future daemon `app_install`
 discovers and consumes.
 

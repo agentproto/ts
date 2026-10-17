@@ -22,7 +22,8 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                         [--access-profile <ref>]
                                         [--worktree | --no-worktree]
                                         [--mode <id>] [--effort <level>]
-                                        [--prompt <text>] [--label <text>]
+                                        [--prompt <text>] [--agent <id-or-path>]
+                                        [--label <text>]
                                         [--title <text>]
                                         [--orchestrator | --orchestrator-json <json>]
                                         [--mcp-servers-json <json|@file>]
@@ -361,6 +362,7 @@ reattached later.
 | `--auth subscription\|api-key` | Deterministic billing-auth mode + inline credential for adapters that declare a subscription login (`authSubscription`) and/or an API-key provider in their manifest; any other adapter fails the spawn with `unsupported_auth_mode`. This is the *inline* billing selector; the first-class config axis is a **named auth profile** (`access.profileRef`) — see [Config axes](#config-axes-mcphttp). |
 | `--options-json <json\|@file>` | Object form of manifest-declared AIP-45 options; merged with `--base-url`/`--auth-token`/`--auth`/`--model`/`--effort` (discrete flags win on collision). |
 | `--prompt <text>`, `-p` | Initial user turn. |
+| `--agent <id-or-path>` | Load an AIP-42 `AGENT.md` as this spawn's defaults (prompt/persona/model/skills/tools). An id resolves to `<cwd>/.agents/<id>/AGENT.md`; a value ending in `.md` or containing a `/` (but not an `@owner/…` id) is treated as an explicit `AGENT.md` path instead. HTTP twin: the `agentId`/`agentPath` body fields on `POST /sessions/agent` — the MCP `agent_start` tool does not accept them. |
 | `--label <text>` | UI label for this session. |
 | `--title <text>` | Display title (auto-derived fallback) for this session. |
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |

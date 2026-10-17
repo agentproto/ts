@@ -130,4 +130,4 @@ is an `agy` agent name, and gets the projection like any other harness.
 
 - [`create-agentproto-app`](./create-agentproto-app.md) — scaffolding a new
   app, including where its `AGENT.md` lives.
-- [`agentproto app`](../verbs/app.md) — the CLI verb (`pack`/`unpack`/`install`/`resync`/`list`/`catalog`/`uninstall`/`update`/`store`/`serve`/`build`/`dev`/`init`/`validate`). Running an app's agent loop is `app_run`, an MCP tool — not a CLI subcommand.
+- [`agentproto app`](../verbs/app.md) — the CLI verb (`pack`/`unpack`/`install`/`resync`/`list`/`catalog`/`uninstall`/`update`/`store`/`tunnel`/`serve`/`build`/`dev`/`init`/`validate`). Running an app's agent loop is `app_run`, an MCP tool — not a CLI subcommand.
