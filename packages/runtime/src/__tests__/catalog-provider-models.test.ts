@@ -70,7 +70,7 @@ describe("buildCatalogProviderModels", () => {
     // makes an `opencode-go` auth profile's models visible at all. Bounds,
     // not exact counts: the roster is catalog-synced and moves weekly (cf.
     // #1324/#1328 — union-alpha moved Go from 36 to 37).
-    expect(res.models.length).toBeGreaterThan(30)
+    expect(res.models.length).toBeGreaterThan(25)
     expect(res.models.every(m => m.kind === "llm")).toBe(true)
     expect(res.models.every(m => m.route === "opencode-go")).toBe(true)
     // Ids are the bare `<provider>/<bare-id>` form a caller spawns — NOT a

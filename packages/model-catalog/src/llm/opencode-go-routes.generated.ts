@@ -20,10 +20,10 @@
 import type { LLMPricing } from "./catalog.js"
 
 export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
-  "opencode-go/cat-jam-free": {
+  "opencode-go/beam-free": {
     inputPer1M: 0,
     outputPer1M: 0,
-    addedAt: "2026-10-12",
+    addedAt: "2026-10-05",
     vendor: "opencode",
     provider: "opencode-go",
   },
@@ -100,14 +100,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     cacheWriteMultiplier: 1.25,
     addedAt: "2026-09-22",
     vendor: "openai",
-    provider: "opencode-go",
-  },
-  "opencode-go/grok-4.6": {
-    inputPer1M: 2,
-    outputPer1M: 6,
-    cacheReadMultiplier: 0.25,
-    addedAt: "2026-08-12",
-    vendor: "x-ai",
     provider: "opencode-go",
   },
   "opencode-go/grok-4.7": {
@@ -197,15 +189,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "xiaomi",
     provider: "opencode-go",
   },
-  "opencode-go/minimax-m2.7": {
-    inputPer1M: 0.3,
-    outputPer1M: 1.2,
-    cacheReadMultiplier: 0.2,
-    cacheWriteMultiplier: 1.25,
-    addedAt: "2026-03-18",
-    vendor: "minimax",
-    provider: "opencode-go",
-  },
   "opencode-go/minimax-m3": {
     inputPer1M: 0.3,
     outputPer1M: 1.2,
@@ -266,9 +249,10 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "opencode",
     provider: "opencode-go",
   },
-  "opencode-go/step-5-preview-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
+  "opencode-go/step-5-preview": {
+    inputPer1M: 1,
+    outputPer1M: 2.7,
+    cacheReadMultiplier: 0.1,
     addedAt: "2026-09-16",
     vendor: "opencode",
     provider: "opencode-go",
@@ -286,7 +270,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
  */
 export const OPENCODE_GO_ANTHROPIC_MODELS: readonly string[] = [
   "claude-haiku-5-5",
-  "minimax-m2.7",
   "minimax-m3",
   "qwen3.7-plus",
   "qwen3.8-flash",

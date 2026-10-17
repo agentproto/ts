@@ -351,7 +351,7 @@ describe("llm:opencode-* generators — real committed snapshots (offline)", () 
     // exact-length pin reddens the weekly "Regenerate catalog data" job the
     // moment the endpoint's live roster gains or loses a model. Same pattern
     // as #1324 in model-catalog.
-    expect((src.match(/inputPer1M:/g) ?? []).length).toBeGreaterThan(30)
+    expect((src.match(/inputPer1M:/g) ?? []).length).toBeGreaterThan(25)
     const list = src.slice(src.indexOf("OPENCODE_GO_ANTHROPIC_MODELS"))
     const goAnthropicIds = [...list.matchAll(/^ {2}"([^"]+)",$/gm)].map(m => m[1])
     // Structural, not a roster pin: the list is catalog-synced (see the

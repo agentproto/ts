@@ -20,17 +20,17 @@
 import type { LLMPricing } from "./catalog.js"
 
 export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
+  "opencode/beam-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-10-05",
+    vendor: "opencode",
+    provider: "opencode",
+  },
   "opencode/big-pickle": {
     inputPer1M: 0,
     outputPer1M: 0,
     addedAt: "2025-10-17",
-    vendor: "opencode",
-    provider: "opencode",
-  },
-  "opencode/cat-jam-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-10-12",
     vendor: "opencode",
     provider: "opencode",
   },
@@ -308,6 +308,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     inputPer1M: 0.15,
     outputPer1M: 0.5,
     cacheReadMultiplier: 0.2,
+    addedAt: "2026-08-26",
+    vendor: "z-ai",
+    provider: "opencode",
+  },
+  "opencode/glm-5.3-flash-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
     addedAt: "2026-08-26",
     vendor: "z-ai",
     provider: "opencode",
@@ -637,13 +644,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "meta",
     provider: "opencode",
   },
-  "opencode/muse-spark-1.3-contributor-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-09-02",
-    vendor: "meta",
-    provider: "opencode",
-  },
   "opencode/nemotron-3-ultra-free": {
     inputPer1M: 0,
     outputPer1M: 0,
@@ -655,6 +655,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     inputPer1M: 0,
     outputPer1M: 0,
     addedAt: "2026-08-11",
+    vendor: "nvidia",
+    provider: "opencode",
+  },
+  "opencode/nemotron-3.5-super-vl-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-10-15",
     vendor: "nvidia",
     provider: "opencode",
   },
@@ -698,13 +705,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     inputPer1M: 0,
     outputPer1M: 0,
     addedAt: "2026-09-23",
-    vendor: "opencode",
-    provider: "opencode",
-  },
-  "opencode/step-5-preview-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-09-16",
     vendor: "opencode",
     provider: "opencode",
   },
