@@ -361,3 +361,23 @@ for that.
 ### llm:huggingface
 - Added: CohereLabs/command-a-plus-05-2026-bf16, CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, CohereLabs/command-a-vision-07-2025, aisingapore/Qwen-SEA-LION-v4-32B-IT, deepseek-ai/DeepSeek-V4-Flash, inclusionAI/Ling-3.1-flash, zai-org/GLM-5.1-FP8
 - Removed: zai-org/GLM-4.5, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8
+
+## 2026-10-17
+
+### llm:openrouter
+- Added: deepseek/deepseek-v4.1-flash-1017, elorian/glimpse, meta/muse-spark-open, moondream/moondream3-preview, moondream/moondream3.1-9b-a2b, nvidia/nemotron-3.5-super-vl, qwen/qwen3.7-plus:batch, reflection/beam-1.0-501b-a23b
+- Removed: anthropic/claude-sonnet-4, unbiased/pareto-26.10-preview
+
+### llm:requesty
+- Added: deepinfra/step-5-preview, deepseek/deepseek-v4.1-flash-1017, fireworks/muse-spark-open, sference/deepseek-v4.1-flash-1017, together/muse-spark-open
+
+### llm:opencode-go
+- Added: opencode-go/beam-free, opencode-go/step-5-preview
+- Removed: opencode-go/cat-jam-free, opencode-go/grok-4.6, opencode-go/minimax-m2.7, opencode-go/step-5-preview-free
+
+### llm:opencode-zen
+- Added: opencode/beam-free, opencode/glm-5.3-flash-free, opencode/nemotron-3.5-super-vl-free
+- Removed: opencode/cat-jam-free, opencode/muse-spark-1.3-contributor-free, opencode/step-5-preview-free
+
+### llm:huggingface
+- Added: deepseek-ai/DeepSeek-V3.2, meta-models/Muse-Spark-Open-816B-A42B, nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8

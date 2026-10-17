@@ -1,4 +1,5 @@
 {
+  "opencode/beam-free": "2026-10-05",
   "opencode/big-pickle": "2025-10-17",
   "opencode/cat-jam-free": "2026-10-12",
   "opencode/claude-3-5-haiku": "2024-10-22",
@@ -44,6 +45,7 @@
   "opencode/glm-5.2": "2026-06-13",
   "opencode/glm-5.3": "2026-08-14",
   "opencode/glm-5.3-flash": "2026-08-26",
+  "opencode/glm-5.3-flash-free": "2026-08-26",
   "opencode/gpt-5": "2025-08-07",
   "opencode/gpt-5-codex": "2025-09-15",
   "opencode/gpt-5-nano": "2025-08-07",
@@ -110,6 +112,7 @@
   "opencode/nemotron-3-super-free": "2026-03-11",
   "opencode/nemotron-3-ultra-free": "2026-06-04",
   "opencode/nemotron-3.5-lightning-free": "2026-08-11",
+  "opencode/nemotron-3.5-super-vl-free": "2026-10-15",
   "opencode/north-mini-code-free": "2026-06-09",
   "opencode/qwen3-coder": "2025-07-23",
   "opencode/qwen3.5-plus": "2026-02-16",
