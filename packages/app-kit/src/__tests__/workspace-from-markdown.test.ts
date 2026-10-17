@@ -9,10 +9,11 @@ import { describe, it, expect } from "vitest"
 import { workspaceFromMarkdownText } from "../load-app.js"
 
 const VALID_FRONTMATTER = `---
-schema: "workspace/v1"
+schema: "workspace/v2"
 id: "@acme/home"
 version: "1.0.0"
 name: Home
+type: app
 owner: { type: "org", id: "org_1", slug: acme }
 storage:
   inline:

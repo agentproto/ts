@@ -1,17 +1,17 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { checkWorkspaceTree } from "../checker/check-tree.js"
-import { writeWorkspaceV2Manifest } from "../manifest/v2.js"
+import { writeWorkspaceManifest } from "../manifest/index.js"
 import { writeTypesManifest } from "../types-registry.js"
-import type { WorkspaceDefinitionV2 } from "../types-v2.js"
+import type { WorkspaceDefinition } from "../types.js"
 
 let root: string
 
-function node(dir: string, def: WorkspaceDefinitionV2, body = ""): void {
+function node(dir: string, def: WorkspaceDefinition, body = ""): void {
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, "WORKSPACE.md"), writeWorkspaceV2Manifest(def, body))
+  writeFileSync(join(dir, "WORKSPACE.md"), writeWorkspaceManifest(def, body))
 }
 
 function minimalWorkMd(name: string, title: string): string {
@@ -123,7 +123,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     const simoneWs = join(root, "agentik", "simone", "WORKSPACE.md")
     writeFileSync(
       simoneWs,
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/simone",
         version: "1.0.0",
@@ -217,7 +217,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     writeFileSync(
       join(root, "agentik", "simone", "WORKSPACE.md"),
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/simone",
         version: "1.0.0",
@@ -243,7 +243,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     writeFileSync(
       join(root, "agentik", "simone", "WORKSPACE.md"),
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/simone",
         version: "1.0.0",
@@ -269,7 +269,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     writeFileSync(
       join(root, "agentik", "simone", "WORKSPACE.md"),
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/simone",
         version: "1.0.0",
@@ -296,7 +296,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     writeFileSync(
       join(root, "agentik", "simone", "WORKSPACE.md"),
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/simone",
         version: "1.0.0",
@@ -320,7 +320,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     writeFileSync(
       join(root, "agentik", "simone", "WORKSPACE.md"),
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/simone",
         version: "1.0.0",
@@ -344,7 +344,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     writeFileSync(
       join(root, "agentik", "simone", "WORKSPACE.md"),
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/simone",
         version: "1.0.0",
@@ -363,7 +363,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     const ccWs = join(root, "agentik", "chatcommerce", "WORKSPACE.md")
     writeFileSync(
       ccWs,
-      writeWorkspaceV2Manifest({
+      writeWorkspaceManifest({
         schema: "workspace/v2",
         id: "@test/chatcommerce",
         version: "1.0.0",
@@ -405,5 +405,109 @@ describe("checkWorkspaceTree — broken trees", () => {
     utimesSync(companyPath, old, old)
     const report = checkWorkspaceTree(root, { maxReportAgeHours: 48 })
     expect(report.findings.some((f) => f.level === "warning" && f.message.includes("is stale"))).toBe(true)
+  })
+
+  it("treats a workspace/v1 node as a hard error — AIP-34 is workspace/v2 only", () => {
+    buildValidTree(root)
+    const legacyDir = join(root, "legacy")
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(
+      join(legacyDir, "WORKSPACE.md"),
+      "---\nschema: workspace/v1\nid: \"@test/legacy\"\nversion: 1.0.0\nname: Legacy\nowner: { type: user, id: jeremy, slug: jeremy }\nstorage: { inline: { provider: local-fs, config: {} } }\n---\n",
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(
+      report.findings.some(
+        (f) => f.level === "error" && f.path.includes("legacy") && f.message.includes("unrecognised `schema`"),
+      ),
+    ).toBe(true)
+  })
+
+  it("honours apps[].attach to another node when accepted_apps grants it", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceManifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", attach: "@test/chatcommerce" }],
+      }),
+    )
+    writeFileSync(
+      join(root, "agentik", "chatcommerce", "WORKSPACE.md"),
+      writeWorkspaceManifest({
+        schema: "workspace/v2",
+        id: "@test/chatcommerce",
+        version: "1.0.0",
+        name: "ChatCommerce",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        accepted_apps: [{ from: "@test/simone", app: "@agentik/seo-crew" }],
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.findings.some((f) => f.level === "error" && f.nodeId === "@test/simone")).toBe(false)
+  })
+
+  it("flags apps[].attach to another node with no accepted_apps grant", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceManifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", attach: "@test/chatcommerce" }],
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(
+      report.findings.some(
+        (f) =>
+          f.level === "error" &&
+          f.nodeId === "@test/simone" &&
+          f.message.includes("has no accepted_apps grant for @test/simone"),
+      ),
+    ).toBe(true)
+  })
+
+  it("flags a work.file that resolves outside the tree via a symlink", () => {
+    buildValidTree(root)
+    const outside = mkdtempSync(join(tmpdir(), "agentproto-outside-"))
+    writeFileSync(join(outside, "SECRET_WORK.md"), minimalWorkMd("escaped", "Escaped"))
+    symlinkSync(join(outside, "SECRET_WORK.md"), join(root, "agentik", "simone", "ESCAPE.md"))
+    writeFileSync(
+      join(root, "agentik", "simone", "WORKSPACE.md"),
+      writeWorkspaceManifest({
+        schema: "workspace/v2",
+        id: "@test/simone",
+        version: "1.0.0",
+        name: "Simone",
+        type: "project",
+        owner: { type: "org", id: "agentik", slug: "jeremy" },
+        storage: { inline: { provider: "local-fs", config: {} } },
+        work: { file: "ESCAPE.md" },
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(
+      report.findings.some(
+        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("resolves outside the tree root via a symlink"),
+      ),
+    ).toBe(true)
+    rmSync(outside, { recursive: true, force: true })
   })
 })

@@ -1,17 +1,12 @@
 /**
- * AIP-34 WORKSPACE.md sidecar parser + manifest-to-handle constructor.
+ * AIP-34 WORKSPACE.md sidecar: .md ↔ object, both directions, one schema.
  *
- * Mirror of `@agentproto/tool/manifest` and `@agentproto/driver/manifest`:
- * the .md provides metadata; the TS module supplies any spec-specific
- * runtime bits (schemas, execute bodies, …) that can't live in
- * frontmatter. Both inputs end up in `defineWorkspace` so the cross-AIP
- * invariants run uniformly.
- *
- *
- * The frontmatter zod schema below was generated from
- * `resources/aip-34/draft/WORKSPACE.schema.json` via json-schema-to-zod.
- * Re-run scaffold-aip to refresh after spec changes (or hand-tune
- * any constraint the converter doesn't capture cleanly).
+ * `parseWorkspaceManifest` / `workspaceFromManifest` are the .md → object
+ * path, mirroring `@agentproto/tool/manifest` and `@agentproto/driver/manifest`.
+ * `writeWorkspaceManifest` is the .ts (TS-authored `defineWorkspace` handle)
+ * → WORKSPACE.md text direction — load/export/verify are true round-trips
+ * of each other through `workspaceFrontmatterSchema`, never a second shape
+ * to keep in sync.
  */
 
 import matter from "gray-matter"
@@ -19,8 +14,6 @@ import { workspaceFrontmatterSchema, type WorkspaceFrontmatter } from "../schema
 import { defineWorkspace } from "../define-workspace.js"
 import type { WorkspaceDefinition, WorkspaceHandle } from "../types.js"
 
-// Re-export so consumers can import the schema + inferred type either
-// from "@@agentproto/workspace/manifest" or directly from "@@agentproto/workspace/schema".
 export { workspaceFrontmatterSchema, type WorkspaceFrontmatter }
 
 export interface WorkspaceManifest {
@@ -45,18 +38,18 @@ export function parseWorkspaceManifest(source: string): WorkspaceManifest {
 }
 
 export function workspaceFromManifest(manifest: WorkspaceManifest): WorkspaceHandle {
-  // The zod-validated frontmatter is structurally compatible with
-  // WorkspaceDefinition; the cast pins the typing once the manifest
-  // schema and the TS interface diverge (e.g. handle has frozen fields
-  // a literal config doesn't carry yet).
   return defineWorkspace(manifest.frontmatter as unknown as WorkspaceDefinition)
 }
 
-export {
-  workspaceV2FrontmatterSchema,
-  parseWorkspaceV2Manifest,
-  workspaceV2FromManifest,
-  writeWorkspaceV2Manifest,
-  type WorkspaceV2Frontmatter,
-  type WorkspaceV2Manifest,
-} from "./v2.js"
+/**
+ * The .ts → .md direction. Validates `def` through the SAME schema (via
+ * `defineWorkspace`, so an invalid definition throws the exact diagnostic
+ * the TS path would) before serializing, so it's impossible to write a
+ * WORKSPACE.md that the loader would then reject.
+ */
+export function writeWorkspaceManifest(def: WorkspaceDefinition, body = ""): string {
+  const handle = defineWorkspace(def)
+  const { schema: _schema, ...frontmatter } = handle as Record<string, unknown>
+  const ordered = { schema: handle.schema, ...frontmatter }
+  return matter.stringify(body, ordered)
+}

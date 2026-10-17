@@ -3,23 +3,23 @@
  * workspace check <dir>`.
  *
  * A single WORKSPACE.md can't see its neighbours, so everything that
- * needs the WHOLE tree (type↔TYPES.md nesting, includes↔exports
- * two-sided consent, secret grants, budget aggregation, report
- * freshness, no-literal-secrets) lives here — not in
- * `define-workspace-v2.ts`, which only ever sees one node at a time.
+ * needs the WHOLE tree (type↔TYPES.md nesting, includes↔exports and
+ * apps↔accepted_apps two-sided consent, secret grants, budget
+ * aggregation, report freshness, no-literal-secrets, path confinement)
+ * lives here — not in `define-workspace.ts`, which only ever sees one
+ * node at a time.
  *
- * Walks `rootDir`, collects every WORKSPACE.md (v1 and v2 both parse;
- * only v2 nodes get tree rules — a v1 node is reported but otherwise
- * left alone, matching v1's own "nested manifests are ignored by v1
- * hosts" posture), resolves each v2 node's implicit parent (nearest
- * ancestor directory that also has a WORKSPACE.md), and runs the
- * rules from AIP-34 §Specification (workspace/v2 — extended).
+ * Walks `rootDir`, collects every `WORKSPACE.md` (AIP-34 §Conformance
+ * rule 1 — a tree is homogeneously `workspace/v2`; anything else is a
+ * hard error, not a legacy node to tolerate), resolves each node's
+ * implicit parent (nearest ancestor directory that also has a
+ * `WORKSPACE.md`), and runs the rules from AIP-34 §Specification.
  */
 
-import { readFileSync, readdirSync, statSync, type Dirent } from "node:fs"
+import { readFileSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs"
 import { dirname, join, relative, sep } from "node:path"
 import matter from "gray-matter"
-import { parseWorkspaceV2Manifest, type WorkspaceV2Manifest } from "../manifest/v2.js"
+import { parseWorkspaceManifest, type WorkspaceManifest } from "../manifest/index.js"
 import { parseTypesManifest, resolveTypeEntry, type TypesManifestFrontmatter } from "../types-registry.js"
 import { parseWorkManifest, workFrontmatterSchema } from "@agentproto/work/manifest"
 
@@ -49,7 +49,7 @@ export interface CheckFinding {
 export interface CheckedNode {
   id: string
   type: string
-  schema: "workspace/v1" | "workspace/v2"
+  schema: "workspace/v2"
   dir: string
   parentId?: string
   wall?: string
@@ -71,7 +71,7 @@ export interface CheckOptions {
 
 interface InternalNode {
   dir: string
-  manifest: WorkspaceV2Manifest
+  manifest: WorkspaceManifest
   parentDir?: string
 }
 
@@ -162,6 +162,27 @@ function isDescendant(ancestorDir: string, dir: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !rel.startsWith(`.${sep}..`)
 }
 
+/**
+ * Path confinement (AIP-34 §Path confinement), the part a string pattern
+ * alone can't catch: a syntactically safe relative path (no leading `/`,
+ * no `..`) that resolves, via a symlink somewhere along it, outside the
+ * tree. Call ONLY after the target is confirmed to exist (realpathSync
+ * throws on a missing path, which would otherwise read as "escaped").
+ */
+function isWithinRoot(absPath: string, rootDir: string): boolean {
+  try {
+    const real = realpathSync(absPath)
+    const realRoot = realpathSync(rootDir)
+    return isDescendant(realRoot, real)
+  } catch {
+    return false
+  }
+}
+
+function hasTraversal(relPath: string): boolean {
+  return relPath.startsWith("/") || /(^|\/)\.\.(\/|$)/.test(relPath)
+}
+
 export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): CheckReport {
   const findings: CheckFinding[] = []
   const nodes: CheckedNode[] = []
@@ -175,25 +196,17 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
     const dir = dirname(manifestPath)
     const raw = readFileSync(manifestPath, "utf8")
     const peeked = matter(raw).data as { schema?: unknown }
-    if (peeked.schema === "workspace/v1") {
-      findings.push({
-        level: "info",
-        path: manifestPath,
-        message: "workspace/v1 node — tree rules (type, wall, includes, budgets) don't apply; v1 hosts ignore nested manifests entirely.",
-      })
-      continue
-    }
     if (peeked.schema !== "workspace/v2") {
       findings.push({
         level: "error",
         path: manifestPath,
-        message: `unrecognised \`schema\` (${JSON.stringify(peeked.schema)}) — expected "workspace/v1" or "workspace/v2".`,
+        message: `unrecognised \`schema\` (${JSON.stringify(peeked.schema)}) — AIP-34 is workspace/v2 only; there is no legacy schema this tree can contain (see AIP-34 §Migrating from workspace/v1).`,
       })
       continue
     }
-    let manifest: WorkspaceV2Manifest
+    let manifest: WorkspaceManifest
     try {
-      manifest = parseWorkspaceV2Manifest(raw)
+      manifest = parseWorkspaceManifest(raw)
     } catch (err) {
       findings.push({ level: "error", path: manifestPath, message: err instanceof Error ? err.message : String(err) })
       continue
@@ -204,9 +217,9 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
   }
 
   // Resolve implicit parent: nearest ancestor directory that is ALSO a
-  // collected v2 node (shorter manifestPaths were inserted first, so
-  // byDir is already populated top-down by the time we reach a child).
-  // Bounded by `isDescendant(rootDir, cursor)` rather than a string-length
+  // collected node (shorter manifestPaths were inserted first, so byDir
+  // is already populated top-down by the time we reach a child). Bounded
+  // by `isDescendant(rootDir, cursor)` rather than a string-length
   // comparison — length is not a reliable proxy for "under root" (a
   // trailing slash or an unnormalized `rootDir` breaks it); `relative()`
   // is.
@@ -243,6 +256,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
 
   for (const [dir, node] of byDir) {
     const fm = node.manifest.frontmatter
+    const workspacePath = join(dir, "WORKSPACE.md")
     countByType.set(fm.type, (countByType.get(fm.type) ?? 0) + 1)
 
     const checked: CheckedNode = {
@@ -258,7 +272,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
     if (types) {
       const typeEntry = resolveTypeEntry(types.types, fm.type)
       if (!typeEntry) {
-        findings.push({ level: "error", nodeId: fm.id, path: join(dir, "WORKSPACE.md"), message: `type "${fm.type}" is not declared in TYPES.md.` })
+        findings.push({ level: "error", nodeId: fm.id, path: workspacePath, message: `type "${fm.type}" is not declared in TYPES.md.` })
       } else {
         const parentType = node.parentDir ? byDir.get(node.parentDir)?.manifest.frontmatter.type : undefined
         if (typeEntry.parents && typeEntry.parents.length > 0) {
@@ -267,7 +281,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
             findings.push({
               level: "error",
               nodeId: fm.id,
-              path: join(dir, "WORKSPACE.md"),
+              path: workspacePath,
               message: `type "${fm.type}" may only nest under [${typeEntry.parents.join(", ")}], but its parent is "${parentType ?? "(none — tree root)"}".`,
             })
           }
@@ -279,67 +293,98 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
             findings.push({
               level: "error",
               nodeId: fm.id,
-              path: join(dir, "WORKSPACE.md"),
+              path: workspacePath,
               message: `wall "${fm.wall}" is looser than the "${fm.type}" type's floor "${typeEntry.default_wall}".`,
             })
           }
         }
         for (const required of typeEntry.requires_files) {
+          if (hasTraversal(required)) {
+            findings.push({ level: "error", nodeId: fm.id, path: workspacePath, message: `TYPES.md requires_files entry "${required}" is not tree-relative.` })
+            continue
+          }
           const p = join(dir, required)
+          let st: ReturnType<typeof statSync>
           try {
-            const st = statSync(p)
-            const ageHours = (Date.now() - st.mtimeMs) / 3_600_000
-            if (ageHours > maxReportAgeHours) {
-              findings.push({
-                level: "warning",
-                nodeId: fm.id,
-                path: p,
-                message: `${required} is stale (${ageHours.toFixed(1)}h old, threshold ${maxReportAgeHours}h).`,
-              })
-            }
+            st = statSync(p)
           } catch {
             findings.push({ level: "error", nodeId: fm.id, path: p, message: `required file ${required} is missing (type "${fm.type}").` })
+            continue
+          }
+          if (!isWithinRoot(p, rootDir)) {
+            findings.push({ level: "error", nodeId: fm.id, path: p, message: `required file ${required} resolves outside the tree root via a symlink — refusing it.` })
+            continue
+          }
+          const ageHours = (Date.now() - st.mtimeMs) / 3_600_000
+          if (ageHours > maxReportAgeHours) {
+            findings.push({
+              level: "warning",
+              nodeId: fm.id,
+              path: p,
+              message: `${required} is stale (${ageHours.toFixed(1)}h old, threshold ${maxReportAgeHours}h).`,
+            })
           }
         }
       }
     }
 
     // work: (AIP-20) — a project's status/board, replacing a flat status
-    // file. Only validated when declared (rule 14 in AIP-34 v2): no
-    // freshness check yet, that's deferred alongside the task-ledger
-    // alignment question. `work` is `z.any()` at the frontmatter-schema
-    // level (cross-AIP refs aren't typed there), so EVERY branch below
-    // narrows with `typeof` before use — a malformed-but-schema-permitted
-    // shape (`work: { file: 123 }`, `work: "oops"`, `work: {}`) must
-    // become a finding, never a thrown TypeError out of `path.join`/co.
-    const workPath = join(dir, "WORKSPACE.md")
+    // file. Only validated when declared (rule 11): no freshness check
+    // yet, that's deferred alongside the task-ledger alignment question.
+    // `work` is `z.any()` at the frontmatter-schema level (cross-AIP refs
+    // aren't typed there), so EVERY branch below narrows with `typeof`
+    // before use — a malformed-but-schema-permitted shape
+    // (`work: { file: 123 }`, `work: "oops"`, `work: {}`) must become a
+    // finding, never a thrown TypeError out of `path.join`/co.
     if (fm.work !== undefined) {
       if (fm.work === null || typeof fm.work !== "object" || Array.isArray(fm.work)) {
         findings.push({
           level: "error",
           nodeId: fm.id,
-          path: workPath,
+          path: workspacePath,
           message: `work: must be an object with one of inline/ref/file, got ${Array.isArray(fm.work) ? "array" : typeof fm.work}.`,
         })
       } else {
         const work = fm.work as { inline?: unknown; ref?: unknown; file?: unknown }
         if (typeof work.file === "string") {
-          const p = join(dir, work.file)
-          try {
-            parseWorkManifest(readFileSync(p, "utf8"))
-          } catch (err) {
-            findings.push({
-              level: "error",
-              nodeId: fm.id,
-              path: p,
-              message: `work.file does not resolve to a valid WORK.md: ${err instanceof Error ? err.message : String(err)}`,
-            })
+          if (hasTraversal(work.file)) {
+            findings.push({ level: "error", nodeId: fm.id, path: workspacePath, message: `work.file "${work.file}" is not tree-relative (path confinement).` })
+          } else {
+            const p = join(dir, work.file)
+            let raw: string
+            try {
+              raw = readFileSync(p, "utf8")
+            } catch (err) {
+              findings.push({
+                level: "error",
+                nodeId: fm.id,
+                path: p,
+                message: `work.file does not resolve to a valid WORK.md: ${err instanceof Error ? err.message : String(err)}`,
+              })
+              raw = ""
+            }
+            if (raw) {
+              if (!isWithinRoot(p, rootDir)) {
+                findings.push({ level: "error", nodeId: fm.id, path: p, message: `work.file "${work.file}" resolves outside the tree root via a symlink — refusing it.` })
+              } else {
+                try {
+                  parseWorkManifest(raw)
+                } catch (err) {
+                  findings.push({
+                    level: "error",
+                    nodeId: fm.id,
+                    path: p,
+                    message: `work.file does not resolve to a valid WORK.md: ${err instanceof Error ? err.message : String(err)}`,
+                  })
+                }
+              }
+            }
           }
         } else if (work.file !== undefined) {
           findings.push({
             level: "error",
             nodeId: fm.id,
-            path: workPath,
+            path: workspacePath,
             message: `work.file must be a string path, got ${typeof work.file}.`,
           })
         } else if (work.inline !== undefined) {
@@ -347,7 +392,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
             findings.push({
               level: "error",
               nodeId: fm.id,
-              path: workPath,
+              path: workspacePath,
               message: `work.inline must be an object, got ${typeof work.inline}.`,
             })
           } else {
@@ -356,7 +401,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
               findings.push({
                 level: "error",
                 nodeId: fm.id,
-                path: workPath,
+                path: workspacePath,
                 message: `work.inline is not a valid WORK.md frontmatter: ${result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
               })
             }
@@ -365,14 +410,14 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
           findings.push({
             level: "info",
             nodeId: fm.id,
-            path: workPath,
+            path: workspacePath,
             message: `work.ref "${work.ref}" is a registry/path reference — not resolved by this standalone tree check.`,
           })
         } else {
           findings.push({
             level: "error",
             nodeId: fm.id,
-            path: workPath,
+            path: workspacePath,
             message: "work: declared but has none of inline/ref/file (or ref is not a string).",
           })
         }
@@ -388,7 +433,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         findings.push({
           level: "warning",
           nodeId: fm.id,
-          path: join(dir, "WORKSPACE.md"),
+          path: workspacePath,
           message: `includes ${include.ref} — target workspace not found in this tree (outside this check's scope, or a typo).`,
         })
         continue
@@ -402,7 +447,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         findings.push({
           level: "error",
           nodeId: fm.id,
-          path: join(dir, "WORKSPACE.md"),
+          path: workspacePath,
           message: `includes ${include.ref} but ${targetId} exports nothing to ${fm.id} — door not accepted on the provider side.`,
         })
         continue
@@ -413,8 +458,34 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         findings.push({
           level: "warning",
           nodeId: fm.id,
-          path: join(dir, "WORKSPACE.md"),
+          path: workspacePath,
           message: `includes ${include.ref} as "${include.mode}" but ${targetId} only exports "${grant.mode}" — downgraded to "${grant.mode}".`,
+        })
+      }
+    }
+
+    // Apps ↔ accepted_apps — two-sided consent, same shape as includes/exports.
+    // attach: "self" (default) or this node's own id needs no consent — a
+    // node can only ever restrict itself that way.
+    for (const app of fm.apps) {
+      if (app.attach === "self" || app.attach === fm.id) continue
+      const target = byId.get(app.attach)
+      if (!target) {
+        findings.push({
+          level: "warning",
+          nodeId: fm.id,
+          path: workspacePath,
+          message: `apps[].attach "${app.attach}" (app ${app.id}) — target workspace not found in this tree.`,
+        })
+        continue
+      }
+      const grant = target.manifest.frontmatter.accepted_apps.find((g) => g.from === fm.id && (g.app === undefined || g.app === app.id))
+      if (!grant) {
+        findings.push({
+          level: "error",
+          nodeId: fm.id,
+          path: workspacePath,
+          message: `apps[].attach "${app.attach}" (app ${app.id}) — ${app.attach} has no accepted_apps grant for ${fm.id} — door not accepted on the provider side.`,
         })
       }
     }
@@ -427,7 +498,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         findings.push({
           level: "error",
           nodeId: fm.id,
-          path: join(dir, "WORKSPACE.md"),
+          path: workspacePath,
           message: `uses_secrets ${used.from}#${used.slug} — provider has no .secrets/SECRETS.md declared.`,
         })
         continue
@@ -440,6 +511,10 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         findings.push({ level: "error", nodeId: fm.id, path: secretsPath, message: `cannot read ${secretsPath}: ${err instanceof Error ? err.message : String(err)}` })
         continue
       }
+      if (!isWithinRoot(secretsPath, rootDir)) {
+        findings.push({ level: "error", nodeId: fm.id, path: secretsPath, message: `${provider.manifest.frontmatter.id}'s secrets.file resolves outside the tree root via a symlink — refusing it.` })
+        continue
+      }
       const entry = secretsDoc.secrets?.find((s) => s.slug === used.slug)
       const op = used.mode === "reveal" ? "reveal" : "bind"
       const granted = entry?.access?.[op]?.some((g) => g.workspace === fm.id)
@@ -447,7 +522,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         findings.push({
           level: "error",
           nodeId: fm.id,
-          path: join(dir, "WORKSPACE.md"),
+          path: workspacePath,
           message: `uses_secrets ${used.from}#${used.slug} (${op}) — no matching access.${op}[].workspace grant for ${fm.id} in ${secretsPath}.`,
         })
       }
@@ -455,8 +530,13 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
     if (fm.secrets) {
       const secretsPath = join(dir, fm.secrets.file)
       try {
-        const doc = matter(readFileSync(secretsPath, "utf8")).data
-        scanForSecretLeakage(doc, "", findings, secretsPath)
+        const raw = readFileSync(secretsPath, "utf8")
+        if (!isWithinRoot(secretsPath, rootDir)) {
+          findings.push({ level: "error", nodeId: fm.id, path: secretsPath, message: `secrets.file resolves outside the tree root via a symlink — refusing it.` })
+        } else {
+          const doc = matter(raw).data
+          scanForSecretLeakage(doc, "", findings, secretsPath)
+        }
       } catch {
         findings.push({ level: "warning", nodeId: fm.id, path: secretsPath, message: `secrets.file declared but unreadable: ${secretsPath}` })
       }
@@ -478,7 +558,7 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         findings.push({
           level: "warning",
           nodeId: fm.id,
-          path: join(dir, "WORKSPACE.md"),
+          path: workspacePath,
           message: `declared budget-usd-per-month ${own.value} exceeds the resolved ancestor ceiling — effective ceiling is ${effective} (most-restrictive-wins).`,
         })
       }

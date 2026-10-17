@@ -3,30 +3,27 @@ import { workspaceFrontmatterSchema } from "./schema.js"
 import type { WorkspaceDefinition, WorkspaceHandle } from "./types.js"
 
 /**
- * AIP-34 reference implementation of `defineWorkspace`.
+ * AIP-34 reference implementation of `defineWorkspace` — `workspace/v2`,
+ * the canonical and only schema this AIP defines (see AIP-34 §Migrating
+ * from workspace/v1).
  *
- * Built on `createDoctype` so the cross-AIP invariants (id pattern,
- * description length, top-level freeze, "defineWorkspace (AIP-34): …"
- * error prefix) run uniformly with every other AIP defineX.
+ * Same `createDoctype` prologue as every other AIP defineX (id pattern,
+ * description length via `readDescription: (def) => def.name`, canonical
+ * error prefix, top-level freeze). Field-level validation runs
+ * `workspaceFrontmatterSchema` — the ONE schema also used by the .md
+ * manifest path (`manifest/index.ts`) and the exporter
+ * (`writeWorkspaceManifest`) — so a malformed TS-authored definition, a
+ * malformed manifest, and an attempted export of an invalid handle all
+ * fail with the same diagnostic.
  *
- * Field-level validation runs the schema-derived zod from
- * `./schema.ts` against the input. Same source of truth as the .md
- * path uses (`parseWorkspaceManifest`), so a malformed TS-authored
- * definition fails with the same diagnostic as a malformed manifest.
- * Cross-field rules go in `validate(def)` after the zod check.
- *
- * Identity / description extractors detected from the JSON Schema:
- *   readIdentity: def.id
- *   readDescription: def.name.
+ * Cross-node rules (type↔TYPES.md, includes↔exports consent, apps↔
+ * accepted_apps consent, budget aggregation) are NOT checked here — a
+ * single WORKSPACE.md can't see its neighbours. Those run in
+ * `checker/check-tree.ts` against a whole materialized tree.
  */
 export const defineWorkspace = createDoctype<WorkspaceDefinition, WorkspaceHandle>({
   aip: 34,
   name: "workspace",
-  // AIP-34 ids are ALWAYS scoped `@<owner-slug>/<workspace-slug>` (see the
-  // `id` regex in schema.ts). The generic DEFAULT_ID_PATTERN is a bare kebab
-  // slug and rejects the `@`/`/`, so without this the constructDoctype id
-  // gate throws before validate() on every spec-compliant id. Mirror the
-  // schema pattern here so the two gates agree.
   idPattern: /^@[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/,
   readDescription: (def) => def.name,
   validate(def) {
@@ -38,15 +35,9 @@ export const defineWorkspace = createDoctype<WorkspaceDefinition, WorkspaceHandl
           .join("; ")}`,
       )
     }
-    // TODO: spec-34-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
   },
   build(def) {
-    // Default build: spread the validated definition into a fresh object.
-    // Hand-tune for nested freezing (Object.freeze on arrays/objects) and
-    // for fields that need defaults applied — see @agentproto/operator
-    // for a reference shape.
-    return { ...def } as WorkspaceHandle
+    const parsed = workspaceFrontmatterSchema.parse(def)
+    return parsed as WorkspaceHandle
   },
 })

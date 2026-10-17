@@ -53,7 +53,7 @@ export function parseTypesManifest(source: string): TypesManifestFrontmatter {
 }
 
 // Accepts the pre-default INPUT shape (e.g. `requires_files` omitted) —
-// same input/output split as `types-v2.ts`'s WorkspaceDefinitionV2, so an
+// same input/output split as `types.ts`'s `WorkspaceDefinition`, so an
 // author doesn't have to spell out every zod default by hand.
 export function writeTypesManifest(def: TypesManifestFrontmatterInput, body = ""): string {
   const parsed = typesManifestSchema.parse(def)

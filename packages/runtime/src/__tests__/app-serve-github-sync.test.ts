@@ -86,10 +86,11 @@ function workspaceMd(mountPath: string, push?: { branch: string; pr: string } | 
         : `      push: { branch_policy: ${push.branch}, pr_policy: ${push.pr} }\n`
   return (
     "---\n" +
-    'schema: "workspace/v1"\n' +
+    'schema: "workspace/v2"\n' +
     'id: "@acme/home"\n' +
     'version: "1.0.0"\n' +
     "name: Home\n" +
+    "type: app\n" +
     'owner: { type: "org", id: "org_1", slug: acme }\n' +
     "storage:\n" +
     "  inline:\n" +

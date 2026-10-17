@@ -111,7 +111,8 @@ describe("defineApp — multi-agent + attachment invariant", () => {
         // storage omitted → defaults to local-fs
       },
     })
-    expect(app.workspace?.schema).toBe("workspace/v1")
+    expect(app.workspace?.schema).toBe("workspace/v2")
+    expect(app.workspace?.type).toBe("app")
     expect(app.workspace?.id).toBe("@acme/reviewers")
     expect(app.workspace?.owner.type).toBe("guild")
     expect(app.workspace?.storage).toEqual({ inline: { provider: "local-fs", config: {} } })
@@ -120,10 +121,11 @@ describe("defineApp — multi-agent + attachment invariant", () => {
 
   it("carries a pre-built defineWorkspace handle through unchanged", () => {
     const ws = defineWorkspace({
-      schema: "workspace/v1",
+      schema: "workspace/v2",
       id: "@acme/reviewers",
       name: "Acme Reviewers",
       version: "2.0.0",
+      type: "app",
       owner: { type: "org", id: "org_1", slug: "acme" },
       storage: { inline: { provider: "github", config: {} } },
     })
