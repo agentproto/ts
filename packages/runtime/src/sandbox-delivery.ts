@@ -70,17 +70,26 @@ export const DEFAULT_BUNDLE_MAX_BYTES = 50 * 1024 * 1024
 const BOX_BUNDLE_PATH = "/tmp/agentproto-delivery.bundle"
 const BOX_CHECKPOINT_BUNDLE_PATH = "/tmp/agentproto-checkpoint.bundle"
 const PROBE_TIMEOUT_MS = 30_000
-const PUSH_TIMEOUT_MS = 90_000
-const BUNDLE_TIMEOUT_MS = 60_000
+/** The sandbox's first push clones/uploads whatever the box's work tree has
+ *  grown to (node_modules, build artifacts of a whole 72-tool-call turn) —
+ *  90 s regularly expired on provider uplink (observed 2026-10-18), so give
+ *  it minutes. Capped per step by the enclosing delivery deadline anyway. */
+const PUSH_TIMEOUT_MS = 180_000
+const BUNDLE_TIMEOUT_MS = 90_000
 /** Wall-clock cap on the WHOLE delivery: the box keeps billing until teardown
  *  finishes, so every step's timeout is also capped by what is left of this.
- *  Sized to fit probe + push + the bundle reserve with room to spare. */
-export const DEFAULT_DELIVERY_DEADLINE_MS = 240_000
+ *  Sized to fit probe + push (180 s) + the bundle reserve with room to spare. */
+export const DEFAULT_DELIVERY_DEADLINE_MS = 420_000
 /** Slice of the deadline the push may never eat into: the bundle (create +
  *  download of up to 50 MiB) is the fallback for a push that hangs or fails. */
 export const DEFAULT_BUNDLE_RESERVE_MS = 90_000
-/** A checkpoint runs while the agent works: keep it well inside one interval. */
-export const DEFAULT_CHECKPOINT_DEADLINE_MS = 120_000
+/** A checkpoint runs while the agent works: default to 5 minutes — a
+ *  first-turn push of a heavily-worked tree with a node_modules-scale
+ *  adapter store regularly exceeded the 120 s default (observed
+ *  2026-10-18: "push: failed, delivery deadline reached"). Also the
+ *  `defaults.sandbox.checkpoint.timeoutMs` config default; raising it
+ *  only costs billing headroom on a slow checkpoint, never correctness. */
+export const DEFAULT_CHECKPOINT_DEADLINE_MS = 300_000
 
 /** The remote branch carrying `branch`'s uncommitted-work snapshot.
  *  `refPrefix` defaults to {@link CHECKPOINT_BRANCH_PREFIX} — the value
