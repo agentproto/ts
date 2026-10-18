@@ -13,7 +13,7 @@ import { defineDriver, implementTool } from "@agentproto/driver"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
-import { buildMcpTool, toMcpTool } from "../to-mcp-tool.js"
+import { buildMcpTool, toMcpTool, MCP_RESULT_MAX_BYTES } from "../to-mcp-tool.js"
 
 const parse = (res: { content: Array<{ text: string }> }) =>
   JSON.parse(res.content[0]!.text)
@@ -535,5 +535,57 @@ describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
     })
     const reg = buildMcpTool({ tool: weird, candidates: [] })
     expect(reg.inputShape).toEqual({})
+  })
+
+  describe("result size cap", () => {
+    const bigTool = defineTool({
+      id: "demo.big",
+      description: "Returns n bytes of payload.",
+      inputSchema: z.object({ n: z.number() }),
+      outputSchema: z.object({ blob: z.string() }),
+    })
+    const bigDriver = defineDriver({
+      id: "big-builtin",
+      name: "Big",
+      description: "Returns a blob of n chars.",
+      kind: "builtin",
+      implements: [{ tool: "demo.big", version: "*" }],
+      implementations: [implementTool(bigTool, ({ input }) => ({ blob: "x".repeat(input.n) }))],
+    })
+
+    it("replaces an oversize result with a truncated marker and no structuredContent", async () => {
+      const reg = buildMcpTool({ tool: bigTool, candidates: [bigDriver] })
+      const res = await reg.handler({ n: MCP_RESULT_MAX_BYTES + 10 })
+      const body = parse(res)
+      expect(body.truncated).toBe(true)
+      expect(body.totalBytes).toBeGreaterThan(MCP_RESULT_MAX_BYTES)
+      expect(body.hint).toBe("use limit/cursor/fields")
+      expect(res.structuredContent).toBeUndefined()
+      expect(res.content[0]!.text.length).toBeLessThan(200)
+    })
+
+    it("passes a result under the cap through untouched", async () => {
+      const reg = buildMcpTool({ tool: bigTool, candidates: [bigDriver] })
+      const res = await reg.handler({ n: 1000 })
+      expect(parse(res).blob).toHaveLength(1000)
+      expect(res.structuredContent).toBeDefined()
+    })
+
+    it("caps a pre-serialized transformer result too", async () => {
+      const reg = buildMcpTool({
+        tool: bigTool,
+        candidates: [bigDriver],
+        transformers: [
+          {
+            name: "raw",
+            wrapHandler: () => async () => ({
+              content: [{ type: "text" as const, text: "y".repeat(MCP_RESULT_MAX_BYTES + 1) }],
+            }),
+          },
+        ],
+      })
+      const res = await reg.handler({ n: 1 })
+      expect(parse(res).truncated).toBe(true)
+    })
   })
 })

@@ -26,6 +26,8 @@ export class SessionListFilterError extends Error {
 export type StringOrList = string | readonly string[]
 
 export interface SessionListFilterInput {
+  /** Only sessions whose `id` equals one of these (exact match): the cheap read of known sessions. */
+  ids?: StringOrList
   /** Case-insensitive substring over id, name, label, title and cwd. */
   q?: string
   /** Only sessions whose `label` equals this (case-insensitive exact match). */
@@ -52,6 +54,7 @@ export interface SessionListFilterInput {
 
 /** Names of every filter key, for surfaces that parse them from a query string. */
 export const SESSION_LIST_FILTER_KEYS = [
+  "ids",
   "q",
   "label",
   "cwd",
@@ -166,6 +169,7 @@ export function sortNewestActivityFirst<T extends Pick<SessionDescriptor, "id" |
 /** True when `input` carries at least one filter (an empty `q` / `false` flag does not count). */
 export function hasSessionListFilters(input: SessionListFilterInput): boolean {
   return (
+    toList(input.ids).length > 0 ||
     (input.q !== undefined && input.q.trim() !== "") ||
     (input.label !== undefined && input.label.trim() !== "") ||
     (input.cwd !== undefined && input.cwd.trim() !== "") ||
@@ -223,6 +227,7 @@ export function compileSessionListFilters(
   input: SessionListFilterInput,
   now: number = Date.now(),
 ): (s: FilterableSession) => boolean {
+  const ids = new Set(toList(input.ids))
   const q = input.q?.trim().toLowerCase() ?? ""
   const labelExact = input.label && input.label.trim() !== "" ? input.label.trim().toLowerCase() : undefined
   const cwdRoot =
@@ -241,6 +246,7 @@ export function compileSessionListFilters(
       : undefined
 
   return s => {
+    if (ids.size > 0 && !ids.has(s.id)) return false
     if (q) {
       const hit = [s.id, s.name, s.label, s.title, s.cwd].some(f => f !== undefined && f.toLowerCase().includes(q))
       if (!hit) return false
@@ -293,6 +299,8 @@ export function parseSessionListFilterParams(params: URLSearchParams): SessionLi
     return v === null || v === "" ? undefined : v
   }
   const out: SessionListFilterInput = {}
+  const ids = list("ids")
+  if (ids) out.ids = ids
   const q = str("q")
   if (q !== undefined) out.q = q
   const label = str("label")
@@ -323,6 +331,7 @@ const stringOrList = z.union([z.string(), z.array(z.string())])
 
 /** Zod fragment spread into `session_list`'s input schema. */
 export const sessionListFilterShape = {
+  ids: stringOrList.optional().describe("Only these session ids (exact): read known sessions without scanning the list."),
   q: z.string().optional().describe("Case-insensitive substring over id, name, label, title, cwd."),
   label: z.string().optional().describe("Only sessions whose label equals this (case-insensitive)."),
   cwd: z.string().optional().describe("Only sessions whose cwd is this path or a path under it."),

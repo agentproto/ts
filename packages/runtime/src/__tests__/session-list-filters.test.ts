@@ -86,6 +86,16 @@ describe("applySessionListFilters", () => {
     expect(hasSessionListFilters({ q: "  ", excludeNoise: false, rootOnly: false })).toBe(false)
   })
 
+  it("ids: exact id match from a string, a list or a comma list; unknown ids match nothing", () => {
+    expect(apply({ ids: "sess_main" })).toEqual(["sess_main"])
+    expect(apply({ ids: ["sess_main", "sess_cmd1", "sess_nope"] }).sort()).toEqual(["sess_cmd1", "sess_main"])
+    expect(apply({ ids: "sess_main,sess_cmd1" }).sort()).toEqual(["sess_cmd1", "sess_main"])
+    expect(apply({ ids: "ess_main" })).toEqual([])
+    expect(hasSessionListFilters({ ids: "sess_main" })).toBe(true)
+    expect(hasSessionListFilters({ ids: [] })).toBe(false)
+    expect(parseSessionListFilterParams(new URLSearchParams("ids=a,b"))).toEqual({ ids: ["a", "b"] })
+  })
+
   it("q: case-insensitive substring over id, name, label, title and cwd", () => {
     expect(apply({ q: "CHECKOUT" })).toEqual(["sess_main"]) // title
     expect(apply({ q: "brain" })).toEqual(["sess_main"]) // label

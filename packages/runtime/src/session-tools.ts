@@ -1402,7 +1402,7 @@ export function registerSessionTools(
     description: "List sessions tracked by the daemon (agent-CLI and terminal/PTY). " +
       "Rows are newest-activity first and COMPACT by default (`full:true` for the whole " +
       "descriptor). NARROW BEFORE YOU READ: filter (`q`, `excludeNoise`, `rootOnly`, …) " +
-      "and/or pass `limit`. `includeCold` also returns history the registry dropped at boot. " +
+      "and/or pass `limit` (default 50 rows, then `truncated` + `nextCursor`); `ids:[...]` reads known sessions. `includeCold` also returns history the registry dropped at boot. " +
       "Detail: tool_help {name:\"session_list\"}; ranked search: `session_search`.",
     inputSchema: sessionListSchema,
     handler: async (input) => {
@@ -1470,7 +1470,9 @@ export function registerSessionTools(
       // are terminal records (`cold: true`, no pid) and are dropped for
       // any id the registry already holds.
       const query = input.q?.trim() ?? ""
-      const wantCold = input.includeCold === true || (query !== "" && rows.length === 0)
+      const wantCold =
+        input.includeCold === true ||
+        ((query !== "" || filters.ids !== undefined) && rows.length === 0)
       // A scope-filtered caller has no way to verify a cold row's subtree
       // membership (its parent chain may not be held by the registry
       // either), so it never sees cold rows.
@@ -1512,6 +1514,9 @@ export function registerSessionTools(
         maxLimit: 200,
         itemKey: "sessions",
         includeTotal: true,
+        // An unpaged call used to return every row (412 KB with ~1k rows).
+        // Cap it at the documented default page and hand back `nextCursor`.
+        defaultLimit: 50,
       }),
     ],
   })
