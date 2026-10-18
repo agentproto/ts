@@ -2969,19 +2969,37 @@ export async function spawnAgentSession(
     | ((sessionId: string) => () => void)
     | undefined
   let orchestratorDelegates = false
-  // Sandbox spawn: NOTHING that points at this daemon's host-loopback `/mcp`
-  // is mountable — the box cannot reach it (mirrors the bundle guard and the
-  // `daemonMount` skip below). An `orchestrator` request would otherwise
-  // mint a scope and inject a `/mcp/orchestrator?scope=…` URL that the child
-  // can never connect to, so the scope is never minted at all and a clear
-  // warning explains what was dropped.
+  // Sandbox spawn: the HOST daemon's loopback `/mcp/orchestrator` is
+  // unreachable from inside the box — but a sandbox box runs its OWN full
+  // agentproto daemon (`agentproto serve`, @agentproto/sandbox's session
+  // host), whose loopback IS reachable by the adapter process. So instead
+  // of mounting an unreachable host URL, the `orchestrator` request is
+  // FORWARDED onto the box's own `agent_start` (`bootSandboxAgentSession`
+  // → `host.start`): the BOX daemon mints the scope token and mounts
+  // `/mcp/orchestrator?scope=…` on ITS loopback, so the sandboxed
+  // supervisor can spawn children on the same box. Depth/quota/reaping
+  // are consequently box-local — the host tracks only the proxy session,
+  // and `callerScope` narrowing from the HOST side does not cross the box
+  // boundary (the box daemon applies its own default ceilings).
+  let sandboxOrchestratorForward:
+    | boolean
+    | { tools?: string[]; maxDepth?: number; maxChildren?: number }
+    | undefined
   if (input.sandbox !== undefined) {
     if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
-      spawnWarnings.push(
-        "agent_start: `orchestrator` not mounted for a sandbox spawn — the box cannot " +
-          "reach this daemon's host-loopback /mcp/orchestrator gateway, so the session " +
-          "runs without delegation tools.",
-      )
+      const orchestratorOpts =
+        typeof input.orchestrator === "object" ? input.orchestrator : undefined
+      sandboxOrchestratorForward = orchestratorOpts
+        ? {
+            ...(orchestratorOpts.tools !== undefined ? { tools: orchestratorOpts.tools } : {}),
+            ...(orchestratorOpts.maxDepth !== undefined
+              ? { maxDepth: orchestratorOpts.maxDepth }
+              : {}),
+            ...(orchestratorOpts.maxChildren !== undefined
+              ? { maxChildren: orchestratorOpts.maxChildren }
+              : {}),
+          }
+        : true
     }
   } else if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
     if (!buildOrchestratorMcp) {
@@ -4547,6 +4565,13 @@ export async function spawnAgentSession(
         // `sendPrompt`); `promptCarriedInStart` stops the proxy from
         // re-sending it. Non-device sandboxes are untouched (two-dial shape).
         ...(isDeviceSpawn && effectivePrompt !== undefined ? { initialPrompt: effectivePrompt } : {}),
+        // NESTED ORCHESTRATION — the caller's `orchestrator` request,
+        // forwarded onto the BOX's own `agent_start` (see the
+        // `sandboxOrchestratorForward` comment above): the box daemon mints
+        // the scope and mounts /mcp/orchestrator on its own loopback.
+        ...(sandboxOrchestratorForward !== undefined
+          ? { orchestrator: sandboxOrchestratorForward }
+          : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -5503,6 +5528,11 @@ export async function bootSandboxAgentSession(opts: {
    *  verify: the stamp is applied ONLY after a successful write, so a box
    *  never spawns unauthenticated on a copy that never landed. */
   boxLogin?: BoxLoginDecl
+  /** The caller's `agent_start.orchestrator`, normalized — forwarded onto
+   *  the BOX's own `agent_start` so the box daemon mints a scope and mounts
+   *  `/mcp/orchestrator` on ITS loopback (reachable by the adapter inside
+   *  the box). Absent for every non-sandbox spawn. */
+  orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
    *  when one was resolved (config-default wallet / access profile). Consulted
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
@@ -6054,6 +6084,10 @@ export async function bootSandboxAgentSession(opts: {
         : {}),
       // F2 — the initial prompt rides the SAME dial as the spawn (device only).
       ...(carriedPrompt !== undefined ? { prompt: carriedPrompt } : {}),
+      // Nested orchestration — the forwarded `orchestrator` request (see the
+      // opts comment above): the box daemon mints the scope and mounts
+      // /mcp/orchestrator on its own loopback, reachable inside the box.
+      ...(opts.orchestrator !== undefined ? { orchestrator: opts.orchestrator } : {}),
     }
     const remoteDesc =
       deviceTarget !== undefined
