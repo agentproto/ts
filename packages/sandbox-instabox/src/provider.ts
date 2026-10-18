@@ -578,8 +578,10 @@ function toBootedSandbox(
       for (let index = 0; ; index++) {
         // `dd ibs=<chunk> skip=<index> count=1` slices the file, `base64 -w0`
         // inlines it under the 1 MiB stdout cap (700 KB -> ~933 KB of b64).
+        // A pipeline exits with base64's status, so `test -r` guards it: an
+        // unreadable file must fail, not read back as empty.
         const result = await client.exec(machineId, {
-          cmd: `dd if='${path}' ibs=${FILE_CHUNK_BYTES} skip=${index} count=1 2>/dev/null | base64 -w0`,
+          cmd: `test -r '${path}' && dd if='${path}' ibs=${FILE_CHUNK_BYTES} skip=${index} count=1 2>/dev/null | base64 -w0`,
           timeoutSeconds: EXEC_MAX_TIMEOUT_SECONDS,
         })
         const encoded = result.stdout.trim()

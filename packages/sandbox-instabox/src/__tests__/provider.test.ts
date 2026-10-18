@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import type { SandboxSpec, SandboxBootOpts, BootedSandbox } from "@agentproto/sandbox"
 import {
   SandboxBoxGoneError,
@@ -366,7 +367,7 @@ class FakeApi {
       this.boxFiles.set(target, merged)
       return result({})
     }
-    const dd = /^dd if='(.+)' ibs=(\d+) skip=(\d+) count=1 2>\/dev\/null \| base64 -w0$/.exec(cmd)
+    const dd = /^test -r '.+' && dd if='(.+)' ibs=(\d+) skip=(\d+) count=1 2>\/dev\/null \| base64 -w0$/.exec(cmd)
     if (dd !== null) {
       const [, target, chunkText, skipText] = dd
       const file = this.boxFiles.get(target!)
@@ -747,6 +748,15 @@ describe("writeFile and readFile", () => {
   it("rejects a missing-file read with a clear error", async () => {
     const booted = await bootOnce()
     await expect(booted.readFile!("/data/home/absent.bin")).rejects.toThrow(/cannot read/)
+  })
+
+  it("guards the read pipeline so a missing file exits non-zero in a real shell", async () => {
+    const api = new FakeApi()
+    const booted = await bootOnce(api)
+    await booted.readFile!("/data/home/absent.bin").catch(() => undefined)
+    const read = api.execBodies.find(exec => exec.cmd.includes("base64 -w0"))!
+    const missing = read.cmd.split("/data/home/absent.bin").join("/nonexistent-instabox-test/absent.bin")
+    expect(spawnSync("sh", ["-c", missing], { encoding: "utf8" }).status).not.toBe(0)
   })
 
   it("accepts an empty write (one mkdir + empty stdin decode)", async () => {
