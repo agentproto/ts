@@ -78,7 +78,9 @@ export async function connectDaemonAgentSessionHost(
   const url = resolveMcpUrl(opts)
   let client: HarnessClient
   try {
-    client = await HarnessClient.connect({ url })
+    // Forward `headers` too: a box daemon behind a PUBLIC edge (InstaBox
+    // bearer, Box `_port_auth` cookie) is gated at the daemon, not the edge.
+    client = await HarnessClient.connect({ ...(opts ?? {}), url })
   } catch (err) {
     throw new Error(
       `worktree-agent: could not reach the agentproto daemon's MCP endpoint at ${url}. ` +

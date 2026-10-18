@@ -165,10 +165,10 @@ export interface SandboxExecOpts {
   /** Extra env vars for THIS command only (merged onto the box's own
    *  sandbox-level env by the provider's SDK; not persisted). */
   env?: Record<string, string>
-   /** Per-command timeout in ms — what the box kills the process after when
-    *  exceeded. Provider-dependent error shape on expiry (e.g. e2b throws a
-    *  TimeoutError); the caller treats any throw as a failed exec. */
-   timeoutMs?: number
+  /** Per-command timeout in ms — what the box kills the process after when
+   *  exceeded. Provider-dependent error shape on expiry (e.g. e2b throws a
+   *  TimeoutError); the caller treats any throw as a failed exec. */
+  timeoutMs?: number
 }
 
 /** What a successful `BootedSandbox.exec` reports. The caller truncates the
@@ -367,9 +367,21 @@ export async function createSandboxAgentSessionHost(
   } else {
     booted = await opts.provider.boot(opts.spec, { env })
   }
+  // A box whose public edge has NO provider-side auth of its own (InstaBox)
+  // gates its daemon with a per-box bearer; Box's private path gates with a
+  // `_port_auth` cookie. Surface whatever `booted.authHeaders`/`token` the
+  // provider returned so the immediate host connection authenticates too —
+  // without this the boot succeeds but the daemon MCP connect 401s, the box
+  // gets reaped, and `agent_start` always fails. Absent ⇒ unchanged.
+  const headers =
+    booted.authHeaders ??
+    (booted.token ? { Authorization: `Bearer ${booted.token}` } : undefined)
   let host: DaemonAgentSessionHost
   try {
-    host = await connectDaemonAgentSessionHost({ url: booted.mcpUrl })
+    host = await connectDaemonAgentSessionHost({
+      url: booted.mcpUrl,
+      ...(headers ? { headers } : {}),
+    })
   } catch (err) {
     // The box EXISTS at this point — the daemon connection on top of it
     // failed. Reap it so a failed boot never leaves a live box behind:

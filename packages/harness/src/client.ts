@@ -55,7 +55,12 @@ export class HarnessClient {
       { name: "harness", version: "0.1.0" },
       { capabilities: {} },
     )
-    const transport = new StreamableHTTPClientTransport(new URL(url))
+    const transport = new StreamableHTTPClientTransport(
+      new URL(url),
+      // Auth for a box daemon reached over a PUBLIC edge (InstaBox's bearer,
+      // Box's `_port_auth` cookie, …). Omitted ⇒ transport unchanged.
+      opts?.headers ? { requestInit: { headers: opts.headers } } : undefined,
+    )
     await client.connect(transport)
     return new HarnessClient(url, client)
   }

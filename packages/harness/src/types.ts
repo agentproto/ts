@@ -134,6 +134,12 @@ export interface ConnectHarnessOptions {
   /** Daemon MCP endpoint. Default `http://127.0.0.1:18790/mcp`
    *  (or `AGENTPROTO_MCP_URL`). */
   url?: string
+  /** Extra HTTP headers for every MCP request. Used to present a sandbox
+   *  daemon's auth (e.g. InstaBox's `Authorization: Bearer <token>` or Box's
+   *  `Cookie: _port_auth=<token>`) when the box is reached over a PUBLIC edge
+   *  that has no provider-side authentication of its own. Absent for a local
+   *  or otherwise ungated daemon. */
+  headers?: Record<string, string>
 }
 
 /**
