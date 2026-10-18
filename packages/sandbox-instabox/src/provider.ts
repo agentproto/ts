@@ -31,9 +31,11 @@
  *   503s, its exec and `wake` answer 409. This provider therefore NEVER sends
  *   the suspend verb and deliberately does NOT implement `pause()` (omitting
  *   it lets callers fall back to `stop()`, which deletes the box). Instead it
- *   leaves `autoSuspendAfterSeconds` at 0 by default (configurable):
- *   auto-suspended machines DO wake on a public request, on `wake` and on
- *   `exec`.
+ *   requests `autoSuspendAfterSeconds` 0 by default (configurable), but the
+ *   live API ignores 0 (the window stays 1800s) and a PATCH of it is a no-op:
+ *   do not rely on it. Auto-suspended machines DO wake on a public request,
+ *   on `wake` and on `exec`, and `connect` revives a manually suspended one
+ *   through `resume` (proven live: process memory survives).
  */
 
 import { randomBytes } from "node:crypto"
@@ -75,8 +77,8 @@ const DEFAULT_TIMEOUT_SECONDS = 3600
 /** Clamp range for machine `timeoutSeconds` (create and extend re-arms). */
 const MIN_TIMEOUT_SECONDS = 60
 const MAX_TIMEOUT_SECONDS = 86400
-/** Default auto-suspend window: 0 disables (a daemon that must stay reachable
- *  over its public edge must not auto-sleep). */
+/** Default auto-suspend request: 0 means "disabled", which the live API
+ *  ignores (the window stays 1800s); kept so an account that honours it does. */
 const DEFAULT_AUTO_SUSPEND_AFTER_SECONDS = 0
 const HEALTH_PROBE_TIMEOUT_MS = 5_000
 /** Pre-install probe window (the daemon can only be there by luck; keep the

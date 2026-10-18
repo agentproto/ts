@@ -61,8 +61,8 @@ export interface InstaboxCreateMachineInput {
   snapshotId?: string
   timeoutSeconds: number
   onTimeout: InstaboxOnTimeout
-  /** 0 disables auto-suspend; 120..86400 arms it. A box that must stay
-   *  reachable on its public URL needs 0. */
+  /** 0 is requested to disable auto-suspend; the live API ignores it (window
+   *  stays 1800s). 120..86400 arms it. */
   autoSuspendAfterSeconds: number
   metadata: Record<string, string>
   /** ALWAYS false: a vault would write the caller's secrets into a box that

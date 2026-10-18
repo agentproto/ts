@@ -52,9 +52,10 @@ Requires `INSTABOX_API_KEY` in the host process's environment (or
 - A MANUALLY suspended machine does not wake on its own (public URL 503, exec
   and `wake` answer 409), so this provider NEVER sends the suspend verb and
   does NOT implement `pause()`: callers fall back to `stop()`, which deletes
-  the machine. Auto-suspend is left disabled (`autoSuspendAfterSeconds: 0`)
-  by default, exactly so a daemon stays reachable on its public edge
-  (configurable via `config.autoSuspendAfterSeconds`).
+  the machine. The provider requests `autoSuspendAfterSeconds: 0`
+  (configurable via `config.autoSuspendAfterSeconds`), but the live API ignores
+  0 and keeps its 1800s window; an auto-suspended box wakes on a public
+  request, `wake` or `exec`, and `connect` revives a manually suspended one.
 - Account limit: 5 machines, suspended and stopped ones counting. `boot`
   pre-checks `GET /v1/usage` + `GET /v1/machines` and throws a typed
   `SandboxQuotaError` (fall back to another provider) when the cap is hit.
