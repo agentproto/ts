@@ -179,6 +179,7 @@ export interface SandboxAgentSessionProxyOpts {
     SandboxAgentSessionHost,
     | "prompt"
     | "output"
+    | "interrupt"
     | "kill"
     | "waitForAny"
     | "currentEventsCursor"
@@ -1011,18 +1012,19 @@ export function createSandboxAgentSessionProxy(
 
     async cancel(): Promise<void> {
       if (closed || detached) return
-      // Cancel on the box without starting another turn. Re-sending the
-      // previous prompt with `interrupt: true` restarts that request before
-      // the registry can deliver the replacement, and contaminates its stream.
-      const url = boxSessionUrl(host.mcpUrl, remoteSessionId, "/interrupt")
-      const res = await fetch(url, {
-        method: "POST",
-        signal: AbortSignal.timeout(60_000),
-      })
-      await res.body?.cancel().catch(() => undefined)
-      if (!res.ok) {
-        throw new Error(`sandbox proxy: remote interrupt failed (HTTP ${res.status})`)
-      }
+      // Cancel the box's turn via its MODEL MCP tool `agent_interrupt` — the
+      // same channel `prompt`/`agent_start` already authenticate fine — never
+      // the raw `POST /sessions/:id/interrupt` HTTP route: every mutating
+      // `/sessions/*` route on the box daemon gates ALL POSTs behind the
+      // per-boot bearer token this host never holds (the box's own
+      // runtime.json token), and that 401'd every interrupt from a remote
+      // sandbox — steering, queue forcing and turnRetry alike. `agent_prompt
+      // interrupt:true`'s redirect prompt (or the replacement's delivery, on
+      // this same interrupts-without-prompt path) must not carry an
+      // `interrupt` flag either: re-sending the previous prompt with
+      // `interrupt: true` restarts that request before the registry can
+      // deliver the replacement, and contaminates its stream.
+      await host.interrupt(remoteSessionId)
     },
 
     async close(closeOpts?: { daemonShutdown?: boolean }): Promise<void> {

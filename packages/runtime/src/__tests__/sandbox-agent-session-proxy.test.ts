@@ -20,6 +20,7 @@ type FakeHost = Parameters<typeof createSandboxAgentSessionProxy>[0]["host"]
 function makeHost(overrides: Partial<FakeHost> = {}): FakeHost {
   return {
     prompt: vi.fn(async () => {}),
+    interrupt: vi.fn(async () => ({ wasBusy: false })),
     output: vi.fn(async () => ""),
     kill: vi.fn(async () => {}),
     waitForAny: vi.fn(async () => ({ timedOut: false, event: "turn-end" as const, sessionIds: [] })),
@@ -419,22 +420,40 @@ describe("sandbox proxy — onBeforeTeardown", () => {
 describe("sandbox proxy — interrupt without replay", () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  /** A fake remote (box) daemon whose mutating `/sessions/*` routes gate
+   *  EVERY POST behind the per-boot bearer token (`http-server.ts`'s
+   *  `checkSessionsToken`) — the gate that 401'd every raw-`fetch`
+   *  interrupt. Its MCP endpoint (how `prompt` reaches it) is unaffected. */
+  async function unauthenticatedInterruptGate(input: string | URL, init?: RequestInit) {
+    const url = new URL(input)
+    if (init?.method === "POST" && url.pathname.startsWith("/sessions/")) {
+      expect(init.headers instanceof Headers ? (init.headers as Headers).get("authorization") : (init.headers as Record<string, unknown>)?.["Authorization"] ?? (init.headers as Record<string, unknown>)?.["authorization"])
+        .toBeUndefined()
+      return new Response(
+        JSON.stringify({ error: "sessions_unauthorized" }),
+        { status: 401 },
+      )
+    }
+    return undefined
+  }
+
   it("settles the cancelled stream and sends only the replacement prompt once", async () => {
     let streamController!: ReadableStreamDefaultController<Uint8Array>
     let opened!: () => void
     const streamOpened = new Promise<void>(resolve => { opened = resolve })
-    const host = makeHost()
-    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      const url = new URL(input)
-      if (init?.method === "POST") {
-        expect(url.pathname).toBe("/sessions/remote_1/interrupt")
-        expect(url.search).toBe("")
+    const host = makeHost({
+      interrupt: vi.fn(async () => {
         streamController.enqueue(new TextEncoder().encode(
           'data: {"seq":1,"kind":"turn-end","reason":"cancelled"}\n\n',
         ))
         streamController.close()
-        return new Response('{"ok":true,"wasBusy":true}')
-      }
+        return { wasBusy: true }
+      }),
+    })
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const gated = await unauthenticatedInterruptGate(input, init)
+      if (gated) return gated
+      const url = new URL(input)
       if (fetchMock.mock.calls.length === 1) {
         return new Response(new ReadableStream<Uint8Array>({
           start(controller) { streamController = controller; opened() },
@@ -451,11 +470,17 @@ describe("sandbox proxy — interrupt without replay", () => {
     const previous = collect(proxy.send("previous request"))
     await streamOpened
     await proxy.cancel()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(await previous).toEqual([{ kind: "turn-end", reason: "cancelled" }])
     expect(await collect(proxy.send("replacement request"))).toEqual([
       { kind: "text-delta", text: "new answer" },
       { kind: "turn-end", reason: "completed" },
     ])
+    // The interrupt rode `agent_interrupt` over the host's MCP client (the
+    // same channel the prompt authenticates through) — never the token-gated
+    // raw POST route, which this fake daemon would have 401'd.
+    expect(host.interrupt).toHaveBeenCalledTimes(1)
+    expect(host.interrupt).toHaveBeenCalledWith("remote_1")
     expect(host.prompt).toHaveBeenCalledTimes(2)
     expect(host.prompt).toHaveBeenNthCalledWith(1, "remote_1", "previous request")
     expect(host.prompt).toHaveBeenNthCalledWith(2, "remote_1", "replacement request")
@@ -464,31 +489,34 @@ describe("sandbox proxy — interrupt without replay", () => {
 
   it("interrupts a reattached session even when this proxy has sent no prompt", async () => {
     const host = makeHost()
-    const fetchMock = vi.fn(async () => new Response('{"ok":true,"wasBusy":false}'))
-    vi.stubGlobal("fetch", fetchMock)
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 404 })))
     const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
     await proxy.cancel()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(host.interrupt).toHaveBeenCalledTimes(1)
+    expect(host.interrupt).toHaveBeenCalledWith("remote_1")
     expect(host.prompt).not.toHaveBeenCalled()
   })
 
   it.each(["close", "detach"] as const)("does not interrupt after %s", async action => {
     const host = makeHost()
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+    vi.stubGlobal("fetch", vi.fn())
     const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1", detachable: true })
     if (action === "close") await proxy.close()
     else proxy.detach!()
     await proxy.cancel()
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(host.interrupt).not.toHaveBeenCalled()
     expect(host.prompt).not.toHaveBeenCalled()
   })
 
-  it.each([404, 409, 500])("surfaces HTTP %s without replaying the previous prompt", async status => {
-    const host = makeHost()
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status })))
+  it("surfaces a failed remote interrupt without replaying the previous prompt", async () => {
+    const host = makeHost({
+      interrupt: vi.fn(async () => {
+        throw new Error("Tool `agent_interrupt` returned error: no session")
+      }),
+    })
+    vi.stubGlobal("fetch", vi.fn())
     const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
-    await expect(proxy.cancel()).rejects.toThrow(`remote interrupt failed (HTTP ${status})`)
+    await expect(proxy.cancel()).rejects.toThrow(/agent_interrupt` returned error: no session/)
     expect(host.prompt).not.toHaveBeenCalled()
   })
 })

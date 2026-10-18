@@ -8,6 +8,7 @@ function fakeClient(overrides: Partial<DaemonClient> = {}): DaemonClient {
     prompt: vi.fn(async () => {}),
     output: vi.fn(async () => ""),
     kill: vi.fn(async () => {}),
+    interrupt: vi.fn(async () => ({ wasBusy: false })),
     waitForAny: vi.fn(async () => ({ sessionId: "sess_1", event: "turn-end" as const })),
     currentEventsCursor: vi.fn(async () => 0),
     close: vi.fn(async () => {}),

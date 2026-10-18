@@ -204,6 +204,7 @@ describe("proxy close() stamps the ledger (PLAN-D1 §1)", () => {
 
     const makeHost = () => ({
       prompt: vi.fn(async () => {}),
+    interrupt: vi.fn(async () => ({ wasBusy: false })),
       output: vi.fn(async () => ""),
       kill: vi.fn(async () => {}),
       waitForAny: vi.fn(async (_ids: string[], _opts?: { timeoutMs?: number; since?: number }) => ({ timedOut: true })),
@@ -244,6 +245,7 @@ describe("proxy close() stamps the ledger (PLAN-D1 §1)", () => {
     const proxy = createSandboxAgentSessionProxy({
       host: {
         prompt: vi.fn(async () => {}),
+    interrupt: vi.fn(async () => ({ wasBusy: false })),
         output: vi.fn(async () => ""),
         kill: vi.fn(async () => {}),
         waitForAny: vi.fn(async (_ids: string[], _opts?: { timeoutMs?: number; since?: number }) => ({ timedOut: true })),

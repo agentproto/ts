@@ -36,6 +36,7 @@ vi.mock("@agentproto/sandbox", async importOriginal => {
       sandboxId: "sbx_fake_device",
       start: startMock,
       prompt: vi.fn(async () => {}),
+    interrupt: vi.fn(async () => ({ wasBusy: false })),
       output: vi.fn(async () => ""),
       kill: vi.fn(async () => {}),
       waitForAny: vi.fn(async () => ({ event: "any" as const, timedOut: false })),

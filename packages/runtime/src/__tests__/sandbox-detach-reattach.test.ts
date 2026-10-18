@@ -47,6 +47,7 @@ type FakeHost = Parameters<typeof createSandboxAgentSessionProxy>[0]["host"]
 function makeHost(overrides: Partial<FakeHost> = {}): FakeHost {
   return {
     prompt: vi.fn(async () => {}),
+    interrupt: vi.fn(async () => ({ wasBusy: false })),
     output: vi.fn(async () => ""),
     kill: vi.fn(async () => {}),
     waitForAny: vi.fn(async () => ({ timedOut: false, event: "turn-end" as const, sessionIds: [] })),
