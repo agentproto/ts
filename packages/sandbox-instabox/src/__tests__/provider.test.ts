@@ -325,6 +325,18 @@ class FakeApi {
       const env = this.boxFiles.get(ENV_FILE_PATH)
       return result({ stdout: env === undefined ? "" : decodeBytes(env) })
     }
+    const grep = /^sudo grep '(?:\^)?([A-Z0-9_]+)=' /.exec(cmd)
+    if (grep !== null) {
+      const env = this.boxFiles.get(ENV_FILE_PATH)
+      if (env === undefined) return result({ exitCode: 1, stdout: "" })
+      const prefix = `${grep[1]}=`
+      const lines = decodeBytes(env)
+        .split("\n")
+        .filter(line => line.startsWith(prefix))
+      return lines.length > 0
+        ? result({ stdout: `${lines.join("\n")}\n` })
+        : result({ exitCode: 1, stdout: "" })
+    }
     if (cmd.startsWith("npm i -g")) return result({})
     if (/^mkdir -p '[^']+' && sudo mkdir -p/.test(cmd) && exec.stdin === undefined) return result({})
     if (/^mkdir -p '[^']+' && base64 -d > '(.+)'/.test(cmd) && exec.stdin !== undefined) {
@@ -885,6 +897,94 @@ describe("connect", () => {
     expect(url).toContain(".instabox.tech")
     const again = await booted.expose!(9443)
     expect(again.url).toBe(url)
+  })
+})
+
+describe("secret hygiene", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("keeps the API key out of exec argv/stdin, the box env file, the unit, request bodies and logs", async () => {
+    const FAKE_KEY = "ib_test_SECRET123"
+    const logs: string[] = []
+    const consoleSpies = (["log", "info", "warn", "error", "debug"] as const).map(method =>
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        logs.push(args.map(String).join(" "))
+      }),
+    )
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        logs.push(String(chunk))
+        return true
+      })
+    try {
+      const api = new FakeApi(FAKE_KEY)
+      await bootOnce(api, { apiKey: FAKE_KEY })
+
+      const surfaces: Array<[string, string]> = [
+        ["create bodies", JSON.stringify(api.creates)],
+        ["exec argv/stdin", api.execBodies.map(e => `${e.cmd}\n${e.stdin ?? ""}`).join("\n")],
+        ["box env file", decodeBytes(api.boxFiles.get(ENV_FILE_PATH) ?? new Uint8Array())],
+        ["systemd unit", decodeBytes(api.boxFiles.get(SYSTEMD_UNIT_PATH) ?? new Uint8Array())],
+        ["request bodies/urls", api.requests.map(r => `${r.method} ${r.url.href} ${r.body}`).join("\n")],
+        ["console output", logs.join("\n")],
+      ]
+      for (const [what, text] of surfaces) expect(text, what).not.toContain(FAKE_KEY)
+    } finally {
+      consoleSpies.forEach(spy => spy.mockRestore())
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it("surfaces an InstaBox API error without echoing the API key in the message or stack", async () => {
+    const FAKE_KEY = "ib_test_SECRET123"
+    const api = new FakeApi(FAKE_KEY)
+    api.overrideResponse = req =>
+      req.method === "POST" && req.url.pathname === "/v1/machines"
+        ? fakeErrorBody(500, "internal_error", "boom")
+        : null
+    vi.stubGlobal("fetch", api.buildFetch() as unknown as typeof fetch)
+
+    const err = await instaboxSandboxProvider
+      .boot(makeSpec({ apiKey: FAKE_KEY }), makeBootOpts())
+      .then(
+        () => {
+          throw new Error("expected boot to fail")
+        },
+        (caught: unknown) => caught as Error,
+      )
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).not.toContain(FAKE_KEY)
+    expect(String(err.stack ?? "")).not.toContain(FAKE_KEY)
+  })
+})
+
+describe("reattach after a host daemon restart", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("re-finds the same box and returns the same per-box auth token without re-creating it", async () => {
+    const api = new FakeApi()
+    const booted = await bootOnce(api)
+    const createsBefore = api.creates.length
+
+    // A fresh provider instance models the runtime process restarting while
+    // the box (and its persisted EnvironmentFile) survives.
+    const restarted = createInstaboxSandboxProvider({ apiKey: SENTINEL_API_KEY })
+    vi.stubGlobal("fetch", api.buildFetch() as unknown as typeof fetch)
+    const reattached = await restarted.connect!(
+      booted.sandboxId,
+      makeSpec(),
+      makeBootOpts(),
+    )
+
+    expect(reattached.sandboxId).toBe(booted.sandboxId)
+    expect(reattached.mcpUrl).toBe(booted.mcpUrl)
+    expect(reattached.token).toBe(booted.token)
+    expect(api.creates).toHaveLength(createsBefore)
   })
 })
 
