@@ -244,4 +244,18 @@ describe("computerSandboxProvider.connect + probe", () => {
       computerSandboxProvider.connect!("cmp-gone", spec(controller.url), bootOpts),
     ).rejects.toBeInstanceOf(SandboxBoxGoneError)
   })
+
+  it("probe uses the boot-time spec config (no env needed)", async () => {
+    // No COMPUTER_CONTROLLER_* env: probe must still reach the controller
+    // using the config captured at boot.
+    delete process.env.COMPUTER_CONTROLLER_URL
+    delete process.env.COMPUTER_CONTROLLER_TOKEN
+    process.env.COMPUTER_TENANT_ID = "tenant-a"
+    try {
+      const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+      expect(await computerSandboxProvider.probe!(booted.sandboxId)).toEqual({ alive: true, state: "running" })
+    } finally {
+      delete process.env.COMPUTER_TENANT_ID
+    }
+  })
 })
