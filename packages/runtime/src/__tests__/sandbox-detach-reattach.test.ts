@@ -830,6 +830,37 @@ describe("runSandboxReattachPass", () => {
     registry.shutdown()
   })
 
+  it("a re-attached session participates in the shared-box refcount: its close leaves the box running under a survivor", async () => {
+    seedDetached([{ id: "s1" }])
+    upsertSandboxLedger({
+      sandboxId: "sbx_1",
+      provider: "e2b",
+      state: "connected",
+      createdAt: "2026-07-23T00:00:00Z",
+      updatedAt: "2026-07-23T00:00:00Z",
+      attachedSessions: ["s1", "survivor"],
+    })
+    const host = makeHost()
+    providerMock.create.mockResolvedValue(host)
+    stubBox({ session: () => json({ busy: false, status: "running" }) })
+    const registry = newRegistry()
+
+    const summary = await runSandboxReattachPass({ registry, resolveSandboxProvider: resolver })
+
+    expect(summary).toMatchObject({ candidates: 1, reattached: 1 })
+
+    // The same close() path the reaper (or an explicit kill) uses: the proxy
+    // must detach THIS session and leave the box (no stop, no pause, no
+    // terminal ledger stamp) for the surviving session.
+    expect(registry.reapIdle("s1", 100)).toBe(true)
+    await vi.waitFor(() => expect(host.kill).toHaveBeenCalledTimes(1))
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(host.pause).toBeUndefined()
+    const row = readSandboxLedger().find(e => e.sandboxId === "sbx_1")!
+    expect(row).toMatchObject({ state: "connected", attachedSessions: ["survivor"] })
+    registry.shutdown()
+  })
+
   it("does nothing when no row was detached", async () => {
     writeFileSync(persistPath, JSON.stringify({ savedAt: "2026-07-23T00:00:00Z", sessions: [] }))
     const registry = newRegistry()
