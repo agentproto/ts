@@ -261,7 +261,9 @@ async function buildProgressContext(client, run) {
   try {
     const result = await client.callTool({
       name: "session_list",
-      arguments: { full: true, includeArchived: true },
+      // `ids`: session_list is bounded (50 rows by default, 100 KB hard cap),
+      // so ask for exactly this run's sessions instead of scanning the list.
+      arguments: { full: true, includeArchived: true, ids: [...sessionIds] },
     })
     // No limit/cursor ⇒ the legacy `{ sessions: [...] }` wrapper (session_list's
     // own `itemKey`), not the `{ items, nextCursor }` page envelope — see
@@ -503,13 +505,29 @@ async function main() {
     // the same call `buildProgressContext` above already uses. `kind:
     // "agent-cli"` keeps the LAST-RESORT sweep (structuredIdCount === 0) to
     // agent sessions.
-    const listed = parseToolResult(
-      await client.callTool({
-        name: "session_list",
-        arguments: { full: true, includeArchived: true, kind: "agent-cli" },
-      }),
-    )
-    listedSessions = Array.isArray(listed) ? listed : Array.isArray(listed?.sessions) ? listed.sessions : []
+    //
+    // `session_list` is bounded (50 rows by default, and a result over 100 KB
+    // becomes a bare `truncated` marker — `full` rows are large). So read the
+    // known ids directly, and bound the last-resort sweep to this driver's
+    // own sessions with a small page.
+    const listArgs =
+      structuredIdCount > 0
+        ? { full: true, includeArchived: true, kind: "agent-cli", ids: [...sessionIds] }
+        : {
+            full: true,
+            includeArchived: true,
+            kind: "agent-cli",
+            startedSince: new Date(driverStartedAt).toISOString(),
+            limit: 10,
+          }
+    const listed = parseToolResult(await client.callTool({ name: "session_list", arguments: listArgs }))
+    listedSessions = Array.isArray(listed)
+      ? listed
+      : Array.isArray(listed?.sessions)
+        ? listed.sessions
+        : Array.isArray(listed?.items)
+          ? listed.items
+          : []
   } catch (err) {
     console.error(
       `driver: session_list lookup for provenance failed: ${err instanceof Error ? err.message : String(err)}`,

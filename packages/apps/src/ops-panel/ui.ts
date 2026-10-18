@@ -297,10 +297,26 @@ function cronByLabel(label) {
 // data loading
 // ============================================================
 
+// session_list is bounded by default (first page + nextCursor); follow the
+// cursor so the ops panels always see the full session list.
+function callAppPaged(tool, args, listKey) {
+  function step(cursor, acc) {
+    var a = Object.assign({}, args);
+    if (a.limit === undefined) a.limit = 100;
+    if (cursor) a.cursor = cursor;
+    return callApp(tool, a).then(function (d) {
+      var page = (d && Array.isArray(d.items)) ? d.items : (d && d[listKey]) || [];
+      var rows = acc.concat(page);
+      return d && d.nextCursor ? step(d.nextCursor, rows) : rows;
+    });
+  }
+  return step(null, []);
+}
+
 function loadAll() {
   return Promise.all([
-    callApp("session_list", { kind: "all" }).then(function (d) {
-      sessions = (d && d.sessions) || (Array.isArray(d) ? d : []);
+    callAppPaged("session_list", { kind: "all" }, "sessions").then(function (rows) {
+      sessions = Array.isArray(rows) ? rows : [];
     }),
     callApp("cron_list", {}).then(function (d) {
       crons = Array.isArray(d) ? d : (d && d.jobs) || [];

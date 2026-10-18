@@ -6464,7 +6464,7 @@ async function handleSessions(
     // Same server-side narrowing as the `session_list` MCP tool (q,
     // excludeLabelPrefix, excludeLabels, excludeKinds, rootOnly,
     // parentSessionId, updatedSince, startedSince, excludeNoise, status,
-    // onlyAlive, limit). Absent ⇒ the response is byte-identical to before.
+    // onlyAlive, limit, ids). Absent ⇒ the response is byte-identical to before.
     const listFilters = parseSessionListFilterParams(params)
     if (listFilters.parentSessionId) {
       listFilters.parentSessionId =

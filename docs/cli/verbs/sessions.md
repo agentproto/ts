@@ -140,10 +140,13 @@ one-shot commands). Every filter below is optional, filters AND together, and
 the same names work on the CLI (kebab-case flags), `GET /sessions` (query
 params) and the MCP `session_list` tool (arguments). Results come back newest
 activity first, and the response carries `total` (the filtered count before
-`limit`).
+`limit`). The MCP `session_list` tool is bounded: an unpaged call returns at most
+50 rows plus `truncated`, `total` and `nextCursor` (pass `limit` up to 200 and
+`cursor` to page).
 
 | Filter | Meaning |
 |---|---|
+| `ids` | only these session ids (exact; string or list): the cheap read of known sessions. MCP also falls back to cold history when none is live |
 | `q` | case-insensitive substring over id, name, label, title and cwd |
 | `excludeNoise` | preset, see below |
 | `excludeLabelPrefix` | drop sessions whose label starts with any of these (string or list), e.g. `review:`, `wf:` |
