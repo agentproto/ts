@@ -21,6 +21,7 @@ import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 import {
   buildWorktreeRemoveCommand,
   planSandboxWorkspace,
+  resolveSharedBoxWorktreeTeardown,
   runSandboxWorkspaceSetup,
   type SandboxWorkspaceRequest,
 } from "../sandbox-workspace-remote.js"
@@ -116,6 +117,44 @@ describe("buildWorktreeRemoveCommand", () => {
     expect(removed).toContain("rev-list --count 'refs/remotes/origin/wt/x..wt/x' 2>/dev/null || echo 1")
     expect(removed).toContain("git worktree remove '/home/user/.worktrees/agentproto/x'")
     expect(removed).toContain("worktree kept: uncommitted or unpushed work")
+  })
+})
+
+describe("resolveSharedBoxWorktreeTeardown — reattach/restart derive the teardown from the persisted checkoutDir", () => {
+  it("an attach checkoutDir recovers baseDir, lockPath and the worktree", () => {
+    const teardown = resolveSharedBoxWorktreeTeardown("/home/user/.worktrees/agentproto/y", "wt/y")
+    expect(teardown).toEqual({
+      baseDir: "/home/user/agentproto",
+      worktreeDir: "/home/user/.worktrees/agentproto/y",
+      branch: "wt/y",
+      lockPath: "/home/user/.worktrees/agentproto.lock",
+    })
+    // Round-trip: what spawn's plan derived is exactly what the helper gives
+    // back from the persisted target, so the reattach/restart proxies tear
+    // down the same worktree the spawn created.
+    const plan = planSandboxWorkspace({ ...request, worktree: { slug: "y" }, sharedBox: true })
+    const fromPlan = {
+      baseDir: plan.sharedBox?.baseDir,
+      worktreeDir: plan.checkoutDir,
+      lockPath: plan.sharedBox?.lockPath,
+    }
+    const {
+      branch: _branch,
+      ...fromHelper
+    } = resolveSharedBoxWorktreeTeardown("/home/user/.worktrees/agentproto/y", "wt/y") ?? {}
+    expect(fromHelper).toEqual(fromPlan)
+  })
+
+  it("a plain per-workspace checkout derives nothing — the first session's checkout is the base", () => {
+    expect(resolveSharedBoxWorktreeTeardown("/home/user/agentproto", "wt/x")).toBeUndefined()
+  })
+
+  it("the recovered teardown builds the same removal command spawn wired", () => {
+    const t = resolveSharedBoxWorktreeTeardown("/home/user/.worktrees/agentproto/y", "wt/y")
+    expect(t).toBeDefined()
+    expect(buildWorktreeRemoveCommand(t!)).toContain(
+      "git worktree remove '/home/user/.worktrees/agentproto/y'",
+    )
   })
 })
 

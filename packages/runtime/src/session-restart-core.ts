@@ -95,7 +95,7 @@ import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
 import { bootSandboxAgentSession, stampDaemonCallerSessionId, uploadBoxLoginCopy } from "./session-spawn.js"
 import { createBoxLoginRefresher, type BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 import { findWorkspace, loadWorkspacesConfig } from "./workspaces-config.js"
-import { SANDBOX_BRANCH_PREFIX } from "./sandbox-workspace-remote.js"
+import { SANDBOX_BRANCH_PREFIX, resolveSharedBoxWorktreeTeardown } from "./sandbox-workspace-remote.js"
 import { stripOwnCallerStamp } from "./session-continue-fresh.js"
 import {
   buildRouteAwareLaunchConfig,
@@ -1772,6 +1772,13 @@ export async function restartAgentSession(
     // The prior session's work branch is still in the box: carry its delivery
     // target over so this session's teardown pushes (or bundles) it too.
     const deliveryTarget = prev.sandboxDeliveryTarget
+    // AIP-36 — when the prior session ran on a shared box (its checkoutDir is
+    // a per-session worktree of the shared clone), the resumed proxy removes
+    // that worktree on its own later detach. `undefined` means the plain
+    // per-workspace checkout, which no detach needs to clean up.
+    const worktreeTeardown = deliveryTarget
+      ? resolveSharedBoxWorktreeTeardown(deliveryTarget.checkoutDir, deliveryTarget.branch)
+      : undefined
     // A tar-mode session (workspace with no git remote) keeps checkpointing
     // its working dir; the live box still holds it, so nothing is restored.
     const tarTarget = deliveryTarget
@@ -1853,6 +1860,12 @@ export async function restartAgentSession(
       ...(tarOpts ?? {}),
       ...(deliveryOpts ?? {}),
       ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
+      // AIP-36 — a re-attached shared-box session still removes its own git
+      // worktree on detach (same wiring as spawn): the layout is recovered
+      // from the persisted delivery target. Absent for the plain per-
+      // workspace checkout (fresh box, no worktree) — see
+      // `resolveSharedBoxWorktreeTeardown`.
+      ...(worktreeTeardown ? { worktreeTeardown } : {}),
       watchdog: {},
     })
     return registerBoxSession(restartedSessionId, sandboxMcpServers, {

@@ -467,11 +467,39 @@ export interface LearnedWorkBranch {
  *  {@link parseLearnedWorkBranch}. */
 export function buildLearnBranchCommand(checkoutDir: string, baseRef: string): string {
   const dir = shellQuote(checkoutDir)
-  const ref = shellQuote(`${baseRef}^{commit}`)
+const ref = shellQuote(`${baseRef}^{commit}`)
   return (
     `cd ${dir} && echo "branch=$(git rev-parse --abbrev-ref HEAD)" && ` +
     `echo "base=$(git merge-base HEAD ${ref} 2>/dev/null)"`
   )
+}
+
+/** Derive the shared-box worktree teardown inputs from a persisted delivery
+ *  target's `checkoutDir` and branch — the layout `planSandboxWorkspace` gives
+ *  attaches (`<home>/.worktrees/<workspaceSlug>/<slug>` with the base clone at
+ *  `<home>/<workspaceSlug>`). Returns `undefined` for the plain per-workspace
+ *  checkout (a session alone on a fresh box): the box death takes that
+ *  checkout with it, nothing is removed. Used by the re-attach and restart
+ *  paths, which build the proxy from the previous session's descriptor and
+ *  have no in-memory workspace plan. */
+export function resolveSharedBoxWorktreeTeardown(
+  checkoutDir: string,
+  branch: string,
+): { baseDir: string; worktreeDir: string; branch: string; lockPath: string } | undefined {
+  const marker = "/.worktrees/"
+  const at = checkoutDir.lastIndexOf(marker)
+  if (at <= 0) return undefined
+  const home = checkoutDir.slice(0, at)
+  const rest = checkoutDir.slice(at + marker.length)
+  const slash = rest.indexOf("/")
+  const workspaceSlug = slash > 0 ? rest.slice(0, slash) : ""
+  if (!workspaceSlug) return undefined
+  return {
+    baseDir: `${home}/${workspaceSlug}`,
+    worktreeDir: checkoutDir,
+    branch,
+    lockPath: `${home}/.worktrees/${workspaceSlug}.lock`,
+  }
 }
 
 /** The best-effort worktree removal a session runs on DETACH from a shared
