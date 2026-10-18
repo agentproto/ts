@@ -177,6 +177,59 @@ describe("computerSandboxProvider.boot", () => {
     expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("agentproto serve"))).toBe(false)
   })
 
+  it("skips the npm CLI install when the image already carries the agentproto CLI", async () => {
+    controller.cliBaked = true
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    const scripts = controller.execs.map((e) => e.argv[2] ?? "")
+    expect(scripts.some((s) => s.includes("agentproto --version"))).toBe(true)
+    expect(scripts.some((s) => s.includes("npm i -g"))).toBe(false)
+    expect(scripts.some((s) => s.includes("agentproto serve"))).toBe(true)
+    expect(booted.sandboxId).toMatch(/^cmp-/)
+  })
+
+  it("still installs when the baked CLI does not match a pinned cliVersion, or extra packages are requested", async () => {
+    controller.cliBaked = true
+    await computerSandboxProvider.boot(spec(controller.url, { cliVersion: "1.30.0" }), bootOpts)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(true)
+
+    controller.execs.length = 0
+    controller.serveSeen = false
+    await computerSandboxProvider.boot(spec(controller.url, { cliVersion: "1.26.0" }), bootOpts)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(false)
+
+    controller.execs.length = 0
+    controller.serveSeen = false
+    await computerSandboxProvider.boot(spec(controller.url, { installPackages: ["@agentproto/adapter-opencode"] }), bootOpts)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(true)
+  })
+
+  it("resolves {hostPort} in gatewayUrl from the published ports, and allows that origin on the daemon", async () => {
+    controller.options.publishedPorts = [{ host: 20003, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { gatewayUrl: "http://127.0.0.1:{hostPort}" }),
+      bootOpts,
+    )
+    expect(booted.mcpUrl).toBe("http://127.0.0.1:20003")
+    const serve = controller.execs.map((e) => e.argv[2] ?? "").find((s) => s.includes("agentproto serve"))
+    expect(serve).toContain("--allow-origin 'http://127.0.0.1:20003'")
+    expect((await booted.expose!(18790)).url).toBe("http://127.0.0.1:20003")
+  })
+
+  it("fails the boot and reclaims the computer when {hostPort} has no published port", async () => {
+    await expect(
+      computerSandboxProvider.boot(spec(controller.url, { gatewayUrl: "http://127.0.0.1:{hostPort}" }), bootOpts),
+    ).rejects.toThrow(/published no host port for guest port 18790/)
+    expect(controller.removed).toHaveLength(1)
+  })
+
+  it("connect re-resolves {hostPort} from the controller's status", async () => {
+    controller.options.publishedPorts = [{ host: 20007, guest: 18790 }]
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(again.mcpUrl).toBe("http://127.0.0.1:20007")
+  })
+
   it("fails the boot when a setup command exits non-zero", async () => {
     controller.options.execOutcome = (argv) =>
       (argv[2] ?? "").includes("make-it-fail") ? { exitCode: 2, stdout: "", stderr: "boom" } : undefined

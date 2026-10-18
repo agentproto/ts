@@ -40,6 +40,7 @@ import type {
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
 import { ComputerApiError, ComputerControllerClient, type ComputerClientConfig } from "./client.js"
+import type { ComputerStatus, PortPublish } from "./api-types.js"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 export const DEFAULT_PORT = 18790
@@ -91,7 +92,10 @@ interface ComputerSandboxConfig {
   /**
    * Public URL template for reaching a computer's ports, containing a
    * `{port}` (and optionally `{id}`) placeholder, e.g.
-   * `http://gate.internal:{port}/computers/{id}`. Default:
+   * `http://gate.internal:{port}/computers/{id}`. `{hostPort}` is the host
+   * port the controller published for that guest port (create response
+   * `ports`), e.g. `http://127.0.0.1:{hostPort}` through an ssh forward of
+   * the published port range. Default:
    * `http://<computer-name>:<port>` — the microVM is assumed addressable by
    * its generated name from the network this process lives on. Set this when
    * computers sit behind an edge/proxy instead.
@@ -297,11 +301,25 @@ async function sleep(ms: number): Promise<void> {
 }
 
 /** URL for reaching `port` on a computer: the gateway template with
- *  `{port}`/`{id}` substituted, else the computer's own generated name —
- *  the default assumes the box network is addressable by name from this
- *  process's network; override with `config.gatewayUrl`. */
-export function boxUrl(id: string, port: number, gatewayUrl?: string): string {
-  if (gatewayUrl) return gatewayUrl.replace(/\{port\}/g, String(port)).replace(/\{id\}/g, id)
+ *  `{port}`/`{id}`/`{hostPort}` substituted, else the computer's own
+ *  generated name — the default assumes the box network is addressable by
+ *  name from this process's network; override with `config.gatewayUrl`.
+ *  `{hostPort}` needs the controller to have published `port`. */
+export function boxUrl(id: string, port: number, gatewayUrl?: string, published: readonly PortPublish[] = []): string {
+  if (gatewayUrl) {
+    let url = gatewayUrl.replace(/\{port\}/g, String(port)).replace(/\{id\}/g, id)
+    if (url.includes("{hostPort}")) {
+      const hit = published.find((p) => p.guest === port)
+      if (!hit) {
+        throw new Error(
+          `@agentproto/sandbox-computer: gatewayUrl uses {hostPort} but the controller published no host port ` +
+            `for guest port ${port} on computer "${id}" (published: ${JSON.stringify(published)})`,
+        )
+      }
+      url = url.replace(/\{hostPort\}/g, String(hit.host))
+    }
+    return url
+  }
   return `http://${id}:${port}`
 }
 
@@ -396,10 +414,13 @@ async function bootOnClient(
   }
   const sandboxId = created.id
   const daemonToken = randomUUID()
+  let published: readonly PortPublish[] = []
 
   try {
-    await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
-    await daemonHealthyOrThrow(client, sandboxId, config, daemonToken, port, workspace)
+    const status = await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    published = created.ports?.length ? created.ports : (status.ports ?? [])
+    const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
+    await daemonHealthyOrThrow(client, sandboxId, config, daemonToken, port, workspace, mcpOrigin)
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
     // sandbox-e2b): propagate the original error but reclaim the box.
@@ -408,7 +429,7 @@ async function bootOnClient(
   }
 
   acquireSessionSlot(sandboxId, config.maxSessions ?? 1)
-  return wrapBox(client, sandboxId, spec, config, port)
+  return wrapBox(client, sandboxId, spec, config, port, published)
 }
 
 async function connectOnClient(
@@ -427,18 +448,21 @@ async function connectOnClient(
   // A suspended/stopped computer is resumed first. The controller may
   // rebuild it under a NEW id — adopt it, remember the alias.
   let currentId = sandboxId
+  let published: readonly PortPublish[] = status.ports ?? []
   if (status.state !== "running") {
     const resumeResult = await client.resume(sandboxId)
     const targetId = resumeResult.id ?? sandboxId
     if (targetId !== sandboxId) idAliases.set(sandboxId, targetId)
     currentId = targetId
-    await waitRunning(client, currentId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    const running = await waitRunning(client, currentId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    published = running.ports ?? []
   }
 
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
   const daemonToken = randomUUID()
-  await daemonHealthyOrThrow(client, currentId, config, daemonToken, port, workspace)
+  const mcpOrigin = new URL(boxUrl(currentId, port, config.gatewayUrl, published)).origin
+  await daemonHealthyOrThrow(client, currentId, config, daemonToken, port, workspace, mcpOrigin)
 
   const maxSessions = config.maxSessions ?? 1
   if (!acquireSessionSlot(currentId, maxSessions)) {
@@ -447,7 +471,7 @@ async function connectOnClient(
         `(${maxSessions}); attach to the existing session instead of opening a new one`,
     )
   }
-  return wrapBox(client, currentId, spec, config, port)
+  return wrapBox(client, currentId, spec, config, port, published)
 }
 
 /** Poll until the computer reports `running`, or throw with the last state. */
@@ -455,12 +479,12 @@ async function waitRunning(
   client: ComputerControllerClient,
   id: string,
   timeoutMs: number,
-): Promise<void> {
+): Promise<ComputerStatus> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     const status = await client.getComputer(id)
     if (status === null) throw new SandboxBoxGoneError(id)
-    if (status.state === "running") return
+    if (status.state === "running") return status
     if (Date.now() >= deadline) {
       throw new Error(`computer "${id}" did not reach running within ${timeoutMs}ms (last state: ${status.state})`)
     }
@@ -477,12 +501,13 @@ async function daemonHealthyOrThrow(
   daemonToken: string,
   port: number,
   workspace: string,
+  mcpOrigin: string,
 ): Promise<void> {
   const probe = await hardExec(client, id, bashArgv(buildHealthCommand(port)), 10)
   const alreadyUp = probe.exitCode === 0 && !probe.stdout.includes("__down__")
   if (alreadyUp) return
 
-  if (config.updateCliOnBoot !== false) {
+  if (config.updateCliOnBoot !== false && !(await cliAlreadyPresent(client, id, config))) {
     const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
     const install = await hardExec(
       client,
@@ -499,7 +524,6 @@ async function daemonHealthyOrThrow(
     if (setup.exitCode !== 0) throw bootStepError("setup command", id, setup)
   }
 
-  const mcpOrigin = new URL(boxUrl(id, port, config.gatewayUrl)).origin
   await hardExec(
     client,
     id,
@@ -521,6 +545,23 @@ async function daemonHealthyOrThrow(
         `within ${waitSeconds}s (see ~/.agentproto-daemon.log in the box)`,
     )
   }
+}
+
+/** True when the computer image already carries an `agentproto` CLI that
+ *  satisfies the config: the install is then pure boot latency. An extra
+ *  `installPackages` list or a pinned `cliVersion` the baked CLI does not
+ *  match still forces the install. */
+async function cliAlreadyPresent(
+  client: ComputerControllerClient,
+  id: string,
+  config: ComputerSandboxConfig,
+): Promise<boolean> {
+  if ((config.installPackages ?? []).length > 0) return false
+  const probe = await hardExec(client, id, bashArgv(`${USER_BIN_PATH_EXPORT}agentproto --version`), 20)
+  if (probe.exitCode !== 0) return false
+  const pin = config.cliVersion
+  if (!pin || pin === "latest") return true
+  return probe.stdout.includes(pin.replace(/^[^0-9]*/, ""))
 }
 
 function bootStepError(
@@ -553,14 +594,15 @@ function wrapBox(
   spec: SandboxSpec,
   config: ComputerSandboxConfig,
   port: number,
+  published: readonly PortPublish[],
 ): BootedSandbox {
   const extraPorts: Record<number, string> = {}
   for (const extra of spec.extraPorts ?? []) {
-    extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl)
+    extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl, published)
   }
 
   return {
-    mcpUrl: boxUrl(id, port, config.gatewayUrl),
+    mcpUrl: boxUrl(id, port, config.gatewayUrl, published),
     sandboxId: id,
     // `expose: "private"` (the attach path) asks for a durable token-gated
     // URL. This daemon IS token-gated (`--auth-token`), but the token lives
@@ -569,7 +611,7 @@ function wrapBox(
     // SandboxBootOpts contract; attach fails closed on its side.
     ...(Object.keys(extraPorts).length > 0 ? { ports: extraPorts } : {}),
     expose(port: number): Promise<{ url: string }> {
-      return Promise.resolve({ url: boxUrl(id, port, config.gatewayUrl) })
+      return Promise.resolve({ url: boxUrl(id, port, config.gatewayUrl, published) })
     },
     async stop(): Promise<void> {
       releaseSessionSlot(id)

@@ -17,6 +17,8 @@ export interface FakeControllerOptions {
   statusNotFound?: boolean
   /** Simulate suspend: state stops being "running". */
   onSuspend?: () => void
+  /** Ports the controller reports as published (create + GET). */
+  publishedPorts?: Array<{ host: number; guest: number }>
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
 }
@@ -87,7 +89,7 @@ export class FakeController {
       const state = this.nextStateSnapshot ?? this.lastCreateState
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
-      return reply(res, 201, { id, template: parsed.template, state, ports: [] })
+      return reply(res, 201, { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] })
     }
 
     const computerMatch = /^\/v1\/computers\/([^/]+)/.exec(url.pathname)
@@ -96,7 +98,7 @@ export class FakeController {
 
     if (req.method === "GET" && url.pathname === `/v1/computers/${productIdPath(computerMatch[1] as string)}`) {
       if (this.options.statusNotFound || !this.states.has(id)) return reply(res, 404, { error: "not found" })
-      return reply(res, 200, { name: id, state: this.states.get(id), ports: [], egress: [], pinsStale: false, pinsTtlSec: 21600 })
+      return reply(res, 200, { name: id, state: this.states.get(id), ports: this.options.publishedPorts ?? [], egress: [], pinsStale: false, pinsTtlSec: 21600 })
     }
     if (req.method === "DELETE") {
       this.removed.push(id)
@@ -134,7 +136,7 @@ export class FakeController {
     const custom = this.options.execOutcome?.(argv, parsed)
     if (custom) return custom
     const script = argv[2] ?? ""
-    if (script.includes("http://127.0.0.1")) {
+    if (script.includes("http://127.0.0.1") && !script.includes("agentproto serve")) {
       // Health probes: the daemon is considered DOWN until a serve command
       // ran (unless serveFixesHealth=false models a daemon that never comes
       // up — used by the reclaim test).
@@ -179,12 +181,20 @@ export class FakeController {
       if (script.includes("agentproto serve")) this.serveSeen = true
       return { exitCode: 0, stdout: "started", stderr: "" }
     }
+    if (script.includes("agentproto --version")) {
+      return this.cliBaked
+        ? { exitCode: 0, stdout: `agentproto ${this.bakedCliVersion} (d7c36672)\n`, stderr: "" }
+        : { exitCode: 127, stdout: "", stderr: "agentproto: command not found" }
+    }
     if (script.includes("npm i -g")) return { exitCode: 0, stdout: "", stderr: "" }
     // plain scripts (setupCommands, callers) echo their script hash — tests
     // shouldn't depend on real output
     return { exitCode: 0, stdout: `ran:${script.length}`, stderr: "" }
   }
 
+  /** Models an image with the agentproto CLI already installed. */
+  cliBaked = false
+  bakedCliVersion = "1.26.0"
   daemonDown = false
   /** Set once a serve command ran (models the box's own daemon state). */
   serveSeen = false
