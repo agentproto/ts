@@ -72,7 +72,17 @@ const DEFAULT_PORT = 18790
  */
 const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
 /** Account-level ceiling: `sandbox.setTimeout` rejects anything above 1 hour
- *  ("Timeout cannot be greater than 1 hours"). */
+ *  ("Timeout cannot be greater than 1 hours").
+ *
+ *  NOTE (field evidence, 2026-10-16): on an e2b plan whose max sandbox
+ *  duration is 1 hour, this cap is TOTAL from box creation — renewals that
+ *  ask for the full runway late in the box's life are clamped/rejected by
+ *  the account policy, and the box is reaped ~1h after `boot` no matter how
+ *  active it was (sess_795b8c58 / e39cd4da / 7d29436b each died
+ *  start+60min, activity notwithstanding). Keeping a box alive past that is
+ *  impossible on such a plan: an idle box whose work is delivered is left to
+ *  expire, and the runtime classifies that death as
+ *  `endedReason: "sandbox-expired"` (a clean end), not a crash. */
 export const MAX_SANDBOX_TIMEOUT_MS = 60 * 60_000
 const DEFAULT_WORKSPACE = "/home/user"
 const HEALTH_PROBE_TIMEOUT_MS = 3_000

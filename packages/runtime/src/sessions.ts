@@ -75,6 +75,7 @@ import type {
   ContextRescueOutcome,
 } from "./session-event-bus.js"
 import { postureEnforcement, resolvePosture, type PostureEnforcement } from "./canonical-posture.js"
+import { isSandboxBoxExpiredError } from "./sandbox-agent-session-proxy.js"
 import {
   buildBackgroundTaskWakePrompt,
   DEFAULT_BG_TASK_WAKE_GRACE_MS,
@@ -4811,6 +4812,16 @@ export interface SessionsRegistry {
    *  `session:exited`) is identical, because in both cases the session is
    *  equally dead and equally resumable. */
   markCrashed(id: string, reason?: SessionCrashReason): boolean
+  /** Flip a LIVE agent-cli sandbox row whose BOX reached its lifetime
+   *  deadline while idle to `status:"exited"`/`endedReason:"sandbox-expired"`
+   *  — the clean end for an expected box expiry (work already
+   *  checkpointed/delivered). Same cleanup shape as `markCrashed` (usage
+   *  recap, binding cleared, lazy-resumable, `session:exited`), but never
+   *  crash-classified: no `crashedAt`, and `restart-scheduler.ts` policies
+   *  (`crashed`/`error`/`sandbox-gone`) never match an exited row. `detail`
+   *  is stamped as the row's `lastError` / `[sandbox-expired]` banner.
+   *  Returns false (no-op) for anything but a live agent-cli row. */
+  markSandboxExpired(id: string, detail: string): boolean
   /** Flip a LIVE, mid-turn agent-cli row to `stalledSinceMs:<ts>` — the
    *  primitive the turn-liveness watchdog (`runStallWatchdogPass`) drives on
    *  a periodic sweep when a turn's adapter stream has gone silent past the
@@ -8109,6 +8120,53 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
+   * The EXPECTED-EXPIRY end action — the clean twin of
+   * {@link markCrashedInternal} for a sandbox box the proxy declared dead at
+   *or past its known lifetime deadline while idle
+   * (`sandbox-agent-session-proxy.ts`'s `SandboxBoxExpiredError`): the box's
+   * work was checkpointed/delivered while it was alive, so this is the box
+   * lifecycle running its course, not a failure. Mirrors `markCrashed`'
+   * cleanup (same close/clear-binding shape so the row stays
+   * operationally identical — `isResumable` holds, the thread of record is
+   * closed) but flips the row to `status: "exited"` /
+   * `endedReason: "sandbox-expired"` instead of `error`/`crashed`, so restart
+   * policies (`restart-scheduler.ts` — crash-restart and sandbox-gone alike)
+   * never fire on a death the system designed, and the UI shows the session
+   * ENDED (with its delivered work branch in the outcome), not FAILED
+   * without an artifact. Same `running`-only guard, hence idempotent.
+   */
+  const markSandboxExpiredInternal = (id: string, detail: string): boolean => {
+    const rt = sessions.get(id)
+    if (!rt || rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") {
+      return false
+    }
+    rt.desc.status = "exited"
+    rt.desc.endedAt = new Date().toISOString()
+    rt.desc.endedReason = "sandbox-expired"
+    rt.desc.lastError = detail
+    if (rt.agentSession) {
+      releaseOutOfTurnEvents(rt)
+      delete rt.desc.backgroundTasks
+      // Durable usage recap on exit — before close() flushes the stream.
+      recordExitUsageSnapshot(rt)
+      // close() runs the teardown delivery / final checkpoint on a best-effort
+      // basis; the box is already gone, so this is mostly a no-op salvage.
+      void rt.agentSession.close().catch(() => undefined)
+      void transcriptWriter.close(rt.desc.id)
+      tracedSessions.delete(rt.desc.id)
+      // Drop the binding exactly as a crash would: the row becomes
+      // lazy-resumable (a future prompt to this session can revive it).
+      rt.agentSession = undefined
+    }
+    schedulePersist()
+    const banner = `[sandbox-expired] ${detail}`
+    appendLine(rt, banner, "stdout")
+    transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+    emitExited(rt)
+    return true
+  }
+
+  /**
    * Bind an agent session onto its runtime handle AND subscribe to its
    * transport death — the single place `rt.agentSession` is ever assigned a
    * live session, so spawn, lazy resume, and adopt-into-existing-row all get
@@ -8136,6 +8194,19 @@ export function createSessionsRegistry(opts?: {
       // been resumed onto a fresh session. Crash-marking then would kill a
       // healthy session on the strength of its dead predecessor.
       if (rt.agentSession !== session) return
+      // A sandbox box dying AT/PAST its known lifetime deadline while idle is
+      // expected expiry, not a crash — end the row cleanly with the delivered
+      // work branch surfaced (see `SandboxBoxExpiredError` in
+      // `sandbox-agent-session-proxy.ts`).
+      if (isSandboxBoxExpiredError(err)) {
+        if (markSandboxExpiredInternal(id, err.message)) {
+          console.warn(
+            `[sessions] ${id}: sandbox box lifetime expired (${err.message}) — ` +
+              "marked sandbox-expired; the row stays lazy-resumable.",
+          )
+        }
+        return
+      }
       if (markCrashedInternal(id, "transport-closed")) {
         console.warn(
           `[sessions] ${id}: adapter connection closed (${err.message}) — ` +
@@ -12595,6 +12666,9 @@ export function createSessionsRegistry(opts?: {
     },
     markCrashed(id, reason = "process-gone") {
       return markCrashedInternal(id, reason)
+    },
+    markSandboxExpired(id, detail) {
+      return markSandboxExpiredInternal(id, detail)
     },
     markStalled(id, stalledSinceMs) {
       const rt = sessions.get(id)
