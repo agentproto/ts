@@ -21,6 +21,7 @@ Providers are resolved from a small built-in catalog by slug:
 | `local` | A real agentproto daemon in a fresh temp workspace on `127.0.0.1` — no cloud credentials needed. | built-in |
 | `box` | An ascii.dev [Box](https://ascii.dev) cloud computer, behind an always-on systemd unit. | `@agentproto/sandbox-box` |
 | `e2b` | An e2b Firecracker microVM (`agentproto-workstation` template). | `@agentproto/sandbox-e2b` |
+| `instabox` | An InstaBox VM (the `universal` template), behind an always-on systemd unit on the account's public edge. | `@agentproto/sandbox-instabox` |
 
 {/* sync-templates:start */}
 The `e2b` provider's default template is declared in
@@ -41,9 +42,11 @@ Configure a provider that needs credentials with `setup_sandbox_provider`
 `~/.agentproto/sandbox-creds/<slug>.json` (mode 0600) and is what flips
 `list_sandbox_providers`' status to `ready`.
 
-**That stored credential is not the whole story.** Both the `box` and `e2b`
+**That stored credential is not the whole story.** The `box`, `e2b` and
+`instabox`
 providers read their API key straight from **this process's own
-environment** (`process.env.BOX_API_KEY`, `process.env.E2B_API_KEY`) when
+environment** (`process.env.BOX_API_KEY`, `process.env.E2B_API_KEY`,
+`process.env.INSTABOX_API_KEY`) when
 they actually call the provider's API — the creds-store value only gates
 readiness in `list_sandbox_providers`/`setup_sandbox_provider`. So whichever
 process is doing the boot or the attach — the daemon for `agent_start`, or

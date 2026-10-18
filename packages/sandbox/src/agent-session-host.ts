@@ -165,10 +165,10 @@ export interface SandboxExecOpts {
   /** Extra env vars for THIS command only (merged onto the box's own
    *  sandbox-level env by the provider's SDK; not persisted). */
   env?: Record<string, string>
-  /** Per-command timeout in ms — what the box kills the process after when
-   *  exceeded. Provider-dependent error shape on expiry (e.g. e2b throws a
-   *  TimeoutError); the caller treats any throw as a failed exec. */
-  timeoutMs?: number
+   /** Per-command timeout in ms — what the box kills the process after when
+    *  exceeded. Provider-dependent error shape on expiry (e.g. e2b throws a
+    *  TimeoutError); the caller treats any throw as a failed exec. */
+   timeoutMs?: number
 }
 
 /** What a successful `BootedSandbox.exec` reports. The caller truncates the
@@ -181,6 +181,11 @@ export interface SandboxExecResult {
   stderr: string
   /** Wall-clock duration of the exec call, ms. */
   durationMs: number
+  /** True when the provider's captured output was clipped BY ITS OWN STREAM
+   *  CAP (not the command's exit) — surfaced so a caller pulling a large file
+   *  out through a stream-capped exec API knows the data is incomplete.
+   *  Absent for providers whose capture is uncapped. */
+  truncated?: boolean
 }
 
 /**

@@ -57,10 +57,20 @@ const E2B_CAPABILITIES: SandboxProviderCapabilities = {
   exec: true,
 }
 
-/** Box's `box stop` snapshots the box for later `box resume`/`box fork`. */
+/** Box's `box stop` snapshots the box for later `box resume`/`box fork` —
+ *  InstaBox supports exec (`POST /machines/{id}/exec`) but NOT manual pause
+ *  (a manually suspended machine never wakes on its own), so its provider
+ *  deliberately omits `pause()` and the lifecycle stays kill-only. */
 const BOX_CAPABILITIES: SandboxProviderCapabilities = {
   ...CAPABILITIES_TODAY,
   lifecyclePause: true,
+}
+
+const INSTABOX_CAPABILITIES: SandboxProviderCapabilities = {
+  ...CAPABILITIES_TODAY,
+  // `BootedSandbox.exec` shells through the exec API — the seam the
+  // `sandbox_exec` MCP tool uses.
+  exec: true,
 }
 
 /** Built-in sandbox providers keyed by canonical slug — resolve without any import. */
@@ -145,6 +155,25 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
       {
         name: "apiKey",
         description: "Box API key (BOX_API_KEY, from ascii.dev).",
+        required: true,
+        sensitive: true,
+      },
+    ],
+  },
+  instabox: {
+    packageName: "@agentproto/sandbox-instabox",
+    exportName: "instaboxSandboxProvider",
+    name: "InstaBox",
+    description:
+      "Runs the agentproto daemon inside an InstaBox VM, behind an always-on systemd unit on the account's public edge.",
+    capabilities: INSTABOX_CAPABILITIES,
+    credEnvVar: "INSTABOX_API_KEY",
+    // InstaBox's image homes its user under /data (provider DEFAULT_WORKSPACE).
+    defaultCwd: "/data/home",
+    setupFields: [
+      {
+        name: "apiKey",
+        description: "InstaBox API key (INSTABOX_API_KEY, from instabox.sh).",
         required: true,
         sensitive: true,
       },

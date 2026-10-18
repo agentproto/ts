@@ -82,6 +82,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // `agentproto sandbox attach box ...` fails with "provider not found".
     "@agentproto/sandbox-e2b",
     "@agentproto/sandbox-box",
+    "@agentproto/sandbox-instabox",
     // Third-party deps — externalised so the published cli installs
     // them via npm at runtime. `gray-matter` is CJS + does dynamic
     // require("fs"), which esbuild can't safely inline into an ESM

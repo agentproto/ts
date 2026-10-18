@@ -103,6 +103,14 @@ export const SANDBOX_CATALOG: AdapterCatalog = [
     hint: "box · cloud",
   },
   {
+    slug: "instabox",
+    name: "InstaBox",
+    description:
+      "Runs the agentproto daemon inside an InstaBox VM, behind an always-on systemd unit on the account's public edge.",
+    packageName: "@agentproto/sandbox-instabox",
+    hint: "instabox · cloud",
+  },
+  {
     slug: "modal",
     name: "Modal",
     description: "Modal sandbox backend. Catalog placeholder — no package published yet.",
