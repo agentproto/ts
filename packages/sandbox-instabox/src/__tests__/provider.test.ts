@@ -476,6 +476,7 @@ describe("boot happy path", () => {
     expect(unit).toContain("--auth-token ${AGENTPROTO_AUTH_TOKEN}")
     expect(unit).toContain(`EnvironmentFile=-${ENV_FILE_PATH}`)
     expect(unit).toContain("Restart=always")
+    expect(unit).toContain("User=user")
     expect(unit).toContain('ExecStart=agentproto serve --port 18790 --bind 0.0.0.0 --workspace "/data/home"')
     expect(api.envFileWrites.join("\n")).toContain(`${CRED_ENV_KEY}=${SENTINEL_SECRET}`)
     expect(api.envFileWrites.join("\n")).toContain(`${AUTH_TOKEN_ENV_VAR}=`)

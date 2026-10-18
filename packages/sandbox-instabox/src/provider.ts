@@ -275,6 +275,7 @@ export function writeDaemonUnitCommand(
     `ExecStart=agentproto serve --port ${port} --bind 0.0.0.0 --workspace "${workspace}" ` +
       `--auth-token \${${AUTH_TOKEN_ENV_VAR}}`,
     "Restart=always",
+    "User=user",
     "",
     "[Install]",
     "WantedBy=multi-user.target",
@@ -693,9 +694,6 @@ async function readExistingAuthToken(client: InstaboxClient, machineId: string):
     cmd: `sudo grep '^${AUTH_TOKEN_ENV_VAR}=' ${ENV_FILE_PATH} 2>/dev/null || true`,
     timeoutSeconds: 60,
   })
-  if (result.exitCode !== 0) {
-    throw new Error(`instabox: daemon env file unreadable (exit ${result.exitCode})`)
-  }
   const line = result.stdout
     .split("\n")
     .map(entry => entry.trim())
