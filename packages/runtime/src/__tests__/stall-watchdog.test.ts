@@ -101,6 +101,17 @@ describe("runStallWatchdogPass — candidate selection", () => {
     expect(stalled).toEqual([])
   })
 
+  it("does NOT flag a row whose currentPhase is an ACTIVE tool call — a long pnpm install is expected silence, not a stall (even when classifyBlockedOn never maps the tool name into blockedOn)", () => {
+    const { registry, stalled } = stubRegistry([
+      row({ id: "installing", currentPhase: "tool-call:install_packages" }),
+      row({ id: "mcp-tool", currentPhase: "tool-call:mcp__agentproto__workspace_sync" }),
+    ])
+    expect(
+      runStallWatchdogPass({ registry, turnStallAfterMs: FIVE_MIN, now: () => NOW }).stalled,
+    ).toBe(0)
+    expect(stalled).toEqual([])
+  })
+
   it("does NOT flag a session already carrying stalledSinceMs — the sweep only ever adds the flag", () => {
     const { registry, stalled } = stubRegistry([
       row({ id: "already-flagged", stalledSinceMs: Date.parse(TEN_MIN_AGO) }),
@@ -301,6 +312,28 @@ describe("registry.markStalled / clearStalled — the trip/clear actions", () =>
     expect(reg.markStalled(idle.id, 1)).toBe(false) // no longer running
 
     expect(reg.markStalled("nope", 1)).toBe(false) // unknown id
+    reg.shutdown()
+  })
+
+  it("refuses a row with a tool call in flight whose name does NOT classify into blockedOn — the action-level guard covers a long `pnpm install` announced by a per-adapter tool name", async () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: hungAgentSession("acp-installing", {
+        toolCall: { toolCallId: "tc1", toolName: "install_packages" },
+      }),
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+    await sleep(20)
+    expect(reg.get(desc.id)?.busy).toBe(true)
+    const live = reg.get(desc.id)
+    expect(live?.currentPhase).toBe("tool-call:install_packages")
+    expect(reg.markStalled(desc.id, 1)).toBe(false)
+    expect(reg.get(desc.id)?.stalledSinceMs).toBeUndefined()
+
+    reg.kill(desc.id)
     reg.shutdown()
   })
 

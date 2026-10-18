@@ -99,6 +99,25 @@ export class HarnessClient {
     await this.#call("agent_kill", { sessionId })
   }
 
+  /**
+   * Cancel the in-flight turn on a live session via `agent_interrupt` —
+   * `POST /sessions/:id/interrupt` with the same registry effect, but reached
+   * through the SAME MCP tool channel `prompt`/`start` already use. This
+   * matters for remote daemons (e.g. a sandbox box): its mutating
+   * `/sessions/*` HTTP routes gate every POST behind the per-boot bearer
+   * token the host never holds, while the MCP endpoint is open to this
+   * client exactly like the prompt calls — so an interrupt that rides
+   * `agent_interrupt` authenticates identically and can never hit the 401 the
+   * raw POST does.
+   */
+  async interrupt(sessionId: string): Promise<{ wasBusy: boolean }> {
+    const res = await this.#call<{ ok: boolean; sessionId: string; wasBusy: boolean }>(
+      "agent_interrupt",
+      { sessionId },
+    )
+    return { wasBusy: res.wasBusy === true }
+  }
+
   /** Usage accounting via `session_usage` — model, cumulative USD cost, token
    *  counts, context window, and where the cost came from. This is how a
    *  sandbox's HOST daemon learns what the box's session spent: the sandbox

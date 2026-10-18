@@ -16,7 +16,14 @@ const MAX_POLL_MS = 49_000
 /** The subset of `HarnessClient` the host drives — narrowed for fake-client tests. */
 export type DaemonClient = Pick<
   HarnessClient,
-  "start" | "prompt" | "output" | "kill" | "waitForAny" | "currentEventsCursor" | "close"
+  | "start"
+  | "prompt"
+  | "output"
+  | "interrupt"
+  | "kill"
+  | "waitForAny"
+  | "currentEventsCursor"
+  | "close"
 > & {
   /** `session_usage` — optional so pre-existing fakes/clients without it still
    *  satisfy the type; the host simply exposes no `usage` then. */
@@ -41,6 +48,9 @@ export interface DaemonAgentSessionHost extends AgentSessionHost {
   output(sessionId: string, lastN?: number): Promise<string>
   /** SIGTERM the session (`agent_kill`). */
   kill(sessionId: string): Promise<void>
+  /** Cancel an in-flight turn without ending the session (`agent_interrupt`,
+   *  over the same MCP channel as `prompt`). */
+  interrupt(sessionId: string): Promise<{ wasBusy: boolean }>
   /** Multiplexed long-poll (`session_monitor`) — see `HarnessClient.waitForAny`. */
   waitForAny(
     sessionIds: string[],
@@ -128,6 +138,15 @@ export function makeDaemonAgentSessionHost(client: DaemonClient): DaemonAgentSes
 
     async kill(sessionId): Promise<void> {
       await client.kill(sessionId)
+    },
+
+    /** Cancel the in-flight turn — rides `agent_interrupt` over the same
+     *  MCP channel as `prompt`, so remote (sandbox box) daemons that gate
+     *  their raw `/sessions/:id/interrupt` POST route behind the per-boot
+     *  bearer token still accept it (the MCP endpoint authenticates this
+     *  client for `prompt` already). */
+    async interrupt(sessionId): Promise<{ wasBusy: boolean }> {
+      return client.interrupt(sessionId)
     },
 
     async waitForAny(sessionIds, opts): Promise<TurnResult> {

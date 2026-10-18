@@ -97,6 +97,15 @@ function lastActivityMsOf(desc: SessionDescriptor): number | null {
  *   - a row with `blockedOn` set — a spawned subagent or a shell/terminal
  *     command legitimately runs long and silent; this is exactly the "long
  *     build" false-positive the predicate is designed to never trip on;
+ *   - a row whose live `currentPhase` is an ACTIVE tool call
+ *     (`tool-call:<name>`) — the descriptor-level twin of the same
+ *     "legitimately long and silent work" exclusion, covering tool calls
+ *     whose name `classifyBlockedOn` does NOT classify into `blockedOn`
+ *     (per-adapter tool names, MCP-prefixed tools, …): a long `pnpm
+ *     install` announced by an unclassified tool is not the provider-retry
+ *     stall this watchdog exists for. The phase is stamped synchronously at
+ *     `list()` time (`stampCurrentStatus`, from the registry's live
+ *     `activeToolCalls` map), so a read phase of `tool-call:*` is honest NOW.
  *   - a row already carrying `stalledSinceMs` — the sweep only ever ADDS
  *     the flag, clearing is event-driven (see the module docblock), so a
  *     row already flagged simply isn't a candidate again until something
@@ -112,6 +121,9 @@ function isStallCandidate(
   if (desc.status !== "running") return false
   if (desc.busy !== true) return false
   if (desc.blockedOn !== undefined) return false
+  if (typeof desc.currentPhase === "string" && desc.currentPhase.startsWith("tool-call:")) {
+    return false
+  }
   if (desc.stalledSinceMs !== undefined) return false
   const lastMs = lastActivityMsOf(desc)
   if (lastMs === null) return false
