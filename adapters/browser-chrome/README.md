@@ -175,6 +175,21 @@ then fails with a clear error. It never stays among your tabs. Once you close th
 agent window, the next attach opens a new one. CDP has no tab-group API, so the
 agent's tabs are not grouped.
 
+### File inputs and extra agent tabs
+
+`uploadFileOwnedTarget(selector, paths)` attaches local files to an
+`<input type=file>` on an owned tab: it probes the selector first
+(`no <input type=file> matches selector …` when it does not match), then
+resolves the element with `DOM.querySelector` and feeds it through
+`DOM.setFileInputFiles` with ABSOLUTE paths — the same mechanism devtools
+uses, a feed rather than a write. A second owned tab is just
+`newTabOwnedTarget(url)` (always a FRESH tab in the agent window — the same
+activate-anchor → createTarget → `getWindowForTarget` flow as the first
+tab — never a reuse), and `listOwnedTabs()` returns every tab the agent
+owns with the window it lives in. The MCP projection is
+`browser_upload_file` (paths are restricted to the daemon's upload
+allowlist on top of this), `browser_new_tab` and `browser_list_tabs`.
+
 ### Screencast of the agent's own tab
 
 `chrome-live` is the only provider that can screencast
