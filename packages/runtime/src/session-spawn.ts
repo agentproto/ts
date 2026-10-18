@@ -5732,6 +5732,55 @@ export async function bootSandboxAgentSession(opts: {
         `\`cwd\` is then read as a path inside the checkout.`,
     )
   }
+  // AIP-36 — a device box is another MACHINE: its filesystem is not ours to
+  // restructure into per-session worktrees, so attach always keeps it as-is.
+  const isDeviceBox = isDeviceSandboxTarget(opts.sandbox)
+  // Reuse target (PR3) — `agent_start.sandbox.reuse`. Undefined ⇒ boot a
+  // fresh box, exactly as PR2. Also feeds `resolveLifecyclePolicy` below:
+  // a reused box defaults to PAUSE (not kill) on close, since it would be
+  // pointless to reconnect to a box that's about to be killed anyway.
+  let reuseSandboxId = typeof opts.sandbox === "object" ? opts.sandbox.reuse : undefined
+  // AIP-36 — the token is resolved BEFORE the workspace checkout is planned
+  // so an attach can plan the session's checkout as its own git worktree of
+  // the shared per-workspace clone instead of that clone itself. PLAN-D1 §3 —
+  // a `reuse` token that isn't a raw sandboxId may name a box via the ledger:
+  // an exact row label, or a unique sandboxId prefix. Ambiguity is a hard
+  // error listing the candidates; no ledger match passes the token through
+  // unchanged so the provider's own connect failure surfaces exactly as
+  // before this resolution existed.
+  if (reuseSandboxId !== undefined) {
+    const reuseResolution = resolveReuseFromLedger(reuseSandboxId, readSandboxLedger())
+    if (reuseResolution.kind === "ambiguous") {
+      return {
+        ok: false,
+        code: "sandbox_reuse_ambiguous",
+        message:
+          `agent_start: sandbox reuse token "${reuseSandboxId}" is ambiguous — it matches ` +
+          `${reuseResolution.candidates.length} ledger entries: ` +
+          reuseResolution.candidates
+            .map(c => `${c.sandboxId}${c.label ? ` (label "${c.label}")` : ""}`)
+            .join(", ") +
+          ". Use a longer id prefix or the full sandboxId.",
+      }
+    }
+    if (reuseResolution.kind === "resolved") reuseSandboxId = reuseResolution.sandboxId
+    // A box booted with one workspace's git token keeps it in its env for
+    // life: another workspace (or a spawn with none) must not reattach it.
+    const tokenOwner = readSandboxLedger().find(e => e.sandboxId === reuseSandboxId)?.gitTokenWorkspace
+    if (tokenOwner !== undefined && tokenOwner !== opts.workspace?.slug) {
+      return {
+        ok: false,
+        code: "sandbox_reuse_workspace_mismatch",
+        message:
+          `agent_start: sandbox "${reuseSandboxId}" was booted with the git token of workspace ` +
+          `"${tokenOwner}" and cannot be reused ` +
+          (opts.workspace ? `by workspace "${opts.workspace.slug}"` : "outside that workspace") +
+          ". Omit sandbox.reuse to boot a fresh box.",
+      }
+    }
+  }
+  const sharedBoxAttach = reuseSandboxId !== undefined && !isDeviceBox
+
   // Workspace `remote`: plan the in-box checkout up front so a bad slug/base
   // rejects the spawn before a box boots. The session lands in the checkout.
   let workspacePlan: SandboxWorkspacePlan | undefined
@@ -5741,6 +5790,7 @@ export async function bootSandboxAgentSession(opts: {
         workspaceSlug: opts.workspace.slug,
         remote: opts.workspace.remote,
         homeDir: handle.defaultCwd,
+        ...(sharedBoxAttach ? { sharedBox: true } : {}),
         ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
         ...(opts.checkpointConfig?.refPrefix ? { checkpointRefPrefix: opts.checkpointConfig.refPrefix } : {}),
         ...(opts.checkpointSnapshot !== undefined ? { checkpointSnapshot: opts.checkpointSnapshot } : {}),
@@ -5761,7 +5811,6 @@ export async function bootSandboxAgentSession(opts: {
   // credential (→ AGENTPROTO_GIT_TOKEN) and, for `env.autoPassthrough`, the
   // attached profile's own ref. A caller never names a keychain slot, and a
   // device target never resolves any (its box is another machine).
-  const isDeviceBox = isDeviceSandboxTarget(opts.sandbox)
   const credentialRefs = new Map<string, string>()
   const gitCredentialRef = opts.workspace?.remote.credentialRef
   if (workspacePlan && gitCredentialRef !== undefined && !isDeviceBox) {
@@ -5810,47 +5859,6 @@ export async function bootSandboxAgentSession(opts: {
         ),
       }
     : spec
-  // Reuse target (PR3) — `agent_start.sandbox.reuse`. Undefined ⇒ boot a
-  // fresh box, exactly as PR2. Also feeds `resolveLifecyclePolicy` below:
-  // a reused box defaults to PAUSE (not kill) on close, since it would be
-  // pointless to reconnect to a box that's about to be killed anyway.
-  let reuseSandboxId = typeof opts.sandbox === "object" ? opts.sandbox.reuse : undefined
-  // PLAN-D1 §3 — a `reuse` token that isn't a raw sandboxId may name a box
-  // via the ledger: an exact row label, or a unique sandboxId prefix.
-  // Ambiguity is a hard error listing the candidates; no ledger match
-  // passes the token through unchanged so the provider's own connect
-  // failure surfaces exactly as before this resolution existed.
-  if (reuseSandboxId !== undefined) {
-    const reuseResolution = resolveReuseFromLedger(reuseSandboxId, readSandboxLedger())
-    if (reuseResolution.kind === "ambiguous") {
-      return {
-        ok: false,
-        code: "sandbox_reuse_ambiguous",
-        message:
-          `agent_start: sandbox reuse token "${reuseSandboxId}" is ambiguous — it matches ` +
-          `${reuseResolution.candidates.length} ledger entries: ` +
-          reuseResolution.candidates
-            .map(c => `${c.sandboxId}${c.label ? ` (label "${c.label}")` : ""}`)
-            .join(", ") +
-          ". Use a longer id prefix or the full sandboxId.",
-      }
-    }
-    if (reuseResolution.kind === "resolved") reuseSandboxId = reuseResolution.sandboxId
-    // A box booted with one workspace's git token keeps it in its env for
-    // life: another workspace (or a spawn with none) must not reattach it.
-    const tokenOwner = readSandboxLedger().find(e => e.sandboxId === reuseSandboxId)?.gitTokenWorkspace
-    if (tokenOwner !== undefined && tokenOwner !== opts.workspace?.slug) {
-      return {
-        ok: false,
-        code: "sandbox_reuse_workspace_mismatch",
-        message:
-          `agent_start: sandbox "${reuseSandboxId}" was booted with the git token of workspace ` +
-          `"${tokenOwner}" and cannot be reused ` +
-          (opts.workspace ? `by workspace "${opts.workspace.slug}"` : "outside that workspace") +
-          ". Omit sandbox.reuse to boot a fresh box.",
-      }
-    }
-  }
   const lifecyclePolicy = resolveLifecyclePolicy(spec, reuseSandboxId !== undefined)
 
   // AIP-36 `env.passthrough` / `env.auth.state.env` — the only env-var
@@ -6339,6 +6347,19 @@ export async function bootSandboxAgentSession(opts: {
       // second `agent_prompt` dial (see `promptCarriedInStart`).
       ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
       ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
+      // AIP-36 — on a shared box, a detaching session removes its own git
+      // worktree of the shared clone (only when the final delivery pushed
+      // everything; else the worktree stays and the removal says so).
+      ...(workspacePlan?.sharedBox?.baseDir && deliveryTarget
+        ? {
+            worktreeTeardown: {
+              baseDir: workspacePlan.sharedBox.baseDir,
+              worktreeDir: deliveryTarget.checkoutDir,
+              branch: deliveryTarget.branch,
+              lockPath: workspacePlan.sharedBox.lockPath,
+            },
+          }
+        : {}),
       ...(trackedDeliveryOpts?.checkpoint ? { checkpoint: trackedDeliveryOpts.checkpoint } : {}),
       ...(tarTarget && deliverySessionId
         ? tarCheckpointProxyOpts({

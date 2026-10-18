@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { readFileSync as readFileSyncSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
@@ -281,6 +282,62 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
     expect(execCalls.some(c => c.command.includes("push"))).toBe(false)
     expect(registry.get(result.descriptor.id)?.sandboxDelivery).toBeUndefined()
+  })
+
+  describe("AIP-36 shared box — per-session worktree on attach", () => {
+    let ledgerFile: string
+
+    beforeEach(() => {
+      ledgerFile = join(tmpdir(), `agentproto-spawn-shared-wt-${process.pid}.json`)
+      vi.stubEnv("AGENTPROTO_SANDBOX_LEDGER", ledgerFile)
+    })
+
+    afterEach(() => {
+      vi.unstubAllEnvs()
+      rmSync(ledgerFile, { force: true })
+    })
+
+    it("an attach plans the checkout as its own git worktree and lands the session in it", async () => {
+      const first = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+        sessionId: "sess_a",
+      })
+      expect(first.ok).toBe(true)
+      if (!first.ok) return
+      expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
+      expect(readFileSyncSync(ledgerFile).toString()).toContain("attachedSessions")
+
+      execCalls.length = 0
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {}, reuse: "sbx_fake_ws" } as unknown as SandboxSpecInput,
+        workspaceSlug: "agentproto",
+        worktree: { slug: "y" },
+        sessionId: "sess_b",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      // The ATTACH never re-checks out the shared clone: it adds a worktree.
+      const commands = execCalls.map(c => c.command)
+      expect(commands.some(c => c.includes("git -C '/home/user/agentproto' checkout"))).toBe(false)
+      expect(commands.some(c => c.includes("worktree add '/home/user/.worktrees/agentproto/y' 'wt/y'"))).toBe(true)
+      expect(commands.some(c => c.includes("flock 9"))).toBe(true)
+      expect(receivedStarts[1]?.cwd).toBe("/home/user/.worktrees/agentproto/y")
+      expect(result.descriptor.cwd).toBe("/home/user/.worktrees/agentproto/y")
+      expect(result.descriptor.sandboxDeliveryTarget).toEqual({
+        checkoutDir: "/home/user/.worktrees/agentproto/y",
+        branch: "wt/y",
+        baseSha: BASE_SHA,
+      })
+
+      // Detaching A (survivor: B) neither stops the box nor touches A's base
+      // checkout; the worktree removal path is B's own attach tearing down.
+      registry.kill(first.descriptor.id)
+      registry.kill(result.descriptor.id)
+    })
   })
 
   describe("turn-end safety net", () => {

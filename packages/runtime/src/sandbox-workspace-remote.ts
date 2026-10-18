@@ -91,6 +91,13 @@ const ERROR_TAIL_CHARS = 1_500
 export interface SandboxWorkspaceRequest {
   /** The registered workspace slug — names the checkout dir under `homeDir`. */
   workspaceSlug: string
+  /** The spawn attaches to a box other sessions may stay attached to
+   *  (AIP-36 reuse/attach). The per-session checkout moves out of the
+   *  shared per-workspace clone into its own git worktree, so concurrent
+   *  sessions never switch each other's branch or mix uncommitted files.
+   *  A session alone on a fresh box leaves the request unset and keeps the
+   *  plain per-workspace checkout exactly as before. */
+  sharedBox?: boolean
   remote: WorkspaceRemote
   /** The box's home (`SandboxProviderHandle.defaultCwd`); the clone lands in
    *  `<homeDir>/<workspaceSlug>`. */
@@ -120,6 +127,11 @@ export interface SandboxSetupStep {
   capturesBaseSha?: boolean
 }
 
+/** Inside a box that other sessions share, the per-workspace clone lives here
+ *  under the home; each attached session gets its own git worktree of it under
+ *  `<homeDir>/.worktrees/<workspaceSlug>/<slug>`. */
+export const SHARED_BOX_WORKTREES_DIR = ".worktrees"
+
 export interface SandboxWorkspacePlan {
   /** The box's home the steps run from. */
   homeDir: string
@@ -130,6 +142,12 @@ export interface SandboxWorkspacePlan {
   baseRef: string
   /** True when a token is expected in {@link GIT_TOKEN_ENV}. */
   authenticated: boolean
+  /** AIP-36 shared-box per-session worktree — present only when the spawn
+   *  attaches to a box other sessions may be using: `checkoutDir` is then
+   *  this session's OWN worktree of `baseDir` (the per-workspace clone), the
+   *  base clone stays untouched, and `lockPath` is the in-box lock file that
+   *  serializes concurrent `git fetch`/`worktree add` on the shared clone. */
+  sharedBox?: { baseDir: string; lockPath: string }
   steps: SandboxSetupStep[]
 }
 
@@ -199,6 +217,14 @@ function validateSegment(kind: string, raw: string, pattern: RegExp): string {
  *  variable's NAME. */
 const CREDENTIAL_HELPER = `!f() { echo username=x-access-token; echo "password=$${GIT_TOKEN_ENV}"; }; f`
 
+/** Serialize a mutating git command against other sessions' mutators on the
+ *  same shared clone: acquire `flock` on `lockPath` first (best-effort — if
+ *  the lock cannot be taken the command still runs, unlocked). Locking uses
+ *  fd 9 inside a subshell so `script` needs no extra quoting layer. */
+function flocked(lockPath: string, script: string): string {
+  return `( mkdir -p ${shellQuote(posix.dirname(lockPath))} && exec 9>>${shellQuote(lockPath)} && flock 9; ${script} )`
+}
+
 /** Build the ordered setup steps. Throws a plain Error on an unusable slug,
  *  branch or base so the caller can reject the spawn before booting a box. */
 export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorkspacePlan {
@@ -215,8 +241,21 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
           /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
         )}`
   const home = req.homeDir.replace(/\/+$/, "")
-  const checkoutDir = `${home}/${workspaceDir}`
+  // AIP-36 per-session worktree: on a shared box the per-workspace clone is
+  // the SHARED base and this session works in its own git worktree of it;
+  // alone on a fresh box the session keeps today's plain per-workspace
+  // checkout (no worktree layering, no lock, byte-identical commands).
+  const shared = req.sharedBox === true
+  const homeBaseDir = `${home}/${workspaceDir}`
+  const worktreesRootDirectory = `${home}/${SHARED_BOX_WORKTREES_DIR}/${workspaceDir}`
+  const worktreeDir =
+    shared && branch !== undefined
+      ? `${worktreesRootDirectory}/${branch.slice(SANDBOX_BRANCH_PREFIX.length)}`
+      : undefined
+  const lockPath = `${home}/${SHARED_BOX_WORKTREES_DIR}/${workspaceDir}.lock`
+  const checkoutDir = worktreeDir ?? homeBaseDir
   const dir = shellQuote(checkoutDir)
+  const baseDirQuoted = shellQuote(homeBaseDir)
   const authenticated = req.remote.credentialRef !== undefined
   const steps: SandboxSetupStep[] = [
     {
@@ -239,32 +278,54 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
     {
       label: "git-clone",
       command:
-        `if [ -d ${shellQuote(`${checkoutDir}/.git`)} ]; then git -C ${dir} fetch --prune origin; ` +
-        `else git clone -- ${shellQuote(req.remote.url)} ${dir}; fi`,
+        `if [ -d ${shellQuote(`${homeBaseDir}/.git`)} ]; then ${shared ? flocked(lockPath, `git -C ${baseDirQuoted} fetch --prune origin`) : `git -C ${baseDirQuoted} fetch --prune origin`}; ` +
+        `else git clone -- ${shellQuote(req.remote.url)} ${baseDirQuoted}; fi`,
       timeoutMs: CLONE_TIMEOUT_MS,
     },
     {
       label: "resolve-base",
-      command: `git -C ${dir} rev-parse --verify --quiet ${shellQuote(`${baseRef}^{commit}`)}`,
+      command: `git -C ${baseDirQuoted} rev-parse --verify --quiet ${shellQuote(`${baseRef}^{commit}`)}`,
       timeoutMs: STEP_TIMEOUT_MS,
       capturesBaseSha: true,
     },
   )
   if (branch !== undefined) {
     const ref = shellQuote(branch)
-    const remoteRef = `refs/remotes/origin/${branch}`
-    steps.push({
-      label: "git-checkout",
-      // Local branch (a reused box) first, then the branch a previous box
-      // pushed (a restart on a fresh box resumes its work), else cut it.
-      command:
-        `cd ${dir} && if git show-ref --verify --quiet ${shellQuote(`refs/heads/${branch}`)}; ` +
-        `then git checkout ${ref}; ` +
-        `elif git show-ref --verify --quiet ${shellQuote(remoteRef)}; ` +
-        `then git checkout -b ${ref} --track ${shellQuote(`origin/${branch}`)}; ` +
-        `else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
-      timeoutMs: STEP_TIMEOUT_MS,
-    })
+    if (worktreeDir === undefined) {
+      const remoteRef = `refs/remotes/origin/${branch}`
+      steps.push({
+        label: "git-checkout",
+        // Local branch (a reused box) first, then the branch a previous box
+        // pushed (a restart on a fresh box resumes its work), else cut it.
+        command:
+          `cd ${dir} && if git show-ref --verify --quiet ${shellQuote(`refs/heads/${branch}`)}; ` +
+          `then git checkout ${ref}; ` +
+          `elif git show-ref --verify --quiet ${shellQuote(remoteRef)}; ` +
+          `then git checkout -b ${ref} --track ${shellQuote(`origin/${branch}`)}; ` +
+          `else git checkout -b ${ref} ${shellQuote(baseRef)}; fi`,
+        timeoutMs: STEP_TIMEOUT_MS,
+      })
+    } else {
+      steps.push({
+        label: "worktree-add",
+        // The session's own worktree of the shared base clone, same branch
+        // precedence as the solo `git-checkout` step: an existing worktree of
+        // this branch wins (a re-attach reuses it), then the pushed branch
+        // (the work survives box restarts), else it is cut from `baseRef`.
+        // The base clone's own checkout is left alone: its HEAD is detached
+        // (it is shared scratch), never re-pointed at a session's branch.
+        command: flocked(
+          lockPath,
+          `if [ -e ${dir}/.git ]; then git -C ${dir} checkout ${ref} 2>/dev/null; ` +
+            `elif git -C ${baseDirQuoted} show-ref --verify --quiet ${shellQuote(`refs/heads/${branch}`)}; ` +
+            `then git -C ${baseDirQuoted} checkout --detach -q && git -C ${baseDirQuoted} worktree add ${dir} ${ref}; ` +
+            `elif git -C ${baseDirQuoted} show-ref --verify --quiet ${shellQuote(`refs/remotes/origin/${branch}`)}; ` +
+            `then git -C ${baseDirQuoted} worktree add --track -b ${ref} ${dir} ${shellQuote(`origin/${branch}`)}; ` +
+            `else git -C ${baseDirQuoted} worktree add -b ${ref} ${dir} ${shellQuote(baseRef)}; fi`,
+        ),
+        timeoutMs: STEP_TIMEOUT_MS,
+      })
+    }
     steps.push(
       ...restoreCheckpointSteps({
         checkoutDir,
@@ -276,11 +337,19 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
   } else {
     steps.push({
       label: "git-checkout",
-      command: `git -C ${dir} checkout ${shellQuote(defaultBranch)}`,
+      command: `git -C ${baseDirQuoted} checkout ${shellQuote(defaultBranch)}`,
       timeoutMs: STEP_TIMEOUT_MS,
     })
   }
-  return { homeDir: home, checkoutDir, ...(branch !== undefined ? { branch } : {}), baseRef, authenticated, steps }
+  return {
+    homeDir: home,
+    checkoutDir,
+    ...(branch !== undefined ? { branch } : {}),
+    baseRef,
+    authenticated,
+    ...(worktreeDir !== undefined ? { sharedBox: { baseDir: homeBaseDir, lockPath } } : {}),
+    steps,
+  }
 }
 
 /** Host-only absolute-path shapes that can never resolve inside a remote
@@ -396,6 +465,37 @@ export function buildLearnBranchCommand(checkoutDir: string, baseRef: string): s
     `cd ${dir} && echo "branch=$(git rev-parse --abbrev-ref HEAD)" && ` +
     `echo "base=$(git merge-base HEAD ${ref} 2>/dev/null)"`
   )
+}
+
+/** The best-effort worktree removal a session runs on DETACH from a shared
+ *  box (after its own teardown delivery has checkpointed and pushed): the
+ *  worktree is removed ONLY when it is clean (no uncommitted changes) and its
+ *  branch is fully pushed (`origin/<branch>` covers `<branch>`); any leftover
+ *  work keeps the worktree in place and SAYS SO — the surviving operators can
+ *  look at it on the still-running box. Unremovable worktrees are harmless:
+ *  the next spawn of the same branch slug reuses the directory. */
+export function buildWorktreeRemoveCommand(input: {
+  /** The shared base clone the worktree hangs off (`git worktree` runs there). */
+  baseDir: string
+  /** The session's own worktree directory being removed. */
+  worktreeDir: string
+  branch: string
+  /** The shared clone's `flock` file (`planSandboxWorkspace`'s `sharedBox.lockPath`).
+   *  Absent ⇒ no lock — the removal just runs unserialized. */
+  lockPath?: string
+}): string {
+  const base = shellQuote(input.baseDir)
+  const dir = shellQuote(input.worktreeDir)
+  const branch = shellQuote(input.branch)
+  const range = shellQuote(`refs/remotes/origin/${input.branch}..${input.branch}`)
+  const script =
+    `cd ${base} && ` +
+    `if [ -e ${dir}/.git ]; then ` +
+    `if [ -z "$(git -C ${dir} status --porcelain)" ] && ` +
+    `[ "$(git rev-list --count ${range} 2>/dev/null || echo 1)" = "0" ]; then ` +
+    `git worktree remove ${dir} && git worktree prune && echo "worktree removed"; ` +
+    `else echo "worktree kept: uncommitted or unpushed work in ${dir}"; fi; fi`
+  return input.lockPath === undefined ? script : flocked(input.lockPath, script)
 }
 
 /** Strict on purpose: only a `wt/`-prefixed branch counts, so a box sitting on
