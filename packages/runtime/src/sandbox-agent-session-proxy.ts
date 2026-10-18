@@ -1141,23 +1141,29 @@ export function createSandboxAgentSessionProxy(
         // AIP-36 shared-box amendment — the ledger row is the refcount.
         // With OTHER sessions still attached, detach only: the box is
         // neither stopped nor paused (it keeps running under the
-        // survivors), and no terminal state is stamped.
+        // survivors), and no terminal state is stamped. The explicit
+        // `if (!survivorsLeft)` guard below matters: a `return` inside the
+        // `finally` would DISCARD a pending exception from `host.kill`
+        // above, so the survivors check is computed first and the
+        // stop/pause + ledger stamp are guarded instead.
         const survivorsLeft =
           !!(opts.ledger?.sandboxId && opts.ledger?.sessionId) &&
           recordSessionDetach(opts.ledger.sandboxId, opts.ledger.sessionId).length > 0
         try {
-          if (survivorsLeft) return
-          if (pauseFn) {
-            await pauseFn()
-          } else {
-            await host.stop()
+          if (!survivorsLeft) {
+            if (pauseFn) {
+              await pauseFn()
+            } else {
+              await host.stop()
+            }
           }
         } finally {
           // PLAN-D1 — stamp the teardown outcome into the sandbox ledger.
           // Inside the finally chain so even a failing teardown records
           // (best-effort: `recordSandboxState` itself never throws). A
-          // survivor-detach returns above — the box keeps running for the
-          // others, so this must NOT stamp a terminal state over the row.
+          // survivor-detach skips the stop/pause — the box keeps running
+          // for the others, so this must NOT stamp a terminal state over
+          // the row.
           if (opts.ledger && !survivorsLeft) {
             const finalState = pauseTeardown ? "paused" : "stopped"
             if (closeOpts?.idleReap) {

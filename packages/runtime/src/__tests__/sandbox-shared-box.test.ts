@@ -90,6 +90,23 @@ describe("shared sandbox — detach refcount", () => {
     expect(entryOf()?.state).toBe("stopped")
   })
 
+  it("a survivor-detach does NOT swallow a failing kill (no return-out-of-finally)", async () => {
+    recordSandboxBoot({ sandboxId: "bx_shared", provider: "fake", state: "booted", sessionId: "sess_b" })
+    const host = makeHost()
+    host.kill = vi.fn(async () => {
+      throw new Error("kill transport blew up")
+    })
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_a",
+      ledger: { sandboxId: "bx_shared", provider: "fake", sessionId: "sess_a" },
+    })
+    await expect(proxy.close()).rejects.toThrow("kill transport blew up")
+    // Still detached from the refcount — the survivor keeps the box running.
+    expect(entryOf()?.attachedSessions).toEqual(["sess_b"])
+    expect(host.stop).not.toHaveBeenCalled()
+  })
+
   it("a solo box still tears down on the only close (regression guard)", async () => {
     const host = makeHost()
     const proxy = createSandboxAgentSessionProxy({

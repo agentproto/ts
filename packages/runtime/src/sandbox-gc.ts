@@ -51,8 +51,8 @@ export function collectGcCandidates(
     )
     // AIP-36 shared-box amendment — the origin session dying does not make
     // the box an orphan when OTHER sessions are still attached. Skip unless
-    // every remaining attachement is itself dead (its status is terminal) or
-    // unknown-to-the-caller cannot be told → survives, conservative.
+    // every remaining attaché is itself dead (its status is terminal);
+    // an unknown survivor status conservatively keeps the box alive.
     .filter(c => {
       const others = (c.entry.attachedSessions ?? []).filter(
         s => s !== c.entry.originSessionId,

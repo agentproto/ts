@@ -5916,10 +5916,28 @@ export async function bootSandboxAgentSession(opts: {
     // the box never outlives this failed spawn unaccounted-for
     // (`sandbox gc` selects on exactly these rows).
     if (err instanceof SandboxHostBootFailedError) {
+      // AIP-36 shared-box amendment — on a FAILED ATTACH, this session
+      // leaves the refcount even though it never finished booting (the
+      // boot-time `attachedSessions` stamp never ran, but `@agentproto/
+      // sandbox`'s own cleanup DID — it reaped the shared box: paused for
+      // a reuse whose provider supports pause, killed otherwise).
+      const survivorsAfterFailedAttach =
+        opts.sessionId !== undefined && reuseSandboxId !== undefined
+          ? recordSessionDetach(err.sandboxId, opts.sessionId).length
+          : 0
+      // The box existed at failure time — `@agentproto/sandbox` reaped it
+      // (paused for a reuse whose provider supports pause, killed
+      // otherwise) before throwing. Stamp the ledger with the outcome so
+      // the box never outlives this failed spawn unaccounted-for
+      // (`sandbox gc` selects on exactly these rows). Survivors keep the
+      // refcount only for a PAUSED box they can `reuse`-attach back onto —
+      // a KILLED box is dead for everyone, so the full clear stands.
+      const keepForSurvivors = err.cleanedUp === "paused" && survivorsAfterFailedAttach > 0
       markFailedBootLedger({
         sandboxId: err.sandboxId,
         provider: providerSlug,
         state: err.cleanedUp,
+        keepAttachedSessions: keepForSurvivors,
         ...(opts.label ? { label: opts.label } : {}),
         ...(boxCwd ? { cwd: boxCwd } : {}),
       })
@@ -6468,6 +6486,11 @@ function markFailedBootLedger(opts: {
   sandboxId: string
   provider: string
   state: "paused" | "stopped"
+  /** AIP-36 shared-box amendment — when a FAILED ATTACH leaves survivors
+   *  live AND the box was only PAUSED (they can `reuse`-attach back), the
+   *  surviving refcount must not be erased by this stamp. A killed box is
+   *  terminal for everyone — the flag stays off and the list clears. */
+  keepAttachedSessions?: boolean
   label?: string
   cwd?: string
 }): void {
@@ -6475,7 +6498,7 @@ function markFailedBootLedger(opts: {
     const ts = new Date().toISOString()
     const prior = readSandboxLedger().find(e => e.sandboxId === opts.sandboxId)
     if (prior) {
-      recordSandboxState(opts.sandboxId, opts.state)
+      recordSandboxState(opts.sandboxId, opts.state, undefined, opts.keepAttachedSessions)
       return
     }
     const entry: SandboxLedgerEntry = {

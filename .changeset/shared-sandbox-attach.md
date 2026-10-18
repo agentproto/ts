@@ -1,5 +1,4 @@
 ---
-"@agentproto/sandbox": minor
 "@agentproto/runtime": minor
 "@agentproto/cli": minor
 ---

@@ -610,7 +610,6 @@ export {
   removeSandboxLedgerEntry,
   resolveReuseFromLedger,
   sandboxLedgerPath,
-  sessionsAttachedAfterDetach,
   upsertSandboxLedger,
   type ReuseResolution,
   type SandboxLedgerEntry,

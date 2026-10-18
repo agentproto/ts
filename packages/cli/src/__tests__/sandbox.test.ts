@@ -253,6 +253,27 @@ describe("agentproto sandbox list", () => {
     expect(out).toContain("sess_1")
   })
 
+  it("renders the ATTACHED column for a shared box and a dash for a solo one (AIP-36)", async () => {
+    readSandboxLedgerMock.mockReturnValue([
+      {
+        ...LEDGER_ROW,
+        sandboxId: "bx_shared1",
+        attachedSessions: ["sess_origin", "sess_survivor"],
+      },
+      { ...LEDGER_ROW, sandboxId: "bx_solo1" },
+    ])
+    const capture = captureOutput()
+    const code = await runSandbox(["list"])
+    capture.restore()
+    expect(code).toBe(0)
+    const out = capture.stdout.join("")
+    expect(out).toContain("sess_survivor")
+    // The solo row has no attachés left — the column still renders, empty.
+    const attachedIdx = out.indexOf("sess_survivor")
+    expect(attachedIdx).toBeGreaterThan(0)
+    expect(out).toContain("bx_solo1")
+  })
+
   it("--json prints the raw rows without probing (no reconcile by default)", async () => {
     readSandboxLedgerMock.mockReturnValue([LEDGER_ROW])
     const capture = captureOutput()

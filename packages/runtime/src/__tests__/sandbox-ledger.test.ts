@@ -301,6 +301,7 @@ describe("sandbox liveness fields", () => {
 describe("idle-reap teardown (sandboxIdleReapAfterMs)", () => {
   const host = () => ({
     prompt: vi.fn(async () => {}),
+    interrupt: vi.fn(async () => ({ wasBusy: false })),
     output: vi.fn(async () => ""),
     kill: vi.fn(async () => {}),
     waitForAny: vi.fn(async (_ids: string[], _opts?: { timeoutMs?: number; since?: number }) => ({ timedOut: true })),
