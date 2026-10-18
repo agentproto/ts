@@ -1,6 +1,6 @@
 ---
-"@agentproto/harness": patch
-"@agentproto/worktree": patch
+"@agentproto/harness": minor
+"@agentproto/worktree": minor
 "@agentproto/runtime": patch
 ---
 
