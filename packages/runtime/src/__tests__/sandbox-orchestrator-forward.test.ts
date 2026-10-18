@@ -45,7 +45,11 @@ vi.mock("../sandbox-agent-session-proxy.js", async importOriginal => {
   }
 })
 
-import { bootSandboxAgentSession } from "../session-spawn.js"
+import {
+  bootSandboxAgentSession,
+  narrowSandboxOrchestratorForward,
+} from "../session-spawn.js"
+import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 
 const handle = {
@@ -128,5 +132,44 @@ describe("agent_start sandbox — orchestrator forwarded to the box daemon", () 
     if (!booted.ok) throw new Error(`expected boot success: ${JSON.stringify(booted)}`)
     expect(hostStarts).toHaveLength(1)
     expect(hostStarts[0]?.orchestrator).toBeUndefined()
+  })
+
+  it("narrowSandboxOrchestratorForward — a scoped (callerScope) controller's ceiling travels to the box, never widens", () => {
+    const callerScope: OrchestratorScope = {
+      token: "tok_parent",
+      tools: new Set(["agent_start", "task_list"]),
+      ownerSessionId: "sess_parent",
+      depth: 1,
+      maxDepth: 4,
+      maxChildren: 10,
+      role: "supervisor",
+    }
+    // Bare `true` from a scoped caller → expanded to the CALLER ceiling (not
+    // the box's default), so the box can't mint a broader scope than the
+    // parent holds.
+    expect(narrowSandboxOrchestratorForward(true, callerScope)).toEqual({
+      tools: ["agent_start", "task_list"],
+      maxDepth: 4,
+      maxChildren: 10,
+    })
+    // Requested ⊆ caller ceiling is preserved.
+    expect(
+      narrowSandboxOrchestratorForward(
+        { tools: ["task_list"], maxDepth: 6, maxChildren: 20 },
+        callerScope,
+      ),
+    ).toEqual({ tools: ["task_list"], maxDepth: 4, maxChildren: 10 })
+    // Off-ceiling requests are intersected/clamped (requested ∩ ceiling).
+    expect(
+      narrowSandboxOrchestratorForward(
+        { tools: ["agent_start", "task_create"], maxDepth: 2 },
+        callerScope,
+      ),
+    ).toEqual({ tools: ["agent_start"], maxDepth: 2, maxChildren: 10 })
+    // Root spawn (no callerScope): passes through, box keeps its defaults.
+    expect(narrowSandboxOrchestratorForward(true)).toBe(true)
+    expect(
+      narrowSandboxOrchestratorForward({ tools: ["agent_start"], maxDepth: 2 }),
+    ).toEqual({ tools: ["agent_start"], maxDepth: 2 })
   })
 })

@@ -1854,6 +1854,72 @@ function workflowOwnerMeta(owner: SpawnAgentSessionInput["workflowOwner"]): Reco
     : {}
 }
 
+  /**
+ * The `orchestrator` request the sandbox spawn path forwards onto the BOX's
+ * own `agent_start` (`bootSandboxAgentSession`) — see the sandbox branch in
+ * `spawnAgentSession`.
+ */
+export type SandboxOrchestratorForward =
+  | boolean
+  | { tools?: string[]; maxDepth?: number; maxChildren?: number }
+
+/**
+ * Normalize a caller's `agent_start({ sandbox, orchestrator })` request into
+ * the object the BOX daemon's own `agent_start` receives.
+ *
+ * The sandbox boundary never WIDENS delegated rights, so this mirrors what
+ * `buildOrchestratorMcp({ caller })` mints on-host for a non-sandbox spawn
+ * (`narrowOrchestratorTools`: `requested ∩ ceiling`, and the scope's own
+ * maxDepth/maxChildren): when the CONTROLLER itself is a scoped orchestrator
+ * (`callerScope`), the forwarded request's `tools` become the intersection
+ * with the caller's toolset (a bare `true` is expanded to the caller
+ * ceiling so the box cannot mint a broader scope than the parent holds),
+ * and maxDepth/maxChildren are min-clamped to the caller's ceilings. With
+ * no `callerScope` (a root spawn), the request passes through unchanged —
+ * the box daemon applies its own default ceilings, same as the host would.
+ * Pure — shared by the sandbox branch and its tests.
+ */
+export function narrowSandboxOrchestratorForward(
+  requested: true | { tools?: string[]; maxDepth?: number; maxChildren?: number },
+  callerScope?: OrchestratorScope,
+): SandboxOrchestratorForward {
+  if (requested === true) {
+    if (callerScope === undefined) return true
+    return {
+      tools: Array.from(callerScope.tools),
+      maxDepth: callerScope.maxDepth,
+      maxChildren: callerScope.maxChildren,
+    }
+  }
+  const requestedTools = requested.tools
+  const tools =
+    requestedTools === undefined
+      ? callerScope === undefined
+        ? undefined
+        : Array.from(callerScope.tools)
+      : callerScope === undefined
+        ? requestedTools
+        : requestedTools.filter(t => callerScope.tools.has(t))
+  const maxDepth =
+    requested.maxDepth === undefined
+      ? callerScope?.maxDepth
+      : callerScope?.maxDepth !== undefined
+        ? Math.min(requested.maxDepth, callerScope.maxDepth)
+        : requested.maxDepth
+  const maxChildren =
+    requested.maxChildren === undefined
+      ? callerScope?.maxChildren
+      : callerScope?.maxChildren !== undefined
+        ? Math.min(requested.maxChildren, callerScope.maxChildren)
+        : requested.maxChildren
+  return {
+    ...(tools !== undefined ? { tools } : {}),
+    ...(maxDepth !== undefined ? { maxDepth } : {}),
+    ...(maxChildren !== undefined ? { maxChildren } : {}),
+  }
+}
+
+
 export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
@@ -2969,37 +3035,38 @@ export async function spawnAgentSession(
     | ((sessionId: string) => () => void)
     | undefined
   let orchestratorDelegates = false
-  // Sandbox spawn: the HOST daemon's loopback `/mcp/orchestrator` is
+// Sandbox spawn: the HOST daemon's loopback `/mcp/orchestrator` is
   // unreachable from inside the box — but a sandbox box runs its OWN full
   // agentproto daemon (`agentproto serve`, @agentproto/sandbox's session
   // host), whose loopback IS reachable by the adapter process. So instead
   // of mounting an unreachable host URL, the `orchestrator` request is
   // FORWARDED onto the box's own `agent_start` (`bootSandboxAgentSession`
   // → `host.start`): the BOX daemon mints the scope token and mounts
-  // `/mcp/orchestrator?scope=…` on ITS loopback, so the sandboxed
-  // supervisor can spawn children on the same box. Depth/quota/reaping
-  // are consequently box-local — the host tracks only the proxy session,
-  // and `callerScope` narrowing from the HOST side does not cross the box
-  // boundary (the box daemon applies its own default ceilings).
-  let sandboxOrchestratorForward:
-    | boolean
-    | { tools?: string[]; maxDepth?: number; maxChildren?: number }
-    | undefined
+  //   `/mcp/orchestrator?scope=…` on ITS loopback, so the sandboxed
+  //   supervisor can spawn children on the same box. Depth/quota/reaping
+  //   are consequently box-local — the host tracks only the proxy session.
+  //   The HOST `callerScope` DOES still narrow the request though: when the
+  //   controller itself is a scoped orchestrator, the `tools` intersection
+  //   and maxDepth/maxChildren min-clamp below mirror what
+  //   `buildOrchestratorMcp({ caller })` mints on-host
+  //   (`requested ∩ caller ceiling`) — the sandbox boundary never WIDENS
+  //   delegated rights. (The token/identity narrowings the box mints itself
+  //   are against the box's own parent attribution and can't be seeded
+  //   across the boundary; a full merge of the two scope chains is a
+  //   cross-daemon identity protocol, out of scope.)
+  //   Version-skew note: an older box daemon whose `serve` predates the
+  //   orchestrator sub-gateway answers `orchestrator_not_enabled` to the
+  //   inner spawn, which surfaces as `sandbox_proxy_failed` — a fail-closed
+  //   refusal, never a mis-mounted/unreachable URL. Boxes install
+  //   `@agentproto/cli@<cliVersion pin>` (see sandbox-e2b's boot); keep that
+  //   pin ≥ the controller runtime when orchestrating inside boxes.
+  let sandboxOrchestratorForward: SandboxOrchestratorForward | undefined
   if (input.sandbox !== undefined) {
     if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
-      const orchestratorOpts =
-        typeof input.orchestrator === "object" ? input.orchestrator : undefined
-      sandboxOrchestratorForward = orchestratorOpts
-        ? {
-            ...(orchestratorOpts.tools !== undefined ? { tools: orchestratorOpts.tools } : {}),
-            ...(orchestratorOpts.maxDepth !== undefined
-              ? { maxDepth: orchestratorOpts.maxDepth }
-              : {}),
-            ...(orchestratorOpts.maxChildren !== undefined
-              ? { maxChildren: orchestratorOpts.maxChildren }
-              : {}),
-          }
-        : true
+      sandboxOrchestratorForward = narrowSandboxOrchestratorForward(
+        typeof input.orchestrator === "object" ? input.orchestrator : true,
+        callerScope,
+      )
     }
   } else if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
     if (!buildOrchestratorMcp) {
