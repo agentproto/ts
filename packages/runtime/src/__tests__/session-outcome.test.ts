@@ -341,6 +341,56 @@ describe("derived session outcome — pure helpers", () => {
     expect(shouldReplaceOutcome(empty, deriveSessionOutcome({ ...base, status: "error", endedReason: "crashed" }))).toBe(true)
   })
 
+  /** sess_795b8c58 / e39cd4da / 7d29436b — an expected box expiry ends the
+   *  session cleanly (`sandbox-expired`, exited): the outcome must carry the
+   *  delivered work branch as the artifact, not show an ended session with
+   *  nothing produced. */
+  it("a sandbox-expired end surfaces the delivered work branch as a branch artifact", () => {
+    const expired: SessionDescriptor = {
+      ...base,
+      status: "exited",
+      endedReason: "sandbox-expired",
+      sandboxDelivery: {
+        at: "2026-09-26T00:00:30.000Z",
+        branch: "wt/fix-handler",
+        baseSha: "abc",
+        ahead: 2,
+        push: { status: "pushed" },
+      },
+    } as SessionDescriptor
+    const o = deriveSessionOutcome(expired)
+    expect(o.artifacts).toEqual([
+      { type: "branch", ref: "wt/fix-handler", title: "delivered work branch" },
+    ])
+
+    // A crash with the same delivery record gets NO branch artifact —
+    // the delivered branch only surfaces on an expected expiry.
+    const crashed = { ...expired, endedReason: "crashed", status: "error" } as SessionDescriptor
+    expect(deriveSessionOutcome(crashed).artifacts).toBeUndefined()
+
+    // Delivery not pushed yet: the target branch is still surfaced, marked
+    // incomplete, so the pushed-anyway-but-unrecorded branch is findable.
+    const unpushed: SessionDescriptor = {
+      ...base,
+      status: "exited",
+      endedReason: "sandbox-expired",
+          sandboxDeliveryTarget: { branch: "wt/fix-handler", deliveryMode: "branch" as const },
+      sandboxCheckpoint: {
+        at: "2026-09-26T00:00:30.000Z",
+        branch: "wt/fix-handler",
+        baseSha: "abc",
+        push: { status: "failed", detail: "network down" },
+        bundle: Buffer.alloc(0),
+      },
+    } as unknown as SessionDescriptor
+    const o2 = deriveSessionOutcome(unpushed)
+    expect(o2.artifacts).toContainEqual({
+      type: "branch",
+      ref: "wt/fix-handler",
+      title: "work branch (delivery incomplete)",
+    })
+  })
+
   it("readLastAssistantTextSync tolerates a missing file and a torn first line", () => {
     expect(readLastAssistantTextSync("/nonexistent/events.jsonl")).toBeUndefined()
     const dir = mkdtempSync(join(tmpdir(), "outcome-tail-"))
