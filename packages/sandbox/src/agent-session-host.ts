@@ -181,6 +181,11 @@ export interface SandboxExecResult {
   stderr: string
   /** Wall-clock duration of the exec call, ms. */
   durationMs: number
+  /** True when the provider's captured output was clipped BY ITS OWN STREAM
+   *  CAP (not the command's exit) — surfaced so a caller pulling a large file
+   *  out through a stream-capped exec API knows the data is incomplete.
+   *  Absent for providers whose capture is uncapped. */
+  truncated?: boolean
 }
 
 /**
@@ -306,6 +311,9 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
    *  caller can record it (there's no local PID for a sandboxed session). */
   sandboxId: string
+  /** Headers the box daemon's gated HTTP routes require — the same ones the
+   *  MCP connection presents. Absent for an ungated daemon. */
+  authHeaders?: Record<string, string>
   /** Ports resolved at boot from `SandboxSpec.extraPorts` — forwarded from
    *  `BootedSandbox.ports` so the runtime can record them on the session
    *  descriptor without reaching into the booted handle after the fact. */
@@ -362,9 +370,21 @@ export async function createSandboxAgentSessionHost(
   } else {
     booted = await opts.provider.boot(opts.spec, { env })
   }
+  // A box whose public edge has NO provider-side auth of its own (InstaBox)
+  // gates its daemon with a per-box bearer; Box's private path gates with a
+  // `_port_auth` cookie. Surface whatever `booted.authHeaders`/`token` the
+  // provider returned so the immediate host connection authenticates too —
+  // without this the boot succeeds but the daemon MCP connect 401s, the box
+  // gets reaped, and `agent_start` always fails. Absent ⇒ unchanged.
+  const headers =
+    booted.authHeaders ??
+    (booted.token ? { Authorization: `Bearer ${booted.token}` } : undefined)
   let host: DaemonAgentSessionHost
   try {
-    host = await connectDaemonAgentSessionHost({ url: booted.mcpUrl })
+    host = await connectDaemonAgentSessionHost({
+      url: booted.mcpUrl,
+      ...(headers ? { headers } : {}),
+    })
   } catch (err) {
     // The box EXISTS at this point — the daemon connection on top of it
     // failed. Reap it so a failed boot never leaves a live box behind:
@@ -387,6 +407,7 @@ export async function createSandboxAgentSessionHost(
     ...host,
     mcpUrl: booted.mcpUrl,
     sandboxId: booted.sandboxId,
+    ...(headers ? { authHeaders: headers } : {}),
     ...(booted.ports ? { ports: booted.ports } : {}),
     ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
     ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
