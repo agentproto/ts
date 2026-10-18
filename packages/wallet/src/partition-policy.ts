@@ -10,9 +10,10 @@
  * Two orthogonal effects a rule can contribute:
  *   - quantity transform — how much of `remaining` is spendable NOW
  *     (expire → ×0 past the cliff, decay → ×factor(t), vest → ×unlocked(t)).
- *   - eligibility gate — may this value be spent for a category / sent to a
- *     counterparty (spendOn, transfer-scope). `restrict` only stamps lattice
- *     tags (consumed by convert/coalesce), it never gates a spend by itself.
+ *   - eligibility gate — may this value be spent for a category / under a
+ *     caller-asserted qualifier / sent to a counterparty (spendOn, qualify,
+ *     transfer-scope). `restrict` only stamps lattice tags (consumed by
+ *     convert/coalesce), it never gates a spend by itself.
  *
  * Rules are pure DATA (JSON-serialisable → DB rows, on-chain partition modules);
  * evaluators are CODE keyed by kind. Adding a kind = extend the union + add one
@@ -38,6 +39,12 @@ export function resolveTime(spec: TimeSpec, grantedAt: number): number {
 export type PartitionRule =
   /** Narrows the categories this value may pay for (∩ with the asset's). */
   | { kind: "spendOn"; categories: readonly string[] }
+  /**
+   * Spendable only when the spend context's qualifier `key` is one of `allow`
+   * (`"*"` = any value, but the qualifier must still be present). Fail-closed:
+   * a spend that omits the qualifier is ineligible. Never alters the quantity.
+   */
+  | { kind: "qualify"; key: string; allow: readonly string[] }
   /** Stamps lattice restriction tags onto the value (lineage / no-laundering). */
   | { kind: "restrict"; tags: Restriction }
   /** Hard cliff: spendable drops to 0 once `at` passes. */
@@ -73,6 +80,12 @@ export interface PolicyContext {
   remaining: number
   /** Spend category under test; undefined for a pure balance read. */
   category?: string
+  /**
+   * Caller-asserted spend qualifiers (e.g. `{ channel: "app" }`), checked by
+   * `qualify` rules. The caller MUST derive them from trusted state, never from
+   * client input. Undefined together with `category` = a pure balance read.
+   */
+  qualifiers?: Readonly<Record<string, string>>
   /** Transfer counterparty under test; undefined for a spend. */
   counterparty?: string
 }
@@ -122,6 +135,20 @@ const EVALUATORS: RuleEvaluators = {
     if (ctx.category === undefined) return NEUTRAL
     const ok =
       rule.categories.includes("*") || rule.categories.includes(ctx.category)
+    return { factor: 1, eligible: ok }
+  },
+
+  qualify: (rule, ctx) => {
+    // A pure balance read (no category, no qualifiers) is never gated.
+    if (ctx.category === undefined && ctx.qualifiers === undefined) return NEUTRAL
+    const value =
+      ctx.qualifiers !== undefined &&
+      Object.hasOwn(ctx.qualifiers, rule.key)
+        ? ctx.qualifiers[rule.key]
+        : undefined
+    const ok =
+      typeof value === "string" &&
+      (rule.allow.includes("*") || rule.allow.includes(value))
     return { factor: 1, eligible: ok }
   },
 
@@ -182,6 +209,8 @@ function evaluateRule(rule: PartitionRule, ctx: PolicyContext): RuleEffect {
   switch (rule.kind) {
     case "spendOn":
       return EVALUATORS.spendOn(rule, ctx)
+    case "qualify":
+      return EVALUATORS.qualify(rule, ctx)
     case "restrict":
       return EVALUATORS.restrict(rule, ctx)
     case "expire":

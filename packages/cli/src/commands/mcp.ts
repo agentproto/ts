@@ -36,7 +36,6 @@ import { KeychainStore } from "@agentproto/auth"
 import { createBundle, getBundle, updateBundle, type Bundle } from "@agentproto/runtime/bundles"
 import { loadConfig, saveConfig, type AgentprotoConfig } from "@agentproto/runtime/config"
 import { openMcpClient } from "@agentproto/runtime/mcp-client-pool"
-import { setMcpCredentialDeps } from "@agentproto/runtime/mcp-credential-deps"
 import { loginMcpOAuth, mcpOAuthRef, type McpOAuthSecretIO } from "@agentproto/runtime/mcp-oauth"
 import {
   isLiteralSecretValue,
@@ -381,7 +380,6 @@ async function runLoginLogout(verb: "login" | "logout", rest: readonly string[])
       process.stdout.write(`OAuth state for '${r.alias}' removed from the keychain.\n`)
       return 0
     }
-    setMcpCredentialDeps({ resolveMcpSecret: io.read, storeMcpSecret: io.write })
     const r = await mcpLogin(
       args.key,
       { ...(args.url ? { url: args.url } : {}), ...(args.scope ? { scope: args.scope } : {}) },
@@ -409,7 +407,11 @@ async function runLoginLogout(verb: "login" | "logout", rest: readonly string[])
                 ...(entry.auth?.scope ? { scope: entry.auth.scope } : {}),
               },
             },
-            { label: `import "${entry.alias}"` }
+            // `openMcpClient` lives in a different tsup entry than the
+            // daemon's own `setMcpCredentialDeps` call in `serve.ts` — its
+            // ambient-global fallback would see an empty store here (see
+            // `createDaemonOAuthProvider`). Pass `io` explicitly instead.
+            { label: `import "${entry.alias}"`, oauthSecrets: io }
           )
           try {
             return (await client.listTools()).tools.map(t => t.name)

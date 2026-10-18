@@ -217,6 +217,29 @@ describe("POST /worktrees/gc — HTTP route", () => {
     }
   })
 
+  it("forwards activeMinutes (a number or its string form) and omits it when absent", async () => {
+    const { runner, seen } = recordingRunner()
+    const http = await start(runner)
+    try {
+      await post(http, { repoRoot: "/repo" })
+      expect(seen()).not.toHaveProperty("activeMinutes")
+
+      await post(http, { repoRoot: "/repo", activeMinutes: 15 })
+      expect(seen()?.activeMinutes).toBe(15)
+
+      // The engine default must still be reachable: 0 means "disable the
+      // recent-activity guard", not "fall back to 60".
+      await post(http, { repoRoot: "/repo", activeMinutes: "0" })
+      expect(seen()?.activeMinutes).toBe(0)
+
+      // Garbage is dropped rather than coerced into a window.
+      await post(http, { repoRoot: "/repo", activeMinutes: "soon" })
+      expect(seen()).not.toHaveProperty("activeMinutes")
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("500 with the message when the runner throws", async () => {
     const runner: WorktreeGcRunner = async () => {
       throw new Error("forge offline")
@@ -369,6 +392,23 @@ describe("worktree_gc — MCP tool", () => {
         includeDetached: true,
         protectedPaths: [],
       })
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("forwards activeMinutes via mcpNumber ('30' and 0), and omits it when absent", async () => {
+    const { runner, seen } = recordingRunner()
+    const h = await harness(runner)
+    try {
+      await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo" } })
+      expect(seen()).not.toHaveProperty("activeMinutes")
+
+      await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo", activeMinutes: "30" } })
+      expect(seen()?.activeMinutes).toBe(30)
+
+      await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo", activeMinutes: 0 } })
+      expect(seen()?.activeMinutes).toBe(0)
     } finally {
       await h.close()
     }

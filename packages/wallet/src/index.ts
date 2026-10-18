@@ -39,7 +39,7 @@ export { assetDeclarationSchema, type AssetDeclarationInput } from "./schema.js"
 export type { PartitionId, PartitionSpec } from "./partition.js"
 export { partitionId, assetOfPartition } from "./partition.js"
 
-// Partition policy — the unified lifecycle runtime (restrict/expire/decay/vest/transfer)
+// Partition policy — the unified lifecycle runtime (restrict/expire/decay/vest/transfer/spendOn/qualify)
 export type {
   TimeSpec,
   PartitionRule,

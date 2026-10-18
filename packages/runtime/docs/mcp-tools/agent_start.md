@@ -33,7 +33,23 @@ an absolute path. Omit to use the `cwd` field or the active workspace.
 ## cwd
 
 Absolute path to spawn the agent in. Wins over `workspaceSlug` when both are
-set.
+set — except for a `sandbox` spawn that also names a `workspaceSlug` (below).
+
+**With `sandbox` + `workspaceSlug`** the workspace's remote is ALWAYS cloned into
+the box (checkout under the box home, `wt/<slug>` work branch, git credential
+helper + `GIT_TOKEN`/`GH_TOKEN`, delivery/checkpoints), whether or not `cwd` is
+set. `cwd` is then read as a working directory INSIDE the box: a relative path
+(resolved against the checkout) or an absolute path under the box home. The box
+home itself (e.g. `/home/user`, the provider default) means "no preference" and
+lands in the checkout. A HOST path (`/Users/…`, `/Volumes/…`, `C:\…`) or a path
+outside the box home is ignored: the session starts in the checkout and the
+spawn result carries a warning.
+
+**With `sandbox` and `cwd` but NO `workspaceSlug`** the box has no repo clone, no
+git token and no delivery branch (a private repo cannot be cloned or pushed and
+`gh` is unauthenticated); the spawn result carries a warning saying so. Pass
+`workspaceSlug` to get them. A `device:<fp>` target is unchanged: its `cwd` is a
+path on the paired machine.
 
 ## prompt
 

@@ -69,6 +69,8 @@ agentproto sessions handoff  <id-or-name> --to <harness> [--model <id>]
                                            [--dry-run] [--json]
 agentproto sessions migrate  <id-or-name> [--sandbox <provider>] [--model <id>]
                                            [--profile <ref>] [--json]
+agentproto sessions report   [--since 12h] [--topN 5] [--json]
+                                           fleet-wide stats over a start-time window
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -1122,6 +1124,33 @@ never reached the remote (`checkpoint_not_delivered`).
 HTTP twin: `POST /sessions/:id/migrate` with body
 `{ sandbox?, model?, profile?, notes? }` → `201 { migratedFrom, migratedTo,
 sandboxId, branch, restore, oldSessionKilled, session }`. MCP: `session_migrate`.
+
+### `report`
+
+```bash
+agentproto sessions report                 # last 12h, default top-N
+agentproto sessions report --since 24h
+agentproto sessions report --since 7d --topN 10
+agentproto sessions report --json
+```
+
+Fleet-wide stats over a **start-time window**, merged from the live registry
+and cold on-disk rows so a busy host's `HISTORY_CAP` doesn't undercount the
+window. Same payload as the `sessions_report` MCP tool / `GET /sessions/report`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--since <t>` | `12h` | Window start, relative (`12h`, `7d`) or ISO. |
+| `--topN <n>` | daemon default | How many costliest / longest sessions to list (positive integer). |
+| `--json` | off | Emit the full report object. |
+
+Reports session counts by harness and model, status + end-reason breakdown,
+total/average wall-clock duration, tokens and estimated cost (split
+subscription vs api-key billing when the session's resolved auth mode says
+so), PRs opened by in-window sessions, the top-N costliest and top-N
+longest-running sessions, every currently-active session, and every alive
+`keepAlive` "permanent" agent. Requires a running daemon; a 404 means the
+daemon predates this route — restart it.
 
 ## Messages between sessions
 

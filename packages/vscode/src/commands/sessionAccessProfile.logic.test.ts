@@ -8,6 +8,7 @@ import type {
 import {
   accessRowsForSession,
   planAccessChange,
+  withEligibleAccess,
 } from "./sessionAccessProfile.logic.js"
 
 const catalog: CatalogModelsResponse = {
@@ -165,5 +166,61 @@ describe("planAccessChange", () => {
       profileRef: "max-fabrikapp",
       killFirst: false,
     })
+  })
+})
+
+describe("withEligibleAccess (model switch across routes)", () => {
+  const route = (r: string, eligibleProfiles: string[]) => ({
+    route: r,
+    ref: `deepseek-v4.1-flash-free@${r}`,
+    baseUrl: null,
+    pricing: null,
+    runnable: true,
+    eligibleProfiles,
+    adapterModes: [],
+    adapters: ["opencode"],
+    curated: true,
+  })
+  const zenGoCatalog = {
+    vendors: [
+      {
+        vendor: "deepseek",
+        products: [
+          {
+            product: "deepseek-v4.1-flash-free",
+            routes: [route("opencode", ["opencode-api-zen-ws02"]), route("opencode-go", ["opencode-ws01", "opencode-go-api"])],
+          },
+        ],
+      },
+    ],
+  } as unknown as CatalogModelsResponse
+  const session = {
+    model: "opencode/deepseek-v4.1-flash-free",
+    accessProfile: { profileRef: "opencode-api-zen-ws02" },
+  } as unknown as SessionDescriptor
+
+  it("auto-picks the first eligible profile when the route changes", () => {
+    const r = withEligibleAccess({ model: "opencode-go/deepseek-v4.1-flash-free" }, session, zenGoCatalog)
+    expect(r.override).toEqual({
+      model: "opencode-go/deepseek-v4.1-flash-free",
+      access: { profileRef: "opencode-ws01" },
+    })
+    expect(r.autoPickedProfile).toBe("opencode-ws01")
+  })
+
+  it("keeps the attached profile when it is eligible on the target route", () => {
+    const r = withEligibleAccess({ model: "opencode/deepseek-v4.1-flash-free" }, session, zenGoCatalog)
+    expect(r.override).toEqual({ model: "opencode/deepseek-v4.1-flash-free" })
+  })
+
+  it("never overrides an explicit access", () => {
+    const o = { model: "opencode-go/deepseek-v4.1-flash-free", access: { profileRef: "x" } }
+    expect(withEligibleAccess(o, session, zenGoCatalog).override).toBe(o)
+  })
+
+  it("errors when the target route has no eligible profile", () => {
+    const cat = JSON.parse(JSON.stringify(zenGoCatalog))
+    cat.vendors[0].products[0].routes[1].eligibleProfiles = []
+    expect(withEligibleAccess({ model: "opencode-go/deepseek-v4.1-flash-free" }, session, cat).error).toMatch(/no auth profile/)
   })
 })

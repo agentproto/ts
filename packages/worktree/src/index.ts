@@ -187,6 +187,7 @@ export {
   type GcReclaimReason,
   type InBaseReclaimReason,
   DEFAULT_GC_NOISE_PATHS,
+  DEFAULT_GC_ACTIVE_MINUTES,
   type GcHoldReason,
   type ClassifyForGcOptions,
   type ResolveGcClassOptions,

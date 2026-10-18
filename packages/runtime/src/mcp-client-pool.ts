@@ -31,7 +31,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/app-bridge"
 import { EXTENSION_ID } from "@modelcontextprotocol/ext-apps/server"
 import type { DiscoveredMcp } from "./mcp-discovery.js"
-import { createDaemonOAuthProvider, type McpOAuthConfig } from "./mcp-oauth.js"
+import { createDaemonOAuthProvider, type McpOAuthConfig, type McpOAuthSecretIO } from "./mcp-oauth.js"
 
 /** The connection-relevant slice of a server config — what a transport
  *  needs, nothing about where it was found. `DiscoveredMcp` (and so an
@@ -56,6 +56,11 @@ export interface OpenMcpClientOptions {
    *  way claude-code expands them in `.mcp.json`. Env values are always
    *  expanded. Default false. */
   expandHeaders?: boolean
+  /** http/sse + `config.oauth` only: explicit secret IO, preferred over the
+   *  `getMcpCredentialDeps()` ambient fallback (see `createDaemonOAuthProvider`
+   *  for why the fallback is bundling-topology-dependent and should not be
+   *  relied on by a caller in a different tsup entry than the daemon). */
+  oauthSecrets?: McpOAuthSecretIO
 }
 
 /**
@@ -152,7 +157,9 @@ export async function openMcpClient(
     if (!config.url) throw new Error(`${opts.label} has no url`)
     const transport = new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit: { headers },
-      ...(config.oauth ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url) } : {}),
+      ...(config.oauth
+        ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url, opts.oauthSecrets) }
+        : {}),
     })
     await client.connect(transport)
     return client
@@ -161,7 +168,9 @@ export async function openMcpClient(
     if (!config.url) throw new Error(`${opts.label} has no url`)
     const transport = new SSEClientTransport(new URL(config.url), {
       requestInit: { headers },
-      ...(config.oauth ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url) } : {}),
+      ...(config.oauth
+        ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url, opts.oauthSecrets) }
+        : {}),
     })
     await client.connect(transport)
     return client

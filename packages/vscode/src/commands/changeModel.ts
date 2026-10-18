@@ -15,6 +15,7 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { TranscriptPanelController } from "../webview/transcriptPanelController.js"
+import { withEligibleAccess } from "./sessionAccessProfile.logic.js"
 import {
   buildChangeModelPlaceHolder,
   makeChangeRouteItem,
@@ -77,7 +78,14 @@ export async function runChangeModelFlow(
     )
     if (go !== "Restart & switch") return
     try {
-      const result = await client.restartSessionWithOverride(session.id, { model: picked.model })
+      // Model + wallet in ONE restart: a route change needs an eligible profile.
+      const catalog = await client.catalogModels().catch(() => undefined)
+      const atomic = withEligibleAccess({ model: picked.model }, session, catalog)
+      if (atomic.error) {
+        void vscode.window.showErrorMessage(`agentproto: ${atomic.error}.`)
+        return
+      }
+      const result = await client.restartSessionWithOverride(session.id, atomic.override)
       await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
       void vscode.window.showInformationMessage(
         `agentproto: restarted as ${result.label ?? result.id}` +

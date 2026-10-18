@@ -13,6 +13,8 @@ import {
   GIT_TOKEN_ENV,
   withGhTokenAlias,
   planSandboxWorkspace,
+  resolveBoxCwdRequest,
+  looksLikeHostOnlyPath,
   restoreCheckpointSteps,
   runSandboxWorkspaceSetup,
   buildLearnBranchCommand,
@@ -330,5 +332,43 @@ describe("learnWorkBranch", () => {
   it("returns the learned branch from a successful exec", async () => {
     const exec = async () => ok(`branch=wt/by-hand\nbase=${SHA}\n`)
     expect(await learnWorkBranch(exec, "/x", "origin/main")).toEqual({ branch: "wt/by-hand", baseSha: SHA })
+  })
+})
+
+describe("resolveBoxCwdRequest", () => {
+  const base = "/home/user/agentproto"
+  const homeDir = "/home/user"
+  const resolve = (requested: string) => resolveBoxCwdRequest({ requested, base, homeDir })
+
+  it("resolves a relative path against the checkout", () => {
+    expect(resolve("packages/runtime")).toEqual({ cwd: `${base}/packages/runtime` })
+    expect(resolve(".")).toEqual({ cwd: base })
+  })
+
+  it("keeps an absolute path under the box home", () => {
+    expect(resolve("/home/user/other")).toEqual({ cwd: "/home/user/other" })
+    expect(resolve(`${base}/src`)).toEqual({ cwd: `${base}/src` })
+  })
+
+  it("treats the box home itself as no preference", () => {
+    expect(resolve("/home/user")).toEqual({ cwd: base })
+    expect(resolve("/home/user/")).toEqual({ cwd: base })
+  })
+
+  it("ignores host paths with a warning", () => {
+    for (const host of ["/Users/me/repo", "/Volumes/SSD/Code", "C:\\Work\\repo"]) {
+      const r = resolve(host)
+      expect(looksLikeHostOnlyPath(host)).toBe(true)
+      expect(r.cwd).toBe(base)
+      expect(r.warning).toMatch(/ignored.*HOST path/)
+    }
+  })
+
+  it("ignores paths outside the box home, including a .. escape", () => {
+    for (const outside of ["/opt/x", "/home/userx", "../../../etc", "../../.."]) {
+      const r = resolve(outside)
+      expect(r.cwd).toBe(base)
+      expect(r.warning).toMatch(/outside the box home \/home\/user/)
+    }
   })
 })

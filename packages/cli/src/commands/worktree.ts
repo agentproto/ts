@@ -100,7 +100,8 @@ Usage:
   agentproto worktree archive <path|slug> [--repo <dir>] [--base <ref>]
                                      [--keep-branch] [--json]
   agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
-                                     [--include-detached] [--noise <path,...>] [--json]
+                                     [--include-detached] [--noise <path,...>]
+                                     [--active-minutes <n>] [--json]
   agentproto worktree --help
 
   ls        List the repo's git worktrees (path, branch, HEAD).
@@ -134,6 +135,10 @@ Usage:
             salvage-class worktree (salvage snapshot, then remove — same as
             \`archive\`).
             hold-class worktrees are never touched, with or without flags.
+            A worktree whose own git index was written within --active-minutes
+            (default 60) counts as recently active and is held too — someone
+            working in it right now is never reclaimed or salvaged, plan-time
+            or at apply time. --active-minutes 0 disables that guard.
             --include-detached also reclaims clean, idle detached worktrees.
             A clean, idle worktree whose branch no merged PR contains is still
             reclaimed when its content is provably in base (squash-, patch- or
@@ -523,6 +528,7 @@ function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
     head: entry.head,
     class: entry.class,
     ...(entry.reclaimReason ? { reclaimReason: entry.reclaimReason } : {}),
+    ...(entry.holdReason ? { holdReason: entry.holdReason } : {}),
     tree: tree.state,
     integration,
     liveness: {
@@ -541,8 +547,16 @@ function toGcOutcomeView(outcome: GcApplyOutcome): WorktreeGcOutcomeView {
       return { ...base, result: outcome.result, ...(outcome.reclaimReason ? { reclaimReason: outcome.reclaimReason } : {}) }
     case "salvaged":
       return { ...base, result: outcome.result, salvageDir: outcome.salvageDir }
+    case "held":
+      return { ...base, result: outcome.result, ...(outcome.holdReason ? { holdReason: outcome.holdReason } : {}) }
     case "aborted-reclassified":
-      return { ...base, result: outcome.result, from: outcome.from, to: outcome.to }
+      return {
+        ...base,
+        result: outcome.result,
+        from: outcome.from,
+        to: outcome.to,
+        ...(outcome.holdReason ? { holdReason: outcome.holdReason } : {}),
+      }
     case "failed":
       return { ...base, result: outcome.result, message: outcome.message }
     default:
@@ -568,6 +582,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
     includeDetached,
     protectedPaths,
     noisePaths,
+    activeMinutes,
   }): Promise<WorktreeGcResult> => {
     const repoRoot = repoRootOf(resolve(repoRootCandidate))
     if (!repoRoot) {
@@ -594,6 +609,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       worktreesRoot: join(worktreesRoot, repoName),
       protectedPaths,
       ...(noisePaths ? { noisePaths } : {}),
+      ...(activeMinutes !== undefined ? { activeMinutes } : {}),
     })
 
     if (!apply) {
@@ -610,6 +626,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       salvageDirty,
       protectedPaths,
       ...(noisePaths ? { noisePaths } : {}),
+      ...(activeMinutes !== undefined ? { activeMinutes } : {}),
     })
     return { mode: "apply", outcomes: outcomes.map(toGcOutcomeView) }
   }
@@ -1084,11 +1101,23 @@ async function runGc(args: readonly string[]): Promise<number> {
       "salvage-dirty": { type: "boolean" },
       "include-detached": { type: "boolean" },
       noise: { type: "string" },
+      "active-minutes": { type: "string" },
       json: { type: "boolean" },
     },
   })
   const noisePaths =
     values.noise === undefined ? undefined : values.noise.split(",").map((p) => p.trim()).filter(Boolean)
+  let activeMinutes: number | undefined
+  if (values["active-minutes"] !== undefined) {
+    const parsed = Number(values["active-minutes"])
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      process.stderr.write(
+        "agentproto worktree gc: --active-minutes must be a non-negative integer (minutes; 0 disables the recent-activity guard).\n",
+      )
+      return 2
+    }
+    activeMinutes = parsed
+  }
 
   const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
   if (!repoRoot) {
@@ -1116,6 +1145,7 @@ async function runGc(args: readonly string[]): Promise<number> {
     includeDetached,
     worktreesRoot: join(worktreesRoot, repoName),
     ...(noisePaths ? { noisePaths } : {}),
+    ...(activeMinutes !== undefined ? { activeMinutes } : {}),
   })
 
   if (!values.apply) {
@@ -1132,6 +1162,7 @@ async function runGc(args: readonly string[]): Promise<number> {
     includeDetached,
     salvageDirty,
     ...(noisePaths ? { noisePaths } : {}),
+    ...(activeMinutes !== undefined ? { activeMinutes } : {}),
   })
   printGcOutcomes(outcomes, Boolean(values.json))
   return outcomes.some((o) => o.result === "failed") ? 1 : 0
@@ -1172,7 +1203,7 @@ function gcPlanAction(entry: GcPlanEntry, salvageDirty: boolean): string {
     return "reclaim (rm, delete branch)"
   }
   if (entry.class === "salvage") return salvageDirty ? "salvage (archive)" : "salvage (skip: needs --salvage-dirty)"
-  return "hold (never touched)"
+  return entry.holdReason === "recent-activity" ? "hold (recent activity)" : "hold (never touched)"
 }
 
 function formatGcPlanRow(entry: GcPlanEntry, salvageDirty: boolean): string {
@@ -1205,13 +1236,16 @@ function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
       detail = `salvaged (${outcome.salvageDir})`
       break
     case "held":
-      detail = "held"
+      detail = outcome.holdReason === "recent-activity" ? "held (recent activity)" : "held"
       break
     case "skipped-dirty":
       detail = "skipped (needs --salvage-dirty)"
       break
     case "aborted-reclassified":
-      detail = `aborted: reclassified ${outcome.from} → ${outcome.to} since the plan was made`
+      detail =
+        outcome.holdReason === "recent-activity"
+          ? `aborted: reclassified ${outcome.from} → ${outcome.to} (recent activity) since the plan was made`
+          : `aborted: reclassified ${outcome.from} → ${outcome.to} since the plan was made`
       break
     case "aborted-vanished":
       detail = "aborted: worktree no longer exists"

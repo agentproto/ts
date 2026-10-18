@@ -476,6 +476,125 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(receivedStarts[0]?.cwd).toBe("/home/user")
   })
 
+  describe("cwd alongside workspaceSlug / without it", () => {
+    const CHECKOUT = "/home/user/agentproto"
+
+    function expectFullWorkspaceSetup(result: Extract<Awaited<ReturnType<typeof spawnAgentSession>>, { ok: true }>): void {
+      const commands = execCalls.map(c => c.command)
+      expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/agentproto.git'"))).toBe(true)
+      expect(commands.some(c => c.includes("credential.https://github.com.helper"))).toBe(true)
+      expect(bootEnvs[0]?.AGENTPROTO_GIT_TOKEN).toBe(FAKE_TOKEN)
+      expect(bootEnvs[0]?.GH_TOKEN).toBe(FAKE_TOKEN)
+      expect(result.descriptor.sandboxDeliveryTarget).toMatchObject({ checkoutDir: CHECKOUT })
+      expect(result.descriptor.sandboxDeliveryTarget?.branch).toMatch(/^wt\//)
+      expect(JSON.stringify(execCalls)).not.toContain(FAKE_TOKEN)
+    }
+
+    it("a cwd relative to the checkout still clones + tokens + delivers, and the session starts in that subdir", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        cwd: "packages/runtime",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expectFullWorkspaceSetup(result)
+      expect(receivedStarts[0]?.cwd).toBe(`${CHECKOUT}/packages/runtime`)
+      expect(result.warnings ?? []).toEqual([])
+    })
+
+    it("an absolute in-box cwd under the box home is honoured, with the full workspace setup", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        cwd: `${CHECKOUT}/packages/runtime`,
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expectFullWorkspaceSetup(result)
+      expect(receivedStarts[0]?.cwd).toBe(`${CHECKOUT}/packages/runtime`)
+      expect(result.warnings ?? []).toEqual([])
+    })
+
+    it("the box home itself (the reported cwd: \"/home/user\") lands in the checkout instead of silencing the clone", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        cwd: "/home/user",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expectFullWorkspaceSetup(result)
+      expect(receivedStarts[0]?.cwd).toBe(CHECKOUT)
+      expect(result.warnings ?? []).toEqual([])
+    })
+
+    it("a HOST cwd is ignored with a warning: full workspace setup, session in the checkout", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        cwd: "/Users/op/projects/agentproto",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expectFullWorkspaceSetup(result)
+      expect(receivedStarts[0]?.cwd).toBe(CHECKOUT)
+      expect(result.warnings?.join("\n")).toMatch(/cwd "\/Users\/op\/projects\/agentproto" ignored.*HOST path/)
+    })
+
+    it("an absolute cwd outside the box home is ignored with a warning", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        cwd: "/opt/elsewhere",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expectFullWorkspaceSetup(result)
+      expect(receivedStarts[0]?.cwd).toBe(CHECKOUT)
+      expect(result.warnings?.join("\n")).toMatch(/ignored.*outside the box home/)
+    })
+
+    it("a cwd with an UNKNOWN workspaceSlug keeps its old meaning (no checkout to be relative to)", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "nope",
+        cwd: "/home/user/tmp",
+      })
+      expect(result.ok).toBe(true)
+      expect(execCalls).toHaveLength(0)
+      expect(receivedStarts[0]?.cwd).toBe("/home/user/tmp")
+    })
+
+    it("sandbox + cwd WITHOUT workspaceSlug: no clone / token, and the spawn result says so", async () => {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        cwd: "/home/user",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(execCalls).toHaveLength(0)
+      expect(bootEnvs[0] ?? {}).not.toHaveProperty("AGENTPROTO_GIT_TOKEN")
+      expect(result.descriptor.sandboxDeliveryTarget).toBeUndefined()
+      expect(receivedStarts[0]?.cwd).toBe("/home/user")
+      expect(result.warnings?.join("\n")).toMatch(/no workspace remote.*no repo clone, no git token.*Pass `workspaceSlug`/)
+    })
+
+    it("sandbox with neither cwd nor workspaceSlug stays silent", async () => {
+      const result = await spawnAgentSession(makeDeps(), { adapter: "fake-cli", sandbox: "fake" })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.warnings ?? []).toEqual([])
+    })
+  })
+
   describe("keychain refs are daemon-derived only", () => {
     const ATTACKER_SLOT = "agentproto.auth.victim"
     const WORKSPACE_SLOT = "agentproto.git.agentproto"

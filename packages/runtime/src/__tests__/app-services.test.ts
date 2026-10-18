@@ -47,17 +47,50 @@ describe("parseAppServices (frozen semantics)", () => {
     expect(parseAppServices({ name: "web" }).errors).toHaveLength(1)
   })
 
-  it("rejects a non-kebab name, an empty entry and a bad port", () => {
-    const { errors } = parseAppServices([
-      { name: "Web", entry: "node server.js" },
-      { name: "web", entry: "   ", port: 4321 },
-      { name: "api", entry: "node api.js", port: 70000 },
-      { name: "zero", entry: "node z.js", port: 0 },
-    ])
-    expect(errors).toHaveLength(4)
-    expect(errors.join(" ")).toContain("name must be a kebab-case slug")
-    expect(errors.join(" ")).toContain("entry must be a non-empty shell command")
-    expect(errors.join(" ")).toContain("port must be an integer in 1..65535")
+  it("rejects an explicitly-present but empty services array (no longer a no-op)", () => {
+    const { services, errors } = parseAppServices([])
+    expect(services).toEqual([])
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain("at least one service")
+  })
+
+  it("rejects a non-kebab name starting with an uppercase letter", () => {
+    const { errors } = parseAppServices([{ name: "Web", entry: "node server.js" }])
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain("kebab-case slug")
+  })
+
+  it("rejects a name starting with a digit (now requires a leading letter)", () => {
+    const { errors } = parseAppServices([{ name: "0abc", entry: "node server.js" }])
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain("kebab-case slug")
+  })
+
+  it("accepts a name with consecutive/trailing hyphens (leading letter is the only constraint)", () => {
+    const { services, errors } = parseAppServices([{ name: "a--b", entry: "node server.js" }])
+    expect(errors).toEqual([])
+    expect(services).toEqual([{ name: "a--b", entry: "node server.js" }])
+  })
+
+  it("rejects an empty entry", () => {
+    const { errors } = parseAppServices([{ name: "web", entry: "   " }])
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain("non-empty shell command")
+  })
+
+  it("rejects a bad port (too high, zero, or non-integer)", () => {
+    expect(parseAppServices([{ name: "api", entry: "node api.js", port: 70000 }]).errors[0]).toContain(
+      "integer between 1 and 65535",
+    )
+    expect(parseAppServices([{ name: "zero", entry: "node z.js", port: 0 }]).errors[0]).toContain(
+      "integer between 1 and 65535",
+    )
+    expect(parseAppServices([{ name: "frac", entry: "node f.js", port: 1.5 }]).errors[0]).toContain(
+      "integer between 1 and 65535",
+    )
+    expect(parseAppServices([{ name: "str", entry: "node s.js", port: "4321" as unknown as number }]).errors[0]).toContain(
+      "integer between 1 and 65535",
+    )
   })
 
   it("rejects duplicate names", () => {
@@ -66,7 +99,21 @@ describe("parseAppServices (frozen semantics)", () => {
       { name: "web", entry: "b" },
     ])
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toContain("duplicated")
+    expect(errors[0]).toContain("unique")
+  })
+
+  it("rejects an unknown object field", () => {
+    const { errors } = parseAppServices([{ name: "web", entry: "a", extra: 1 } as unknown as object])
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain("not a supported service field")
+  })
+
+  it("fails fast on the first bad entry — does not accumulate every entry's error", () => {
+    const { errors } = parseAppServices([
+      { name: "Bad", entry: "x" },
+      { name: "also-bad", entry: "" },
+    ])
+    expect(errors).toHaveLength(1)
   })
 })
 

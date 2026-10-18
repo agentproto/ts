@@ -116,6 +116,8 @@ import {
   withGhTokenAlias,
   withoutReservedSandboxEnv,
   planSandboxWorkspace,
+  looksLikeHostOnlyPath,
+  resolveBoxCwdRequest,
   type CheckpointRestoreSnapshot,
   runSandboxWorkspaceSetup,
   type SandboxWorkspacePlan,
@@ -2186,6 +2188,18 @@ export async function spawnAgentSession(
   }
   let cwd = input.cwd ?? (appBoundary && !input.workspaceSlug ? appBoundary.root : undefined)
   let resolvedSlug = input.workspaceSlug
+  // Sandbox spawn that names a workspace AND a `cwd`: the `cwd` is a path
+  // INSIDE the box (relative to the checkout, or absolute under the box home),
+  // never a host path, so it must not short-circuit the workspace resolution
+  // below — that resolution is what yields the clone, git token and delivery
+  // target. Held aside here, applied by `bootSandboxAgentSession` once the
+  // checkout dir is known. A device target is excluded: its `cwd` is a path on
+  // the other machine and keeps its own meaning.
+  let boxCwdRequest: string | undefined
+  if (cwd !== undefined && input.sandbox !== undefined && !isDeviceSpawn && input.workspaceSlug !== undefined) {
+    boxCwdRequest = cwd
+    cwd = undefined
+  }
   // The workspace's off-machine clone source, captured only for a sandbox
   // spawn that named the workspace itself (no explicit `cwd`, not a device):
   // that is the one shape where the host path is meaningless in the box and
@@ -2294,6 +2308,12 @@ export async function spawnAgentSession(
     } catch {
       // fall through to error below
     }
+  }
+  if (!cwd && boxCwdRequest !== undefined) {
+    // The slug did not resolve (unknown workspace / config unreadable): there
+    // is no checkout to be relative to, so the cwd keeps its old meaning.
+    cwd = boxCwdRequest
+    boxCwdRequest = undefined
   }
   resolvedSlug = resolvedSlug ?? "default"
   if (!cwd && !isDeviceSpawn) {
@@ -4454,7 +4474,8 @@ export async function spawnAgentSession(
         // workspace" — only the latter gets silently replaced by the
         // provider's own `defaultCwd` (e.g. e2b/Box's `/home/user`).
         cwd,
-        explicitCwd,
+        explicitCwd: explicitCwd && boxCwdRequest === undefined,
+        ...(boxCwdRequest !== undefined ? { boxCwdRequest } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
@@ -4523,6 +4544,10 @@ export async function spawnAgentSession(
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
       sandboxSourceNotices = [...sandboxSourceNotices, ...(booted.notices ?? [])]
+      if (booted.warnings?.length) {
+        spawnWarnings.push(...booted.warnings)
+        sandboxSourceNotices.push(...booted.warnings)
+      }
       if (isDeviceSandboxTarget(input.sandbox)) {
         // BOOTSTRAP P7a — persist the controller→host id mapping. The proxy's
         // `sessionId` is the HOST's own session id (the inner `agent_start`'s
@@ -5134,6 +5159,9 @@ export type SandboxBootResult =
       /** Spawn-time explanations (derived remote, tar mode, …) the caller
        *  records on the new session. */
       notices?: string[]
+      /** Advisory spawn-time warnings the caller returns on the spawn result
+       *  (an ignored `cwd`, a `cwd` with no workspace remote to clone). */
+      warnings?: string[]
       /** The box daemon's own `resumeVia` when `resumeSessionId` was passed
        *  and the box's adapter actually rehydrated that conversation
        *  (`"resumed via ACP"`). Absent on a fresh spawn or a resume the box
@@ -5320,22 +5348,6 @@ function withSandboxInstallAdapters(spec: SandboxSpec): SandboxSpec {
   }
 }
 
-/** Host-only absolute-path shapes that can never resolve inside a remote
- *  sandbox's own (Linux) filesystem: macOS's `/Volumes/…` (external/network
- *  volumes) and `/Users/…` (user homes), and a Windows drive letter
- *  (`C:\…`/`C:/…`). Deliberately narrow — a generic-looking absolute path
- *  (`/home/user`, `/workspace`, `/root/…`) is left alone since it might be
- *  exactly the box path the caller meant. */
-const HOST_ONLY_PATH_PATTERNS: readonly RegExp[] = [
-  /^\/Volumes\//,
-  /^\/Users\//,
-  /^[A-Za-z]:[\\/]/,
-]
-
-function looksLikeHostOnlyPath(p: string): boolean {
-  return HOST_ONLY_PATH_PATTERNS.some(re => re.test(p))
-}
-
 /**
  * Transport-class device-spawn failures worth ONE automatic retry — the E2E
  * channel to a paired host can flap (the Noise handshake succeeds, the NEXT
@@ -5448,6 +5460,11 @@ export async function bootSandboxAgentSession(opts: {
    *  resolution defaulted to something host-shaped" (silently replaced by
    *  the provider's own `defaultCwd` instead of forwarded verbatim). */
   explicitCwd: boolean
+  /** The caller's `agent_start.cwd` when the spawn ALSO named a workspace: a
+   *  path inside the box (relative to the checkout, or absolute under the box
+   *  home), applied once the checkout dir is known. `cwd`/`explicitCwd` above
+   *  then describe the workspace's host-side resolution, not this path. */
+  boxCwdRequest?: string
   mcpServers?: AcpMcpServer[]
   model?: string
   route?: RouteSpec
@@ -5576,7 +5593,10 @@ export async function bootSandboxAgentSession(opts: {
   //     500 three hops away, inside the box's own `agent_start`. Anything
   //     else (`/home/user`, `/workspace`, a relative-looking path, …) is
   //     forwarded as-is: it might be exactly the box path the caller meant.
-  let boxCwd = opts.cwd
+  // A provider with no `defaultCwd` shares the host's filesystem: the host
+  // `cwd` the caller passed is valid there exactly as for any local spawn.
+  let boxCwd = opts.boxCwdRequest !== undefined && !handle.defaultCwd ? opts.boxCwdRequest : opts.cwd
+  const bootWarnings: string[] = []
   if (handle.defaultCwd) {
     if (!opts.explicitCwd) {
       boxCwd = handle.defaultCwd
@@ -5591,6 +5611,14 @@ export async function bootSandboxAgentSession(opts: {
           "exists inside the box.",
       }
     }
+  }
+  if (handle.defaultCwd && opts.explicitCwd && !opts.workspace && !opts.tarWorkspace && !isDeviceSandboxTarget(opts.sandbox)) {
+    bootWarnings.push(
+      `agent_start: sandbox spawn with a cwd but no workspace remote — the box has no repo clone, no git ` +
+        `token and no delivery branch, so it cannot clone or push a private repo and \`gh\` is not ` +
+        `authenticated. Pass \`workspaceSlug\` (a registered workspace with a git remote) to get them; ` +
+        `\`cwd\` is then read as a path inside the checkout.`,
+    )
   }
   // Workspace `remote`: plan the in-box checkout up front so a bad slug/base
   // rejects the spawn before a box boots. The session lands in the checkout.
@@ -5898,6 +5926,16 @@ export async function bootSandboxAgentSession(opts: {
     }
   }
 
+  if (opts.boxCwdRequest !== undefined && handle.defaultCwd) {
+    const landed = resolveBoxCwdRequest({
+      requested: opts.boxCwdRequest,
+      base: boxCwd,
+      homeDir: workspacePlan?.homeDir ?? handle.defaultCwd,
+    })
+    boxCwd = landed.cwd
+    if (landed.warning) bootWarnings.push(landed.warning)
+  }
+
   // A fresh-box restart's saved conversation store: put it back at the SAME
   // path the dead box keyed it by, AFTER the code is restored and BEFORE the
   // adapter starts — the resume below (`resumeSessionId`) resolves the
@@ -6153,6 +6191,7 @@ export async function bootSandboxAgentSession(opts: {
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(deliveryTarget ? { deliveryTarget } : {}),
     ...(bootNotices.length > 0 ? { notices: bootNotices } : {}),
+    ...(bootWarnings.length > 0 ? { warnings: bootWarnings } : {}),
     ...(boxResumeVia ? { resumeVia: boxResumeVia } : {}),
     // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
     // fingerprint at boot (even for a name target); forward it so the

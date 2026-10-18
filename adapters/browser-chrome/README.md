@@ -136,6 +136,7 @@ dedicated Chrome. `autoLaunch: false` disables dedicated launching globally
 | `autoLaunch` | `true` | May the provider ever launch a dedicated Chrome at all (as the default, or as the attach path's fallback) |
 | `preferDedicated` | `true` | `false` restores the old attach-first default for every call on this provider instance |
 | `launch({ attachIntent })` | `false` | Per-call explicit ask to attach to the user's own Chrome instead of the dedicated default |
+| `createChromeLiveProvider({ cookieSource })` | none | Injects granted cookies into the **dedicated** Chrome on every `attach()` (never into your own); same `BrowserCookieSource` shape as `chrome`. Filtered by the launch's `domains`; cookie values are never logged, only a count |
 | `CHROME_LIVE_LAUNCH_DATA_DIR` | `~/.agentproto/browser/chrome/live` | Persisted profile dir for the auto-launched Chrome |
 
 `launch({ wsUrl, port })` wins over the provider config, which wins over the
@@ -219,9 +220,14 @@ and `.jpg` (latest frame).
   did not create. Through `driver.send` (the agent's `cdp_send`), the whole
   `Target.*` and `Browser.*` domains are refused, as are cookie and storage
   writes.
-- **Cookies are read-only.** Nothing is written into your profile: no
-  `Network.setCookies`, granted-cookie payloads are ignored, and the driver
-  reports `canCookies: false`. Reading (`Network.getCookies`) works.
+- **Cookies are read-only on your profile.** When attached to the Chrome you
+  already run, nothing is written into that profile: no `Network.setCookies`,
+  granted-cookie payloads are ignored, and the driver reports
+  `canCookies: false`. Reading (`Network.getCookies`) works. On the
+  auto-launched **dedicated** Chrome a host-configured `cookieSource` (or a
+  session-payload cookie list) may inject cookies through
+  `Network.setCookies` at attach time — the agent still cannot write cookies
+  through `cdp_send`, and your own Chrome stays untouched either way.
 - **Declared capabilities:** `cdp`, `isUserVisible`, `canMultiTarget` (tabs of
   the agent window), `headed`, `canScreencast` (see
   [Screencast](#screencast-of-the-agents-own-tab)). Not `headless`, not
@@ -250,7 +256,9 @@ still knows the tabs it opened before, so `stop()` can close them.
 ## Deferred
 
 Not in this package yet: extension handling, a multi-profile UI, headed
-takeover polish, the grant-backed cookie source, and full-profile access.
+takeover polish, and full-profile access. The `cookieSource` seam is here
+(both providers); the grant model that *supplies* a source lives in
+`@agentproto/browser-profiles`.
 
 ## Tests
 

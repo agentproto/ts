@@ -379,14 +379,20 @@ async function openClient(entry: ImportedMcpEntry): Promise<{
   stale?: { reason: string }
   originName?: string
 }> {
-  const { config, stale, origin } = await resolveImportConnection(
-    entry,
-    getMcpCredentialDeps()
-  )
+  const credDeps = getMcpCredentialDeps()
+  const { config, stale, origin } = await resolveImportConnection(entry, credDeps)
   const client = await openMcpClient(config, {
     label: `import "${entry.alias}"`,
     // claude-code `.mcp.json` semantics; parity with McpClientPool.
     expandHeaders: true,
+    // Pass explicitly rather than relying on `openMcpClient`'s own
+    // `getMcpCredentialDeps()` fallback: this module and `serve.ts`'s
+    // `setMcpCredentialDeps` call happen to share a bundle today (both
+    // flow through the `./index` tsup entry), but that's an accident of
+    // bundling, not a guarantee — see `createDaemonOAuthProvider`.
+    ...(credDeps.resolveMcpSecret && credDeps.storeMcpSecret
+      ? { oauthSecrets: { read: credDeps.resolveMcpSecret, write: credDeps.storeMcpSecret } }
+      : {}),
   })
   return {
     client,
