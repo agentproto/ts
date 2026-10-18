@@ -89,6 +89,26 @@ function checkCliSource(ctx: StepContext): StepCheck | null {
   }
 }
 
+/**
+ * `node-pty` is an optional native dependency (it needs a build step that
+ * npm 11 gates, and corporate machines often lack a toolchain). Without it
+ * only PTY-backed terminal sessions are off - agent-cli/ACP sessions work -
+ * so this is informational (`warn`), never a failure.
+ */
+async function checkTerminalSessions(ctx: StepContext): Promise<StepCheck> {
+  const available = await ctx.sources.ptyAvailable().catch(() => false)
+  return available
+    ? { id: "preflight.terminal", title: "Terminal sessions", status: "ok", detail: "available (node-pty)", data: { available } }
+    : {
+        id: "preflight.terminal",
+        title: "Terminal sessions",
+        status: "warn",
+        detail: "unavailable (node-pty not built) - agent sessions are unaffected",
+        fix: "only if you need PTY terminals: npm i -g --allow-scripts=node-pty @agentproto/cli",
+        data: { available },
+      }
+}
+
 async function checkHomeDir(ctx: StepContext): Promise<StepCheck> {
   const dir = join(ctx.homedir, ".agentproto")
   const shown = tildify(ctx, dir)
@@ -116,7 +136,7 @@ export const preflightStep: OnboardingStep = {
   title: "Preflight",
   required: true,
   async detect(ctx) {
-    const checks = [checkNode(ctx), checkPlatform(ctx), await checkCliVersion(ctx), await checkHomeDir(ctx)]
+    const checks = [checkNode(ctx), checkPlatform(ctx), await checkCliVersion(ctx), await checkHomeDir(ctx), await checkTerminalSessions(ctx)]
     const source = checkCliSource(ctx)
     if (source) checks.push(source)
     return checks

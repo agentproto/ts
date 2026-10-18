@@ -250,6 +250,10 @@ export interface StepSources {
    *  build because `daemon install` would bake that local folder into the
    *  service; the fix is an npm install, never a local copy. */
   cliInstallSource(): { source: CliInstallSource; entry: string | null }
+  /** Whether `node-pty` (an optional native dependency) loads here. Without
+   *  it PTY-backed terminal sessions are disabled; agent-cli/ACP sessions are
+   *  unaffected. */
+  ptyAvailable(): Promise<boolean>
   /** Resolve a global `@agentproto/adapter-<slug>` package the way the
    *  daemon's manifest loader does — `createRequire(import.meta.url).resolve(
    *  '<pkg>/package.json')`. Pass `fromNode` to resolve as if from the global

@@ -88,7 +88,7 @@ describe("agentproto doctor", () => {
     expect(Object.keys(json)).toEqual(["version", "platform", "steps", "summary"])
     expect(json.version).toBe("1.0.0")
     expect(json.platform).toBe("darwin/arm64")
-    expect(json.summary).toEqual({ ok: 4, warn: 0, missing: 0, broken: 0 })
+    expect(json.summary).toEqual({ ok: 5, warn: 0, missing: 0, broken: 0 })
     expect(json.steps.map((s) => ({ ...s, durationMs: 0 }))).toMatchInlineSnapshot(`
       [
         {
@@ -131,6 +131,15 @@ describe("agentproto doctor", () => {
               "id": "preflight.home",
               "status": "ok",
               "title": "State directory",
+            },
+            {
+              "data": {
+                "available": true,
+              },
+              "detail": "available (node-pty)",
+              "id": "preflight.terminal",
+              "status": "ok",
+              "title": "Terminal sessions",
             },
           ],
           "durationMs": 0,

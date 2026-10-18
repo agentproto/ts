@@ -109,6 +109,22 @@ describe("preflight", () => {
     expect(c.data).toMatchObject({ source: "workspace", entry: "/code/agentproto/packages/cli/dist/cli.mjs" })
   })
 
+  it("node-pty missing reports terminal sessions unavailable as a warn, never a failure", async () => {
+    const checks = await preflightStep.detect(
+      createFakeContext({ sources: { ptyAvailable: async () => false } }),
+    )
+    const c = byId(checks, "preflight.terminal")
+    expect(c.status).toBe("warn")
+    expect(c.detail).toContain("unavailable (node-pty not built)")
+    expect(c.data).toMatchObject({ available: false })
+    expect(preflightStep.stopIf?.(checks)).toBeNull()
+  })
+
+  it("node-pty loadable reports terminal sessions available", async () => {
+    const checks = await preflightStep.detect(createFakeContext())
+    expect(byId(checks, "preflight.terminal").status).toBe("ok")
+  })
+
   it("a published npm install adds no CLI-source check", async () => {
     const checks = await preflightStep.detect(createFakeContext())
     expect(checks.find((c) => c.id === "preflight.cli-source")).toBeUndefined()
