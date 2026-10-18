@@ -156,6 +156,28 @@ describe("agent_start turnRetry default for executor agents", () => {
     expect(paidPolicy?.on).toMatchObject(["rate-limit", "upstream-5xx", "no-output-stall"])
     expect(paidPolicy?.rotate).toBeUndefined()
   })
+  it("a preset carry-over turnRetry loses to an explicit null opt-out", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    cleanups.push(() => Promise.resolve(registry.shutdown()))
+    const deps = makeDeps(registry)
+
+    // The preloaded preset pins a turnRetry; the spawn itself opts out with
+    // an explicit null, which must win.
+    const optedOut = await descriptorOf(deps, {
+      role: "executor",
+      preset: { id: "retry-fast", label: "Retry fast", turnRetry: { on: ["rate-limit"], maxRetries: 3 } },
+      turnRetry: null,
+    })
+    expect(turnRetryOf(optedOut)?.on).toEqual([])
+    expect(turnRetryOf(optedOut)?.rotate).toBeUndefined()
+
+    // Without the explicit null the preset's policy still lands.
+    const presetted = await descriptorOf(deps, {
+      role: "executor",
+      preset: { id: "retry-fast", label: "Retry fast", turnRetry: { on: ["rate-limit"], maxRetries: 3 } },
+    })
+    expect(turnRetryOf(presetted)).toMatchObject({ on: ["rate-limit"], maxRetries: 3 })
+  })
 })
 
 describe("agent_start turnRetry default for sandbox agents", () => {

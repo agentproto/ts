@@ -1973,7 +1973,9 @@ export async function spawnAgentSession(
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
       bundles: explicit.bundles ?? preset.bundles,
-      turnRetry: explicit.turnRetry ?? preset.turnRetry,
+      // `turnRetry: null` is an explicit opt-out, not an omission: an
+      // explicit value (null included) wins over a preset turnRetry.
+      turnRetry: explicit.turnRetry !== undefined ? explicit.turnRetry : preset.turnRetry,
     }
     // Best-effort recency stamp — a favorite just got resolved and used for
     // this spawn. Never let the write (or its absence, for a since-deleted
@@ -2015,7 +2017,10 @@ export async function spawnAgentSession(
         ...input,
         access: { profileRef: preset.profileRef },
         model: input.model ?? preset.defaultModel,
-        ...((input.turnRetry ?? preset.turnRetry) ? { turnRetry: input.turnRetry ?? preset.turnRetry } : {}),
+        // An explicit `turnRetry: null` must win over a preset turnRetry.
+        ...((input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry)
+          ? { turnRetry: input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry }
+          : {}),
       }
     }
   }
