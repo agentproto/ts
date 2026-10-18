@@ -528,7 +528,9 @@ function wrapBox(
         const out = await hardExec(
           client,
           id,
-          bashArgv(`dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset} 2>/dev/null | base64; exit 0`),
+          bashArgv(
+            `dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset / READ_CHUNK_RAW} 2>/dev/null | base64; exit 0`,
+          ),
           60,
         )
         if (out.exitCode !== 0) {

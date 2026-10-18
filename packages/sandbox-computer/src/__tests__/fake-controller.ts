@@ -154,7 +154,8 @@ export class FakeController {
       const match = /dd if='([^']*)'/.exec(script)
       const content = match ? (this.fileSystem.get(match[1] as string) ?? "") : ""
       const skipMatch = /skip=(\d+)/.exec(script)
-      const offset = Number(skipMatch?.[1] ?? 0)
+      const block = Number(skipMatch?.[1] ?? 0)
+      const offset = block * 700_000
       if (script.includes("| wc -c")) {
         return { exitCode: 0, stdout: String(Math.max(0, content.length - offset)), stderr: "" }
       }

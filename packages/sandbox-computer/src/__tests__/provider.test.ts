@@ -166,6 +166,17 @@ describe("computerSandboxProvider.boot", () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     await expect(booted.readFile!("/nope/missing")).rejects.toThrow(/no file at/)
   })
+
+  it("readFile round-trips a multi-byte-block file (>700 KB) without truncation", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    const payload = Buffer.from("a".repeat(750_000) + "TAIL", "utf8")
+    await booted.writeFile!("/home/user/data/big.bin", new Uint8Array(payload))
+
+    const read = await booted.readFile!("/home/user/data/big.bin")
+    const merged = Buffer.from(read)
+    expect(merged.length).toBe(payload.length)
+    expect(merged.subarray(-4).toString()).toBe("TAIL")
+  })
 })
 
 describe("computerSandboxProvider.connect + probe", () => {
