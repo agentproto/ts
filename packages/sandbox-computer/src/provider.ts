@@ -40,6 +40,7 @@ import type {
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
 import { ComputerApiError, ComputerControllerClient, type ComputerClientConfig } from "./client.js"
+import type { ComputerStatus, PortPublish } from "./api-types.js"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 export const DEFAULT_PORT = 18790
@@ -78,6 +79,10 @@ interface ComputerSandboxConfig {
   rootDiskMiB?: number
   /** Computer TTL seconds forwarded as the controller create body's `ttl`. */
   ttlSeconds?: number
+  /** Egress allowlist forwarded as the create body's `egress.allow`. Entries
+   *  are `"host"`, `"host:port"` (port defaults to 443) or `{ host, port? }`.
+   *  The controller denies all egress (DNS included) when this is absent. */
+  egress?: Array<{ host: string; port: number }>
   /** How many sessions this process may map onto one computer. Default 1. */
   maxSessions?: number
   /** Port the agentproto daemon listens on inside the computer. Default 18790. */
@@ -87,7 +92,10 @@ interface ComputerSandboxConfig {
   /**
    * Public URL template for reaching a computer's ports, containing a
    * `{port}` (and optionally `{id}`) placeholder, e.g.
-   * `http://gate.internal:{port}/computers/{id}`. Default:
+   * `http://gate.internal:{port}/computers/{id}`. `{hostPort}` is the host
+   * port the controller published for that guest port (create response
+   * `ports`), e.g. `http://127.0.0.1:{hostPort}` through an ssh forward of
+   * the published port range. Default:
    * `http://<computer-name>:<port>` — the microVM is assumed addressable by
    * its generated name from the network this process lives on. Set this when
    * computers sit behind an edge/proxy instead.
@@ -110,6 +118,26 @@ interface ComputerSandboxConfig {
   daemonReadyTimeoutMs?: number
 }
 
+function parseEgress(value: unknown): Array<{ host: string; port: number }> | undefined {
+  if (!Array.isArray(value)) return undefined
+  const rules: Array<{ host: string; port: number }> = []
+  for (const entry of value) {
+    let host: string | undefined
+    let port = 443
+    if (typeof entry === "string") {
+      const m = /^(.+?)(?::(\d{1,5}))?$/.exec(entry.trim())
+      host = m?.[1]
+      if (m?.[2]) port = Number(m[2])
+    } else if (entry && typeof entry === "object") {
+      const e = entry as Record<string, unknown>
+      host = typeof e.host === "string" ? e.host.trim() : undefined
+      if (typeof e.port === "number" && Number.isInteger(e.port)) port = e.port
+    }
+    if (host) rules.push({ host, port })
+  }
+  return rules.length > 0 ? rules : undefined
+}
+
 function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
   const config = (spec.config ?? {}) as Record<string, unknown>
   const int = (v: unknown): number | undefined =>
@@ -124,6 +152,7 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     memoryMiB: int(config.memoryMiB),
     rootDiskMiB: int(config.rootDiskMiB),
     ttlSeconds: int(config.ttlSeconds),
+    egress: parseEgress(config.egress),
     maxSessions: int(config.maxSessions),
     port: int(config.port),
     workspace: str(config.workspace),
@@ -166,9 +195,21 @@ export function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/** Computers run as an unprivileged user with no sudo, so a global npm install
+ *  must target a user-writable prefix, and the serve script must find the CLI
+ *  there (it shadows any CLI baked into the template). */
+export const USER_BIN_PATH_EXPORT = `export PATH="$HOME/.local/bin:$PATH"; `
+
+/** Log path for the in-box daemon. Computers run as uid 1000 and /var/log is
+ *  root-owned, so the log must live under the user's home. */
+export const DAEMON_LOG_PATH = "$HOME/.agentproto-daemon.log"
+/** Records the `--allow-origin` the provider started the daemon with, so a
+ *  reconnect can tell a stale origin (host port changed) from a current one. */
+export const DAEMON_ORIGIN_PATH = "$HOME/.agentproto-daemon.origin"
+
 /** The `agentproto serve` boot script: a detached (nohup … &) daemon that
- *  outlives the synchronous exec call, logging to /var/log so a failed boot
- *  can be diagnosed in-box. The token lives ONLY in this script. */
+ *  outlives the synchronous exec call, logging to DAEMON_LOG_PATH so a failed
+ *  boot can be diagnosed in-box. The token lives ONLY in this script. */
 export function buildServeCommand(opts: {
   token: string
   port: number
@@ -176,11 +217,13 @@ export function buildServeCommand(opts: {
   allowOrigin?: string
 }): string {
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
+  const marker = opts.allowOrigin ? `printf %s ${shQuote(opts.allowOrigin)} > "${DAEMON_ORIGIN_PATH}"; ` : ""
   return (
-    `mkdir -p /var/log 2>/dev/null; ` +
+    USER_BIN_PATH_EXPORT +
+    marker +
     `nohup agentproto serve --port ${opts.port} --bind 0.0.0.0` +
     ` --workspace ${shQuote(opts.workspace)} --auth-token ${shQuote(opts.token)}${origin}` +
-    ` </dev/null > /var/log/agentproto-daemon.log 2>&1 & echo started`
+    ` </dev/null > "${DAEMON_LOG_PATH}" 2>&1 & echo started`
   )
 }
 
@@ -263,11 +306,25 @@ async function sleep(ms: number): Promise<void> {
 }
 
 /** URL for reaching `port` on a computer: the gateway template with
- *  `{port}`/`{id}` substituted, else the computer's own generated name —
- *  the default assumes the box network is addressable by name from this
- *  process's network; override with `config.gatewayUrl`. */
-export function boxUrl(id: string, port: number, gatewayUrl?: string): string {
-  if (gatewayUrl) return gatewayUrl.replace(/\{port\}/g, String(port)).replace(/\{id\}/g, id)
+ *  `{port}`/`{id}`/`{hostPort}` substituted, else the computer's own
+ *  generated name — the default assumes the box network is addressable by
+ *  name from this process's network; override with `config.gatewayUrl`.
+ *  `{hostPort}` needs the controller to have published `port`. */
+export function boxUrl(id: string, port: number, gatewayUrl?: string, published: readonly PortPublish[] = []): string {
+  if (gatewayUrl) {
+    let url = gatewayUrl.replace(/\{port\}/g, String(port)).replace(/\{id\}/g, id)
+    if (url.includes("{hostPort}")) {
+      const hit = published.find((p) => p.guest === port)
+      if (!hit) {
+        throw new Error(
+          `@agentproto/sandbox-computer: gatewayUrl uses {hostPort} but the controller published no host port ` +
+            `for guest port ${port} on computer "${id}" (published: ${JSON.stringify(published)})`,
+        )
+      }
+      url = url.replace(/\{hostPort\}/g, String(hit.host))
+    }
+    return url
+  }
   return `http://${id}:${port}`
 }
 
@@ -346,14 +403,15 @@ async function bootOnClient(
       ...(config.memoryMiB !== undefined ? { memoryMiB: config.memoryMiB } : {}),
       ...(config.rootDiskMiB !== undefined ? { rootDiskMiB: config.rootDiskMiB } : {}),
       ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
+      ...(config.egress ? { egress: { allow: config.egress } } : {}),
       env: createEnv,
     })
   } catch (err) {
     if (err instanceof ComputerApiError) {
       throw new Error(
         `computer sandbox: create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""})` +
-          (err.code === "unknown template"
-            ? ` — that template is not registered on this controller; see the README's config.template note`
+          (err.code === "unknown template" || err.code === "invalid body"
+            ? ` — check that config.template (default "${DEFAULT_TEMPLATE}") is registered on this controller; see the README's config.template note`
             : ""),
       )
     }
@@ -361,10 +419,13 @@ async function bootOnClient(
   }
   const sandboxId = created.id
   const daemonToken = randomUUID()
+  let published: readonly PortPublish[] = []
 
   try {
-    await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
-    await daemonHealthyOrThrow(client, sandboxId, config, daemonToken, port, workspace)
+    const status = await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    published = created.ports?.length ? created.ports : (status.ports ?? [])
+    const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
+    await daemonHealthyOrThrow(client, sandboxId, config, daemonToken, port, workspace, mcpOrigin)
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
     // sandbox-e2b): propagate the original error but reclaim the box.
@@ -373,7 +434,7 @@ async function bootOnClient(
   }
 
   acquireSessionSlot(sandboxId, config.maxSessions ?? 1)
-  return wrapBox(client, sandboxId, spec, config, port)
+  return wrapBox(client, sandboxId, spec, config, port, published)
 }
 
 async function connectOnClient(
@@ -392,18 +453,21 @@ async function connectOnClient(
   // A suspended/stopped computer is resumed first. The controller may
   // rebuild it under a NEW id — adopt it, remember the alias.
   let currentId = sandboxId
+  let published: readonly PortPublish[] = status.ports ?? []
   if (status.state !== "running") {
     const resumeResult = await client.resume(sandboxId)
     const targetId = resumeResult.id ?? sandboxId
     if (targetId !== sandboxId) idAliases.set(sandboxId, targetId)
     currentId = targetId
-    await waitRunning(client, currentId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    const running = await waitRunning(client, currentId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    published = running.ports ?? []
   }
 
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
   const daemonToken = randomUUID()
-  await daemonHealthyOrThrow(client, currentId, config, daemonToken, port, workspace)
+  const mcpOrigin = new URL(boxUrl(currentId, port, config.gatewayUrl, published)).origin
+  await daemonHealthyOrThrow(client, currentId, config, daemonToken, port, workspace, mcpOrigin)
 
   const maxSessions = config.maxSessions ?? 1
   if (!acquireSessionSlot(currentId, maxSessions)) {
@@ -412,7 +476,7 @@ async function connectOnClient(
         `(${maxSessions}); attach to the existing session instead of opening a new one`,
     )
   }
-  return wrapBox(client, currentId, spec, config, port)
+  return wrapBox(client, currentId, spec, config, port, published)
 }
 
 /** Poll until the computer reports `running`, or throw with the last state. */
@@ -420,12 +484,12 @@ async function waitRunning(
   client: ComputerControllerClient,
   id: string,
   timeoutMs: number,
-): Promise<void> {
+): Promise<ComputerStatus> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     const status = await client.getComputer(id)
     if (status === null) throw new SandboxBoxGoneError(id)
-    if (status.state === "running") return
+    if (status.state === "running") return status
     if (Date.now() >= deadline) {
       throw new Error(`computer "${id}" did not reach running within ${timeoutMs}ms (last state: ${status.state})`)
     }
@@ -442,25 +506,52 @@ async function daemonHealthyOrThrow(
   daemonToken: string,
   port: number,
   workspace: string,
+  mcpOrigin: string,
 ): Promise<void> {
   const probe = await hardExec(client, id, bashArgv(buildHealthCommand(port)), 10)
   const alreadyUp = probe.exitCode === 0 && !probe.stdout.includes("__down__")
-  if (alreadyUp) return
+  if (alreadyUp) {
+    // The daemon only accepts the --allow-origin it was started with; with a
+    // {hostPort} gatewayUrl the origin changes when the controller republishes
+    // the port, so restart it when the recorded origin is stale. No marker
+    // (a template-autostarted daemon) means the origin is unknown: leave it.
+    const recorded = await hardExec(client, id, bashArgv(`cat "${DAEMON_ORIGIN_PATH}" 2>/dev/null`), 10)
+    const current = recorded.exitCode === 0 ? recorded.stdout.trim() : ""
+    if (current === "" || current === mcpOrigin) return
+    await hardExec(client, id, bashArgv(`pkill -f '[a]gentproto serve' || true`), 10)
+    await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+    return
+  }
 
-  if (config.updateCliOnBoot !== false) {
+  if (config.updateCliOnBoot !== false && !(await cliAlreadyPresent(client, id, config))) {
     const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
-    await hardExec(
+    const install = await hardExec(
       client,
       id,
-      bashArgv(`npm i -g @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`),
+      bashArgv(
+        `${USER_BIN_PATH_EXPORT}npm i -g --prefix "$HOME/.local" @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`,
+      ),
       Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(UPDATE_CLI_TIMEOUT_MS / 1000)),
     )
+    if (install.exitCode !== 0) throw bootStepError("CLI install", id, install)
   }
   for (const command of config.setupCommands ?? []) {
-    await hardExec(client, id, bashArgv(command), EXEC_TIMEOUT_MAX_SEC)
+    const setup = await hardExec(client, id, bashArgv(command), EXEC_TIMEOUT_MAX_SEC)
+    if (setup.exitCode !== 0) throw bootStepError("setup command", id, setup)
   }
 
-  const mcpOrigin = new URL(boxUrl(id, port, config.gatewayUrl)).origin
+  await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+}
+
+async function startDaemonAndWait(
+  client: ComputerControllerClient,
+  id: string,
+  config: ComputerSandboxConfig,
+  daemonToken: string,
+  port: number,
+  workspace: string,
+  mcpOrigin: string,
+): Promise<void> {
   await hardExec(
     client,
     id,
@@ -479,9 +570,48 @@ async function daemonHealthyOrThrow(
   if (waited.exitCode !== 0) {
     throw new Error(
       `@agentproto/sandbox-computer: agentproto daemon did not become healthy on computer "${id}" ` +
-        `within ${waitSeconds}s (see /var/log/agentproto-daemon.log in the box)`,
+        `within ${waitSeconds}s (see ~/.agentproto-daemon.log in the box)`,
     )
   }
+}
+
+/** True when the computer image already carries an `agentproto` CLI that
+ *  satisfies the config: the install is then pure boot latency. An extra
+ *  `installPackages` list or a pinned `cliVersion` the baked CLI does not
+ *  match still forces the install. */
+async function cliAlreadyPresent(
+  client: ComputerControllerClient,
+  id: string,
+  config: ComputerSandboxConfig,
+): Promise<boolean> {
+  if ((config.installPackages ?? []).length > 0) return false
+  const probe = await hardExec(client, id, bashArgv(`${USER_BIN_PATH_EXPORT}agentproto --version`), 20)
+  if (probe.exitCode !== 0) return false
+  const pin = config.cliVersion
+  if (!pin || pin === "latest") return true
+  const want = semverCore(pin)
+  const have = semverCore(probe.stdout)
+  return want !== null && want === have
+}
+
+/** `major.minor.patch[-prerelease]` of the first version-looking token,
+ *  ignoring a leading `v`/range operator and build metadata. A partial pin
+ *  such as "1.2" yields null, so it never matches `1.26.0`. */
+function semverCore(text: string): string | null {
+  const match = /(?:^|[^0-9.])(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(?![.\d])/.exec(text)
+  return match ? (match[1] as string) + (match[2] ?? "") : null
+}
+
+function bootStepError(
+  step: string,
+  id: string,
+  result: { exitCode: number; stdout: string; stderr: string },
+): Error {
+  const tail = (result.stderr.trim() || result.stdout.trim()).slice(-400)
+  return new Error(
+    `@agentproto/sandbox-computer: ${step} failed on computer "${id}" (exit ${result.exitCode})` +
+      (tail ? `: ${tail}` : ""),
+  )
 }
 
 /** Exec clamped into the controller's `timeoutSec ≤ 600` window. */
@@ -502,14 +632,15 @@ function wrapBox(
   spec: SandboxSpec,
   config: ComputerSandboxConfig,
   port: number,
+  published: readonly PortPublish[],
 ): BootedSandbox {
   const extraPorts: Record<number, string> = {}
   for (const extra of spec.extraPorts ?? []) {
-    extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl)
+    extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl, published)
   }
 
   return {
-    mcpUrl: boxUrl(id, port, config.gatewayUrl),
+    mcpUrl: boxUrl(id, port, config.gatewayUrl, published),
     sandboxId: id,
     // `expose: "private"` (the attach path) asks for a durable token-gated
     // URL. This daemon IS token-gated (`--auth-token`), but the token lives
@@ -518,7 +649,7 @@ function wrapBox(
     // SandboxBootOpts contract; attach fails closed on its side.
     ...(Object.keys(extraPorts).length > 0 ? { ports: extraPorts } : {}),
     expose(port: number): Promise<{ url: string }> {
-      return Promise.resolve({ url: boxUrl(id, port, config.gatewayUrl) })
+      return Promise.resolve({ url: boxUrl(id, port, config.gatewayUrl, published) })
     },
     async stop(): Promise<void> {
       releaseSessionSlot(id)

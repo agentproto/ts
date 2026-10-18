@@ -1601,6 +1601,9 @@ importers:
       '@agentproto/sandbox-box':
         specifier: workspace:*
         version: link:../sandbox-box
+      '@agentproto/sandbox-computer':
+        specifier: workspace:*
+        version: link:../sandbox-computer
       '@agentproto/sandbox-e2b':
         specifier: workspace:*
         version: link:../sandbox-e2b

@@ -96,13 +96,17 @@ describe("computerSandboxProvider.boot", () => {
     // exec flow: health probe → CLI install → detached serve → wait-healthy
     const scripts = controller.execs.map((e) => e.argv[2] ?? "")
     expect(scripts.some((s) => s.includes("http://127.0.0.1:18790/health") && !s.includes("sleep 1"))).toBe(true)
-    expect(scripts.some((s) => s.includes("npm i -g @agentproto/cli@'latest'"))).toBe(true)
+    expect(scripts.some((s) => s.includes(`npm i -g --prefix "$HOME/.local" @agentproto/cli@'latest'`))).toBe(true)
     const serve = scripts.find((s) => s.includes("agentproto serve"))
     expect(serve).toBeDefined()
+    expect(serve).toContain(`export PATH="$HOME/.local/bin:$PATH"; `)
     expect(serve).toContain("--bind 0.0.0.0")
     expect(serve).toContain("--workspace '/home/user'")
     expect(serve).toMatch(/--auth-token '[0-9a-f-]{36}'/)
     expect(serve).toContain("& echo started")
+    // uid 1000 cannot write /var/log: the daemon log must live under $HOME
+    expect(serve).toContain(`> "$HOME/.agentproto-daemon.log" 2>&1`)
+    expect(serve).not.toContain("/var/log")
     expect(scripts.some((s) => s.includes("sleep 1"))).toBe(true)
 
     // booted handle exec maps onto POST exec
@@ -111,6 +115,28 @@ describe("computerSandboxProvider.boot", () => {
     const last = controller.execs[controller.execs.length - 1] as { argv: string[] }
     expect(last.argv[0]).toBe("/bin/bash")
     expect(last.argv[1]).toBe("-lc")
+  })
+
+  it("forwards the egress allowlist as create egress.allow, defaulting to port 443", async () => {
+    await computerSandboxProvider.boot(
+      spec(controller.url, {
+        egress: ["github.com", "registry.npmjs.org:443", { host: "opencode.ai" }, { host: "x.test", port: 8443 }, "", 7],
+      }),
+      bootOpts,
+    )
+    expect((controller.createBodies[0] as { egress: unknown }).egress).toEqual({
+      allow: [
+        { host: "github.com", port: 443 },
+        { host: "registry.npmjs.org", port: 443 },
+        { host: "opencode.ai", port: 443 },
+        { host: "x.test", port: 8443 },
+      ],
+    })
+  })
+
+  it("omits egress from the create body when none is configured", async () => {
+    await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    expect(controller.createBodies[0]).not.toHaveProperty("egress")
   })
 
   it("drops env vars the controller would reject", async () => {
@@ -125,7 +151,7 @@ describe("computerSandboxProvider.boot", () => {
     controller.options.createStatus = 400
     controller.options.createError = "unknown template"
     await expect(computerSandboxProvider.boot(spec(controller.url), bootOpts)).rejects.toThrow(
-      /create rejected \(HTTP 400, "unknown template"\).*template is not registered/,
+      /create rejected \(HTTP 400, "unknown template"\).*config\.template/,
     )
     expect(controller.removed).toEqual([])
   })
@@ -137,6 +163,137 @@ describe("computerSandboxProvider.boot", () => {
     )
     expect(controller.removed).toHaveLength(1)
     expect(controller.removed[0]).toMatch(/^cmp-/)
+  })
+
+  it("fails fast with the install error and reclaims the computer when the CLI install exits non-zero", async () => {
+    controller.options.execOutcome = (argv) =>
+      (argv[2] ?? "").includes("npm i -g")
+        ? { exitCode: 243, stdout: "", stderr: "npm error EACCES: permission denied, mkdir '/usr/local/lib/node_modules/@agentproto'" }
+        : undefined
+    await expect(computerSandboxProvider.boot(spec(controller.url), bootOpts)).rejects.toThrow(
+      /CLI install failed on computer "cmp-[^"]+" \(exit 243\): npm error EACCES/,
+    )
+    expect(controller.removed).toHaveLength(1)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("agentproto serve"))).toBe(false)
+  })
+
+  it("skips the npm CLI install when the image already carries the agentproto CLI", async () => {
+    controller.cliBaked = true
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    const scripts = controller.execs.map((e) => e.argv[2] ?? "")
+    expect(scripts.some((s) => s.includes("agentproto --version"))).toBe(true)
+    expect(scripts.some((s) => s.includes("npm i -g"))).toBe(false)
+    expect(scripts.some((s) => s.includes("agentproto serve"))).toBe(true)
+    expect(booted.sandboxId).toMatch(/^cmp-/)
+  })
+
+  it("still installs when the baked CLI does not match a pinned cliVersion, or extra packages are requested", async () => {
+    controller.cliBaked = true
+    await computerSandboxProvider.boot(spec(controller.url, { cliVersion: "1.30.0" }), bootOpts)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(true)
+
+    controller.execs.length = 0
+    controller.serveSeen = false
+    await computerSandboxProvider.boot(spec(controller.url, { cliVersion: "1.26.0" }), bootOpts)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(false)
+
+    controller.execs.length = 0
+    controller.serveSeen = false
+    await computerSandboxProvider.boot(spec(controller.url, { installPackages: ["@agentproto/adapter-opencode"] }), bootOpts)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(true)
+  })
+
+  it("compares the pinned cliVersion exactly, not as a substring", async () => {
+    controller.cliBaked = true
+    const installsFor = async (cliVersion: string): Promise<boolean> => {
+      controller.execs.length = 0
+      controller.serveSeen = false
+      await computerSandboxProvider.boot(spec(controller.url, { cliVersion }), bootOpts)
+      return controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))
+    }
+    expect(await installsFor("1.2")).toBe(true)
+    expect(await installsFor("1.26")).toBe(true)
+    expect(await installsFor("1.26.00")).toBe(true)
+    expect(await installsFor("1.26.0-beta.1")).toBe(true)
+    expect(await installsFor("1.26.0")).toBe(false)
+    expect(await installsFor("v1.26.0")).toBe(false)
+  })
+
+  it("restarts a healthy daemon on connect when its recorded origin is stale", async () => {
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    controller.options.publishedPorts = [{ host: 20011, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    expect(controller.daemonOrigin).toBe("http://127.0.0.1:20011")
+    const serves = controller.serveCount
+
+    // Same origin: the running daemon is left alone.
+    await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(controller.killCount).toBe(0)
+    expect(controller.serveCount).toBe(serves)
+
+    // Host port changed: the daemon is restarted with the new origin.
+    controller.options.publishedPorts = [{ host: 20012, guest: 18790 }]
+    controller.execs.length = 0
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(again.mcpUrl).toBe("http://127.0.0.1:20012")
+    expect(controller.killCount).toBe(1)
+    expect(controller.serveCount).toBe(serves + 1)
+    expect(controller.daemonOrigin).toBe("http://127.0.0.1:20012")
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(false)
+  })
+
+  it("leaves a healthy daemon without an origin marker alone on connect", async () => {
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    controller.options.publishedPorts = [{ host: 20021, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    controller.daemonOrigin = undefined
+    controller.options.publishedPorts = [{ host: 20022, guest: 18790 }]
+    await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(controller.killCount).toBe(0)
+  })
+
+  it("resolves {hostPort} in gatewayUrl from the published ports, and allows that origin on the daemon", async () => {
+    controller.options.publishedPorts = [{ host: 20003, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { gatewayUrl: "http://127.0.0.1:{hostPort}" }),
+      bootOpts,
+    )
+    expect(booted.mcpUrl).toBe("http://127.0.0.1:20003")
+    const serve = controller.execs.map((e) => e.argv[2] ?? "").find((s) => s.includes("agentproto serve"))
+    expect(serve).toContain("--allow-origin 'http://127.0.0.1:20003'")
+    expect((await booted.expose!(18790)).url).toBe("http://127.0.0.1:20003")
+  })
+
+  it("fails the boot and reclaims the computer when {hostPort} has no published port", async () => {
+    await expect(
+      computerSandboxProvider.boot(spec(controller.url, { gatewayUrl: "http://127.0.0.1:{hostPort}" }), bootOpts),
+    ).rejects.toThrow(/published no host port for guest port 18790/)
+    expect(controller.removed).toHaveLength(1)
+  })
+
+  it("connect re-resolves {hostPort} from the controller's status", async () => {
+    controller.options.publishedPorts = [{ host: 20007, guest: 18790 }]
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(again.mcpUrl).toBe("http://127.0.0.1:20007")
+  })
+
+  it("fails the boot when a setup command exits non-zero", async () => {
+    controller.options.execOutcome = (argv) =>
+      (argv[2] ?? "").includes("make-it-fail") ? { exitCode: 2, stdout: "", stderr: "boom" } : undefined
+    await expect(
+      computerSandboxProvider.boot(spec(controller.url, { setupCommands: ["make-it-fail"] }), bootOpts),
+    ).rejects.toThrow(/setup command failed on computer "cmp-[^"]+" \(exit 2\): boom/)
+    expect(controller.removed).toHaveLength(1)
+  })
+
+  it("hints at the template registry when the controller answers invalid body", async () => {
+    controller.options.createStatus = 400
+    controller.options.createError = "invalid body"
+    await expect(computerSandboxProvider.boot(spec(controller.url), bootOpts)).rejects.toThrow(
+      /create rejected \(HTTP 400, "invalid body"\).*config\.template/,
+    )
   })
 
   it("surfaces controller exec failures during boot", async () => {

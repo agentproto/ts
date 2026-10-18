@@ -17,7 +17,7 @@ describe("sandbox provider registry: computer", () => {
       sharedSessions: true,
     })
     expect(handle!.defaultCwd).toBe("/home/user")
-    expect(handle!.setupFields?.map((f) => f.name)).toEqual(["apiKey", "controllerUrl"])
+    expect(handle!.setupFields?.map((f) => f.name)).toEqual(["apiKey", "controllerUrl", "tenantId"])
   })
 
   it("reports the catalog placeholder as null when the package is missing", async () => {
@@ -32,14 +32,19 @@ describe("sandbox provider registry: computer", () => {
     const previousUrl = process.env.COMPUTER_CONTROLLER_URL
     delete process.env.COMPUTER_CONTROLLER_TOKEN
     delete process.env.COMPUTER_CONTROLLER_URL
+    const previousTenant = process.env.COMPUTER_TENANT_ID
+    delete process.env.COMPUTER_TENANT_ID
     try {
       await resolveSandboxProvider("computer", {
         importPackage: async () => ({ computerSandboxProvider }),
-        creds: { apiKey: "stored-token", controllerUrl: "http://stored:7110" },
+        creds: { apiKey: "stored-token", controllerUrl: "http://stored:7110", tenantId: "t1" },
       })
       expect(process.env.COMPUTER_CONTROLLER_TOKEN).toBe("stored-token")
       expect(process.env.COMPUTER_CONTROLLER_URL).toBe("http://stored:7110")
+      expect(process.env.COMPUTER_TENANT_ID).toBe("t1")
     } finally {
+      if (previousTenant === undefined) delete process.env.COMPUTER_TENANT_ID
+      else process.env.COMPUTER_TENANT_ID = previousTenant
       if (previousToken === undefined) delete process.env.COMPUTER_CONTROLLER_TOKEN
       else process.env.COMPUTER_CONTROLLER_TOKEN = previousToken
       if (previousUrl === undefined) delete process.env.COMPUTER_CONTROLLER_URL

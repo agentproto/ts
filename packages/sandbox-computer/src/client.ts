@@ -70,6 +70,8 @@ export interface CreateComputerInput {
   rootDiskMiB?: number
   ttl?: number
   env?: Record<string, string>
+  /** Deny-by-default egress allowlist; a computer created without one has no DNS. */
+  egress?: { allow: Array<{ host: string; port: number }> }
 }
 
 export class ComputerControllerClient {
