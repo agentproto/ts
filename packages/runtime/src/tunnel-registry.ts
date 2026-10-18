@@ -222,6 +222,7 @@ export class TunnelRegistry {
     | undefined
   private readonly gatewayGuard: TunnelRegistryOptions["gatewayGuard"]
   private persistTimer: ReturnType<typeof setTimeout> | null = null
+  private closed = false
 
   constructor(opts: TunnelRegistryOptions = {}) {
     this.persistPath = opts.persistPath ?? TUNNELS_FILE_PATH()
@@ -387,6 +388,25 @@ export class TunnelRegistry {
       throw err
     }
 
+    // The registry was shut down while this start was still in flight
+    // (shutdown only stops entries already `starting`/`active`). Do not
+    // leak the freshly-spawned child: stop it right away and keep the
+    // descriptor (and the entry) from ever going `active`.
+    if (this.closed) {
+      await provider.stop().catch(() => {
+        // swallow — best-effort cleanup
+      })
+      try {
+        await guard?.stop()
+      } catch {
+        // swallow
+      }
+      desc.status = "stopped"
+      desc.stoppedAt = new Date().toISOString()
+      this.schedulePersist()
+      return
+    }
+
     entry.guard = guard
     desc.publicUrl = result.publicUrl
     desc.pid = result.pid
@@ -412,6 +432,7 @@ export class TunnelRegistry {
    * `error` and the others still come up.
    */
   async restoreOnBoot(): Promise<void> {
+    if (this.closed) return
     const toStart = Array.from(this.tunnels.values()).filter(
       e => e.desc.autostart === true && e.desc.status === "stopped",
     )
@@ -610,6 +631,7 @@ export class TunnelRegistry {
   }
 
   async shutdown(): Promise<void> {
+    this.closed = true
     const active = Array.from(this.tunnels.values()).filter(
       e => e.desc.status === "starting" || e.desc.status === "active",
     )

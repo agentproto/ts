@@ -2129,8 +2129,16 @@ export async function createGateway(
   // registry rebuild a provider that keeps its secrets off the descriptor
   // (ngrok authtoken, third-party creds) when restoring on boot / creating.
   const tunnelCredsStore = makeTunnelCredsStore()
+  // Persistence switch for every store this gateway owns. Production
+  // (and any caller that omits it) keeps today's behaviour: persist on,
+  // default paths. Tests pass `persist: false` so their fakes never reach
+  // the real ~/.agentproto/ — see `CreateGatewayOptions.persist`.
+  const persist = opts.persist ?? true
   const tunnels = new TunnelRegistry({
     workspace,
+    ...(persist
+      ? {}
+      : { persistPath: join(workspace, ".agentproto", "tunnels.json") }),
     onLog: line =>
       events.emit({
         type: "remote-log",
@@ -2157,9 +2165,16 @@ export async function createGateway(
   // daemon restarted. Non-blocking — boot must not wait on cloudflared,
   // and a failed restore leaves that one tunnel `error` without gating
   // the rest of the gateway.
-  void tunnels.restoreOnBoot().catch(() => {
-    // restoreOnBoot already logs per-tunnel failures via onLog.
-  })
+  // Relaunch any `autostart` (named) tunnels that were live before this
+  // daemon restarted. Non-blocking — boot must not wait on cloudflared,
+  // and a failed restore leaves that one tunnel `error` without gating
+  // the rest of the gateway. Skipped when persistence is off (tests):
+  // a test gateway must not relaunch the user's real tunnels.
+  if (persist) {
+    void tunnels.restoreOnBoot().catch(() => {
+      // restoreOnBoot already logs per-tunnel failures via onLog.
+    })
+  }
 
   // Public origin GitHub calls back into for the `webhook` sentinel provider:
   // AGENTPROTO_PUBLIC_URL, else an active tunnel to this daemon's port
@@ -2326,12 +2341,6 @@ export async function createGateway(
         redactor: configDefaults?.traceRedactor ?? "secrets",
       })
     : undefined
-
-  // Persistence switch for every store this gateway owns. Production
-  // (and any caller that omits it) keeps today's behaviour: persist on,
-  // default paths. Tests pass `persist: false` so their fakes never reach
-  // the real ~/.agentproto/ — see `CreateGatewayOptions.persist`.
-  const persist = opts.persist ?? true
 
   // Sentinel store + provider resolver — hoisted above `sessions` because
   // the auto-link hook (`onOpenedPr`, wired into `createSessionsRegistry`

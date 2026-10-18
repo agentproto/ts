@@ -118,6 +118,11 @@ export function namedTunnelProvider(
   let configPath: string | null = null
   let logFilePath: string | null = null
   let stopLogTail: (() => void) | null = null
+  // Set by `stop()` while `start()` is still awaiting `spawnCloudflaredUntil`.
+  // When the spawn resolves, a stopped start kills its own child instead of
+  // leaking it — the registry's `child` assignment happens too late for
+  // `stop()` to find it.
+  let stopped = false
 
   const credentialsFile =
     cfg.credentialsFile ??
@@ -146,6 +151,7 @@ export function namedTunnelProvider(
       return bin && creds
     },
     async start(opts: ProviderStartOptions): Promise<ProviderStartResult> {
+      stopped = false
       await assertCloudflaredOnPath()
       await assertCredentialsExist(credentialsFile)
 
@@ -192,6 +198,24 @@ export function namedTunnelProvider(
           onLog: opts.onLog,
         },
       )
+      if (stopped) {
+        // `stop()` ran while the spawn was still pending — `stop()` found
+        // `child === null` and returned, so kill the process here or it
+        // leaks. Same SIGTERM → 3 s → SIGKILL escalation as `stop()` below.
+        stopTail()
+        await rm(configPath, { force: true }).catch(() => {})
+        await rm(logPath, { force: true }).catch(() => {})
+        proc.kill("SIGTERM")
+        const killed = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL")
+          } catch {
+            /* noop */
+          }
+        }, 3_000)
+        proc.once("exit", () => clearTimeout(killed))
+        throw new Error("tunnel stopped during startup")
+      }
       child = proc
       stopLogTail = stopTail
 
@@ -205,6 +229,7 @@ export function namedTunnelProvider(
     },
 
     async stop(): Promise<void> {
+      stopped = true
       const proc = child
       const cfg2 = configPath
       const log = logFilePath
