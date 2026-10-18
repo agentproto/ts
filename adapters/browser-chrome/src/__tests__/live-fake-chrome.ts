@@ -21,6 +21,8 @@ export interface FakeChromeOptions {
   domTitle?: string
   /** Simulate "no element matches selector" for click/fill/scroll's generated `querySelector` expressions. */
   selectorMissing?: boolean
+  /** Simulate the uploadFile selector not matching an `<input type=file>`. */
+  fileInputMissing?: boolean
   /** `Runtime.evaluate("document.location.href")` answers with this (simulating a committed URL that differs from the requested one, e.g. a redirect). Unset: falls through to the generic unmatched-expression default. */
   locationHref?: string
 }
@@ -40,6 +42,8 @@ export interface FakeChrome {
   userTargets: readonly string[]
   /** Targets alive now, with their window. */
   targets: Map<string, { windowId: number; url: string; created: boolean }>
+  /** Files passed to every DOM.setFileInputFiles, per selector (the fake records instead of touching a real input). */
+  filesAttached: Map<string, string[]>
   options: FakeChromeOptions
   /** Emit a Page.screencastFrame event into an open flat session (test hook). */
   emitScreencastFrame(
@@ -72,6 +76,9 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
   let lastActiveWindow = USER_WINDOW
   // CDP sessions with Page.startScreencast seen and not stopped.
   const screencastActiveSessions = new Set<string>()
+  // Selector → nodeId map for the DOM.* uploadFile commands.
+  const fileInputNodes = new Map<string, number>()
+  let nextNodeId = 100
   // Server-initiated sends, added when a websocket connects (frames can arrive
   // at any moment in real Chrome; the same shape here).
   const senders = new Set<(raw: string) => void>()
@@ -88,6 +95,7 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
       ["user-tab-1", { windowId: USER_WINDOW, url: "https://mail.example/", created: false }],
       ["user-tab-2", { windowId: USER_WINDOW, url: "https://bank.example/", created: false }],
     ]),
+    filesAttached: new Map(),
     options,
     emitScreencastFrame(cdpSessionId, frame) {
       for (const send of senders) {
@@ -212,7 +220,32 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
           if (expression.includes("el.focus()") || expression.includes("scrollIntoView")) {
             return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: !fake.options.selectorMissing } })
           }
+          // uploadFile's "is this selector an <input type=file>?" probe.
+          if (expression.includes('el.type === "file"')) {
+            return reply(msg.id, msg.sessionId, {
+              result: { type: "boolean", value: !fake.options.fileInputMissing && !fake.options.selectorMissing },
+            })
+          }
           return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: false } })
+        }
+        case "DOM.getDocument":
+          return reply(msg.id, msg.sessionId, { root: { nodeId: 12 } })
+        case "DOM.querySelector": {
+          const selector = String(msg.params?.selector ?? "")
+          if (fake.options.fileInputMissing || fake.options.selectorMissing) {
+            fileInputNodes.delete(selector)
+            return reply(msg.id, msg.sessionId, { nodeId: 0 })
+          }
+          fileInputNodes.set(selector, nextNodeId)
+          return reply(msg.id, msg.sessionId, { nodeId: nextNodeId })
+        }
+        case "DOM.setFileInputFiles": {
+          const selector = [...fileInputNodes.entries()].find(([, node]) => node === msg.params?.nodeId)?.[0] ?? String(msg.params?.nodeId)
+          fake.filesAttached.set(
+            selector,
+            [...(fake.filesAttached.get(selector) ?? []), ...((msg.params?.files as string[]) ?? [])],
+          )
+          return reply(msg.id, msg.sessionId, {})
         }
         case "Page.getLayoutMetrics":
           return reply(msg.id, msg.sessionId, { cssVisualViewport: { clientWidth: 1, clientHeight: 1 } })

@@ -22,6 +22,7 @@ import {
 } from "@agentproto/driver-browser"
 import { ToolError } from "@agentproto/tool"
 import { z } from "zod"
+import { resolve as resolvePath } from "node:path"
 import { CdpConnection } from "./cdp.js"
 import { ChromeCdpDriver, chromeDriverCapabilities, toCdpCookieParams } from "./driver.js"
 import { CHROME_LIVE_LAUNCH_PROFILE, launchDetachedChrome, type LaunchedChrome, type LiveLaunchDeps } from "./live-launch.js"
@@ -281,6 +282,12 @@ export interface ChromeLiveInstance extends BrowserInstance {
   evaluateOwnedTarget<T = unknown>(options: EvaluateOptions, targetId?: string): Promise<EvaluateResult<T>>
   /** Scroll one OWNED agent tab: a CSS selector into view, or the window to an absolute `{x, y}`. */
   scrollOwnedTarget(options: ChromeLiveScrollOptions, targetId?: string): Promise<{ targetId: string }>
+  /** Attach local files to one `<input type=file>` on an OWNED agent tab (CDP DOM.setFileInputFiles). */
+  uploadFileOwnedTarget(options: ChromeLiveUploadFileOptions, targetId?: string): Promise<{ targetId: string; files: readonly string[] }>
+  /** Open a FRESH tab in the agent's own window (never reusing an existing one) and navigate it to `url`. */
+  newTabOwnedTarget(url?: string): Promise<{ targetId: string; url: string }>
+  /** Every tab this provider created on this endpoint (targets it owns), with the window they live in. */
+  listOwnedTabs(): Promise<{ targetId: string; url: string; windowId?: number }[]>
   /** Start Page.startScreencast on one OWNED agent tab (reused if one exists; attach() opens a fresh one otherwise). Idempotent per driver. */
   screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }>
   /** Latest buffered frame, or null before the first frame lands / after a stop. */
@@ -421,6 +428,33 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     // Target.closeTarget on our own targetId only (see ChromeCdpDriver.close).
     await super.close()
     this.onClosed(this.target.id)
+  }
+
+  /**
+   * Attach local files to one `<input type=file>` on THIS target — CDP
+   * `DOM.setFileInputFiles` (the same mechanism devtools uses; nothing is
+   * ever written back out through it). Paths MUST already be absolute; the
+   * selector's target is verified to be a real file input first.
+   */
+  async uploadFile(options: { selector: string; paths: readonly string[] }): Promise<{ files: readonly string[] }> {
+    const files = options.paths.map((p) => resolvePath(p))
+    const isFileInput = await this.evalRaw(
+      `(() => { const el = document.querySelector(${JSON.stringify(options.selector)}); return !!el && el.tagName === "INPUT" && el.type === "file" })()`,
+      false,
+      true,
+    )
+    if (isFileInput.result.value !== true) {
+      throw new Error(`no <input type=file> matches selector ${options.selector}`)
+    }
+    const { root } = await this.send<{ root: { nodeId: number } }>(
+      { method: "DOM.getDocument", params: { depth: 0 } },
+    )
+    const { nodeId } = await this.send<{ nodeId: number }>(
+      { method: "DOM.querySelector", params: { nodeId: root.nodeId, selector: options.selector } },
+    )
+    if (!nodeId) throw new Error(`no <input type=file> matches selector ${options.selector}`)
+    await this.send<void>({ method: "DOM.setFileInputFiles", params: { files, nodeId } })
+    return { files }
   }
 
   // ── screencast ──────────────────────────────────────────────────────────────
@@ -582,6 +616,14 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     this.screencastBuffer.length = 0
     this.screencastIndex = 0
   }
+}
+
+/** `uploadFileOwnedTarget` options: attach local files to one `<input type=file>`. */
+export interface ChromeLiveUploadFileOptions {
+  /** CSS selector of the `<input type=file>` element to fill. */
+  selector: string
+  /** ABSOLUTE local paths on the SAME machine Chrome runs on. Gone through the runtime's allowlist. */
+  paths: readonly string[]
 }
 
 interface LiveEntry {
@@ -929,6 +971,36 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         const result = await driver.evaluate<boolean>({ expression, awaitPromise: false, returnByValue: true, maxResultBytes: 1_000 })
         if (options.selector && result.value !== true) throw new Error(`[chrome-live] no element matches selector ${options.selector}`)
         return { targetId: driver.target.id }
+      },
+
+      async uploadFileOwnedTarget(options: ChromeLiveUploadFileOptions, targetId?: string): Promise<{ targetId: string; files: readonly string[] }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const driver = requireOwnedDriver(targetId, "attach a file to")
+        const { files } = await driver.uploadFile({ selector: options.selector, paths: options.paths })
+        return { targetId: driver.target.id, files }
+      },
+
+      async newTabOwnedTarget(url?: string): Promise<{ targetId: string; url: string }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        // attach() always opens a FRESH tab (createTab: activate one of our
+        // tabs first, so the new one lands in the agent window; driver-less
+        // initialUrl still records the url).
+        const driver = (await this.attach({ ...(url ? { initialUrl: url } : {}) })) as ChromeLiveDriver
+        return { targetId: driver.target.id, url: driver.target.url ?? url ?? "about:blank" }
+      },
+
+      async listOwnedTabs(): Promise<{ targetId: string; url: string; windowId?: number }[]> {
+        const tabs: { targetId: string; url: string; windowId?: number }[] = []
+        for (const driver of entry.drivers) {
+          if (driver.closed) continue
+          const windowId = await windowOf(entry, driver.target.id)
+          tabs.push({
+            targetId: driver.target.id,
+            url: driver.target.url ?? "",
+            ...(windowId !== undefined ? { windowId } : {}),
+          })
+        }
+        return tabs
       },
 
       async screencastStart(opts?: ChromeLiveScreencastOptions): Promise<{ targetId: string; index: number }> {

@@ -3693,6 +3693,9 @@ export async function createGateway(
       ...(opts.listBrowserAdapters
         ? { listBrowserAdapters: opts.listBrowserAdapters }
         : {}),
+      // browser_upload_file may attach files from the agent's own workspace
+      // (merged over the ~/.pygmalion/data default + the env allowlist).
+      uploadAllowDirs: [opts.workspace],
     })
     // MCP Apps host verbs — same root-/mcp-only exposure as mcp_imported_*.
     registerMcpAppHostTools(server, { service: mcpAppsHost })

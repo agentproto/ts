@@ -38,8 +38,10 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join, resolve, sep } from "node:path"
+import { homedir } from "node:os"
 import { tmpdir } from "node:os"
+import { realpath } from "node:fs/promises"
 import { z } from "zod"
 import type { AdapterLister } from "@agentproto/provider-kit"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
@@ -80,6 +82,15 @@ interface BrowserInstanceLike {
     tabId?: string
   ): Promise<{ value: T | undefined; truncated: boolean }>
   scroll?(options: { selector?: string; x?: number; y?: number }, tabId?: string): Promise<{ targetId: string }>
+  /** Attach local files to one `<input type=file>` on an owned tab (CDP DOM.setFileInputFiles; paths absolute). */
+  uploadFileOntoFileInput?(
+    options: { selector: string; paths: readonly string[] },
+    tabId?: string
+  ): Promise<{ targetId: string; files: readonly string[] }>
+  /** Open a FRESH tab (never reusing an existing one) and navigate it to `url`. */
+  openNewTab?(url?: string): Promise<{ targetId: string; url: string }>
+  /** Tabs owned by this provider instance on its endpoint. */
+  listOwnedTabs?(): Promise<{ targetId: string; url: string; windowId?: number }[]>
   /** False when a non-blocking cold start returned before the service
    *  finished converging (background health-wait still running). */
   healthy: boolean
@@ -134,6 +145,74 @@ interface BrowserAdapterLike {
  * request; we return promptly and let health converge in the background.
  */
 const START_BROWSER_INITIAL_WAIT_MS = 6_000
+
+/** Env var listing directories `browser_upload_file` may read files from, separated by `:`. */
+export const BROWSER_UPLOAD_ALLOW_DIRS_ENV = "AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS"
+
+/**
+ * The baseline upload allowlist: the agent's shared data dir (`~/.pygmalion/data`,
+ * where session artifacts land) plus any extra dir named in the env var. Each
+ * entry collapsed to an absolute path.
+ */
+export function defaultBrowserUploadAllowDirs(): string[] {
+  const env = (process.env[BROWSER_UPLOAD_ALLOW_DIRS_ENV] ?? "")
+    .split(":")
+    .map((d) => d.trim())
+    .filter(Boolean)
+  return [resolve(join(homedir(), ".pygmalion", "data")), ...env.map((p) => resolve(p))]
+}
+
+/**
+ * Validate + canonicalize `browser_upload_file` paths: every path must be
+ * absolute, must exist (readable, via realpath so symlinks are collapsed —
+ * the check is on the REAL target), and must live inside one of `allowDirs`.
+ * Read-only: nothing is ever written; CDP only points the file input at these.
+ */
+async function checkUploadPaths(
+  paths: readonly string[],
+  allowDirs: readonly string[]
+): Promise<string[]> {
+  const dirs = await Promise.all(
+    allowDirs.map(async (d) => {
+      // Canonicalize like the candidate paths (`realpath` collapses symlinks, e.g.
+      // a symlinked workspace or data dir); fall back to `resolve` when the dir
+      // does not exist yet — a non-existent allowDir just never matches.
+      try {
+        return await realpath(d)
+      } catch {
+        return resolve(d)
+      }
+    })
+  )
+  const allowed = (real: string): boolean =>
+    dirs.some((dir) => {
+      const realWithSep = real.endsWith(sep) ? real : real + sep
+      const dirWithSep = dir.endsWith(sep) ? dir : dir + sep
+      return real === dir || realWithSep.startsWith(dirWithSep)
+    })
+  const out: string[] = []
+  for (const p of paths) {
+    if (!isAbsolute(p)) {
+      throw new Error(`browser_upload_file: path "${p}" is not absolute (give an absolute path on this machine)`)
+    }
+    let real: string
+    try {
+      real = await realpath(p)
+    } catch (err) {
+      throw new Error(
+        `browser_upload_file: cannot read "${p}": ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+    if (!allowed(real)) {
+      throw new Error(
+        `browser_upload_file: "${p}" is outside the upload allowlist ` +
+          `(${dirs.join(", ") || "empty"} — extend it with ${BROWSER_UPLOAD_ALLOW_DIRS_ENV})`
+      )
+    }
+    out.push(real)
+  }
+  return out
+}
 
 export type BrowserAdapterResolver = (id: string) => BrowserAdapterLike | undefined
 export type BrowserAdapterLister = () => {
@@ -279,6 +358,9 @@ interface RegisterBrowserToolsOptions {
    * When absent, the legacy `listBrowserAdapters` path is used.
    */
   lister?: AdapterLister<BrowserAdapterInfo>
+  /** Extra directories `browser_upload_file` may read files from (absolute).
+   *  Merged over the defaults (see `defaultBrowserUploadAllowDirs`). */
+  uploadAllowDirs?: readonly string[]
   log?: (msg: string) => void
 }
 
@@ -1172,6 +1254,113 @@ export function registerBrowserTools(
         )
       } catch (err) {
         return errResult(`browser_scroll: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_upload_file ─────────────────────────────────────────────────────
+  server.tool(
+    "browser_upload_file",
+    "chrome-live only. Attach local files to one `<input type=file>` on the agent-OWNED tab " +
+      "(CDP DOM.setFileInputFiles; the same mechanism devtools uses — never a write into them). " +
+      "Every path must be ABSOLUTE, exist, and live inside an upload-allowlisted directory " +
+      "(default: the agent's workspace and `~/.pygmalion/data`; extend with " +
+      "AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS, `:`-separated absolute dirs) — anything else is refused. Find the " +
+      "selector with `browser_get_dom`. Same ownership rule as `browser_screenshot` — call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      selector: z.string().min(1).describe("CSS selector of the `<input type=file>` element."),
+      paths: z
+        .array(z.string().min(1))
+        .min(1)
+        .describe("ABSOLUTE local paths (on this machine) of the files to attach, in order."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_upload_file: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_upload_file: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_upload_file: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.uploadFileOntoFileInput)
+        return errResult("browser_upload_file: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        const files = await checkUploadPaths(input.paths, [
+          ...new Set([...defaultBrowserUploadAllowDirs(), ...(opts.uploadAllowDirs ?? [])]),
+        ])
+        return okResult(await liveInstance.uploadFileOntoFileInput({ selector: input.selector, paths: files }, input.tabId))
+      } catch (err) {
+        return errResult(`browser_upload_file: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_new_tab ─────────────────────────────────────────────────────────
+  server.tool(
+    "browser_new_tab",
+    "chrome-live only. Open a FRESH tab — always a new one, in the agent's own window " +
+      "(never reusing an existing owned tab, never the user's other windows) — and navigate " +
+      "it to `url`. Returns { targetId, url }; pass that `tabId` to the other browser tools " +
+      "to work on it, or `browser_list_tabs` to see them all.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      url: z.string().optional().describe("URL to open the new tab at (default about:blank)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_new_tab: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_new_tab: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_new_tab: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.openNewTab)
+        return errResult("browser_new_tab: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(await liveInstance.openNewTab(input.url))
+      } catch (err) {
+        return errResult(`browser_new_tab: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_list_tabs ───────────────────────────────────────────────────────
+  server.tool(
+    "browser_list_tabs",
+    "chrome-live only. List the tabs the agent itself opened (" +
+      "{ targetId, url, windowId }[] — never the user's own tabs): the ids every other " +
+      "browser tool accepts as `tabId`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_list_tabs: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_list_tabs: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_list_tabs: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.listOwnedTabs)
+        return errResult("browser_list_tabs: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult({ tabs: await liveInstance.listOwnedTabs() })
+      } catch (err) {
+        return errResult(`browser_list_tabs: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
   )
