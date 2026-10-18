@@ -142,6 +142,49 @@ describe("browser_upload_file", () => {
     await cleanup()
   })
 
+  it("merges opts.uploadAllowDirs OVER the defaults: env-listed dirs still accept files when a host dir is set", async () => {
+    vi.stubEnv("HOME", tmp)
+    const dataDir = join(tmp, ".pygmalion", "data")
+    mkdirSync(dataDir, { recursive: true })
+    vi.stubEnv(BROWSER_UPLOAD_ALLOW_DIRS_ENV, dataDir)
+    const sessionId = registerChromeLiveSession()
+    const file = join(dataDir, "cv.pdf")
+    writeFileSync(file, "pdf")
+    setLiveBrowserInstance(sessionId, {
+      ...baseInstance(),
+      uploadFileOntoFileInput: async (options) => ({ targetId: "t", files: options.paths }),
+    })
+    const { client, cleanup } = await makeClient()
+    const result = await client.callTool({
+      name: "browser_upload_file",
+      arguments: { sessionId, selector: "input[type=file]", paths: [file] },
+    })
+    expect(result.isError).toBeFalsy()
+    expect(parse(result)).toMatchObject({ files: [file] })
+    await cleanup()
+  })
+
+  it("merges opts.uploadAllowDirs OVER the defaults: the ~/.pygmalion/data baseline still accepts files when a host dir is set", async () => {
+    vi.stubEnv("HOME", tmp)
+    const dataDir = join(tmp, ".pygmalion", "data")
+    mkdirSync(dataDir, { recursive: true })
+    const sessionId = registerChromeLiveSession()
+    const file = join(dataDir, "cv.pdf")
+    writeFileSync(file, "pdf")
+    setLiveBrowserInstance(sessionId, {
+      ...baseInstance(),
+      uploadFileOntoFileInput: async (options) => ({ targetId: "t", files: options.paths }),
+    })
+    const { client, cleanup } = await makeClient()
+    const result = await client.callTool({
+      name: "browser_upload_file",
+      arguments: { sessionId, selector: "input[type=file]", paths: [file] },
+    })
+    expect(result.isError).toBeFalsy()
+    expect(parse(result)).toMatchObject({ files: [file] })
+    await cleanup()
+  })
+
   it("never calls the instance when any path is rejected (protect-then-dispatch)", async () => {
     const sessionId = registerChromeLiveSession()
     const spy = vi.fn(async () => ({ targetId: "t", files: [] }))

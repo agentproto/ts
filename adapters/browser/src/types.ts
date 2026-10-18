@@ -241,6 +241,15 @@ export interface BrowserAdapterInstance {
   ): Promise<{ value: T | undefined; truncated: boolean }>
   /** Optional scroll on a provider-owned target (chrome-live): a CSS selector into view, or the window to an absolute `{x, y}`. */
   scroll?(options: { selector?: string; x?: number; y?: number }, tabId?: string): Promise<{ targetId: string }>
+  /** Optional attach of local files to one `<input type=file>` on a provider-owned target (chrome-live, CDP DOM.setFileInputFiles; paths absolute). */
+  uploadFileOntoFileInput?(
+    options: { selector: string; paths: readonly string[] },
+    tabId?: string
+  ): Promise<{ targetId: string; files: readonly string[] }>
+  /** Optional open of a FRESH provider-owned tab (never reusing an existing one) and navigate it to `url` (chrome-live). */
+  openNewTab?(url?: string): Promise<{ targetId: string; url: string }>
+  /** Optional list of the tabs owned by this provider instance on its endpoint (chrome-live). */
+  listOwnedTabs?(): Promise<{ targetId: string; url: string; windowId?: number }[]>
   /** Optional CDP screencast over a provider-owned tab (chrome-live). Frames come base64-encoded. */
   screencastStart?(opts?: { format?: "jpeg" | "png"; quality?: number; everyNthFrame?: number; maxWidth?: number; maxHeight?: number }): Promise<{ targetId: string; index: number }>
   screencastFrame?(): Promise<{ data: string; format: "jpeg" | "png"; timestampMs: number; index: number; width?: number; height?: number } | null>

@@ -71,6 +71,12 @@ describe("chrome-live facade", () => {
     expect(typeof instance.fill).toBe("function")
     expect(typeof instance.evaluate).toBe("function")
     expect(typeof instance.scroll).toBe("function")
+    // Upload + multi-tab: the runtime's browser_upload_file / browser_new_tab /
+    // browser_list_tabs tools look these THREE names up structurally — if the
+    // facade forgets to forward one, that tool is dead against a real daemon.
+    expect(typeof instance.uploadFileOntoFileInput).toBe("function")
+    expect(typeof instance.openNewTab).toBe("function")
+    expect(typeof instance.listOwnedTabs).toBe("function")
     await instance.stop()
   })
 

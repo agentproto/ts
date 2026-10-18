@@ -447,7 +447,7 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
       throw new Error(`no <input type=file> matches selector ${options.selector}`)
     }
     const { root } = await this.send<{ root: { nodeId: number } }>(
-      { method: "DOM.getDocument", params: { depth: -1 } },
+      { method: "DOM.getDocument", params: { depth: 0 } },
     )
     const { nodeId } = await this.send<{ nodeId: number }>(
       { method: "DOM.querySelector", params: { nodeId: root.nodeId, selector: options.selector } },

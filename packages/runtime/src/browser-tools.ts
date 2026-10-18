@@ -172,7 +172,18 @@ async function checkUploadPaths(
   paths: readonly string[],
   allowDirs: readonly string[]
 ): Promise<string[]> {
-  const dirs = allowDirs.map((d) => resolve(d))
+  const dirs = await Promise.all(
+    allowDirs.map(async (d) => {
+      // Canonicalize like the candidate paths (`realpath` collapses symlinks, e.g.
+      // a symlinked workspace or data dir); fall back to `resolve` when the dir
+      // does not exist yet — a non-existent allowDir just never matches.
+      try {
+        return await realpath(d)
+      } catch {
+        return resolve(d)
+      }
+    })
+  )
   const allowed = (real: string): boolean =>
     dirs.some((dir) => {
       const realWithSep = real.endsWith(sep) ? real : real + sep
@@ -1280,7 +1291,9 @@ export function registerBrowserTools(
       if (!liveInstance?.uploadFileOntoFileInput)
         return errResult("browser_upload_file: chrome-live provider instance is unavailable; start the browser again to reconnect")
       try {
-        const files = await checkUploadPaths(input.paths, opts.uploadAllowDirs ?? defaultBrowserUploadAllowDirs())
+        const files = await checkUploadPaths(input.paths, [
+          ...new Set([...defaultBrowserUploadAllowDirs(), ...(opts.uploadAllowDirs ?? [])]),
+        ])
         return okResult(await liveInstance.uploadFileOntoFileInput({ selector: input.selector, paths: files }, input.tabId))
       } catch (err) {
         return errResult(`browser_upload_file: ${err instanceof Error ? err.message : String(err)}`)
