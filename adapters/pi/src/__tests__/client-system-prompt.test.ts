@@ -102,7 +102,7 @@ describe("adapter-pi client — system-prompt argv (`--append-system-prompt`)", 
     spawnMock.mockReturnValue(child)
     const client = createAgentCliClient(pi)
 
-    await client.connect(connectOpts({ model: "anthropic/claude-sonnet-4-5" }))
+    await client.connect(connectOpts({ model: "anthropic/claude-sonnet-5-5" }))
 
     const [, args] = spawnMock.mock.calls[0] as [string, string[]]
     expect(args).not.toContain("--append-system-prompt")

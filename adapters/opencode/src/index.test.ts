@@ -92,7 +92,7 @@ describe("@agentproto/adapter-opencode", () => {
       .map((entry) => entry.provider)
 
     // Anthropic and OpenAI direct prefixes.
-    expect(ids).toContain("anthropic/claude-sonnet-4-5")
+    expect(ids).toContain("anthropic/claude-sonnet-5-5")
     expect(ids).toContain("openai/gpt-5")
 
     // OpenRouter router prefix.
@@ -143,7 +143,7 @@ describe("@agentproto/adapter-opencode", () => {
   })
 
   it("keeps a canonical catalog model as the default", () => {
-    expect(opencode.models?.default).toBe("anthropic/claude-sonnet-4-5")
+    expect(opencode.models?.default).toBe("anthropic/claude-sonnet-5-5")
   })
 
   it("has no duplicate model ids in the generated menu", () => {
