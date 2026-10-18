@@ -145,7 +145,7 @@ describe("context-losing paths checkpoint first", () => {
   }
 
   describe("a /compact prompt", () => {
-    it("is preceded by a checkpoint carrying the session's own decisions", async () => {
+    it("is preceded by a checkpoint built from the transcript alone, no handoff turn by default", async () => {
       const { id, harness } = spawn(40, { mode: "manual" })
       await reg.sendPrompt(id, "Let's decide which database we use")
       expect(readdirSync(dirOf(id))).not.toContain("checkpoints")
@@ -156,6 +156,21 @@ describe("context-losing paths checkpoint first", () => {
       expect(harness.checkpointsAtCompact).toHaveLength(1)
       const ckpt = readCheckpoint(id, harness.checkpointsAtCompact![0]!)
       expect(ckpt.sourceSessionId).toBe(id)
+      // No billed handoff turn: the checkpoint comes from the transcript.
+      expect(ckpt.handoffTurn?.status).toBe("skipped")
+      expect(ckpt.recentDigest).toContain("decide which database")
+      expect(harness.prompts.at(-1)).toBe("/compact")
+      expect(harness.prompts.some(p => p.includes(HANDOFF_PROMPT_OPENER))).toBe(false)
+    })
+
+    it("asks the live session for a handoff turn when compactHandoffTurn is true", async () => {
+      const { id, harness } = spawn(40, { mode: "manual", compactHandoffTurn: true })
+      await reg.sendPrompt(id, "Let's decide which database we use")
+
+      await reg.sendPrompt(id, "/compact")
+
+      expect(harness.checkpointsAtCompact).toHaveLength(1)
+      const ckpt = readCheckpoint(id, harness.checkpointsAtCompact![0]!)
       expect(ckpt.handoffTurn?.status).toBe("answered")
       expect(ckpt.sections.decisions).toContain("Postgres")
       expect(ckpt.sections.risks).toContain("migration is untested")
@@ -305,6 +320,17 @@ describe("context-losing paths checkpoint first", () => {
       expect(desc.contextContinuityHardStopped).toBeFalsy()
       // checkpoint on disk at the instant /compact reached the harness
       expect(harness.checkpointsAtCompact).toHaveLength(1)
+    })
+
+    it("never asks the session for a handoff turn, even with compactHandoffTurn", async () => {
+      const { id, harness } = spawn(95, { mode: "manual", compactHandoffTurn: true })
+      await reg.sendPrompt(id, "Let's decide which database we use")
+      await vi.waitFor(() => expect(harness.prompts.some(p => p.startsWith("/compact"))).toBe(true))
+
+      expect(harness.prompts.some(p => p.includes(HANDOFF_PROMPT_OPENER))).toBe(false)
+      expect(harness.checkpointsAtCompact).toHaveLength(1)
+      const ckpt = readCheckpoint(id, harness.checkpointsAtCompact![0]!)
+      expect(ckpt.handoffTurn?.status).toBe("skipped")
     })
 
     it("takes prompts again once the automatic compaction has settled", async () => {

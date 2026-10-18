@@ -598,6 +598,14 @@ compaction prompt attributed to a session (`agent_prompt`, `session_compact`,
 or the session itself) is refused; only an operator-originated prompt (HTTP,
 CLI, UI) can compact. Default off.
 
+`compactHandoffTurn: true` has a `/compact` or `/compress` prompt ask the
+live session for a handoff turn (its own goal, decisions, risks) before the
+checkpoint is built, then the harness's native compaction runs on the same
+session. Default off: the checkpoint is extracted from the transcript alone,
+with no billed model turn before compaction. The context-rescue path never
+asks, and explicit handoffs (`session_checkpoint`, `session_continue_fresh`)
+are unaffected.
+
 ## role
 
 Spawn-time role gating whether this child may itself delegate (spawn/drive

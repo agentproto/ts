@@ -9351,9 +9351,15 @@ export function createSessionsRegistry(opts?: {
     // the session errored. No checkpoint, no compaction.
     if (isCompactPrompt(message)) {
       assertCompactionAllowed(rt, message, turnOpts?.promptSource, "runAgentTurn")
+      // A handoff turn is opt-in (`compactHandoffTurn`), and the rescue never
+      // asks: default `/compact` writes the checkpoint from the transcript
+      // alone, with no billed model turn before the harness compacts in place.
+      const compactHandoffTurn = rt.desc.contextContinuity?.compactHandoffTurn ?? false
+      const askSource =
+        compactHandoffTurn && turnOpts?.promptSource !== CONTEXT_RESCUE_SOURCE
       try {
         // The rescue runs at the window's edge: no handoff turn into it.
-        await checkpointBeforeContextLoss(rt, "compaction", turnOpts?.promptSource !== CONTEXT_RESCUE_SOURCE)
+        await checkpointBeforeContextLoss(rt, "compaction", askSource)
       } catch (err) {
         throw new Error(
           `runAgentTurn: compaction refused — no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,

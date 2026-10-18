@@ -86,6 +86,25 @@ describe("resolveContextContinuityPolicy", () => {
       resolveContextContinuityPolicy(undefined, undefined, undefined, { warnAtPct: 90 })
     ).toThrow(/Invalid context continuity policy/)
   })
+
+  it("merges compactHandoffTurn, defaulting to undefined (off) at every layer", () => {
+    expect(
+      resolveContextContinuityPolicy(undefined, undefined, undefined, undefined).compactHandoffTurn
+    ).toBeUndefined()
+    expect(
+      resolveContextContinuityPolicy(undefined, { compactHandoffTurn: true }, undefined, undefined)
+        .compactHandoffTurn
+    ).toBe(true)
+    // A higher layer's explicit false overrides a lower layer's true.
+    expect(
+      resolveContextContinuityPolicy(
+        { compactHandoffTurn: true },
+        undefined,
+        undefined,
+        { compactHandoffTurn: false },
+      ).compactHandoffTurn
+    ).toBe(false)
+  })
 })
 
 describe("computeContextPct", () => {
