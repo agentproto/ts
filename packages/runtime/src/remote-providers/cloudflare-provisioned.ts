@@ -57,6 +57,7 @@ import type {
   TunnelIdentity,
   TunnelProviderHandle,
 } from "./types.js"
+import { TunnelStartAbortedError } from "./types.js"
 
 export const CLOUDFLARE_PROVISIONED_SLUG = "cloudflare-provisioned"
 
@@ -212,6 +213,10 @@ export function cloudflareProvisionedTunnelProvider(
 ): ProvisionedProvider {
   const fetchImpl: FetchLike = deps.fetch ?? (globalThis.fetch as unknown as FetchLike)
   let runner: CloudflaredRunner | null = null
+  // Set by `stop()` while `start()` is still awaiting preflight/provisioning.
+  // `runner` is only assigned after those awaits, so `stop()` finds nothing to
+  // stop; the pending `start()` checks this before spawning cloudflared.
+  let stopped = false
   let service: string | null = null
 
   const oidc = (): OidcDeviceClient => {
@@ -315,6 +320,7 @@ export function cloudflareProvisionedTunnelProvider(
       if (!tunnel) throw new Error("cloudflare-provisioned: missing tunnel identity")
       if (runner) throw new Error("cloudflare-provisioned: provider already started")
       parseConfig(creds)
+      stopped = false
       const r = new CloudflaredRunner({
         ...deps,
         ...(deps.probeFetch || deps.fetch ? { probeFetch: deps.probeFetch ?? fetchImpl } : {}),
@@ -329,6 +335,12 @@ export function cloudflareProvisionedTunnelProvider(
         service = null
         if (err instanceof OidcError) throw new Error(`cloudflare-provisioned: ${err.message}`)
         throw err
+      }
+      if (stopped) {
+        // `stop()` ran during the awaits above and found no runner. Spawning
+        // now would leak a cloudflared nobody can stop.
+        service = null
+        throw new TunnelStartAbortedError()
       }
       runner = r
       try {
@@ -353,6 +365,7 @@ export function cloudflareProvisionedTunnelProvider(
     },
 
     async stop(): Promise<void> {
+      stopped = true
       const r = runner
       runner = null
       service = null

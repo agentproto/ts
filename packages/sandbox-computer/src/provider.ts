@@ -14,9 +14,9 @@
  *   connect  → GET id (404 ⇒ SandboxBoxGoneError), resume when suspended
  *   probe    → GET id (cheap liveness for `sandbox list`)
  *
- * SHARED SESSIONS: this provider declares `sharedSessions: true` — several
- * agentproto sessions hang off ONE computer's daemon (the runtime's AIP-36
- * reuse/attach path multiplexes over `mcpUrl`). `config.maxSessions` caps
+ * SHARED SESSIONS: this provider declares `sharedSessions: true` —
+ * descriptive metadata marking the box as advertised shareable; no runtime
+ * behaviour reads the flag yet. `config.maxSessions` independently caps
  * how many sessions this PROCESS maps onto one computer (default 1); the
  * controller has no attach/detach refcount, so cross-process counting is a
  * known gap (see README).
@@ -231,7 +231,14 @@ export function buildWaitHealthyCommand(port: number, attemptSeconds: number): s
 
 function inlineEnv(env: Record<string, string> | undefined): string {
   if (!env) return ""
-  return Object.entries(env).map(([k, v]) => `export ${k}=${shQuote(v)};`).join(" ")
+  // Same shape gate the create payload uses (controller-validated): reject
+  // malformed keys / overlong or newline-carrying values before they reach
+  // the shell.
+  const envKeyRe = /^[A-Z_][A-Z0-9_]{0,63}$/
+  return Object.entries(env)
+    .filter(([k, v]) => envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v))
+    .map(([k, v]) => `export ${k}=${shQuote(v)};`)
+    .join(" ")
 }
 
 /** Compose one `/bin/bash -lc` argv array from a script, a cwd and per-exec env. */
@@ -266,6 +273,15 @@ function releaseSessionSlot(sandboxId: string): void {
 
 const idAliases = new Map<string, string>()
 
+/**
+ * Resolved controller creds per live computer id, captured from the spec
+ * config at boot/connect. `probe` has no spec surface (contract takes only
+ * the sandbox id), so it reuses the config the box was booted with — falling
+ * back to `COMPUTER_CONTROLLER_*` env when this process never booted the
+ * box (e.g. after an adapter restart).
+ */
+const probeClientConfigs = new Map<string, ComputerClientConfig>()
+
 export function resolveAlias(sandboxId: string): string {
   let current = sandboxId
   const seen = new Set<string>()
@@ -289,31 +305,50 @@ export function boxUrl(id: string, port: number, gatewayUrl?: string): string {
   return `http://${id}:${port}`
 }
 
+/** One controller GET — `{alive:false}` on 404, otherwise the state. */
+async function probeComputer(sandboxId: string, clientConfig: ComputerClientConfig): Promise<SandboxProbeResult> {
+  const status = await new ComputerControllerClient(clientConfig).getComputer(sandboxId)
+  return status === null ? { alive: false } : { alive: true, state: status.state }
+}
+
 // ── the provider ──────────────────────────────────────────────────────
 
 export const computerSandboxProvider: SandboxProvider = {
   async boot(spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
     const config = readComputerConfig(spec)
-    const client = new ComputerControllerClient(resolveClientConfig(spec, config))
-    return bootOnClient(client, spec, config, opts)
+    const clientConfig = resolveClientConfig(spec, config)
+    const client = new ComputerControllerClient(clientConfig)
+    const booted = await bootOnClient(client, spec, config, opts)
+    probeClientConfigs.set(booted.sandboxId, clientConfig)
+    return booted
   },
 
   async connect(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
     const config = readComputerConfig(spec)
-    const client = new ComputerControllerClient(resolveClientConfig(spec, config))
-    return connectOnClient(client, sandboxId, spec, config, opts)
+    const clientConfig = resolveClientConfig(spec, config)
+    const client = new ComputerControllerClient(clientConfig)
+    const booted = await connectOnClient(client, sandboxId, spec, config, opts)
+    probeClientConfigs.set(booted.sandboxId, clientConfig)
+    return booted
   },
 
   /** Liveness against the controller — one cheap GET, no box contact.
    *  404 ⇒ `{alive:false}`; anything else propagates ("check failed",
-   *  never "box died"). */
+   *  never "box died"). Uses the spec config captured at boot/connect,
+   *  falling back to the `COMPUTER_CONTROLLER_*` env vars. */
   async probe(sandboxId: string): Promise<SandboxProbeResult> {
-    const client = new ComputerControllerClient(
-      resolveClientConfig({ provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } }, readComputerConfig({ provider: "computer", config: {} })),
-    )
-    const status = await client.getComputer(resolveAlias(sandboxId))
-    if (status === null) return { alive: false }
-    return { alive: true, state: status.state }
+    const fallbackConfig = () =>
+      resolveClientConfig(
+        { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
+        readComputerConfig({ provider: "computer", config: {} }),
+      )
+    // Probe the raw id first (its creds captured at boot/connect); when that
+    // id is gone behind a resume-rename alias, chase the alias once.
+    const first = await probeComputer(sandboxId, probeClientConfigs.get(sandboxId) ?? fallbackConfig())
+    if (first.alive) return first
+    const aliased = resolveAlias(sandboxId)
+    if (aliased === sandboxId) return first
+    return probeComputer(aliased, probeClientConfigs.get(aliased) ?? fallbackConfig())
   },
 }
 
@@ -403,11 +438,7 @@ async function connectOnClient(
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
   const daemonToken = randomUUID()
-  try {
-    await daemonHealthyOrThrow(client, currentId, config, daemonToken, port, workspace)
-  } catch (err) {
-    throw err
-  }
+  await daemonHealthyOrThrow(client, currentId, config, daemonToken, port, workspace)
 
   const maxSessions = config.maxSessions ?? 1
   if (!acquireSessionSlot(currentId, maxSessions)) {
@@ -543,6 +574,15 @@ function wrapBox(
     async stop(): Promise<void> {
       releaseSessionSlot(id)
       await client.remove(id)
+      // Free the per-process bookkeeping: session slot (done above), any
+      // alias pointing at this id, and the probe config captured at
+      // boot/connect — the box is gone, nothing should route here anymore.
+      for (const [from, to] of idAliases) {
+        if (to === id) idAliases.delete(from)
+      }
+      idAliases.delete(id)
+      activeSessions.delete(id)
+      probeClientConfigs.delete(id)
     },
     async pause(): Promise<void> {
       await client.suspend(id)
@@ -579,7 +619,9 @@ function wrapBox(
         const out = await hardExec(
           client,
           id,
-          bashArgv(`dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset} 2>/dev/null | base64; exit 0`),
+          bashArgv(
+            `dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset / READ_CHUNK_RAW} 2>/dev/null | base64; exit 0`,
+          ),
           60,
         )
         if (out.exitCode !== 0) {

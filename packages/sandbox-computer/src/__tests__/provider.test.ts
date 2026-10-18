@@ -24,6 +24,25 @@ function spec(controllerUrl: string, extra: Record<string, unknown> = {}): Sandb
 
 const bootOpts = { env: { OPENROUTER_API_KEY: "sk-test" } as Record<string, string> }
 
+describe("ComputerControllerClient: empty success bodies", () => {
+  it("treats 200/204 with an empty body as {} for suspend/resume/remove", async () => {
+    const seen: string[] = []
+    const client = new ComputerControllerClient({
+      baseUrl: "http://controller.test",
+      token: SERVICE_TOKEN,
+      tenantId: "tenant-a",
+      fetchImpl: (async (_url, init) => {
+        seen.push(`${init?.method ?? "GET"}`)
+        return new Response(null, { status: 204 }) as Response
+      }) as typeof fetch,
+    })
+    await expect(client.suspend("cmp-1")).resolves.toEqual({})
+    await expect(client.resume("cmp-1")).resolves.toEqual({})
+    await expect(client.remove("cmp-1")).resolves.toBeUndefined()
+    expect(seen).toEqual(["POST", "POST", "DELETE"])
+  })
+})
+
 describe("FakeController", () => {
   let controller: FakeController
 
@@ -221,6 +240,17 @@ describe("computerSandboxProvider.boot", () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     await expect(booted.readFile!("/nope/missing")).rejects.toThrow(/no file at/)
   })
+
+  it("readFile round-trips a multi-byte-block file (>700 KB) without truncation", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    const payload = Buffer.from("a".repeat(750_000) + "TAIL", "utf8")
+    await booted.writeFile!("/home/user/data/big.bin", new Uint8Array(payload))
+
+    const read = await booted.readFile!("/home/user/data/big.bin")
+    const merged = Buffer.from(read)
+    expect(merged.length).toBe(payload.length)
+    expect(merged.subarray(-4).toString()).toBe("TAIL")
+  })
 })
 
 describe("computerSandboxProvider.connect + probe", () => {
@@ -268,5 +298,19 @@ describe("computerSandboxProvider.connect + probe", () => {
     await expect(
       computerSandboxProvider.connect!("cmp-gone", spec(controller.url), bootOpts),
     ).rejects.toBeInstanceOf(SandboxBoxGoneError)
+  })
+
+  it("probe uses the boot-time spec config (no env needed)", async () => {
+    // No COMPUTER_CONTROLLER_* env: probe must still reach the controller
+    // using the config captured at boot.
+    delete process.env.COMPUTER_CONTROLLER_URL
+    delete process.env.COMPUTER_CONTROLLER_TOKEN
+    process.env.COMPUTER_TENANT_ID = "tenant-a"
+    try {
+      const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+      expect(await computerSandboxProvider.probe!(booted.sandboxId)).toEqual({ alive: true, state: "running" })
+    } finally {
+      delete process.env.COMPUTER_TENANT_ID
+    }
   })
 })
