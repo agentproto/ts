@@ -17,6 +17,7 @@ import {
   createSandboxAgentSessionProxy,
   IDLE_REAP_CHECKPOINT_TIMEOUT_MS,
 } from "../sandbox-agent-session-proxy.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS } from "../sandbox-delivery.js"
 import {
   readSandboxLedger,
   recordSandboxBoot,
@@ -363,6 +364,10 @@ describe("idle-reap teardown (sandboxIdleReapAfterMs)", () => {
     const row = readSandboxLedger(path).find(r => r.sandboxId === "bx_pr")!
     expect(row.state).toBe("paused")
     expect(row.reapedIdleMs).toBe(1_000)
+  })
+
+  it("the idle-reap checkpoint ceiling is at least the default checkpoint deadline (workSecured fast path is not a dead letter)", () => {
+    expect(IDLE_REAP_CHECKPOINT_TIMEOUT_MS).toBeGreaterThanOrEqual(DEFAULT_CHECKPOINT_DEADLINE_MS)
   })
 
   it("a hung final checkpoint never keeps the box alive", async () => {

@@ -33,7 +33,7 @@ import type {
   SandboxDetachRecord,
   SandboxReattachProbe,
 } from "./sessions.js"
-import { DEFAULT_CHECKPOINT_INTERVAL_MS, isFullyDelivered, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, isFullyDelivered, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 
@@ -342,8 +342,11 @@ export const BOX_ACTIVE_RENEW_INTERVAL_MS = 10 * 60_000
 export const BOX_DEADLINE_GUARD_LEAD_MS = 5 * 60_000
 
 /** Upper bound on the final checkpoint an idle reap runs before tearing the
- *  box down: a checkpoint that hangs must not keep an idle box alive. */
-export const IDLE_REAP_CHECKPOINT_TIMEOUT_MS = 2 * 60_000
+ *  box down: a checkpoint that hangs must not keep an idle box alive. At
+ *  least the DEFAULT_CHECKPOINT_DEADLINE_MS — one below it would abort the
+ *  final `workSecured` checkpoint the push layer is still legitimately
+ *  working on, making the timed default deadline a dead letter. */
+export const IDLE_REAP_CHECKPOINT_TIMEOUT_MS = DEFAULT_CHECKPOINT_DEADLINE_MS
 
 /**
  * Best-effort extraction of the prompt text from whatever `sessions.ts`'s

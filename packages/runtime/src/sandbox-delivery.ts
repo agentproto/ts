@@ -678,7 +678,7 @@ export function createSandboxCheckpointer(
  *  equivalent and wins when set; this env var remains the ultimate fallback
  *  (see {@link resolveSandboxCheckpointConfig}) so an existing deployment
  *  that only ever touched it keeps behaving identically. */
-export const DEFAULT_CHECKPOINT_INTERVAL_MS = 5 * 60_000
+export const DEFAULT_CHECKPOINT_INTERVAL_MS = 10 * 60_000
 export const CHECKPOINT_INTERVAL_ENV = "AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS"
 
 export function resolveCheckpointIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
