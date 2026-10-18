@@ -1060,6 +1060,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
     const wsConfig = await loadWorkspacesConfig()
     const registeredSlugs = new Set(wsConfig.workspaces.map(w => w.slug))
     const servedSlug = findWorkspaceByPath(wsConfig, opts.workspace)?.slug
+    // The same slug rule the `bucketOf` mapper below applies to OTHER
+    // daemons' registry workspaces: a workspace missing from `wsConfig`
+    // maps to the identical bucket on both sides (`resolveBucketSlug`
+    // resolves an unregistered slug to `default`), so a row that another
+    // live daemon serves in the same bucket pool is consistently counted
+    // as served here too — never rescued from a daemon that is alive.
     const servedBucket = resolveBucketSlug(servedSlug, registeredSlugs)
     // Sandbox sessions the previous daemon DETACHED from (box + agent kept
     // running) re-attach FIRST, to the same session ids — before the passes
