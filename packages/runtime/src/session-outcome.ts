@@ -31,11 +31,13 @@ export const OUTCOME_COMPACT_SUMMARY_MAX = 120
 export const OUTCOME_TAIL_BYTES = 64 * 1024
 
 export interface SessionOutcomeArtifact {
-  type: "pr" | "commit" | "url" | "file"
+  type: "pr" | "commit" | "url" | "file" | "branch"
   /** The artifact's canonical reference — a PR url, a commit sha, a url,
    *  or (for `type: "file"`) the session artifact's `key`
    *  (`session-artifacts.ts`) — resolve it via `session_artifact_get` /
-   *  `GET /sessions/:id/artifacts/:key`. */
+   *  `GET /sessions/:id/artifacts/:key`. `type: "branch"` carries the
+   *  sandbox session's delivered work branch (`wt/<slug>`, pushed to
+   *  origin by the session's checkpoints — see `sandbox-delivery.ts`). */
   ref: string
   title?: string
 }
@@ -243,6 +245,23 @@ export function deriveSessionOutcome(desc: SessionDescriptor, input: DeriveSessi
     })),
     ...(input.artifacts ?? []),
   ]
+  // An EXPECTED sandbox expiry ends the session cleanly
+  // (`endedReason: "sandbox-expired"`, status "exited"): its work was already
+  // checkpointed and pushed, so the outcome must carry that delivered
+  // work branch as the artifact — otherwise the UI shows an ended session
+  // with nothing produced and the pushed branch is invisible.
+  if (desc.endedReason === "sandbox-expired") {
+    const delivered = desc.sandboxDelivery ?? desc.sandboxCheckpoint
+    if (delivered?.push.status === "pushed") {
+      artifacts.push({ type: "branch", ref: delivered.branch, title: "delivered work branch" })
+    } else if (desc.sandboxDeliveryTarget?.branch) {
+      artifacts.push({
+        type: "branch",
+        ref: desc.sandboxDeliveryTarget.branch,
+        title: "work branch (delivery incomplete)",
+      })
+    }
+  }
 
   const links: SessionOutcomeLink[] = []
   const runId = desc.meta?.workflowRunId

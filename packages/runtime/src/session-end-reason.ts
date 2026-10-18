@@ -51,6 +51,14 @@ export const SESSION_END_REASONS = [
   // the host daemon came back (expired, reaped, deleted) — the reattach pass
   // could not reconnect it. Distinct from `daemon-restart`: nothing survived.
   "sandbox_gone",
+  // An E2B-style box whose lifetime expired on schedule while the session
+  // was idle: the box's lifetime is a per-renew runway, the proxy deliberately
+  // leaves an idle box to expire, and the provider reaps it exactly at that
+  // deadline (or at the plan-level lifetime cap). Expected expiry, NOT a
+  // crash — the row ends `status: "exited"` with its work branch (already
+  // checkpointed/pushed) surfaced in the outcome's artifacts
+  // (`sandbox-agent-session-proxy.ts`'s `SandboxBoxExpiredError`).
+  "sandbox-expired",
 ] as const
 
 export type SessionEndReason = (typeof SESSION_END_REASONS)[number]
