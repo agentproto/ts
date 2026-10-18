@@ -312,13 +312,20 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
         // precedence as the solo `git-checkout` step: an existing worktree of
         // this branch wins (a re-attach reuses it), then the pushed branch
         // (the work survives box restarts), else it is cut from `baseRef`.
-        // The base clone's own checkout is left alone: its HEAD is detached
-        // (it is shared scratch), never re-pointed at a session's branch.
+        // The base clone's own checkout is left alone unless it already sits
+        // on the branch being added: detaching is only required so
+        // `worktree add <branch>` can hand the existing local branch to the
+        // new worktree. Detaching it unconditionally would yank a first
+        // session's live checkout (e.g. base on wt/a, attach reuses wt/b)
+        // off its branch, so commits there would miss delivery. Otherwise
+        // `worktree add` runs against the base as-is.
         command: flocked(
           lockPath,
           `if [ -e ${dir}/.git ]; then git -C ${dir} checkout ${ref} 2>/dev/null; ` +
             `elif git -C ${baseDirQuoted} show-ref --verify --quiet ${shellQuote(`refs/heads/${branch}`)}; ` +
-            `then git -C ${baseDirQuoted} checkout --detach -q && git -C ${baseDirQuoted} worktree add ${dir} ${ref}; ` +
+            `then if [ "$(git -C ${baseDirQuoted} symbolic-ref --short -q HEAD)" = ${shellQuote(branch)} ]; ` +
+            `then git -C ${baseDirQuoted} checkout --detach -q; fi; ` +
+            `git -C ${baseDirQuoted} worktree add ${dir} ${ref}; ` +
             `elif git -C ${baseDirQuoted} show-ref --verify --quiet ${shellQuote(`refs/remotes/origin/${branch}`)}; ` +
             `then git -C ${baseDirQuoted} worktree add --track -b ${ref} ${dir} ${shellQuote(`origin/${branch}`)}; ` +
             `else git -C ${baseDirQuoted} worktree add -b ${ref} ${dir} ${shellQuote(baseRef)}; fi`,
