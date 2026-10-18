@@ -49,6 +49,7 @@ import type {
   RemoteProvider,
   TunnelProviderHandle,
 } from "./types.js"
+import { TunnelStartAbortedError } from "./types.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -153,8 +154,9 @@ export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
             /* noop */
           }
         }, 3_000)
+        killed.unref()
         proc.once("exit", () => clearTimeout(killed))
-        throw new Error("tunnel stopped during startup")
+        throw new TunnelStartAbortedError()
       }
       child = proc
       stopLogTail = stopTail

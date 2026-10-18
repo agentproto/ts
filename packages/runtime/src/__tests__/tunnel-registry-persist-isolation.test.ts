@@ -21,7 +21,7 @@ import type { AddressInfo } from "node:net"
 
 import { createGateway, type GatewayHandle } from "../index.js"
 import { TunnelRegistry } from "../tunnel-registry.js"
-import type { RemoteProvider } from "../remote-providers/types.js"
+import { TunnelStartAbortedError, type RemoteProvider } from "../remote-providers/types.js"
 
 let fakeHome = ""
 let homeTunnelsFile = ""
@@ -155,6 +155,50 @@ describe("shutdown during pending provider start", () => {
     await Promise.all([created.then(d => (desc = d)), shuttingDown])
     expect(stopCalls.length).toBeGreaterThan(0)
     expect(desc!.status).toBe("stopped")
+  })
+
+  it("settles as stopped (not error) when the provider aborts its own start", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "tunnel-registry-abort-"))
+    tmpdirs.push(tmp)
+    let stopped = false
+    let releaseStart!: () => void
+    const startPending = new Promise<void>(resolve => {
+      releaseStart = resolve
+    })
+
+    // Mirrors the built-in cloudflared providers: stop() flips a flag, and
+    // start() reaps its own child then throws the typed abort.
+    const reg = new (class extends TunnelRegistry {
+      protected override async pickProviderForTest(): Promise<RemoteProvider> {
+        return {
+          id: "mock",
+          async start() {
+            await startPending
+            if (stopped) throw new TunnelStartAbortedError()
+            return { publicUrl: "https://mock.example.com", pid: 42 }
+          },
+          async stop() {
+            stopped = true
+          },
+        }
+      }
+    })({ persistPath: join(tmp, "tunnels.json"), workspace: tmp })
+    registries.push(reg)
+
+    const created = reg.create({
+      provider: "quick",
+      targetPort: 8082,
+      name: "aborted-start",
+      public: true,
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const shuttingDown = reg.shutdown()
+    releaseStart()
+    const [desc] = await Promise.all([created, shuttingDown])
+
+    expect(desc.status).toBe("stopped")
+    expect(desc.lastError).toBeUndefined()
+    expect(desc.stoppedAt).toBeDefined()
   })
 })
 

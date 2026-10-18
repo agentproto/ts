@@ -37,10 +37,11 @@ import {
   builtinProviderCapabilities,
   type TunnelCreds,
 } from "./remote-providers/registry.js"
-import type {
-  RemoteProvider,
-  TunnelHealth,
-  TunnelIdentity,
+import {
+  TunnelStartAbortedError,
+  type RemoteProvider,
+  type TunnelHealth,
+  type TunnelIdentity,
 } from "./remote-providers/types.js"
 import { createLinkGuard, parseTtlMs, type LinkGuard } from "./remote-providers/link-guard.js"
 
@@ -382,6 +383,13 @@ export class TunnelRegistry {
       await guard?.stop().catch(() => {
         // best-effort — the provider start already failed
       })
+      // The provider saw a `stop()` land mid-start and already reaped its
+      // own process. That is an abort, not a failure: settle as `stopped`
+      // (so autostart relaunches it on the next boot) and resolve.
+      if (err instanceof TunnelStartAbortedError) {
+        this.markStopped(desc)
+        return
+      }
       desc.status = "error"
       desc.lastError = err instanceof Error ? err.message : String(err)
       this.schedulePersist()
@@ -393,6 +401,8 @@ export class TunnelRegistry {
     // leak the freshly-spawned child: stop it right away and keep the
     // descriptor (and the entry) from ever going `active`.
     if (this.closed) {
+      // `shutdown()` may already have stopped this provider; third-party
+      // providers must tolerate a repeat `stop()`.
       await provider.stop().catch(() => {
         // swallow — best-effort cleanup
       })
@@ -401,9 +411,7 @@ export class TunnelRegistry {
       } catch {
         // swallow
       }
-      desc.status = "stopped"
-      desc.stoppedAt = new Date().toISOString()
-      this.schedulePersist()
+      this.markStopped(desc)
       return
     }
 
@@ -418,6 +426,13 @@ export class TunnelRegistry {
     desc.status = "active"
     desc.url = guardToken ? appendToken(result.publicUrl, guardToken) : result.publicUrl
     delete desc.stoppedAt
+    this.schedulePersist()
+  }
+
+  private markStopped(desc: TunnelDescriptor): void {
+    desc.status = "stopped"
+    desc.stoppedAt = new Date().toISOString()
+    delete desc.lastError
     this.schedulePersist()
   }
 
