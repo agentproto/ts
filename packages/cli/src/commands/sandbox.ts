@@ -13,7 +13,8 @@
  * PLAN-D1 adds navigation over the daemon's sandbox ledger
  * (`~/.agentproto/sandboxes.json`):
  *   - `list` renders the persisted boxes (id, provider, label, state, age,
- *     expiry, origin session) — `--json` for machines.
+ *     expiry, origin session, attached sessions per the AIP-36 shared-box
+ *     refcount) — `--json` for machines.
  *   - `rm` drops a LEDGER ENTRY by default; `--box` ALSO stops the box
  *     side the provider (destructive — requires `--yes` on a non-TTY, an
  *     interactive confirmation otherwise).
@@ -317,7 +318,7 @@ async function runList(args: readonly string[]): Promise<number> {
     ]),
   )
   const rows: Array<string[]> = [
-    ["ID", "PROVIDER", "LABEL", "STATE", "LIVE", "AGE", "EXPIRES", "ORIGIN SESSION"],
+    ["ID", "PROVIDER", "LABEL", "STATE", "LIVE", "AGE", "EXPIRES", "ORIGIN SESSION", "ATTACHED"],
   ]
   for (const e of entries) {
     const id = e.sandboxId.length > 20 ? `${e.sandboxId.slice(0, 17)}…` : e.sandboxId
@@ -333,6 +334,7 @@ async function runList(args: readonly string[]): Promise<number> {
       relative(e.updatedAt),
       expires,
       e.originSessionId ?? "—",
+      e.attachedSessions?.length ? e.attachedSessions.join(", ") : "—",
     ])
   }
   const header = rows[0]

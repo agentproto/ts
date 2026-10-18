@@ -606,6 +606,7 @@ export {
   recordSandboxLiveness,
   recordSandboxOrigin,
   recordSandboxState,
+  recordSessionDetach,
   removeSandboxLedgerEntry,
   resolveReuseFromLedger,
   sandboxLedgerPath,

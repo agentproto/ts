@@ -49,6 +49,20 @@ export function collectGcCandidates(
       (c): c is SandboxGcCandidate & { sessionStatus: string } =>
         c.sessionStatus !== undefined && DEAD_SESSION_STATUSES.has(c.sessionStatus),
     )
+    // AIP-36 shared-box amendment — the origin session dying does not make
+    // the box an orphan when OTHER sessions are still attached. Skip unless
+    // every remaining attaché is itself dead (its status is terminal);
+    // an unknown survivor status conservatively keeps the box alive.
+    .filter(c => {
+      const others = (c.entry.attachedSessions ?? []).filter(
+        s => s !== c.entry.originSessionId,
+      )
+      if (others.length === 0) return true
+      return others.every(s => {
+        const st = sessionStatuses.get(s)
+        return st !== undefined && DEAD_SESSION_STATUSES.has(st)
+      })
+    })
 }
 
 /** Provider resolution + ledger targeting for the reaper — injectable so

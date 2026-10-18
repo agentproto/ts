@@ -34,7 +34,7 @@ import type {
   SandboxReattachProbe,
 } from "./sessions.js"
 import { DEFAULT_CHECKPOINT_INTERVAL_MS } from "./sandbox-delivery.js"
-import { recordSandboxReap, recordSandboxState } from "./sandbox-ledger.js"
+import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
@@ -231,7 +231,7 @@ export interface SandboxAgentSessionProxyOpts {
    *  stamps the teardown outcome ("paused" vs "stopped") into
    *  `~/.agentproto/sandboxes.json`. Best-effort: a ledger failure never
    *  blocks or fails the teardown. */
-  ledger?: { sandboxId: string; provider: string }
+  ledger?: { sandboxId: string; provider: string; sessionId?: string }
   /** Device-spawn only: when the box's FIRST turn ends errored or EMPTY,
    *  read the box's raw `agent_output` ring buffer and surface the adapter's
    *  own failure line as a `notice` — the box's structured transcript does
@@ -1126,6 +1126,10 @@ export function createSandboxAgentSessionProxy(
       // teardown must never silently no-op and leak the box.
       const pauseFn = lifecyclePolicy?.teardown === "pause" ? host.pause : undefined
       const pauseTeardown = pauseFn !== undefined
+      // AIP-36 shared-box amendment — teardown = DETACH first, destroy last:
+      // only the LAST live session to close() tears the box down (stop/pause
+      // + ledger terminal stamp); the others leave it running. No ledger
+      // coordinates (or no sessionId on them) ⇒ solo teardown as before.
       try {
         await host.kill(remoteSessionId)
       } finally {
@@ -1134,17 +1138,33 @@ export function createSandboxAgentSessionProxy(
         } catch {
           // best-effort — see `onBeforeTeardown`
         }
+        // AIP-36 shared-box amendment — the ledger row is the refcount.
+        // With OTHER sessions still attached, detach only: the box is
+        // neither stopped nor paused (it keeps running under the
+        // survivors), and no terminal state is stamped. The explicit
+        // `if (!survivorsLeft)` guard below matters: a `return` inside the
+        // `finally` would DISCARD a pending exception from `host.kill`
+        // above, so the survivors check is computed first and the
+        // stop/pause + ledger stamp are guarded instead.
+        const survivorsLeft =
+          !!(opts.ledger?.sandboxId && opts.ledger?.sessionId) &&
+          recordSessionDetach(opts.ledger.sandboxId, opts.ledger.sessionId).length > 0
         try {
-          if (pauseFn) {
-            await pauseFn()
-          } else {
-            await host.stop()
+          if (!survivorsLeft) {
+            if (pauseFn) {
+              await pauseFn()
+            } else {
+              await host.stop()
+            }
           }
         } finally {
           // PLAN-D1 — stamp the teardown outcome into the sandbox ledger.
           // Inside the finally chain so even a failing teardown records
-          // (best-effort: `recordSandboxState` itself never throws).
-          if (opts.ledger) {
+          // (best-effort: `recordSandboxState` itself never throws). A
+          // survivor-detach skips the stop/pause — the box keeps running
+          // for the others, so this must NOT stamp a terminal state over
+          // the row.
+          if (opts.ledger && !survivorsLeft) {
             const finalState = pauseTeardown ? "paused" : "stopped"
             if (closeOpts?.idleReap) {
               recordSandboxReap(opts.ledger.sandboxId, finalState, closeOpts.idleReap)

@@ -43,6 +43,13 @@ import { join, resolve } from "node:path"
  *  did, which a vanished box makes a lie). */
 export type SandboxLedgerState = "booted" | "paused" | "connected" | "stopped" | "gone"
 
+/* AIP-36 amendment "shared box" — one box can host SEVERAL live sessions
+ * (e.g. two agents attaching to the same e2b sandbox via `reuse`). The
+ * ledger is the refcount: `attachedSessions` lists every session currently
+ * attached, which makes a daemon restart robust (the count lives on disk,
+ * not in memory). Session teardown = DETACH: the box is only stopped when
+ * the LAST session detaches — stopping the first of two sessions must never
+ * kill the box under the surviving one's feet. */
 export interface SandboxLedgerEntry {
   sandboxId: string
   provider: string
@@ -57,6 +64,18 @@ export interface SandboxLedgerEntry {
   gitTokenWorkspace?: string
   /** The HOST session id that first booted / last reconnected to the box. */
   originSessionId?: string
+  /** Every session CURRENTLY attached to this box (AIP-36 shared-box
+   *  amendment). Written by `recordSandboxBoot` / `recordSandboxOrigin`,
+   *  dropped per-session by `recordSessionDetach`. The refcount source of
+   *  truth — on disk, so it survives a daemon restart.
+   *
+   *  Known follow-up (scoped, not fixed in this PR): a session that dies
+   *  WITHOUT going through `close()` (daemon SIGKILL / crash) leaves a
+   *  stale attaché here — the box's real last session never triggers the
+   *  teardown and `sandbox gc` conservatively skips the box forever. A
+   *  restart-time sweep reconciling `attachedSessions` against the live
+   *  session registry should prune dead ids. */
+  attachedSessions?: string[]
   /** ISO instant the box is expected to idle-expire — stamped only when the
    *  boot knew a window (`lifecycle.pause_after_idle`). */
   expiresAt?: string
@@ -186,6 +205,15 @@ export function removeSandboxLedgerEntry(sandboxId: string, path?: string): bool
 
 const nowIso = (): string => new Date().toISOString()
 
+/** Append `sessionId` to an attached-sessions list (dedupe, keep order). */
+const attachToSessions = (
+  prior: string[] | undefined,
+  sessionId: string | undefined,
+): string[] => {
+  if (!sessionId) return prior ?? []
+  return prior?.includes(sessionId) ? prior : [...(prior ?? []), sessionId]
+}
+
 /**
  * Stamp a boot or reconnect into the ledger — the spawn path's hook.
  * `state` is "booted" for a fresh boot, "connected" for a reuse/attach.
@@ -200,12 +228,16 @@ export function recordSandboxBoot(opts: {
   originSessionId?: string
   expiresAt?: string
   gitTokenWorkspace?: string
+  /** The host session attaching to the box — appended to the shared-box
+   *  refcount (`attachedSessions`) in the same write. */
+  sessionId?: string
   path?: string
 }): void {
   try {
     const target = opts.path ?? sandboxLedgerPath()
     const existing = readSandboxLedger(target)
     const prior = existing.find(e => e.sandboxId === opts.sandboxId)
+    const attached = attachToSessions(prior?.attachedSessions, opts.sessionId)
     const ts = nowIso()
     const entry: SandboxLedgerEntry = {
       sandboxId: opts.sandboxId,
@@ -213,6 +245,7 @@ export function recordSandboxBoot(opts: {
       state: opts.state,
       createdAt: prior?.createdAt ?? ts,
       updatedAt: ts,
+      ...(prior?.attachedSessions || opts.sessionId ? { attachedSessions: attached } : {}),
       ...(opts.label ? { label: opts.label } : prior?.label ? { label: prior.label } : {}),
       ...(opts.cwd ? { cwd: opts.cwd } : prior?.cwd ? { cwd: prior.cwd } : {}),
       ...(opts.originSessionId
@@ -234,18 +267,32 @@ export function recordSandboxBoot(opts: {
 }
 
 /** Stamp a state transition ("paused"/"stopped"/"gone") for an existing row.
- *  Best-effort: never throws. */
+ *  Best-effort: never throws.
+ *
+ *  AIP-36 shared-box semantics: `attachedSessions` is a REFCOUNT, so a
+ *  generic state stamp must not erase it under the survivors' feet. By
+ *  default the stamp CLEARS the list (safe default: every stop is terminal
+ *  and a stale attaché must not make `sandbox gc` skip the box forever);
+ *  call with `keepAttachedSessions` only when the box physically kept
+ *  running for other sessions (e.g. a reuse attach whose failed boot left
+ *  the box PAUSED for the survivors — they re-attach through `reuse`). */
 export function recordSandboxState(
   sandboxId: string,
   state: "paused" | "stopped" | "gone",
   path?: string,
+  keepAttachedSessions?: boolean,
 ): void {
   try {
     const target = path ?? sandboxLedgerPath()
     const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
     if (!prior) return // Nothing boot recorded — no row to transition.
     upsertSandboxLedger(
-      { ...prior, state, updatedAt: nowIso() },
+      {
+        ...prior,
+        state,
+        ...(keepAttachedSessions ? {} : { attachedSessions: [] }),
+        updatedAt: nowIso(),
+      },
       target,
     )
   } catch {
@@ -274,6 +321,8 @@ export function recordSandboxReap(
         ...prior,
         state,
         updatedAt: ts,
+        // The box is no longer serving anyone.
+        attachedSessions: [],
         reapedAt: ts,
         reapedIdleMs: info.idleMs,
         ...(info.sessionId ? { reapedSessionId: info.sessionId } : {}),
@@ -322,7 +371,14 @@ export function recordSandboxOrigin(sandboxId: string, originSessionId: string, 
     const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
     if (!prior) return
     upsertSandboxLedger(
-      { ...prior, originSessionId, updatedAt: nowIso() },
+      {
+        ...prior,
+        originSessionId,
+        // The boot hook ran before the host minted this session id — count
+        // the session into the shared-box refcount now, same write.
+        attachedSessions: attachToSessions(prior.attachedSessions, originSessionId),
+        updatedAt: nowIso(),
+      },
       target,
     )
   } catch {
@@ -357,4 +413,29 @@ export function resolveReuseFromLedger(
   if (sole) return { kind: "resolved", sandboxId: sole.sandboxId, entry: sole }
   if (matches.length > 1) return { kind: "ambiguous", candidates: matches }
   return { kind: "unresolved" }
+}
+
+/** Record one session DETACHING from a box (AIP-36 shared-box teardown:
+ *  teardown = detach, the box survives as long as others remain). Drops
+ *  `sessionId` from `attachedSessions`; no-op for a row this session isn't
+ *  on. Returns the sessions STILL attached (excluding `sessionId`).
+ *  Best-effort: never throws. */
+export function recordSessionDetach(
+  sandboxId: string,
+  sessionId: string,
+  path?: string,
+): string[] {
+  try {
+    const target = path ?? sandboxLedgerPath()
+    const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
+    if (!prior) return []
+    const remaining = (prior.attachedSessions ?? []).filter(s => s !== sessionId)
+    upsertSandboxLedger(
+      { ...prior, attachedSessions: remaining, updatedAt: nowIso() },
+      target,
+    )
+    return remaining
+  } catch {
+    return []
+  }
 }

@@ -271,6 +271,7 @@ import {
   recordSandboxLiveness,
   recordSandboxOrigin,
   recordSandboxState,
+  recordSessionDetach,
   upsertSandboxLedger,
   resolveReuseFromLedger,
   type SandboxLedgerEntry,
@@ -5915,10 +5916,28 @@ export async function bootSandboxAgentSession(opts: {
     // the box never outlives this failed spawn unaccounted-for
     // (`sandbox gc` selects on exactly these rows).
     if (err instanceof SandboxHostBootFailedError) {
+      // AIP-36 shared-box amendment — on a FAILED ATTACH, this session
+      // leaves the refcount even though it never finished booting (the
+      // boot-time `attachedSessions` stamp never ran, but `@agentproto/
+      // sandbox`'s own cleanup DID — it reaped the shared box: paused for
+      // a reuse whose provider supports pause, killed otherwise).
+      const survivorsAfterFailedAttach =
+        opts.sessionId !== undefined && reuseSandboxId !== undefined
+          ? recordSessionDetach(err.sandboxId, opts.sessionId).length
+          : 0
+      // The box existed at failure time — `@agentproto/sandbox` reaped it
+      // (paused for a reuse whose provider supports pause, killed
+      // otherwise) before throwing. Stamp the ledger with the outcome so
+      // the box never outlives this failed spawn unaccounted-for
+      // (`sandbox gc` selects on exactly these rows). Survivors keep the
+      // refcount only for a PAUSED box they can `reuse`-attach back onto —
+      // a KILLED box is dead for everyone, so the full clear stands.
+      const keepForSurvivors = err.cleanedUp === "paused" && survivorsAfterFailedAttach > 0
       markFailedBootLedger({
         sandboxId: err.sandboxId,
         provider: providerSlug,
         state: err.cleanedUp,
+        keepAttachedSessions: keepForSurvivors,
         ...(opts.label ? { label: opts.label } : {}),
         ...(boxCwd ? { cwd: boxCwd } : {}),
       })
@@ -5949,6 +5968,10 @@ export async function bootSandboxAgentSession(opts: {
     sandboxId: host.sandboxId,
     provider: providerSlug,
     state: reuseSandboxId !== undefined ? "connected" : "booted",
+    // AIP-36 shared-box refcount: the attaching session joins
+    // `attachedSessions` in the same write (the boot stamp lands before the
+    // session id exists — `recordSandboxOrigin` covers that case).
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     ...(opts.label ? { label: opts.label } : {}),
     ...(boxCwd ? { cwd: boxCwd } : {}),
     ...(credentialRefs.has(GIT_TOKEN_ENV) && opts.workspace
@@ -5958,6 +5981,17 @@ export async function bootSandboxAgentSession(opts: {
       ? { expiresAt: new Date(Date.now() + lifecyclePolicy.pauseAfterIdleMs).toISOString() }
       : {}),
   })
+
+  // AIP-36 shared-box amendment — a FAILED boot/setup of an attaching
+  // session is a DETACH, not a teardown: when other sessions are still
+  // attached, their box must be neither stopped nor paused (R2). Detach
+  // THIS session from the ledger row; returns true when survivors remain
+  // (the box is theirs), false when the caller should tear the box down
+  // and stamp the terminal state as before. Best-effort.
+  const detachOnBootFailure = async (): Promise<boolean> => {
+    if (!opts.sessionId) return false
+    return recordSessionDetach(host.sandboxId, opts.sessionId).length > 0
+  }
 
   let deliveryTarget: SandboxDeliveryTarget | undefined
   const deliverySessionId = opts.sessionId
@@ -5976,6 +6010,13 @@ export async function bootSandboxAgentSession(opts: {
       ...(opts.tarWorkspace.restoreFrom ? { restoreFrom: opts.tarWorkspace.restoreFrom } : {}),
     })
     if (!tar.ok) {
+      if (await detachOnBootFailure()) {
+        return {
+          ok: false,
+          code: "sandbox_workspace_setup_failed",
+          message: `agent_start: restoring workspace "${opts.tarWorkspace.slug}" in the sandbox failed — ${tar.message}`,
+        }
+      }
       if (reuseSandboxId !== undefined && host.pause) {
         await host.pause().catch(() => undefined)
         recordSandboxState(host.sandboxId, "paused")
@@ -6001,12 +6042,15 @@ export async function bootSandboxAgentSession(opts: {
       // A reused box may hold earlier sessions' unpushed work: keep it
       // reconnectable (pause) rather than kill it, as the reconnect-failure
       // path does.
-      if (reuseSandboxId !== undefined && host.pause) {
-        await host.pause().catch(() => undefined)
-        recordSandboxState(host.sandboxId, "paused")
-      } else {
-        await host.stop().catch(() => undefined)
-        recordSandboxState(host.sandboxId, "stopped")
+      // AIP-36 shared-box: survivors keep the box — detach only.
+      if (!(await detachOnBootFailure())) {
+        if (reuseSandboxId !== undefined && host.pause) {
+          await host.pause().catch(() => undefined)
+          recordSandboxState(host.sandboxId, "paused")
+        } else {
+          await host.stop().catch(() => undefined)
+          recordSandboxState(host.sandboxId, "stopped")
+        }
       }
       return {
         ok: false,
@@ -6173,9 +6217,12 @@ export async function bootSandboxAgentSession(opts: {
   } catch (err) {
     // The box was fully booted but its own `agent_start` failed — reap the
     // box (kill: it holds nothing of value) and mark the ledger so the
-    // failure is never a silent orphan.
-    await host.stop().catch(() => undefined)
-    recordSandboxState(host.sandboxId, "stopped")
+    // failure is never a silent orphan. AIP-36 shared-box: survivors keep
+    // the box — detach only.
+    if (!(await detachOnBootFailure())) {
+      await host.stop().catch(() => undefined)
+      recordSandboxState(host.sandboxId, "stopped")
+    }
     // A device spawn whose E2E channel never came up (after the retry) is a
     // transport failure, not the host daemon rejecting the adapter — surface
     // it as its own 4xx (see `http-server.ts`) so a caller gets an actionable
@@ -6209,8 +6256,10 @@ export async function bootSandboxAgentSession(opts: {
       github: { resolveToken: resolveGithubWorkspaceTokenFromBroker },
     })
     if (!serve.ok) {
-      await host.stop().catch(() => undefined)
-      recordSandboxState(host.sandboxId, "stopped")
+      if (!(await detachOnBootFailure())) {
+        await host.stop().catch(() => undefined)
+        recordSandboxState(host.sandboxId, "stopped")
+      }
       return {
         ok: false,
         code: "sandbox_app_serve_failed",
@@ -6272,7 +6321,13 @@ export async function bootSandboxAgentSession(opts: {
       // boot-time upload never happened, so a degraded spawn stays degraded
       // instead of discovering a write path it never had.
       ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
-      ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+      ledger: {
+        sandboxId: host.sandboxId,
+        provider: providerSlug,
+        // AIP-36 shared-box refcount: `close()` detaches THIS session and
+        // only kills the box when no other session is still attached.
+        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+      },
       // A provider box outlives a host-daemon restart (shutdown detaches
       // instead of killing it, boot re-attaches). Device sandboxes keep the
       // old behavior: their box daemon is reached through a paired host.
@@ -6431,6 +6486,11 @@ function markFailedBootLedger(opts: {
   sandboxId: string
   provider: string
   state: "paused" | "stopped"
+  /** AIP-36 shared-box amendment — when a FAILED ATTACH leaves survivors
+   *  live AND the box was only PAUSED (they can `reuse`-attach back), the
+   *  surviving refcount must not be erased by this stamp. A killed box is
+   *  terminal for everyone — the flag stays off and the list clears. */
+  keepAttachedSessions?: boolean
   label?: string
   cwd?: string
 }): void {
@@ -6438,7 +6498,7 @@ function markFailedBootLedger(opts: {
     const ts = new Date().toISOString()
     const prior = readSandboxLedger().find(e => e.sandboxId === opts.sandboxId)
     if (prior) {
-      recordSandboxState(opts.sandboxId, opts.state)
+      recordSandboxState(opts.sandboxId, opts.state, undefined, opts.keepAttachedSessions)
       return
     }
     const entry: SandboxLedgerEntry = {
