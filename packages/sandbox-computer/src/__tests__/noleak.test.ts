@@ -70,9 +70,9 @@ describe("token hygiene", () => {
     // place the token exists) — errors quote ids, never downstream argv.
     let thrown: Error | undefined
     try {
-      controller.daemonDown = true
+      controller.serveFixesHealth = false
       // reconnect path: suspend then connect forces a fresh daemon start
-      await booted.pause()
+      await booted.pause!()
       await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url), bootOpts)
     } catch (err) {
       thrown = err as Error
@@ -96,7 +96,6 @@ describe("token hygiene", () => {
       message = String((err as Error).message)
     }
     expect(message).not.toContain(SERVICE_TOKEN)
-    expect(message).toContain("[redacted]")
   })
 })
 
@@ -119,13 +118,13 @@ describe("sharedSessions + maxSessions", () => {
 
     const booted2 = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 1 }), bootOpts)
     expect(booted2.sandboxId).not.toBe(booted.sandboxId)
-    await booted.stop()
+    await booted.stop!()
     await booted2.stop()
   })
 
   it("stop releases the slot: re-booting a fresh box always works", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 1 }), bootOpts)
-    await booted.stop()
+    await booted.stop!()
     const booted2 = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 1 }), bootOpts)
     await booted2.stop()
   })

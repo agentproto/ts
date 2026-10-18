@@ -35,7 +35,7 @@ export class FakeController {
   private nextStateSnapshot: string | undefined = undefined
   private lastCreateState = "running"
 
-  constructor(private options: FakeControllerOptions) {
+  constructor(public options: FakeControllerOptions) {
     this.server = createServer((req, res) => {
       void this.handle(req, res).catch((err) => {
         res.statusCode = 500
@@ -135,9 +135,11 @@ export class FakeController {
     if (custom) return custom
     const script = argv[2] ?? ""
     if (script.includes("http://127.0.0.1")) {
-      // health probes (single curl or wait-loop)
-      const healthy = !this.daemonDown
-      if (script.includes("exit 1; done")) {
+      // Health probes: the daemon is considered DOWN until a serve command
+      // ran (unless serveFixesHealth=false models a daemon that never comes
+      // up — used by the reclaim test).
+      const healthy = this.serveSeen && this.serveFixesHealth
+      if (script.includes("done; exit 1")) {
         return { exitCode: healthy ? 0 : 1, stdout: "", stderr: "" }
       }
       return { exitCode: 0, stdout: healthy ? "ok" : "__down__", stderr: "" }
@@ -173,6 +175,7 @@ export class FakeController {
       return { exitCode: 0, stdout: "", stderr: "" }
     }
     if (script.startsWith("mkdir -p") || script.startsWith(": > ") || script.includes("echo started")) {
+      if (script.includes("agentproto serve")) this.serveSeen = true
       return { exitCode: 0, stdout: "started", stderr: "" }
     }
     if (script.includes("npm i -g")) return { exitCode: 0, stdout: "", stderr: "" }
@@ -182,6 +185,10 @@ export class FakeController {
   }
 
   daemonDown = false
+  /** Set once a serve command ran (models the box's own daemon state). */
+  serveSeen = false
+  /** Models a daemon that refuses to become healthy even after launch. */
+  serveFixesHealth = true
 }
 
 function readBody(req: IncomingMessage): Promise<string> {

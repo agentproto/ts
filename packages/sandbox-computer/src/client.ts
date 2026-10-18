@@ -134,7 +134,7 @@ export class ComputerControllerClient {
 
     if (!res.ok) {
       const parsedError = errorResponseSchema.safeParse(json)
-      const code = parsedError.success ? parsedError.data.error : undefined
+      const code = parsedError.success ? redactSecret(parsedError.data.error, this.secrets()) : undefined
       const detail = parsedError.success && parsedError.data.detail !== undefined
         ? ` — ${JSON.stringify(parsedError.data.detail).slice(0, 500)}`
         : ""

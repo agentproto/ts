@@ -77,7 +77,7 @@ describe("computerSandboxProvider.boot", () => {
     // exec flow: health probe → CLI install → detached serve → wait-healthy
     const scripts = controller.execs.map((e) => e.argv[2] ?? "")
     expect(scripts.some((s) => s.includes("http://127.0.0.1:18790/health") && !s.includes("sleep 1"))).toBe(true)
-    expect(scripts.some((s) => s.includes("npm i -g @agentproto/cli@latest"))).toBe(true)
+    expect(scripts.some((s) => s.includes("npm i -g @agentproto/cli@'latest'"))).toBe(true)
     const serve = scripts.find((s) => s.includes("agentproto serve"))
     expect(serve).toBeDefined()
     expect(serve).toContain("--bind 0.0.0.0")
@@ -87,7 +87,7 @@ describe("computerSandboxProvider.boot", () => {
     expect(scripts.some((s) => s.includes("sleep 1"))).toBe(true)
 
     // booted handle exec maps onto POST exec
-    const result = await booted.exec({ command: "echo hi" })
+    const result = await booted.exec!({ command: "echo hi" })
     expect(result).toMatchObject({ exitCode: 0 })
     const last = controller.execs[controller.execs.length - 1] as { argv: string[] }
     expect(last.argv[0]).toBe("/bin/bash")
@@ -97,9 +97,9 @@ describe("computerSandboxProvider.boot", () => {
   it("drops env vars the controller would reject", async () => {
     await computerSandboxProvider.boot(
       spec(controller.url),
-      { env: { good: "kept", "bad-key-!avoided": "x", lower_case: "dropped", multiline: "a\nb" } },
+      { env: { GOOD_VAR: "kept", "bad-key-!dropped": "x", lower_case: "dropped", multiline: "a\nb" } },
     )
-    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({ good: "kept" })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({ GOOD_VAR: "kept" })
   })
 
   it("maps create errors and never leaks a computer on a failed boot", async () => {
@@ -112,7 +112,7 @@ describe("computerSandboxProvider.boot", () => {
   })
 
   it("reclaims the computer when the daemon never becomes healthy", async () => {
-    controller.daemonDown = true
+    controller.serveFixesHealth = false
     await expect(computerSandboxProvider.boot(spec(controller.url), bootOpts)).rejects.toThrow(
       /daemon did not become healthy/,
     )
@@ -130,7 +130,7 @@ describe("computerSandboxProvider.boot", () => {
 
   it("lifecycle: pause=suspend, stop=rm, exec works after boot", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
-    await booted.pause()
+    await booted.pause!()
     expect(controller.suspended).toEqual([booted.sandboxId])
     expect(controller.states.get(booted.sandboxId)).toBe("stopped")
 
@@ -147,24 +147,24 @@ describe("computerSandboxProvider.boot", () => {
       bootOpts,
     )
     expect(booted.mcpUrl).toBe(`http://gate.internal:18790/computers/${booted.sandboxId}`)
-    const exposed = await booted.expose(3000)
+    const exposed = await booted.expose!(3000)
     expect(exposed.url).toBe(`http://gate.internal:3000/computers/${booted.sandboxId}`)
   })
 
   it("writeFile/readFile round-trips through chunked base64 execs", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     const payload = Buffer.from("x".repeat(20_000) + "y", "utf8")
-    await booted.writeFile("/home/user/data/blob.bin", new Uint8Array(payload))
+    await booted.writeFile!("/home/user/data/blob.bin", new Uint8Array(payload))
     const stored = controller.fileSystem.get("/home/user/data/blob.bin")
     expect(stored).toBe(payload.toString("utf8"))
 
-    const read = await booted.readFile("/home/user/data/blob.bin")
+    const read = await booted.readFile!("/home/user/data/blob.bin")
     expect(Buffer.from(read).toString()).toBe(payload.toString())
   })
 
   it("readFile rejects for a missing file", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
-    await expect(booted.readFile("/nope/missing")).rejects.toThrow(/no file at/)
+    await expect(booted.readFile!("/nope/missing")).rejects.toThrow(/no file at/)
   })
 })
 
@@ -180,24 +180,33 @@ describe("computerSandboxProvider.connect + probe", () => {
   })
 
   it("resumes a suspended computer, adopts the controller's new id and aliases the old one", async () => {
-    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
-    await booted.pause()
-    const oldId = booted.sandboxId
+    process.env.COMPUTER_CONTROLLER_URL = controller.url
+    process.env.COMPUTER_CONTROLLER_TOKEN = SERVICE_TOKEN
+    process.env.COMPUTER_TENANT_ID = "tenant-a"
+    try {
+      const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+      await booted.pause!()
+      const oldId = booted.sandboxId
 
-    const reconnected = await computerSandboxProvider.connect!(
-      oldId,
-      spec(controller.url),
-      bootOpts,
-    )
-    expect(controller.resumed).toEqual([oldId])
-    expect(reconnected.sandboxId).not.toBe(oldId)
-    expect(controller.states.get(reconnected.sandboxId)).toBe("running")
+      const reconnected = await computerSandboxProvider.connect!(
+        oldId,
+        spec(controller.url),
+        bootOpts,
+      )
+      expect(controller.resumed).toEqual([oldId])
+      expect(reconnected.sandboxId).not.toBe(oldId)
+      expect(controller.states.get(reconnected.sandboxId)).toBe("running")
 
-    // the old id still resolves for liveness via the in-process alias
-    const alive = await computerSandboxProvider.probe!(oldId)
-    expect(alive).toEqual({ alive: true, state: "running" })
-    const dead = await computerSandboxProvider.probe!("cmp-not-a-box")
-    expect(dead).toEqual({ alive: false })
+      // the old id still resolves for liveness via the in-process alias
+      const alive = await computerSandboxProvider.probe!(oldId)
+      expect(alive).toEqual({ alive: true, state: "running" })
+      const dead = await computerSandboxProvider.probe!("cmp-not-a-box")
+      expect(dead).toEqual({ alive: false })
+    } finally {
+      delete process.env.COMPUTER_CONTROLLER_URL
+      delete process.env.COMPUTER_CONTROLLER_TOKEN
+      delete process.env.COMPUTER_TENANT_ID
+    }
   })
 
   it("connect on an expired id throws SandboxBoxGoneError", async () => {

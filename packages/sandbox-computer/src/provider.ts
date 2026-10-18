@@ -297,8 +297,9 @@ async function bootOnClient(
   // the per-box daemon token ever appears in here.
   const envKeyRe = /^[A-Z_][A-Z0-9_]{0,63}$/
   const createEnv: Record<string, string> = {}
-  for (const [k, v] of Object.entries(opts.env ?? {})) {
-    if (envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v)) createEnv[k] = v
+  for (const [k, raw] of Object.entries(opts.env ?? {})) {
+    const v = typeof raw === "string" ? raw : undefined
+    if (v !== undefined && envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v)) createEnv[k] = v
   }
 
   let created
