@@ -14,9 +14,9 @@
  *   connect  → GET id (404 ⇒ SandboxBoxGoneError), resume when suspended
  *   probe    → GET id (cheap liveness for `sandbox list`)
  *
- * SHARED SESSIONS: this provider declares `sharedSessions: true` — several
- * agentproto sessions hang off ONE computer's daemon (the runtime's AIP-36
- * reuse/attach path multiplexes over `mcpUrl`). `config.maxSessions` caps
+ * SHARED SESSIONS: this provider declares `sharedSessions: true` —
+ * descriptive metadata marking the box as advertised shareable; no runtime
+ * behaviour reads the flag yet. `config.maxSessions` independently caps
  * how many sessions this PROCESS maps onto one computer (default 1); the
  * controller has no attach/detach refcount, so cross-process counting is a
  * known gap (see README).

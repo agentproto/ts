@@ -55,12 +55,13 @@ Registered under the slug `computer`:
 }
 ```
 
-`sharedSessions: true` means several agentproto sessions can hang off ONE
-computer's daemon — the runtime's AIP-36 reuse/attach path multiplexes over
-`mcpUrl` instead of demanding a box per session. `config.maxSessions` caps
-how many sessions a single host process books onto one computer; the
-controller has no cross-process attach/detach refcount (see gaps below), so
-the cap is enforced per process only.
+`sharedSessions: true` is descriptive metadata: this provider's box is
+advertised as shareable — one computer's daemon could hang off several
+agentproto sessions multiplexing over `mcpUrl`. No runtime behaviour reads
+this flag yet. `config.maxSessions` separately caps how many sessions a
+single host process books onto one computer; the controller has no
+cross-process attach/detach refcount (see gaps below), so the cap is
+enforced per process only.
 
 ## Secrets
 
