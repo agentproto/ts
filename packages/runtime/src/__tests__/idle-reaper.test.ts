@@ -279,6 +279,22 @@ describe("runIdleReapPass — sandboxed sessions (sandboxIdleReapAfterMs)", () =
     expect(reaped).toEqual([])
   })
 
+  it("a restarted sandbox session still awaiting its first prompt gets a grace period past the sandbox threshold", () => {
+    // startedAt 00:00, never active, 60min before NOW: past 15min, inside the 60min+ grace.
+    const restarted = (id: string, over: Partial<SessionDescriptor> = {}) =>
+      box({ id, lastActivityAt: undefined, continuedFrom: "sess_prev", ...over })
+    const { registry, reaped } = stubRegistry([
+      restarted("fresh", { startedAt: "2026-07-23T00:30:00Z" }), // 30min old
+      restarted("resumed", { startedAt: "2026-07-23T00:30:00Z", continuedFrom: undefined, resumedFrom: "sess_prev" }),
+      restarted("stale", { startedAt: "2026-07-22T22:00:00Z" }), // 3h old: grace over
+      box({ id: "never-restarted", lastActivityAt: undefined, startedAt: "2026-07-23T00:30:00Z" }),
+      restarted("active", { startedAt: "2026-07-23T00:30:00Z", lastActivityAt: "2026-07-23T00:40:00Z" }),
+    ])
+    const summary = runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now })
+    expect(summary.ids.sort()).toEqual(["active", "never-restarted", "stale"])
+    expect(reaped).toHaveLength(3)
+  })
+
   it("a device: sandbox (a paired host, not a box of ours) keeps the general rules", () => {
     const { registry } = stubRegistry([box({ id: "dev", sandboxProvider: "device:my-mac" })])
     expect(runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now }).reaped).toBe(0)
