@@ -324,6 +324,7 @@ describe("runLinuxInstall", () => {
       const code = await runLinuxInstall([], {
         home,
         exec: noSessionExec,
+        health: async () => ({ url: "http://127.0.0.1:18790", version: "0.31.0", pid: 4242 }),
         spawnServe: async opts => {
           spawned = opts
           return 4242
