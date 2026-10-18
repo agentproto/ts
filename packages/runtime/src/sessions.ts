@@ -4823,7 +4823,9 @@ export interface SessionsRegistry {
    *  policy. This method only guards the invariants a stall-mark must never
    *  violate — it refuses (returns false, no-op) a row that isn't a live
    *  (`running`) agent-cli session, isn't currently `busy` (mid-turn), is
-   *  legitimately `blockedOn` a subagent/command, or is already flagged
+   *  legitimately `blockedOn` a subagent/command, has a tool call in
+   *  flight (`activeToolCalls` non-empty — a long `pnpm install` is
+   *  expected silence, a `tool-call:` phase, never a stall), or is already flagged
    *  stalled (idempotent — the sweep's own candidate filter already excludes
    *  these, this is the second line of defense for any other caller).
    *  Returns true iff the row was actually flagged. */
@@ -12604,6 +12606,12 @@ export function createSessionsRegistry(opts?: {
       // for any caller regardless of what the sweep already filtered for.
       if (rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") return false
       if (rt.desc.busy !== true || rt.desc.blockedOn !== undefined) return false
+      // Tool call in flight (e.g. a long `pnpm install` announced by a tool
+      // name `classifyBlockedOn` never maps into `blockedOn`) — expected
+      // silence, never a stall; same exclusion the sweep makes on the
+      // descriptor's stamped `currentPhase` (`tool-call:<name>`, derived
+      // from this very map), so the two layers cannot disagree.
+      if (rt.activeToolCalls !== undefined && rt.activeToolCalls.size > 0) return false
       if (rt.desc.stalledSinceMs !== undefined) return false
       rt.desc.stalledSinceMs = stalledSinceMs
       // A turn that has produced NOTHING at all since its prompt and gone
