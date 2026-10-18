@@ -300,4 +300,40 @@ describe("agent_start sandbox — workspace without a configured remote", () => 
     expect(pack).toContain("node_modules")
     expect(execCalls.some(c => c.command.includes("push"))).toBe(false)
   })
+
+  it("orchestrator:true on a sandbox spawn is FORWARDED to the box daemon's own agent_start — nested orchestration mounts from the BOX, never the unreachable host loopback (regression)", async () => {
+    const buildOrchestratorMcp = vi.fn(() => ({
+      entry: {
+        name: "agentproto",
+        transport: "http",
+        ref: "http://127.0.0.1:1/mcp/orchestrator?scope=tok",
+      } as const,
+      bindLifecycle: () => () => {},
+    }))
+    const deps = () => ({ ...makeDeps(), buildOrchestratorMcp })
+
+    const result = await spawnAgentSession(deps(), {
+      adapter: "fake-cli",
+      sandbox: "fake",
+      workspaceSlug: "scratch",
+      role: "supervisor",
+      orchestrator: { tools: ["agent_start"], maxDepth: 2 },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // The HOST daemon never mints a scope nor injects its unreachable
+    // loopback URL — the request rides the inner agent_start instead.
+    expect(buildOrchestratorMcp).not.toHaveBeenCalled()
+    expect(JSON.stringify(result.descriptor.mcpServers ?? [])).not.toContain("/mcp/orchestrator")
+    expect(result.warnings ?? []).not.toContainEqual(expect.stringMatching(/orchestrator/))
+    // The inner agent_start (BOX daemon) received the forwarded request —
+    // pinned precisely at the `host.start` seam in
+    // sandbox-orchestrator-forward.test.ts (the box daemon consumes
+    // `orchestrator` itself, so the ADAPTER never sees it here).
+    expect(receivedStarts).toHaveLength(1)
+
+    registry.shutdown()
+    await rm(sessionTranscriptDir(result.descriptor.id), { recursive: true, force: true })
+  })
 })

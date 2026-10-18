@@ -319,7 +319,7 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      `Make this child a SCOPED orchestrator — auto-mounts the daemon's spawn/supervise tools. ${help("orchestrator")}`
+      `For a \`sandbox\` spawn, FORWARDED to the box daemon (the sandboxed session orchestrates children ON THE SAME BOX through the box daemon's own loopback gateway); otherwise this host auto-mounts the scoped orchestrator gateway. ${help("orchestrator")}`
     ),
   notifyUrl: z
     .string()
