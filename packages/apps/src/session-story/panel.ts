@@ -831,8 +831,8 @@ function sendMsg(){
 // ============================================================
 var POLL_MS=5000;
 function loadSessions(){
-  return callTool('session_list', {kind:'all'}).then(function(data){
-    sessions=data.sessions||[];
+  return callToolPaged('session_list', {kind:'all'}, 'sessions').then(function(all){
+    sessions=all;
     if($('pickerScreen') && !$('pickerScreen').classList.contains('hidden')) renderPicker();
   }).catch(function(e){ setStatus('Erreur : '+e.message); });
 }

@@ -70,12 +70,6 @@ interface Page {
   total?: number
 }
 
-interface Page {
-  items: SessionDescriptor[]
-  nextCursor?: string
-  total?: number
-}
-
 describe("session_list default bound + ids filter", () => {
   let workspace: string
 

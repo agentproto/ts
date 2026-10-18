@@ -130,8 +130,7 @@ function render(sessions, summaries){
 }
 
 function loadAndRender(){
-  return callTool('session_list', {kind:'all'}).then(function(data){
-    var all = data.sessions || [];
+  return callToolPaged('session_list', {kind:'all'}, 'sessions').then(function(all){
     var agents = all.filter(function(s){ return s.kind === 'agent-cli'; });
     // Render shells immediately, then fill summaries as they arrive.
     var summaries = {};

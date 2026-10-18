@@ -555,13 +555,35 @@ describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
 
     it("replaces an oversize result with a truncated marker and no structuredContent", async () => {
       const reg = buildMcpTool({ tool: bigTool, candidates: [bigDriver] })
+      // `bigTool` has no paging parameters in its input shape — the marker
+      // hint must not tell the caller to paginate.
       const res = await reg.handler({ n: MCP_RESULT_MAX_BYTES + 10 })
       const body = parse(res)
       expect(body.truncated).toBe(true)
       expect(body.totalBytes).toBeGreaterThan(MCP_RESULT_MAX_BYTES)
-      expect(body.hint).toBe("use limit/cursor/fields")
+      expect(body.hint).toContain("narrow the request arguments")
       expect(res.structuredContent).toBeUndefined()
       expect(res.content[0]!.text.length).toBeLessThan(200)
+    })
+
+    it("hints paging for an oversize paged (limit/cursor) tool", async () => {
+      const pagedTool = defineTool({
+        id: "demo.big.paged",
+        description: "Returns n bytes of payload; paged input.",
+        inputSchema: z.object({ n: z.number(), limit: z.number().optional() }),
+        outputSchema: z.object({ blob: z.string() }),
+      })
+      const pagedDriver = defineDriver({
+        id: "big-builtin-paged",
+        name: "BigPaged",
+        description: "Returns a blob of n chars.",
+        kind: "builtin",
+        implements: [{ tool: "demo.big.paged", version: "*" }],
+        implementations: [implementTool(pagedTool, ({ input }) => ({ blob: "x".repeat(input.n) }))],
+      })
+      const reg = buildMcpTool({ tool: pagedTool, candidates: [pagedDriver] })
+      const res = await reg.handler({ n: MCP_RESULT_MAX_BYTES + 10 })
+      expect(parse(res).hint).toBe("use limit/cursor/fields")
     })
 
     it("passes a result under the cap through untouched", async () => {

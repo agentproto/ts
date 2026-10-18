@@ -250,6 +250,7 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
       // untransformed tool output) gets the default JSON serialization.
       return capResult(
         isMcpTextResult(output) ? output : contentText(output),
+        inputShape,
       )
     },
   }
@@ -267,7 +268,7 @@ export interface McpTruncatedMarker {
   hint: string
 }
 
-function capResult(result: McpToolResult): McpToolResult {
+function capResult(result: McpToolResult, inputShape: ZodRawShape): McpToolResult {
   if (result.isError) return result
   const totalBytes = result.content.reduce(
     (n, c) => n + Buffer.byteLength(c.text, "utf8"),
@@ -277,7 +278,13 @@ function capResult(result: McpToolResult): McpToolResult {
   const marker: McpTruncatedMarker = {
     truncated: true,
     totalBytes,
-    hint: "use limit/cursor/fields",
+    // Tool-aware: list tools wrap in the shared `pageParamsShape` (limit/
+    // cursor/fields), so a marker that names those is actionable. Tools whose
+    // input has no paging parameters can't obey that hint — point them at
+    // narrowing their own arguments instead.
+    hint: Object.hasOwn(inputShape, "limit")
+      ? "use limit/cursor/fields"
+      : "no limit/cursor/fields on this tool; narrow the request arguments so the result fits",
   }
   return { content: [{ type: "text", text: JSON.stringify(marker) }] }
 }

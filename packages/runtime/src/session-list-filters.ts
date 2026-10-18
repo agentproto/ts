@@ -109,7 +109,7 @@ export function parseTimeBound(raw: string, field: string, now: number = Date.no
   return abs
 }
 
-function toList(v: StringOrList | undefined): string[] {
+export function toList(v: StringOrList | undefined): string[] {
   if (v === undefined) return []
   const parts = typeof v === "string" ? [v] : [...v]
   return parts.flatMap(p => p.split(",")).map(s => s.trim()).filter(s => s.length > 0)

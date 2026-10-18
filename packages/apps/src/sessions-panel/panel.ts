@@ -228,8 +228,10 @@ function loadSessions() {
   // {kind:'all'} is session_list's live-able default — agent-CLI + terminal/
   // PTY only. kind:"command" rows (a shell-execution log, not a resumable
   // session) are excluded unless includeCommands is explicitly passed.
-  return callTool('session_list', {kind: 'all'}).then(function(data) {
-    sessions = data.sessions || [];
+  // callToolPaged follows session_list's cursor so rows past the default
+  // bound still reach the sidebar.
+  return callToolPaged('session_list', {kind: 'all'}, 'sessions').then(function (rows) {
+    sessions = rows;
     renderSidebar();
     setStatus(sessions.length + ' session' + (sessions.length === 1 ? '' : 's') + ' · ' + new Date().toLocaleTimeString());
   }).catch(function(e) {
