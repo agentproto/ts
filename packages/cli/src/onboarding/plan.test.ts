@@ -114,13 +114,36 @@ describe("daemon", () => {
     expect(action(actions, "daemon.restart").default).toBe(false)
   })
 
-  it("linux ⇒ the detached serve fallback", async () => {
+  it("linux ⇒ start the daemon (the verb itself picks systemd --user or the pidfile fallback)", async () => {
     const linux = createFakeContext({ platform: "linux" })
     const actions = await daemonStep.plan?.([{ id: "daemon.health", title: "", status: "missing" }], linux, none)
-    const a = action(actions ?? [], "daemon.serve")
+    const a = action(actions ?? [], "daemon.start")
     const fake = createFakeSetup(linux)
     expect((await a.apply(fake.io)).ok).toBe(true)
-    expect(fake.calls).toEqual(["ensureDaemon"])
+    expect(fake.calls).toEqual(["daemon start"])
+  })
+
+  it("linux, systemd unit not installed ⇒ install the service then start, default yes", async () => {
+    const linux = createFakeContext({ platform: "linux" })
+    const actions = await daemonStep.plan?.(
+      [
+        { id: "daemon.health", title: "", status: "missing", fix: "agentproto daemon install" },
+        {
+          id: "daemon.service",
+          title: "",
+          status: "warn",
+          fix: "agentproto daemon install",
+          data: { mode: "systemd", installed: false },
+        },
+      ],
+      linux,
+      none,
+    )
+    const a = action(actions ?? [], "daemon.install")
+    expect(a.default).toBe(true)
+    const fake = createFakeSetup(linux)
+    expect((await a.apply(fake.io)).ok).toBe(true)
+    expect(fake.calls).toEqual(["daemon install", "daemon start"])
   })
 
   it("Windows, not installed ⇒ install the scheduled task then start, default yes", async () => {

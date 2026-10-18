@@ -336,7 +336,8 @@ describe("runLinuxInstall", () => {
       const { readFileSync, existsSync } = await import("node:fs")
       expect(existsSync(systemdUnitPath(home))).toBe(false)
       expect(readFileSync(linuxPidfilePath(home), "utf8").trim()).toBe("4242")
-      expect(out.chunks.join("")).toContain("pidfile")
+      expect(out.chunks.join("")).toContain("detached serve")
+      expect(out.chunks.join("")).toContain(linuxPidfilePath(home))
     } finally {
       rmSync(home, { recursive: true, force: true })
     }

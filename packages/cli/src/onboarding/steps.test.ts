@@ -16,7 +16,7 @@ import { rendezvousStep } from "./steps/rendezvous.js"
 import { skillsStep } from "./steps/skills.js"
 import { localModelsStep } from "./steps/local-models.js"
 import { llmGatewayStep } from "./steps/llm-gateway.js"
-import { globalNodeModulesDir } from "../commands/daemon.js"
+import { computeDaemonPath, globalNodeModulesDir } from "../commands/daemon.js"
 import { ONBOARDING_STEPS } from "./registry.js"
 import { runChecks } from "./run.js"
 import type { StepCheck } from "./types.js"
@@ -217,6 +217,7 @@ describe("daemon", () => {
     const checks = await daemonStep.detect(
       createFakeContext({
         platform: "linux",
+        health: null,
         exec: (cmd, args) => {
           if (cmd === "systemctl" && args[1] === "show-environment") return { code: 0, stdout: "", stderr: "" }
           if (cmd === "loginctl") return { code: 0, stdout: "Linger=yes\n", stderr: "" }
@@ -233,6 +234,7 @@ describe("daemon", () => {
     const checks = await daemonStep.detect(
       createFakeContext({
         platform: "linux",
+        health: null,
         // default exec: `systemctl --user …` fails ⇒ no user session.
       }),
     )
