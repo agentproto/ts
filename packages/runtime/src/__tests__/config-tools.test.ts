@@ -39,6 +39,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
   delete process.env[WORKTREE_ISOLATION_ENV]
   delete process.env[PROVENANCE_WRAP_GH_ENV]
+  delete process.env.AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS
 })
 
 async function writeCfg(cfg: AgentprotoConfig): Promise<void> {
@@ -88,6 +89,21 @@ describe("config_get", () => {
     expect(row.envOverride).toBe(WORKTREE_ISOLATION_ENV)
     expect(row.effective).toBe("always")
     expect(row.value).toBe("never")
+    await client.close()
+  })
+
+  it("reports source=env for daemon.sandboxIdleReapAfterMs, including the 0 (off) value", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}, { bootDaemonKnobs: { "daemon.sandboxIdleReapAfterMs": 0 } }))
+    for (const raw of ["600000", "0"]) {
+      process.env.AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS = raw
+      const res = parse(
+        await client.callTool({ name: "config_get", arguments: { keys: ["daemon.sandboxIdleReapAfterMs"] } }),
+      )
+      const row = findKey(res, "daemon.sandboxIdleReapAfterMs")
+      expect(row.source).toBe("env")
+      expect(row.envOverride).toBe("AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS")
+    }
     await client.close()
   })
 

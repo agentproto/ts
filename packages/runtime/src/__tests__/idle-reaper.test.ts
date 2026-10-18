@@ -538,6 +538,41 @@ describe("registry.reapIdle — sandboxed session (box teardown + fresh-box revi
     reg.shutdown()
   })
 
+  it("the fresh-box move waits for the reap's own teardown (final checkpoint) to finish", async () => {
+    const order: string[] = []
+    let releaseClose!: () => void
+    const closeDone = new Promise<void>(res => { releaseClose = res })
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      moveReapedBox: async () => {
+        order.push("move")
+        return { ok: true, newSessionId: reg.spawnAgent({
+          workspaceSlug: "default",
+          cwd: "/home/user/work",
+          agentSession: liveAgentSession("acp-new", { value: false }),
+          adapterSlug: "claude-code",
+          remote: true,
+          sandboxId: "bx_2",
+          sandboxProvider: "e2b",
+        }).id }
+      },
+    })
+    const desc = spawnBox(reg, vi.fn(async () => {
+      await closeDone
+      order.push("teardown-done")
+    }))
+    reg.reapIdle(desc.id, 5)
+
+    const prompt = reg.sendPrompt(desc.id, "go")
+    await new Promise(res => setTimeout(res, 20))
+    expect(order).toEqual([]) // move held back while the teardown runs
+    releaseClose()
+    await prompt
+    expect(order).toEqual(["teardown-done", "move"])
+    reg.shutdown()
+  })
+
   it("concurrent prompts share ONE fresh-box move", async () => {
     let calls = 0
     let succId = ""

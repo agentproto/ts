@@ -3060,6 +3060,10 @@ interface SessionRuntime {
    *  ({@link SessionsRegistryOptions.moveReapedBox}) — concurrent prompts
    *  share one move and the one successor id. Cleared once settled. */
   reapedBoxMove?: Promise<string>
+  /** The in-flight box teardown an idle reap started (final checkpoint, branch
+   *  delivery, box stop). A prompt that wakes the row waits for it, so the
+   *  fresh box cold-boots from the FINAL checkpoint, not one that predates it. */
+  reapTeardown?: Promise<void>
   /** Async stop callback for browser sessions (kind="browser").
    *  Called by kill() best-effort — the descriptor is already flipped
    *  to "killed" before this fires. */
@@ -7871,6 +7875,9 @@ export function createSessionsRegistry(opts?: {
     if (!needsReapedBoxMove(rt) || !moveReapedBoxHook) return undefined
     const id = rt.desc.id
     const move = (async () => {
+      // Let the reap's own teardown (final checkpoint + delivery) finish first.
+      await rt.reapTeardown
+      delete rt.reapTeardown
       let outcome: Awaited<ReturnType<typeof moveReapedBoxHook>>
       try {
         outcome = await moveReapedBoxHook({ sessionId: id, prev: rt.desc })
@@ -12724,7 +12731,7 @@ export function createSessionsRegistry(opts?: {
         // stamps the ledger. Failure is surfaced, not swallowed: a box that
         // survives its reaped session is exactly the leak this exists to stop.
         const sandboxedBox = isProviderBoxSession(rt.desc)
-        void rt.agentSession
+        const teardown = rt.agentSession
           .close(sandboxedBox ? { idleReap: { idleMs, sessionId: rt.desc.id } } : undefined)
           .catch(err => {
             if (!sandboxedBox) return
@@ -12735,6 +12742,7 @@ export function createSessionsRegistry(opts?: {
             )
             appendLine(rt, `[warn] box teardown after idle reap failed: ${detail}`, "stderr")
           })
+        if (sandboxedBox) rt.reapTeardown = teardown
         void transcriptWriter.close(rt.desc.id)
         tracedSessions.delete(rt.desc.id)
         // THE difference from kill(): drop the (now-closed) binding so the row
