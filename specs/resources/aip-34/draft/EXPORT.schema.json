@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-34/EXPORT.schema.json",
+  "title": "EXPORT.md frontmatter — workspace-export/v1 (sealed/hard node digest)",
+  "description": "Validates the YAML frontmatter portion of an EXPORT.md manifest. A `wall: sealed` or `wall: hard` node's ONLY readable surface for its ancestors: the body is free-form prose (summaries), never raw files.",
+  "type": "object",
+  "required": ["schema", "from", "generated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "workspace-export/v1" },
+    "from": {
+      "type": "string",
+      "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+      "description": "Id of the sealed/hard workspace this export speaks for."
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "generated_by": {
+      "type": "string",
+      "description": "Agent slug that wrote this export, if any."
+    },
+    "sections": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Informational table of contents for the body's `##` headings. Not enforced."
+    },
+    "metadata": { "type": "object", "additionalProperties": true }
+  }
+}

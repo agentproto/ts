@@ -19,39 +19,87 @@
     "createdAt"
   ],
   "properties": {
-    "schema": { "const": "agentproto.review.attestation/v1" },
-    "runId": { "type": "string", "pattern": "^review-.+$" },
-    "reviewId": { "type": "string", "description": "The REVIEW.md id." },
-    "manifestSha": { "$ref": "#/$defs/sha256", "description": "sha256 of the REVIEW.md source bytes." },
-    "binding": { "type": "string", "minLength": 1 },
+    "schema": {
+      "const": "agentproto.review.attestation/v1"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^review-.+$"
+    },
+    "reviewId": {
+      "type": "string",
+      "description": "The REVIEW.md id."
+    },
+    "manifestSha": {
+      "$ref": "#/$defs/sha256",
+      "description": "sha256 of the REVIEW.md source bytes."
+    },
+    "binding": {
+      "type": "string",
+      "minLength": 1
+    },
     "target": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repoRemote", "baseSha", "headSha"],
+      "required": [
+        "repoRemote",
+        "baseSha",
+        "headSha"
+      ],
       "properties": {
         "repoRemote": {
           "type": "string",
           "minLength": 1,
           "description": "Normalized origin URL (scheme and credentials stripped, scp form converted to host/path, .git and trailing slashes stripped), or `local:<absolute root>` when the repo has no origin."
         },
-        "baseSha": { "type": "string", "minLength": 1 },
-        "headSha": { "type": "string", "minLength": 1 }
+        "baseSha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "headSha": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "rangeSha": {
       "$ref": "#/$defs/sha256",
       "description": "sha256 of the UTF-8 string `<baseSha>..<headSha>`."
     },
-    "lanes": { "type": "array", "items": { "$ref": "#/$defs/lane" } },
-    "verdict": { "enum": ["pass", "block", "incomplete"] },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/lane"
+      }
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "block",
+        "incomplete"
+      ]
+    },
     "attestor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["daemon", "presets"],
+      "required": [
+        "daemon",
+        "presets"
+      ],
       "properties": {
-        "daemon": { "type": "string" },
-        "presets": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-        "signature": { "$ref": "#/$defs/signature" }
+        "daemon": {
+          "type": "string"
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "signature": {
+          "$ref": "#/$defs/signature"
+        }
       }
     },
     "rubrics": {
@@ -59,11 +107,21 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["check", "path", "sha256"],
+        "required": [
+          "check",
+          "path",
+          "sha256"
+        ],
         "properties": {
-          "check": { "type": "string" },
-          "path": { "type": "string" },
-          "sha256": { "$ref": "#/$defs/sha256" }
+          "check": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          }
         }
       }
     },
@@ -73,16 +131,31 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ref", "id", "version", "alg", "sha256"],
+        "required": [
+          "ref",
+          "id",
+          "version",
+          "alg",
+          "sha256"
+        ],
         "properties": {
-          "ref": { "type": "string", "description": "The uses[].pack string as written." },
-          "id": { "type": "string" },
-          "version": { "type": "string" },
+          "ref": {
+            "type": "string",
+            "description": "The uses[].pack string as written."
+          },
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
           "alg": {
             "const": "agentproto-pack-digest/v1",
             "description": "The digest recipe tag. A verifier that does not recognize it MUST refuse to compare."
           },
-          "sha256": { "$ref": "#/$defs/sha256" }
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          }
         }
       }
     },
@@ -96,14 +169,23 @@
       "minProperties": 1,
       "description": "Informational provenance. Names the requester; does not authenticate them.",
       "properties": {
-        "sessionId": { "type": "string" },
+        "sessionId": {
+          "type": "string"
+        },
         "gitAuthor": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["name", "email"],
+          "required": [
+            "name",
+            "email"
+          ],
           "properties": {
-            "name": { "type": "string" },
-            "email": { "type": "string" }
+            "name": {
+              "type": "string"
+            },
+            "email": {
+              "type": "string"
+            }
           }
         }
       }
@@ -111,93 +193,263 @@
     "pr": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["provider", "repo", "number", "url"],
+      "required": [
+        "provider",
+        "repo",
+        "number",
+        "url"
+      ],
       "properties": {
-        "provider": { "const": "github" },
-        "repo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
-        "number": { "type": "integer", "minimum": 1 },
-        "url": { "type": "string" }
+        "provider": {
+          "const": "github"
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[^/]+/[^/]+$"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "url": {
+          "type": "string"
+        }
       }
     },
-    "createdAt": { "type": "string", "format": "date-time" }
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decisionId",
+        "spec"
+      ],
+      "description": "The AIP-65 decision that picked `binding`, when the caller resolved it that way. Omitted when binding was resolved any other way.",
+      "properties": {
+        "decisionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    }
   },
   "$defs": {
-    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "finding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["severity", "title", "detail"],
+      "required": [
+        "severity",
+        "title",
+        "detail"
+      ],
       "properties": {
-        "severity": { "enum": ["high", "medium", "low"] },
-        "title": { "type": "string" },
-        "detail": { "type": "string" },
-        "file": { "type": "string", "description": "Repo-relative." },
-        "line": { "type": "integer", "minimum": 1 }
+        "severity": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string",
+          "description": "Repo-relative."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "lane": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "status", "blocking", "findings", "durationMs"],
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "blocking",
+        "findings",
+        "durationMs"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "kind": { "enum": ["command", "agent"] },
-        "status": { "enum": ["pass", "fail", "skipped", "timeout"] },
-        "blocking": { "type": "boolean" },
-        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
-        "durationMs": { "type": "number", "minimum": 0 },
-        "error": { "type": "string" },
-        "sessionId": { "type": "string" },
-        "preset": { "type": "string" },
-        "summary": { "type": "string" },
-        "exitCode": { "type": "integer" },
-        "model": { "type": "string" },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "command",
+            "agent"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "skipped",
+            "timeout",
+            "error"
+          ]
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          }
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "error": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "preset": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        },
+        "composedFrom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rangeSha",
+            "headSha",
+            "attestationSha256"
+          ],
+          "description": "Agent lanes only. The prior passing attestation this lane built on; the lane itself reviewed only headSha..<this attestation's head>.",
+          "properties": {
+            "rangeSha": {
+              "$ref": "#/$defs/sha256"
+            },
+            "headSha": {
+              "type": "string",
+              "minLength": 1
+            },
+            "attestationSha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
         "fallbacks": {
           "type": "array",
           "description": "Agent lanes only. Reviewers tried BEFORE the one in `preset` that were unavailable, in order, each with the error that made it so. Absent when the primary reviewer ran.",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["preset", "error"],
+            "required": [
+              "preset",
+              "error"
+            ],
             "properties": {
-              "preset": { "type": "string" },
-              "error": { "type": "string" }
+              "preset": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
             }
           }
         },
         "recovery": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["outcome"],
+          "required": [
+            "outcome"
+          ],
           "description": "Agent lanes only. Present when the reviewer's turn ended without a valid verdict file and the host ran its bounded output-recovery step. `sessionId`/`preset`/`model` here name the RECOVERY model and are always distinct from the lane's own reviewer fields. `recovered` = the host wrote the verdict file from the reviewer's own explicit conclusion; `followup` = the original reviewer wrote it after one targeted follow-up; every other outcome leaves the lane incomplete.",
           "properties": {
-            "outcome": { "enum": ["recovered", "followup", "insufficient_evidence", "reviewer_failed", "invalid_output", "unavailable", "timeout", "cancelled"] },
-            "reason": { "type": "string" },
-            "sessionId": { "type": "string" },
-            "preset": { "type": "string" },
-            "model": { "type": "string" }
+            "outcome": {
+              "enum": [
+                "recovered",
+                "followup",
+                "insufficient_evidence",
+                "reviewer_failed",
+                "invalid_output",
+                "unavailable",
+                "timeout",
+                "cancelled"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "preset": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            }
           }
         },
         "sharedExecution": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["executionId", "role", "ownerLane"],
+          "required": [
+            "executionId",
+            "role",
+            "ownerLane"
+          ],
           "description": "Agent lanes only. Present when this lane's result came from a reviewer execution shared with other lanes of the same run that resolved to the same model, configuration, rubric and range. Every lane naming the same `executionId` is ONE reviewer's verdict, not independent agreement.",
           "properties": {
-            "executionId": { "type": "string" },
-            "role": { "enum": ["owner", "joiner"] },
-            "ownerLane": { "type": "string" }
-          }
-        },
-        "composedFrom": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["rangeSha", "headSha", "attestationSha256"],
-          "description": "Agent lanes only. The prior passing attestation this lane built on; the lane itself reviewed only headSha..<this attestation's head>.",
-          "properties": {
-            "rangeSha": { "$ref": "#/$defs/sha256" },
-            "headSha": { "type": "string", "minLength": 1 },
-            "attestationSha256": { "$ref": "#/$defs/sha256" }
+            "executionId": {
+              "type": "string"
+            },
+            "role": {
+              "enum": [
+                "owner",
+                "joiner"
+              ]
+            },
+            "ownerLane": {
+              "type": "string"
+            }
           }
         }
       }
@@ -205,16 +457,33 @@
     "signature": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["alg", "keyFingerprint", "principal", "signedAt", "sig"],
+      "required": [
+        "alg",
+        "keyFingerprint",
+        "principal",
+        "signedAt",
+        "sig"
+      ],
       "properties": {
-        "alg": { "const": "ssh-ed25519" },
-        "keyFingerprint": { "type": "string", "pattern": "^SHA256:.+$" },
+        "alg": {
+          "const": "ssh-ed25519"
+        },
+        "keyFingerprint": {
+          "type": "string",
+          "pattern": "^SHA256:.+$"
+        },
         "principal": {
           "type": "string",
           "description": "A claim, matched against an allowed_signers principal at verify time. Not authenticated by the signature on its own."
         },
-        "signedAt": { "type": "string", "format": "date-time" },
-        "sig": { "type": "string", "description": "Armored SSHSIG produced by `ssh-keygen -Y sign -n agentproto-review`." }
+        "signedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "sig": {
+          "type": "string",
+          "description": "Armored SSHSIG produced by `ssh-keygen -Y sign -n agentproto-review`."
+        }
       }
     }
   }
