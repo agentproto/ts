@@ -247,6 +247,27 @@ describe("generic OAuth for imported MCPs", () => {
     }
   })
 
+  it("works via explicit oauthSecrets even when the ambient credential store is empty — the regression this reproduces: @agentproto/runtime ships ./mcp-oauth, ./mcp-client-pool and ./mcp-credential-deps as separate tsup entries (splitting: false), so a consumer that imports them from DIFFERENT subpaths (as the CLI does) gets independent copies of mcp-credential-deps.ts's module state; a setMcpCredentialDeps() call made through one subpath is invisible to getMcpCredentialDeps() reached through another, and openMcpClient's ambient fallback then reports 'no keychain secret store is configured' even though the caller did configure one", async () => {
+    await login()
+    setMcpCredentialDeps({}) // simulates the cross-entry blind spot: ambient store looks empty here
+    const { config } = await resolveImportConnection(entryFor(server), {
+      resolveMcpSecret: io.read,
+      storeMcpSecret: io.write,
+    })
+    await expect(openMcpClient(config, { label: 'import "bank"' })).rejects.toThrow(
+      /no keychain secret store is configured/
+    )
+    const client = await openMcpClient(config, {
+      label: 'import "bank"',
+      oauthSecrets: { read: io.read, write: io.write },
+    })
+    try {
+      expect((await client.listTools()).tools.map(t => t.name)).toEqual(["list_accounts"])
+    } finally {
+      await client.close()
+    }
+  })
+
   it("rejects a callback with a wrong state and still completes on the right one", async () => {
     let wrongStatus = 0
     await loginMcpOAuth({

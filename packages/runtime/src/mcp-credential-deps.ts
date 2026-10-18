@@ -36,6 +36,20 @@ export interface McpCredentialDeps {
   storeMcpSecret?: (ref: string, value: string) => Promise<void>
 }
 
+/**
+ * `setMcpCredentialDeps`/`getMcpCredentialDeps` are a plain module-scope
+ * singleton, and this package ships with `splitting: false` across many
+ * tsup entries: `./mcp-credential-deps` here, `./mcp-oauth` and
+ * `./mcp-client-pool` each bundle their OWN copy of this file, with their
+ * OWN independent `deps` variable. A `setMcpCredentialDeps` call reached
+ * through one subpath import is invisible to a `getMcpCredentialDeps` call
+ * reached through another — only consumers that both go through the SAME
+ * subpath (or both through `./index`, which inlines everything into one
+ * chunk) actually share state. Treat any cross-subpath read of this
+ * singleton as unreliable; pass the resolved deps explicitly instead (see
+ * `createDaemonOAuthProvider`'s `io` parameter and `mcp-proxy.ts`'s
+ * `openClient` for the pattern).
+ */
 let deps: McpCredentialDeps = {}
 
 export function setMcpCredentialDeps(d: McpCredentialDeps): void {

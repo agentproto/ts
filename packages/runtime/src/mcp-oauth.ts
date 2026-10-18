@@ -210,13 +210,26 @@ export class McpOAuthProvider implements OAuthClientProvider {
 }
 
 /** The daemon-mode provider for a connection config, backed by the keychain
- *  seam the daemon registered via `setMcpCredentialDeps`. */
+ *  seam the daemon registered via `setMcpCredentialDeps`.
+ *
+ * `io` lets a caller that already holds the resolved secret functions (the
+ * CLI's own `KeychainStore`-backed IO, or a daemon call site that already
+ * fetched `getMcpCredentialDeps()`) pass them in directly. Prefer this over
+ * the `getMcpCredentialDeps()` fallback: `@agentproto/runtime`'s multi-entry
+ * tsup build (`splitting: false`) gives `./mcp-oauth`, `./mcp-client-pool`
+ * and `./mcp-credential-deps` each their OWN bundled copy of
+ * `mcp-credential-deps.ts`'s module state, so a `setMcpCredentialDeps` call
+ * reached through one subpath is invisible to `getMcpCredentialDeps()`
+ * reached through another — the fallback only actually works when both ends
+ * happen to be inlined into the same chunk (true for `./index`, false for a
+ * direct subpath import like the CLI's). */
 export function createDaemonOAuthProvider(
   oauth: McpOAuthConfig,
-  serverUrl: string
+  serverUrl: string,
+  io?: McpOAuthSecretIO
 ): McpOAuthProvider {
-  const deps = getMcpCredentialDeps()
-  if (!deps.resolveMcpSecret || !deps.storeMcpSecret) {
+  const resolved = io ?? fromCredentialDeps()
+  if (!resolved) {
     throw new Error(
       `import "${oauth.alias}" uses oauth but no keychain secret store is configured`
     )
@@ -226,8 +239,14 @@ export function createDaemonOAuthProvider(
     alias: oauth.alias,
     serverUrl,
     ...(oauth.scope ? { scope: oauth.scope } : {}),
-    io: { read: deps.resolveMcpSecret, write: deps.storeMcpSecret },
+    io: resolved,
   })
+}
+
+function fromCredentialDeps(): McpOAuthSecretIO | undefined {
+  const deps = getMcpCredentialDeps()
+  if (!deps.resolveMcpSecret || !deps.storeMcpSecret) return undefined
+  return { read: deps.resolveMcpSecret, write: deps.storeMcpSecret }
 }
 
 export interface McpOAuthLoginOptions {
