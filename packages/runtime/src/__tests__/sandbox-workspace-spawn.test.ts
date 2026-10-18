@@ -20,10 +20,10 @@ import type { SandboxExecOpts, SandboxExecResult, SandboxProvider } from "@agent
 import { createGateway, type GatewayHandle } from "../index.js"
 import {
   spawnAgentSession,
-  bootSandboxAgentSession,
   type SandboxSpecInput,
   type SpawnAgentSessionDeps,
 } from "../session-spawn.js"
+import { readSandboxLedger } from "../sandbox-ledger.js"
 import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
@@ -302,6 +302,10 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       rmSync(ledgerFile, { force: true })
     })
 
+    // True once the ledger no longer carries `id` as an attached session.
+    const recordedDetach = (file: string, id: string): boolean =>
+      !readSandboxLedger(file).some(e => (e.attachedSessions ?? []).includes(id))
+
     it("an attach plans the checkout as its own git worktree and lands the session in it", async () => {
       const first = await spawnAgentSession(makeDeps(), {
         adapter: "fake-cli",
@@ -328,7 +332,11 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       const idB = attach.descriptor.id
       // The ATTACH never re-checks out the shared clone: it adds a worktree.
       const commands = execCalls.map(c => c.command)
-      expect(commands.some(c => c.includes("git -C '/home/user/agentproto' checkout"))).toBe(false)
+      expect(
+        commands.some(
+          c => c.includes("'/home/user/agentproto' checkout") && !c.includes("checkout --detach"),
+        ),
+      ).toBe(false)
       expect(commands.some(c => c.includes("worktree add '/home/user/.worktrees/agentproto/y' 'wt/y'"))).toBe(true)
       expect(commands.some(c => c.includes("flock 9"))).toBe(true)
       expect(receivedStarts[1]?.cwd).toBe("/home/user/.worktrees/agentproto/y")
@@ -343,13 +351,17 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       expect(ledger).toContain(idB)
 
       // A (the fresh boot) detaches first: the shared box keeps running for
-      // B — only PAUSED, never stopped, while the base clone stays intact.
+      // B — detach ONLY, neither paused nor stopped, base clone intact.
       registry.kill(idA)
-      await vi.waitFor(() => expect(pauseSpy).toHaveBeenCalled())
+      await vi.waitFor(() => expect(recordedDetach(ledgerFile, idA)).toBe(true))
+      expect(pauseSpy).not.toHaveBeenCalled()
       expect(stopSpy).not.toHaveBeenCalled()
       expect(readFileSyncSync(ledgerFile).toString()).toContain(idB)
+      // B is the LAST session on the box: its close pauses the box (a reused
+      // box is marked pauseable), never an outright stop.
       registry.kill(idB)
-      await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
+      await vi.waitFor(() => expect(pauseSpy).toHaveBeenCalledTimes(1))
+      expect(stopSpy).not.toHaveBeenCalled()
     })
   })
 
