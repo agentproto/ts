@@ -78,12 +78,12 @@
     "@agentclientprotocol/sdk": "^0.21.1",
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@agentproto/secrets": "workspace:*",
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.9.5",
+    "@types/node": "^25.9.9",
     "esbuild": "^0.28.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",

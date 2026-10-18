@@ -237,6 +237,29 @@ function callTool(name, args){
     : rpcRequest('tools/call', {name: name, arguments: args || {}});
   return raw.then(_unwrapToolResult);
 }
+// session_list (and every other contract-layer list tool) is bounded by
+// default: an unpaged call returns the first page plus truncated/total
+// and a nextCursor. Panels that must render EVERY row follow the cursor
+// here instead, so a daemon with more sessions than one page never shows a
+// silently partial list. Reads both envelope shapes: a cursor-paged call
+// keys rows as "items", the plain wrapper as [listKey].
+function callToolPaged(name, args, listKey){
+  var base = args || {};
+  function step(cursor, acc){
+    var a = Object.assign({}, base);
+    // 100 rows a page keeps a 1k-session poll at 10 calls (default 50 = 20)
+    // and a compact page well under the 100 KB MCP result cap.
+    if (a.limit === undefined) a.limit = 100;
+    if (cursor) a.cursor = cursor;
+    return callTool(name, a).then(function(d){
+      var page = (d && Array.isArray(d.items)) ? d.items : (d && d[listKey]) || [];
+      acc = acc.concat(page);
+      if (d && d.nextCursor) return step(d.nextCursor, acc);
+      return acc;
+    });
+  }
+  return step(null, []);
+}
 
 // ── Display-mode toggle (shared: @agentproto/app-client/display-mode) ──
 // The installer is inlined verbatim (it is self-contained and idempotent),

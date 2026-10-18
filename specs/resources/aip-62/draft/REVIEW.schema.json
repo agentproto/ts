@@ -5,23 +5,47 @@
   "description": "The YAML frontmatter of a REVIEW.md review manifest, parsed to JSON. Field shapes only: the cross-field rules (unique ids, binding references, prepare/effects rules, implied default binding, explicit bindings when uses[] is present) are normative in AIP-62 and are enforced by the parser, not by this schema. Unknown keys are errors at every level.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["kind", "id", "target", "checks"],
+  "required": [
+    "kind",
+    "id",
+    "target",
+    "checks"
+  ],
   "properties": {
-    "kind": { "const": "review" },
-    "id": { "$ref": "#/$defs/id" },
-    "name": { "type": "string", "minLength": 1 },
-    "description": { "type": "string" },
+    "kind": {
+      "const": "review"
+    },
+    "id": {
+      "$ref": "#/$defs/id"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
     "target": {
       "description": "What is reviewed. v1 supports only a git range. The string form \"git-range\" is shorthand for { kind: git-range } with the default base (origin/main). The reviewed range is merge-base(base, HEAD)..HEAD.",
       "oneOf": [
-        { "const": "git-range" },
+        {
+          "const": "git-range"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind"],
+          "required": [
+            "kind"
+          ],
           "properties": {
-            "kind": { "const": "git-range" },
-            "base": { "type": "string", "minLength": 1, "default": "origin/main" }
+            "kind": {
+              "const": "git-range"
+            },
+            "base": {
+              "type": "string",
+              "minLength": 1,
+              "default": "origin/main"
+            }
           }
         }
       ]
@@ -31,20 +55,30 @@
       "minItems": 1,
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/commandCheck" },
-          { "$ref": "#/$defs/agentCheck" }
+          {
+            "$ref": "#/$defs/commandCheck"
+          },
+          {
+            "$ref": "#/$defs/agentCheck"
+          }
         ]
       }
     },
     "bindings": {
       "description": "Named lane selections, keyed by binding id. When absent, an implied `default` binding over every non-effects check applies. When `uses` is present, explicit bindings are required.",
       "type": "object",
-      "propertyNames": { "$ref": "#/$defs/id" },
-      "additionalProperties": { "$ref": "#/$defs/binding" }
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/binding"
+      }
     },
     "uses": {
       "type": "array",
-      "items": { "$ref": "#/$defs/use" }
+      "items": {
+        "$ref": "#/$defs/use"
+      }
     },
     "verdict": {
       "type": "object",
@@ -70,23 +104,50 @@
       "pattern": "^[a-z][a-z0-9-]*(?:/[a-z][a-z0-9-]*)?$",
       "maxLength": 129
     },
-    "severity": { "enum": ["high", "medium", "low"] },
+    "severity": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
     "commandCheck": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "run"],
+      "required": [
+        "id",
+        "kind",
+        "run"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/id" },
-        "kind": { "const": "command" },
-        "description": { "type": "string" },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "command"
+        },
+        "description": {
+          "type": "string"
+        },
         "run": {
           "type": "string",
           "minLength": 1,
           "description": "Executed as `sh -c`. May contain {base}, {head}, {changed} placeholders; {{name}} escapes a literal {name}."
         },
-        "cwd": { "type": "string", "minLength": 1, "description": "Relative to the repo root." },
-        "blocking": { "type": "boolean", "default": true },
-        "timeoutMs": { "type": "integer", "exclusiveMinimum": 0, "default": 600000 },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative to the repo root."
+        },
+        "blocking": {
+          "type": "boolean",
+          "default": true
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 600000
+        },
         "effects": {
           "type": "boolean",
           "default": false,
@@ -97,35 +158,68 @@
     "agentCheck": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "preset", "rubric"],
+      "required": [
+        "id",
+        "kind",
+        "preset",
+        "rubric"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/id" },
-        "kind": { "const": "agent" },
-        "description": { "type": "string" },
-        "preset": { "type": "string", "minLength": 1 },
-        "fallbackPresets": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 },
-          "description": "Ordered fallback reviewers. When `preset`'s reviewer is unavailable (spawn/transport error, errored or empty turn, session exited), the lane runs on the next one. Never consulted after a verdict, a timeout, or a cancel. Must not repeat `preset` or itself."
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "agent"
+        },
+        "description": {
+          "type": "string"
+        },
+        "preset": {
+          "type": "string",
+          "minLength": 1
         },
         "rubric": {
           "type": "string",
           "minLength": 1,
           "description": "Path relative to the directory containing REVIEW.md."
         },
-        "blockOn": { "$ref": "#/$defs/severity", "default": "high" },
-        "blocking": { "type": "boolean", "default": true },
-        "timeoutMs": { "type": "integer", "exclusiveMinimum": 0, "default": 900000 },
+        "blockOn": {
+          "$ref": "#/$defs/severity",
+          "default": "high"
+        },
+        "blocking": {
+          "type": "boolean",
+          "default": true
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 900000
+        },
         "effects": {
           "const": false,
           "description": "An agent check is always a read-only reviewer; effects: true is an error."
+        },
+        "sandbox": {
+          "$ref": "#/$defs/sandboxRef",
+          "description": "Optional. Places this check's reviewer session in a sandbox instead of on the host (AIP-36 inline form). Absent by default (host spawn)."
+        },
+        "fallbackPresets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Ordered fallback reviewers. When `preset`'s reviewer is unavailable (spawn/transport error, errored or empty turn, session exited), the lane runs on the next one. Never consulted after a verdict, a timeout, or a cancel. Must not repeat `preset` or itself."
         }
       }
     },
     "binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["checks"],
+      "required": [
+        "checks"
+      ],
       "properties": {
         "on": {
           "type": "string",
@@ -134,21 +228,31 @@
         },
         "prepare": {
           "type": "array",
-          "items": { "$ref": "#/$defs/checkRef" },
+          "items": {
+            "$ref": "#/$defs/checkRef"
+          },
           "description": "effects: true command checks, run in order before the range freezes."
         },
         "checks": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/checkRef" }
+          "items": {
+            "$ref": "#/$defs/checkRef"
+          }
         },
-        "quorum": { "const": "all-blocking-pass", "default": "all-blocking-pass" }
+        "quorum": {
+          "const": "all-blocking-pass",
+          "default": "all-blocking-pass"
+        }
       }
     },
     "use": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["pack", "as"],
+      "required": [
+        "pack",
+        "as"
+      ],
       "properties": {
         "pack": {
           "type": "string",
@@ -161,32 +265,74 @@
         },
         "checks": {
           "type": "array",
-          "items": { "$ref": "#/$defs/id" },
+          "items": {
+            "$ref": "#/$defs/id"
+          },
           "description": "Subset of the pack's check ids to import. Default: all."
         },
-        "preset": { "type": "string", "minLength": 1 },
-        "fallbackPresets": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 },
-          "description": "Ordered fallback reviewers for every imported agent check (see agentCheck.fallbackPresets)."
+        "preset": {
+          "type": "string",
+          "minLength": 1
         },
         "overrides": {
           "type": "object",
-          "propertyNames": { "$ref": "#/$defs/id" },
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "blockOn": { "$ref": "#/$defs/severity" },
-              "blocking": { "type": "boolean" },
-              "timeoutMs": { "type": "integer", "exclusiveMinimum": 0 },
-              "preset": { "type": "string", "minLength": 1 },
-              "fallbackPresets": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+              "blockOn": {
+                "$ref": "#/$defs/severity"
+              },
+              "blocking": {
+                "type": "boolean"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "preset": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fallbackPresets": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
             }
           }
         },
-        "allowCommands": { "type": "boolean", "default": false }
+        "allowCommands": {
+          "type": "boolean",
+          "default": false
+        },
+        "fallbackPresets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Ordered fallback reviewers for every imported agent check (see agentCheck.fallbackPresets)."
+        }
       }
+    },
+    "sandboxRef": {
+      "description": "AIP-36 inline SANDBOX form embedded directly in this manifest — a provider slug, or an object naming a provider with its config/env (AIP-36's own frontmatter-only fields such as schema/id/version do not apply here).",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "A sandbox provider slug (e.g. \"e2b\"); the spec is fully host-derived."
+        },
+        {
+          "$ref": "https://agentproto.sh/schemas/aip-36/SANDBOX.schema.json"
+        }
+      ]
     }
   }
 }

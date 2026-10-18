@@ -201,7 +201,7 @@ export class ChromeCdpDriver implements BrowserDriver {
     this.target.url = options.url
   }
 
-  private async evalRaw(expression: string, awaitPromise: boolean, returnByValue: boolean): Promise<RuntimeEvaluateResult> {
+  protected async evalRaw(expression: string, awaitPromise: boolean, returnByValue: boolean): Promise<RuntimeEvaluateResult> {
     const result = await this.send<RuntimeEvaluateResult>({
       method: "Runtime.evaluate",
       params: { expression, awaitPromise, returnByValue },

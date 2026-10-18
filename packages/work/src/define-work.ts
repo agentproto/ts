@@ -27,18 +27,10 @@ export const defineWork = createDoctype<WorkDefinition, WorkHandle>({
     // Cross-field rules run BEFORE field-level zod so structural
     // errors surface before the cascade of "missing required field".
     //
-    // AIP-20 rule: appliesTo non-empty ⇒ extends required (the doctype
-    // is acting as a view of a parent workspace).
-    const d = def as { appliesTo?: readonly unknown[]; extends?: unknown }
-    if (
-      Array.isArray(d.appliesTo) &&
-      d.appliesTo.length > 0 &&
-      d.extends == null
-    ) {
-      throw new Error(
-        `defineWork (AIP-20): appliesTo is non-empty — extends MUST be set`,
-      )
-    }
+    // AIP-20 dropped view mode entirely: `extends` / `appliesTo` are no
+    // longer part of the WORK manifest (additionalProperties: false), so
+    // the old "appliesTo non-empty ⇒ extends required" rule is gone with
+    // it — the redesigned draft carries no active cross-field rule yet.
     const result = workFrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(

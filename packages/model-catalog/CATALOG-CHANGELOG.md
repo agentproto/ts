@@ -381,3 +381,14 @@ for that.
 
 ### llm:huggingface
 - Added: deepseek-ai/DeepSeek-V3.2, meta-models/Muse-Spark-Open-816B-A42B, nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8
+
+## 2026-10-18
+
+### llm:openrouter
+- Added: unbiased/pareto-26.10
+
+### llm:requesty
+- Added: deepinfra/deepseek-v4.1-flash-1017, deepinfra/deepseek-v4.1-flash-1017:priority, fireworks/deepseek-v4.1-flash-1017, tensorx/deepseek-v4.1-flash-1017
+
+### llm:huggingface
+- Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, zai-org/GLM-4.6-FP8, zai-org/GLM-5.1-FP8

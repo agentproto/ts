@@ -148,6 +148,22 @@ function callApp(tool, args) {
   return callTool("app_tool_call", { appId: APP_ID, tool: tool, args: args || {} }).then(unwrapText);
 }
 
+// session_list is bounded by default (first page + nextCursor); follow the
+// cursor so the picker always lists every session.
+function callAppPaged(tool, args, listKey) {
+  function step(cursor, acc) {
+    var a = Object.assign({}, args);
+    if (a.limit === undefined) a.limit = 100;
+    if (cursor) a.cursor = cursor;
+    return callApp(tool, a).then(function (d) {
+      var page = (d && Array.isArray(d.items)) ? d.items : (d && d[listKey]) || [];
+      var rows = acc.concat(page);
+      return d && d.nextCursor ? step(d.nextCursor, rows) : rows;
+    });
+  }
+  return step(null, []);
+}
+
 function escHtml(s) {
   return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -265,8 +281,8 @@ function renderSidebar() {
 }
 
 function loadSessions() {
-  return callApp("session_list", { kind: "all", includeArchived: includeArchived }).then(function (data) {
-    sessions = (data && data.sessions) || [];
+  return callAppPaged("session_list", { kind: "all", includeArchived: includeArchived }, "sessions").then(function (rows) {
+    sessions = (Array.isArray(rows) && rows) || [];
     renderSidebar();
     if (activeId) {
       var hdr = document.getElementById("header");

@@ -87,6 +87,11 @@
                 "default": false,
                 "description": "Whether items in this status are considered closed. Lints like `overdue` typically skip terminal statuses."
               },
+              "category": {
+                "type": "string",
+                "enum": ["todo", "active", "waiting", "done", "failed", "cancelled"],
+                "description": "OPTIONAL protocol class of the status. When set, `terminal` MUST be true exactly for done, failed and cancelled. Consumer AIPs (AIP-20) may require it."
+              },
               "transitionsTo": {
                 "type": "array",
                 "items": {
@@ -261,7 +266,8 @@
             "text",
             "url",
             "ref",
-            "array"
+            "array",
+            "object"
           ],
           "description": "Field type. Drift across composition (parent string -> child number) is HARD refused (`collection_field_type_drift`)."
         },
@@ -356,7 +362,8 @@
             "text",
             "url",
             "ref",
-            "array"
+            "array",
+            "object"
           ],
           "description": "Field type. Drift across composition (parent string -> child number) is HARD refused (`collection_field_type_drift`)."
         },

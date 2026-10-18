@@ -36,10 +36,12 @@ import type { SandboxMode } from "@agentproto/command-sandbox"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import {
+  ErrorCode,
   LATEST_PROTOCOL_VERSION,
   SUPPORTED_PROTOCOL_VERSIONS,
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  McpError,
 } from "@modelcontextprotocol/sdk/types.js"
 import { WebSocketServer, type WebSocket } from "ws"
 import { ZodError, type ZodType } from "zod"
@@ -2168,7 +2170,10 @@ export async function startHttpServer(
    * already on the daemon's own `/mcp`; this endpoint is what lets a
    * capability bundle mount the SAME imported server into any OTHER harness
    * (opencode, codex, …) as a first-class MCP server. Same auth as `/mcp`
-   * (loopback + token / `callerSessionId` — see `authorizeMcp`). An
+   * (loopback + token / `callerSessionId` — see `authorizeMcp`). Also same
+   * `?denyTools=` / `?allowTools=` contract as `/mcp` (#2050): the filter
+   * hides tools from `tools/list` AND rejects `tools/call` of a filtered
+   * name with a JSON-RPC error (deny applied after allow). An
    * upstream that's down surfaces as a tool-call error result, never a hang
    * (the registry's own connect path already bounds it — see mcp-proxy.ts).
    */
@@ -2189,6 +2194,22 @@ export async function startHttpServer(
       return
     }
     const proxy = opts.mcpProxy
+    // Same `?denyTools=` / `?allowTools=` wire contract as the plain `/mcp`
+    // gateway (see `parseToolListQuery` + `handleMcp`): a capability bundle
+    // mounting an imported server into another harness must not get a wider
+    // surface than the same import mounted on `/mcp` would. Deny is applied
+    // AFTER allow — a name on both lists is excluded. Unlike `/mcp` (which
+    // wraps the registered server), this handler filters the proxy responses
+    // and gates `tools/call` directly, so a filtered tool is both hidden from
+    // `tools/list` AND rejected on call with a proper JSON-RPC error —
+    // enforcement, not just hiding.
+    const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
+    const allowTools = parseToolListQuery(req.url ?? "", "allowTools")
+    const allowed = (name: string): boolean => {
+      if (denyTools?.has(name)) return false
+      if (allowTools && !allowTools.has(name)) return false
+      return true
+    }
     const aliases = await proxy.listAliases()
     const known = aliases.find(a => a.importId === importId || a.alias === importId)
     if (!known) {
@@ -2211,14 +2232,27 @@ export async function startHttpServer(
       const out = await proxy.listTools(importId)
       if (!out.ok) return { tools: [] }
       return {
-        tools: out.tools.map(t => ({
-          name: t.name,
-          ...(t.description ? { description: t.description } : {}),
-          inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
-        })),
+        tools: out.tools
+          .filter(t => allowed(t.name))
+          .map(t => ({
+            name: t.name,
+            ...(t.description ? { description: t.description } : {}),
+            inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
+          })),
       }
     })
     server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      // Hard gate: a filtered tool never reaches the upstream, mirroring
+      // `withToolExclusion` / `withToolSubset` on `/mcp` (index.ts). Throwing
+      // an `McpError` surfaces as a JSON-RPC error response, not a tool
+      // result, so the caller cannot mistake the refusal for an upstream
+      // execution failure.
+      if (!allowed(request.params.name)) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `tool "${request.params.name}" is not available on this import (denyTools/allowTools filter)`,
+        )
+      }
       const out = await proxy.callTool(importId, request.params.name, request.params.arguments ?? {})
       if (!out.ok) {
         return { content: [{ type: "text", text: out.error }], isError: true }
@@ -6464,7 +6498,7 @@ async function handleSessions(
     // Same server-side narrowing as the `session_list` MCP tool (q,
     // excludeLabelPrefix, excludeLabels, excludeKinds, rootOnly,
     // parentSessionId, updatedSince, startedSince, excludeNoise, status,
-    // onlyAlive, limit). Absent ⇒ the response is byte-identical to before.
+    // onlyAlive, limit, ids). Absent ⇒ the response is byte-identical to before.
     const listFilters = parseSessionListFilterParams(params)
     if (listFilters.parentSessionId) {
       listFilters.parentSessionId =

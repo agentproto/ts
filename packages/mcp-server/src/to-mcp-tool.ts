@@ -248,11 +248,45 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
       // A transformer that terminates the pipeline returns a pre-serialized
       // MCP text result — pass it through verbatim. Anything else (the
       // untransformed tool output) gets the default JSON serialization.
-      return isMcpTextResult(output)
-        ? output
-        : contentText(output)
+      return capResult(
+        isMcpTextResult(output) ? output : contentText(output),
+        inputShape,
+      )
     },
   }
+}
+
+/** Largest result body (UTF-8 bytes) a contract-layer MCP tool may return;
+ *  clients refuse far less than a runaway list, so past this the body is
+ *  replaced by a {@link McpTruncatedMarker}. */
+export const MCP_RESULT_MAX_BYTES = 100_000
+
+/** What a result over {@link MCP_RESULT_MAX_BYTES} is replaced with. */
+export interface McpTruncatedMarker {
+  truncated: true
+  totalBytes: number
+  hint: string
+}
+
+function capResult(result: McpToolResult, inputShape: ZodRawShape): McpToolResult {
+  if (result.isError) return result
+  const totalBytes = result.content.reduce(
+    (n, c) => n + Buffer.byteLength(c.text, "utf8"),
+    0,
+  )
+  if (totalBytes <= MCP_RESULT_MAX_BYTES) return result
+  const marker: McpTruncatedMarker = {
+    truncated: true,
+    totalBytes,
+    // Tool-aware: list tools wrap in the shared `pageParamsShape` (limit/
+    // cursor/fields), so a marker that names those is actionable. Tools whose
+    // input has no paging parameters can't obey that hint — point them at
+    // narrowing their own arguments instead.
+    hint: Object.hasOwn(inputShape, "limit")
+      ? "use limit/cursor/fields"
+      : "no limit/cursor/fields on this tool; narrow the request arguments so the result fits",
+  }
+  return { content: [{ type: "text", text: JSON.stringify(marker) }] }
 }
 
 function isMcpTextResult(value: unknown): value is McpToolResult {

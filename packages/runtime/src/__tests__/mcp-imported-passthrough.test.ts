@@ -55,8 +55,10 @@ async function mcpServerFactory() {
 }
 
 /** A fake registry backing exactly one import: alias "fake-mcp", id "fake:mcp",
- *  one tool `ping` that echoes back whatever `arguments.text` was sent. */
-function fakeProxy(): McpProxyRegistry {
+ *  one tool `ping` that echoes back whatever `arguments.text` was sent
+ *  (extra tools can be injected for the deny/allow filter tests — a filtered
+ *  tool must be rejected BEFORE the upstream is ever asked). */
+function fakeProxy(extraTools: ProxyToolDescriptor[] = []): McpProxyRegistry {
   const aliases: ProxyAliasSummary[] = [
     {
       alias: "fake-mcp",
@@ -64,12 +66,14 @@ function fakeProxy(): McpProxyRegistry {
       source: "workspace",
       type: "stdio",
       status: "connected",
-      toolCount: 1,
+      toolCount: 1 + extraTools.length,
     },
   ]
   const tools: ProxyToolDescriptor[] = [
     { name: "ping", description: "echoes text back", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+    ...extraTools,
   ]
+  const knownNames = new Set(tools.map(t => t.name))
   return {
     async listAliases() {
       return aliases
@@ -80,8 +84,8 @@ function fakeProxy(): McpProxyRegistry {
     },
     async callTool(alias: string, toolName: string, args: unknown): Promise<ProxyCallOutcome> {
       if (alias !== "fake:mcp" && alias !== "fake-mcp") return { ok: false, error: `unknown alias "${alias}"` }
-      if (toolName !== "ping") return { ok: false, error: `no such tool "${toolName}"` }
-      const text = (args as { text?: string } | undefined)?.text ?? ""
+      if (!knownNames.has(toolName)) return { ok: false, error: `no such tool "${toolName}"` }
+      const text = (args as { text?: string } | undefined)?.text ?? toolName
       return { ok: true, result: { content: [{ type: "text", text: `pong:${text}` }] } }
     },
     async closeAll() {},
@@ -206,6 +210,113 @@ describe("/mcp/imported/<id> — per-import passthrough (PLAN D phase 1)", () =>
     try {
       const res = await fetch(`http://127.0.0.1:${port}/mcp/imported/anything`)
       expect(res.status).toBe(501)
+    } finally {
+      await http.stop()
+    }
+  })
+})
+
+describe("/mcp/imported/<id> — denyTools/allowTools query filter (#2050)", () => {
+  const secretTool: ProxyToolDescriptor = {
+    name: "secret_tool",
+    description: "must be hideable",
+    inputSchema: { type: "object" },
+  }
+
+  async function startWith(extraTools: ProxyToolDescriptor[]) {
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      mcpProxy: fakeProxy(extraTools),
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    return { http, port }
+  }
+
+  it("denyTools hides the tool from tools/list and REJECTS tools/call with a JSON-RPC error", async () => {
+    const { http, port } = await startWith([secretTool])
+    try {
+      const client = new Client({ name: "imported-deny-test", version: "0.0.1" })
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${port}/mcp/imported/fake:mcp?denyTools=secret_tool`),
+      )
+      await client.connect(transport)
+      const { tools } = await client.listTools()
+      expect(tools.map(t => t.name)).toEqual(["ping"])
+      // Enforcement, not just hiding: the call must be a JSON-RPC error, not
+      // an upstream round-trip (the fake proxy would echo `pong:secret_tool`).
+      let rpcError: unknown
+      try {
+        await client.callTool({ name: "secret_tool", arguments: { text: "x" } })
+      } catch (err) {
+        rpcError = err
+      }
+      expect(rpcError).toBeDefined()
+      expect((rpcError as Error).message).toContain("secret_tool")
+      await client.close()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("allowTools keeps only the allowlisted tool and rejects the rest", async () => {
+    const { http, port } = await startWith([secretTool])
+    try {
+      const client = new Client({ name: "imported-allow-test", version: "0.0.1" })
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${port}/mcp/imported/fake:mcp?allowTools=ping`),
+      )
+      await client.connect(transport)
+      const { tools } = await client.listTools()
+      expect(tools.map(t => t.name)).toEqual(["ping"])
+      await expect(
+        client.callTool({ name: "secret_tool", arguments: {} }),
+      ).rejects.toThrow()
+      await client.close()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("deny applied after allow: a name on both lists is excluded", async () => {
+    const { http, port } = await startWith([secretTool])
+    try {
+      const client = new Client({ name: "imported-both-test", version: "0.0.1" })
+      const transport = new StreamableHTTPClientTransport(
+        new URL(
+          `http://127.0.0.1:${port}/mcp/imported/fake:mcp?allowTools=${encodeURIComponent("ping,secret_tool")}&denyTools=secret_tool`,
+        ),
+      )
+      await client.connect(transport)
+      const { tools } = await client.listTools()
+      expect(tools.map(t => t.name)).toEqual(["ping"])
+      await expect(
+        client.callTool({ name: "secret_tool", arguments: {} }),
+      ).rejects.toThrow()
+      await client.close()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("no params = unchanged behaviour (both tools listed and callable)", async () => {
+    const { http, port } = await startWith([secretTool])
+    try {
+      const client = new Client({ name: "imported-nofilter-test", version: "0.0.1" })
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${port}/mcp/imported/fake:mcp`),
+      )
+      await client.connect(transport)
+      const { tools } = await client.listTools()
+      expect(tools.map(t => t.name)).toEqual(["ping", "secret_tool"])
+      const result = await client.callTool({ name: "secret_tool", arguments: { text: "hi" } })
+      expect(result.content).toEqual([{ type: "text", text: "pong:hi" }])
+      await client.close()
     } finally {
       await http.stop()
     }

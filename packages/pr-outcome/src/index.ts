@@ -1,0 +1,6 @@
+export { collect, type CollectOpts, type CollectResult } from "./collect.js"
+export { computeOutcome, isBotAuthor, countCiFailures } from "./outcome.js"
+export { parseFooter, isProvenanceBody } from "./parse-footer.js"
+export { isRevertOf } from "./revert.js"
+export { GhCliFetcher, type GhFetcher } from "./gh-fetcher.js"
+export type * from "./types.js"

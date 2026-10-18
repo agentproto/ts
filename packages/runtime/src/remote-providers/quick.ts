@@ -49,6 +49,7 @@ import type {
   RemoteProvider,
   TunnelProviderHandle,
 } from "./types.js"
+import { TunnelStartAbortedError } from "./types.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -73,6 +74,10 @@ export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
   let configPath: string | null = null
   let logFilePath: string | null = null
   let stopLogTail: (() => void) | null = null
+  // Set by `stop()` while `start()` is still awaiting `spawnCloudflaredUntil`.
+  // When the spawn resolves, a stopped start kills its own child instead of
+  // leaking it.
+  let stopped = false
 
   return {
     id: "quick",
@@ -89,6 +94,7 @@ export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
       return cloudflaredOnPath()
     },
     async start(opts: ProviderStartOptions): Promise<ProviderStartResult> {
+      stopped = false
       await assertCloudflaredOnPath()
       const targetUrl = `http://${opts.target.host}:${opts.target.port}`
 
@@ -133,6 +139,25 @@ export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
           onLog: opts.onLog,
         },
       )
+      if (stopped) {
+        // `stop()` ran while the spawn was still pending — kill the child
+        // here or it leaks. Same SIGTERM → 3 s → SIGKILL escalation as
+        // `stop()` below.
+        stopTail()
+        await rm(configPath, { force: true }).catch(() => {})
+        await rm(logPath, { force: true }).catch(() => {})
+        proc.kill("SIGTERM")
+        const killed = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL")
+          } catch {
+            /* noop */
+          }
+        }, 3_000)
+        killed.unref()
+        proc.once("exit", () => clearTimeout(killed))
+        throw new TunnelStartAbortedError()
+      }
       child = proc
       stopLogTail = stopTail
 
@@ -146,6 +171,7 @@ export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
     },
 
     async stop(): Promise<void> {
+      stopped = true
       const proc = child
       const cfg = configPath
       const log = logFilePath

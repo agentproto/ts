@@ -124,8 +124,7 @@ function render(rows){
 }
 
 function loadAndRender(){
-  return callTool('session_list', {kind:'all'}).then(function(data){
-    var all = data.sessions || [];
+  return callToolPaged('session_list', {kind:'all'}, 'sessions').then(function(all){
     var browsers = all.filter(function(s){ return s.kind === 'browser'; });
     render(browsers);
     setStatus(browsers.length + ' session' + (browsers.length===1?'':'s') + ' · ' + new Date().toLocaleTimeString('fr-FR'));
