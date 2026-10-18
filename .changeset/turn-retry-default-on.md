@@ -1,5 +1,6 @@
 ---
-"@agentproto/runtime": patch
+"@agentproto/runtime": minor
+"@agentproto/cli": patch
 ---
 
 Graceful turn retry by default for executor and sandbox agent starts: a

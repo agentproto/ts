@@ -383,12 +383,16 @@ sessions start flags:
                                   '{"maxCostUsd":20,"window":"5h","scope":"profile"}'
                                   — is also accepted. Mirrors MCP
                                   agent_start.costBudget.
-  --turn-retry <spec>           opt-in: when a turn fails on a transient
-                                  provider error, re-send a short continuation
-                                  prompt to the same session after backoff.
-                                  spec: 'all', or a comma list of classes
-                                  (rate-limit,upstream-5xx,no-output-stall), or
-                                  a JSON object '{"on":["rate-limit"],
+  --turn-retry <spec>           retry policy for a turn that failed on a
+                                  transient provider error: re-send a short
+                                  continuation prompt to the same session
+                                  after backoff. ON by default for
+                                  executor/sandbox spawns, off for
+                                  supervisors; "off" disables it (explicit
+                                  opt-out). spec: 'all', 'off', or a comma
+                                  list of classes
+                                  (rate-limit,upstream-5xx,no-output-stall),
+                                  or a JSON object '{"on":["rate-limit"],
                                   "maxRetries":3,"baseDelayMs":5000,"factor":2,
                                   "maxDelayMs":60000}'. "action":"migrate"
                                   moves a SANDBOX session to a fresh box (new
@@ -701,11 +705,15 @@ export function parseTurnRetryFlag(raw: string): Record<string, unknown> | strin
     obj = parsed as Record<string, unknown>
   } else if (trimmed === "all") {
     obj = { on: [...TURN_RETRY_CLASSES] }
+  } else if (trimmed === "off") {
+    // An explicit opt-out, the runtime's empty-`on` shape: a disabled policy
+    // (empty `on`) and `null` are equivalent at spawn time.
+    return { on: [] }
   } else {
     obj = { on: trimmed.split(",").map(s => s.trim()).filter(Boolean) }
   }
   const on = obj.on
-  if (!Array.isArray(on) || on.length === 0) return `"on" must list at least one of ${TURN_RETRY_CLASSES.join(", ")}`
+  if (!Array.isArray(on) || on.length === 0) return `"on" must list at least one of ${TURN_RETRY_CLASSES.join(", ")}, or use "off"`
   const unknown = on.filter(c => typeof c !== "string" || !TURN_RETRY_CLASSES.includes(c))
   if (unknown.length > 0) {
     return `unknown class(es) ${unknown.map(String).join(", ")} — expected ${TURN_RETRY_CLASSES.join(", ")} or "all"`
