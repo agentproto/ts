@@ -191,9 +191,58 @@ describe("daemon", () => {
     expect(byId(checks, "daemon.path").detail).toContain("not checked")
   })
 
-  it("linux: no service manager yet", async () => {
-    const checks = await daemonStep.detect(createFakeContext({ platform: "linux" }))
-    expect(byId(checks, "daemon.service")).toMatchObject({ status: "warn", fix: "agentproto serve" })
+  it("linux with a usable systemd user session: unit installed + active ⇒ ok, lingering off warns", async () => {
+    const checks = await daemonStep.detect(
+      createFakeContext({
+        platform: "linux",
+        fs: createFakeFs({
+          ...healthyFiles(),
+          [`${HOME}/.config/systemd/user/agentproto.service`]:
+            `Environment=PATH=${computeDaemonPath("/usr/bin:/bin")}`,
+        }),
+        exec: (cmd, args) => {
+          if (cmd === "systemctl" && args[1] === "show-environment") return { code: 0, stdout: "", stderr: "" }
+          if (cmd === "systemctl" && args[1] === "is-active") return { code: 0, stdout: "active\n", stderr: "" }
+          if (cmd === "loginctl") return { code: 0, stdout: "Linger=no\n", stderr: "" }
+          return { code: 1, stdout: "", stderr: "" }
+        },
+      }),
+    )
+    expect(byId(checks, "daemon.service")).toMatchObject({ status: "ok", title: "systemd --user service" })
+    expect(byId(checks, "daemon.linger")).toMatchObject({ status: "warn", fix: "loginctl enable-linger $USER" })
+    expect(byId(checks, "daemon.path").status).toBe("ok")
+  })
+
+  it("linux with systemd but no unit installed warns with the daemon install fix", async () => {
+    const checks = await daemonStep.detect(
+      createFakeContext({
+        platform: "linux",
+        exec: (cmd, args) => {
+          if (cmd === "systemctl" && args[1] === "show-environment") return { code: 0, stdout: "", stderr: "" }
+          if (cmd === "loginctl") return { code: 0, stdout: "Linger=yes\n", stderr: "" }
+          return { code: 1, stdout: "", stderr: "" }
+        },
+      }),
+    )
+    expect(byId(checks, "daemon.service")).toMatchObject({ status: "warn", fix: "agentproto daemon install" })
+    expect(byId(checks, "daemon.health").fix).toBe("agentproto daemon install")
+    expect(checks.find((c) => c.detail?.includes("no service manager"))).toBeUndefined()
+  })
+
+  it("linux without a usable systemd user session falls back to the pidfile check", async () => {
+    const checks = await daemonStep.detect(
+      createFakeContext({
+        platform: "linux",
+        // default exec: `systemctl --user …` fails ⇒ no user session.
+      }),
+    )
+    expect(byId(checks, "daemon.service")).toMatchObject({
+      status: "warn",
+      title: "Detached serve (pidfile)",
+      fix: "agentproto daemon start",
+    })
+    expect(byId(checks, "daemon.health").fix).toBe("agentproto daemon start")
+    expect(checks.find((c) => c.detail?.includes("no service manager"))).toBeUndefined()
   })
 
   it("windows: scheduled task registered ⇒ ok; unregistered ⇒ daemon install fix", async () => {
