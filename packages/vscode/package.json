@@ -38,13 +38,13 @@
     "@agentproto/runtime": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.9.5",
+    "@types/node": "^25.9.9",
     "@types/vscode": "1.138.0",
-    "@types/ws": "^8.18.1",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.28.2",
     "jsdom": "^29.1.1",
     "typescript": "^5.9.3",

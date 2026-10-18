@@ -124,7 +124,9 @@ describe("fetch_page", () => {
     const result = await client.callTool({ name: "fetch_page", arguments: { url: `http://127.0.0.1:${port}/` } })
     const data = parse(result)
     expect(data.blocked).toBe(false)
-    expect(String(data.text)).toContain("Contact")
+    // defuddle >=0.15 lifts a title-like <h1> into `title` and drops it from the body.
+    expect(String(data.title)).toContain("Contact")
+    expect(String(data.text)).toContain("Email")
     await cleanup()
   })
 
@@ -138,7 +140,8 @@ describe("fetch_page", () => {
     const result = await client.callTool({ name: "fetch_page", arguments: { url: `http://127.0.0.1:${port}/` } })
     const data = parse(result)
     expect(data.blocked).toBe(false)
-    expect(String(data.text)).toContain("Akamai")
+    expect(String(data.title)).toContain("Akamai")
+    expect(String(data.text)).toContain("are you a robot")
     await cleanup()
   })
 
