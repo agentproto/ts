@@ -11,6 +11,12 @@ describe("parseTurnRetryFlag", () => {
   it("expands 'all'", () => {
     expect(parseTurnRetryFlag("all")).toEqual({ on: ["rate-limit", "upstream-5xx", "no-output-stall"] })
   })
+  it("expands 'off' to the explicit empty-`on` opt-out", () => {
+    expect(parseTurnRetryFlag("off")).toEqual({ on: [] })
+  })
+  it("still rejects an empty class list (did you mean 'off'?)", () => {
+    expect(parseTurnRetryFlag("")).toContain('"on" must list at least one of')
+  })
   it("accepts a comma list of classes", () => {
     expect(parseTurnRetryFlag("rate-limit, no-output-stall")).toEqual({ on: ["rate-limit", "no-output-stall"] })
   })

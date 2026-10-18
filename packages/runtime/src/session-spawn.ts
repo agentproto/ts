@@ -29,7 +29,13 @@ import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
 } from "./sandbox-adapter-store.js"
-import { resolveTurnRetryPolicy, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
+import {
+  resolveTurnRetryPolicy,
+  validateTurnRetryRotate,
+  defaultTurnRetryForSpawn,
+  type TurnRetryPolicyInput,
+  type TurnRetryInput,
+} from "./turn-retry-policy.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
@@ -1969,7 +1975,9 @@ export async function spawnAgentSession(
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
       bundles: explicit.bundles ?? preset.bundles,
-      turnRetry: explicit.turnRetry ?? preset.turnRetry,
+      // `turnRetry: null` is an explicit opt-out, not an omission: an
+      // explicit value (null included) wins over a preset turnRetry.
+      turnRetry: explicit.turnRetry !== undefined ? explicit.turnRetry : preset.turnRetry,
     }
     // Best-effort recency stamp — a favorite just got resolved and used for
     // this spawn. Never let the write (or its absence, for a since-deleted
@@ -2011,7 +2019,10 @@ export async function spawnAgentSession(
         ...input,
         access: { profileRef: preset.profileRef },
         model: input.model ?? preset.defaultModel,
-        ...((input.turnRetry ?? preset.turnRetry) ? { turnRetry: input.turnRetry ?? preset.turnRetry } : {}),
+        // An explicit `turnRetry: null` must win over a preset turnRetry.
+        ...((input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry)
+          ? { turnRetry: input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry }
+          : {}),
       }
     }
   }
@@ -2749,6 +2760,28 @@ export async function spawnAgentSession(
     }
   }
   const delegationDenied = role.toolPolicy.delegation === "deny"
+  // Graceful retry BY DEFAULT for executor / sandbox spawns: a spawn that
+  // gave no `turnRetry` (explicit, or from a preset; both are already
+  // folded into `input.turnRetry` above) gets the default policy (rate
+  // limit, upstream 5xx, no-output stall; 6 retries; default backoff) so a
+  // transient provider failure re-prompts instead of just stopping the turn.
+  // Interactive supervisor sessions keep the old opt-in behaviour. An
+  // explicit opt-out (`turnRetry: null`, or an empty `on`) is honoured: any
+  // explicit input wins over the default. A free OpenCode current model
+  // also rotates on 5xx by default (`defaultTurnRetryForSpawn` builds that
+  // list from other free ids only, so the "free stays free" rule in
+  // `validateTurnRetryRotate` still passes for it).
+  const explicitTurnRetry = input.turnRetry
+  // `turnRetry: null` is an EXPLICIT opt-out, not an omission: land it on an
+  // empty `on` so the resolved policy matches nothing (and no default applies).
+  const turnRetryInput: TurnRetryPolicyInput | undefined =
+    explicitTurnRetry === null
+      ? { on: [] }
+      : explicitTurnRetry !== undefined
+        ? explicitTurnRetry
+        : role.name === "executor" || input.sandbox !== undefined
+          ? defaultTurnRetryForSpawn(input.model)
+          : undefined
   // Deferred/lazy tool loading override for the self-mount (harness-parity
   // item 3): per-spawn `input.deferredTools` > harness with native MCP tool
   // search (manifest `capabilities.nativeToolSearch` ⇒ eager, so the daemon
@@ -4129,7 +4162,7 @@ export async function spawnAgentSession(
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
         contextContinuity: resolvedContextContinuity,
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
-        ...(input.turnRetry ? { turnRetry: resolveTurnRetryPolicy(input.turnRetry) } : {}),
+        ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
         ...(input.trace !== undefined ? { trace: input.trace } : {}),
         ...(authEcho?.fingerprint
           ? {
@@ -4816,7 +4849,7 @@ export async function spawnAgentSession(
       ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
       contextContinuity: resolvedContextContinuity,
       ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
-      ...(input.turnRetry ? { turnRetry: resolveTurnRetryPolicy(input.turnRetry) } : {}),
+      ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       // Verifiability: record the OBSERVABLE echo — resolved provider, mode,
