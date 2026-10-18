@@ -269,10 +269,14 @@ export interface SandboxAgentSessionProxyOpts {
    *  so the box is released at once instead. */
   onBeforeTeardown?: () => Promise<void>
   /** AIP-36 — this session's own git worktree of a shared box's per-workspace
-   *  clone. On `close()` WITH other sessions still attached (the shared box
-   *  keeps running), the worktree is removed through the box's exec — only
-   *  when the teardown delivery (which runs before this) pushed the branch
-   *  and the tree is clean; any leftover work keeps the worktree and the
+   *  clone (`baseDir`). Only set when the plan gave the session a worktree of
+   *  the shared clone: on an attach (`sandbox.reuse`). The first session on a
+   *  fresh box owns `baseDir` itself as its live checkout — `baseDir` is then
+   *  undefined (it is the session's checkoutDir) and nothing is removed here.
+   *  On `close()` WITH other sessions still attached (the shared box keeps
+   *  running), the worktree is removed through the box's exec — only when
+   *  the teardown delivery (which runs before this) pushed the branch and
+   *  the tree is clean; any leftover work keeps the worktree and the
    *  command's own notice says so. The worktree removal is best-effort: a
    *  failure is logged, never thrown. The worktree needs no removal when the
    *  CLOSE tears the box down itself (no survivors) — the box dies with it. */
@@ -1162,8 +1166,11 @@ export function createSandboxAgentSessionProxy(
           recordSessionDetach(opts.ledger.sandboxId, opts.ledger.sessionId).length > 0
         // AIP-36 — a detaching session takes its own worktree with it (the
         // final delivery above already checkpointed and pushed the branch).
-        // Best-effort: the removal never removes unpushed/undone work (see
-        // `buildWorktreeRemoveCommand`) and never blocks the close.
+        // Only attach sessions have a `worktreeTeardown`: a first session on
+        // a fresh box lives directly in the base clone, which the box death
+        // takes with it. Best-effort: the removal never removes
+        // unpushed/undone work (see `buildWorktreeRemoveCommand`) and never
+        // blocks the close.
         if (survivorsLeft && opts.worktreeTeardown && host.exec) {
           const command = buildWorktreeRemoveCommand({
             baseDir: opts.worktreeTeardown.baseDir,
