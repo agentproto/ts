@@ -213,7 +213,7 @@ export interface SandboxAgentSessionProxyOpts {
     | "pause"
     | "mcpUrl"
   > &
-    Partial<Pick<SandboxAgentSessionHost, "close" | "extendTimeout" | "lifetimeMs">>
+    Partial<Pick<SandboxAgentSessionHost, "close" | "extendTimeout" | "lifetimeMs" | "authHeaders">>
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
    *  proxy's local session id (the registry mints its own on `spawnAgent`). */
   remoteSessionId: string
@@ -381,9 +381,10 @@ async function probeBoxSession(
   mcpUrl: string,
   remoteSessionId: string,
   since: number,
+  headers?: Record<string, string>,
 ): Promise<SandboxReattachProbe> {
   const get = async (url: string): Promise<Response> =>
-    fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+    fetch(url, { ...(headers ? { headers } : {}), signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
   try {
     const res = await get(boxSessionUrl(mcpUrl, remoteSessionId, ""))
     if (res.status === 404) return { state: "gone" }
@@ -420,9 +421,10 @@ async function openBoxEventStream(
   remoteSessionId: string,
   since: number,
   signal: AbortSignal,
+  headers?: Record<string, string>,
 ): Promise<ReadableStream<Uint8Array>> {
   const url = buildEventsStreamUrl(mcpUrl, remoteSessionId, since)
-  const res = await fetch(url, { headers: { accept: "text/event-stream" }, signal })
+  const res = await fetch(url, { headers: { ...headers, accept: "text/event-stream" }, signal })
   if (!res.ok || !res.body) {
     throw new Error(`sandbox proxy: GET ${url} returned ${res.status}`)
   }
@@ -790,6 +792,7 @@ export function createSandboxAgentSessionProxy(
         remoteSessionId,
         transcriptCursor,
         controller.signal,
+        host.authHeaders,
       )
     } catch {
       // Unreachable box, or a daemon old enough to 404 the route —
@@ -1202,7 +1205,7 @@ export function createSandboxAgentSessionProxy(
       }
     },
     async probeReattach(): Promise<SandboxReattachProbe> {
-      const probe = await probeBoxSession(host.mcpUrl, remoteSessionId, transcriptCursor)
+      const probe = await probeBoxSession(host.mcpUrl, remoteSessionId, transcriptCursor, host.authHeaders)
       lastProbeState = probe.state
       return probe
     },

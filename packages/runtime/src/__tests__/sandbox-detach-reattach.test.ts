@@ -286,6 +286,23 @@ describe("sandbox proxy — probeReattach", () => {
     expect((await probe()).state).toBe("idle")
   })
 
+  it("presents the gated daemon's auth headers on every box session read", async () => {
+    const authHeaders = { Authorization: "Bearer gated-box-token" }
+    const fetchMock = stubBox({ events: () => json({ events: [] }) })
+    const proxy = createSandboxAgentSessionProxy({
+      host: makeHost({ authHeaders }),
+      remoteSessionId: "remote_1",
+      detachable: true,
+      initialTranscriptCursor: 3,
+    })
+    expect(((await proxy.probeReattach!()) as { state: string }).state).toBe("idle")
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    for (const call of fetchMock.mock.calls) {
+      const init = (call as unknown as [unknown, RequestInit | undefined])[1]
+      expect(init?.headers).toEqual(authHeaders)
+    }
+  })
+
   it("transport failure → unreachable (never throws)", async () => {
     vi.stubGlobal(
       "fetch",

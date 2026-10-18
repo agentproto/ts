@@ -311,6 +311,9 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
    *  caller can record it (there's no local PID for a sandboxed session). */
   sandboxId: string
+  /** Headers the box daemon's gated HTTP routes require — the same ones the
+   *  MCP connection presents. Absent for an ungated daemon. */
+  authHeaders?: Record<string, string>
   /** Ports resolved at boot from `SandboxSpec.extraPorts` — forwarded from
    *  `BootedSandbox.ports` so the runtime can record them on the session
    *  descriptor without reaching into the booted handle after the fact. */
@@ -404,6 +407,7 @@ export async function createSandboxAgentSessionHost(
     ...host,
     mcpUrl: booted.mcpUrl,
     sandboxId: booted.sandboxId,
+    ...(headers ? { authHeaders: headers } : {}),
     ...(booted.ports ? { ports: booted.ports } : {}),
     ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
     ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
