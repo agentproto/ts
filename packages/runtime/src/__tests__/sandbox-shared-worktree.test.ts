@@ -213,6 +213,33 @@ describe("two sessions on one shared box — real git", () => {
     expect(git(["branch", "--format=%(refname:short)", "--all"], dirB).includes("wt/b")).toBe(true)
   })
 
+  it("reusing a local branch the base clone does not sit on never detaches the base's live checkout", async () => {
+    home = await mkdtemp(join(tmpdir(), "agentproto-shared-wt-"))
+    seedOrigin()
+
+    // A (first session) is live in the base clone, checked out on wt/a, with
+    // uncommitted-to-nothing commits landing on wt/a. A prior session left a
+    // local wt/b branch behind (not checked out anywhere).
+    const dirA = await setup("a", true)
+    expect(dirA).toBe(join(home, "agentproto"))
+    configIdentity(dirA)
+    execFileSync("bash", ["-c", "echo a > a-only.txt && git add a-only.txt && git commit -qm 'a work'"], env(dirA))
+    git(["branch", "wt/b", "origin/main"], dirA)
+
+    // B attaches and reuses the still-present local branch wt/b.
+    const dirB = await setup("b", false)
+    expect(dirB).toBe(join(home, ".worktrees", "agentproto", "b"))
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], dirB)).toBe("wt/b")
+
+    // The base clone's HEAD was never detached: A is still on wt/a...
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], dirA)).toBe("wt/a")
+    // ...so a commit there lands on wt/a and survives delivery push.
+    execFileSync("bash", ["-c", "echo more >> a-only.txt && git add a-only.txt && git commit -qm 'a more'"], env(dirA))
+    expect(git(["rev-parse", "HEAD"], dirA)).toBe(git(["rev-parse", "wt/a"], join(home, "agentproto")))
+    execFileSync("git", ["push", "-q", "origin", "wt/a"], env(dirA))
+    expect(git(["rev-parse", "origin/wt/a"], join(home, "agentproto"))).toBe(git(["rev-parse", "wt/a"], dirA))
+  })
+
   it("detaching the first session removes only its clean, pushed worktree; the second stays intact", async () => {
     home = await mkdtemp(join(tmpdir(), "agentproto-shared-wt-"))
     seedOrigin()
