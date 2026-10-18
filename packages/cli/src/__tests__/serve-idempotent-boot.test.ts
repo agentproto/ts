@@ -21,7 +21,8 @@ import {
   resolveBucketSlug,
   type RuntimeMeta,
 } from "@agentproto/runtime"
-import { findWorkspaceByPath } from "@agentproto/runtime/workspaces-config"
+import { WORKSPACES_CONFIG_VERSION, findWorkspaceByPath } from "@agentproto/runtime/workspaces-config"
+import type { WorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 
 describe("resolveBucketSlug", () => {
   it("the served workspace and the other-daemons bucketOf mapper derive the SAME bucket for a workspace missing from wsConfig", async () => {
@@ -37,7 +38,10 @@ describe("resolveBucketSlug", () => {
     const home = await mkdtemp(join(tmpdir(), "agp-bucket-agree-"))
     process.env.HOME = home
     try {
-      const wsConfig = { workspaces: [] } // nothing found by path
+      const wsConfig: import("@agentproto/runtime/workspaces-config").WorkspacesConfig = {
+        version: WORKSPACES_CONFIG_VERSION,
+        workspaces: [],
+      } // nothing found by path
       const registeredSlugs = new Set<string>() // matches an empty registry read
       const missingWorkspace = "/not/registered"
       const bucketOf = (path: string): string =>
