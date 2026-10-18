@@ -43,6 +43,7 @@ import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
+import { opaqueSchema } from "./tool-schema-opaque.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import {
@@ -356,11 +357,9 @@ export function registerAgentTools(
     "agent_start",
     {
       description:
-        "Spawn a long-running agent CLI (claude-code, hermes, …) on the host. " +
-      "The session stays alive across multiple turns — call `agent_prompt` " +
-      "to continue the conversation. Returns the session id + initial descriptor. " +
-      "`agentproto sessions start ...` is the CLI equivalent, if you have shell access. " +
-      'Details on any field: tool_help {name:"agent_start", topic:"<field>"}',
+        "Spawn a long-running agent CLI (claude-code, hermes, …) on the host; " +
+      "the session stays alive across turns — call `agent_prompt` to continue. " +
+      'Returns the session id + descriptor. Field docs: tool_help {name:"agent_start", topic:"<field>"}',
       inputSchema: agentStartInputShape,
       // Session-chat widget: rendering agent_start's result auto-mounts the
       // session-chat launcher for the new session (ext-apps
@@ -530,49 +529,30 @@ export function registerAgentTools(
   server.tool(
     "agent_prompt",
     "Send a follow-up prompt to a live agent session — multi-turn continuity " +
-      "without re-spawning. The session id comes from `agent_start` " +
-      "(or `agent_sessions_list`). Returns immediately; tail output via " +
-      "`agent_output` or the SSE /sessions/:id/stream endpoint. Mid-turn, " +
-      "the prompt is steered into the running turn when the adapter supports " +
-      "it (`steering: true` in `session_list`; `delivery: \"steered\"`), else " +
-      "queued FIFO until the turn ends (`delivery: \"queued-mid-turn\"`; stale " +
-      "ones show as `pendingPrompts` in `session_list`/`session_recap`). " +
-      "`pending: false` = delivered, `true` = NOT yet; `deliverWithin` forces " +
-      "a stuck one through. An interrupted turn leaves the queue parked until " +
-      "the next natural turn-end. `interrupt: true` cancels the in-flight turn " +
-      "and redirects the SAME session onto this prompt, keeping its context " +
-      "(unlike `agent_kill`); the prompt opens with a one-line `[agentproto]` " +
-      "notice saying the cut was a delivery, not a stop. No-op when idle.",
+      "without re-spawning. Returns immediately; tail output via `agent_output` " +
+      "or the SSE /sessions/:id/stream endpoint. Mid-turn, the prompt is " +
+      "steered into the running turn when supported, else queued FIFO until " +
+      "the turn ends; `interrupt: true` cancels the in-flight turn and " +
+      "redirects the SAME session onto this prompt, keeping its context.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
-      prompt: promptInputSchema.describe(
-        "The next user turn — plain text, or a content block / block array " +
-          "for a multimodal turn (e.g. a pasted image, " +
-          '`{type:"image", data, mimeType}`), same loose shape ' +
-          "`POST /sessions/:id/prompt` accepts over HTTP. Forwarded to the " +
-          "adapter verbatim; it negotiates its own multimodal support."
+      prompt: opaqueSchema(promptInputSchema).describe(
+        `The next user turn — plain text, or a content block / block array for a multimodal turn. Details: tool_help {name:"agent_prompt", topic:"prompt"}`
       ),
       interrupt: z
         .boolean()
         .optional()
         .describe(
-          "When true and the session is mid-turn, cancel the in-flight " +
-            "turn and deliver this prompt on the same session immediately " +
-            "instead of queueing it behind the current turn. No-op when the " +
-            "session is already idle. UNSET falls back to the daemon default " +
-            "`defaults.agentPromptInterrupt` in config.json (false unless an " +
-            "operator changed it) — so a mid-turn target queues by default; " +
-            "pass `interrupt: true` explicitly to cut now."
+          "When true and the session is mid-turn, cancel the in-flight turn and deliver this " +
+            "prompt immediately instead of queueing it. UNSET uses the daemon default (`defaults.agentPromptInterrupt`). " +
+            "Details: tool_help {name:\"agent_prompt\", topic:\"interrupt\"}"
         ),
       queue: z
         .boolean()
         .optional()
         .describe(
-          "When the session is mid-turn, queue this prompt (FIFO) and " +
-            "dispatch it automatically once the current turn ends instead " +
-            "of rejecting. Default true. Explicit false restores the old " +
-            "reject-when-busy behavior."
+          "When mid-turn, queue this prompt (FIFO) and dispatch it once the current turn ends. Default true."
         ),
       steer: z
         .boolean()
@@ -713,18 +693,12 @@ export function registerAgentTools(
   server.tool(
     "message_parent",
     "Report a message UP to the session that spawned you (your parent/" +
-      "supervisor) — a result, a progress update, or a blocker. No session " +
-      "id needed: the daemon resolves your recorded parent from your own " +
-      "session identity (also visible as the AGENTPROTO_PARENT_SESSION_ID " +
-      "env var). An idle parent gets it as its own turn right away. A busy " +
-      "parent gets it by `urgency`: `next-turn` (default for report/done/" +
-      "notice) waits for its current turn to end; `steer` (default for " +
-      "blocker/question) is injected INTO its running turn when its agent " +
-      "supports that, else next-turn; `fyi` only lands in its inbox. " +
-      "`interrupt: true` asks to cancel the parent's turn — honoured only when " +
-      "the operator allows it, otherwise delivered as `steer`. The result " +
-      "reports the tier actually applied. Errors if this session has no " +
-      "recorded parent or the parent is gone.",
+      "supervisor) — a result, a progress update, or a blocker. No session id " +
+      "needed: the daemon resolves your recorded parent from your own session " +
+      "identity (also the AGENTPROTO_PARENT_SESSION_ID env var). Delivery tier " +
+      "follows `urgency`; `interrupt: true` asks to cancel the parent's turn, " +
+      "honoured only when the operator allows it. Errors if this session has " +
+      "no recorded parent or the parent is gone.",
     {
       message: z
         .string()
@@ -734,30 +708,21 @@ export function registerAgentTools(
         .boolean()
         .optional()
         .describe(
-          "Ask to cancel the parent's in-flight turn and deliver this now " +
-            "(urgency `interrupt`). Honoured only when config.json " +
-            "`defaults.messaging.agentInterrupt` is \"allow\"; otherwise it's " +
-            "delivered as `steer` (injected into the running turn when " +
-            "possible) and the result says so. UNSET falls back to " +
-            "`defaults.agentPromptInterrupt` (false by default).",
+          "Ask to cancel the parent's in-flight turn and deliver this now. Honoured only when " +
+            "`defaults.messaging.agentInterrupt` is \"allow\", else delivered as `steer`. Default false."
         ),
       urgency: z
         .enum(MESSAGE_URGENCIES as [MessageUrgency, ...MessageUrgency[]])
         .optional()
         .describe(
-          "fyi | next-turn | steer | interrupt — see the tool description. " +
-            "Default: steer for blocker/question, next-turn otherwise. " +
-            "`interrupt: true` wins over this.",
+          "fyi | next-turn | steer | interrupt. Default: steer for blocker/question, next-turn otherwise."
         ),
       replyTo: z.string().optional().describe("Id of a parent message this answers (msg_…)."),
       kind: z
         .enum(MESSAGE_KINDS as [MessageKind, ...MessageKind[]])
         .optional()
         .describe(
-          "What this message is: `report` (default — a result or progress), " +
-            "`question` (you need an answer), `blocker` (you cannot proceed), " +
-            "`done` (your task is complete), `notice` (informational). Shown " +
-            "to the parent in the daemon-attested message header.",
+          "report (default) | question | blocker | done | notice. Shown to the parent in the message header."
         ),
     },
     async input => {

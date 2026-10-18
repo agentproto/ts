@@ -5,10 +5,17 @@
  */
 
 import { describe, expect, it } from "vitest"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { createServer } from "node:net"
+import type { AddressInfo } from "node:net"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
+import { createGateway } from "../index.js"
 import { registerToolHelpTool } from "../tool-help-mcp.js"
 import { getToolHelp, listToolHelpTopics } from "../tool-help.js"
 
@@ -94,5 +101,71 @@ describe("tool_help MCP tool", () => {
     expect(result.isError).toBeFalsy()
     expect(textOf(result)).toContain("not-a-real-section")
     await close()
+  })
+})
+
+/** Every `tool_help {name, topic}` pointer in a tool's advertised text, so a
+ *  slimming pass that trims a description down to a pointer can't leave the
+ *  caller with a dangling one (the pointer still has to resolve to a real
+ *  `## <topic>` section in the shipped doc). */
+const POINTER_RE = /tool_help \{name:"([^"]+)"(?:, topic:"([^"]+)")?\}/g
+
+function collectStrings(obj: unknown, out: string[]): void {
+  if (typeof obj === "string") {
+    out.push(obj)
+    return
+  }
+  if (!obj || typeof obj !== "object") return
+  for (const value of Object.values(obj as Record<string, unknown>)) collectStrings(value, out)
+}
+
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once("error", reject)
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as AddressInfo).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+describe("tool_help pointers resolve", () => {
+  it("every advertised tool_help {name, topic} points at a real doc section", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agentproto-tool-help-ws-"))
+    const gateway = await createGateway({
+      workspace,
+      specs: [],
+      port: await freePort(),
+      boot: false,
+      persist: false,
+    })
+    const texts: string[] = []
+    try {
+      const client = new Client({ name: "tool-help-pointer-test", version: "0" })
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${gateway.url}/mcp`)))
+      const { tools } = await client.listTools()
+      await client.close()
+      for (const tool of tools) collectStrings(tool, texts)
+    } finally {
+      await gateway.stop().catch(() => {})
+      await rm(workspace, { recursive: true, force: true })
+    }
+
+    const dangling: string[] = []
+    for (const text of texts) {
+      for (const match of text.matchAll(POINTER_RE)) {
+        const [, name, topic] = match
+        const doc = getToolHelp(name!)
+        if (doc === undefined) {
+          dangling.push(`tool_help {name:"${name}"} — no doc for that tool`)
+          continue
+        }
+        if (topic !== undefined && !topic.includes("<") && !doc.includes(`## ${topic}`)) {
+          dangling.push(`tool_help {name:"${name}", topic:"${topic}"} — no "## ${topic}" section`)
+        }
+      }
+    }
+    expect(dangling, dangling.join("\n")).toEqual([])
   })
 })
