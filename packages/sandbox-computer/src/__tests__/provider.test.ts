@@ -24,6 +24,25 @@ function spec(controllerUrl: string, extra: Record<string, unknown> = {}): Sandb
 
 const bootOpts = { env: { OPENROUTER_API_KEY: "sk-test" } as Record<string, string> }
 
+describe("ComputerControllerClient: empty success bodies", () => {
+  it("treats 200/204 with an empty body as {} for suspend/resume/remove", async () => {
+    const seen: string[] = []
+    const client = new ComputerControllerClient({
+      baseUrl: "http://controller.test",
+      token: SERVICE_TOKEN,
+      tenantId: "tenant-a",
+      fetchImpl: (async (_url, init) => {
+        seen.push(`${init?.method ?? "GET"}`)
+        return new Response(null, { status: 204 }) as Response
+      }) as typeof fetch,
+    })
+    await expect(client.suspend("cmp-1")).resolves.toEqual({})
+    await expect(client.resume("cmp-1")).resolves.toEqual({})
+    await expect(client.remove("cmp-1")).resolves.toBeUndefined()
+    expect(seen).toEqual(["POST", "POST", "DELETE"])
+  })
+})
+
 describe("FakeController", () => {
   let controller: FakeController
 

@@ -145,6 +145,11 @@ export class ComputerControllerClient {
       )
     }
 
+    // 200/204 with no body: every success schema tolerates `{}` (all fields
+    // optional), so an empty body parses as `{}` instead of blowing up on
+    // `undefined`.
+    if (res.ok && json === undefined) json = {}
+
     const parsed = schema.safeParse(json)
     if (!parsed.success) {
       throw new ComputerApiError(
