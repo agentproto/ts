@@ -492,7 +492,7 @@ export const agentStartInputShape = {
   turnRetry: jsonTolerant(turnRetryInputSchema)
     .optional()
     .describe(
-      `Retries a turn after a transient failure. On by default for executor/sandbox spawns, off for supervisors; null opts out. ${help("turnRetry")}`
+      `Retries a transiently failed turn; executor/sandbox on, supervisors off; null opts out. ${help("turnRetry")}`
     ),
   contextContinuity: jsonTolerant(contextContinuityInputSchema)
     .optional()
