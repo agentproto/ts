@@ -12,15 +12,16 @@ $MinNodeMajor = 20
 $MinNodeMinor = 9
 $LtsMajor = 22
 
-# npm is ALWAYS invoked as npm.cmd (never the bare `npm`): on stock Windows
-# PowerShell resolves `npm` to npm.ps1 first, which a Restricted
-# ExecutionPolicy refuses to run (recap point 2: "npm.ps1 cannot be loaded
-# because running scripts is disabled"). npm.cmd is itself a batch file, so
-# it needs no script policy at all - that makes the whole script work even
-# when the policy change below is refused (group policy), with no
-# special-casing further down.
+# npm and agentproto are ALWAYS invoked through their .cmd shims (never the
+# bare name): on Windows PowerShell a bare `npm` / `agentproto` resolves to the
+# .ps1 shim first, which a Restricted or AllSigned ExecutionPolicy refuses to
+# run ("running scripts is disabled on this system"). The .cmd shims are batch
+# files and need no script policy, so the whole script works even when the
+# policy cannot be changed (group policy), with no special-casing further down.
+# This holds even when the CurrentUser change below "succeeds": a machine- or
+# user-level GPO scope can still keep the EFFECTIVE policy restrictive.
 $NpmCmd = "npm.cmd"
-$script:PolicyChangeFailed = $false
+$CliCmd = "agentproto.cmd"
 
 function Info($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Host "!!  $msg" -ForegroundColor Yellow }
@@ -50,19 +51,8 @@ if ("$PolicyBefore" -eq "Restricted") {
     Write-Host "    (CurrentUser policy was Restricted; to undo later: Set-ExecutionPolicy -Scope CurrentUser Restricted -Force)"
   }
   catch {
-    Warn "Could not set ExecutionPolicy (likely a group policy). Falling back to invoking npm and agentproto via their .cmd shims for the rest of the script (batch files need no script policy)."
-    $script:PolicyChangeFailed = $true
+    Warn "Could not set ExecutionPolicy (likely a group policy). Continuing: npm and agentproto are invoked via their .cmd shims, which need no script policy."
   }
-}
-
-# Helper shims: when the policy could not be raised, PowerShell itself still
-# resolves a bare `npm` / `agentproto` to their .ps1 shims (which a Restricted
-# policy refuses) — so every in-script invocation goes through the .cmd shim
-# explicitly, the recap-point-2 fallback.
-if ($script:PolicyChangeFailed) {
-  $CliCmd = "agentproto.cmd"
-} else {
-  $CliCmd = "agentproto"
 }
 
 # --- 1. Windows 10/11 check ---------------------------------------------------
@@ -125,16 +115,20 @@ Info "Node $(NodeVersion) ready"
 
 # --- 3. CLI -------------------------------------------------------------------
 Info "Installing @agentproto/cli globally"
-& $NpmCmd i -g @agentproto/cli
+# --allow-scripts=node-pty: npm 11 gates dependency install scripts, and
+# node-pty (a dependency of @agentproto/cli) needs its native build to run -
+# without the allow-list the install "succeeds" but the terminal features
+# crash at runtime. Older npm versions accept the flag and ignore it.
+& $NpmCmd i -g --allow-scripts=node-pty @agentproto/cli
 if ($LASTEXITCODE -ne 0) {
-  Die "npm i -g @agentproto/cli failed (exit $LASTEXITCODE)." "Run it by hand to see the full npm error: npm i -g @agentproto/cli"
+  Die "npm i -g @agentproto/cli failed (exit $LASTEXITCODE)." "Run it by hand to see the full npm error: npm.cmd i -g --allow-scripts=node-pty @agentproto/cli"
 }
-if (-not (Get-Command agentproto -ErrorAction SilentlyContinue)) {
+if (-not (Get-Command $CliCmd -ErrorAction SilentlyContinue)) {
   Die "The agentproto binary is not on PATH after install." "Open a NEW PowerShell window, or check your npm global bin dir (npm config get prefix), then re-run this script."
 }
 & $CliCmd --version
 if ($LASTEXITCODE -ne 0) {
-  Die "agentproto --version failed after install." "Reinstall by hand: npm i -g @agentproto/cli"
+  Die "agentproto --version failed after install." "Reinstall by hand: npm.cmd i -g --allow-scripts=node-pty @agentproto/cli"
 }
 
 # --- 4. pnpm native builds ----------------------------------------------------
@@ -177,11 +171,8 @@ else {
   else {
     Warn "daemon install failed (exit $LASTEXITCODE) - older CLI or ALREADY a daemon running? Falling back to a detached serve window."
     Info "(no Windows service support on this CLI - that window must stay open; closing it stops the daemon)"
-    # Same shim logic: the daemon window must be able to run `agentproto serve`
-    # under whatever policy this session ended up with - use the .cmd shim in
-    # the fallback branch.
-    $serveCommand = if ($script:PolicyChangeFailed) { "agentproto.cmd serve" } else { "agentproto serve" }
-    Start-Process powershell -ArgumentList '-NoExit', '-Command', $serveCommand -WindowStyle Minimized
+    # The new window inherits the same policy: use the .cmd shim there too.
+    Start-Process powershell -ArgumentList '-NoExit', '-Command', "$CliCmd serve" -WindowStyle Minimized
     Start-Sleep -Seconds 3
   }
 }
@@ -195,6 +186,22 @@ Write-Host "Doctor summary" -ForegroundColor White
 }
 
 # --- 8. Next step -------------------------------------------------------------
+# Get-ExecutionPolicy with no -Scope is the EFFECTIVE policy (GPO scopes
+# included), i.e. what actually decides whether `agentproto` (the .ps1 shim)
+# runs when the user types it in a new window.
+try { $EffectivePolicy = "$(Get-ExecutionPolicy)" } catch { $EffectivePolicy = "" }
+$PolicyBlocksScripts = ($EffectivePolicy -eq "Restricted") -or ($EffectivePolicy -eq "AllSigned")
+
 Write-Host ""
 Write-Host "Done. Next step:" -ForegroundColor White
-Write-Host "  agentproto onboard" -ForegroundColor White
+if ($PolicyBlocksScripts) {
+  Write-Host "  agentproto.cmd onboard" -ForegroundColor White
+  Write-Host ""
+  Warn "PowerShell ExecutionPolicy is $EffectivePolicy: typing 'agentproto' will fail with 'running scripts is disabled on this system' (it resolves to agentproto.ps1)."
+  Write-Host "  Either use the .cmd shim, which needs no policy:  agentproto.cmd <command>" -ForegroundColor Yellow
+  Write-Host "  or allow local scripts for your user (may be blocked by group policy on a work PC):" -ForegroundColor Yellow
+  Write-Host "    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned" -ForegroundColor Yellow
+}
+else {
+  Write-Host "  agentproto onboard" -ForegroundColor White
+}
