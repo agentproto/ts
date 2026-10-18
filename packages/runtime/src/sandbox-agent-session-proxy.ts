@@ -34,6 +34,7 @@ import type {
   SandboxReattachProbe,
 } from "./sessions.js"
 import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, isFullyDelivered, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import { buildWorktreeRemoveCommand } from "./sandbox-workspace-remote.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 
@@ -225,6 +226,7 @@ export interface SandboxAgentSessionProxyOpts {
     | "stop"
     | "pause"
     | "mcpUrl"
+    | "exec"
   > &
     Partial<Pick<SandboxAgentSessionHost, "close" | "extendTimeout" | "lifetimeMs" | "authHeaders">>
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
@@ -279,6 +281,19 @@ export interface SandboxAgentSessionProxyOpts {
    *  down (`close({ daemonShutdown: true })`): the process is about to exit,
    *  so the box is released at once instead. */
   onBeforeTeardown?: () => Promise<void>
+  /** AIP-36 — this session's own git worktree of a shared box's per-workspace
+   *  clone (`baseDir`). Only set when the plan gave the session a worktree of
+   *  the shared clone: on an attach (`sandbox.reuse`). The first session on a
+   *  fresh box owns `baseDir` itself as its live checkout — `baseDir` is then
+   *  undefined (it is the session's checkoutDir) and nothing is removed here.
+   *  On `close()` WITH other sessions still attached (the shared box keeps
+   *  running), the worktree is removed through the box's exec — only when
+   *  the teardown delivery (which runs before this) pushed the branch and
+   *  the tree is clean; any leftover work keeps the worktree and the
+   *  command's own notice says so. The worktree removal is best-effort: a
+   *  failure is logged, never thrown. The worktree needs no removal when the
+   *  CLOSE tears the box down itself (no survivors) — the box dies with it. */
+  worktreeTeardown?: { baseDir: string; worktreeDir: string; branch: string; lockPath?: string }
   /** Opt in to surviving a host-daemon restart: `detach()` then closes only
    *  the connection (box session and box left running) and the session can
    *  be re-attached at the next boot. Off for device sandboxes (their box
@@ -1178,6 +1193,35 @@ export function createSandboxAgentSessionProxy(
         const survivorsLeft =
           !!(opts.ledger?.sandboxId && opts.ledger?.sessionId) &&
           recordSessionDetach(opts.ledger.sandboxId, opts.ledger.sessionId).length > 0
+        // AIP-36 — a detaching session takes its own worktree with it (the
+        // final delivery above already checkpointed and pushed the branch).
+        // Only attach sessions have a `worktreeTeardown`: a first session on
+        // a fresh box lives directly in the base clone, which the box death
+        // takes with it. Best-effort: the removal never removes
+        // unpushed/undone work (see `buildWorktreeRemoveCommand`) and never
+        // blocks the close.
+        if (survivorsLeft && opts.worktreeTeardown && host.exec) {
+          const command = buildWorktreeRemoveCommand({
+            baseDir: opts.worktreeTeardown.baseDir,
+            worktreeDir: opts.worktreeTeardown.worktreeDir,
+            branch: opts.worktreeTeardown.branch,
+            ...(opts.worktreeTeardown.lockPath !== undefined
+              ? { lockPath: opts.worktreeTeardown.lockPath }
+              : {}),
+          })
+          try {
+            const cleaned = await host.exec({
+              command,
+              cwd: opts.worktreeTeardown.baseDir,
+              env: { GIT_TERMINAL_PROMPT: "0" },
+              timeoutMs: 2 * 60_000,
+            })
+            const notice = (cleaned.stdout.trim() || cleaned.stderr.trim()).slice(-1_000)
+            if (notice) console.warn(`[sandbox-proxy] detaching session's worktree: ${notice}`)
+          } catch (err) {
+            console.warn("[sandbox-proxy] failed to remove the detaching session's worktree:", err)
+          }
+        }
         try {
           if (!survivorsLeft) {
             if (pauseFn) {

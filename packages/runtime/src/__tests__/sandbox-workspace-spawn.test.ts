@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { readFileSync as readFileSyncSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
@@ -17,7 +18,12 @@ import type { AddressInfo } from "node:net"
 import type { SandboxExecOpts, SandboxExecResult, SandboxProvider } from "@agentproto/sandbox"
 
 import { createGateway, type GatewayHandle } from "../index.js"
-import { spawnAgentSession, type SandboxSpecInput, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import {
+  spawnAgentSession,
+  type SandboxSpecInput,
+  type SpawnAgentSessionDeps,
+} from "../session-spawn.js"
+import { readSandboxLedger } from "../sandbox-ledger.js"
 import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
@@ -281,6 +287,82 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
     expect(execCalls.some(c => c.command.includes("push"))).toBe(false)
     expect(registry.get(result.descriptor.id)?.sandboxDelivery).toBeUndefined()
+  })
+
+  describe("AIP-36 shared box — per-session worktree on attach", () => {
+    let ledgerFile: string
+
+    beforeEach(() => {
+      ledgerFile = join(tmpdir(), `agentproto-spawn-shared-wt-${process.pid}.json`)
+      vi.stubEnv("AGENTPROTO_SANDBOX_LEDGER", ledgerFile)
+    })
+
+    afterEach(() => {
+      vi.unstubAllEnvs()
+      rmSync(ledgerFile, { force: true })
+    })
+
+    // True once the ledger no longer carries `id` as an attached session.
+    const recordedDetach = (file: string, id: string): boolean =>
+      !readSandboxLedger(file).some(e => (e.attachedSessions ?? []).includes(id))
+
+    it("an attach plans the checkout as its own git worktree and lands the session in it", async () => {
+      const first = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: "fake",
+        workspaceSlug: "agentproto",
+        worktree: { slug: "x" },
+      })
+      expect(first.ok).toBe(true)
+      if (!first.ok) return
+      const idA = first.descriptor.id
+      expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
+      // A's fresh boot stamped itself into the shared-box refcount.
+      expect(readFileSyncSync(ledgerFile).toString()).toContain(idA)
+
+      execCalls.length = 0
+      const attach = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        sandbox: { provider: "fake", config: {}, reuse: "sbx_fake_ws" } as unknown as SandboxSpecInput,
+        workspaceSlug: "agentproto",
+        worktree: { slug: "y" },
+      })
+      expect(attach.ok).toBe(true)
+      if (!attach.ok) return
+      const idB = attach.descriptor.id
+      // The ATTACH never re-checks out the shared clone: it adds a worktree.
+      const commands = execCalls.map(c => c.command)
+      expect(
+        commands.some(
+          c => c.includes("'/home/user/agentproto' checkout") && !c.includes("checkout --detach"),
+        ),
+      ).toBe(false)
+      expect(commands.some(c => c.includes("worktree add '/home/user/.worktrees/agentproto/y' 'wt/y'"))).toBe(true)
+      expect(commands.some(c => c.includes("flock 9"))).toBe(true)
+      expect(receivedStarts[1]?.cwd).toBe("/home/user/.worktrees/agentproto/y")
+      expect(attach.descriptor.cwd).toBe("/home/user/.worktrees/agentproto/y")
+      expect(registry.get(idB)?.sandboxDeliveryTarget).toEqual({
+        checkoutDir: "/home/user/.worktrees/agentproto/y",
+        branch: "wt/y",
+        baseSha: BASE_SHA,
+      })
+      const ledger = readFileSyncSync(ledgerFile).toString()
+      expect(ledger).toContain(idA)
+      expect(ledger).toContain(idB)
+
+      // A (the fresh boot) detaches first: the shared box keeps running for
+      // B — detach ONLY, neither paused nor stopped, base clone intact.
+      registry.kill(idA)
+      await vi.waitFor(() => expect(recordedDetach(ledgerFile, idA)).toBe(true))
+      expect(pauseSpy).not.toHaveBeenCalled()
+      expect(stopSpy).not.toHaveBeenCalled()
+      expect(readFileSyncSync(ledgerFile).toString()).toContain(idB)
+      // B is the LAST session on the box: its close pauses the box (a reused
+      // box is marked pauseable), never an outright stop.
+      registry.kill(idB)
+      await vi.waitFor(() => expect(pauseSpy).toHaveBeenCalledTimes(1))
+      expect(stopSpy).not.toHaveBeenCalled()
+    })
   })
 
   describe("turn-end safety net", () => {

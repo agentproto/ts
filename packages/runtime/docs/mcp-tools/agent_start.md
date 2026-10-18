@@ -667,14 +667,26 @@ creds configured.
 Run this session inside a sandbox instead of on the host — pass a provider
 slug (see `list_sandbox_providers`) or an inline AIP-36 SandboxDefinition
 object. The daemon boots the sandbox, spawns `adapter` on the box's OWN
-agentproto daemon, and proxies the conversation back onto this session —
-`agent_prompt`/`agent_output`/`agent_kill` behave exactly as they do for a
-local spawn, and the transcript stays readable here even after the box is
 torn down. Omit to run locally (default). Pass an inline spec with `reuse:
 "<sandboxId>"` (from a prior session's `sandboxId`) to reconnect to an
 existing box instead — by default such a box is PAUSED (not killed) on
 session close so it stays reusable; set `lifecycle.destroy_on` to always
 kill it.
+
+When a spawn ATTACHES to a box another session may already be using
+(`reuse`, non-device, with a workspace), the per-workspace clone at
+`<home>/<workspaceSlug>` stays the first session's checkout and the
+attaching session gets its OWN git worktree of that clone at
+`<home>/.worktrees/<workspaceSlug>/<branchSlug>` (same branch precedence as
+a fresh-box checkout: an existing worktree of the branch → the pushed
+`origin/<branch>` → cut from the resolved base). Concurrent workspace setup
+on the shared clone is flock-serialized. On detach (box still shared), the
+session's final delivery (checkpoint + push) runs first, then its worktree
+is removed through the box (only when the push landed and the tree is
+clean — any uncommitted/unpushed work keeps the worktree and says so). A
+session alone on a fresh box is not affected: it lives directly in
+`<home>/<workspaceSlug>` as before, and the box teardown takes that
+checkout with it.
 
 DO NOT CONFUSE with `commandSandbox` below — this field boots a WHOLE
 SEPARATE machine/box; `commandSandbox` confines THIS host's own spawn argv
