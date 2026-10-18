@@ -56,15 +56,22 @@ export function timestampedWrite(
       lineStart = raw.endsWith("\n")
       return out(stamped, ...args.slice(1))
     }
-    // Buffers, Uint8Arrays and empty/undefined writes pass through: every
+    // Buffers, Uint8Arrays and undefined writes pass through: every
     // log writer here is textual; a non-string write is never a "line".
-    lineStart = false
+    // An empty string is no line boundary either — it must not flip
+    // `lineStart`.
+    if (typeof raw !== "string") lineStart = false
     return out(...args)
   }
 
   /** Prefix every logical line of `s` with `prefix`; a trailing newline's
    *  (empty) imaginary segment gets none. */
   function prefixLines(s: string, prefix: string): string {
+    // An empty segment (nothing before the newline just consumed, or an
+    // empty chunk) carries no line content: stamping it would emit a bare
+    // dangling `TS ` that the next chunk's fresh stamp turns into the
+    // corrupt `TS TS next` sequence.
+    if (s === "") return ""
     let parts = s.split("\n")
     let suffix = ""
     if (s.endsWith("\n")) {

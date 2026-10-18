@@ -29,6 +29,24 @@ describe("timestampedWrite", () => {
     expect(writes).toEqual([`${TS} part`, "icu", "lar\n" + `${TS} next`])
   })
 
+  it("a partial line whose continuation ends on the newline doesn't stamp the empty segment (no TS TS)", () => {
+    const { stream, writes } = fakeStream()
+    timestampedWrite(stream, { now: () => new Date(TS) })
+    stream.write("part")
+    stream.write("done\n")
+    stream.write("next\n")
+    expect(writes).toEqual([`${TS} part`, `done\n`, `${TS} next\n`])
+  })
+
+  it("an empty string write is a no-op that preserves the line-start state", () => {
+    const { stream, writes } = fakeStream()
+    timestampedWrite(stream, { now: () => new Date(TS) })
+    stream.write("one\n")
+    stream.write("")
+    stream.write("next\n")
+    expect(writes).toEqual([`${TS} one\n`, "", `${TS} next\n`])
+  })
+
   it("only string writes get a prefix; buffers pass through untouched", () => {
     const { stream, writes } = fakeStream()
     timestampedWrite(stream, { now: () => new Date(TS) })
