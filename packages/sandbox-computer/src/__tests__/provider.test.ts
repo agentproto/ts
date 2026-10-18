@@ -94,6 +94,28 @@ describe("computerSandboxProvider.boot", () => {
     expect(last.argv[1]).toBe("-lc")
   })
 
+  it("forwards the egress allowlist as create egress.allow, defaulting to port 443", async () => {
+    await computerSandboxProvider.boot(
+      spec(controller.url, {
+        egress: ["github.com", "registry.npmjs.org:443", { host: "opencode.ai" }, { host: "x.test", port: 8443 }, "", 7],
+      }),
+      bootOpts,
+    )
+    expect((controller.createBodies[0] as { egress: unknown }).egress).toEqual({
+      allow: [
+        { host: "github.com", port: 443 },
+        { host: "registry.npmjs.org", port: 443 },
+        { host: "opencode.ai", port: 443 },
+        { host: "x.test", port: 8443 },
+      ],
+    })
+  })
+
+  it("omits egress from the create body when none is configured", async () => {
+    await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    expect(controller.createBodies[0]).not.toHaveProperty("egress")
+  })
+
   it("drops env vars the controller would reject", async () => {
     await computerSandboxProvider.boot(
       spec(controller.url),

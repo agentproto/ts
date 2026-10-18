@@ -78,6 +78,10 @@ interface ComputerSandboxConfig {
   rootDiskMiB?: number
   /** Computer TTL seconds forwarded as the controller create body's `ttl`. */
   ttlSeconds?: number
+  /** Egress allowlist forwarded as the create body's `egress.allow`. Entries
+   *  are `"host"`, `"host:port"` (port defaults to 443) or `{ host, port? }`.
+   *  The controller denies all egress (DNS included) when this is absent. */
+  egress?: Array<{ host: string; port: number }>
   /** How many sessions this process may map onto one computer. Default 1. */
   maxSessions?: number
   /** Port the agentproto daemon listens on inside the computer. Default 18790. */
@@ -110,6 +114,26 @@ interface ComputerSandboxConfig {
   daemonReadyTimeoutMs?: number
 }
 
+function parseEgress(value: unknown): Array<{ host: string; port: number }> | undefined {
+  if (!Array.isArray(value)) return undefined
+  const rules: Array<{ host: string; port: number }> = []
+  for (const entry of value) {
+    let host: string | undefined
+    let port = 443
+    if (typeof entry === "string") {
+      const m = /^(.+?)(?::(\d{1,5}))?$/.exec(entry.trim())
+      host = m?.[1]
+      if (m?.[2]) port = Number(m[2])
+    } else if (entry && typeof entry === "object") {
+      const e = entry as Record<string, unknown>
+      host = typeof e.host === "string" ? e.host.trim() : undefined
+      if (typeof e.port === "number" && Number.isInteger(e.port)) port = e.port
+    }
+    if (host) rules.push({ host, port })
+  }
+  return rules.length > 0 ? rules : undefined
+}
+
 function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
   const config = (spec.config ?? {}) as Record<string, unknown>
   const int = (v: unknown): number | undefined =>
@@ -124,6 +148,7 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     memoryMiB: int(config.memoryMiB),
     rootDiskMiB: int(config.rootDiskMiB),
     ttlSeconds: int(config.ttlSeconds),
+    egress: parseEgress(config.egress),
     maxSessions: int(config.maxSessions),
     port: int(config.port),
     workspace: str(config.workspace),
@@ -311,6 +336,7 @@ async function bootOnClient(
       ...(config.memoryMiB !== undefined ? { memoryMiB: config.memoryMiB } : {}),
       ...(config.rootDiskMiB !== undefined ? { rootDiskMiB: config.rootDiskMiB } : {}),
       ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
+      ...(config.egress ? { egress: { allow: config.egress } } : {}),
       env: createEnv,
     })
   } catch (err) {

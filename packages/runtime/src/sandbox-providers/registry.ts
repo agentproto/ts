@@ -155,12 +155,20 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
         required: true,
         sensitive: false,
       },
+      {
+        name: "tenantId",
+        description:
+          "Controller tenant the computers are created under (default \"agentproto\"), injected as COMPUTER_TENANT_ID.",
+        required: false,
+        sensitive: false,
+      },
     ],
     /** Setup-field name → env var the provider package reads it from —
      *  filled in `importThirdPartyProvider` when the process env is unset. */
     credentialEnvVars: [
       { name: "apiKey", envVar: "COMPUTER_CONTROLLER_TOKEN" },
       { name: "controllerUrl", envVar: "COMPUTER_CONTROLLER_URL" },
+      { name: "tenantId", envVar: "COMPUTER_TENANT_ID" },
     ],
   },
   e2b: {
