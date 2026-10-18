@@ -56,6 +56,7 @@ import {
   makePrStateResolver,
 } from "./worktree.js"
 import { makeBranchGcRunner, makeBranchGcVerdictReader, makeBranchGcVerdictRecorder } from "./branch.js"
+import { installDaemonLogTimestamps } from "./_log-timestamps.js"
 import { systemPromptCapsFor } from "./system-prompt-caps.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
@@ -210,6 +211,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
     process.stdout.write(SERVE_USAGE)
     return 0
   }
+  // Daemon.log correlation — when our output is redirected into
+  // `~/.agentproto/daemon.log` (launchd / the Windows launcher / a terminal
+  // pipe), prefix every line with its ISO-8601 write moment so logs
+  // correlate across restarts. Interactive runs (TTY) stay unprefixed.
+  installDaemonLogTimestamps()
   const { values } = parseArgs({
     args: [...args],
     allowPositionals: false,
