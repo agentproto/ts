@@ -15,7 +15,7 @@ function node(dir: string, def: WorkspaceDefinition, body = ""): void {
 }
 
 function minimalWorkMd(name: string, title: string): string {
-  return `---\nschema: work.workspace/v2\nname: ${name}\ntitle: ${title}\ndescription: Tracks ${title}'s work items.\nversion: 1.0.0\n---\n`
+  return `---\nschema: work.workspace/v2\nname: ${name}\ntitle: ${title}\ndescription: Tracks ${title}'s work items.\n---\n`
 }
 
 const TYPES = {
@@ -351,7 +351,6 @@ describe("checkWorkspaceTree — broken trees", () => {
             name: "simone",
             title: "Simone",
             description: "Simone's board.",
-            version: "1.0.0",
           },
         },
       }),
@@ -372,7 +371,7 @@ describe("checkWorkspaceTree — broken trees", () => {
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
-        work: { inline: { schema: "work.workspace/v2", name: "simone" } }, // missing title/description/version
+        work: { inline: { schema: "work.workspace/v2", name: "simone" } }, // missing title/description
       }),
     )
     const report = checkWorkspaceTree(root)
