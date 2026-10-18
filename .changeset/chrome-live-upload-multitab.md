@@ -1,5 +1,6 @@
 ---
 "@agentproto/adapter-browser-chrome": minor
+"@agentproto/adapter-browser": minor
 "@agentproto/runtime": minor
 ---
 
