@@ -9,6 +9,9 @@ come back newest-activity first (`lastActivityAt`, falling back to
 The same names work on `GET /sessions` (query params) and the CLI
 (`agentproto sessions --q … --exclude-noise …`).
 
+An unpaged MCP call is bounded: at most 50 rows, plus `truncated`, `total` and
+`nextCursor` when more match. Pass `limit` (max 200) and `cursor` to page.
+
 ```json
 { "q": "checkout", "excludeNoise": true, "limit": 10 }
 ```
@@ -17,6 +20,7 @@ The same names work on `GET /sessions` (query params) and the CLI
 
 | Filter | Meaning |
 |---|---|
+| `ids` | only these session ids (exact; string or list): read known sessions without scanning the list |
 | `q` | case-insensitive substring over id, name, label, title and cwd |
 | `label` | only sessions whose label equals this (case-insensitive exact match) |
 | `cwd` | only sessions whose cwd is this path or lives under it (boundary-aware prefix) |

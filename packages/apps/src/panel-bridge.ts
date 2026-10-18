@@ -247,6 +247,9 @@ function callToolPaged(name, args, listKey){
   var base = args || {};
   function step(cursor, acc){
     var a = Object.assign({}, base);
+    // 100 rows a page keeps a 1k-session poll at 10 calls (default 50 = 20)
+    // and a compact page well under the 100 KB MCP result cap.
+    if (a.limit === undefined) a.limit = 100;
     if (cursor) a.cursor = cursor;
     return callTool(name, a).then(function(d){
       var page = (d && Array.isArray(d.items)) ? d.items : (d && d[listKey]) || [];

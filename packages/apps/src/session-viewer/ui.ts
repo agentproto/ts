@@ -153,6 +153,7 @@ function callApp(tool, args) {
 function callAppPaged(tool, args, listKey) {
   function step(cursor, acc) {
     var a = Object.assign({}, args);
+    if (a.limit === undefined) a.limit = 100;
     if (cursor) a.cursor = cursor;
     return callApp(tool, a).then(function (d) {
       var page = (d && Array.isArray(d.items)) ? d.items : (d && d[listKey]) || [];
