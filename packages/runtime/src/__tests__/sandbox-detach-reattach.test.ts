@@ -509,6 +509,27 @@ describe("registry — detach on shutdown, reattach on boot", () => {
     expect(persistedRow(desc.id)).toMatchObject({ status: "running", hostDetached: true })
   })
 
+  it("a sandboxTeardown:'kill' session is still DETACHED by shutdown — the teardown policy never reaches a daemon stop", () => {
+    const { registry } = newRegistry()
+    const box = fakeBoxSession()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: tmp,
+      agentSession: box,
+      adapterSlug: "claude-code",
+      remote: true,
+      sandboxId: "sbx_kill",
+      sandboxProvider: "e2b",
+      sandboxTeardown: "kill",
+    })
+
+    registry.shutdown()
+
+    expect(box.detach).toHaveBeenCalledTimes(1)
+    expect(box.closeSpy).not.toHaveBeenCalled()
+    expect(persistedRow(desc.id)).toMatchObject({ status: "running", hostDetached: true })
+  })
+
   it("a session whose proxy is not detachable (device / local) keeps the old behaviour: killed + daemon-restart", async () => {
     const { registry } = newRegistry()
     const plain = fakeBoxSession({ detachable: false })
