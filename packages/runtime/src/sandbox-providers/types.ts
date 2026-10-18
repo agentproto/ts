@@ -32,6 +32,16 @@ export interface SandboxProviderCapabilities {
   exec?: boolean
   /** Hard cap on `limits.timeout_ms`, when the provider enforces one. */
   maxTimeoutMs?: number
+  /**
+   * Several agentproto sessions can share ONE booted box (the runtime's
+   * AIP-36 reuse/attach path multiplexes over its `mcpUrl`) — e.g. the
+   * `computer` provider, whose daemon runs exactly one self-hosted
+   * microVM advertised as reusable. Providers whose boot contract assumes
+   * single-tenant surface (default) leave this false; `reuse` against those
+   * providers still works, but each reuse re-points the whole box rather
+   * than joining other sessions on it.
+   */
+  sharedSessions: boolean
 }
 
 /**
