@@ -77,13 +77,17 @@ describe("computerSandboxProvider.boot", () => {
     // exec flow: health probe → CLI install → detached serve → wait-healthy
     const scripts = controller.execs.map((e) => e.argv[2] ?? "")
     expect(scripts.some((s) => s.includes("http://127.0.0.1:18790/health") && !s.includes("sleep 1"))).toBe(true)
-    expect(scripts.some((s) => s.includes("npm i -g @agentproto/cli@'latest'"))).toBe(true)
+    expect(scripts.some((s) => s.includes(`npm i -g --prefix "$HOME/.local" @agentproto/cli@'latest'`))).toBe(true)
     const serve = scripts.find((s) => s.includes("agentproto serve"))
     expect(serve).toBeDefined()
+    expect(serve).toContain(`export PATH="$HOME/.local/bin:$PATH"; `)
     expect(serve).toContain("--bind 0.0.0.0")
     expect(serve).toContain("--workspace '/home/user'")
     expect(serve).toMatch(/--auth-token '[0-9a-f-]{36}'/)
     expect(serve).toContain("& echo started")
+    // uid 1000 cannot write /var/log: the daemon log must live under $HOME
+    expect(serve).toContain(`> "$HOME/.agentproto-daemon.log" 2>&1`)
+    expect(serve).not.toContain("/var/log")
     expect(scripts.some((s) => s.includes("sleep 1"))).toBe(true)
 
     // booted handle exec maps onto POST exec
@@ -128,7 +132,7 @@ describe("computerSandboxProvider.boot", () => {
     controller.options.createStatus = 400
     controller.options.createError = "unknown template"
     await expect(computerSandboxProvider.boot(spec(controller.url), bootOpts)).rejects.toThrow(
-      /create rejected \(HTTP 400, "unknown template"\).*template is not registered/,
+      /create rejected \(HTTP 400, "unknown template"\).*config\.template/,
     )
     expect(controller.removed).toEqual([])
   })
@@ -140,6 +144,35 @@ describe("computerSandboxProvider.boot", () => {
     )
     expect(controller.removed).toHaveLength(1)
     expect(controller.removed[0]).toMatch(/^cmp-/)
+  })
+
+  it("fails fast with the install error and reclaims the computer when the CLI install exits non-zero", async () => {
+    controller.options.execOutcome = (argv) =>
+      (argv[2] ?? "").includes("npm i -g")
+        ? { exitCode: 243, stdout: "", stderr: "npm error EACCES: permission denied, mkdir '/usr/local/lib/node_modules/@agentproto'" }
+        : undefined
+    await expect(computerSandboxProvider.boot(spec(controller.url), bootOpts)).rejects.toThrow(
+      /CLI install failed on computer "cmp-[^"]+" \(exit 243\): npm error EACCES/,
+    )
+    expect(controller.removed).toHaveLength(1)
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("agentproto serve"))).toBe(false)
+  })
+
+  it("fails the boot when a setup command exits non-zero", async () => {
+    controller.options.execOutcome = (argv) =>
+      (argv[2] ?? "").includes("make-it-fail") ? { exitCode: 2, stdout: "", stderr: "boom" } : undefined
+    await expect(
+      computerSandboxProvider.boot(spec(controller.url, { setupCommands: ["make-it-fail"] }), bootOpts),
+    ).rejects.toThrow(/setup command failed on computer "cmp-[^"]+" \(exit 2\): boom/)
+    expect(controller.removed).toHaveLength(1)
+  })
+
+  it("hints at the template registry when the controller answers invalid body", async () => {
+    controller.options.createStatus = 400
+    controller.options.createError = "invalid body"
+    await expect(computerSandboxProvider.boot(spec(controller.url), bootOpts)).rejects.toThrow(
+      /create rejected \(HTTP 400, "invalid body"\).*config\.template/,
+    )
   })
 
   it("surfaces controller exec failures during boot", async () => {

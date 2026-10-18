@@ -191,9 +191,18 @@ export function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/** Computers run as an unprivileged user with no sudo, so a global npm install
+ *  must target a user-writable prefix, and the serve script must find the CLI
+ *  there (it shadows any CLI baked into the template). */
+export const USER_BIN_PATH_EXPORT = `export PATH="$HOME/.local/bin:$PATH"; `
+
+/** Log path for the in-box daemon. Computers run as uid 1000 and /var/log is
+ *  root-owned, so the log must live under the user's home. */
+export const DAEMON_LOG_PATH = "$HOME/.agentproto-daemon.log"
+
 /** The `agentproto serve` boot script: a detached (nohup … &) daemon that
- *  outlives the synchronous exec call, logging to /var/log so a failed boot
- *  can be diagnosed in-box. The token lives ONLY in this script. */
+ *  outlives the synchronous exec call, logging to DAEMON_LOG_PATH so a failed
+ *  boot can be diagnosed in-box. The token lives ONLY in this script. */
 export function buildServeCommand(opts: {
   token: string
   port: number
@@ -202,10 +211,10 @@ export function buildServeCommand(opts: {
 }): string {
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
   return (
-    `mkdir -p /var/log 2>/dev/null; ` +
+    USER_BIN_PATH_EXPORT +
     `nohup agentproto serve --port ${opts.port} --bind 0.0.0.0` +
     ` --workspace ${shQuote(opts.workspace)} --auth-token ${shQuote(opts.token)}${origin}` +
-    ` </dev/null > /var/log/agentproto-daemon.log 2>&1 & echo started`
+    ` </dev/null > "${DAEMON_LOG_PATH}" 2>&1 & echo started`
   )
 }
 
@@ -343,8 +352,8 @@ async function bootOnClient(
     if (err instanceof ComputerApiError) {
       throw new Error(
         `computer sandbox: create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""})` +
-          (err.code === "unknown template"
-            ? ` — that template is not registered on this controller; see the README's config.template note`
+          (err.code === "unknown template" || err.code === "invalid body"
+            ? ` — check that config.template (default "${DEFAULT_TEMPLATE}") is registered on this controller; see the README's config.template note`
             : ""),
       )
     }
@@ -444,15 +453,19 @@ async function daemonHealthyOrThrow(
 
   if (config.updateCliOnBoot !== false) {
     const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
-    await hardExec(
+    const install = await hardExec(
       client,
       id,
-      bashArgv(`npm i -g @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`),
+      bashArgv(
+        `${USER_BIN_PATH_EXPORT}npm i -g --prefix "$HOME/.local" @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`,
+      ),
       Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(UPDATE_CLI_TIMEOUT_MS / 1000)),
     )
+    if (install.exitCode !== 0) throw bootStepError("CLI install", id, install)
   }
   for (const command of config.setupCommands ?? []) {
-    await hardExec(client, id, bashArgv(command), EXEC_TIMEOUT_MAX_SEC)
+    const setup = await hardExec(client, id, bashArgv(command), EXEC_TIMEOUT_MAX_SEC)
+    if (setup.exitCode !== 0) throw bootStepError("setup command", id, setup)
   }
 
   const mcpOrigin = new URL(boxUrl(id, port, config.gatewayUrl)).origin
@@ -474,9 +487,21 @@ async function daemonHealthyOrThrow(
   if (waited.exitCode !== 0) {
     throw new Error(
       `@agentproto/sandbox-computer: agentproto daemon did not become healthy on computer "${id}" ` +
-        `within ${waitSeconds}s (see /var/log/agentproto-daemon.log in the box)`,
+        `within ${waitSeconds}s (see ~/.agentproto-daemon.log in the box)`,
     )
   }
+}
+
+function bootStepError(
+  step: string,
+  id: string,
+  result: { exitCode: number; stdout: string; stderr: string },
+): Error {
+  const tail = (result.stderr.trim() || result.stdout.trim()).slice(-400)
+  return new Error(
+    `@agentproto/sandbox-computer: ${step} failed on computer "${id}" (exit ${result.exitCode})` +
+      (tail ? `: ${tail}` : ""),
+  )
 }
 
 /** Exec clamped into the controller's `timeoutSec ≤ 600` window. */

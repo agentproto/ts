@@ -67,7 +67,7 @@ the cap is enforced per process only.
 
 - The controller token travels only in the `Authorization: Bearer …` header.
 - A fresh `--auth-token` (UUID) gates the daemon inside each computer; it
-  exists only inside the box (`/var/log/agentproto-daemon.log`'s command
+  exists only inside the box (`~/.agentproto-daemon.log`'s command
   line is the one place it is used) and is deliberately never surfaced on
   `BootedSandbox`.
 - This package logs nothing and redacts the service token from every error
