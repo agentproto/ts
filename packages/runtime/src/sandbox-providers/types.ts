@@ -37,11 +37,11 @@ export interface SandboxProviderCapabilities {
    * AIP-36 reuse/attach path multiplexes over its `mcpUrl`) — e.g. the
    * `computer` provider, whose daemon runs exactly one self-hosted
    * microVM advertised as reusable. Providers whose boot contract assumes
-   * single-tenant surface (default) leave this false; `reuse` against those
+   * single-tenant surface leave this false; `reuse` against those
    * providers still works, but each reuse re-points the whole box rather
-   * than joining other sessions on it.
+   * than joining other sessions on it. Defaults to false when absent.
    */
-  sharedSessions: boolean
+  sharedSessions?: boolean
 }
 
 /**

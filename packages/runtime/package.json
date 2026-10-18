@@ -278,7 +278,8 @@
     "zod": "^4.6.5"
   },
   "optionalDependencies": {
-    "@agentproto/sandbox-e2b": "workspace:*"
+    "@agentproto/sandbox-e2b": "workspace:*",
+    "@agentproto/sandbox-computer": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/rendezvous": "workspace:*",
