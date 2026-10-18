@@ -76,6 +76,14 @@ export interface ContextContinuityPolicy
    *  brain), so it can't be bypassed by a prompt-level self-compact. Unset
    *  = false. */
   compactRequiresOperator?: boolean
+  /** When true, a `/compact` or `/compress` prompt asks the live session for
+   *  a handoff turn (its own goal/decisions/risks) before the checkpoint is
+   *  built, then the harness's native compaction runs on the same session.
+   *  Unset = false: the checkpoint is extracted from the transcript alone,
+   *  with no billed model turn before compaction. The context-rescue path
+   *  (`runtime:context-rescue`) never asks. Unchanged explicit handoffs
+   *  (`session_checkpoint`, `session_continue_fresh`) still ask. */
+  compactHandoffTurn?: boolean
 }
 
 /**
@@ -92,6 +100,8 @@ export interface ResolvedContextContinuityPolicy
   handoffAtQuotaRemaining?: number
   /** See {@link ContextContinuityPolicy.compactRequiresOperator}. */
   compactRequiresOperator?: boolean
+  /** See {@link ContextContinuityPolicy.compactHandoffTurn}. */
+  compactHandoffTurn?: boolean
 }
 
 export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
@@ -229,6 +239,9 @@ function mergePolicyLayer(
       : {}),
     ...((override.compactRequiresOperator ?? base.compactRequiresOperator) !== undefined
       ? { compactRequiresOperator: (override.compactRequiresOperator ?? base.compactRequiresOperator)! }
+      : {}),
+    ...((override.compactHandoffTurn ?? base.compactHandoffTurn) !== undefined
+      ? { compactHandoffTurn: (override.compactHandoffTurn ?? base.compactHandoffTurn)! }
       : {}),
   }
 }
