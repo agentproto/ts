@@ -137,9 +137,10 @@ describe("two sessions on one shared box — real git", () => {
     execFileSync("git", args, { ...env(dir), encoding: "utf8" }).trim()
 
   const exec = async (opts: SandboxExecOpts): Promise<SandboxExecResult> => {
+    const command = opts.command ?? "true"
     try {
-      const stdout = execFileSync("bash", ["-c", opts.command], {
-        ...env(opts.cwd),
+      const stdout = execFileSync("bash", ["-c", command], {
+        ...env(opts.cwd ?? home ?? tmpdir()),
         encoding: "utf8",
         timeout: (opts.timeoutMs ?? 60_000) + 5_000,
       })

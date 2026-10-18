@@ -18,7 +18,12 @@ import type { AddressInfo } from "node:net"
 import type { SandboxExecOpts, SandboxExecResult, SandboxProvider } from "@agentproto/sandbox"
 
 import { createGateway, type GatewayHandle } from "../index.js"
-import { spawnAgentSession, type SandboxSpecInput, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import {
+  spawnAgentSession,
+  bootSandboxAgentSession,
+  type SandboxSpecInput,
+  type SpawnAgentSessionDeps,
+} from "../session-spawn.js"
 import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
@@ -303,40 +308,48 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
         sandbox: "fake",
         workspaceSlug: "agentproto",
         worktree: { slug: "x" },
-        sessionId: "sess_a",
       })
       expect(first.ok).toBe(true)
       if (!first.ok) return
+      const idA = first.descriptor.id
       expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
-      expect(readFileSyncSync(ledgerFile).toString()).toContain("attachedSessions")
+      // A's fresh boot stamped itself into the shared-box refcount.
+      expect(readFileSyncSync(ledgerFile).toString()).toContain(idA)
 
       execCalls.length = 0
-      const result = await spawnAgentSession(makeDeps(), {
+      const attach = await spawnAgentSession(makeDeps(), {
         adapter: "fake-cli",
         sandbox: { provider: "fake", config: {}, reuse: "sbx_fake_ws" } as unknown as SandboxSpecInput,
         workspaceSlug: "agentproto",
         worktree: { slug: "y" },
-        sessionId: "sess_b",
       })
-      expect(result.ok).toBe(true)
-      if (!result.ok) return
+      expect(attach.ok).toBe(true)
+      if (!attach.ok) return
+      const idB = attach.descriptor.id
       // The ATTACH never re-checks out the shared clone: it adds a worktree.
       const commands = execCalls.map(c => c.command)
       expect(commands.some(c => c.includes("git -C '/home/user/agentproto' checkout"))).toBe(false)
       expect(commands.some(c => c.includes("worktree add '/home/user/.worktrees/agentproto/y' 'wt/y'"))).toBe(true)
       expect(commands.some(c => c.includes("flock 9"))).toBe(true)
       expect(receivedStarts[1]?.cwd).toBe("/home/user/.worktrees/agentproto/y")
-      expect(result.descriptor.cwd).toBe("/home/user/.worktrees/agentproto/y")
-      expect(result.descriptor.sandboxDeliveryTarget).toEqual({
+      expect(attach.descriptor.cwd).toBe("/home/user/.worktrees/agentproto/y")
+      expect(registry.get(idB)?.sandboxDeliveryTarget).toEqual({
         checkoutDir: "/home/user/.worktrees/agentproto/y",
         branch: "wt/y",
         baseSha: BASE_SHA,
       })
+      const ledger = readFileSyncSync(ledgerFile).toString()
+      expect(ledger).toContain(idA)
+      expect(ledger).toContain(idB)
 
-      // Detaching A (survivor: B) neither stops the box nor touches A's base
-      // checkout; the worktree removal path is B's own attach tearing down.
-      registry.kill(first.descriptor.id)
-      registry.kill(result.descriptor.id)
+      // A (the fresh boot) detaches first: the shared box keeps running for
+      // B — only PAUSED, never stopped, while the base clone stays intact.
+      registry.kill(idA)
+      await vi.waitFor(() => expect(pauseSpy).toHaveBeenCalled())
+      expect(stopSpy).not.toHaveBeenCalled()
+      expect(readFileSyncSync(ledgerFile).toString()).toContain(idB)
+      registry.kill(idB)
+      await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled())
     })
   })
 
