@@ -141,6 +141,16 @@ class FakeApi {
     const notFound = (): Response => fakeErrorBody(404, "not_found", "machine not found")
     const path = url.pathname
 
+    // Measured live: every mutating call except exec (DELETE, PATCH, POST
+    // create/ports/verbs) answers 400 without an Idempotency-Key header.
+    if (
+      method !== "GET" &&
+      !path.endsWith("/exec") &&
+      (this.requests.at(-1)?.idempotencyKey ?? "") === ""
+    ) {
+      return fakeErrorBody(400, "bad_request", "Idempotency-Key header is required (1-200 printable characters)")
+    }
+
     if (method === "GET" && path === "/v1/usage") return mk(200, this.usage)
     if (method === "GET" && path === "/v1/machines") {
       return mk(200, { machines: [...this.machineStates.values()].map(machineJson) })
@@ -171,7 +181,9 @@ class FakeApi {
       if (method === "PATCH") {
         const patch = JSON.parse(this.requests.at(-1)!.body) as Record<string, unknown>
         machine.create.patchLog = [...((machine.create.patchLog as unknown[] | undefined) ?? []), patch]
-        return this.spawnOperation(machine.id, "succeeded")
+        // Measured live: PATCH answers 200 with the MACHINE (operationId null),
+        // not a 202 operation.
+        return mk(200, { ...machineJson(machine), operationId: null })
       }
       if (method === "DELETE") {
         const snapshot = machineJson(machine)
@@ -337,7 +349,7 @@ class FakeApi {
         ? result({ stdout: `${lines.join("\n")}\n` })
         : result({ exitCode: 1, stdout: "" })
     }
-    if (cmd.startsWith("npm i -g")) return result({})
+    if (cmd.includes("npm i -g")) return result({})
     if (/^mkdir -p '[^']+' && sudo mkdir -p/.test(cmd) && exec.stdin === undefined) return result({})
     if (/^mkdir -p '[^']+' && base64 -d > '(.+)'/.test(cmd) && exec.stdin !== undefined) {
       const target = /base64 -d > '(.+)'/.exec(cmd)![1]!
@@ -761,7 +773,7 @@ describe("background redirection invariant", () => {
   it("builds the CLI install command from ONLY package spec names (no secret)", async () => {
     const api = new FakeApi()
     await bootOnce(api, { installPackages: ["@agentproto/adapter-claude-sdk@latest"] })
-    const install = api.execBodies.find(exec => exec.cmd.startsWith("npm i -g"))
+    const install = api.execBodies.find(exec => exec.cmd.includes("npm i -g"))
     expect(install!.cmd).toContain("@agentproto/cli@latest")
     expect(install!.cmd).toContain("'@agentproto/adapter-claude-sdk@latest'")
     expect(install!.cmd).not.toContain(SENTINEL_SECRET)
@@ -780,6 +792,15 @@ describe("stop", () => {
     expect(api.deleted).toContain(booted.sandboxId)
     expectNoSuspend(api)
     expect(booted.pause).toBeUndefined()
+  })
+
+  it("sends an Idempotency-Key on the DELETE (the API answers 400 without one)", async () => {
+    const api = new FakeApi()
+    const booted = await bootOnce(api)
+    await booted.stop()
+    const del = api.requests.filter(r => r.method === "DELETE").at(-1)
+    expect(del?.idempotencyKey).toBeTruthy()
+    expect(api.deleted).toContain(booted.sandboxId)
   })
 
   it("tolerates an already-gone machine (404)", async () => {
@@ -808,6 +829,47 @@ describe("extendTimeout", () => {
     expect(JSON.parse(api.requests.filter(r => r.method === "PATCH").at(-1)!.body)).toEqual({
       timeoutSeconds: 60,
     })
+  })
+
+  it("never polls /v1/operations for the PATCH answer (it is the machine, not an operation)", async () => {
+    const api = new FakeApi()
+    const booted = await bootOnce(api)
+    const before = api.requests.filter(r => r.url.pathname.startsWith("/v1/operations/")).length
+    await booted.extendTimeout!(120_000)
+    const polled = api.requests.filter(r => r.url.pathname.startsWith("/v1/operations/")).slice(before)
+    expect(polled.map(r => r.url.pathname)).not.toContain(`/v1/operations/${booted.sandboxId}`)
+    expect(api.requests.filter(r => r.method === "PATCH").at(-1)?.idempotencyKey).toBeTruthy()
+  })
+})
+
+describe("provisioning failures", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("surfaces a failed CLI install (exit code + stderr head) and reaps the machine", async () => {
+    const api = new FakeApi()
+    api.overrideExec = exec =>
+      exec.cmd.includes("npm i -g")
+        ? { ...exec, exitCode: 243, stderr: "npm error code EACCES" }
+        : api.defaultExecHandler(exec)
+    vi.stubGlobal("fetch", api.buildFetch() as unknown as typeof fetch)
+    await expect(instaboxSandboxProvider.boot(makeSpec(), makeBootOpts())).rejects.toThrow(
+      /CLI install failed on machine m_fake1 \(exit 243: npm error code EACCES\)/,
+    )
+    expect(api.deleted).toContain("m_fake1")
+  })
+
+  it("never echoes the env file heredoc when the unit install fails", async () => {
+    const api = new FakeApi()
+    api.overrideExec = exec =>
+      exec.cmd.includes("<<'AGENTPROTO_ENV'")
+        ? { ...exec, exitCode: 1, stderr: `tee failed for ${exec.cmd}` }
+        : api.defaultExecHandler(exec)
+    vi.stubGlobal("fetch", api.buildFetch() as unknown as typeof fetch)
+    const err = await instaboxSandboxProvider.boot(makeSpec(), makeBootOpts()).catch((e: unknown) => e)
+    expect(String((err as Error).message)).toContain("daemon unit install failed")
+    expect(String((err as Error).message)).not.toContain(SENTINEL_SECRET)
   })
 })
 
@@ -1005,7 +1067,9 @@ describe("pure helpers", () => {
   })
 
   it("buildCliInstallCommand renders pinned and floating versions", () => {
-    expect(buildCliInstallCommand("1.2.3", [])).toBe('npm i -g "@agentproto/cli@1.2.3"')
+    expect(buildCliInstallCommand("1.2.3", [])).toBe(
+      'sudo env "PATH=$PATH" npm i -g "@agentproto/cli@1.2.3"',
+    )
     expect(buildCliInstallCommand("latest", ["x"])).toContain("'x'")
   })
 })

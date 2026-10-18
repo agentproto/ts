@@ -32,6 +32,8 @@ export interface InstaboxMachine {
   onTimeout?: InstaboxOnTimeout
   autoSuspendAfterSeconds?: number
   metadata?: Record<string, string>
+  /** Pending operation id, or null when the answer is already final. */
+  operationId?: string | null
 }
 
 export type InstaboxOperationState =
@@ -326,22 +328,31 @@ export class InstaboxClient {
     return this.request<InstaboxUsage>("GET", "/v1/usage")
   }
 
-  /** PATCH /v1/machines/{id} ({timeoutSeconds, onTimeout} | ...). */
-  patchMachine(
+  /** PATCH /v1/machines/{id}. Answers 200 with the updated MACHINE (measured
+   *  live: `operationId` is null, there is no operation to wait on), so the
+   *  machine's own `id` must never be handed to `waitForOperation`. A pending
+   *  `operationId` is still awaited if the API ever returns one. */
+  async patchMachine(
     id: string,
     patch: { timeoutSeconds?: number; onTimeout?: InstaboxOnTimeout } | { autoSuspendAfterSeconds: number },
     idempotencyKey?: string,
-  ): Promise<InstaboxOperation> {
-    return this.request<InstaboxOperation>(
-      "PATCH",
-      `/v1/machines/${encodeURIComponent(id)}`,
-      { body: patch, ...(idempotencyKey ? { idempotency: idempotencyKey } : {}) },
-    )
+  ): Promise<InstaboxMachine> {
+    const machine = await this.request<InstaboxMachine>("PATCH", `/v1/machines/${encodeURIComponent(id)}`, {
+      body: patch,
+      idempotency: idempotencyKey ?? crypto.randomUUID(),
+    })
+    if (typeof machine.operationId === "string" && machine.operationId.length > 0) {
+      await this.waitForOperation(machine.operationId)
+    }
+    return machine
   }
 
-  /** DELETE /v1/machines/{id}. */
+  /** DELETE /v1/machines/{id}. The API rejects a DELETE without an
+   *  `Idempotency-Key` (HTTP 400), so one is always sent. */
   deleteMachine(id: string): Promise<InstaboxOperation> {
-    return this.request<InstaboxOperation>("DELETE", `/v1/machines/${encodeURIComponent(id)}`)
+    return this.request<InstaboxOperation>("DELETE", `/v1/machines/${encodeURIComponent(id)}`, {
+      idempotency: crypto.randomUUID(),
+    })
   }
 
   /** POST /v1/machines/{id}/ports {port}. 201 first, 200 if already published

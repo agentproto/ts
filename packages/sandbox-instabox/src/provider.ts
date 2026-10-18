@@ -287,11 +287,14 @@ export function writeDaemonUnitCommand(
   return { command, envFileContents, unitContents: unit }
 }
 
-/** The `npm i -g` command line (exported for tests: only package spec names,
- *  never a secret). */
+/** The global install command line (exported for tests: only package spec
+ *  names, never a secret). The box user is the unprivileged `user` and the
+ *  npm prefix is the root-owned /usr/local (measured live: a bare `npm i -g`
+ *  dies with EACCES), so it runs through `sudo`, keeping the caller's PATH
+ *  because `sudo`'s secure_path may not list node's directory. */
 export function buildCliInstallCommand(cliVersion: string, extras: string[]): string {
   const extraText = extras.map(extra => ` '${extra.replace(/'/g, "")}'`).join("")
-  return `npm i -g "@agentproto/cli@${cliVersion}"${extraText}`
+  return `sudo env "PATH=$PATH" npm i -g "@agentproto/cli@${cliVersion}"${extraText}`
 }
 
 /**
@@ -409,7 +412,7 @@ async function provisionAndProbe(
   const alreadyUp = await probeHealth(healthUrl, ALREADY_UP_PROBE_TIMEOUT_MS)
   if (!alreadyUp) {
     if (config.updateCliOnBoot) {
-      await execScrubbed(client, machineId, {
+      await execChecked(client, machineId, "CLI install", {
         cmd: buildCliInstallCommand(
           config.cliVersion,
           config.installPackages.map(extra => extra.replace(/'/g, "")),
@@ -417,16 +420,24 @@ async function provisionAndProbe(
         timeoutSeconds: config.updateCliTimeoutSeconds,
       })
     }
-    await execScrubbed(client, machineId, {
+    await execChecked(client, machineId, "workspace setup", {
       cmd: `mkdir -p '${config.workspace}' && sudo mkdir -p ${ENV_FILE_DIR}`,
     })
-    await execScrubbed(client, machineId, {
-      cmd: writeDaemonUnitCommand(config.port, config.workspace, state.env, state.authToken).command,
-    })
+    // stderr is NOT quoted here: the command carries the secrets heredoc.
+    await execChecked(
+      client,
+      machineId,
+      "daemon unit install",
+      { cmd: writeDaemonUnitCommand(config.port, config.workspace, state.env, state.authToken).command },
+      { quoteStderr: false },
+    )
     for (const command of config.setupCommands) {
-      await execScrubbed(client, machineId, { cmd: command, timeoutSeconds: EXEC_MAX_TIMEOUT_SECONDS })
+      await execChecked(client, machineId, "setup command", {
+        cmd: command,
+        timeoutSeconds: EXEC_MAX_TIMEOUT_SECONDS,
+      })
     }
-    await execScrubbed(client, machineId, {
+    await execChecked(client, machineId, "daemon enable", {
       cmd: `sudo systemctl daemon-reload && sudo systemctl enable --now ${DAEMON_UNIT_NAME} ${BACKGROUND_REDIRECT}`,
     })
     const ready = await probeHealth(healthUrl, config.daemonReadyTimeoutMs)
@@ -462,6 +473,29 @@ async function execScrubbed(
     }
     throw err
   }
+}
+
+/** `execScrubbed` that also refuses a non-zero exit: a failed install must
+ *  surface as itself instead of as a daemon that "never became healthy" 60s
+ *  later. Only the exit code and the head of stderr are reported, never the
+ *  command (it can carry the env file heredoc). */
+async function execChecked(
+  client: InstaboxClient,
+  machineId: string,
+  what: string,
+  input: { cmd: string; stdin?: string; timeoutSeconds?: number },
+  opts: { quoteStderr?: boolean } = {},
+): Promise<InstaboxExecResultApi> {
+  const result = await execScrubbed(client, machineId, input)
+  if (result.exitCode !== 0) {
+    const detail =
+      opts.quoteStderr === false ? "" : scrubCommandFromMessage(result.stderr.trim(), input.cmd).slice(0, 300)
+    throw new Error(
+      `@agentproto/sandbox-instabox: ${what} failed on machine ${machineId} ` +
+        `(exit ${result.exitCode}${result.timedOut ? ", timed out" : ""}${detail ? `: ${detail}` : ""}).`,
+    )
+  }
+  return result
 }
 
 function newInstanceName(): string {
@@ -595,8 +629,7 @@ function toBootedSandbox(
       // PATCH timeoutSeconds restarts the countdown FROM NOW (the API's own
       // semantics), so `ms` simply maps to a clamped second count.
       const seconds = clampTimeoutSeconds(ms / 1000)
-      const op = await client.patchMachine(machineId, { timeoutSeconds: seconds })
-      await client.waitForOperation(op.id)
+      await client.patchMachine(machineId, { timeoutSeconds: seconds })
     },
     lifetimeMs: config.timeoutSeconds * 1000,
   }
@@ -798,8 +831,7 @@ export function createInstaboxSandboxProvider(baseConfig: InstaboxSandboxSpecCon
       }
       // Re-arm the SAME runway a fresh boot gets (InstaBox restarts the life
       // countdown from now), like e2b's connect `setTimeout` re-arm.
-      const rearm = await client.patchMachine(machineId, { timeoutSeconds: clampTimeoutSeconds(config.timeoutSeconds) })
-      await client.waitForOperation(rearm.id)
+      await client.patchMachine(machineId, { timeoutSeconds: clampTimeoutSeconds(config.timeoutSeconds) })
       const provisioned = await provisionAndProbe(
         { client, machineId, config, env: opts.env, authToken },
         false,
