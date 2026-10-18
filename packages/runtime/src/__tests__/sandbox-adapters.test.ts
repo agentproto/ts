@@ -263,7 +263,7 @@ describe("list_sandbox_providers tool", () => {
     const entries = JSON.parse(
       res.content[0]!.text,
     ) as AdapterEntry<SandboxAdapterInfo>[]
-    expect(entries).toHaveLength(6)
+    expect(entries).toHaveLength(7)
     expect(entries.map((e) => e.slug).sort()).toEqual([
       "box",
       "computer",
