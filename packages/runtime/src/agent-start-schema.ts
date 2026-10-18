@@ -43,9 +43,9 @@ export const mcpPositiveNumber = z.preprocess(
  *  suffix so every field's pointer stays byte-identical. */
 const help = (field: string) => `Details: tool_help {name:"agent_start", topic:"${field}"}`
 
-/** Opaque nested field (real validation kept) — see tool-schema-opaque.ts. */
-const opaque = <T extends z.ZodTypeAny>(real: T, field: string) =>
-  opaqueSchema(real, { tool: "agent_start", field })
+/** Opaque nested field (real validation + parsed output kept) — see
+ *  tool-schema-opaque.ts. */
+const opaque = <T extends z.ZodTypeAny>(real: T) => opaqueSchema(real)
 
 /**
  * ONE MCP-server-mount entry — the shape both `agent_start.mcpServers` (below)
@@ -132,7 +132,7 @@ export const agentStartInputShape = {
     .describe(
       `Absolute path to spawn in; wins over \`workspaceSlug\`.`
     ),
-  prompt: opaque(promptInputSchema, "prompt")
+  prompt: opaque(promptInputSchema)
     .optional()
     .describe(
       `Optional initial prompt — spawns and dispatches it in one call. Plain string or content-block array. ${help("prompt")}`
@@ -161,7 +161,7 @@ export const agentStartInputShape = {
     .describe(
       `Parent-lineage hint: nest this spawn under that session; ignored through the scoped gateway.`
     ),
-  attach: jsonTolerant(opaque(attachFieldSchema, "attach"))
+  attach: jsonTolerant(opaque(attachFieldSchema))
     .optional()
     .describe(
       `Parent-attach override, mirrors \`worktree\`. \`false\` = independent root. ${help("attach")}`
@@ -213,7 +213,6 @@ export const agentStartInputShape = {
   options: jsonTolerant(
     opaque(
       z.record(z.string(), z.union([z.boolean(), z.number(), z.string()])),
-      "options"
     )
   )
     .optional()
@@ -250,7 +249,6 @@ export const agentStartInputShape = {
   route: jsonTolerant(
     opaque(
       z.object({ gateway: z.string().min(1), baseUrl: z.string().url().optional() }),
-      "route"
     )
   )
     .optional()
@@ -263,7 +261,6 @@ export const agentStartInputShape = {
         force: mcpBool.optional(),
         headroomPct: z.number().min(0).max(95).optional(),
       }),
-      "inference"
     )
   )
     .optional()
@@ -276,7 +273,6 @@ export const agentStartInputShape = {
         profileRef: z.string().min(1).optional(),
         profileRefs: z.array(z.string().min(1)).min(1).optional(),
       }),
-      "access"
     )
   )
     .optional()
@@ -298,14 +294,13 @@ export const agentStartInputShape = {
         apiKey: z.string().optional(),
         loginFile: z.boolean().optional(),
       }).passthrough(),
-      "auth"
     )
   )
     .optional()
     .describe(
       `Explicit billing-auth mode + credential; FAILS FAST when the resolved mode has no credential. ${help("auth")}`
     ),
-  mcpServers: jsonTolerant(opaque(z.array(mcpServerMountEntrySchema), "mcpServers"))
+  mcpServers: jsonTolerant(opaque(z.array(mcpServerMountEntrySchema)))
     .optional()
     .describe(
       "MCP servers to mount into the spawned agent's session at spawn time; adapters without MCP mounting ignore it."
@@ -320,7 +315,6 @@ export const agentStartInputShape = {
           maxChildren: z.number().int().min(1).optional(),
         }),
       ]),
-      "orchestrator"
     )
   )
     .optional()
@@ -358,7 +352,6 @@ export const agentStartInputShape = {
         window: z.string().min(1),
         scope: z.enum(["session", "profile"]),
       }),
-      "costBudget"
     )
   )
     .optional()
@@ -376,7 +369,6 @@ export const agentStartInputShape = {
         maxDelayMs: z.number().int().positive(),
         resume: z.boolean().optional(),
       }),
-      "restartPolicy"
     )
   )
     .optional()
@@ -389,7 +381,7 @@ export const agentStartInputShape = {
       `Opt-in: re-prompt after backoff when a turn fails transiently; "rotate" switches to another (non-cooling) model first. ${help("turnRetry")}`
     ),
   contextContinuity: jsonTolerant(
-    opaque(contextContinuityInputSchema, "contextContinuity")
+    opaque(contextContinuityInputSchema)
   )
     .optional()
     .describe(
@@ -419,7 +411,6 @@ export const agentStartInputShape = {
       v => (v === true || v === "true" ? "headless" : v === "false" ? false : v),
       z.union([z.literal("headless"), z.literal(false)]),
     ),
-    "browser"
   )
     .optional()
     .describe(
@@ -434,7 +425,6 @@ export const agentStartInputShape = {
   sandbox: jsonTolerant(
     opaque(
       z.union([z.string().min(1), sandboxSpecWithReuseSchema]),
-      "sandbox"
     )
   )
     .optional()
@@ -459,7 +449,6 @@ export const agentStartInputShape = {
           port: z.number().int().min(1).max(65535).optional(),
         })
         .strict(),
-      "appServe"
     )
   )
     .optional()
@@ -489,7 +478,6 @@ export const agentStartInputShape = {
           })
           .strict(),
       ]),
-      "worktree"
     )
   )
     .optional()

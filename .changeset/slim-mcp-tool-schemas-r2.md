@@ -14,8 +14,10 @@ structured nested options (`sandbox`, `worktree`, `orchestrator`, `inference`,
 `costBudget`, `appServe`, `attach`, `options`, `route`, `browser`, `prompt`)
 are now advertised as opaque values (`tool-schema-opaque.ts`, the
 `sandboxCheckpoint` pattern) so `tools/list` sends `{description}` instead of
-every sub-field, while the REAL zod validation at spawn time still runs and
-still reports the original issue path and message (e.g.
+every sub-field, while the REAL zod validation at spawn time still runs,
+returns the schema's parsed output (transforms, defaults and unknown-key
+stripping all preserved, e.g. `browser: true` still normalizes to
+`"headless"`) and still reports the original issue path and message (e.g.
 `access.profileRef: ...`). The full sub-field detail moved to
 `docs/mcp-tools/*.md`, fetched on demand via
 `tool_help {name:"agent_start", topic:"<field>"}`.

@@ -168,7 +168,7 @@ export function registerTaskTools(
       blockedBy: jsonTolerant(z.array(z.string()))
         .optional()
         .describe("Task ids this depends on. INFORMATIONAL in v1 — nothing schedules off it."),
-      verify: jsonTolerant(opaqueSchema(gateInputSchema, { tool: "task_create", field: "verify" }))
+      verify: jsonTolerant(opaqueSchema(gateInputSchema))
         .optional()
         .describe(
           `Opt-in done-gate (policy_attach's \`gate\` shape): shell (exit 0 = pass) or judge agent. Details: tool_help {name:"task_create", topic:"verify"}`
@@ -342,7 +342,7 @@ export function registerTaskTools(
           "Reassign (sessionId / \"human\" / \"operator\") or release with null (owner or creator/operator).",
         ),
       evidence: jsonTolerant(
-        opaqueSchema(z.object({ policyId: z.string().min(1) }), { tool: "task_update", field: "evidence" })
+        opaqueSchema(z.object({ policyId: z.string().min(1) }))
       )
         .optional()
         .describe(
@@ -358,7 +358,7 @@ export function registerTaskTools(
           "Replace the linked approval ids (owner-settable). Required non-empty when moving into awaiting_approval.",
         ),
       artifacts: jsonTolerant(
-        opaqueSchema(z.array(taskArtifactLinkSchema), { tool: "task_update", field: "artifacts" })
+        opaqueSchema(z.array(taskArtifactLinkSchema))
       )
         .optional()
         .describe(

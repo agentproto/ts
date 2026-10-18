@@ -537,7 +537,7 @@ export function registerAgentTools(
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
-      prompt: opaqueSchema(promptInputSchema, { tool: "agent_prompt", field: "prompt" }).describe(
+      prompt: opaqueSchema(promptInputSchema).describe(
         `The next user turn — plain text, or a content block / block array for a multimodal turn. Details: tool_help {name:"agent_prompt", topic:"prompt"}`
       ),
       interrupt: z
