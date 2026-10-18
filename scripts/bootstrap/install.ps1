@@ -57,8 +57,8 @@ if ("$PolicyBefore" -eq "Restricted") {
 
 # --- 1. Windows 10/11 check ---------------------------------------------------
 $caption = (Get-CimInstance Win32_OperatingSystem).Caption
-if ($caption -notmatch "Windows 1[01]") {
-  Die "Unsupported OS: $caption (this script targets Windows 10/11)." "Install Node 22 LTS from https://nodejs.org/ and then: npm i -g @agentproto/cli"
+if ($caption -notmatch "Windows (1[01]|Server)") {
+  Die "Unsupported OS: $caption (this script targets Windows 10/11 and Windows Server)." "Install Node 22 LTS from https://nodejs.org/ and then: npm i -g @agentproto/cli"
 }
 Info "Windows detected: $caption"
 
