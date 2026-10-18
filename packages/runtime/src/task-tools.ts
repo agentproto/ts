@@ -34,6 +34,7 @@ import { z, type ZodRawShape } from "zod"
 
 import { gateInputSchema } from "./orchestration-tools.js"
 import { jsonTolerant } from "./json-tolerant.js"
+import { opaqueSchema } from "./tool-schema-opaque.js"
 import { withToolSubset } from "./tool-subset.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
@@ -147,13 +148,10 @@ export function registerTaskTools(
   server.tool(
     "task_create",
     "Create a task on the caller's board — declared intent, not a run. " +
-      "Default board: a daemon session's lineage board (`tree:<root>`, shared " +
-      "with its supervisor and siblings); the operator's workspace board " +
-      "(`ws:<slug>`). Pass `boardId` to override (e.g. one shared board for " +
-      "children spawned from a client). Leave `owner` absent for a claimable " +
-      "task; pass \"self\" to keep it for yourself. Declare `verify` to make " +
-      "done GATED: a done report then runs the gate (shell exit 0 / judge " +
-      "PASS) before the task closes.",
+      "Default board: a daemon session's lineage board (`tree:<root>`), else " +
+      "the operator's workspace board (`ws:<slug>`). Pass `boardId` to " +
+      "override. Leave `owner` absent for a claimable task; `\"self\"` keeps " +
+      "it. Declare `verify` (or a later `evidence`) to gate a `done` report.",
     {
       title: z.string().min(1).describe("One-line imperative title."),
       description: z.string().optional().describe("Longer context for whoever claims it."),
@@ -165,18 +163,15 @@ export function registerTaskTools(
         .string()
         .optional()
         .describe(
-          "Pre-assign: a sessionId, \"human\", \"operator\", or \"self\" " +
-            "(the calling session). Omit → claimable by anyone on the board.",
+          "Pre-assign: a sessionId, \"human\", \"operator\", or \"self\". Omit → claimable by anyone.",
         ),
       blockedBy: jsonTolerant(z.array(z.string()))
         .optional()
         .describe("Task ids this depends on. INFORMATIONAL in v1 — nothing schedules off it."),
-      verify: jsonTolerant(gateInputSchema)
+      verify: jsonTolerant(opaqueSchema(gateInputSchema, { tool: "task_create", field: "verify" }))
         .optional()
         .describe(
-          "Opt-in done-gate (same shape as policy_attach's `gate`): shell " +
-            "command (exit 0 = pass) or judge agent. With it, `status:\"done\"` " +
-            "only lands after the gate passes.",
+          `Opt-in done-gate (policy_attach's \`gate\` shape): shell (exit 0 = pass) or judge agent. Details: tool_help {name:"task_create", topic:"verify"}`
         ),
       meta: jsonTolerant(z.record(z.string(), z.string()))
         .optional()
@@ -319,22 +314,13 @@ export function registerTaskTools(
   server.tool(
     "task_update",
     "Update a task (rev-CAS: pass the rev you last read; a mismatch answers " +
-      "`{conflict:true, current}`). The OWNER sets status " +
-      "(in_progress/done/failed/awaiting_approval) and releases itself " +
-      "(`owner:null`); the CREATOR/operator additionally edit fields, " +
-      "reassign `owner`, cancel, and reopen a done task " +
-      "(`status:\"pending\"`). `status:\"done\"` on a task with a declared " +
-      "`verify` does NOT close it immediately — the reply says " +
-      "`verifying:true` and the gate decides after your turn ends (green → " +
-      "done, red → stays in_progress with `lastVerifyError`; watch " +
-      "`task:changed`). `evidence:{policyId}` closes it off an " +
-      "already-passed policy without re-running anything. " +
-      "`status:\"awaiting_approval\"` parks the task on one or more " +
-      "`approvalIds` (must resolve non-empty, in this write or already on " +
-      "the task) — a human `approval:decided` on any of them then moves it " +
-      "on its own: approved → in_progress, denied → cancelled " +
-      "(`meta.reason:\"denied\"`). The owner never gets released while " +
-      "waiting, even across a restart.",
+      "`{conflict:true, current}`). The OWNER sets status and releases itself " +
+      "(`owner:null`); the CREATOR/operator also edit fields, reassign `owner`, " +
+      "cancel, and reopen a done task (`status:\"pending\"`). `status:\"done\"` " +
+      "on a task with a declared `verify` reports `verifying:true` — the gate " +
+      "decides after your turn ends (watch `task:changed`). `evidence:{policyId}` " +
+      "closes it off an already-passed policy. `status:\"awaiting_approval\"` " +
+      "parks the task on `approvalIds`; a human decision then moves it.",
     {
       taskId: z.string().describe("Task id from task_list / task_create."),
       rev: z.number().int().min(0).describe("The rev you last read."),
@@ -342,10 +328,7 @@ export function registerTaskTools(
         .enum(TASK_STATUSES)
         .optional()
         .describe(
-          "Target status. pending ⇄ in_progress → done|failed; " +
-            "in_progress ⇄ awaiting_approval; " +
-            "pending|in_progress|awaiting_approval → cancelled; " +
-            "done → pending is the explicit reopen (creator/operator).",
+          "Target status: pending/in_progress → done|failed; in_progress ⇄ awaiting_approval; → cancelled; done → pending (reopen).",
         ),
       title: z.string().optional().describe("New title (creator/operator)."),
       description: z.string().optional().describe("New description (creator/operator)."),
@@ -356,14 +339,14 @@ export function registerTaskTools(
         .union([z.string(), z.null()])
         .optional()
         .describe(
-          "Reassign (a sessionId / \"human\" / \"operator\" — creator/operator) " +
-            "or release with null (the owner itself, or creator/operator).",
+          "Reassign (sessionId / \"human\" / \"operator\") or release with null (owner or creator/operator).",
         ),
-      evidence: jsonTolerant(z.object({ policyId: z.string().min(1) }))
+      evidence: jsonTolerant(
+        opaqueSchema(z.object({ policyId: z.string().min(1) }), { tool: "task_update", field: "evidence" })
+      )
         .optional()
         .describe(
-          "With status:\"done\": an already-PASSED completion policy standing " +
-            "in for the gate — stamped verbatim, nothing re-runs.",
+          `With status:"done": an already-PASSED policy standing in for the gate. Details: tool_help {name:"task_update", topic:"evidence"}`
         ),
       note: z
         .string()
@@ -372,15 +355,14 @@ export function registerTaskTools(
       approvalIds: jsonTolerant(z.array(z.string()))
         .optional()
         .describe(
-          "Replace the linked approval ids (owner-settable, like `note`). " +
-            "Required non-empty when moving into awaiting_approval.",
+          "Replace the linked approval ids (owner-settable). Required non-empty when moving into awaiting_approval.",
         ),
-      artifacts: jsonTolerant(z.array(taskArtifactLinkSchema))
+      artifacts: jsonTolerant(
+        opaqueSchema(z.array(taskArtifactLinkSchema), { tool: "task_update", field: "artifacts" })
+      )
         .optional()
         .describe(
-          "Replace the evidence trail: session artifacts " +
-            "(`{sessionId, key, sha256}`) and/or approval payload pointers " +
-            "(`{approvalId}`). Owner-settable, like `note`.",
+          `Replace the evidence trail: session artifacts and/or approval payload pointers. Details: tool_help {name:"task_update", topic:"artifacts"}`
         ),
     },
     async input => {

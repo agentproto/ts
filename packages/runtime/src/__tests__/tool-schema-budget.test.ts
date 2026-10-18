@@ -25,21 +25,24 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 
 import { createGateway, type GatewayHandle } from "../index.js"
-import { measureToolList } from "../tool-schema-measure.js"
+import { measureTool, measureToolList } from "../tool-schema-measure.js"
 
-/** Always-on set: ~51.4 KB measured after slimming agent_start (down from
- *  ~63.6 KB baseline). Re-set to 61 KB when `session_list` grew ~0.35 KB for
- *  the `label`/`cwd` filters and the cold-history fallback (`includeCold`) —
- *  the measured total was already at the old 60 KB line, so the old number
- *  left no room for a normal field addition. Re-set to 62 KB for the
- *  `sandboxCheckpoint` spawn override (kept opaque in the schema, ~0.15 KB).
- *  Headroom for normal growth without re-opening this file on every field addition.
- *  `turnRetry.rotate`/`rotateOn`/`cooldownMs` fields on `agent_start`
- *  (+~0.5 KB of schema; the prose lives in `tool_help`). Headroom for normal growth
- *  without re-opening this file on every field addition. Re-set to 63 KB when
- *  `auth.loginFile` (#1933) and `restartPolicy.on: sandbox-gone` (#1935) landed
- *  together (62.17 KB measured). */
-const ALWAYS_ON_BUDGET_BYTES = 63_000
+/** Always-on set: ~38.98 KB measured after the round-2 structural slimming
+ *  (`agent_start` collapsed from 28.2 KB to ~9.7 KB by advertising its rarely
+ *  used nested options — sandbox, restartPolicy, inference, mcpServers,
+ *  contextContinuity, orchestrator, auth, appServe, costBudget, worktree,
+ *  attach, options, route, browser, prompt — as opaque values that keep the
+ *  real zod validation; see `tool-schema-opaque.ts`). Re-set here with ~1.5 KB
+ *  headroom. Earlier history: ~63.6 KB baseline, re-set to 61 KB for
+ *  `session_list` filters, 62 KB for the `sandboxCheckpoint` override, 63 KB
+ *  when `auth.loginFile` and `restartPolicy.on: sandbox-gone` landed (62.17 KB
+ *  measured). Headroom for normal growth without re-opening this file on every
+ *  field addition. */
+const ALWAYS_ON_BUDGET_BYTES = 40_500
+
+/** No single tool in the always-on set may exceed this — the round-2 plan's
+ *  per-tool cap, guarding against one tool ballooning back into a manual. */
+const MAX_TOOL_BYTES = 12_000
 
 /** No single description — a tool's own, or any schema property's, at any
  *  nesting depth — may exceed this. The plan's own cap. */
@@ -114,6 +117,16 @@ describe("MCP tool schema budget", () => {
       `always-on tools/list grew to ${totalBytes} bytes (budget ${ALWAYS_ON_BUDGET_BYTES}). ` +
         `Biggest: ${entries.slice(0, 5).map(e => `${e.name}=${e.bytes}`).join(", ")}`,
     ).toBeLessThanOrEqual(ALWAYS_ON_BUDGET_BYTES)
+  })
+
+  it("no single always-on tool exceeds the per-tool cap", async () => {
+    const gateway = await bootGateway({})
+    const tools = await listTools(gateway)
+    const offenders = tools
+      .map(t => ({ name: t.name, bytes: measureTool(t) }))
+      .filter(e => e.bytes > MAX_TOOL_BYTES)
+      .map(e => `${e.name}=${e.bytes}`)
+    expect(offenders, offenders.join(", ")).toEqual([])
   })
 
   it("no tool or field description on the full surface exceeds the per-description cap", async () => {
