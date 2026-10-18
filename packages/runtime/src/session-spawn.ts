@@ -6272,7 +6272,13 @@ export async function bootSandboxAgentSession(opts: {
       // boot-time upload never happened, so a degraded spawn stays degraded
       // instead of discovering a write path it never had.
       ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
-      ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+      ledger: {
+        sandboxId: host.sandboxId,
+        provider: providerSlug,
+        // AIP-36 shared-box refcount: `close()` detaches THIS session and
+        // only kills the box when no other session is still attached.
+        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+      },
       // A provider box outlives a host-daemon restart (shutdown detaches
       // instead of killing it, boot re-attaches). Device sandboxes keep the
       // old behavior: their box daemon is reached through a paired host.

@@ -43,6 +43,13 @@ import { join, resolve } from "node:path"
  *  did, which a vanished box makes a lie). */
 export type SandboxLedgerState = "booted" | "paused" | "connected" | "stopped" | "gone"
 
+/* AIP-36 amendment "shared box" — one box can host SEVERAL live sessions
+ * (e.g. two agents attaching to the same e2b sandbox via `reuse`). The
+ * ledger is the refcount: `attachedSessions` lists every session currently
+ * attached, which makes a daemon restart robust (the count lives on disk,
+ * not in memory). Session teardown = DETACH: the box is only stopped when
+ * the LAST session detaches — stopping the first of two sessions must never
+ * kill the box under the surviving one's feet. */
 export interface SandboxLedgerEntry {
   sandboxId: string
   provider: string
@@ -57,6 +64,11 @@ export interface SandboxLedgerEntry {
   gitTokenWorkspace?: string
   /** The HOST session id that first booted / last reconnected to the box. */
   originSessionId?: string
+  /** Every session CURRENTLY attached to this box (AIP-36 shared-box
+   *  amendment). Written by boot/`recordSandboxOrigin` + `attachSession`,
+   *  emptied by `detachSession`. The refcount source of truth — on disk, so
+   *  it survives a daemon restart. */
+  attachedSessions?: string[]
   /** ISO instant the box is expected to idle-expire — stamped only when the
    *  boot knew a window (`lifecycle.pause_after_idle`). */
   expiresAt?: string
@@ -186,6 +198,15 @@ export function removeSandboxLedgerEntry(sandboxId: string, path?: string): bool
 
 const nowIso = (): string => new Date().toISOString()
 
+/** Append `sessionId` to an attached-sessions list (dedupe, keep order). */
+const attachToSessions = (
+  prior: string[] | undefined,
+  sessionId: string | undefined,
+): string[] => {
+  if (!sessionId) return prior ?? []
+  return prior?.includes(sessionId) ? prior : [...(prior ?? []), sessionId]
+}
+
 /**
  * Stamp a boot or reconnect into the ledger — the spawn path's hook.
  * `state` is "booted" for a fresh boot, "connected" for a reuse/attach.
@@ -200,12 +221,16 @@ export function recordSandboxBoot(opts: {
   originSessionId?: string
   expiresAt?: string
   gitTokenWorkspace?: string
+  /** The host session attaching to the box — appended to the shared-box
+   *  refcount (`attachedSessions`) in the same write. */
+  sessionId?: string
   path?: string
 }): void {
   try {
     const target = opts.path ?? sandboxLedgerPath()
     const existing = readSandboxLedger(target)
     const prior = existing.find(e => e.sandboxId === opts.sandboxId)
+    const attached = attachToSessions(prior?.attachedSessions, opts.sessionId)
     const ts = nowIso()
     const entry: SandboxLedgerEntry = {
       sandboxId: opts.sandboxId,
@@ -213,6 +238,7 @@ export function recordSandboxBoot(opts: {
       state: opts.state,
       createdAt: prior?.createdAt ?? ts,
       updatedAt: ts,
+      ...(prior?.attachedSessions || opts.sessionId ? { attachedSessions: attached } : {}),
       ...(opts.label ? { label: opts.label } : prior?.label ? { label: prior.label } : {}),
       ...(opts.cwd ? { cwd: opts.cwd } : prior?.cwd ? { cwd: prior.cwd } : {}),
       ...(opts.originSessionId
@@ -245,7 +271,7 @@ export function recordSandboxState(
     const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
     if (!prior) return // Nothing boot recorded — no row to transition.
     upsertSandboxLedger(
-      { ...prior, state, updatedAt: nowIso() },
+      { ...prior, state, attachedSessions: [], updatedAt: nowIso() },
       target,
     )
   } catch {
@@ -274,6 +300,8 @@ export function recordSandboxReap(
         ...prior,
         state,
         updatedAt: ts,
+        // The box is no longer serving anyone.
+        attachedSessions: [],
         reapedAt: ts,
         reapedIdleMs: info.idleMs,
         ...(info.sessionId ? { reapedSessionId: info.sessionId } : {}),
@@ -322,7 +350,14 @@ export function recordSandboxOrigin(sandboxId: string, originSessionId: string, 
     const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
     if (!prior) return
     upsertSandboxLedger(
-      { ...prior, originSessionId, updatedAt: nowIso() },
+      {
+        ...prior,
+        originSessionId,
+        // The boot hook ran before the host minted this session id — count
+        // the session into the shared-box refcount now, same write.
+        attachedSessions: attachToSessions(prior.attachedSessions, originSessionId),
+        updatedAt: nowIso(),
+      },
       target,
     )
   } catch {
@@ -357,4 +392,46 @@ export function resolveReuseFromLedger(
   if (sole) return { kind: "resolved", sandboxId: sole.sandboxId, entry: sole }
   if (matches.length > 1) return { kind: "ambiguous", candidates: matches }
   return { kind: "unresolved" }
+}
+
+/** Sessions still attached AFTER `sessionId` detaches — the shared-box
+ *  refcount readout. Returns `undefined` for a box with no ledger row
+ *  (nothing to count). Never throws. */
+export function sessionsAttachedAfterDetach(
+  sandboxId: string,
+  sessionId: string,
+  path?: string,
+): string[] | undefined {
+  try {
+    const prior = readSandboxLedger(path).find(e => e.sandboxId === sandboxId)
+    if (!prior) return undefined
+    return (prior.attachedSessions ?? []).filter(s => s !== sessionId)
+  } catch {
+    return []
+  }
+}
+
+/** Record one session DETACHING from a box (AIP-36 shared-box teardown:
+ *  teardown = detach, the box survives as long as others remain). Drops
+ *  `sessionId` from `attachedSessions`; no-op for a row this session isn't
+ *  on. Returns the sessions STILL attached (excluding `sessionId`).
+ *  Best-effort: never throws. */
+export function recordSessionDetach(
+  sandboxId: string,
+  sessionId: string,
+  path?: string,
+): string[] {
+  try {
+    const target = path ?? sandboxLedgerPath()
+    const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
+    if (!prior) return []
+    const remaining = (prior.attachedSessions ?? []).filter(s => s !== sessionId)
+    upsertSandboxLedger(
+      { ...prior, attachedSessions: remaining, updatedAt: nowIso() },
+      target,
+    )
+    return remaining
+  } catch {
+    return []
+  }
 }
