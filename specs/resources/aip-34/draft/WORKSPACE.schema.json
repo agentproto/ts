@@ -1,35 +1,33 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentproto.sh/docs/aip-34/WORKSPACE.schema.json",
-  "title": "WORKSPACE.md frontmatter — agentworkspace/v1 (workspace identity)",
-  "description": "Validates the YAML frontmatter portion of an AIP-34 WORKSPACE.md manifest. Composes the AIP-35 STORAGE block (required), AIP-36 SANDBOX block (optional), AIP-26 CODE block (optional), AIP-23 identity-ref block (optional).",
+  "$id": "https://agentproto.sh/schemas/aip-34/WORKSPACE.schema.json",
+  "title": "WORKSPACE.md frontmatter — agentworkspace/v2 (workspace tree node — THE canonical AIP-34 schema; supersedes v1 outright)",
+  "description": "Validates the YAML frontmatter portion of an AIP-34 WORKSPACE.md manifest — the canonical workspace/v2 tree-node shape: node `type` (resolved against a sibling TYPES.md), `wall` (visibility level), `includes`/`exports` (two-sided consent doors), `agents`/`routines` (declared manifests this node hosts), `secrets`/`uses_secrets` (never-inherited secret grants), `apps`/`accepted_apps` (versioned app attachments with two-sided consent), `work` (AIP-20 status/board), and `policy.limits` budget aggregation. Supersedes the original workspace/v1 identity-only draft outright — there is no parallel v1 schema; see AIP-34 §Migrating from workspace/v1.",
   "type": "object",
-  "required": ["schema", "id", "version", "name", "owner", "storage"],
+  "required": ["schema", "id", "version", "name", "type", "owner", "storage"],
   "additionalProperties": false,
   "properties": {
-    "schema": {
-      "const": "workspace/v1"
-    },
+    "schema": { "const": "workspace/v2" },
     "id": {
       "type": "string",
       "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
-      "description": "Globally addressable id `@<owner-slug>/<workspace-slug>`. Lowercase kebab-case, immutable across the workspace's lifetime."
+      "description": "Globally addressable, FLAT id `@<owner-slug>/<workspace-slug>`. Immutable even if the node moves to a different folder (`ws mv` rewrites the path, never the id)."
     },
     "version": {
       "type": "string",
-      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
-      "description": "Spec version of THIS file. Bump on breaking shape change."
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$"
     },
-    "name": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "type": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 80,
-      "description": "Human-readable display name."
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Node kind. MUST be a key declared in the nearest ancestor TYPES.md (walking up through folders with no WORKSPACE.md). Day-1 vocabulary: root | perso | company | project | initiative. Hosts/trees MAY register more under TYPES.md; this field stays an open string so the registry — not this schema — is the extension point."
     },
-    "description": {
-      "type": "string",
-      "maxLength": 2000,
-      "description": "One-paragraph purpose."
+    "status": {
+      "enum": ["active", "paused", "archived"],
+      "default": "active",
+      "description": "active: runs normally. paused: keeps declarations/data but runs nothing — hosts MUST NOT start agents or fire routines at or below this node, excluded from budget/heartbeat checks like archived, stays writable and resumes by flipping back to active. archived: read-only, excluded from budget/heartbeat checks, never runs anything. A node's EFFECTIVE status is the most restrictive value along its ancestor chain (archived > paused > active) — a child is never more active than an ancestor; the field itself always holds only this node's own declared value."
     },
     "owner": {
       "type": "object",
@@ -40,38 +38,69 @@
         "id": { "type": "string", "minLength": 1 },
         "slug": {
           "type": "string",
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$",
-          "description": "Owner-side slug. MUST match the slug suffix of the workspace `id`."
+          "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$"
         }
       }
     },
-    "storage": {
-      "$ref": "#/$defs/storageRef",
-      "description": "AIP-35 STORAGE block. Required. Inline / ref / file."
+    "storage": { "$ref": "#/$defs/storageRef" },
+    "sandbox": { "$ref": "#/$defs/sandboxRef" },
+    "code": { "$ref": "#/$defs/codeRef" },
+    "work": {
+      "$ref": "#/$defs/workRef",
+      "description": "AIP-20 WORK.md block. Optional — when present, this node's status/board is tracked there (items are AIP-18 ITEM.md records under the collection(s) WORK.md declares), not in a flat status file. Same inline/ref/file union shape as `code`."
     },
-    "sandbox": {
-      "$ref": "#/$defs/sandboxRef",
-      "description": "AIP-36 SANDBOX block. Optional — when absent, command-execution tools MUST be unavailable."
+    "identity": { "$ref": "#/$defs/identityRefBlock" },
+    "wall": {
+      "enum": ["shared", "isolated", "sealed", "hard"],
+      "default": "isolated",
+      "description": "Visibility level toward sibling/ancestor nodes. shared: siblings read the whole node (implicit export `to: \"children\"` of the PARENT). isolated (default): nothing crosses without an explicit includes/exports door; ancestors still see everything. sealed: as isolated, PLUS ancestors see only this node's EXPORT.md, never raw files; inbound includes require host-side approval (AIP-7). hard: as sealed, PLUS enforced by a separate process/identity — no shared daemon, no shared auth profile, no shared MCP surface; the only traffic in or out is the declared exports, delivered by message, never by mount. A child MAY raise its own wall (shared→isolated→sealed→hard) but MUST NOT set a level looser than its parent's or its TYPES.md entry's `default_wall`."
     },
-    "code": {
-      "$ref": "#/$defs/codeRef",
-      "description": "AIP-26 CODE block. Optional — when present, the workspace IS a code-workspace / repo (codespace pattern)."
+    "includes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/includeEntry" },
+      "default": []
     },
-    "identity": {
-      "$ref": "#/$defs/identityRefBlock",
-      "description": "AIP-23 identity-ref — default identity for sub-blocks. Sub-blocks (storage, sandbox, code) may override."
+    "exports": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/exportEntry" },
+      "default": []
     },
-    "policy": {
-      "$ref": "#/$defs/policyRefBlock",
-      "description": "AIP-38 POLICY block — access grants, defaults, limits, requirements. Composable inline / ref / file / array."
+    "agents": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/agentRef" },
+      "default": []
     },
+    "routines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fileRef" },
+      "default": []
+    },
+    "secrets": {
+      "$ref": "#/$defs/fileRef",
+      "description": "Ref to this node's OWN .secrets/SECRETS.md inventory (AIP-19). Never inherited — a node with no `secrets` block has no secrets of its own, full stop."
+    },
+    "uses_secrets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/usesSecretEntry" },
+      "default": [],
+      "description": "Consumer-side declaration of a secret grant this node expects. Only effective if the named provider workspace's SECRETS.md carries a matching `access.bind[].workspace` (or `.reveal[].workspace`) grant for this node's id — consent MUST exist on both sides, same rule as includes/exports."
+    },
+    "apps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/appRef" },
+      "default": []
+    },
+    "accepted_apps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/acceptedAppEntry" },
+      "default": [],
+      "description": "Provider-side consent for an `apps[].attach` pointed at THIS node by another node — same two-sided-consent shape as `exports`/`uses_secrets`. An attach with no matching entry here is a conformance error, never silently honoured."
+    },
+    "policy": { "$ref": "#/$defs/policyRefBlock" },
     "defaults": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "read_only": { "type": "boolean" }
-      }
+      "properties": { "read_only": { "type": "boolean" } }
     },
     "publish": {
       "type": "object",
@@ -85,21 +114,148 @@
         }
       }
     },
-    "tags": {
-      "type": "array",
-      "items": { "type": "string" },
-      "default": []
-    },
-    "created_at": {
+    "tags": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "lock": {
       "type": "string",
-      "format": "date-time"
+      "default": "agentproto.lock",
+      "description": "Workspace-relative path to this node's apps/packs lockfile (see AIP-34 §agentproto.lock). Only meaningful on nodes that install apps/packs directly; a node that attaches nothing MAY omit it."
     },
-    "metadata": {
-      "type": "object",
-      "additionalProperties": true
-    }
+    "metadata": { "type": "object", "additionalProperties": true }
   },
   "$defs": {
+    "safeRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$",
+      "description": "Path confinement (see §Path confinement): tree-relative (no leading `/`), no `..` path segment anywhere. Schema-level best effort — hosts MUST ALSO realpath-resolve and verify containment to catch a symlink escape the string alone can't reveal."
+    },
+    "acceptedAppEntry": {
+      "type": "object",
+      "required": ["from"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+          "description": "Id of the workspace whose `apps[].attach` this grant honours."
+        },
+        "app": {
+          "type": "string",
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+          "description": "Restrict the grant to one app id. Omitted = any app `from` attaches."
+        }
+      }
+    },
+    "fileRef": {
+      "type": "object",
+      "required": ["file"],
+      "additionalProperties": false,
+      "properties": { "file": { "$ref": "#/$defs/safeRelativePath" } }
+    },
+    "agentRef": {
+      "type": "object",
+      "required": ["file"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "$ref": "#/$defs/safeRelativePath" },
+        "share": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$"
+          },
+          "description": "Other workspace ids this agent is also declared transverse to (AIP-34 §Specification (workspace/v2) exception 3). The agent always runs scoped to whichever of these ids is the live caller — never a union of several at once."
+        }
+      }
+    },
+    "includeEntry": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^ws://workspaces/@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*(#(?!.*\\.\\.)[^\\s]+)?$",
+          "description": "AIP-54 ws:// ref: `ws://workspaces/<provider-id>[#<subpath>]`. No subpath = the whole node. The `#<subpath>` fragment is path confinement scope (see §Path confinement): no `..` anywhere in it."
+        },
+        "mode": { "enum": ["read", "write", "append"], "default": "read" }
+      }
+    },
+    "exportEntry": {
+      "type": "object",
+      "required": ["path", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "allOf": [{ "$ref": "#/$defs/safeRelativePath" }],
+          "description": "Path (relative to this node) made available to the grantee(s). Path confinement applies — see §Path confinement."
+        },
+        "to": {
+          "oneOf": [
+            {
+              "const": "children",
+              "description": "Sentinel: every node nested, in the folder tree, under whichever workspace DECLARES this export entry — regardless of id. For an explicit entry, that's whoever wrote it. For the IMPLICIT grant `wall: shared` synthesizes, the declaring node is the PARENT, not the shared node itself — so the grant reaches the shared node's SIBLINGS (the parent's other children), not merely its own descendants. See AIP-34 §The four wall levels."
+            },
+            {
+              "type": "string",
+              "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+              "description": "A single named workspace id — the explicit two-sided door case."
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$"
+              },
+              "minItems": 1
+            }
+          ]
+        },
+        "mode": { "enum": ["read", "write"], "default": "read" }
+      }
+    },
+    "usesSecretEntry": {
+      "type": "object",
+      "required": ["from", "slug"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+          "description": "Id of the workspace whose SECRETS.md owns this slug."
+        },
+        "slug": { "type": "string", "minLength": 1 },
+        "mode": { "enum": ["bind", "reveal"], "default": "bind" }
+      }
+    },
+    "appRef": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+          "description": "AIP-53 APP id."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Semver or semver-range (`^0.1.0`, `~1.2.0`, `1.2.3`). Resolved against the installed app store at attach time; the resolved exact version is what lands in agentproto.lock."
+        },
+        "expose": {
+          "type": "array",
+          "items": { "enum": ["agents", "tools", "ui", "data"] },
+          "default": []
+        },
+        "attach": {
+          "type": "string",
+          "default": "self",
+          "description": "`\"self\"` (default): this node and its subtree — no consent needed, the declaring node can only ever restrict itself. Otherwise a workspace id the app is attached to instead — effective ONLY if that target node's WORKSPACE.md declares a matching `accepted_apps` entry granting this node (and optionally this app id); see §Apps and consent. An unconsented cross-node attach is a conformance error, not a silent no-op."
+        }
+      }
+    },
     "storageRef": {
       "anyOf": [
         {
@@ -158,9 +314,29 @@
           "type": "object",
           "required": ["inline"],
           "additionalProperties": false,
-          "properties": {
-            "inline": { "type": "object" }
-          }
+          "properties": { "inline": { "type": "object" } }
+        },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": false,
+          "properties": { "ref": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": false,
+          "properties": { "file": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
+    "workRef": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["inline"],
+          "additionalProperties": false,
+          "properties": { "inline": { "type": "object" } }
         },
         {
           "type": "object",
@@ -177,76 +353,31 @@
       ]
     },
     "identityRefBlock": {
-      "anyOf": [
-        { "$ref": "#/$defs/identityRefEntry" },
-        {
-          "type": "array",
-          "items": { "$ref": "#/$defs/identityRefEntry" },
-          "minItems": 1
-        }
-      ]
-    },
-    "policyRefEntry": {
-      "anyOf": [
-        { "$ref": "https://agentproto.sh/schemas/aip-38/POLICY.schema.json" },
-        {
-          "type": "object",
-          "required": ["ref"],
-          "additionalProperties": false,
-          "properties": { "ref": { "type": "string", "minLength": 1 } }
-        },
-        {
-          "type": "object",
-          "required": ["file"],
-          "additionalProperties": false,
-          "properties": { "file": { "type": "string", "minLength": 1 } }
-        }
-      ]
+      "description": "AIP-23 identity-ref. Single entry or multi-attribution array. Left permissive here; AIP-23 owns the normative shape."
     },
     "policyRefBlock": {
-      "anyOf": [
-        { "$ref": "#/$defs/policyRefEntry" },
-        {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "limits": {
           "type": "array",
-          "items": { "$ref": "#/$defs/policyRefEntry" },
-          "minItems": 1
+          "items": {
+            "type": "object",
+            "required": ["kind", "value"],
+            "additionalProperties": true,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "description": "AIP-38 limit kind. Budget kinds added by AIP-34 v2: budget-usd-per-month | budget-usd-per-day. Also any AIP-38 kind (max-concurrent-sessions, rate-tool-calls, ...)."
+              },
+              "value": { "type": "number" },
+              "scope": { "type": "string" },
+              "per": { "type": "string" }
+            }
+          },
+          "default": []
         }
-      ]
-    },
-    "identityRefEntry": {
-      "anyOf": [
-        {
-          "type": "object",
-          "required": ["name", "email"],
-          "additionalProperties": true,
-          "properties": {
-            "name": { "type": "string", "minLength": 1 },
-            "email": { "type": "string", "minLength": 1 },
-            "avatar": { "type": "string" },
-            "gpg_key": { "type": "string" },
-            "role": { "type": "string" },
-            "metadata": { "type": "object" }
-          }
-        },
-        {
-          "type": "object",
-          "required": ["ref"],
-          "additionalProperties": true,
-          "properties": {
-            "ref": { "type": "string", "minLength": 1 },
-            "role": { "type": "string" }
-          }
-        },
-        {
-          "type": "object",
-          "required": ["file"],
-          "additionalProperties": true,
-          "properties": {
-            "file": { "type": "string", "minLength": 1 },
-            "role": { "type": "string" }
-          }
-        }
-      ]
+      }
     }
   }
 }

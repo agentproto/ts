@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-63/RECORDING.schema.json",
+  "title": "browser-recording/v1",
+  "description": "Schemas for the files of a browser recording directory (AIP-63 section 6). manifest.json validates against $defs/manifest. Each line of frames.jsonl validates against $defs/frame and each line of actions.jsonl against $defs/action. The property sets are closed on purpose: there is no field in which a typed value of a masked input could be placed (R8, R9).",
+  "$ref": "#/$defs/manifest",
+  "$defs": {
+    "recordingId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+      "description": "Also the name of the recording directory. No dot and no slash, so it cannot traverse (R1)."
+    },
+    "isoDateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "deviceScaleFactor": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "id",
+        "sessionId",
+        "provider",
+        "mode",
+        "startedAt",
+        "endedAt",
+        "status",
+        "viewport",
+        "frameCount",
+        "actionCount",
+        "redaction",
+        "retentionDays"
+      ],
+      "properties": {
+        "schema": { "const": "browser-recording/v1" },
+        "id": { "$ref": "#/$defs/recordingId" },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The agent or browser session that was recorded."
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The id of the BROWSER.md provider that drove the browser (for example chrome-live, chromium, bureau)."
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The adapter package or host component that captured the frames, when different from the provider."
+        },
+        "instanceId": { "type": "string", "minLength": 1 },
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-59 device that owns the recording. When present, any other paired device MUST NOT read it (R11)."
+        },
+        "grantIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Ids of the profile grants (AIP-63 section 4) that seeded the recorded session. Ids only, never material (R13)."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["per-action", "screencast"],
+          "description": "How frames were produced. The file format is identical in both modes (R6)."
+        },
+        "screencast": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Capture parameters, for mode screencast. Informational.",
+          "properties": {
+            "format": { "const": "jpeg" },
+            "quality": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "everyNthFrame": { "type": "integer", "minimum": 1 },
+            "maxFps": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "startedAt": { "$ref": "#/$defs/isoDateTime" },
+        "endedAt": {
+          "oneOf": [{ "$ref": "#/$defs/isoDateTime" }, { "type": "null" }],
+          "description": "Null while status is recording."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["recording", "complete", "failed", "interrupted"],
+          "description": "recording: the writer is live. complete: closed normally. failed: the writer hit an error it could not recover from (see statusReason). interrupted: the host stopped or crashed while recording (R14)."
+        },
+        "statusReason": { "type": "string", "maxLength": 500 },
+        "viewport": { "$ref": "#/$defs/viewport" },
+        "frameCount": { "type": "integer", "minimum": 0 },
+        "actionCount": { "type": "integer", "minimum": 0 },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "redaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["passwordFields"],
+          "properties": {
+            "passwordFields": {
+              "type": "string",
+              "enum": ["masked", "none"],
+              "description": "masked is the default. none is an explicit operator opt-out and MUST be recorded here (R8)."
+            },
+            "maskedFrames": { "type": "integer", "minimum": 0 },
+            "droppedFrames": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Frames that could not be masked with certainty and were not written (R9)."
+            }
+          }
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Days after endedAt (or after startedAt, if the recording never ended) at which the host MUST delete the whole directory (R10)."
+        },
+        "expiresAt": { "$ref": "#/$defs/isoDateTime" },
+        "exports": {
+          "type": "array",
+          "description": "Derived files under exports/. Not part of the format proper: a reader MUST be able to regenerate them from frames and actions (R15).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "file", "createdAt"],
+            "properties": {
+              "kind": { "const": "video" },
+              "file": { "type": "string", "pattern": "^exports/[A-Za-z0-9._-]+\\.(mp4|webm)$" },
+              "container": { "type": "string", "enum": ["mp4", "webm"] },
+              "durationMs": { "type": "integer", "minimum": 0 },
+              "createdAt": { "$ref": "#/$defs/isoDateTime" }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "description": "R3, R14: a live recording has no end; any other status has one.",
+          "if": { "properties": { "status": { "const": "recording" } }, "required": ["status"] },
+          "then": { "properties": { "endedAt": { "type": "null" } } },
+          "else": { "properties": { "endedAt": { "$ref": "#/$defs/isoDateTime" } } }
+        },
+        {
+          "description": "R6: capture parameters only make sense for the screencast mode.",
+          "if": { "properties": { "mode": { "const": "per-action" } }, "required": ["mode"] },
+          "then": { "properties": { "screencast": false } }
+        }
+      ]
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One line of frames.jsonl.",
+      "required": ["i", "tMs", "file", "url", "tabId", "w", "h"],
+      "properties": {
+        "i": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Frame index, 1-based and contiguous (R4)."
+        },
+        "tMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds since manifest.startedAt, non-decreasing (R4)."
+        },
+        "file": {
+          "type": "string",
+          "pattern": "^frames/[0-9]{6,}\\.jpg$",
+          "description": "Path relative to the recording directory. The number is i, zero-padded to at least six digits (R5)."
+        },
+        "url": {
+          "type": "string",
+          "description": "Page URL at capture time, with fragment and any userinfo removed (R7)."
+        },
+        "tabId": { "type": "string", "minLength": 1 },
+        "w": { "type": "integer", "minimum": 1, "description": "Pixel width of the stored JPEG. It MAY be smaller than the viewport (R5)." },
+        "h": { "type": "integer", "minimum": 1 },
+        "actionSeq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "seq of the action this frame follows. Required in per-action mode, optional in screencast mode (R6)."
+        },
+        "masked": {
+          "type": "string",
+          "enum": ["none", "fields", "full"],
+          "description": "none: no sensitive field visible. fields: the regions of sensitive fields were masked. full: the whole frame was blurred because masking could not be scoped (R8, R9). Absent means none."
+        },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "prev": {
+          "$ref": "#/$defs/sha256Hex",
+          "description": "SHA-256 of the previous line of this file (SHOULD, R3)."
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One line of actions.jsonl. There is no field that holds a typed or evaluated value in clear (R7).",
+      "required": ["seq", "tMs", "tool", "url", "summary", "status", "durationMs"],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Action sequence number, 1-based and contiguous (R4)."
+        },
+        "tMs": { "type": "integer", "minimum": 0, "description": "Start of the action, in milliseconds since manifest.startedAt." },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+          "description": "The browser tool without the browser. prefix: navigate, click, fill, evaluate, screenshot, scroll, get_dom, extract_text, act, tabs, or a vendor tool."
+        },
+        "url": {
+          "type": "string",
+          "description": "Page URL when the action started, with fragment and any userinfo removed."
+        },
+        "tabId": { "type": "string", "minLength": 1 },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "What the action was aimed at. A locator, never a value (R7).",
+          "properties": {
+            "selector": { "type": "string", "maxLength": 500 },
+            "role": { "type": "string", "maxLength": 100 },
+            "name": { "type": "string", "maxLength": 200, "description": "Accessible name of the element, not its value." },
+            "sensitive": {
+              "const": true,
+              "description": "The element is a password-like field (R8). Present means the value was redacted from the summary."
+            }
+          }
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "One human-readable line. For a fill on a sensitive field it MUST NOT contain the value, not even its length (R7)."
+        },
+        "status": { "type": "string", "enum": ["ok", "error"] },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code"],
+          "properties": {
+            "code": { "type": "string", "description": "A browser:* code from AIP-63 T4 or a vendor code." },
+            "message": { "type": "string", "maxLength": 500 }
+          }
+        },
+        "redacted": {
+          "const": true,
+          "description": "Some part of this action was removed by the writer (R7)."
+        },
+        "prev": {
+          "$ref": "#/$defs/sha256Hex",
+          "description": "SHA-256 of the previous line of this file (SHOULD, R3)."
+        }
+      },
+      "allOf": [
+        {
+          "description": "R7: an error status carries an error, an ok status does not.",
+          "if": { "properties": { "status": { "const": "error" } }, "required": ["status"] },
+          "then": { "required": ["error"] },
+          "else": { "not": { "required": ["error"] } }
+        },
+        {
+          "description": "R7: a fill that targets a sensitive field is marked redacted.",
+          "if": {
+            "properties": {
+              "tool": { "const": "fill" },
+              "target": { "required": ["sensitive"], "properties": { "sensitive": { "const": true } } }
+            },
+            "required": ["tool", "target"]
+          },
+          "then": { "required": ["redacted"] }
+        }
+      ]
+    }
+  }
+}

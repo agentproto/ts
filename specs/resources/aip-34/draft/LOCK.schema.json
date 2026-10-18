@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-34/LOCK.schema.json",
+  "title": "agentproto.lock — agentproto-lock/v1 (tree-wide app/pack lockfile)",
+  "description": "Validates agentproto.lock, a plain YAML file (NOT frontmatter — no markdown body) at the tree root. Pins every AIP-53 app and AIP-64 pack installed anywhere in the tree to the exact version, source and attach point it resolved to, so `agentproto workspace check` can flag drift between WORKSPACE.md `apps:` version ranges and what is actually installed.",
+  "type": "object",
+  "required": ["lockfile", "generated"],
+  "additionalProperties": false,
+  "properties": {
+    "lockfile": { "const": "agentproto-lock/v1" },
+    "generated": { "type": "string", "format": "date-time" },
+    "apps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/lockedApp" },
+      "default": []
+    },
+    "packs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/lockedPack" },
+      "default": []
+    }
+  },
+  "$defs": {
+    "lockedApp": {
+      "type": "object",
+      "required": ["id", "version", "attach", "dataDir"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+          "description": "Exact resolved version — never a range. The range lives in the consuming WORKSPACE.md's `apps[].version`."
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the .agentapp came from (file: path, registry URL, ...)."
+        },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "attach": {
+          "type": "string",
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+          "description": "Workspace id this install is scoped to (the `scopeId` passed to app_apply)."
+        },
+        "dataDir": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$",
+          "description": "Tree-relative path to this ATTACH's own data directory — one per attach point, never shared across attaches of the same app. Path confinement applies (AIP-34 §Path confinement): no leading `/`, no `..` segment; hosts MUST ALSO realpath-verify containment."
+        }
+      }
+    },
+    "lockedPack": {
+      "type": "object",
+      "required": ["name", "version", "digest", "attach"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^agentproto-pack-digest/v1:.+$"
+        },
+        "attach": {
+          "type": "string",
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$"
+        }
+      }
+    }
+  }
+}

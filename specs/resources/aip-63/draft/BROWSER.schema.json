@@ -86,7 +86,7 @@
     },
     "conformanceLevel": {
       "type": "string",
-      "enum": ["core", "interaction", "network", "download", "profile"]
+      "enum": ["core", "interaction", "network", "download", "profile", "recording"]
     },
     "capabilities": {
       "type": "object",
@@ -285,6 +285,10 @@
               }
             }
           }
+        },
+        {
+          "if": { "required": ["conformance"], "properties": { "conformance": { "contains": { "const": "recording" } } } },
+          "then": { "properties": { "capabilities": { "required": ["recording"], "properties": { "recording": { "enum": ["screencast", "video"] } } } } }
         }
       ]
     },

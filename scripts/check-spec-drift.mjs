@@ -23,6 +23,13 @@
  *
  * Usage: node scripts/check-spec-drift.mjs
  *   --aip 36 --slug sandbox --doctype SANDBOX  (these defaults)
+ *
+ * With no arguments the CLI checks EVERY entry of DEFAULT_PACKAGES (not
+ * just sandbox) — one regen per guarded package, all failures reported,
+ * exit 1 if any drifts. CI invokes the no-arg form, so adding a package
+ * to DEFAULT_PACKAGES widens the CI guard without a workflow change.
+ * `checkSpecDrift(opts)` (the API) keeps DEFAULTS as its single-package
+ * default.
  */
 
 import { spawnSync } from "node:child_process"
@@ -34,6 +41,15 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, "..")
 
 export const DEFAULTS = { aip: 36, slug: "sandbox", doctype: "SANDBOX" }
+
+/** Packages the no-arg CLI run guards. AIP-20/work joined after the
+ *  redesigned WORK draft shipped in the AIP-49/AIP-20/… re-vendor
+ *  (#2043), which left `packages/work/src/schema.ts` stale — the
+ *  single-package default would not have caught it. */
+export const DEFAULT_PACKAGES = [
+  DEFAULTS,
+  { aip: 20, slug: "work", doctype: "WORK" },
+]
 
 function parseArgs(argv) {
   const args = {}
@@ -90,11 +106,28 @@ export async function checkSpecDrift(opts = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2))
-  const result = await checkSpecDrift({
-    aip: Number(args.aip ?? DEFAULTS.aip),
-    slug: args.slug ?? DEFAULTS.slug,
-    doctype: (args.doctype ?? DEFAULTS.doctype).toUpperCase(),
-  })
-  console[result.ok ? "log" : "error"](result.message)
-  process.exit(result.ok ? 0 : 1)
+  const explicit =
+    args.aip !== undefined || args.slug !== undefined || args.doctype !== undefined
+  const targets = explicit
+    ? [
+        {
+          aip: Number(args.aip ?? DEFAULTS.aip),
+          slug: args.slug ?? DEFAULTS.slug,
+          doctype: (args.doctype ?? DEFAULTS.doctype).toUpperCase(),
+        },
+      ]
+    : DEFAULT_PACKAGES
+  let ok = true
+  for (const t of targets) {
+    const result = await checkSpecDrift(t)
+    if (result.ok) {
+      console.log(result.message)
+    } else {
+      ok = false
+      console.error(
+        targets.length > 1 ? `@agentproto/${t.slug}: ${result.message}` : result.message,
+      )
+    }
+  }
+  process.exit(ok ? 0 : 1)
 }
