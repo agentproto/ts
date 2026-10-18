@@ -1239,6 +1239,7 @@ export {
   readRuntimeMeta,
   daemonRegistryDir,
   readDaemonRegistry,
+  bucketsServedByOtherLiveDaemons,
   sweepStaleDaemonRegistry,
   writeDaemonRegistryEntry,
   unlinkDaemonRegistryEntry,

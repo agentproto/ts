@@ -33,7 +33,7 @@ import type {
   SandboxDetachRecord,
   SandboxReattachProbe,
 } from "./sessions.js"
-import { DEFAULT_CHECKPOINT_INTERVAL_MS } from "./sandbox-delivery.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, isFullyDelivered, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
 import { buildWorktreeRemoveCommand } from "./sandbox-workspace-remote.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
@@ -157,6 +157,19 @@ async function* harvestHostErrorNotice(
     .filter(l => l.length > 0 && HOST_ERROR_LINE_RE.test(l))
   if (lines.length === 0) return
   yield { kind: "notice", text: lines.join("\n") }
+}
+
+/** Whether a checkpoint outcome proves the box's work is safe outside the box:
+ *  a git delivery record that reached the remote/host (or found nothing new),
+ *  or a saved tarball. `undefined` (failed, timed out, never ran) is not. */
+function checkpointSecuredWork(outcome: unknown): boolean {
+  if (outcome === null || typeof outcome !== "object") return false
+  const rec = outcome as { status?: unknown; unchanged?: unknown; push?: unknown; bundle?: unknown }
+  if (rec.status === "saved" || rec.unchanged === true) return true
+  if (rec.push !== undefined && rec.bundle !== undefined) {
+    return isFullyDelivered(outcome as SandboxDeliveryRecord)
+  }
+  return false
 }
 
 /** Record `kind`s the box's transcript writer produces FROM an adapter's
@@ -344,8 +357,11 @@ export const BOX_ACTIVE_RENEW_INTERVAL_MS = 10 * 60_000
 export const BOX_DEADLINE_GUARD_LEAD_MS = 5 * 60_000
 
 /** Upper bound on the final checkpoint an idle reap runs before tearing the
- *  box down: a checkpoint that hangs must not keep an idle box alive. */
-export const IDLE_REAP_CHECKPOINT_TIMEOUT_MS = 2 * 60_000
+ *  box down: a checkpoint that hangs must not keep an idle box alive. At
+ *  least the DEFAULT_CHECKPOINT_DEADLINE_MS — one below it would abort the
+ *  final `workSecured` checkpoint the push layer is still legitimately
+ *  working on, making the timed default deadline a dead letter. */
+export const IDLE_REAP_CHECKPOINT_TIMEOUT_MS = DEFAULT_CHECKPOINT_DEADLINE_MS
 
 /**
  * Best-effort extraction of the prompt text from whatever `sessions.ts`'s
@@ -1115,16 +1131,18 @@ export function createSandboxAgentSessionProxy(
       // its filesystem is still reachable — the teardown below is what ends the
       // box, and the reaped session's only way back is a cold boot from this
       // checkpoint. Bounded so a hung checkpoint can never keep the box alive.
+      let workSecured = false
       if (closeOpts?.idleReap && !detached && opts.checkpoint) {
         let timer: ReturnType<typeof setTimeout> | undefined
-        await Promise.race([
+        const outcome = await Promise.race([
           runCheckpoint(turnsSent),
-          new Promise<void>(resolve => {
-            timer = setTimeout(resolve, IDLE_REAP_CHECKPOINT_TIMEOUT_MS)
+          new Promise<undefined>(resolve => {
+            timer = setTimeout(() => resolve(undefined), IDLE_REAP_CHECKPOINT_TIMEOUT_MS)
             timer.unref?.()
           }),
         ])
         if (timer) clearTimeout(timer)
+        workSecured = checkpointSecuredWork(outcome)
         // Timed out: stop waiting on the straggler below as well.
         checkpointInFlight = undefined
       }
@@ -1139,7 +1157,15 @@ export function createSandboxAgentSessionProxy(
       // provider never exposed a `pause()` (e.g. `local`, or a policy
       // that resolved to "pause" against a non-pausable provider): a
       // teardown must never silently no-op and leak the box.
-      const pauseFn = lifecyclePolicy?.teardown === "pause" ? host.pause : undefined
+      //
+      // An idle reap whose work was NOT durably checkpointed (no work branch /
+      // tarball target, or the final checkpoint failed or timed out) pauses
+      // regardless of policy: stopping would destroy the only copy of the
+      // session's uncommitted/unpushed work, and the reaped row's prompt-time
+      // revival re-attaches the paused box.
+      const keepBoxForRecovery = closeOpts?.idleReap !== undefined && !workSecured
+      const pauseFn =
+        lifecyclePolicy?.teardown === "pause" || keepBoxForRecovery ? host.pause : undefined
       const pauseTeardown = pauseFn !== undefined
       // AIP-36 shared-box amendment — teardown = DETACH first, destroy last:
       // only the LAST live session to close() tears the box down (stop/pause

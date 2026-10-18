@@ -9319,6 +9319,25 @@ export function createSessionsRegistry(opts?: {
     })
   }
 
+  // Stamp `lastActivityAt` from a turn's own event stream. The ACP
+  // `onActivity` circuit only fires for adapter PROCESS traffic, so a
+  // SANDBOX proxy session (whose "adapter" runs on a remote box and streams
+  // events to the host) never pulses while its turn runs: `lastActivityAt`
+  // stays at `startedAt`, and both the stall watchdog and the idle reaper
+  // then measure silence from turn start. Observed 2026-10-18: a sandboxed
+  // session 72 tool calls into a busy first turn was flagged
+  // "stalled" and reaped "idle" 19m20s after its box was created.
+  // Feeding the pulse from the turn loop closes that gap for every driver
+  // shape, and `clearStalledFlag` mirrors `pulseActivity` so recovery
+  // disproves a stall claim without waiting for the next sweep tick.
+  // (Redundant-but-harmless for local sessions, which already pulse from
+  // `onActivity`; both stamp the same field.)
+  const pulseTurnActivity = (rt: SessionRuntime): void => {
+    rt.desc.lastActivityAt = new Date().toISOString()
+    clearStalledFlag(rt)
+    schedulePersist()
+  }
+
   const runAgentTurn = async (
     rt: SessionRuntime,
     message: unknown,
@@ -9560,6 +9579,11 @@ export function createSessionsRegistry(opts?: {
           ? rt.agentSession.resumeTurn()
           : rt.agentSession.send(wrapped)
       for await (let evt of turnStream) {
+        // Every event from the turn stream is adapter activity — stamp
+        // `lastActivityAt` so the stall watchdog and idle reaper age the
+        // silence from the LAST output, not `startedAt` (sandbox proxies
+        // have no `onActivity` circuit; see `pulseTurnActivity` above).
+        pulseTurnActivity(rt)
         // Hermes may end a turn with nested/parallel tool calls still lacking
         // their terminal `tool_call_update`. Persist synthetic settlements
         // first so durable replay observes result → turn-end, never the
@@ -12717,10 +12741,23 @@ export function createSessionsRegistry(opts?: {
       if (rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") {
         return false
       }
+      // A busy (mid-turn) session is NEVER reapable — the sweep filters for
+      // this, and the guard makes the primitive honest for any caller: a
+      // turn in flight is work, not idleness, however long `lastActivityAt`
+      // claims the silence has lasted (observed 2026-10-18: a sandboxed
+      // session 72 tool calls into a busy turn was reaped because its
+      // sandbox proxy never pulsed `lastActivityAt`, and the idle span
+      // then measured from `startedAt`). Capture before refusing so the
+      // `killedMidTurn` mirror below would remain honest if this were ever
+      // relaxed.
+      const midTurn = rt.desc.busy === true
+      if (midTurn) {
+        return false
+      }
       // Read `busy` before the flip (see killedMidTurn's docblock) — a reap
       // only targets an idle session, so this is false in practice, but capture
       // the honest value rather than assume it.
-      rt.desc.killedMidTurn = rt.desc.busy === true
+      rt.desc.killedMidTurn = midTurn
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
       // The one field that makes this a REAP, not a plain kill: an automatic
@@ -12768,7 +12805,8 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       const banner = isProviderBoxSession(rt.desc)
         ? "── reaped after being idle past the sandbox threshold; its box was torn " +
-          "down. Re-prompt to continue on a fresh box restored from the last checkpoint. ──"
+          "down (paused instead when its work was not checkpointed). Re-prompt to " +
+          "continue on the paused box, or a fresh one restored from the last checkpoint. ──"
         : "── reaped after being idle past the threshold; the adapter process was " +
           "freed. Re-prompt to resume this session in place. ──"
       appendLine(rt, banner, "stdout")

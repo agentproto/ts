@@ -80,6 +80,14 @@ function idleMsOf(desc: SessionDescriptor, nowMs: number): number | null {
  *  revivable on a fresh box. */
 export const DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS = 15 * 60_000
 
+/** Minimum idle span before a RESTARTED sandbox session (`continuedFrom` /
+ *  `resumedFrom` set) that has shown no activity yet is reaped. A restart
+ *  parks the successor on the existing box awaiting its first prompt, and the
+ *  box holds the prior session's uncommitted work: reaping it on the ordinary
+ *  15-minute clock (counted from `startedAt`) tore that box down before anyone
+ *  could prompt it (observed 2026-10-18). */
+export const SANDBOX_RESTART_REAP_GRACE_MS = 60 * 60_000
+
 /** The two idle thresholds (ms); a non-positive / undefined one is off. */
 interface ReapThresholds {
   general: number | undefined
@@ -130,7 +138,9 @@ function isSandboxWorkInFlight(
  *   - a `keepAlive:true` row — the session opted itself out of the reaper (a
  *     supervisor legitimately parked waiting on a child/scheduled wake looks
  *     idle but isn't finished);
- *   - a row younger than the threshold, or one we can't age;
+ *   - a row younger than the threshold, or one we can't age; a restarted
+ *     sandbox session still awaiting its first prompt gets
+ *     {@link SANDBOX_RESTART_REAP_GRACE_MS} instead;
  *   - a depth>0 sub-agent whose parent is still alive — reaping it would orphan
  *     an active orchestration mid-flight.
  */
@@ -149,8 +159,15 @@ function isReapable(
   if (desc.keepAlive === true) return false
   const sandboxed = isBoxSession(desc)
   if (sandboxed && isSandboxWorkInFlight(desc, byId)) return false
-  const thresholdMs = thresholdFor(desc, thresholds)
+  let thresholdMs = thresholdFor(desc, thresholds)
   if (thresholdMs === undefined) return false
+  if (
+    sandboxed &&
+    desc.lastActivityAt === undefined &&
+    (desc.continuedFrom !== undefined || desc.resumedFrom !== undefined)
+  ) {
+    thresholdMs = Math.max(thresholdMs, SANDBOX_RESTART_REAP_GRACE_MS)
+  }
   const idle = idleMsOf(desc, nowMs)
   if (idle === null || idle < thresholdMs) return false
   // Don't orphan an active orchestration: a spawned sub-agent whose parent is

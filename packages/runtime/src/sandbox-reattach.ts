@@ -349,7 +349,13 @@ export async function runSandboxReattachPass(opts: {
       host,
       remoteSessionId: record.remoteSessionId,
       lifecyclePolicy: { teardown },
-      ledger: { sandboxId, provider: providerSlug },
+      // The re-attached session must take part in the AIP-36 shared-box
+      // refcount: without `sessionId` its close() computed "solo teardown"
+      // unconditionally and STOPPED the box out from under any OTHER session
+      // still attached (its own detach was never recorded either, leaving a
+      // stale attaché that made `sandbox gc` conservatively skip the box
+      // forever).
+      ledger: { sandboxId, provider: providerSlug, sessionId: desc.id },
       detachable: true,
       initialTranscriptCursor: record.transcriptSeq,
       ...(tarOpts ?? {}),
