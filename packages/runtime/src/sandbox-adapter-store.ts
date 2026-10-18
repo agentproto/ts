@@ -45,8 +45,12 @@ export const DEFAULT_ADAPTER_STORE_MAX_BYTES = 20 * 1024 * 1024
 export const BOX_ADAPTER_STORE_ARCHIVE_PATH = "/tmp/agentproto-adapter-store.tar.gz"
 /** … and the path a restore upload lands at before extraction. */
 export const BOX_ADAPTER_STORE_RESTORE_PATH = "/tmp/agentproto-adapter-store-restore.tar.gz"
-/** Pack + download budget for the store archive inside a checkpoint. */
-export const ADAPTER_STORE_TIMEOUT_MS = 30_000
+/** Pack + download budget for the store archive inside a checkpoint. Sized
+ *  to minutes on purpose: the store is a tar.gz of the adapter's isolated
+ *  config dir (torch/etc. config trees included), and on a provider network
+ *  (e2b) 30 s regularly expired mid-pack — `deadline_exceeded` at the exec
+ *  level, surfacing as "packing failed" (observed 2026-10-18). */
+export const ADAPTER_STORE_TIMEOUT_MS = 180_000
 /** Extract budget on a fresh box. */
 const ADAPTER_STORE_RESTORE_TIMEOUT_MS = 30_000
 

@@ -74,6 +74,18 @@ describe("defineKnowledge (AIP-10)", () => {
     rejects({ ...entry, slug: `a${"b".repeat(96)}c` }, /defineKnowledge/)
   })
 
+  it("accepts entry and source titles up to 1000 chars (verbatim legal headings)", () => {
+    const long = "x".repeat(1000)
+    expect(defineKnowledge({ ...entry, title: long } as never).schema).toBe("knowledge.entry/v1")
+    expect(defineKnowledge({ ...source, title: long } as never).schema).toBe("knowledge.source/v1")
+  })
+
+  it("rejects entry and source titles over 1000 chars", () => {
+    const tooLong = "x".repeat(1001)
+    rejects({ ...entry, title: tooLong }, /defineKnowledge/)
+    rejects({ ...source, title: tooLong }, /defineKnowledge/)
+  })
+
   it("rejects an unknown top-level key (strict)", () => {
     rejects({ ...entry, bogus: 1 }, /defineKnowledge \(AIP-10\)/)
   })

@@ -1,7 +1,7 @@
 # `agentproto daemon`
 
 ```text
-agentproto daemon install [--dry-run]   register service + start it (macOS launchd, Windows Task Scheduler)
+agentproto daemon install [--dry-run]   register service + start it (macOS launchd, Linux systemd --user, Windows Task Scheduler)
 agentproto daemon uninstall             stop + deregister service
 agentproto daemon start                 start the service (idempotent; never kills healthy)
 agentproto daemon restart               kill + relaunch
@@ -11,14 +11,15 @@ agentproto daemon logs [--lines <N>]    tail daemon.log
 ```
 
 Runs `agentproto serve` as a background service via the host's
-service manager. Today: **macOS launchd** and **Windows Task
-Scheduler** (per-user scheduled task at logon). Linux (`systemctl
---user`) ships later; until then the verb prints a clear "not
-supported" message and points you at `agentproto serve &; disown`.
+service manager. Today: **macOS launchd**, **Linux systemd --user**
+(with a detached-serve pidfile fallback when the box has no usable
+systemd user session) and **Windows Task Scheduler** (per-user
+scheduled task at logon).
 
 The daemon picks up its config from `~/.agentproto/config.json` via
 `daemon.*` keys. Configure once, then `daemon install` captures the
-snapshot into the plist. Re-run `install` after any config change.
+snapshot into the plist (Linux: the unit's `ExecStart`; Windows: the
+launcher `.cmd`). Re-run `install` after any config change.
 
 Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
 
@@ -33,9 +34,24 @@ Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
   `process.argv[1]` of the install invocation — so the daemon runs on the
   same Node binary that ran `daemon install` (works correctly with `nvm` /
   `fnm` / Homebrew).
-- **Linux:** not yet supported. Fall back to
-  `agentproto serve &; disown` or your own `systemd --user` unit
-  pointing at `agentproto serve`.
+- **Linux:** `systemd --user` when the session has a usable user
+  manager: a generated `~/.config/systemd/user/agentproto.service`
+  whose `ExecStart` is the same `[node, cli.mjs, serve, …]` argv
+  snapshot the plist/`.cmd` use, with the same captured (and
+  start/restart-self-healed) `Environment=PATH`, and stdout+stderr
+  appended to `~/.agentproto/daemon.log`. `install` writes the unit,
+  `daemon-reload`s and `enable --now`s it; `start`/`restart`/`stop`
+  map to `systemctl --user start` / `restart` / `stop`, and `status`
+  shows unit + active state + `/health`. **No usable systemd user
+  session** (containers, minimal VMs, E2B sandboxes — `systemctl`
+  missing or `systemctl --user` cannot connect): every verb falls
+  back to a detached `serve` managed through a pidfile at
+  `~/.agentproto/agentproto-daemon.pid`, so
+  `install`/`start`/`stop`/`restart`/`status` still work (and never
+  exit 2); `status` names which mode is active. On headless boxes,
+  **lingering** decides whether the service survives logout:
+  `install` and `status` print a note when
+  `loginctl enable-linger $USER` is off (they never run it for you).
 - **Windows:** `agentproto daemon install` registers a **per-user
   scheduled task** (`schtasks /Create /TN agentproto-daemon /SC ONLOGON
   /F` — no admin required) whose payload is a generated
@@ -193,7 +209,10 @@ in play.
 
 Exit code is `0` only when plist exists AND launchctl reports the
 service loaded. `/health` reachability is informational — it can be
-red briefly during a restart without changing the exit code.
+red briefly during a restart without changing the exit code. On Linux
+the same rule applies to the active backend: unit installed AND
+active (systemd mode), or a live recorded pid (pidfile-fallback
+mode); the `mode:` line always names which one you are in.
 
 ### `logs`
 

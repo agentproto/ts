@@ -1239,6 +1239,7 @@ export {
   readRuntimeMeta,
   daemonRegistryDir,
   readDaemonRegistry,
+  bucketsServedByOtherLiveDaemons,
   sweepStaleDaemonRegistry,
   writeDaemonRegistryEntry,
   unlinkDaemonRegistryEntry,
@@ -2086,6 +2087,7 @@ export async function createGateway(
           mounts: false,
           lifecyclePause: false,
           readOnly: false,
+          sharedSessions: false,
         },
         // See that field's doc — a device's filesystem is disjoint from the
         // driving daemon's; forwarding a HOST-shaped implicit cwd would
@@ -2394,6 +2396,12 @@ export async function createGateway(
     resolveProvider: resolveSentinelProviderResolved,
     autoWatchPrs: resolveAutoWatchPrs,
     autoWatchUrgency: resolveAutoWatchUrgency,
+    // A PR recorded on a row that a restart/continue already superseded
+    // (e.g. the old row's own exit-time reconcile) is watched for the live
+    // successor — retirement-cleanup only re-points sentinels that existed
+    // at retirement time.
+    resolveTargetSession: id =>
+      (sessionsRef ? resolveSuccessor(sid => sessionsRef?.get(sid), id) : undefined) ?? id,
   })
 
   // Sessions registry — single instance per gateway, captured by
@@ -2753,6 +2761,12 @@ export async function createGateway(
         registry: sessions,
         sessionEvents,
         resolveOpenPr: opts.resolveOpenPr,
+        // A sandboxed session's cwd is a box path: its PR is resolved
+        // against the host checkout of the workspace the box was cloned from.
+        localRepoCwdFor: async session =>
+          session.workspaceSlug
+            ? findWorkspace(await loadWorkspacesConfig(), session.workspaceSlug)?.path
+            : undefined,
       })
     : undefined
 

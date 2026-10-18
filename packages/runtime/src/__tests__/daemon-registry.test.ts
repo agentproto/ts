@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  bucketsServedByOtherLiveDaemons,
   daemonRegistryDir,
   readDaemonRegistry,
   sweepStaleDaemonRegistry,
@@ -98,5 +99,19 @@ describe("daemon central registry", () => {
 
     const remaining = (await readDaemonRegistry()).map(e => e.meta.port).sort()
     expect(remaining).toEqual([100, 300])
+  })
+})
+
+describe("bucketsServedByOtherLiveDaemons", () => {
+  it("returns the buckets of other LIVE daemons only (not self, not dead PIDs)", async () => {
+    await writeDaemonRegistryEntry(meta({ port: 1111, workspace: "/self" }))
+    await writeDaemonRegistryEntry(meta({ port: 2222, workspace: "/other-live" }))
+    await writeDaemonRegistryEntry(meta({ port: 3333, workspace: "/other-dead", pid: 2 ** 22 + 12345 }))
+    const buckets = await bucketsServedByOtherLiveDaemons(1111, p => p.slice(1))
+    expect([...buckets]).toEqual(["other-live"])
+  })
+
+  it("is empty when no registry exists", async () => {
+    expect((await bucketsServedByOtherLiveDaemons(1111, p => p)).size).toBe(0)
   })
 })

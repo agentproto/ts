@@ -66,3 +66,27 @@ describe("makeOpenPrResolver default-branch guard", () => {
     })
   })
 })
+
+describe("makeOpenPrResolver explicit branch (sandboxed sessions)", () => {
+  // A sandboxed session's work branch lives in its box; the host checkout of
+  // the same repo sits on whatever it sits on (here: main). The explicit
+  // branch is what gets asked, the checkout only names the repo.
+  it("asks the forge about the given branch, not the checkout's own", async () => {
+    const root = await makeRepo()
+    const calls: string[] = []
+    const resolve = makeOpenPrResolver({ createForge: eagerForge(calls) })
+    expect(await resolve(root, { branch: "wt/computer-adapter" })).toEqual({
+      number: 797,
+      url: "https://github.com/agentproto/ts/pull/797",
+    })
+    expect(calls).toEqual(["wt/computer-adapter"])
+  })
+
+  it("keeps the default-branch guard for an explicit branch", async () => {
+    const root = await makeRepo()
+    const calls: string[] = []
+    const resolve = makeOpenPrResolver({ createForge: eagerForge(calls) })
+    expect(await resolve(root, { branch: "main" })).toBeNull()
+    expect(calls).toEqual([])
+  })
+})

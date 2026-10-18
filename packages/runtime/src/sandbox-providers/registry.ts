@@ -43,6 +43,7 @@ const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
   lifecyclePause: false,
   readOnly: false,
   exec: false,
+  sharedSessions: false,
 }
 
 /** e2b and Box can both pause/reconnect (e2b: `Sandbox.pause()` +
@@ -107,6 +108,10 @@ interface ThirdPartySandboxDescriptor {
    *  so `setup_sandbox_provider` actually authenticates `boot()` — see
    *  `importThirdPartyProvider`. */
   credEnvVar?: string
+  /** Additional setup fields (name → env var) a provider's package reads
+   *  from the stored creds alongside `credEnvVar`'s implicit `apiKey` —
+   *  filled when the process env is unset (same override rule). */
+  credentialEnvVars?: ReadonlyArray<{ name: string; envVar: string }>
   /** Forwarded onto the resolved handle as `SandboxProviderHandle.defaultCwd`
    *  — see that field's doc. Both e2b and Box boot their workstation image
    *  logged in as `user` with home `/home/user` (`DEFAULT_WORKSPACE` in each
@@ -121,7 +126,53 @@ interface ThirdPartySandboxDescriptor {
  *  packages beyond the existing dynamic `import()`. */
 const REMOTE_WORKSTATION_HOME = "/home/user"
 
+const COMPUTER_CONTROLLER_URL_ENV = "COMPUTER_CONTROLLER_URL"
+/** The self-hosted microVM "computer" provider: pause/resume via the
+ *  controller's suspend/restore (which MAY rebuild the box under a new id —
+ *  the package's `connect()` handles that), exec/file-seam implemented in
+ *  the package, and several agentproto sessions sharing one computer. */
+const COMPUTER_CAPABILITIES: SandboxProviderCapabilities = {
+  ...CAPABILITIES_TODAY,
+  lifecyclePause: true,
+  exec: true,
+  sharedSessions: true,
+}
+
 const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor> = {
+  computer: {
+    packageName: "@agentproto/sandbox-computer",
+    exportName: "computerSandboxProvider",
+    name: "Computer",
+    description:
+      "Runs the agentproto daemon on a self-hosted microVM computer via its controller API (suspend/resume shared sessions).",
+    capabilities: COMPUTER_CAPABILITIES,
+    // The token is the controller's bearer service token; the controller
+    // base URL is plain configuration (read by the package from
+    // `COMPUTER_CONTROLLER_URL` or manifest config).
+    credEnvVar: "COMPUTER_CONTROLLER_TOKEN",
+    defaultCwd: REMOTE_WORKSTATION_HOME,
+    setupFields: [
+      {
+        name: "apiKey",
+        description: "Controller service token (stored, injected as COMPUTER_CONTROLLER_TOKEN).",
+        required: true,
+        sensitive: true,
+      },
+      {
+        name: "controllerUrl",
+        description:
+          "Controller base URL (e.g. http://host:7110), injected as COMPUTER_CONTROLLER_URL.",
+        required: true,
+        sensitive: false,
+      },
+    ],
+    /** Setup-field name → env var the provider package reads it from —
+     *  filled in `importThirdPartyProvider` when the process env is unset. */
+    credentialEnvVars: [
+      { name: "apiKey", envVar: "COMPUTER_CONTROLLER_TOKEN" },
+      { name: "controllerUrl", envVar: "COMPUTER_CONTROLLER_URL" },
+    ],
+  },
   e2b: {
     packageName: "@agentproto/sandbox-e2b",
     exportName: "e2bSandboxProvider",
@@ -252,6 +303,15 @@ async function importThirdPartyProvider(
   // only when unset, so an explicit process-env key still wins.
   if (descriptor.credEnvVar && creds?.apiKey && !process.env[descriptor.credEnvVar]) {
     process.env[descriptor.credEnvVar] = creds.apiKey
+  }
+  // Same fill rule for the provider's other setup fields (e.g. a base URL):
+  // stored creds win only where the process env is empty, an explicit env
+  // var always overrides a stored value.
+  for (const { name, envVar } of descriptor.credentialEnvVars ?? []) {
+    const value = (creds as Record<string, unknown> | null)?.[name]
+    if (typeof value === "string" && value.length > 0 && !process.env[envVar]) {
+      process.env[envVar] = value
+    }
   }
 
   return {

@@ -32,6 +32,15 @@ describe("parseKnowledgeManifest", () => {
     expect(() => parseKnowledgeManifest(entry('updated_at: "yesterday"\n'))).toThrow(/updated_at/)
   })
 
+  it("accepts a 1000-char entry title and rejects 1001", () => {
+    const ts = "updated_at: 2026-04-27T17:00:00Z\n"
+    const withTitle = (t: string) => entry(ts).replace("title: Alex", `title: ${t}`)
+    expect(
+      (parseKnowledgeManifest(withTitle("x".repeat(1000))).frontmatter as { title: string }).title,
+    ).toHaveLength(1000)
+    expect(() => parseKnowledgeManifest(withTitle("x".repeat(1001)))).toThrow(/title/)
+  })
+
   it("rejects an unknown key on an entry (strict)", () => {
     expect(() =>
       parseKnowledgeManifest(entry("updated_at: 2026-04-27T17:00:00Z\nbogus: 1\n")),

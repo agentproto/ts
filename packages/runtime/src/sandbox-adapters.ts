@@ -95,6 +95,14 @@ export const SANDBOX_CATALOG: AdapterCatalog = [
     hint: "e2b · cloud",
   },
   {
+    slug: "computer",
+    name: "Computer",
+    description:
+      "Runs the agentproto daemon on a self-hosted microVM computer via its controller API (pause/suspend, resume, shared sessions).",
+    packageName: "@agentproto/sandbox-computer",
+    hint: "computer · self-hosted",
+  },
+  {
     slug: "box",
     name: "Box",
     description:

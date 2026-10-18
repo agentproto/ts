@@ -1,0 +1,5 @@
+---
+"@agentproto/cli": minor
+---
+
+`agentproto daemon install|uninstall|start|stop|restart|status|logs` now work on Linux. When the session has a usable systemd user manager, `install` writes `~/.config/systemd/user/agentproto.service` (ExecStart from the same `buildServeArgv` snapshot and captured/self-healed PATH as the macOS plist and Windows launcher), `daemon-reload`s and `enable --now`s it; the lifecycle verbs map to `systemctl --user start|stop|restart` and `status` shows unit + active state + `/health`. Boxes with no usable systemd user session (containers, minimal VMs, E2B sandboxes) fall back to a detached `serve` managed through `~/.agentproto/agentproto-daemon.pid`, so the verbs keep working (never exit 2). `status` names the active mode either way, and `install`/`status` note when `loginctl enable-linger` is off (they never enable it themselves). The onboarding `daemon` step (and therefore `doctor`) uses the same detection instead of "no service manager support on linux yet".

@@ -1,20 +1,29 @@
 /**
- * daemon — is the daemon answering `/health`, and (macOS) is it installed
- * as a launchd service with a fresh PATH. Reuses `commands/daemon.ts`'s
- * probes; never kickstarts, rewrites, or reloads anything.
+ * daemon — is the daemon answering `/health`, and is it installed as a
+ * launchd / systemd --user / Task Scheduler service (or, on Linux without a
+ * usable systemd user session, running as a detached pidfile daemon) with a
+ * fresh PATH. Reuses `commands/daemon.ts`'s probes and backend detection;
+ * never kickstarts, rewrites, or reloads anything.
  */
 
 import {
   LAUNCHD_LABEL,
   SCHTASKS_TASK_NAME,
+  SYSTEMD_UNIT_NAME,
   computeFreshDaemonPath,
+  detectLinuxDaemonMode,
+  detectSystemdLinger,
   extractPlistPathValue,
+  extractUnitPathValue,
   fetchHealth,
   globalNodeModulesDir,
   humaniseUptime,
   launchdPlistPath,
+  linuxPidfilePath,
   pathNeedsRefresh,
+  systemdUnitPath,
   type DaemonHealthInfo,
+  type LinuxDaemonMode,
 } from "../../commands/daemon.js"
 import { catalogByType } from "../../registry/catalog.js"
 import type { OnboardingStep, SetupAction, StepCheck, StepContext } from "../types.js"
@@ -34,7 +43,7 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
   const port = config.daemon?.port ?? DEFAULT_PORT
   const info = await fetchHealth({ config, fetchImpl: ctx.fetch })
   const managedFix =
-    ctx.platform === "win32"
+    ctx.platform === "win32" || ctx.platform === "linux"
       ? serviceInstalled
         ? "agentproto daemon start"
         : "agentproto daemon install"
@@ -75,7 +84,7 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
         title: "Daemon /health",
         status: "warn",
         detail: `${version}${up} at ${info.url}, but this CLI is v${ctx.cliVersion}`,
-        fix: ctx.platform === "darwin" ? "agentproto daemon restart" : managedFix ?? "restart `agentproto serve`",
+        fix: ctx.platform === "darwin" || ctx.platform === "linux" ? "agentproto daemon restart" : managedFix ?? "restart `agentproto serve`",
         data,
       },
     }
@@ -184,8 +193,111 @@ async function checkTask(
   }
 }
 
-async function checkPlistPath(ctx: StepContext, plistXml: string): Promise<StepCheck> {
-  const current = extractPlistPathValue(plistXml)
+/** The Linux service check, systemd-user mode: unit installed? active?
+ *  Same three-part shape as the launchd/task checks. */
+async function checkSystemdService(
+  ctx: StepContext,
+  unitPath: string,
+): Promise<StepCheck> {
+  const unit = await readText(ctx, unitPath)
+  if (unit === null) {
+    return {
+      id: "daemon.service",
+      title: "systemd --user service",
+      status: "warn",
+      detail: "not installed (a foreground `agentproto serve` also works)",
+      fix: "agentproto daemon install",
+      data: { mode: "systemd", unit: unitPath, installed: false, active: false },
+    }
+  }
+  const out = await ctx.exec("systemctl", ["--user", "is-active", SYSTEMD_UNIT_NAME], { timeoutMs: 3_000 })
+  const active = out.code === 0 && out.stdout.trim() === "active"
+  const data = { mode: "systemd", unit: unitPath, installed: true, active }
+  return active
+    ? { id: "daemon.service", title: "systemd --user service", status: "ok", detail: "active", data }
+    : {
+        id: "daemon.service",
+        title: "systemd --user service",
+        status: "warn",
+        detail: `${tildify(ctx, unitPath)} exists but is not active`,
+        fix: "agentproto daemon start",
+        data,
+      }
+}
+
+/** The Linux service check, pidfile-fallback mode (no usable systemd user
+ *  session): is a detached serve's pidfile recorded? Liveness itself is the
+ *  `daemon.health` check's job — this one is read-only. */
+async function checkPidfileService(ctx: StepContext): Promise<StepCheck> {
+  const pidPath = linuxPidfilePath(ctx.homedir)
+  const raw = await readText(ctx, pidPath)
+  const pid = raw === null ? Number.NaN : Number.parseInt(raw.trim(), 10)
+  const installed = Number.isFinite(pid) && pid > 0
+  return {
+    id: "daemon.service",
+    title: "Detached serve (pidfile)",
+    status: installed ? "ok" : "warn",
+    detail: installed
+      ? `pidfile present (pid ${pid})`
+      : "no usable systemd user session — a detached serve is managed through a pidfile",
+    ...(installed ? {} : { fix: "agentproto daemon start" }),
+    data: { mode: "pidfile", pidfile: pidPath, installed, pid: installed ? pid : null },
+  }
+}
+
+/** Lingering decides whether the systemd --user service survives logout on a
+ *  headless box. Warn-only (never fails doctor); the fix is the exact
+ *  command — we never run enable-linger ourselves. */
+async function checkLinger(ctx: StepContext): Promise<StepCheck | null> {
+  const linger = await detectSystemdLinger((cmd, args, opts) => ctx.exec(cmd, args, opts))
+  if (linger !== false) return null
+  return {
+    id: "daemon.linger",
+    title: "User lingering",
+    status: "warn",
+    detail: "off — the systemd service stops at logout (headless boxes lose it)",
+    fix: "loginctl enable-linger $USER",
+    data: { lingering: false },
+  }
+}
+
+/** Linux detect: the SAME backend detection the `daemon` verb uses — a
+ *  usable systemd user session ⇒ unit checks (+ lingering); otherwise the
+ *  pidfile-fallback checks. Never the old "no service manager support". */
+async function detectLinux(ctx: StepContext): Promise<StepCheck[]> {
+  const mode: LinuxDaemonMode = await detectLinuxDaemonMode((cmd, args, opts) => ctx.exec(cmd, args, opts))
+  const service =
+    mode === "systemd"
+      ? await checkSystemdService(ctx, systemdUnitPath(ctx.homedir))
+      : await checkPidfileService(ctx)
+  const health = await checkHealth(
+    ctx,
+    // Pidfile mode has no "install" step — `daemon start` is the fix in both
+    // of its states; systemd mode only suggests `start` once the unit exists.
+    service.data?.mode === "pidfile" || service.data?.installed === true,
+  )
+  const checks: StepCheck[] = [health.check, service]
+  if (mode === "systemd") {
+    const linger = await checkLinger(ctx)
+    if (linger) checks.push(linger)
+    const unit = await readText(ctx, systemdUnitPath(ctx.homedir))
+    if (unit !== null) checks.push(await checkPlistPath(ctx, unit, extractUnitPathValue))
+  }
+  if (health.info) {
+    const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
+    if (mismatch) checks.push(mismatch)
+  }
+  return checks
+}
+
+async function checkPlistPath(
+  ctx: StepContext,
+  plistXml: string,
+  /** How to pull the baked PATH back out — the plist XML extractor by
+   *  default, the unit-file extractor for the Linux systemd branch. */
+  extract: (raw: string) => string | null = extractPlistPathValue,
+): Promise<StepCheck> {
+  const current = extract(plistXml)
   const probed = await ctx.sources.loginShellPath().catch(() => null)
   if (probed === null) {
     return {
@@ -223,6 +335,9 @@ export const daemonStep: OnboardingStep = {
       }
       return checks
     }
+    if (ctx.platform === "linux") {
+      return detectLinux(ctx)
+    }
     if (ctx.platform !== "darwin") {
       const health = await checkHealth(ctx, false)
       const checks: StepCheck[] = [
@@ -231,7 +346,7 @@ export const daemonStep: OnboardingStep = {
           id: "daemon.service",
           title: "Service manager",
           status: "warn",
-          detail: `no service manager support on ${ctx.platform} yet, run \`agentproto serve\``,
+          detail: `no service manager support on ${ctx.platform}, run \`agentproto serve\``,
           fix: "agentproto serve",
         },
       ]
@@ -283,11 +398,57 @@ export const daemonStep: OnboardingStep = {
       }
       return actions
     }
+    if (ctx.platform === "linux") {
+      // Same shape as the win32/darwin branches: install when the service
+      // isn't registered, start when it is but the daemon is down, restart
+      // for staleness. `daemon install` itself picks the backend (systemd
+      // --user, or the detached pidfile fallback on boxes with no user
+      // session).
+      if (service?.status === "warn" && service.fix === "agentproto daemon install") {
+        actions.push({
+          id: "daemon.install",
+          title: "Install the daemon as a systemd --user service and start it",
+          default: true,
+          async apply(io) {
+            const installed = await io.verbs.daemon(["install"])
+            if (installed !== 0) return { ok: false, detail: `daemon install exited ${installed}` }
+            const started = await io.verbs.daemon(["start"])
+            return started === 0 ? { ok: true, detail: "installed and started" } : { ok: false, detail: `daemon start exited ${started}` }
+          },
+        })
+      } else if (health?.status === "missing") {
+        actions.push({
+          id: "daemon.start",
+          title: "Start the daemon",
+          default: true,
+          async apply(io) {
+            const code = await io.verbs.daemon(["start"])
+            return code === 0 ? { ok: true, detail: "started" } : { ok: false, detail: `daemon start exited ${code}` }
+          },
+        })
+      }
+      const linuxStale = [
+        health?.status === "warn" ? "it runs a different version than this CLI" : null,
+        path?.status === "warn" ? "its PATH is stale" : null,
+      ].filter((r): r is string => r !== null)
+      if (linuxStale.length > 0 && actions.length === 0) {
+        actions.push({
+          id: "daemon.restart",
+          title: `Restart the daemon (${linuxStale.join(", ")}; running sessions are stopped)`,
+          default: false,
+          async apply(io) {
+            const code = await io.verbs.daemon(["restart"])
+            return code === 0 ? { ok: true, detail: "restarted" } : { ok: false, detail: `daemon restart exited ${code}` }
+          },
+        })
+      }
+      return actions
+    }
     if (ctx.platform !== "darwin") {
       if (health?.status === "missing") {
         actions.push({
           id: "daemon.serve",
-          title: "Start `agentproto serve` in the background (service support for this OS is coming)",
+          title: "Start `agentproto serve` in the background",
           default: true,
           async apply(io) {
             const port = await io.verbs.ensureDaemon()

@@ -633,3 +633,104 @@ describe("createPrProvenanceReconciler — textual mention lane (C)", () => {
     expect(recorded).toEqual([])
   })
 })
+
+describe("createPrProvenanceReconciler — sandboxed sessions", () => {
+  // Observed 2026-10-18: PRs opened from e2b boxes (heads wt/computer-adapter,
+  // …) never got a sentinel. The session's cwd is a box path, so the branch
+  // lookup found no checkout and every `gh` call ran in a directory that does
+  // not exist on the host — the PR was never recorded, so auto-link never
+  // fired.
+  const boxSession = (over: Partial<ReconcilerSession> = {}): ReconcilerSession =>
+    execSession({
+      cwd: "/home/user/workspace/ts",
+      remote: true,
+      workspaceSlug: "ts",
+      sandboxDeliveryTarget: { branch: "wt/computer-adapter" },
+      ...over,
+    })
+
+  it("resolves the PR for the box's work branch against the workspace's host checkout", async () => {
+    const { reg, recorded } = fakeRegistry([boxSession(), SUPER])
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
+    const ghCwds: string[] = []
+    const run: GhRunner = async (args, cwd) => {
+      ghCwds.push(cwd)
+      return okRun(args, cwd)
+    }
+    const localRepoCwdFor = vi.fn(async (s: ReconcilerSession) => (s.workspaceSlug === "ts" ? "/host/ts" : undefined))
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr,
+      run,
+      localRepoCwdFor,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(resolveOpenPr).toHaveBeenCalledWith("/host/ts", { branch: "wt/computer-adapter" })
+    expect(recorded).toEqual([{ sessionId: "sess_exec", number: 42, url: PR.url }])
+    expect(ghCwds.length).toBeGreaterThan(0)
+    expect(ghCwds.every(c => c === "/host/ts")).toBe(true)
+  })
+
+  it("without a host checkout, skips the branch lane but still records an exact (tool-call) PR", async () => {
+    const { reg, recorded } = fakeRegistry([boxSession({ workspaceSlug: undefined }), SUPER])
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
+    const ghCwds: string[] = []
+    const run: GhRunner = async (args, cwd) => {
+      ghCwds.push(cwd)
+      return okRun(args, cwd)
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [
+        {
+          sessionId: "sess_exec",
+          tool: "bash",
+          command: "gh pr create --title t",
+          isError: false,
+          createdPrUrl: PR.url,
+          createdPrNumber: PR.number,
+          ts: "t",
+        },
+      ],
+      sessionEvents: bus,
+      resolveOpenPr,
+      run,
+      localRepoCwdFor: async () => undefined,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(resolveOpenPr).not.toHaveBeenCalled()
+    expect(recorded).toEqual([{ sessionId: "sess_exec", number: 42, url: PR.url }])
+    expect(ghCwds).not.toContain("/home/user/workspace/ts")
+  })
+
+  it("leaves a local session's lookup unchanged (cwd only, no branch override)", async () => {
+    const { reg } = fakeRegistry([execSession(), SUPER])
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
+    const localRepoCwdFor = vi.fn(async () => "/host/ts")
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr,
+      run: okRun,
+      localRepoCwdFor,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(resolveOpenPr).toHaveBeenCalledWith("/wt")
+    expect(localRepoCwdFor).not.toHaveBeenCalled()
+  })
+})

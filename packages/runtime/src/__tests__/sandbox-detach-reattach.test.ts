@@ -526,6 +526,27 @@ describe("registry — detach on shutdown, reattach on boot", () => {
     expect(persistedRow(desc.id)).toMatchObject({ status: "running", hostDetached: true })
   })
 
+  it("a sandboxTeardown:'kill' session is still DETACHED by shutdown — the teardown policy never reaches a daemon stop", () => {
+    const { registry } = newRegistry()
+    const box = fakeBoxSession()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: tmp,
+      agentSession: box,
+      adapterSlug: "claude-code",
+      remote: true,
+      sandboxId: "sbx_kill",
+      sandboxProvider: "e2b",
+      sandboxTeardown: "kill",
+    })
+
+    registry.shutdown()
+
+    expect(box.detach).toHaveBeenCalledTimes(1)
+    expect(box.closeSpy).not.toHaveBeenCalled()
+    expect(persistedRow(desc.id)).toMatchObject({ status: "running", hostDetached: true })
+  })
+
   it("a session whose proxy is not detachable (device / local) keeps the old behaviour: killed + daemon-restart", async () => {
     const { registry } = newRegistry()
     const plain = fakeBoxSession({ detachable: false })
@@ -823,6 +844,37 @@ describe("runSandboxReattachPass", () => {
     expect(registry.get("s2")).toMatchObject({ status: "killed", endedReason: "daemon-restart" })
     expect(host.kill).not.toHaveBeenCalled()
     expect(host.stop).not.toHaveBeenCalled()
+    registry.shutdown()
+  })
+
+  it("a re-attached session participates in the shared-box refcount: its close leaves the box running under a survivor", async () => {
+    seedDetached([{ id: "s1" }])
+    upsertSandboxLedger({
+      sandboxId: "sbx_1",
+      provider: "e2b",
+      state: "connected",
+      createdAt: "2026-07-23T00:00:00Z",
+      updatedAt: "2026-07-23T00:00:00Z",
+      attachedSessions: ["s1", "survivor"],
+    })
+    const host = makeHost()
+    providerMock.create.mockResolvedValue(host)
+    stubBox({ session: () => json({ busy: false, status: "running" }) })
+    const registry = newRegistry()
+
+    const summary = await runSandboxReattachPass({ registry, resolveSandboxProvider: resolver })
+
+    expect(summary).toMatchObject({ candidates: 1, reattached: 1 })
+
+    // The same close() path the reaper (or an explicit kill) uses: the proxy
+    // must detach THIS session and leave the box (no stop, no pause, no
+    // terminal ledger stamp) for the surviving session.
+    expect(registry.reapIdle("s1", 100)).toBe(true)
+    await vi.waitFor(() => expect(host.kill).toHaveBeenCalledTimes(1))
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(host.pause).toBeUndefined()
+    const row = readSandboxLedger().find(e => e.sandboxId === "sbx_1")!
+    expect(row).toMatchObject({ state: "connected", attachedSessions: ["survivor"] })
     registry.shutdown()
   })
 
