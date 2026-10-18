@@ -2087,6 +2087,7 @@ export async function createGateway(
           mounts: false,
           lifecyclePause: false,
           readOnly: false,
+          sharedSessions: false,
         },
         // See that field's doc — a device's filesystem is disjoint from the
         // driving daemon's; forwarding a HOST-shaped implicit cwd would
