@@ -115,20 +115,21 @@ Info "Node $(NodeVersion) ready"
 
 # --- 3. CLI -------------------------------------------------------------------
 Info "Installing @agentproto/cli globally"
-# --allow-scripts=node-pty: npm 11 gates dependency install scripts, and
-# node-pty (a dependency of @agentproto/cli) needs its native build to run -
-# without the allow-list the install "succeeds" but the terminal features
-# crash at runtime. Older npm versions accept the flag and ignore it.
+# --allow-scripts=node-pty is best effort: node-pty (an OPTIONAL dependency of
+# @agentproto/cli) only powers PTY terminal sessions, and npm 11 gates its
+# build script. The flag lets it build when it can; if it cannot, the install
+# still succeeds and `agentproto doctor` reports terminal sessions as
+# unavailable (agent sessions are unaffected). Older npm accepts and ignores it.
 & $NpmCmd i -g --allow-scripts=node-pty @agentproto/cli
 if ($LASTEXITCODE -ne 0) {
-  Die "npm i -g @agentproto/cli failed (exit $LASTEXITCODE)." "Run it by hand to see the full npm error: npm.cmd i -g --allow-scripts=node-pty @agentproto/cli"
+  Die "npm i -g @agentproto/cli failed (exit $LASTEXITCODE)." "Run it by hand to see the full npm error: npm.cmd i -g @agentproto/cli"
 }
 if (-not (Get-Command $CliCmd -ErrorAction SilentlyContinue)) {
   Die "The agentproto binary is not on PATH after install." "Open a NEW PowerShell window, or check your npm global bin dir (npm config get prefix), then re-run this script."
 }
 & $CliCmd --version
 if ($LASTEXITCODE -ne 0) {
-  Die "agentproto --version failed after install." "Reinstall by hand: npm.cmd i -g --allow-scripts=node-pty @agentproto/cli"
+  Die "agentproto --version failed after install." "Reinstall by hand: npm.cmd i -g @agentproto/cli"
 }
 
 # --- 4. pnpm native builds ----------------------------------------------------
