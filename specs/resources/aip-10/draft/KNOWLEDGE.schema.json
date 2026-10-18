@@ -35,7 +35,7 @@
         "title": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200,
+          "maxLength": 1000,
           "description": "Human-readable page title."
         },
         "sources": {
@@ -137,7 +137,7 @@
         "title": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200,
+          "maxLength": 1000,
           "description": "Human-readable source title."
         },
         "captured_at": {

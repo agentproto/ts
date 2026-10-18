@@ -47,6 +47,7 @@ import {
   resolveSandboxCheckpointConfig,
   sandboxCheckpointOpts,
 } from "./sandbox-delivery.js"
+import { resolveSharedBoxWorktreeTeardown } from "./sandbox-workspace-remote.js"
 import { loadConfig } from "./config.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import { recordSandboxState } from "./sandbox-ledger.js"
@@ -272,6 +273,13 @@ export async function runSandboxReattachPass(opts: {
     state.host = host
     const teardown = desc.sandboxTeardown ?? resolveLifecyclePolicy(spec, true).teardown
     const deliveryTarget = desc.sandboxDeliveryTarget
+    // AIP-36 — a shared-box session's persisted checkoutDir is its own
+    // worktree of the shared clone; the re-attached proxy removes it on the
+    // session's later detach, same as the spawn path. `undefined` means the
+    // plain per-workspace checkout (fresh box) — nothing to remove.
+    const worktreeTeardown = deliveryTarget
+      ? resolveSharedBoxWorktreeTeardown(deliveryTarget.checkoutDir, deliveryTarget.branch)
+      : undefined
     const checkpointConfig = resolveSandboxCheckpointConfig(
       (await (opts.loadDefaultsConfig?.() ?? loadConfig().then(cfg => cfg.defaults)).catch(() => undefined))?.sandbox
         ?.checkpoint,
@@ -341,12 +349,19 @@ export async function runSandboxReattachPass(opts: {
       host,
       remoteSessionId: record.remoteSessionId,
       lifecyclePolicy: { teardown },
-      ledger: { sandboxId, provider: providerSlug },
+      // The re-attached session must take part in the AIP-36 shared-box
+      // refcount: without `sessionId` its close() computed "solo teardown"
+      // unconditionally and STOPPED the box out from under any OTHER session
+      // still attached (its own detach was never recorded either, leaving a
+      // stale attaché that made `sandbox gc` conservatively skip the box
+      // forever).
+      ledger: { sandboxId, provider: providerSlug, sessionId: desc.id },
       detachable: true,
       initialTranscriptCursor: record.transcriptSeq,
       ...(tarOpts ?? {}),
       ...(deliveryOpts ?? {}),
       ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
+      ...(worktreeTeardown ? { worktreeTeardown } : {}),
       watchdog: {},
     })
     state.session = agentSession

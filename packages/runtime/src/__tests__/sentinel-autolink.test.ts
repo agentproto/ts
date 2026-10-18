@@ -179,3 +179,29 @@ describe("sentinel auto-link", () => {
     expect(sentinels.map(s => s.spec.group)).toEqual(["sess_1", "sess_1"])
   })
 })
+
+describe("sentinel auto-link — superseded sessions (restart / continue)", () => {
+  // A sandboxed session restarted onto a fresh box gets a NEW id; the old
+  // row's exit-time reconcile can still record the PR afterwards. The
+  // sentinel must land on the live successor, and the successor recording
+  // the same PR again must not create a second one.
+  it("targets the successor of a superseded session, once", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
+    const continuedTo: Record<string, string> = { sess_old: "sess_new" }
+    const linker = createSentinelAutoLinker({
+      store,
+      resolveProvider: resolverFor(provider),
+      autoWatchPrs: async () => true,
+      resolveTargetSession: id => continuedTo[id] ?? id,
+    })
+
+    await linker.linkNow("sess_old", OPENED, {})
+    await linker.linkNow("sess_new", OPENED, {})
+
+    expect(store.list()).toHaveLength(1)
+    const s = store.list()[0]!
+    expect(s.spec.target).toMatchObject({ kind: "session", sessionId: "sess_new" })
+    expect(s.spec.group).toBe("sess_new")
+  })
+})

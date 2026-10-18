@@ -651,6 +651,27 @@ describe("wireRetirementCleanup", () => {
     expect(target.kind === "session" && target.sessionId).toBe(newId)
   })
 
+  it("a sandboxed session restarted onto a fresh box (new id, resumedFrom) takes its sentinels along", () => {
+    const { reg, sentinelStore, ids } = setup([{ id: "box-old" }])
+    const [oldId] = ids as [string]
+    const s = watch(sentinelStore, oldId)
+    // Same shape `registerBoxSession` (session-restart-core.ts) spawns the
+    // fresh-box row with: remote, same work branch, `resumedFrom` the old id.
+    const fresh = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/home/user/workspace",
+      adapterSlug: "fake",
+      remote: true,
+      sandboxId: "sbx_new",
+      sandboxDeliveryTarget: { checkoutDir: "/home/user/workspace", branch: "wt/computer-adapter", baseSha: "abc" },
+      resumedFrom: oldId,
+      agentSession: { sessionId: "acp_new", async *send() {}, async cancel() {}, async close() {} },
+    })
+    expect(reg.get(oldId)?.continuedTo).toBe(fresh.id)
+    const target = sentinelStore.get(s.id)!.spec.target
+    expect(target.kind === "session" && target.sessionId).toBe(fresh.id)
+  })
+
   it("archiving a session with no successor leaves its follows and sentinels alone (archive stays reversible)", () => {
     const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup([{ id: "old" }])
     const [oldId] = ids as [string]

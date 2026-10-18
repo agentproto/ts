@@ -33,7 +33,8 @@ import type {
   SandboxDetachRecord,
   SandboxReattachProbe,
 } from "./sessions.js"
-import { DEFAULT_CHECKPOINT_INTERVAL_MS } from "./sandbox-delivery.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, isFullyDelivered, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import { buildWorktreeRemoveCommand } from "./sandbox-workspace-remote.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 
@@ -158,6 +159,19 @@ async function* harvestHostErrorNotice(
   yield { kind: "notice", text: lines.join("\n") }
 }
 
+/** Whether a checkpoint outcome proves the box's work is safe outside the box:
+ *  a git delivery record that reached the remote/host (or found nothing new),
+ *  or a saved tarball. `undefined` (failed, timed out, never ran) is not. */
+function checkpointSecuredWork(outcome: unknown): boolean {
+  if (outcome === null || typeof outcome !== "object") return false
+  const rec = outcome as { status?: unknown; unchanged?: unknown; push?: unknown; bundle?: unknown }
+  if (rec.status === "saved" || rec.unchanged === true) return true
+  if (rec.push !== undefined && rec.bundle !== undefined) {
+    return isFullyDelivered(outcome as SandboxDeliveryRecord)
+  }
+  return false
+}
+
 /** Record `kind`s the box's transcript writer produces FROM an adapter's
  *  own stream (`transcript-writer.ts`'s `recordEvent` switch) — the exact
  *  set a local session's `send()` can yield. Other on-disk kinds
@@ -212,6 +226,7 @@ export interface SandboxAgentSessionProxyOpts {
     | "stop"
     | "pause"
     | "mcpUrl"
+    | "exec"
   > &
     Partial<Pick<SandboxAgentSessionHost, "close" | "extendTimeout" | "lifetimeMs">>
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
@@ -266,6 +281,19 @@ export interface SandboxAgentSessionProxyOpts {
    *  down (`close({ daemonShutdown: true })`): the process is about to exit,
    *  so the box is released at once instead. */
   onBeforeTeardown?: () => Promise<void>
+  /** AIP-36 — this session's own git worktree of a shared box's per-workspace
+   *  clone (`baseDir`). Only set when the plan gave the session a worktree of
+   *  the shared clone: on an attach (`sandbox.reuse`). The first session on a
+   *  fresh box owns `baseDir` itself as its live checkout — `baseDir` is then
+   *  undefined (it is the session's checkoutDir) and nothing is removed here.
+   *  On `close()` WITH other sessions still attached (the shared box keeps
+   *  running), the worktree is removed through the box's exec — only when
+   *  the teardown delivery (which runs before this) pushed the branch and
+   *  the tree is clean; any leftover work keeps the worktree and the
+   *  command's own notice says so. The worktree removal is best-effort: a
+   *  failure is logged, never thrown. The worktree needs no removal when the
+   *  CLOSE tears the box down itself (no survivors) — the box dies with it. */
+  worktreeTeardown?: { baseDir: string; worktreeDir: string; branch: string; lockPath?: string }
   /** Opt in to surviving a host-daemon restart: `detach()` then closes only
    *  the connection (box session and box left running) and the session can
    *  be re-attached at the next boot. Off for device sandboxes (their box
@@ -329,8 +357,11 @@ export const BOX_ACTIVE_RENEW_INTERVAL_MS = 10 * 60_000
 export const BOX_DEADLINE_GUARD_LEAD_MS = 5 * 60_000
 
 /** Upper bound on the final checkpoint an idle reap runs before tearing the
- *  box down: a checkpoint that hangs must not keep an idle box alive. */
-export const IDLE_REAP_CHECKPOINT_TIMEOUT_MS = 2 * 60_000
+ *  box down: a checkpoint that hangs must not keep an idle box alive. At
+ *  least the DEFAULT_CHECKPOINT_DEADLINE_MS — one below it would abort the
+ *  final `workSecured` checkpoint the push layer is still legitimately
+ *  working on, making the timed default deadline a dead letter. */
+export const IDLE_REAP_CHECKPOINT_TIMEOUT_MS = DEFAULT_CHECKPOINT_DEADLINE_MS
 
 /**
  * Best-effort extraction of the prompt text from whatever `sessions.ts`'s
@@ -1100,16 +1131,18 @@ export function createSandboxAgentSessionProxy(
       // its filesystem is still reachable — the teardown below is what ends the
       // box, and the reaped session's only way back is a cold boot from this
       // checkpoint. Bounded so a hung checkpoint can never keep the box alive.
+      let workSecured = false
       if (closeOpts?.idleReap && !detached && opts.checkpoint) {
         let timer: ReturnType<typeof setTimeout> | undefined
-        await Promise.race([
+        const outcome = await Promise.race([
           runCheckpoint(turnsSent),
-          new Promise<void>(resolve => {
-            timer = setTimeout(resolve, IDLE_REAP_CHECKPOINT_TIMEOUT_MS)
+          new Promise<undefined>(resolve => {
+            timer = setTimeout(() => resolve(undefined), IDLE_REAP_CHECKPOINT_TIMEOUT_MS)
             timer.unref?.()
           }),
         ])
         if (timer) clearTimeout(timer)
+        workSecured = checkpointSecuredWork(outcome)
         // Timed out: stop waiting on the straggler below as well.
         checkpointInFlight = undefined
       }
@@ -1124,7 +1157,15 @@ export function createSandboxAgentSessionProxy(
       // provider never exposed a `pause()` (e.g. `local`, or a policy
       // that resolved to "pause" against a non-pausable provider): a
       // teardown must never silently no-op and leak the box.
-      const pauseFn = lifecyclePolicy?.teardown === "pause" ? host.pause : undefined
+      //
+      // An idle reap whose work was NOT durably checkpointed (no work branch /
+      // tarball target, or the final checkpoint failed or timed out) pauses
+      // regardless of policy: stopping would destroy the only copy of the
+      // session's uncommitted/unpushed work, and the reaped row's prompt-time
+      // revival re-attaches the paused box.
+      const keepBoxForRecovery = closeOpts?.idleReap !== undefined && !workSecured
+      const pauseFn =
+        lifecyclePolicy?.teardown === "pause" || keepBoxForRecovery ? host.pause : undefined
       const pauseTeardown = pauseFn !== undefined
       // AIP-36 shared-box amendment — teardown = DETACH first, destroy last:
       // only the LAST live session to close() tears the box down (stop/pause
@@ -1149,6 +1190,35 @@ export function createSandboxAgentSessionProxy(
         const survivorsLeft =
           !!(opts.ledger?.sandboxId && opts.ledger?.sessionId) &&
           recordSessionDetach(opts.ledger.sandboxId, opts.ledger.sessionId).length > 0
+        // AIP-36 — a detaching session takes its own worktree with it (the
+        // final delivery above already checkpointed and pushed the branch).
+        // Only attach sessions have a `worktreeTeardown`: a first session on
+        // a fresh box lives directly in the base clone, which the box death
+        // takes with it. Best-effort: the removal never removes
+        // unpushed/undone work (see `buildWorktreeRemoveCommand`) and never
+        // blocks the close.
+        if (survivorsLeft && opts.worktreeTeardown && host.exec) {
+          const command = buildWorktreeRemoveCommand({
+            baseDir: opts.worktreeTeardown.baseDir,
+            worktreeDir: opts.worktreeTeardown.worktreeDir,
+            branch: opts.worktreeTeardown.branch,
+            ...(opts.worktreeTeardown.lockPath !== undefined
+              ? { lockPath: opts.worktreeTeardown.lockPath }
+              : {}),
+          })
+          try {
+            const cleaned = await host.exec({
+              command,
+              cwd: opts.worktreeTeardown.baseDir,
+              env: { GIT_TERMINAL_PROMPT: "0" },
+              timeoutMs: 2 * 60_000,
+            })
+            const notice = (cleaned.stdout.trim() || cleaned.stderr.trim()).slice(-1_000)
+            if (notice) console.warn(`[sandbox-proxy] detaching session's worktree: ${notice}`)
+          } catch (err) {
+            console.warn("[sandbox-proxy] failed to remove the detaching session's worktree:", err)
+          }
+        }
         try {
           if (!survivorsLeft) {
             if (pauseFn) {

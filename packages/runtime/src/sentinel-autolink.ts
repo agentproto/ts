@@ -27,6 +27,15 @@
  * `create()` failure is logged and swallowed — auto-link must never affect
  * the PR-recording it hangs off of, nor the session's own turn.
  *
+ * Superseded session note: a PR can be recorded on a row a restart/continue
+ * already retired (the old row's exit-time reconcile, or a sandboxed session
+ * moved to a fresh box under a new id). `resolveTargetSession` maps such an id
+ * to the live end of its `continuedTo` chain, so the sentinel lands on the
+ * successor — and the idempotency check runs against the successor, so the
+ * successor re-recording the same PR doesn't watch it twice. Sentinels that
+ * already existed when the row was retired are re-pointed by
+ * `retirement-cleanup.ts`.
+ *
  * Dead session note: if the owning session later exits for good (not
  * resumable), this sentinel is NOT cancelled — same as every sentinel, its
  * provider-side watch keeps running (design §2: "the PR is still real").
@@ -72,6 +81,10 @@ export interface SentinelAutoLinkOptions {
    *  one). Defaults to the daemon-wired resolver. */
   publicUrl?: () => SentinelPublicUrl | undefined
   log?: (line: string) => void
+  /** Maps the recording session to the session the sentinel should target —
+   *  the daemon wires the end of the `continuedTo` chain (see the module
+   *  doc). Defaults to identity. */
+  resolveTargetSession?: (sessionId: string) => string
 }
 
 export interface SentinelAutoLinker {
@@ -95,9 +108,10 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
           s.spec.match.some(m => m.subject === subject),
       )
 
-  const link = async (sessionId: string, input: RecordOpenedPrInput, desc: AutoLinkSession): Promise<void> => {
+  const link = async (recordedOn: string, input: RecordOpenedPrInput, desc: AutoLinkSession): Promise<void> => {
     if (desc.sentinelAutoWatch === false) return
     if (input.adapter === OUTPUT_SCAN_ADAPTER) return
+    const sessionId = opts.resolveTargetSession?.(recordedOn) ?? recordedOn
 
     const enabled = await opts.autoWatchPrs()
     if (!enabled) return
