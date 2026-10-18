@@ -329,7 +329,13 @@ export interface AgentSessionLike {
   /** `daemonShutdown` ⇒ the daemon process is exiting: skip any slow
    *  pre-teardown work (a sandbox's work-branch delivery) and release the
    *  underlying resource immediately. */
-  close(opts?: { daemonShutdown?: boolean }): Promise<void>
+  close(opts?: {
+    daemonShutdown?: boolean
+    /** Set by the idle reaper for a sandboxed session: the sandbox proxy runs
+     *  a final checkpoint before teardown and stamps the ledger row with the
+     *  reap provenance. Other sessions ignore it. */
+    idleReap?: { idleMs: number; sessionId?: string }
+  }): Promise<void>
   /**
    * Sandbox proxies only: peek at the data needed to re-attach to this
    * session's box after a host-daemon restart, WITHOUT detaching. Stamped
@@ -3050,6 +3056,10 @@ interface SessionRuntime {
    *  the adapter, the rest await this promise. Cleared once
    *  resolved (success or failure). */
   resumePromise?: Promise<void>
+  /** In-flight fresh-box move of an idle-reaped box session
+   *  ({@link SessionsRegistryOptions.moveReapedBox}) — concurrent prompts
+   *  share one move and the one successor id. Cleared once settled. */
+  reapedBoxMove?: Promise<string>
   /** Async stop callback for browser sessions (kind="browser").
    *  Called by kill() best-effort — the descriptor is already flipped
    *  to "killed" before this fires. */
@@ -3503,6 +3513,18 @@ function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
  * (§5). Keeping the base predicate free of the reason check is what lets PR-4
  * add the stricter gate without changing lazy behaviour.
  */
+/** A session running in a provider box this daemon owns (`agent_start.sandbox`):
+ *  remote with a `sandboxId`. A `device:` spawn runs on a paired host's own
+ *  daemon — no metered box of ours to tear down — so it is excluded. */
+export function isProviderBoxSession(desc: SessionDescriptor): boolean {
+  return (
+    desc.remote === true &&
+    typeof desc.sandboxId === "string" &&
+    desc.sandboxId.length > 0 &&
+    desc.sandboxProvider?.startsWith("device:") !== true
+  )
+}
+
 export function isResumable(desc: SessionDescriptor): boolean {
   return (
     desc.kind === "agent-cli" &&
@@ -5662,6 +5684,17 @@ export function createSessionsRegistry(opts?: {
     sessionId: string
     prev: SessionDescriptor
   }) => Promise<{ ok: true; newSessionId: string } | { ok: false; blocker: string }>
+  /** Hook a prompt to an IDLE-REAPED box session drives: the reap tore the box
+   *  down (`daemon.sandboxIdleReapAfterMs`), so the row cannot revive in place —
+   *  move it to a FRESH box (cold boot from the checkpoint branch, the same
+   *  `restartAgentSession` path `session_restart` takes) WITHOUT a continuation
+   *  prompt (the caller's own prompt is the continuation). Same contract as
+   *  {@link restartSandboxGone}. Omitted ⇒ a reaped box row is not revived
+   *  and the prompt fails with `session_not_alive`. */
+  moveReapedBox?: (input: {
+    sessionId: string
+    prev: SessionDescriptor
+  }) => Promise<{ ok: true; newSessionId: string } | { ok: false; blocker: string }>
   /** Default `restartPolicy` for a BOX spawn (`sandboxId` set) that carries
    *  NO explicit `restartPolicy` — the `daemon.sandboxGoneRestartDefault`
    *  opt-in, wired by the gateway as
@@ -5781,6 +5814,7 @@ export function createSessionsRegistry(opts?: {
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
   const restartSandboxGoneHook = opts?.restartSandboxGone
+  const moveReapedBoxHook = opts?.moveReapedBox
   const boxRestartPolicyDefault = opts?.boxRestartPolicyDefault
   /** The `restartPolicy` a spawn lands on its descriptor with: the caller's
    *  own policy when given (always wins), else — a BOX spawn with
@@ -7813,6 +7847,58 @@ export function createSessionsRegistry(opts?: {
    * so a proactive crash/error restart isn't misreported as a daemon-restart
    * revival.
    */
+  /** A reaped row whose BOX is gone and must be cold-booted again: killed by
+   *  the idle reaper, ran in a provider box, and not already superseded. */
+  const isReapedBoxRow = (desc: SessionDescriptor): boolean =>
+    desc.status === "killed" &&
+    desc.endedReason === "idle-reaped" &&
+    isProviderBoxSession(desc) &&
+    desc.archived !== true &&
+    desc.continuedTo === undefined
+
+  /** Prompt-time revival of an idle-reaped box session: move it to a fresh box
+   *  (once, however many prompts race) and return the successor id the prompt
+   *  must be delivered to. `undefined` ⇒ not a reaped box row / no hook wired —
+   *  the caller carries on with its normal path. A failed move throws, loudly:
+   *  falling through to the local in-place resume would start the adapter on
+   *  the HOST against a path that only exists inside the dead box. */
+  const needsReapedBoxMove = (rt: SessionRuntime): boolean =>
+    rt.reapedBoxMove !== undefined ||
+    (moveReapedBoxHook !== undefined && !rt.agentSession && isReapedBoxRow(rt.desc))
+
+  const moveReapedBoxIfNeeded = async (rt: SessionRuntime): Promise<string | undefined> => {
+    if (rt.reapedBoxMove) return rt.reapedBoxMove
+    if (!needsReapedBoxMove(rt) || !moveReapedBoxHook) return undefined
+    const id = rt.desc.id
+    const move = (async () => {
+      let outcome: Awaited<ReturnType<typeof moveReapedBoxHook>>
+      try {
+        outcome = await moveReapedBoxHook({ sessionId: id, prev: rt.desc })
+      } catch (err) {
+        outcome = { ok: false, blocker: err instanceof Error ? err.message : String(err) }
+      }
+      if (!outcome.ok) {
+        const text =
+          `[idle-reaped] cannot move this session to a fresh box: ${outcome.blocker} — ` +
+          "fix the cause and `session_restart` it manually."
+        appendLine(rt, text, "stderr")
+        transcriptWriter.recordEvent(id, { kind: "notice", text })
+        schedulePersist()
+        throw new Error(`session "${id}" was idle-reaped and could not be moved to a fresh box: ${outcome.blocker}`)
+      }
+      return outcome.newSessionId
+    })()
+    rt.reapedBoxMove = move
+    try {
+      return await move
+    } finally {
+      // Keep the settled promise only while a racing prompt may still hold it;
+      // the old row is superseded (`continuedTo`) after a successful move, so
+      // later prompts take the standard `session_superseded` path.
+      if (rt.reapedBoxMove === move) delete rt.reapedBoxMove
+    }
+  }
+
   const maybeResumeAgent = async (
     rt: SessionRuntime,
     resumedFrom: "daemon-restart" | "restarted" = "daemon-restart",
@@ -11466,6 +11552,9 @@ export function createSessionsRegistry(opts?: {
         await interruptInFlightTurn(rtPre, id, "sendPrompt", undefined, promptOriginLabel({ source: opts.source }))
       }
       if (rtPre) {
+        // Synchronous gate: no extra microtask tick on the common path.
+        const movedTo = needsReapedBoxMove(rtPre) ? await moveReapedBoxIfNeeded(rtPre) : undefined
+        if (movedTo) return registry.sendPrompt(movedTo, message, opts)
         await maybeResumeAgent(rtPre, "daemon-restart", {
           ...(opts?.source ? { source: opts.source } : {}),
           ...(opts?.forceResume ? { force: true } : {}),
@@ -11605,6 +11694,8 @@ export function createSessionsRegistry(opts?: {
         // so the caller can surface the "queued, not delivered yet" hint.
         return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: item.id }
       }
+      const movedTo = needsReapedBoxMove(rtPre) ? await moveReapedBoxIfNeeded(rtPre) : undefined
+      if (movedTo) return registry.enqueuePrompt(movedTo, message, opts)
       await maybeResumeAgent(rtPre, "daemon-restart", {
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.forceResume ? { force: true } : {}),
@@ -12628,7 +12719,22 @@ export function createSessionsRegistry(opts?: {
         delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
-        void rt.agentSession.close().catch(() => undefined)
+        // A sandboxed row's close() is what ends the BOX: the proxy runs a
+        // final checkpoint, tears the box down per its lifecycle policy and
+        // stamps the ledger. Failure is surfaced, not swallowed: a box that
+        // survives its reaped session is exactly the leak this exists to stop.
+        const sandboxedBox = isProviderBoxSession(rt.desc)
+        void rt.agentSession
+          .close(sandboxedBox ? { idleReap: { idleMs, sessionId: rt.desc.id } } : undefined)
+          .catch(err => {
+            if (!sandboxedBox) return
+            const detail = err instanceof Error ? err.message : String(err)
+            console.warn(
+              `[idle-reaper] closing the box of reaped session "${rt.desc.id}" ` +
+                `(sandbox ${rt.desc.sandboxId}) failed: ${detail} — it may still be running`,
+            )
+            appendLine(rt, `[warn] box teardown after idle reap failed: ${detail}`, "stderr")
+          })
         void transcriptWriter.close(rt.desc.id)
         tracedSessions.delete(rt.desc.id)
         // THE difference from kill(): drop the (now-closed) binding so the row
@@ -12644,9 +12750,11 @@ export function createSessionsRegistry(opts?: {
       // one may carry a child — SIGTERM it best-effort, same as kill().
       killChildIfSpawned(rt.child, "SIGTERM")
       schedulePersist()
-      const banner =
-        "── reaped after being idle past the threshold; the adapter process was " +
-        "freed. Re-prompt to resume this session in place. ──"
+      const banner = isProviderBoxSession(rt.desc)
+        ? "── reaped after being idle past the sandbox threshold; its box was torn " +
+          "down. Re-prompt to continue on a fresh box restored from the last checkpoint. ──"
+        : "── reaped after being idle past the threshold; the adapter process was " +
+          "freed. Re-prompt to resume this session in place. ──"
       appendLine(rt, banner, "stdout")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
       // The reaper-specific signal (names the actor + carries how long it was

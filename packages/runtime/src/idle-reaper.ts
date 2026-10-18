@@ -24,9 +24,20 @@
  * OFF by default: a non-positive / undefined `idleReapAfterMs` disables the pass
  * entirely (it returns `enabled:false` and never touches a row) — the same
  * opt-in shape as eager resume-on-boot.
+ *
+ * SANDBOXED sessions (a box on a metered provider — e2b, …) get their own,
+ * shorter threshold, `sandboxIdleReapAfterMs`: a finished turn never closes
+ * the session, so an idle box otherwise lives until its provider lifetime
+ * expires (observed: a dozen 4 vCPU / 8 GB boxes idling after finished
+ * turns). Reaping such a row closes its `SandboxAgentSessionProxy`, which takes
+ * a final checkpoint of the box's work and tears the box down per its
+ * lifecycle policy (kill unless the spec asked to pause). A sandboxed row
+ * counts as idle only when it is ALSO not blocked on a command/sub-agent/
+ * background task and has no live child session. A non-sandbox session keeps
+ * the general `idleReapAfterMs` rules unchanged.
  */
 
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { isProviderBoxSession as isBoxSession, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 
 /** Tally of one idle-reap sweep, for the periodic log line + tests. */
 export interface IdleReapSummary {
@@ -63,6 +74,50 @@ function idleMsOf(desc: SessionDescriptor, nowMs: number): number | null {
   return nowMs - ts
 }
 
+/** Default `daemon.sandboxIdleReapAfterMs`: a sandboxed session idle this long
+ *  loses its box (15 min). Unlike the general knob this one is ON by default —
+ *  an idle box is a billed 4 vCPU / 8 GB VM, and the reaped session stays
+ *  revivable on a fresh box. */
+export const DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS = 15 * 60_000
+
+/** The two idle thresholds (ms); a non-positive / undefined one is off. */
+interface ReapThresholds {
+  general: number | undefined
+  sandbox: number | undefined
+}
+
+const positive = (ms: number | undefined): number | undefined =>
+  typeof ms === "number" && ms > 0 ? ms : undefined
+
+/** The threshold that applies to this row: a sandboxed row takes the shorter
+ *  of the sandbox and general thresholds that are enabled; any other row only
+ *  the general one. `undefined` ⇒ no rule reaps this row. */
+function thresholdFor(desc: SessionDescriptor, t: ReapThresholds): number | undefined {
+  if (!isBoxSession(desc)) return t.general
+  if (t.sandbox === undefined) return t.general
+  return t.general === undefined ? t.sandbox : Math.min(t.sandbox, t.general)
+}
+
+/** Work the box is still doing that `busy` doesn't show: a command or
+ *  sub-agent the turn is blocked on, a running background task, or a live
+ *  child session spawned from this one. */
+function isSandboxWorkInFlight(
+  desc: SessionDescriptor,
+  byId: ReadonlyMap<string, SessionDescriptor>,
+): boolean {
+  if (desc.blockedOn !== undefined) return true
+  if (desc.backgroundTasks?.some(t => t.status === "running" || t.status === "paused")) return true
+  for (const other of byId.values()) {
+    if (
+      other.parentSessionId === desc.id &&
+      (other.status === "running" || other.status === "starting")
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
 /**
  * Reap policy for one row. True iff it is an agent-cli session that is
  * genuinely idle and safe to retire. NEVER reaps:
@@ -82,7 +137,7 @@ function idleMsOf(desc: SessionDescriptor, nowMs: number): number | null {
 function isReapable(
   desc: SessionDescriptor,
   nowMs: number,
-  thresholdMs: number,
+  thresholds: ReapThresholds,
   byId: ReadonlyMap<string, SessionDescriptor>,
 ): boolean {
   if (desc.kind !== "agent-cli") return false
@@ -92,6 +147,10 @@ function isReapable(
   if (desc.awaitingPermission === true) return false
   if (desc.archived === true) return false
   if (desc.keepAlive === true) return false
+  const sandboxed = isBoxSession(desc)
+  if (sandboxed && isSandboxWorkInFlight(desc, byId)) return false
+  const thresholdMs = thresholdFor(desc, thresholds)
+  if (thresholdMs === undefined) return false
   const idle = idleMsOf(desc, nowMs)
   if (idle === null || idle < thresholdMs) return false
   // Don't orphan an active orchestration: a spawned sub-agent whose parent is
@@ -115,8 +174,13 @@ function isReapable(
 export function runIdleReapPass(opts: {
   registry: IdleReaperRegistry
   /** Reap agent-cli sessions idle longer than this many ms. Non-positive /
-   *  undefined ⇒ the pass is DISABLED (off by default). */
+   *  undefined ⇒ this rule is OFF (the pass as a whole is disabled only when
+   *  `sandboxIdleReapAfterMs` is off too). */
   idleReapAfterMs: number | undefined
+  /** Shorter threshold for SANDBOXED sessions (see module doc). Non-positive /
+   *  undefined ⇒ sandboxed rows fall back to `idleReapAfterMs`. When both are
+   *  on, a sandboxed row is reaped at the shorter one. */
+  sandboxIdleReapAfterMs?: number
   /** Injected clock (ms since epoch). Defaults to `Date.now`. */
   now?: () => number
   /** Cross-process gate (mirrors the eager pass §5): with two daemons sharing
@@ -125,11 +189,14 @@ export function runIdleReapPass(opts: {
   isServed?: (desc: SessionDescriptor) => boolean
 }): IdleReapSummary {
   const { registry, isServed } = opts
-  const thresholdMs = opts.idleReapAfterMs
-  // Off by default (opt-in): a non-positive / undefined threshold disables the
-  // sweep. Lazy resume + everything else is unaffected; this only controls the
+  const thresholds: ReapThresholds = {
+    general: positive(opts.idleReapAfterMs),
+    sandbox: positive(opts.sandboxIdleReapAfterMs),
+  }
+  // Off by default (opt-in): with neither threshold set the sweep is disabled.
+  // Lazy resume + everything else is unaffected; this only controls the
   // automatic retirement of idle sessions.
-  if (!thresholdMs || thresholdMs <= 0) {
+  if (thresholds.general === undefined && thresholds.sandbox === undefined) {
     return { enabled: false, candidates: 0, reaped: 0, ids: [] }
   }
   const nowMs = opts.now ? opts.now() : Date.now()
@@ -139,7 +206,7 @@ export function runIdleReapPass(opts: {
   const all = registry.list({ includeArchived: true })
   const byId = new Map<string, SessionDescriptor>(all.map(d => [d.id, d]))
   const candidates = all.filter(
-    d => (isServed?.(d) ?? true) && isReapable(d, nowMs, thresholdMs, byId),
+    d => (isServed?.(d) ?? true) && isReapable(d, nowMs, thresholds, byId),
   )
 
   const summary: IdleReapSummary = {

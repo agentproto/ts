@@ -71,6 +71,7 @@ import { unknownModelRoleIds } from "./model-roles.js"
  *  path so `describeKey` can look one up generically. */
 export interface BootDaemonKnobs {
   "daemon.idleReapAfterMs"?: number
+  "daemon.sandboxIdleReapAfterMs"?: number
   "daemon.crashDetectIntervalMs"?: number
   "daemon.restartSweepIntervalMs"?: number
   "daemon.turnStallAfterMs"?: number

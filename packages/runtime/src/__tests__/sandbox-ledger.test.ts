@@ -15,11 +15,13 @@ import { join } from "node:path"
 
 import {
   createSandboxAgentSessionProxy,
+  IDLE_REAP_CHECKPOINT_TIMEOUT_MS,
 } from "../sandbox-agent-session-proxy.js"
 import {
   readSandboxLedger,
   recordSandboxBoot,
   recordSandboxOrigin,
+  recordSandboxReap,
   recordSandboxState,
   removeSandboxLedgerEntry,
   resolveReuseFromLedger,
@@ -291,5 +293,122 @@ describe("sandbox liveness fields", () => {
     const path = newLedgerPath()
     expect(() => recordSandboxLiveness("bx_never", false, path)).not.toThrow()
     expect(readSandboxLedger(path)).toHaveLength(0)
+  })
+})
+
+describe("idle-reap teardown (sandboxIdleReapAfterMs)", () => {
+  const host = () => ({
+    prompt: vi.fn(async () => {}),
+    output: vi.fn(async () => ""),
+    kill: vi.fn(async () => {}),
+    waitForAny: vi.fn(async (_ids: string[], _opts?: { timeoutMs?: number; since?: number }) => ({ timedOut: true })),
+    currentEventsCursor: vi.fn(async () => 0),
+    stop: vi.fn(async () => {}),
+    pause: vi.fn(async () => {}),
+    mcpUrl: "http://127.0.0.1:9/mcp",
+  })
+
+  it("close({idleReap}) checkpoints first, kills the box, and stamps the reap into the ledger", async () => {
+    const path = newLedgerPath()
+    process.env.AGENTPROTO_SANDBOX_LEDGER = path
+    recordSandboxBoot({ sandboxId: "bx_r", provider: "e2b", state: "booted" })
+    const order: string[] = []
+    const h = host()
+    h.kill.mockImplementation(async () => void order.push("kill"))
+    h.stop.mockImplementation(async () => void order.push("stop"))
+    const proxy = createSandboxAgentSessionProxy({
+      host: h,
+      remoteSessionId: "remote_1",
+      lifecyclePolicy: { teardown: "kill" },
+      ledger: { sandboxId: "bx_r", provider: "e2b" },
+      checkpoint: { run: async () => void order.push("checkpoint"), intervalMs: 3_600_000 },
+      onBeforeTeardown: async () => void order.push("deliver"),
+    })
+
+    await proxy.close({ idleReap: { idleMs: 900_000, sessionId: "sess_1" } })
+
+    expect(order).toEqual(["checkpoint", "kill", "deliver", "stop"])
+    const row = readSandboxLedger(path).find(r => r.sandboxId === "bx_r")!
+    expect(row.state).toBe("stopped")
+    expect(row.reapedIdleMs).toBe(900_000)
+    expect(row.reapedSessionId).toBe("sess_1")
+    expect(typeof row.reapedAt).toBe("string")
+  })
+
+  it("honours a pause lifecycle policy: pauses instead of killing, still records the reap", async () => {
+    const path = newLedgerPath()
+    process.env.AGENTPROTO_SANDBOX_LEDGER = path
+    recordSandboxBoot({ sandboxId: "bx_pr", provider: "e2b", state: "booted" })
+    const h = host()
+    const proxy = createSandboxAgentSessionProxy({
+      host: h,
+      remoteSessionId: "remote_1",
+      lifecyclePolicy: { teardown: "pause" },
+      ledger: { sandboxId: "bx_pr", provider: "e2b" },
+    })
+
+    await proxy.close({ idleReap: { idleMs: 1_000 } })
+
+    expect(h.pause).toHaveBeenCalledTimes(1)
+    expect(h.stop).not.toHaveBeenCalled()
+    const row = readSandboxLedger(path).find(r => r.sandboxId === "bx_pr")!
+    expect(row.state).toBe("paused")
+    expect(row.reapedIdleMs).toBe(1_000)
+  })
+
+  it("a hung final checkpoint never keeps the box alive", async () => {
+    vi.useFakeTimers()
+    try {
+      const path = newLedgerPath()
+      process.env.AGENTPROTO_SANDBOX_LEDGER = path
+      const h = host()
+      const proxy = createSandboxAgentSessionProxy({
+        host: h,
+        remoteSessionId: "remote_1",
+        lifecyclePolicy: { teardown: "kill" },
+        checkpoint: { run: () => new Promise(() => undefined), intervalMs: 3_600_000 },
+      })
+      const closing = proxy.close({ idleReap: { idleMs: 1 } })
+      await vi.advanceTimersByTimeAsync(IDLE_REAP_CHECKPOINT_TIMEOUT_MS + 1)
+      await closing
+      expect(h.kill).toHaveBeenCalledTimes(1)
+      expect(h.stop).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("a plain close() takes no extra checkpoint and leaves no reap fields", async () => {
+    const path = newLedgerPath()
+    process.env.AGENTPROTO_SANDBOX_LEDGER = path
+    recordSandboxBoot({ sandboxId: "bx_n", provider: "e2b", state: "booted" })
+    const run = vi.fn(async () => undefined)
+    const proxy = createSandboxAgentSessionProxy({
+      host: host(),
+      remoteSessionId: "remote_1",
+      ledger: { sandboxId: "bx_n", provider: "e2b" },
+      checkpoint: { run, intervalMs: 3_600_000 },
+    })
+    await proxy.close()
+    expect(run).not.toHaveBeenCalled()
+    const row = readSandboxLedger(path).find(r => r.sandboxId === "bx_n")!
+    expect(row.state).toBe("stopped")
+    expect(row.reapedAt).toBeUndefined()
+  })
+
+  it("recordSandboxReap is a no-op without a boot row and never throws", () => {
+    const path = newLedgerPath()
+    expect(() => recordSandboxReap("ghost", "stopped", { idleMs: 1 }, path)).not.toThrow()
+    expect(readSandboxLedger(path)).toEqual([])
+  })
+
+  it("a re-boot of the same sandboxId clears the reap provenance", () => {
+    const path = newLedgerPath()
+    process.env.AGENTPROTO_SANDBOX_LEDGER = path
+    recordSandboxBoot({ sandboxId: "bx_rb", provider: "e2b", state: "booted" })
+    recordSandboxReap("bx_rb", "paused", { idleMs: 5 })
+    expect(readSandboxLedger(path)[0]!.reapedAt).toBeDefined()
+    recordSandboxBoot({ sandboxId: "bx_rb", provider: "e2b", state: "connected" })
+    expect(readSandboxLedger(path)[0]!.reapedAt).toBeUndefined()
   })
 })

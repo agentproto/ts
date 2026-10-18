@@ -100,6 +100,19 @@ export interface DaemonConfig {
    *  field > off. Set via `agentproto config set daemon.idleReapAfterMs
    *  <ms>`. Surfaced in `daemon_health` / `GET /health`. */
   idleReapAfterMs?: number
+  /** Shorter idle threshold in ms for SANDBOXED sessions (a session running in
+   *  a provider box — e2b, …). A finished turn never closes the session, so an
+   *  idle box otherwise lives until its provider lifetime expires. A sandboxed
+   *  session that is not busy, not blocked on a command/sub-agent/background
+   *  task and not `keepAlive` is reaped once idle this long: a final checkpoint
+   *  of its work, then the box is torn down per its lifecycle policy (kill
+   *  unless the spec asked to pause), and a ledger row records the reap. The
+   *  row stays revivable: a later prompt cold-boots a fresh box from the
+   *  checkpoint branch. DEFAULT ON (15 min); `0` turns it off. Does not touch
+   *  non-sandbox sessions (those follow `idleReapAfterMs` only). Resolution
+   *  order: `AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS` env > this field > 15 min.
+   *  Set via `agentproto config set daemon.sandboxIdleReapAfterMs <ms>`. */
+  sandboxIdleReapAfterMs?: number
   /** Crash-detect sweep interval in ms (crash-detect PR-1). Unlike
    *  `idleReapAfterMs`, this is DEFAULT ON (non-destructive observability):
    *  the daemon periodically probes every live agent-cli session's OS

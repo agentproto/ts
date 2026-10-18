@@ -152,7 +152,11 @@ import {
   runContinueOnBootPass,
   type ContinueOnBootSummary,
 } from "./continue-interrupted.js"
-import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
+import {
+  DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS,
+  runIdleReapPass,
+  type IdleReapSummary,
+} from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
@@ -809,6 +813,7 @@ export {
   type SessionRetentionResult,
 } from "./session-retention.js"
 export {
+  DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS,
   runIdleReapPass,
   type IdleReapSummary,
   type IdleReaperRegistry,
@@ -1486,6 +1491,14 @@ export interface CreateGatewayOptions {
    *  kept lazy-resumable). Unset / 0 / negative ⇒ the reaper never runs.
    *  Surfaced in `daemon_health` / `GET /health`. */
   idleReapAfterMs?: number
+  /** Idle threshold in ms for SANDBOXED sessions. Mirrors the
+   *  `daemon.sandboxIdleReapAfterMs` config knob (the CLI resolves env >
+   *  config > default). DEFAULT ON, unlike `idleReapAfterMs`: unset applies
+   *  {@link DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS} (15 min); an explicit
+   *  non-positive value turns it off. A sandboxed session idle this long gets a
+   *  final checkpoint, its box torn down and a ledger row; it stays revivable
+   *  on a fresh box. Surfaced in `daemon_health` / `GET /health`. */
+  sandboxIdleReapAfterMs?: number
   /** Crash-detect sweep interval in ms (crash-detect PR-1). Mirrors the
    *  `daemon.crashDetectIntervalMs` config knob; the CLI resolves it (env >
    *  config > a sane default — DEFAULT ON, unlike `idleReapAfterMs`) and
@@ -1973,6 +1986,15 @@ export async function createGateway(
     typeof opts.idleReapAfterMs === "number" && opts.idleReapAfterMs > 0
       ? opts.idleReapAfterMs
       : 0
+  // Effective sandbox idle-reap threshold: DEFAULT ON (15 min), unlike
+  // idleReapAfterMs — an idle box is a billed VM. An explicit non-positive
+  // value is the opt-out.
+  const sandboxIdleReapAfterMs =
+    typeof opts.sandboxIdleReapAfterMs === "number"
+      ? opts.sandboxIdleReapAfterMs > 0
+        ? opts.sandboxIdleReapAfterMs
+        : 0
+      : DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS
   // Effective crash-detect interval (crash-detect PR-1): DEFAULT ON, unlike
   // idleReapAfterMs — an unset knob still gets a sane default sweep cadence
   // since detection is non-destructive observability. A caller must pass an
@@ -2280,6 +2302,7 @@ export async function createGateway(
     events,
     bootDaemonKnobs: {
       "daemon.idleReapAfterMs": idleReapAfterMs,
+      "daemon.sandboxIdleReapAfterMs": sandboxIdleReapAfterMs,
       "daemon.crashDetectIntervalMs": crashDetectIntervalMs,
       "daemon.restartSweepIntervalMs": restartSweepIntervalMs,
       "daemon.turnStallAfterMs": turnStallAfterMs,
@@ -2390,11 +2413,15 @@ export async function createGateway(
   let sessionsRef: SessionsRegistry | undefined
   /** Transcript provenance for the post-move continuation prompt. */
   const SANDBOX_GONE_PROMPT_SOURCE = "daemon:sandbox-gone-restart"
-  const restartSandboxGoneHook = async (input: {
-    sessionId: string
-    prev: SessionDescriptor
-  }): Promise<{ ok: true; newSessionId: string } | { ok: false; blocker: string }> => {
-    const { prev } = input
+  /** Move a dead/reaped box session onto a FRESH box through the same
+   *  `restartAgentSession` path `session_restart` takes (re-attaches the box if
+   *  it still exists, else cold-boots a new one from the checkpoint branch). */
+  const moveBoxSessionToFreshBox = async (
+    prev: SessionDescriptor,
+  ): Promise<
+    | { ok: true; restarted: Awaited<ReturnType<typeof restartAgentSession>> }
+    | { ok: false; blocker: string }
+  > => {
     if (!sessionsRef) return { ok: false, blocker: "sessions registry not ready" }
     if (!opts.resolveAgentAdapter) {
       return { ok: false, blocker: "agent restart is not enabled (no resolveAgentAdapter)" }
@@ -2404,6 +2431,26 @@ export async function createGateway(
       resolveSandboxProvider: resolveSandboxProviderResolved,
       daemonMcpUrl,
     })
+    return { ok: true, restarted }
+  }
+  /** Idle-reaped box session, prompted again: fresh box, NO continuation
+   *  prompt — the prompt that woke it is the continuation. */
+  const moveReapedBoxHook = async (input: {
+    sessionId: string
+    prev: SessionDescriptor
+  }): Promise<{ ok: true; newSessionId: string } | { ok: false; blocker: string }> => {
+    const moved = await moveBoxSessionToFreshBox(input.prev)
+    return moved.ok ? { ok: true, newSessionId: moved.restarted.desc.id } : moved
+  }
+  const restartSandboxGoneHook = async (input: {
+    sessionId: string
+    prev: SessionDescriptor
+  }): Promise<{ ok: true; newSessionId: string } | { ok: false; blocker: string }> => {
+    const { prev } = input
+    const moved = await moveBoxSessionToFreshBox(prev)
+    if (!moved.ok) return moved
+    const { restarted } = moved
+    if (!sessionsRef) return { ok: false, blocker: "sessions registry not ready" }
     // ONE short continuation prompt on the fresh session. The full prior
     // transcript + structured handoff (lane T, `restart-handoff.ts`) rides
     // along as the restart's own `pendingResumeContext`, so this prompt only
@@ -2567,6 +2614,7 @@ export async function createGateway(
     // "Box is gone" policy executor (see `restartSandboxGoneHook` above) —
     // inert unless a session's `restartPolicy.on` lists `"sandbox-gone"`.
     restartSandboxGone: restartSandboxGoneHook,
+    moveReapedBox: moveReapedBoxHook,
     // `daemon.sandboxGoneRestartDefault` — OFF unless set, so a caller that
     // never opted in gets today's policy-less box spawn, unchanged. When set,
     // a BOX spawn with no explicit `restartPolicy` is stamped with the
@@ -3412,6 +3460,7 @@ export async function createGateway(
       bootResumePolicy: opts.bootResumePolicy,
       continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
+      sandboxIdleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
       turnStallAfterMs,
@@ -4244,6 +4293,7 @@ export async function createGateway(
       bootResumePolicy: opts.bootResumePolicy,
       continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
+      sandboxIdleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
       turnStallAfterMs,
@@ -4264,16 +4314,23 @@ export async function createGateway(
   // AGENTPROTO_IDLE_REAP_INTERVAL_MS (mirroring AGENTPROTO_RESUME_CONCURRENCY).
   // `.unref()` so the ticker never keeps the process alive on its own.
   let idleReapTimer: ReturnType<typeof setInterval> | null = null
-  if (idleReapAfterMs > 0) {
+  const reapThresholdMs = Math.min(
+    ...[idleReapAfterMs, sandboxIdleReapAfterMs].filter(ms => ms > 0),
+  )
+  if (Number.isFinite(reapThresholdMs)) {
     const rawInterval = process.env.AGENTPROTO_IDLE_REAP_INTERVAL_MS
     const parsedInterval = rawInterval ? Number.parseInt(rawInterval, 10) : NaN
     const intervalMs =
       Number.isFinite(parsedInterval) && parsedInterval > 0
         ? parsedInterval
-        : Math.min(idleReapAfterMs, 60_000)
+        : Math.min(reapThresholdMs, 60_000)
     idleReapTimer = setInterval(() => {
       try {
-        const summary = runIdleReapPass({ registry: sessions, idleReapAfterMs })
+        const summary = runIdleReapPass({
+          registry: sessions,
+          idleReapAfterMs,
+          sandboxIdleReapAfterMs,
+        })
         if (summary.reaped > 0) {
           // One line per sweep that actually reaped something (silent otherwise
           // so a quiet daemon doesn't log every tick).
