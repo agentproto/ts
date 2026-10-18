@@ -50,6 +50,16 @@
       "file": "aip-7/draft/GOVERNANCE.schema.json",
       "field": "$defs.approvalChannel",
       "reason": "approvals: telegram joins web_click/ui_card as a declared human decide channel, gated by a shared bot-bridge bearer secret instead of an Origin check; pending upstream spec PR"
+    },
+    {
+      "file": "aip-10/draft/KNOWLEDGE.schema.json",
+      "field": "$defs.entry.properties.title",
+      "reason": "official legal headings exceed 200 chars and must not be truncated: entry title maxLength 200 -> 1000; pending upstream spec PR agentproto/agentproto#79"
+    },
+    {
+      "file": "aip-10/draft/KNOWLEDGE.schema.json",
+      "field": "$defs.source.properties.title",
+      "reason": "source title maxLength 200 -> 1000, same as entry title; pending upstream spec PR agentproto/agentproto#79"
     }
   ]
 }
