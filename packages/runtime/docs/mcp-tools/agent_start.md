@@ -750,3 +750,48 @@ it), `refPrefix` (remote branch namespace the snapshot lands under —
 changing this only affects a FUTURE checkpoint), `minIntervalMs` (periodic
 checkpoint spacing; `0` disables the timer AND the turn-end hook even when
 `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs` (per-checkpoint wall-clock budget).
+
+## inference
+
+Bind this spawn to a local/LAN inference endpoint instead of a cloud model.
+Accepted shapes: `{endpoint}`, `{endpoint, model}`, or the shorthand
+`{model: "<model>@<device|endpoint>"}` (when `endpoint` is omitted).
+
+Before spawning, a fit check runs — the harness's known first-request size
+vs the endpoint's loaded context window — and a clear miss is refused with
+an actionable error; `force: true` skips the refusal (the check still runs
+and still warns). `headroomPct` (default 25) is the percentage held back
+from the endpoint's loaded context for the fit check.
+
+When neither `adapter` nor `harness` is set, both default to `pi`.
+Mutually exclusive with `model`/`route`/`access`: set those directly
+instead of `inference`, never both.
+
+## daemonMount
+
+Explicitly mount the daemon's own scoped /mcp gateway for this spawn — the
+only way an adapter outside the default self-mount set (opencode, codex,
+gemini, …) gets it. Default false. Prefer `bundles` (`bundle_list`) when
+you need the same goal through an explicit bundle; bundles can also include
+the daemon's /mcp.
+
+## deviceBridge
+
+Controller-internal (issue #1647) — NOT a tool-caller surface. The device
+sandbox proxy (`bootSandboxAgentSession`, session-spawn.ts) stamps it when
+it forwards an explicit `workspaceSlug` across the /device-spawn bridge, so
+the TARGET daemon's `agent_start` treats the slug as bridge-ffi:
+registry-first, no active-workspace fallback — an unresolvable slug fails
+loudly (`device_bridge_workspace_unknown`) instead of silently landing
+wherever the target happens to have active.
+
+## resumeSessionId
+
+Controller-internal — not a tool-caller surface. The host daemon's box
+re-attach path (`session_restart` on a session whose sandbox box is still
+alive) hands the BOX daemon the prior in-box session id so the box
+continues that adapter conversation instead of starting blank; the HTTP
+`POST /sessions` route passes a raw adapter conversation id. The box
+resolves a session id on ITS OWN registry to that row's adapter
+conversation + isolated config dir (the same ACP-level resume a local
+restart uses) and reports the outcome on the descriptor's `resumeVia`.

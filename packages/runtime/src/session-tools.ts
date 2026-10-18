@@ -1387,8 +1387,8 @@ export function registerSessionTools(
       .boolean()
       .optional()
       .describe(
-        "Also serve sessions the registry dropped at boot (`HISTORY_CAP`) from disk — " +
-          "terminal records, flagged `cold: true`. Implied when `q` matches nothing live.",
+        "Also serve sessions the registry dropped at boot (`HISTORY_CAP`) from disk, " +
+          "terminal records flagged `cold: true`. Implied when `q` matches nothing live.",
       ),
     stats: statsParamSchema.describe(
       "Per-live-session RSS, %CPU, process count and top commands under `stats`; " +
@@ -1402,11 +1402,11 @@ export function registerSessionTools(
   registerBuiltinTool<SessionListInput, Array<Omit<SessionDescriptor, "ptyResumeEnv">>>(server, {
     id: "session_list",
     description: "List sessions tracked by the daemon (agent-CLI and terminal/PTY). " +
-      "NARROW BEFORE YOU READ: hundreds of sessions are mostly noise and without `limit` " +
-      "all come back — filter (`q`, `excludeNoise`, `rootOnly`, `updatedSince`, …) and/or " +
-      "pass `limit`. Rows are newest-activity first, `total` is the filtered count, COMPACT " +
-      "by default (`full:true` for the whole descriptor). History the registry dropped at " +
-      "boot comes back via `includeCold` (or a `q` matching nothing live), flagged `cold:true`. " +
+      "NARROW BEFORE YOU READ — filter (`q`, `excludeNoise`, `rootOnly`, `updatedSince`, …) " +
+      "and/or pass `limit`; without `limit` all sessions come back. Rows are newest-activity " +
+      "first, `total` is the filtered count, COMPACT by default (`full:true` for the whole " +
+      "descriptor). History the registry dropped at boot comes back via `includeCold` " +
+      "(or a `q` matching nothing live), flagged `cold:true`. " +
       "Detail: tool_help {name:\"session_list\"}; ranked search: `session_search`.",
     inputSchema: sessionListSchema,
     handler: async (input) => {

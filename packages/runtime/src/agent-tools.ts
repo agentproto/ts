@@ -529,29 +529,28 @@ export function registerAgentTools(
   // ── agent_prompt ───────────────────────────────────────
   server.tool(
     "agent_prompt",
-    "Send a follow-up prompt to a live agent session — multi-turn continuity " +
-      "without re-spawning. The session id comes from `agent_start` " +
-      "(or `agent_sessions_list`). Returns immediately; tail output via " +
+    "Send a follow-up prompt to a live agent session — multi-turn " +
+      "continuity without re-spawning (session id from `agent_start` or " +
+      "`agent_sessions_list`). Returns immediately; tail output via " +
       "`agent_output` or the SSE /sessions/:id/stream endpoint. Mid-turn, " +
-      "the prompt is steered into the running turn when the adapter supports " +
-      "it (`steering: true` in `session_list`; `delivery: \"steered\"`), else " +
+      "the prompt is steered into the running turn where supported " +
+      "(`steering: true` in `session_list`; `delivery: \"steered\"`), else " +
       "queued FIFO until the turn ends (`delivery: \"queued-mid-turn\"`; stale " +
       "ones show as `pendingPrompts` in `session_list`/`session_recap`). " +
-      "`pending: false` = delivered, `true` = NOT yet; `deliverWithin` forces " +
-      "a stuck one through. An interrupted turn leaves the queue parked until " +
-      "the next natural turn-end. `interrupt: true` cancels the in-flight turn " +
-      "and redirects the SAME session onto this prompt, keeping its context " +
-      "(unlike `agent_kill`); the prompt opens with a one-line `[agentproto]` " +
-      "notice saying the cut was a delivery, not a stop. No-op when idle.",
+      "`pending: false` = delivered, `true` = not yet; `deliverWithin` forces " +
+      "a stuck one through. An interrupted turn parks the queue until the " +
+      "next natural turn-end. `interrupt: true` cancels the in-flight turn " +
+      "and redirects the SAME session onto this prompt (keeps context, " +
+      "unlike `agent_kill`); the prompt opens with a one-line `[agentproto]` " +
+      "notice that the cut was a delivery, not a stop. No-op when idle.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
       prompt: promptInputSchema.describe(
         "The next user turn — plain text, or a content block / block array " +
-          "for a multimodal turn (e.g. a pasted image, " +
-          '`{type:"image", data, mimeType}`), same loose shape ' +
-          "`POST /sessions/:id/prompt` accepts over HTTP. Forwarded to the " +
-          "adapter verbatim; it negotiates its own multimodal support."
+          "(e.g. a pasted image), same loose shape `POST /sessions/:id/prompt` " +
+          "accepts over HTTP; forwarded verbatim, the adapter negotiates its " +
+          "own multimodal support."
       ),
       interrupt: z
         .boolean()
@@ -559,11 +558,10 @@ export function registerAgentTools(
         .describe(
           "When true and the session is mid-turn, cancel the in-flight " +
             "turn and deliver this prompt on the same session immediately " +
-            "instead of queueing it behind the current turn. No-op when the " +
-            "session is already idle. UNSET falls back to the daemon default " +
-            "`defaults.agentPromptInterrupt` in config.json (false unless an " +
-            "operator changed it) — so a mid-turn target queues by default; " +
-            "pass `interrupt: true` explicitly to cut now."
+            "instead of queueing behind the current turn. No-op when idle. " +
+            "UNSET falls back to `defaults.agentPromptInterrupt` (false unless " +
+            "an operator changed it) — a mid-turn target queues by default; " +
+            "pass `interrupt: true` to cut now."
         ),
       queue: z
         .boolean()

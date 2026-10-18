@@ -121,28 +121,25 @@ export const agentStartInputShape = {
     .string()
     .optional()
     .describe(
-      "Workspace slug from `agentproto workspace list`, resolved to a path. " +
-        "With `sandbox`, its remote is cloned into the box. " +
+      "Workspace slug (`agentproto workspace list`) resolved to a path; with " +
+        "`sandbox`, its remote is cloned into the box. " +
         "Omit to use `cwd` or the active workspace."
     ),
   cwd: z
     .string()
     .optional()
     .describe(
-      "Absolute path to spawn the agent in. Wins over `workspaceSlug`, except with `sandbox` + " +
-        "`workspaceSlug`: then it is a path inside the box. " +
+      "Absolute spawn path. Wins over `workspaceSlug` except with " +
+        "`sandbox` + `workspaceSlug`: then a path inside the box. " +
         help("cwd")
     ),
   prompt: promptInputSchema
     .optional()
     .describe(
-      "Optional initial prompt — spawns and dispatches it in one call " +
-        "(spawn + `agent_prompt` combined). Omit to spawn idle. A plain " +
-        "string is composed with the role/AGENTS.md disposition preamble " +
-        "as usual; a content block or block array (e.g. a pasted image, " +
-        "`{type:\"image\", data, mimeType}`) SKIPS that composition and is " +
-        "sent to the adapter verbatim — the adapter negotiates its own " +
-        "multimodal support. " +
+      "Optional initial prompt — spawn + dispatch in one call; omit to spawn idle. A plain " +
+        "string is composed with the role/AGENTS.md preamble; a content block/" +
+        "array (e.g. a pasted image) SKIPS composition and is sent verbatim — " +
+        "the adapter negotiates its own multimodal support. " +
         help("prompt")
     ),
   label: z
@@ -154,8 +151,8 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Manifest-declared mode id (AIP-45 `modes`), applied before the child " +
-        "starts (e.g. claude-code's 'plan'/'accept-edits'/'bypass-permissions'). " +
-        `Adapters with no declared \`modes\` REJECT any value here. ${help("mode")}`
+        "starts (e.g. claude-code 'plan'/'accept-edits'). Adapters with no " +
+        `declared \`modes\` reject any value. ${help("mode")}`
     ),
   origin: z
     .string()
@@ -171,14 +168,14 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Parent-lineage hint: nests this spawn under that session in the tree " +
-        "instead of a depth-0 root. Ignored through the scoped orchestrator " +
+        `instead of a depth-0 root. Ignored through the scoped orchestrator ` +
         `gateway (its own token wins). ${help("parentSessionId")}`
     ),
   attach: jsonTolerant(attachFieldSchema)
     .optional()
     .describe(
-      "Parent-attach override, mirrors `worktree`. Default attaches under the " +
-        "calling session; `false` = independent root; `true` forces attach; " +
+      "Parent-attach override, mirrors `worktree`: default attaches under the " +
+        "calling session; `false` = independent root; `true` forces; " +
         `\`{ parent: "<id>" }\` pins an explicit parent. ${help("attach")}`
     ),
   boardId: z
@@ -194,43 +191,42 @@ export const agentStartInputShape = {
     .min(1)
     .optional()
     .describe(
-      "Caller-declared dedup token: a retried call with the SAME key for the " +
-        "same `adapter`+`cwd` within ~10min of a successful spawn returns that " +
-        "SAME session (`deduped: true`) instead of forking a new one. Always " +
-        `wins over the implicit key \`dedupe\` derives. ${help("idempotencyKey")}`
+      "Caller-declared dedup token: same key for the same `adapter`+`cwd` " +
+        "within ~10min of a successful spawn returns that SAME session " +
+        `(\`deduped: true\`). Always wins over the implicit key \`dedupe\` derives. ${help("idempotencyKey")}`
     ),
   dedupe: mcpBool
     .optional()
     .describe(
-      "Override the implicit dedup-by-`label` default (on when no " +
-        "`idempotencyKey` is given): `false` opts this spawn out, `true` " +
-        `forces it even under an "on-request" daemon policy. ${help("dedupe")}`
+      "Overrides the implicit dedup-by-`label` default (active when no " +
+        "`idempotencyKey` is given): `false` opts out, `true` forces even " +
+        `under an "on-request" daemon policy. ${help("dedupe")}`
     ),
   permissionHold: mcpBool
     .optional()
     .describe(
-      "Hold every ACP permission request in the cross-session inbox " +
+      "Hold ACP permission requests in the cross-session inbox " +
         "(`permissions_list`/`permissions_respond`) instead of auto-answering. " +
         "ACP adapters only; default false."
     ),
   notifyParentOnCrash: mcpBool
     .optional()
     .describe(
-      "Notify this session's parent directly (in-band) if it later crashes. " +
-        `Independent of the global \`notifyUrl\` webhook, which fires either way. ${help("notifyParentOnCrash")}`
+      "Notify this session's parent (in-band) if it later crashes, " +
+        `independent of the global \`notifyUrl\` webhook. ${help("notifyParentOnCrash")}`
     ),
   sentinel: mcpBool
     .optional()
     .describe(
-      "Set false to opt this spawn OUT of sentinel auto-link: a PR this " +
-        "session opens will never get an automatic AIP-60 sentinel watching " +
-        `it, regardless of the daemon's \`sentinel.autoWatchPrs\` config. ${help("sentinel")}`
+      "`false` opts this spawn out of AIP-60 sentinel auto-link: a PR this " +
+        "session opens gets no automatic watcher, regardless of the daemon's " +
+        `\`sentinel.autoWatchPrs\` config. ${help("sentinel")}`
     ),
   allowSharedCwd: mcpBool
     .optional()
     .describe(
-      "Acknowledge running a nested spawn in the parent's dirty working tree, " +
-        "silencing the shared-dirty-cwd warning. Only relevant with no " +
+      "Acknowledge a nested spawn in the parent's dirty working tree, " +
+        "silencing the shared-dirty-cwd warning. Only relevant without " +
         "`worktree`/`sandbox`; default false = warn."
     ),
   keepAlive: mcpBool
@@ -250,25 +246,24 @@ export const agentStartInputShape = {
   skills: jsonTolerant(z.array(z.string()))
     .optional()
     .describe(
-      "Normalized skill ids for this session (e.g. ['agentproto']). REPLACES " +
-        "(not unions) config defaults when set. Adapters with no `skills` " +
-        `option (e.g. claude-code) ignore it. ${help("skills")}`
+      "Skill ids for this session (e.g. ['agentproto']). REPLACES (not " +
+        "unions) config defaults when set; adapters with no `skills` option " +
+        `(e.g. claude-code) ignore it. ${help("skills")}`
     ),
   bundles: jsonTolerant(z.array(z.string()))
     .optional()
     .describe(
-      "Capability bundle ids (`bundle_list`) to attach — each expands to its " +
-        "imported MCPs (mounted as native MCP servers, never via the " +
-        "mcp_imported_* indirection) + skills, and optionally the daemon's " +
-        "own /mcp. REPLACES (not unions) config defaults when set. " +
-        `${help("bundles")}`
+      "Capability bundle ids (`bundle_list`) — each expands to its imported " +
+        "MCPs (mounted as native MCP servers, never via the mcp_imported_* " +
+        "indirection) + skills, optionally the daemon's own /mcp. REPLACES " +
+        `(not unions) config defaults when set. ${help("bundles")}`
     ),
   daemonMount: mcpBool
     .optional()
     .describe(
-      "Explicitly mount the daemon's own scoped /mcp gateway for this spawn " +
-        "— the only way an adapter outside the default self-mount set " +
-        `(opencode, codex, gemini, …) gets it. Default false. ${help("daemonMount")}`
+      "Mount the daemon's own scoped /mcp gateway for this spawn — the only " +
+        "way for adapters outside the default self-mount set (opencode, " +
+        `codex, gemini, …). Default false. ${help("daemonMount")}`
     ),
   model: z
     .string()
@@ -281,9 +276,9 @@ export const agentStartInputShape = {
     .string()
     .optional()
     .describe(
-      "Reasoning effort label ('low'/'medium'/'high'/'xhigh'/'max'/'ultracode'). " +
-        "Calibrated PER MODEL — the same label means different compute budgets " +
-        "across models. Omit to keep the model's own default."
+      "Reasoning effort label ('low'/'medium'/'high'/'xhigh'/'max'/'ultracode'), " +
+        "calibrated PER MODEL — the same label means different compute budgets " +
+        "across models. Omit for the model's default."
     ),
   route: jsonTolerant(
     z.object({ gateway: z.string().min(1), baseUrl: z.string().url().optional() })
@@ -315,12 +310,12 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      "Bind this spawn to a local/LAN inference endpoint instead of a cloud model: `{endpoint}`, " +
-        '`{endpoint, model}`, or the shorthand `{model: "<model>@<device|endpoint>"}`. Runs a fit ' +
-        "check (the harness's known first-request size vs the endpoint's loaded ctx) BEFORE " +
-        "spawning and refuses with an actionable error on a clear miss (`force` overrides). " +
-        'Defaults `adapter`/`harness` to "pi" when neither is set. Mutually exclusive with ' +
-        `\`model\`/\`route\`/\`access\` — set those directly instead of \`inference\`, never both. ${help("inference")}`
+      "Bind to a local/LAN inference endpoint instead of a cloud model: " +
+        '`{endpoint}`, `{endpoint, model}`, or `{model: "<model>@<device|endpoint>"}`. ' +
+        "Runs a PRE-SPAWN fit check (known first-request size vs the endpoint's " +
+        "loaded ctx) and refuses with an actionable error on a clear miss " +
+        "(`force` overrides). Mutually exclusive with `model`/`route`/`access`. " +
+        `${help("inference")}`
     ),
   access: jsonTolerant(
     z.object({
@@ -360,12 +355,10 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      "Explicit billing-auth mode + credential for adapters that declare it " +
-        "(those that declare a subscription login and/or an API-key provider; " +
-        "any other fails with unsupported_auth_mode) — 'subscription' " +
-        "(default) bills the user's subscription login, 'api-key' bills API " +
-        "credits. FAILS FAST with no fallback if the " +
-        `resolved mode has no credential configured anywhere. ${help("auth")}`
+      "Billing-auth mode + credential for adapters that declare one " +
+        "('subscription' default — bills the subscription login; 'api-key' " +
+        "bills API credits; anything else fails with unsupported_auth_mode). " +
+        `FAILS FAST, no fallback, if the resolved mode has no credential configured. ${help("auth")}`
     ),
   mcpServers: jsonTolerant(z.array(mcpServerMountEntrySchema))
     .optional()
@@ -399,18 +392,18 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      "Make this child a SCOPED orchestrator — auto-mounts the daemon's own " +
-        "spawn/supervise tools, scoped to its own sub-agents. `true` = default " +
-        `subset; \`{ tools }\` narrows it. Shell/fs/remote tools are NEVER exposed. ${help("orchestrator")}`
+      "Make this child a SCOPED orchestrator — mounts the daemon's own " +
+        "spawn/supervise tools, limited to its own sub-agents (`true` = " +
+        "default subset; `{ tools }` narrows it; a child can never widen " +
+        `its own scope). Shell/fs/remote tools are NEVER exposed. ${help("orchestrator")}`
     ),
   notifyUrl: z
     .string()
     .url()
     .optional()
     .describe(
-      "Optional per-session webhook URL. POSTed (fire-and-forget) on this " +
-        "session's turn-end / awaiting-input / exited events, in addition to " +
-        "any global notify URL."
+      "Per-session webhook URL, POSTed fire-and-forget on turn-end / " +
+        "awaiting-input / exited, in addition to the global notify URL."
     ),
   notifySecret: z
     .string()
@@ -422,10 +415,9 @@ export const agentStartInputShape = {
   wait: mcpBool
     .optional()
     .describe(
-      "Block until the spawned session's first turn completes (~40-90s+) and " +
-        "include its output. Default false = return immediately. Batched " +
-        "`wait:true` calls do NOT run in parallel — see " +
-        `\`tool_help {name:"agent_start", topic:"wait"}\` for the fan-out pattern.`
+      "Block until the child's first turn completes (~40-90s+) and include " +
+        "its output; default returns immediately. Batched `wait:true` calls " +
+        `do NOT run in parallel — see \`tool_help {name:"agent_start", topic:"wait"}\`.`
     ),
   maxCostUsd: mcpPositiveNumber
     .optional()
@@ -450,8 +442,8 @@ export const agentStartInputShape = {
         .array(z.enum(["crashed", "error", "sandbox-gone"]))
         .min(1)
         .describe(
-          "Which automatic death reasons trigger a restart (`sandbox-gone`: box lost, " +
-            "move to a fresh box). Never a clean exit, kill, idle-reap, or cost-budget kill.",
+          "Death reasons that trigger a restart (`sandbox-gone`: box lost). " +
+            "Never a clean exit, kill, idle-reap, or cost-budget kill.",
         ),
       maxRetries: z
         .number()
@@ -485,9 +477,9 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      "Opt-in auto-restart policy: an unexpected death (`crashed`/`error`, per " +
-        "`on`) is revived IN PLACE after exponential backoff, up to a " +
-        `rolling-window crash-loop cap. Omit for today's stay-dead behaviour. ${help("restartPolicy")}`
+      "Opt-in auto-restart: an unexpected death (`crashed`/`error`, per " +
+        "`on`) revives the session IN PLACE after exponential backoff, up " +
+        `to a rolling-window crash-loop cap. Omit = today's stay-dead behaviour. ${help("restartPolicy")}`
     ),
   turnRetry: jsonTolerant(turnRetryInputSchema)
     .optional()
@@ -497,17 +489,16 @@ export const agentStartInputShape = {
   contextContinuity: jsonTolerant(contextContinuityInputSchema)
     .optional()
     .describe(
-      "Context-continuity policy for this session — controls warning, opportunistic " +
-        "compaction, fresh-continuation, and hard-stop thresholds. Resolved from " +
-        "global → per-adapter → explicit override."
+      "Context-continuity policy for this session: warn / opportunistic-compaction / " +
+        "fresh-continuation / hard-stop thresholds. Resolved global → per-adapter → explicit."
     ),
   role: z
     .string()
     .optional()
     .describe(
-      "Spawn-time delegation gate. 'executor' = leaf, cannot delegate " +
-        "(`agent_start`/`agent_prompt` stripped). 'supervisor' = may delegate " +
-        "(default). Custom role packs resolve the same way. Omit to derive " +
+      "Delegation gate: 'executor' = leaf, cannot delegate " +
+        "(`agent_start`/`agent_prompt` stripped); 'supervisor' = may delegate " +
+        " (default). Custom role packs resolve the same way; omit to derive " +
         `from spawn depth. ${help("role")}`
     ),
   promptAppend: z
@@ -521,10 +512,9 @@ export const agentStartInputShape = {
     .boolean()
     .optional()
     .describe(
-      "Override lazy MCP tool loading for this spawn: `true` hides most " +
-        "tools from `tools/list` (still callable via `tool_search`), `false` " +
-        `keeps the full eager surface. Omit to use the harness/role/daemon default ` +
-        `(harnesses with native tool search default to eager). ${help("deferredTools")}`
+      "Override lazy MCP tool loading: `true` hides most tools from " +
+        "`tools/list` (still callable via `tool_search`); `false` keeps the " +
+        `full eager surface. Omit = harness/role/daemon default. ${help("deferredTools")}`
     ),
   browser: z
     .preprocess(
@@ -534,17 +524,15 @@ export const agentStartInputShape = {
     )
     .optional()
     .describe(
-      "`\"headless\"` gives the spawned agent its own isolated headless " +
-        "Chrome as a per-session `browser` MCP server, torn down with the " +
-        `session. \`false\` = none (default). Not supported with \`sandbox\`. ${help("browser")}`
+      "`\"headless\"` = isolated headless Chrome as a per-session `browser` " +
+        `MCP server, torn down with the session. \`false\` (default) = none. Not supported with \`sandbox\`. ${help("browser")}`
     ),
   trace: z
     .boolean()
     .optional()
     .describe(
-      "Emit Langfuse observability traces for this session (prompt/completion + " +
-        "tool spans + tokens/cost). Off by default; requires langfuse eval-reporter " +
-        "creds configured."
+      "Emit Langfuse traces for this session (prompt/completion + tool spans " +
+        "+ tokens/cost). Off by default; requires langfuse eval-reporter creds."
     ),
   sandbox: jsonTolerant(
     z.union([
@@ -560,11 +548,11 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      "Run this session inside a sandbox instead of on the host (provider " +
-        "slug or inline AIP-36 spec) — the daemon boots the box, spawns " +
-        "`adapter` on its own agentproto daemon, and proxies the conversation " +
-        "back here. DISTINCT from `commandSandbox` (whole separate machine vs. " +
-        `confining this host's own process). Omit to run locally. ${help("sandbox")}`
+      "Run inside a sandbox box instead of on the host: a provider slug " +
+        "(from `list_sandbox_providers`) or an inline AIP-36 spec (`reuse` " +
+        "reconnects). The daemon boots the box, spawns `adapter` there, and " +
+        "proxies the conversation back. DISTINCT from `commandSandbox` " +
+        `(separate machine vs confining this host's own process). Omit = local. ${help("sandbox")}`
     ),
   sandboxCheckpoint: jsonTolerant(sandboxCheckpointOverrideSchema)
     .optional()
@@ -575,12 +563,10 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Managed cloud vendor slug (AIP-66, e.g. 'anthropic') — the VENDOR " +
-        "owns the machine and the harness; the host relays through the " +
-        "vendor's cloud adapter (adapter resolves to the vendor's, e.g. " +
-        "'claude-code-cloud'). DISTINCT from `sandbox` (a host-booted box) " +
-        "and mutually exclusive with it and the other fields the vendor can " +
-        "never apply (worktree, commandSandbox, mcpServers, daemonMount, " +
-        `bundles, browser, appServe, inference). ${help("cloud")}`
+        "owns the machine and the harness; the host relays via the vendor's " +
+        "cloud adapter (e.g. 'claude-code-cloud'). DISTINCT from `sandbox`; " +
+        "mutually exclusive with it and worktree/commandSandbox/mcpServers/" +
+        `daemonMount/bundles/browser/appServe/inference. ${help("cloud")}`
     ),
   appServe: jsonTolerant(
     z
@@ -607,11 +593,10 @@ export const agentStartInputShape = {
   commandSandbox: commandSandboxSchema
     .optional()
     .describe(
-      "OS-level confinement (macOS Seatbelt / Linux bubblewrap) of the " +
-        "adapter's OWN process on THIS host — NOT `sandbox` above, which boots " +
-        "a separate machine. `\"off\"` (default) = unconfined; `\"workspace\"` " +
-        "= deny reads/writes outside cwd; `\"strict\"` = + deny network. Fails " +
-        `the spawn if the OS backend isn't installed. ${help("commandSandbox")}`
+      "OS-level confinement (Seatbelt/bubblewrap) of the adapter's OWN " +
+        "process on THIS host — NOT `sandbox` (separate machine). `\"off\"` " +
+        "(default) = unconfined; `\"workspace\"` = deny fs outside cwd; " +
+        `\`\"strict\"\` = + deny network. Fails spawn if the OS backend is missing. ${help("commandSandbox")}`
     ),
   worktree: jsonTolerant(
     z.union([
@@ -635,9 +620,8 @@ export const agentStartInputShape = {
             .boolean()
             .optional()
             .describe(
-              "Return a registered session immediately (status \"starting\") " +
-                "instead of blocking on provisioning; incompatible with `wait`. " +
-                `Defaults true whenever a worktree is provisioned. ${help("worktree")}`
+              "Return immediately (status \"starting\") instead of blocking on " +
+                `provisioning; incompatible with \`wait\`. Defaults true. ${help("worktree")}`
             ),
         })
         .strict(),
@@ -645,11 +629,11 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      "Isolate this session in its OWN git worktree instead of `cwd`. `true` " +
-        "provisions one on a fresh `wt/<slug>` branch; `{ slug, base, async }` " +
-        "pins details. ROOT spawns only (rejected on a nested spawn — use " +
-        "`sandbox` there); ignored when `cwd` isn't a git repo. NOT " +
-        `auto-removed on session close — tear down with \`agentproto worktree rm\`. ${help("worktree")}`
+      "Isolate this session in its own git worktree (fresh `wt/<slug>` branch) " +
+        "instead of `cwd`: `true` provisions one; `{ slug, base, async }` pins " +
+        "details. ROOT spawns only (rejected on nested spawns — use `sandbox` " +
+        "there); ignored when `cwd` isn't a git repo; NOT auto-removed on " +
+        `close — tear down with \`agentproto worktree rm\`. ${help("worktree")}`
     ),
   // CONTROLLER-INTERNAL (issue #1647) — NOT for tool callers. The device
   // sandbox proxy (`bootSandboxAgentSession`, session-spawn.ts) stamps it
@@ -661,10 +645,8 @@ export const agentStartInputShape = {
   deviceBridge: mcpBool
     .optional()
     .describe(
-      "Internal: set by the controller's device-sandbox bridge when this " +
-        "spawn crossed a device pairing. Do not set — an explicit " +
-        "`workspaceSlug` that the target daemon has not registered fails " +
-        "instead of falling back to its active workspace."
+      "Internal: set by the controller's device-sandbox bridge; do not set. " +
+        `See tool_help topic \`deviceBridge\`.`
     ),
   // CONTROLLER-INTERNAL — not a tool-caller surface. The host daemon's box
   // re-attach path (`session_restart` on a session whose sandbox box is
@@ -679,10 +661,9 @@ export const agentStartInputShape = {
     .min(1)
     .optional()
     .describe(
-      "Internal: reattach to a prior adapter conversation — a session id " +
-        "on this daemon (that row's adapter conversation and isolated " +
-        "config dir are reused) or a raw adapter conversation id. Set by a " +
-        "host re-attaching its sandbox box; not for tool callers."
+      "Internal: reattach to a prior adapter conversation (session id or raw " +
+        "adapter conversation id). Set by a host re-attaching its sandbox box; " +
+        "not for tool callers. See tool_help topic `resumeSessionId`."
     ),
 }
 
