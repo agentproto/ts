@@ -34,7 +34,7 @@ import type {
   SandboxReattachProbe,
 } from "./sessions.js"
 import { DEFAULT_CHECKPOINT_INTERVAL_MS } from "./sandbox-delivery.js"
-import { recordSandboxReap, recordSandboxState } from "./sandbox-ledger.js"
+import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
@@ -1138,16 +1138,15 @@ export function createSandboxAgentSessionProxy(
         } catch {
           // best-effort — see `onBeforeTeardown`
         }
+        // AIP-36 shared-box amendment — the ledger row is the refcount.
+        // With OTHER sessions still attached, detach only: the box is
+        // neither stopped nor paused (it keeps running under the
+        // survivors), and no terminal state is stamped.
+        const survivorsLeft =
+          !!(opts.ledger?.sandboxId && opts.ledger?.sessionId) &&
+          recordSessionDetach(opts.ledger.sandboxId, opts.ledger.sessionId).length > 0
         try {
-          // AIP-36 shared-box amendment — the ledger row is the refcount.
-          // With OTHER sessions still attached, detach only: the box is
-          // neither stopped nor paused (it keeps running under the
-          // survivors), and no terminal state is stamped.
-          const remaining =
-            opts.ledger?.sandboxId && opts.ledger?.sessionId
-              ? recordSessionDetach(opts.ledger.sandboxId, opts.ledger.sessionId)
-              : []
-          if (remaining.length > 0) return
+          if (survivorsLeft) return
           if (pauseFn) {
             await pauseFn()
           } else {
@@ -1156,8 +1155,10 @@ export function createSandboxAgentSessionProxy(
         } finally {
           // PLAN-D1 — stamp the teardown outcome into the sandbox ledger.
           // Inside the finally chain so even a failing teardown records
-          // (best-effort: `recordSandboxState` itself never throws).
-          if (opts.ledger) {
+          // (best-effort: `recordSandboxState` itself never throws). A
+          // survivor-detach returns above — the box keeps running for the
+          // others, so this must NOT stamp a terminal state over the row.
+          if (opts.ledger && !survivorsLeft) {
             const finalState = pauseTeardown ? "paused" : "stopped"
             if (closeOpts?.idleReap) {
               recordSandboxReap(opts.ledger.sandboxId, finalState, closeOpts.idleReap)

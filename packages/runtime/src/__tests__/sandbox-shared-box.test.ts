@@ -59,7 +59,6 @@ afterEach(() => {
 describe("shared sandbox — detach refcount", () => {
   it("stopping the 1st of 2 sessions detaches but does NOT kill the box", async () => {
     expect(sandboxLedgerPath()).toBe(ledgerFile)
-    recordSessionDetach("bx_shared", "sess_a") // stale-op safety (no-op)
     recordSandboxBoot({ sandboxId: "bx_shared", provider: "fake", state: "booted", sessionId: "sess_b" })
 
     const proxyA = createSandboxAgentSessionProxy({
@@ -68,6 +67,7 @@ describe("shared sandbox — detach refcount", () => {
       ledger: { sandboxId: "bx_shared", provider: "fake", sessionId: "sess_a" },
     })
     await proxyA.close()
+
 
     expect(entryOf()?.attachedSessions).toEqual(["sess_b"])
     const survivors = readSandboxLedger(ledgerFile).find(e => e.sandboxId === "bx_shared")
