@@ -37,7 +37,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import { listModels } from "@agentproto/model-catalog"
+import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
 
 /**
  * Build pi's model menu from the shared provider catalog. Pi routes by the
@@ -195,7 +195,7 @@ export const pi: AgentCliHandle = defineAgentCli({
   models: {
     // Pi's `--model <pattern>` accepts `provider/id` (verified against pi
     // 0.80.x cli/args.ts + core/model-resolver.ts).
-    default: "anthropic/claude-sonnet-4-5",
+    default: `anthropic/${DEFAULT_ANTHROPIC_MODEL}`,
     // Generated from the shared provider catalog. Moonshot ids use the
     // `moonshotai/` wire prefix pi's model resolver expects, with the
     // canonical `moonshot` billing provider (not the wire-format
@@ -297,7 +297,7 @@ export const pi: AgentCliHandle = defineAgentCli({
       id: "model",
       type: "string",
       description:
-        "Provider/model pattern passed to pi's `--model` (e.g. `anthropic/claude-sonnet-4-5`).",
+        "Provider/model pattern passed to pi's `--model` (e.g. `anthropic/claude-sonnet-5-5`).",
     },
     {
       id: "effort",

@@ -22,6 +22,7 @@ export {
   LLM_PRICING_CATALOG,
   MODEL_ALIASES,
   DEFAULT_PRICING,
+  DEFAULT_ANTHROPIC_MODEL,
   resolvePricing,
   calculateLLMCreditCost,
   selectPricingTier,

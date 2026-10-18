@@ -29,6 +29,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { DEFAULT_ANTHROPIC_MODEL } from "@agentproto/model-catalog"
 import { deriveDeclaredCapabilities, type CapabilityStrategy } from "@agentproto/provider-kit"
 
 export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
@@ -94,13 +95,14 @@ export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
   // so the route falls out of the chosen model → derived-from-model.
   routeSelection: "derived-from-model",
   models: {
-    default: "anthropic/claude-sonnet-4-5",
+    default: `anthropic/${DEFAULT_ANTHROPIC_MODEL}`,
     // Anthropic is no longer advertised as a pickable escalation — only the
-    // adapter's own default Claude model stays listed (repointing the default
-    // is out of scope). The extra Sonnet + gateway dupe are dropped from the
+    // adapter's own default Claude model stays listed, resolved from the
+    // catalog's `DEFAULT_ANTHROPIC_MODEL` (single source of truth for the
+    // default). The extra Sonnet + gateway dupe are dropped from the
     // menu; the free-form `model` option still accepts any id.
     allowed: [
-      "anthropic/claude-sonnet-4-5",
+      `anthropic/${DEFAULT_ANTHROPIC_MODEL}`,
       "openai/gpt-5.1",
       "openai/gpt-5.1-mini",
       "google/gemini-2.5-flash",
@@ -163,7 +165,7 @@ export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
       id: "model",
       type: "string",
       description:
-        "Provider/model override for this operator binding (e.g. `anthropic/claude-sonnet-4-5`).",
+        "Provider/model override for this operator binding (e.g. `anthropic/claude-sonnet-5-5`).",
     },
     {
       id: "effort",
