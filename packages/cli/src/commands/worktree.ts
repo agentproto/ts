@@ -691,11 +691,13 @@ export function makeOpenPrResolver(deps?: {
   /** Test seam — defaults to {@link createForgeClient}. */
   createForge?: (repoRoot: string) => Promise<Pick<ForgeClient, "pullRequestsForBranch">>
 }): OpenPrResolver {
-  return async (cwd: string): Promise<{ number: number; url: string } | null> => {
+  return async (cwd: string, opts?: { branch?: string }): Promise<{ number: number; url: string } | null> => {
     try {
       const repoRoot = repoRootOf(resolve(cwd))
       if (!repoRoot) return null
-      const branch = worktreeBranch(cwd)
+      // An explicit branch (a sandboxed session's in-box work branch) wins
+      // over the checkout's own — `cwd` then only identifies the repo.
+      const branch = opts?.branch ?? worktreeBranch(cwd)
       if (!branch) return null
       // "The open PR whose head is this cwd's branch" is only a meaningful
       // question on a topic branch. On the repo's default branch it turns

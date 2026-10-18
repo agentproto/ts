@@ -99,6 +99,7 @@ export function healthySources(): StepSources {
     // Healthy machine: the CLI is the published npm install, not a workspace
     // build, so the preflight source check stays quiet.
     cliInstallSource: () => ({ source: "published", entry: "/usr/local/lib/node_modules/@agentproto/cli/dist/cli.mjs" }),
+    ptyAvailable: async () => true,
     resolveAdapterPackage: () => null,
     listAuthProfiles: async () => [
       { id: "anthropic-cc", endpoint: "anthropic", method: "oauth-bearer", origin: "claude-code" },

@@ -17,6 +17,7 @@ import {
   createSandboxAgentSessionProxy,
   IDLE_REAP_CHECKPOINT_TIMEOUT_MS,
 } from "../sandbox-agent-session-proxy.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS } from "../sandbox-delivery.js"
 import {
   readSandboxLedger,
   recordSandboxBoot,
@@ -324,7 +325,13 @@ describe("idle-reap teardown (sandboxIdleReapAfterMs)", () => {
       remoteSessionId: "remote_1",
       lifecyclePolicy: { teardown: "kill" },
       ledger: { sandboxId: "bx_r", provider: "e2b" },
-      checkpoint: { run: async () => void order.push("checkpoint"), intervalMs: 3_600_000 },
+      checkpoint: {
+        run: async () => {
+          order.push("checkpoint")
+          return { status: "saved" }
+        },
+        intervalMs: 3_600_000,
+      },
       onBeforeTeardown: async () => void order.push("deliver"),
     })
 
@@ -359,6 +366,10 @@ describe("idle-reap teardown (sandboxIdleReapAfterMs)", () => {
     expect(row.reapedIdleMs).toBe(1_000)
   })
 
+  it("the idle-reap checkpoint ceiling is at least the default checkpoint deadline (workSecured fast path is not a dead letter)", () => {
+    expect(IDLE_REAP_CHECKPOINT_TIMEOUT_MS).toBeGreaterThanOrEqual(DEFAULT_CHECKPOINT_DEADLINE_MS)
+  })
+
   it("a hung final checkpoint never keeps the box alive", async () => {
     vi.useFakeTimers()
     try {
@@ -375,10 +386,91 @@ describe("idle-reap teardown (sandboxIdleReapAfterMs)", () => {
       await vi.advanceTimersByTimeAsync(IDLE_REAP_CHECKPOINT_TIMEOUT_MS + 1)
       await closing
       expect(h.kill).toHaveBeenCalledTimes(1)
-      expect(h.stop).toHaveBeenCalledTimes(1)
+      // The timed-out checkpoint did not secure the work: the box is released
+      // (paused) but never destroyed.
+      expect(h.pause).toHaveBeenCalledTimes(1)
+      expect(h.stop).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("a reap with no checkpoint configured pauses a kill-policy box instead of destroying unsaved work", async () => {
+    const path = newLedgerPath()
+    process.env.AGENTPROTO_SANDBOX_LEDGER = path
+    recordSandboxBoot({ sandboxId: "bx_nc", provider: "e2b", state: "booted" })
+    const h = host()
+    const proxy = createSandboxAgentSessionProxy({
+      host: h,
+      remoteSessionId: "remote_1",
+      lifecyclePolicy: { teardown: "kill" },
+      ledger: { sandboxId: "bx_nc", provider: "e2b" },
+    })
+    await proxy.close({ idleReap: { idleMs: 900_000, sessionId: "sess_1" } })
+    expect(h.pause).toHaveBeenCalledTimes(1)
+    expect(h.stop).not.toHaveBeenCalled()
+    const row = readSandboxLedger(path).find(r => r.sandboxId === "bx_nc")!
+    expect(row.state).toBe("paused")
+    expect(row.reapedSessionId).toBe("sess_1")
+  })
+
+  it("a reap whose checkpoint failed pauses; one that secured the work still stops the box", async () => {
+    const failed = host()
+    await createSandboxAgentSessionProxy({
+      host: failed,
+      remoteSessionId: "remote_1",
+      lifecyclePolicy: { teardown: "kill" },
+      checkpoint: { run: async () => Promise.reject(new Error("push failed")), intervalMs: 3_600_000 },
+    }).close({ idleReap: { idleMs: 1 } })
+    expect(failed.pause).toHaveBeenCalledTimes(1)
+    expect(failed.stop).not.toHaveBeenCalled()
+
+    const unsafe = host()
+    await createSandboxAgentSessionProxy({
+      host: unsafe,
+      remoteSessionId: "remote_1",
+      lifecyclePolicy: { teardown: "kill" },
+      // git delivery record: commits ahead but the push failed and no bundle saved
+      checkpoint: {
+        run: async () => ({
+          key: "k",
+          ahead: 2,
+          push: { status: "failed" },
+          bundle: { status: "failed" },
+        }),
+        intervalMs: 3_600_000,
+      },
+    }).close({ idleReap: { idleMs: 1 } })
+    expect(unsafe.pause).toHaveBeenCalledTimes(1)
+
+    const safe = host()
+    await createSandboxAgentSessionProxy({
+      host: safe,
+      remoteSessionId: "remote_1",
+      lifecyclePolicy: { teardown: "kill" },
+      checkpoint: {
+        run: async () => ({
+          key: "k",
+          ahead: 2,
+          push: { status: "pushed" },
+          bundle: { status: "skipped" },
+        }),
+        intervalMs: 3_600_000,
+      },
+    }).close({ idleReap: { idleMs: 1 } })
+    expect(safe.stop).toHaveBeenCalledTimes(1)
+    expect(safe.pause).not.toHaveBeenCalled()
+  })
+
+  it("a plain (non-reap) close still stops a kill-policy box without a checkpoint", async () => {
+    const h = host()
+    await createSandboxAgentSessionProxy({
+      host: h,
+      remoteSessionId: "remote_1",
+      lifecyclePolicy: { teardown: "kill" },
+    }).close()
+    expect(h.stop).toHaveBeenCalledTimes(1)
+    expect(h.pause).not.toHaveBeenCalled()
   })
 
   it("a plain close() takes no extra checkpoint and leaves no reap fields", async () => {

@@ -424,10 +424,16 @@ describe("uncommitted-work snapshot", () => {
   })
 
   it("resolves the checkpoint interval from the env, 0 turning it off", () => {
-    expect(resolveCheckpointIntervalMs({})).toBe(5 * 60_000)
+    expect(resolveCheckpointIntervalMs({})).toBe(10 * 60_000)
     expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "60000" })).toBe(60_000)
     expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "0" })).toBe(0)
-    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "soon" })).toBe(5 * 60_000)
+    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "soon" })).toBe(10 * 60_000)
+  })
+
+  it("the default checkpoint interval leaves room for a default-deadline checkpoint to finish", () => {
+    // A periodic checkpoint may legitimately run up to its deadline; the
+    // interval must exceed the deadline or the loop re-fires mid-flight.
+    expect(DEFAULT_CHECKPOINT_INTERVAL_MS).toBeGreaterThan(DEFAULT_CHECKPOINT_DEADLINE_MS)
   })
 
   it("stamps the turn number onto the snapshot commit message and the record", async () => {

@@ -18,6 +18,7 @@ import { readPairingsSnapshot, readHostsSnapshot } from "@agentproto/runtime"
 import { listAuthProfiles } from "@agentproto/auth"
 import { globalNodeModulesDir, probeLoginShellPath } from "../commands/daemon.js"
 import { cliInstallSource, resolveCliEntry } from "../registry/install-source.js"
+import { loadNodePtyFactory } from "../util/pty-factory.js"
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
 import { resolveSkillFanOutTargets } from "../commands/install-skill.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
@@ -135,6 +136,7 @@ export function createStepContext(cliVersion: string): StepContext {
       loginShellPath: () => probeLoginShellPath(),
       resolveAdapterHandle: async (slug) => (await resolveAdapter(slug)).handle,
       nodeExecPath: () => process.execPath,
+      ptyAvailable: async () => (await loadNodePtyFactory(() => {})) !== null,
       cliInstallSource: () => {
         const entry = resolveCliEntry(process.argv[1])
         return { source: cliInstallSource(entry), entry }

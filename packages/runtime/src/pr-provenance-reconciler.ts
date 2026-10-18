@@ -39,6 +39,7 @@
  * branches) stamps each of them exactly once.
  */
 
+import { homedir } from "node:os"
 import type { SessionEventBus } from "./session-event-bus.js"
 import { stampFooterOnPr, type GhRunner } from "./pr-provenance-stamp.js"
 import type { FooterSession } from "./pr-provenance.js"
@@ -55,8 +56,16 @@ import { OUTPUT_SCAN_ADAPTER } from "./sessions.js"
  * reconciler treats any failure as "no PR right now"). Injected by the CLI host
  * because branch→PR resolution runs over `@agentproto/worktree`, a dependency
  * the runtime deliberately does not take.
+ *
+ * `opts.branch` overrides "the cwd's current branch": a sandboxed session's
+ * work branch lives in its box (`SessionDescriptor.sandboxDeliveryTarget`), so
+ * the reconciler asks about THAT branch against a local checkout of the same
+ * repo (the session's workspace) — `cwd` then only identifies the repo.
  */
-export type OpenPrResolver = (cwd: string) => Promise<{ number: number; url: string } | null>
+export type OpenPrResolver = (
+  cwd: string,
+  opts?: { branch?: string },
+) => Promise<{ number: number; url: string } | null>
 
 /** A session as the reconciler inspects it: the footer's {@link FooterSession}
  *  shape plus the two descriptor fields it reads for dedupe/attribution. The
@@ -68,6 +77,12 @@ export interface ReconcilerSession extends FooterSession {
    *  (see `SessionDescriptor.eventsPath`); lane C's bounded tail read
    *  needs it. Absent from test fakes without a transcript on disk. */
   eventsPath?: string
+  /** Sandboxed session: its cwd is a path inside the box, never on this
+   *  host — see {@link localRepoCwdFor}. */
+  remote?: boolean
+  /** Sandboxed session's work branch inside its box. */
+  sandboxDeliveryTarget?: { branch: string }
+  workspaceSlug?: string
 }
 
 /** PR number from a forge PR url (`…/pull/42`), for `openedPrs` rows recorded
@@ -106,6 +121,13 @@ export function createPrProvenanceReconciler(opts: {
   listToolCalls?: (sessionId: string) => Promise<ToolCallRecord[]>
   run?: GhRunner
   host?: string
+  /** Host-side checkout of the repo a SANDBOXED session works on (its
+   *  workspace's path) — the session's own `cwd` is a box path that does not
+   *  exist here. Lane B then resolves the PR whose head is the box's work
+   *  branch (`sandboxDeliveryTarget.branch`) against that checkout, and every
+   *  `gh` call runs there. Absent / unresolvable ⇒ lane B is skipped for the
+   *  session and the url-addressed `gh` calls run from the home dir. */
+  localRepoCwdFor?: (session: ReconcilerSession) => Promise<string | undefined>
 }): PrProvenanceReconciler {
   // PR urls already stamped this daemon run — the dedupe is per-PR, not per
   // session, so a session that opens several PRs stamps each one once. Also
@@ -121,13 +143,29 @@ export function createPrProvenanceReconciler(opts: {
   // run even if two sessions both printed it; `openedPrs` covers restarts).
   const scannedPrUrls = new Set<string>()
 
+  /** Where this host runs `gh` for the session, and which branch lane B asks
+   *  about (`undefined` ⇒ the cwd's current branch; `null` ⇒ skip lane B). A
+   *  local session uses its own cwd. A sandboxed one uses the workspace's
+   *  local checkout + the box's work branch: matching on the branch name
+   *  alone across repos would attribute another repo's same-named PR. */
+  const hostSideOf = async (
+    desc: ReconcilerSession,
+    cwd: string,
+  ): Promise<{ cwd: string; branch?: string | null }> => {
+    if (!desc.remote) return { cwd }
+    const branch = desc.sandboxDeliveryTarget?.branch
+    const local = await opts.localRepoCwdFor?.(desc).catch(() => undefined)
+    if (!local) return { cwd: homedir(), branch: null }
+    return { cwd: local, branch: branch ?? null }
+  }
+
   const reconcile = async (sessionId: string, terminal: boolean): Promise<void> => {
     const desc = opts.registry.get(sessionId)
     // Only executor agent-cli sessions open PRs; a command/terminal session
     // never does.
     if (!desc || desc.kind !== "agent-cli") return
-    const cwd = desc.cwd ?? desc.worktreePath
-    if (!cwd) return
+    const sessionCwd = desc.cwd ?? desc.worktreePath
+    if (!sessionCwd) return
 
     // Throttle the turn-end path only; a terminal exit always gets its look.
     // This also bounds re-polling for a long-lived session that already stamped
@@ -137,6 +175,9 @@ export function createPrProvenanceReconciler(opts: {
       if (last !== undefined && Date.now() - last < POLL_THROTTLE_MS) return
       lastPollAt.set(sessionId, Date.now())
     }
+
+    const host = await hostSideOf(desc, sessionCwd)
+    const cwd = host.cwd
 
     // Per-PR dedupe shared by both lanes: skip a PR already stamped this run,
     // or one already recorded on the descriptor (a prior daemon generation, or
@@ -232,8 +273,13 @@ export function createPrProvenanceReconciler(opts: {
 
     // Lane B — branch→PR reconciliation, the fallback for adapters whose tool
     // calls aren't recorded (or a PR opened by a path no record captured).
-    const pr = await opts.resolveOpenPr(cwd)
-    if (pr && shouldStamp(pr.url)) await stamp(pr)
+    // A sandboxed session asks about its box's work branch (see `hostSideOf`).
+    if (host.branch !== null) {
+      const pr = host.branch
+        ? await opts.resolveOpenPr(cwd, { branch: host.branch })
+        : await opts.resolveOpenPr(cwd)
+      if (pr && shouldStamp(pr.url)) await stamp(pr)
+    }
 
     await refreshCost(desc, supervisor, cwd)
   }
@@ -294,8 +340,9 @@ export function createPrProvenanceReconciler(opts: {
     void (async () => {
       const desc = opts.registry.get(sessionId)
       if (!desc || desc.kind !== "agent-cli") return
-      const cwd = desc.cwd ?? desc.worktreePath
-      if (!cwd) return
+      const sessionCwd = desc.cwd ?? desc.worktreePath
+      if (!sessionCwd) return
+      const { cwd } = await hostSideOf(desc, sessionCwd)
       const supervisor =
         desc.parentSessionId != null
           ? opts.registry.get(desc.parentSessionId) ?? { id: desc.parentSessionId }

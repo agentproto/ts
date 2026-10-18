@@ -192,6 +192,30 @@ export async function sweepStaleDaemonRegistry(currentPort: number): Promise<str
 }
 
 /**
+ * Buckets served by a daemon OTHER than the one on `currentPort` that is
+ * actually alive (registry entry with a live PID). The boot passes use it to
+ * tell "this row belongs to another running daemon — leave it" apart from
+ * "no daemon serves this row's bucket — it is stranded unless we take it":
+ * a sandbox session spawned into a workspace bucket nobody serves otherwise
+ * stays a `daemon-restart` ghost forever while its box keeps running.
+ * `bucketOf` maps a daemon's workspace path to its bucket slug.
+ */
+export async function bucketsServedByOtherLiveDaemons(
+  currentPort: number,
+  bucketOf: (workspacePath: string) => string,
+): Promise<Set<string>> {
+  const buckets = new Set<string>()
+  for (const entry of await readDaemonRegistry()) {
+    const { port, pid, workspace } = entry.meta
+    if (port === currentPort) continue
+    if (typeof pid !== "number" || !isPidAlive(pid)) continue
+    if (typeof workspace !== "string" || workspace.length === 0) continue
+    buckets.add(bucketOf(workspace))
+  }
+  return buckets
+}
+
+/**
  * Delete `<workspace>/.agentproto/runtime.json`. Best-effort — called
  * from the daemon's graceful shutdown path so a CLI looking for the
  * live daemon doesn't pick up a stale token after this process exits.

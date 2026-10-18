@@ -506,6 +506,22 @@ jobs:
             exit 1
           fi
 
+  # Guards scripts/bootstrap/install.ps1 on a real Windows PowerShell 5.1 under
+  # a Restricted ExecutionPolicy (the stock Windows default): the installer
+  # must allow-list node-pty for npm 11, call only the .cmd shims, and print
+  # the policy guidance. Standalone (not part of "Build + test"): it needs a
+  # Windows runner and touches nothing else in the repo.
+  bootstrap-windows:
+    name: Bootstrap installer (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run install.ps1 tests (Restricted + Bypass)
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap/install.test.ps1
+
   # On PRs: verify a changeset was added. Quick git-only check that
   # runs in parallel with build-and-test to give fast feedback.
   # If the changeset is missing, pr-review will generate one after

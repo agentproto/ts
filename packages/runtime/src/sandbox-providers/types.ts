@@ -32,6 +32,15 @@ export interface SandboxProviderCapabilities {
   exec?: boolean
   /** Hard cap on `limits.timeout_ms`, when the provider enforces one. */
   maxTimeoutMs?: number
+  /**
+   * Descriptive metadata only — no runtime behaviour reads this yet.
+   * Marks a provider whose booted box is ADVERTISED as shareable by several
+   * agentproto sessions (e.g. the `computer` provider, whose daemon runs
+   * exactly one self-hosted microVM). Providers whose boot contract assumes
+   * a single-tenant surface leave this false. No reader in the registry or
+   * reuse path consumes this flag today.
+   */
+  sharedSessions?: boolean
 }
 
 /**

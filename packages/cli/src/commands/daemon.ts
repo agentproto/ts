@@ -5,40 +5,54 @@
  * generated `~/Library/LaunchAgents/sh.agentproto.plist`; on Windows
  * we wrap the Task Scheduler — a per-user `schtasks /SC ONLOGON`
  * task (no admin needed) whose payload is a generated
- * `~/.agentproto/agentproto-daemon.cmd` launcher. On Linux we'll
- * wrap `systemctl --user` once that path is finished (the verb
- * prints "not yet" until then).
+ * `~/.agentproto/agentproto-daemon.cmd` launcher. On Linux we wrap
+ * `systemctl --user` with a generated
+ * `~/.config/systemd/user/agentproto.service`; when the box has no
+ * usable systemd user session (containers, minimal VMs, E2B
+ * sandboxes), the same verbs fall back to a detached `serve`
+ * managed through a pidfile under `~/.agentproto/` so
+ * start/stop/restart/status keep working. See the "Linux
+ * (systemd --user)" section below.
  *
  * The plist's `ProgramArguments` is built from `~/.agentproto/config.json`'s
  * `daemon.*` keys (workspace, port, bind, allowedOrigins). The user
  * configures once via `agentproto config set …`, then `daemon install`
  * captures that snapshot. Re-run `install` after any config change
- * to refresh the plist.
+ * to refresh the plist. The Linux unit's `ExecStart` and the Windows
+ * launcher's argv come out of the same `buildServeArgv(cfg)` snapshot.
  *
  * The plist's `EnvironmentVariables.PATH` is different: `install` captures a
  * one-time snapshot too, but `start`/`restart` self-heal it on every
  * kickstart by probing a login shell for the current PATH and rewriting the
  * plist if it changed — see the "PATH self-heal" section below
- * (`computeFreshDaemonPath`, `refreshPlistPathIfNeeded`). No manual
+ * (`computeFreshDaemonPath`, `refreshPlistPathIfNeeded`; the Linux unit
+ * self-heals the same way via `refreshUnitPathIfNeeded`). No manual
  * `uninstall`/`install` cycle needed after installing a new CLI tool.
  *
- * Logs go to `~/.agentproto/daemon.log` (stdout + stderr merged).
+ * Logs go to `~/.agentproto/daemon.log` (stdout + stderr merged) on every
+ * platform — the Linux unit redirects into the same file.
  *
  * Sub-verbs:
- *   install     write the plist + launchctl bootstrap
- *   uninstall   launchctl bootout + delete plist
+ *   install     write the plist + launchctl bootstrap (Linux: unit +
+ *               systemctl enable --now; no systemd user session ⇒ detached
+ *               pidfile daemon)
+ *   uninstall   launchctl bootout + delete plist (Linux: disable --now +
+ *               delete unit; also clears the pidfile fallback)
  *   start       launchctl kickstart WITHOUT -k — idempotent: launches the
  *               daemon if it's down, leaves a healthy one running. Never kills.
+ *               (systemd `start` and the pidfile spawn are equally idempotent.)
  *   restart     launchctl kickstart -k — kill the running daemon and relaunch.
  *               The clean replacement for `pnpm killport 18790`.
  *   stop        launchctl kill SIGTERM
  *   status      plist installed? launchctl loaded? /health probe?
- *               last 10 lines of daemon.log
+ *               last 10 lines of daemon.log (Linux names the active mode:
+ *               systemd --user or the pidfile fallback, and flags when
+ *               `loginctl enable-linger` is off)
  *   logs        tail daemon.log (10 lines by default, --lines <N>)
  */
 
 import { spawn } from "node:child_process"
-import { promises as fs } from "node:fs"
+import { openSync, promises as fs } from "node:fs"
 import { homedir, platform as osPlatform } from "node:os"
 import { dirname, join, posix as pathPosix, win32 as pathWin32 } from "node:path"
 import { parseArgs } from "node:util"
@@ -63,7 +77,7 @@ export const LAUNCHD_LABEL = LABEL
 const USAGE = `agentproto daemon — run agentproto serve as a background service
 
 Usage:
-  agentproto daemon install [--dry-run]   register service + start it (macOS launchd, Windows Task Scheduler)
+  agentproto daemon install [--dry-run]   register service + start it (macOS launchd, Linux systemd --user, Windows Task Scheduler)
   agentproto daemon uninstall             stop + deregister service
   agentproto daemon start                 start the service (idempotent; never kills a healthy daemon)
   agentproto daemon restart               kill + relaunch (replaces \`pnpm killport 18790\`)
@@ -82,53 +96,30 @@ export async function runDaemon(args: readonly string[]): Promise<number> {
     process.stdout.write(USAGE)
     return args.length === 0 ? 2 : 0
   }
-  if (osPlatform() === "win32") {
-    const sub = args[0]
-    switch (sub) {
-      case "install":
-        return runWinInstall(args.slice(1))
-      case "uninstall":
-        return runWinUninstall()
-      case "start":
-        return runWinStart()
-      case "restart":
-        return runWinRestart()
-      case "stop":
-        return runWinStop()
-      case "status":
-        return runWinStatus()
-      case "logs":
-        return runLogs(args.slice(1))
-      default:
-        process.stderr.write(
-          `agentproto daemon: unknown sub-verb "${sub}".\n\n${USAGE}`,
-        )
-        return 2
-    }
-  }
-  if (osPlatform() !== "darwin") {
+  if (osPlatform() !== "win32" && osPlatform() !== "darwin" && osPlatform() !== "linux") {
     process.stderr.write(
-      `agentproto daemon: ${osPlatform()} not yet supported. macOS (launchd) and Windows (Task Scheduler) ship today; ` +
-        "Linux (systemd --user) is on the follow-up list. " +
-        "In the meantime: `agentproto serve &; disown` will detach the daemon from your shell.\n",
+      `agentproto daemon: ${osPlatform()} not supported. macOS (launchd), Linux (systemd --user, ` +
+        "with a detached-serve pidfile fallback) and Windows (Task Scheduler) ship today.\n",
     )
     return 2
   }
   const sub = args[0]
   const rest = args.slice(1)
+  const win = osPlatform() === "win32"
+  const linux = osPlatform() === "linux"
   switch (sub) {
     case "install":
-      return runInstall(rest)
+      return win ? runWinInstall(rest) : linux ? runLinuxInstall(rest) : runInstall(rest)
     case "uninstall":
-      return runUninstall()
+      return win ? runWinUninstall() : linux ? runLinuxUninstall() : runUninstall()
     case "start":
-      return runStart()
+      return win ? runWinStart() : linux ? runLinuxStart() : runStart()
     case "restart":
-      return runRestart()
+      return win ? runWinRestart() : linux ? runLinuxRestart() : runRestart()
     case "stop":
-      return runStop()
+      return win ? runWinStop() : linux ? runLinuxStop() : runStop()
     case "status":
-      return runStatus()
+      return win ? runWinStatus() : linux ? runLinuxStatus() : runStatus()
     case "logs":
       return runLogs(rest)
     default:
@@ -881,6 +872,26 @@ function fmtTokens(n: number): string {
   return String(n)
 }
 
+/** The ran/sandbox/activity lines of the `stop` goodbye summary — shared by
+ *  the launchd, systemd and pidfile branches so all three report a stop the
+ *  same way. `""` when there are no stats. */
+export function renderStopStats(stats: DaemonStopStats | null): string {
+  if (!stats) return ""
+  let msg = `  ran:       ${humaniseUptime(stats.uptimeMs ?? 0)}${stats.version ? ` · v${stats.version}` : ""}\n`
+  if (stats.sandboxDetached) {
+    msg +=
+      `  sandbox:   ${stats.sandboxDetached} sandbox session${stats.sandboxDetached === 1 ? "" : "s"} detached ` +
+      `(box + agent keep running — not killed); re-attached on next start\n`
+  }
+  if (stats.sessions !== undefined) {
+    const tokens = `${fmtTokens(stats.tokensIn ?? 0)} in / ${fmtTokens(stats.tokensOut ?? 0)} out tok`
+    const unpriced = stats.unpricedTokens ? ` · ${fmtTokens(stats.unpricedTokens)} unpriced` : ""
+    const spend = stats.spentUsd !== undefined ? ` · ~$${stats.spentUsd.toFixed(2)} est` : ""
+    msg += `  activity:  ${stats.sessions} session${stats.sessions === 1 ? "" : "s"} · ${tokens}${spend}${unpriced}\n`
+  }
+  return msg
+}
+
 export async function runStop(
   run: LaunchctlFn = launchctl,
   gather: StopStatsFn = gatherStopStats,
@@ -895,22 +906,7 @@ export async function runStop(
     )
     return out.code
   }
-  let msg = "agentproto daemon: SIGTERM sent\n"
-  if (stats) {
-    msg += `  ran:       ${humaniseUptime(stats.uptimeMs ?? 0)}${stats.version ? ` · v${stats.version}` : ""}\n`
-    if (stats.sandboxDetached) {
-      msg +=
-        `  sandbox:   ${stats.sandboxDetached} sandbox session${stats.sandboxDetached === 1 ? "" : "s"} detached ` +
-        `(box + agent keep running — not killed); re-attached on next start\n`
-    }
-    if (stats.sessions !== undefined) {
-      const tokens = `${fmtTokens(stats.tokensIn ?? 0)} in / ${fmtTokens(stats.tokensOut ?? 0)} out tok`
-      const unpriced = stats.unpricedTokens ? ` · ${fmtTokens(stats.unpricedTokens)} unpriced` : ""
-      const spend = stats.spentUsd !== undefined ? ` · ~$${stats.spentUsd.toFixed(2)} est` : ""
-      msg += `  activity:  ${stats.sessions} session${stats.sessions === 1 ? "" : "s"} · ${tokens}${spend}${unpriced}\n`
-    }
-  }
-  process.stdout.write(msg)
+  process.stdout.write("agentproto daemon: SIGTERM sent\n" + renderStopStats(stats))
   return 0
 }
 
@@ -1442,6 +1438,800 @@ export async function runWinStatus(schtasksFn: SchtasksFn = schtasks): Promise<n
     /* no log yet */
   }
   return installed ? 0 : 1
+}
+
+// ---------------------------------------------------------------------------
+// Linux (systemd --user, with a detached-serve pidfile fallback)
+//
+// `daemon install` writes `~/.config/systemd/user/agentproto.service` —
+// ExecStart is the same `[node, cli.mjs, serve, …]` argv snapshot
+// (`buildServeArgv(cfg)`) the plist/.cmd use, Environment=PATH is the same
+// captured-and-self-healed PATH — then `systemctl --user daemon-reload` +
+// `enable --now`. Many headless boxes (containers, minimal VMs, E2B
+// sandboxes) have NO usable systemd user session: `systemctl` is missing or
+// `systemctl --user` cannot connect to the per-user manager. There, every
+// verb falls back to a detached `serve` whose pid is recorded in
+// `~/.agentproto/agentproto-daemon.pid`, so start/stop/restart/status keep
+// working (exit 1 when down, never the old exit 2). `status` names the
+// active mode either way.
+//
+// Lingering (`loginctl enable-linger`) decides whether the systemd service
+// survives logout on a headless box. We never run enable-linger ourselves —
+// `install`/`status` print a note when it is off.
+// ---------------------------------------------------------------------------
+
+/** The systemd --user unit name. Exported for read-only probes (doctor, the
+ *  onboarding daemon step's `systemctl --user is-active`). */
+export const SYSTEMD_UNIT_NAME = "agentproto.service"
+
+/** Where `daemon install` writes the systemd --user unit. */
+export function systemdUnitPath(home: string = homedir()): string {
+  return join(home, ".config", "systemd", "user", SYSTEMD_UNIT_NAME)
+}
+
+/** The pidfile of the detached-serve fallback (no usable systemd user
+ *  session). One line: the serve process's pid. */
+export function linuxPidfilePath(home: string = homedir()): string {
+  return join(home, ".agentproto", "agentproto-daemon.pid")
+}
+
+/** Quote one argv word for a unit file's `ExecStart=` (systemd's own
+ *  quoting: double quotes, `\` and `"` escaped, `%` doubled as `%%`).
+ *  Pure — unit-tested without systemd. */
+export function systemdQuote(arg: string): string {
+  if (arg === "") return '""'
+  if (/[\s"\\%]/.test(arg)) {
+    return `"${arg.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%")}"`
+  }
+  return arg
+}
+
+function systemdEnvLine(key: string, value: string): string {
+  return /[\s"\\]/.test(value)
+    ? `Environment="${key}=${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+    : `Environment=${key}=${value}`
+}
+
+interface LinuxUnitOpts {
+  /** Full argv systemd execs — `[node, cli.mjs, serve, …]`. */
+  fullArgv: string[]
+  logPath: string
+  /** `Environment=PATH=` to bake in — same snapshot rules as the plist. */
+  path: string
+  home: string
+  /** `WorkingDirectory=` — the configured workspace, else the home dir
+   *  (never leave it to default to `/`: the daemon must be able to write
+   *  under a writable directory). */
+  workingDir?: string
+}
+
+/** The unit file body. Pure — unit-tested without systemd. Mirrors the
+ *  plist: crash-only restart (`Restart=on-failure` ≙ `SuccessfulExit=false`
+ *  KeepAlive — a clean exit-0 stays settled, a crash relaunches) and both
+ *  stdout+stderr appended to `~/.agentproto/daemon.log`. */
+export function renderSystemdUnit(opts: LinuxUnitOpts): string {
+  return `[Unit]
+Description=agentproto daemon
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=${opts.workingDir ?? opts.home}
+${systemdEnvLine("PATH", opts.path)}
+${systemdEnvLine("HOME", opts.home)}
+ExecStart=${opts.fullArgv.map(systemdQuote).join(" ")}
+# Crash-only, mirroring launchd's SuccessfulExit=false KeepAlive: relaunch on
+# a non-zero exit, leave a clean exit-0 alone (a redundant serve exits 0
+# when a healthy daemon already owns the port and must not be respawned).
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:${opts.logPath}
+StandardError=append:${opts.logPath}
+
+[Install]
+WantedBy=default.target
+`
+}
+
+/** Pull the current `Environment=PATH=` value back out of a previously
+ *  rendered unit — `null` when absent. The counterpart of
+ *  {@link extractPlistPathValue}. */
+export function extractUnitPathValue(unit: string): string | null {
+  const m = unit.match(/^Environment=(?:")?PATH=([^"\n]*?)(?:")?\s*$/m)
+  return m && m[1] !== undefined ? m[1] : null
+}
+
+/** Shape shared by every external command the Linux branch runs and by the
+ *  onboarding step's `ctx.exec` (structurally the same as
+ *  `onboarding/types.ts`'s `ExecResult`). */
+export interface ExecCmdResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+/** Injectable external command — `systemctl`, `loginctl`, … Tests inject
+ *  doubles; the real one spawns with a timeout and resolves (never rejects):
+ *  spawn failure is `code: 127`, timeout `code: 124`. */
+export type LinuxExecFn = (
+  cmd: string,
+  args: readonly string[],
+  opts?: { timeoutMs?: number },
+) => Promise<ExecCmdResult>
+
+const DEFAULT_EXEC_TIMEOUT_MS = 15_000
+
+function execCommand(
+  cmd: string,
+  args: readonly string[],
+  opts?: { timeoutMs?: number },
+): Promise<ExecCmdResult> {
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (result: ExecCmdResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] })
+    } catch (err) {
+      resolve({ code: 127, stdout: "", stderr: err instanceof Error ? err.message : String(err) })
+      return
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      finish({ code: 124, stdout: "", stderr: `${cmd} ${args.join(" ")} timed out` })
+    }, opts?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS)
+    let stdout = ""
+    let stderr = ""
+    child.stdout?.setEncoding("utf8").on("data", c => (stdout += c))
+    child.stderr?.setEncoding("utf8").on("data", c => (stderr += c))
+    child.on("error", err => finish({ code: 127, stdout, stderr: err.message }))
+    child.on("exit", code => finish({ code: code ?? 1, stdout, stderr }))
+  })
+}
+
+/** `systemctl --user …` — injectable everywhere so tests never touch a real
+ *  user manager. */
+export type SystemdFn = (args: readonly string[]) => Promise<ExecCmdResult>
+
+function systemctlUser(args: readonly string[]): Promise<ExecCmdResult> {
+  return execCommand("systemctl", ["--user", ...args])
+}
+
+/** Which Linux backend the verbs use: the systemd user manager when one
+ *  answers, the detached-serve pidfile otherwise. */
+export type LinuxDaemonMode = "systemd" | "pidfile"
+
+/** Is there a usable systemd USER session? `systemctl --user
+ *  show-environment` exits 0 only when the per-user manager answers; it
+ *  fails ("Failed to connect to bus: …") on boxes with no user session, and
+ *  a missing `systemctl` binary is code 127. Anything but a clean 0 is the
+ *  pidfile fallback. */
+export async function detectLinuxDaemonMode(
+  exec: LinuxExecFn = execCommand,
+): Promise<LinuxDaemonMode> {
+  try {
+    const out = await exec("systemctl", ["--user", "show-environment"], { timeoutMs: 5_000 })
+    return out.code === 0 ? "systemd" : "pidfile"
+  } catch {
+    return "pidfile"
+  }
+}
+
+/** `loginctl show-user <who> --property=Linger` — true when lingering is on,
+ *  false when off, `null` when the probe failed (unknown ≠ off). Never runs
+ *  enable-linger; it only reports. */
+export async function detectSystemdLinger(
+  exec: LinuxExecFn = execCommand,
+  user: string | undefined = process.env.USER ?? process.env.LOGNAME ?? "",
+): Promise<boolean | null> {
+  if (!user) return null
+  try {
+    const out = await exec("loginctl", ["show-user", user, "--property=Linger"], { timeoutMs: 5_000 })
+    if (out.code !== 0) return null
+    const m = out.stdout.match(/^\s*Linger=(yes|no)\s*$/mi)
+    return m ? m[1]!.toLowerCase() === "yes" : null
+  } catch {
+    return null
+  }
+}
+
+/** The lingering footnote — printed by `install`/`status` when it is OFF
+ *  (a headless box loses the service at logout). `""` otherwise. We never
+ *  run enable-linger ourselves. */
+export function renderLingerNote(linger: boolean | null): string {
+  return linger === false
+    ? `  note:     lingering is off — the service stops at logout. Enable it with: loginctl enable-linger $USER\n`
+    : ""
+}
+
+/** Injectable deps for the Linux verbs — the exec/systemctl runners mirror
+ *  {@link SchtasksFn}'s injection so tests stay hermetic (no real systemd,
+ *  pidfile, or network). */
+export interface LinuxDeps {
+  exec?: LinuxExecFn
+  systemctl?: SystemdFn
+  health?: HealthFetchFn
+  probeHealth?: LinuxHealthProbeFn
+  home?: string
+  /** Spawn the detached fallback serve; resolves its pid or `null`. */
+  spawnServe?: ServeSpawnFn
+  kill?: (pid: number, signal: NodeJS.Signals) => void
+  /** Is this pid alive? (`kill(pid, 0)` by default.) */
+  isAlive?: (pid: number) => boolean
+}
+
+/** What `status` shows for the `/health` probe. */
+export interface LinuxHealthSummary {
+  health: string
+  release: string | null
+  sandboxSessions?: DaemonHealthInfo["sandboxSessions"]
+}
+
+/** Single `/health` + release-check pass for `status` — injectable so the
+ *  status tests never hit the network. */
+export type LinuxHealthProbeFn = () => Promise<LinuxHealthSummary>
+
+async function probeLinuxHealth(): Promise<LinuxHealthSummary> {
+  const cfg = await loadConfig()
+  const port = cfg.daemon?.port ?? 18790
+  const bind = cfg.daemon?.bind ?? "127.0.0.1"
+  try {
+    const res = await fetch(`http://${bind}:${port}/health`, {
+      signal: AbortSignal.timeout(800),
+    })
+    if (!res.ok) return { health: `HTTP ${res.status}`, release: null }
+    const body = (await res.json().catch(() => ({}))) as {
+      workspace?: string
+      uptimeMs?: number
+      version?: string | null
+      build?: DaemonHealthInfo["build"]
+      sandboxSessions?: DaemonHealthInfo["sandboxSessions"]
+    }
+    const health =
+      `ok${body.version ? ` · v${body.version}` : ""}${renderBuild(body.build)}` +
+      ` · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
+    const buildSource: ReleaseBuildSource = body.build?.source === "workspace" ? "workspace" : "tarball"
+    const release = await renderReleaseStatus(body.version ?? null, buildSource)
+    return { health, release, sandboxSessions: body.sandboxSessions }
+  } catch {
+    return { health: "unreachable", release: null }
+  }
+}
+
+async function readPidfile(pidPath: string): Promise<number | null> {
+  try {
+    const raw = await fs.readFile(pidPath, "utf8")
+    const pid = Number.parseInt(raw.trim(), 10)
+    return Number.isFinite(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
+function defaultIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM means the process exists but belongs to someone else.
+    return (err as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+/** Spawn the detached fallback serve: double-fork semantics via
+ *  `detached: true` + `unref()` so the daemon survives this CLI's exit,
+ *  with stdout+stderr appended to `~/.agentproto/daemon.log` (same log the
+ *  other branches use). Resolves the child's pid, or `null`. */
+export type ServeSpawnFn = (opts: {
+  fullArgv: string[]
+  cwd: string
+  logPath: string
+}) => Promise<number | null>
+
+function spawnDetachedServe(opts: { fullArgv: string[]; cwd: string; logPath: string }): Promise<number | null> {
+  return new Promise(resolve => {
+    const [cmd, ...rest] = opts.fullArgv
+    if (!cmd) {
+      resolve(null)
+      return
+    }
+    let fd: number | undefined
+    try {
+      fd = openSync(opts.logPath, "a")
+    } catch {
+      fd = undefined
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(cmd, rest, {
+        cwd: opts.cwd,
+        detached: true,
+        stdio: ["ignore", fd ?? "ignore", fd ?? "ignore"],
+      })
+    } catch {
+      resolve(null)
+      return
+    }
+    child.unref()
+    resolve(typeof child.pid === "number" ? child.pid : null)
+  })
+}
+
+/** Core gating + action for the unit's PATH self-heal — the Linux twin of
+ *  {@link refreshPlistPathIfNeeded}. Rewrites the unit (via
+ *  {@link renderSystemdUnit}) and `daemon-reload`s ONLY when the PATH
+ *  actually changed. Returns whether it rewrote. */
+export async function refreshUnitPathIfNeeded(opts: {
+  unitPath: string
+  currentUnit: string | null
+  fullArgv: string[]
+  logPath: string
+  home: string
+  workingDir?: string
+  freshPath: string
+  run: SystemdFn
+  writeFile?: (path: string, data: string) => Promise<void>
+}): Promise<boolean> {
+  if (opts.currentUnit === null) return false
+  const currentPath = extractUnitPathValue(opts.currentUnit)
+  if (!pathNeedsRefresh(currentPath, opts.freshPath)) return false
+  const unit = renderSystemdUnit({
+    fullArgv: opts.fullArgv,
+    logPath: opts.logPath,
+    path: opts.freshPath,
+    home: opts.home,
+    workingDir: opts.workingDir,
+  })
+  const writeFile = opts.writeFile ?? (async (path, data) => fs.writeFile(path, data, "utf8"))
+  await writeFile(opts.unitPath, unit)
+  // The running service definition is in memory — daemon-reload makes the
+  // manager pick up the rewritten unit (start/restart then load the new
+  // argv/env, like the launchd branch's bootout+bootstrap).
+  await opts.run(["daemon-reload"])
+  return true
+}
+
+/** Real wiring for {@link refreshUnitPathIfNeeded}: read the unit off disk,
+ *  probe a real login shell, reload config for the argv. Best-effort —
+ *  never blocks a `start`/`restart`. */
+async function selfHealLinuxUnitPath(run: SystemdFn, home: string): Promise<boolean> {
+  try {
+    const unitPath = systemdUnitPath(home)
+    let currentUnit: string | null
+    try {
+      currentUnit = await fs.readFile(unitPath, "utf8")
+    } catch {
+      currentUnit = null
+    }
+    if (currentUnit === null) return false
+    const p = paths(home)
+    const [freshPath, cfg] = await Promise.all([computeFreshDaemonPath(), loadConfig()])
+    return await refreshUnitPathIfNeeded({
+      unitPath,
+      currentUnit,
+      fullArgv: [...p.argv, ...buildServeArgv(cfg)],
+      logPath: p.log,
+      home,
+      workingDir: cfg.daemon?.workspace ?? home,
+      freshPath,
+      run,
+    })
+  } catch {
+    return false
+  }
+}
+
+/** The pidfile-fallback `start`: idempotent like the launchd kickstart
+ *  WITHOUT -k — a live recorded pid is left alone (never killed), a stale
+ *  pidfile is replaced by a fresh detached spawn. */
+async function startPidfileDaemon(
+  deps: LinuxDeps,
+  probeAttempts: number,
+  verb: "started" | "restarted" = "started",
+): Promise<number> {
+  const home = deps.home ?? homedir()
+  const health = deps.health ?? fetchHealth
+  const spawnServe = deps.spawnServe ?? spawnDetachedServe
+  const isAlive = deps.isAlive ?? defaultIsAlive
+  const cfg = await loadConfig()
+  const p = paths(home)
+  const pidPath = linuxPidfilePath(home)
+
+  const existing = await readPidfile(pidPath)
+  if (existing !== null && isAlive(existing)) {
+    const info = await waitForHealth(health, Math.min(probeAttempts, 5), 300)
+    process.stdout.write(`agentproto daemon: already running (pid ${existing}, pidfile mode)\n`)
+    printLifecycleInfo(verb, info)
+    return 0
+  }
+
+  await fs.mkdir(dirname(pidPath), { recursive: true })
+  await fs.mkdir(dirname(p.log), { recursive: true })
+  const pid = await spawnServe({
+    fullArgv: [...p.argv, ...buildServeArgv(cfg)],
+    cwd: cfg.daemon?.workspace ?? home,
+    logPath: p.log,
+  })
+  if (pid === null) {
+    process.stderr.write(
+      `agentproto daemon ${verb}: failed to spawn a detached serve\n` +
+        `  Run \`agentproto serve\` in a terminal to see why.\n`,
+    )
+    return 1
+  }
+  await fs.writeFile(pidPath, `${pid}\n`, "utf8")
+  printLifecycleInfo(verb, await waitForHealth(health, probeAttempts, 300))
+  return 0
+}
+
+/** The pidfile-fallback `stop`: SIGTERM the recorded pid (bounded wait for
+ *  it to exit), then clear the pidfile. Idempotent — no pidfile is not an
+ *  error. */
+async function stopPidfileDaemon(deps: LinuxDeps): Promise<number> {
+  const home = deps.home ?? homedir()
+  const kill = deps.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal))
+  const isAlive = deps.isAlive ?? defaultIsAlive
+  const pidPath = linuxPidfilePath(home)
+  const pid = await readPidfile(pidPath)
+  if (pid === null) {
+    process.stdout.write(`agentproto daemon: no detached daemon recorded (${pidPath} absent)\n`)
+    return 0
+  }
+  if (!isAlive(pid)) {
+    await fs.unlink(pidPath).catch(() => undefined)
+    process.stdout.write(`agentproto daemon: pid ${pid} not running — pidfile cleared\n`)
+    return 0
+  }
+  try {
+    kill(pid, "SIGTERM")
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+      process.stderr.write(
+        `agentproto daemon stop: failed to signal pid ${pid}: ${err instanceof Error ? err.message : String(err)}\n`,
+      )
+      return 1
+    }
+  }
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (!isAlive(pid)) break
+    await new Promise(r => setTimeout(r, 250))
+  }
+  await fs.unlink(pidPath).catch(() => undefined)
+  if (isAlive(pid)) {
+    process.stderr.write(
+      `agentproto daemon stop: pid ${pid} still alive after SIGTERM — kill it manually if needed\n`,
+    )
+    return 1
+  }
+  process.stdout.write(`agentproto daemon: detached serve (pid ${pid}) stopped\n`)
+  return 0
+}
+
+/** `install` — write the unit + `enable --now` (systemd mode), or start a
+ *  detached pidfile daemon (no usable systemd user session). `--dry-run`
+ *  prints the unit and the systemctl commands and touches nothing. */
+export async function runLinuxInstall(
+  args: readonly string[] = [],
+  deps: LinuxDeps = {},
+): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: { "dry-run": { type: "boolean" } },
+  })
+  const home = deps.home ?? homedir()
+  const exec = deps.exec ?? execCommand
+  const systemctl = deps.systemctl ?? systemctlUser
+  const mode = await detectLinuxDaemonMode(exec)
+  const cfg = await loadConfig()
+  const p = paths(home)
+  const unitPath = systemdUnitPath(home)
+  const unit = renderSystemdUnit({
+    fullArgv: [...p.argv, ...buildServeArgv(cfg)],
+    logPath: p.log,
+    path: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    home,
+    workingDir: cfg.daemon?.workspace ?? home,
+  })
+  const linger = mode === "systemd" ? await detectSystemdLinger(exec) : null
+
+  if (values["dry-run"]) {
+    process.stdout.write(
+      `# Would install a systemd --user unit running:\n${renderServiceTarget(p.argv[0], process.argv[1] ?? null, "linux")}\n` +
+        `# Would write ${unitPath}:\n\n${unit}\n` +
+        `# systemctl --user daemon-reload\n# systemctl --user enable --now ${SYSTEMD_UNIT_NAME}\n` +
+        (mode === "pidfile"
+          ? `# NOTE: no usable systemd user session on this machine — install would fall back to a detached serve (pidfile ${linuxPidfilePath(home)})\n`
+          : ""),
+    )
+    process.stdout.write(renderLingerNote(linger))
+    return 0
+  }
+
+  if (mode === "pidfile") {
+    process.stdout.write(
+      `agentproto daemon: no usable systemd user session on this machine ` +
+        `(containers, minimal VMs and sandboxes often lack one)\n` +
+        `  falling back to a detached serve managed through ${linuxPidfilePath(home)}\n`,
+    )
+    return startPidfileDaemon(deps, 20, "started")
+  }
+
+  await fs.mkdir(dirname(unitPath), { recursive: true })
+  await fs.mkdir(dirname(p.log), { recursive: true })
+  await fs.writeFile(unitPath, unit, "utf8")
+  process.stdout.write(`agentproto daemon: wrote ${unitPath}\n`)
+  process.stdout.write(
+    `agentproto daemon: service will run:\n${renderServiceTarget(p.argv[0], process.argv[1] ?? null, "linux")}`,
+  )
+
+  const reload = await systemctl(["daemon-reload"])
+  if (reload.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon install: systemctl daemon-reload failed (exit ${reload.code})\n${reload.stderr}\n`,
+    )
+    return 1
+  }
+  const enabled = await systemctl(["enable", "--now", SYSTEMD_UNIT_NAME])
+  if (enabled.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon install: systemctl enable --now failed (exit ${enabled.code})\n${enabled.stderr}\n`,
+    )
+    return 1
+  }
+  process.stdout.write(
+    `agentproto daemon: registered as a systemd --user service and started. Tail logs: agentproto daemon logs\n`,
+  )
+  process.stdout.write(renderLingerNote(linger))
+  return 0
+}
+
+/** `uninstall` — `disable --now` + delete the unit (systemd mode); also
+ *  clears the pidfile fallback (stopping a detached daemon first).
+ *  Idempotent — "already absent" is not an error. */
+export async function runLinuxUninstall(deps: LinuxDeps = {}): Promise<number> {
+  const home = deps.home ?? homedir()
+  const exec = deps.exec ?? execCommand
+  const systemctl = deps.systemctl ?? systemctlUser
+  const unitPath = systemdUnitPath(home)
+  const mode = await detectLinuxDaemonMode(exec)
+
+  if (mode === "systemd") {
+    const out = await systemctl(["disable", "--now", SYSTEMD_UNIT_NAME])
+    // "not loaded"/"not found" is the idempotent path (cf. launchd's bootout
+    // tolerance); anything else is worth surfacing but still best-effort.
+    if (out.code !== 0 && !/not (found|loaded|installed)|does not exist|No such/i.test(out.stderr + out.stdout)) {
+      process.stderr.write(
+        `agentproto daemon uninstall: systemctl disable --now failed (exit ${out.code})\n${out.stderr}\n`,
+      )
+    }
+  }
+
+  let removedUnit = false
+  try {
+    await fs.unlink(unitPath)
+    removedUnit = true
+    process.stdout.write(`agentproto daemon: removed ${unitPath}\n`)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== "ENOENT") {
+      process.stderr.write(
+        `agentproto daemon uninstall: failed to remove unit: ${err instanceof Error ? err.message : String(err)}\n`,
+      )
+      return 1
+    }
+    process.stdout.write(`agentproto daemon: ${unitPath} already absent\n`)
+  }
+  if (removedUnit && mode === "systemd") {
+    await systemctl(["daemon-reload"]).catch(() => undefined)
+  }
+
+  // A leftover pidfile (or a live detached daemon from the fallback) goes
+  // too — uninstall deregisters every mode.
+  const pidPath = linuxPidfilePath(home)
+  const pid = await readPidfile(pidPath)
+  if (pid !== null) {
+    const stopCode = await stopPidfileDaemon(deps)
+    if (stopCode !== 0) return stopCode
+  }
+  return 0
+}
+
+/** `start` — systemd `start` (idempotent; a healthy unit is left running,
+ *  never killed) or the pidfile fallback's detached spawn. */
+export async function runLinuxStart(
+  deps: LinuxDeps = {},
+  probeAttempts = 20,
+): Promise<number> {
+  const home = deps.home ?? homedir()
+  const exec = deps.exec ?? execCommand
+  const systemctl = deps.systemctl ?? systemctlUser
+  const health = deps.health ?? fetchHealth
+  const mode = await detectLinuxDaemonMode(exec)
+  if (mode === "pidfile") {
+    return startPidfileDaemon(deps, probeAttempts, "started")
+  }
+  await selfHealLinuxUnitPath(systemctl, home).catch(() => false)
+  const out = await systemctl(["start", SYSTEMD_UNIT_NAME])
+  if (out.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon start: ${out.stderr || "systemctl exited " + out.code}\n` +
+        `  Run \`agentproto daemon install\` first.\n`,
+    )
+    return out.code
+  }
+  printLifecycleInfo("started", await waitForHealth(health, probeAttempts, 300))
+  return 0
+}
+
+/** `restart` — systemd `restart` (or stop+start on the pidfile fallback),
+ *  with the sandbox detach/reattach bookkeeping the launchd branch has. */
+export async function runLinuxRestart(
+  deps: LinuxDeps = {},
+  probeAttempts = 20,
+  reattachPollMs = 500,
+  reattachWaitMs = REATTACH_WAIT_DEFAULT_MS,
+): Promise<number> {
+  const home = deps.home ?? homedir()
+  const exec = deps.exec ?? execCommand
+  const systemctl = deps.systemctl ?? systemctlUser
+  const health = deps.health ?? fetchHealth
+  const mode = await detectLinuxDaemonMode(exec)
+
+  // Read BEFORE the restart — the old daemon can't answer afterwards.
+  const detaching = (await health().catch(() => null))?.sandboxSessions?.attached ?? 0
+  if (detaching > 0) {
+    process.stdout.write(
+      `agentproto daemon: ${detaching} sandbox session${detaching === 1 ? "" : "s"} will be detached ` +
+        `(box + agent keep running — not killed) and re-attached after boot\n`,
+    )
+  }
+
+  if (mode === "pidfile") {
+    const stopCode = await stopPidfileDaemon(deps)
+    if (stopCode !== 0) return stopCode
+    return startPidfileDaemon(deps, probeAttempts, "restarted")
+  }
+
+  await selfHealLinuxUnitPath(systemctl, home).catch(() => false)
+  const out = await systemctl(["restart", SYSTEMD_UNIT_NAME])
+  if (out.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon restart: ${out.stderr || "systemctl exited " + out.code}\n` +
+        `  Run \`agentproto daemon install\` first.\n`,
+    )
+    return out.code
+  }
+  const booted = await waitForHealth(health, probeAttempts, 300)
+  printLifecycleInfo("restarted", booted)
+  const reattachLine = await awaitSandboxReattach(
+    health,
+    detaching,
+    booted,
+    reattachWaitMs,
+    reattachPollMs,
+  )
+  if (reattachLine) process.stdout.write(reattachLine)
+  return 0
+}
+
+/** `stop` — systemd `stop` (SIGTERM by default, like launchd's) or SIGTERM
+ *  the pidfile-fallback pid. Same goodbye summary as the other branches. */
+export async function runLinuxStop(
+  deps: LinuxDeps = {},
+  gather: StopStatsFn = gatherStopStats,
+): Promise<number> {
+  const home = deps.home ?? homedir()
+  const exec = deps.exec ?? execCommand
+  const systemctl = deps.systemctl ?? systemctlUser
+  const mode = await detectLinuxDaemonMode(exec)
+  // Gather BEFORE killing — a stopped daemon answers nothing.
+  const stats = await gather()
+
+  if (mode === "pidfile") {
+    const code = await stopPidfileDaemon(deps)
+    if (code === 0) process.stdout.write(renderStopStats(stats))
+    return code
+  }
+  const out = await systemctl(["stop", SYSTEMD_UNIT_NAME])
+  if (out.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon stop: ${out.stderr || "systemctl exited " + out.code}\n`,
+    )
+    return out.code
+  }
+  process.stdout.write("agentproto daemon: service stopped\n" + renderStopStats(stats))
+  return 0
+}
+
+/** `status` — same three-part shape as the launchd/schtasks branches, plus
+ *  a `mode:` line naming which backend is active (systemd --user, or the
+ *  detached-serve pidfile fallback) and — in systemd mode — a lingering
+ *  note when `loginctl enable-linger` is off. Truthful in both modes:
+ *  exit 0 only when the service is actually installed AND running (pidfile
+ *  mode: only when the recorded pid is alive). */
+export async function runLinuxStatus(deps: LinuxDeps = {}): Promise<number> {
+  const home = deps.home ?? homedir()
+  const exec = deps.exec ?? execCommand
+  const systemctl = deps.systemctl ?? systemctlUser
+  const probe = deps.probeHealth ?? probeLinuxHealth
+  const isAlive = deps.isAlive ?? defaultIsAlive
+  const mode = await detectLinuxDaemonMode(exec)
+  const cfg = await loadConfig()
+  const port = cfg.daemon?.port ?? 18790
+  const bind = cfg.daemon?.bind ?? "127.0.0.1"
+  const p = paths(home)
+  const summary = await probe()
+  const sandboxLine = summary.sandboxSessions ? (renderSandboxTally(summary.sandboxSessions) ?? "") : ""
+
+  let head: string
+  let ok: boolean
+  if (mode === "pidfile") {
+    const pidPath = linuxPidfilePath(home)
+    const pid = await readPidfile(pidPath)
+    const alive = pid !== null && isAlive(pid)
+    head =
+      `agentproto daemon status\n` +
+      `  mode:      pidfile fallback (no usable systemd user session)\n` +
+      `  pidfile:   ${pid === null ? "absent" : `present (pid ${pid})`} (${pidPath})\n` +
+      `  process:   ${alive ? `running (pid ${pid})` : "not running"}\n`
+    ok = alive
+  } else {
+    const unitPath = systemdUnitPath(home)
+    const show = await systemctl([
+      "show",
+      SYSTEMD_UNIT_NAME,
+      "--property=LoadState,ActiveState,SubState,MainPID",
+    ])
+    const props = new Map<string, string>()
+    for (const line of show.stdout.split("\n")) {
+      const eq = line.indexOf("=")
+      if (eq > 0) props.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim())
+    }
+    const loadState = props.get("LoadState") ?? "unknown"
+    const activeState = props.get("ActiveState") ?? "unknown"
+    const subState = props.get("SubState")
+    const mainPid = props.get("MainPID")
+    const installed = loadState !== "not-found" && loadState !== "unknown"
+    const active = activeState === "active"
+    const pid = mainPid && mainPid !== "0" ? Number(mainPid) : null
+    const linger = await detectSystemdLinger(exec)
+    head =
+      `agentproto daemon status\n` +
+      `  mode:      systemd --user\n` +
+      `  unit:      ${installed ? "installed" : "not installed"} (${unitPath})\n` +
+      `  systemd:   ${installed ? activeState : "not loaded"}` +
+      (subState && subState !== activeState ? ` (${subState})` : "") +
+      (pid ? ` · pid=${pid}` : "") +
+      `\n` +
+      renderLingerNote(linger)
+    ok = installed && active
+  }
+
+  process.stdout.write(
+    head +
+      `  /health:   ${summary.health}  (http://${bind}:${port})\n` +
+      sandboxLine +
+      `  release:   ${summary.release ?? "unknown"}\n` +
+      `  config:    ${CONFIG_FILE_PATH()}\n` +
+      `  logs:      ${p.log}\n`,
+  )
+  try {
+    const buf = await fs.readFile(p.log, "utf8")
+    const tail = buf.split("\n").slice(-6).join("\n").trim()
+    if (tail) {
+      process.stdout.write(`\n  recent logs:\n${indent(tail, "    ")}\n`)
+    }
+  } catch {
+    /* no log yet */
+  }
+  return ok ? 0 : 1
 }
 
 interface LaunchctlResult {
