@@ -65,7 +65,7 @@ const WATCHDOG_PROBE_TIMEOUT_MS = 10_000
 export const BOX_LOGIN_REFRESH_THROTTLE_MS = 5 * 60_000
 
 /**
- * A sandbox box that died ATOR PAST its known lifetime deadline while the
+ * A sandbox box that died AT OR PAST its known lifetime deadline while the
  * session was idle. Expected expiry, not a crash: the box's work was
  * already checkpointed/delivered, the idle box was deliberately left to run
  * out its lifetime, and the provider reaped it on schedule. The registry's
@@ -954,6 +954,9 @@ export function createSandboxAgentSessionProxy(
             silent++
           }
           if (failures < threshold && silent < unresponsiveThreshold) return
+          // Capture the deadline BEFORE stopTimers() — it clears
+          // `nextDeadlineAt`, and the expiry check below would never see it.
+          const knownDeadlineAt = nextDeadlineAt
           stopTimers()
           // An idle box whose DEADLINE has already passed was deliberately
           // left to expire — the provider reaping it then is the expected
@@ -962,8 +965,7 @@ export function createSandboxAgentSessionProxy(
           // account cap after the work was delivered, misclassified as
           // "crashed"). Tag the death so the registry ends the row with
           // `endedReason: "sandbox-expired"` instead of `crashed`.
-          const expired =
-            nextDeadlineAt !== undefined && Date.now() >= nextDeadlineAt
+          const expired = knownDeadlineAt !== undefined && Date.now() >= knownDeadlineAt
           deadError = expired
             ? new SandboxBoxExpiredError(
                 `sandbox box for remote session "${remoteSessionId}" reached its ` +

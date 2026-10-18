@@ -8122,7 +8122,7 @@ export function createSessionsRegistry(opts?: {
   /**
    * The EXPECTED-EXPIRY end action — the clean twin of
    * {@link markCrashedInternal} for a sandbox box the proxy declared dead at
-   *or past its known lifetime deadline while idle
+   * or past its known lifetime deadline while idle
    * (`sandbox-agent-session-proxy.ts`'s `SandboxBoxExpiredError`): the box's
    * work was checkpointed/delivered while it was alive, so this is the box
    * lifecycle running its course, not a failure. Mirrors `markCrashed`'

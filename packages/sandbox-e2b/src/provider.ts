@@ -74,15 +74,19 @@ const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
 /** Account-level ceiling: `sandbox.setTimeout` rejects anything above 1 hour
  *  ("Timeout cannot be greater than 1 hours").
  *
- *  NOTE (field evidence, 2026-10-16): on an e2b plan whose max sandbox
- *  duration is 1 hour, this cap is TOTAL from box creation — renewals that
- *  ask for the full runway late in the box's life are clamped/rejected by
- *  the account policy, and the box is reaped ~1h after `boot` no matter how
- *  active it was (sess_795b8c58 / e39cd4da / 7d29436b each died
- *  start+60min, activity notwithstanding). Keeping a box alive past that is
- *  impossible on such a plan: an idle box whose work is delivered is left to
- *  expire, and the runtime classifies that death as
- *  `endedReason: "sandbox-expired"` (a clean end), not a crash. */
+ *  ROOT CAUSE of the "active session dies at start+~60min" field reports
+ *  (sess_795b8c58 / e39cd4da / 7d29436b, 2026-10-16): on the Hobby/Base plan
+ *  e2b enforces a cap on CONTINUOUS sandbox runtime — "Sandboxes can run
+ *  continuously for up to 24 hours (Pro) or 1 hour (Hobby)" — i.e. ~1h from
+ *  box CREATION, whatever `setTimeout` does. Renewal-while-active is already
+ *  in place (the runtime proxy heartbeats `extendTimeout` every 10 min of a
+ *  turn and on streamed events, and e2b `setTimeout` does reset the countdown
+ *  from now), yet an active box was still reaped at start+59min because the
+ *  plan's total-run window ran out. Keeping a box alive past that is
+ *  impossible on such a plan (only Pro, or e2b pause/resume, escapes it): a
+ *  box whose work is delivered is left to expire, and the runtime now
+ *  classifies that death as `endedReason: "sandbox-expired"` (a clean end
+ *  with the delivered branch as artifact), not `crashed`. */
 export const MAX_SANDBOX_TIMEOUT_MS = 60 * 60_000
 const DEFAULT_WORKSPACE = "/home/user"
 const HEALTH_PROBE_TIMEOUT_MS = 3_000

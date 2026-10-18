@@ -36,7 +36,8 @@ export const SESSION_END_REASONS = [
   "provider-limit",
   "forgotten",
   // Session steward (FIX-9A) — a deterministic/judged close via
-  // `registry.closeWithOutcome`, never a plain `kill()`.  "steward-completed", // verdict:"done" — the steward closed it as finished work.
+  // `registry.closeWithOutcome`, never a plain `kill()`.
+  "steward-completed", // verdict:"done" — the steward closed it as finished work.
   "steward-abandoned", // verdict other than "done" — the steward closed it as not completed.
   // `restartAgentSession` (session-restart-core.ts) minted a fresh-id
   // continuation while this row was still alive (running/starting) — the
