@@ -401,7 +401,10 @@ export const agentStartInputShape = {
     .describe(
       "Make this child a SCOPED orchestrator — auto-mounts the daemon's own " +
         "spawn/supervise tools, scoped to its own sub-agents. `true` = default " +
-        `subset; \`{ tools }\` narrows it. Shell/fs/remote tools are NEVER exposed. ${help("orchestrator")}`
+        `subset; \`{ tools }\` narrows it. Shell/fs/remote tools are NEVER exposed. ` +
+        "Skipped with a warning for a `sandbox` spawn — the loopback " +
+        "/mcp/orchestrator mount is unreachable from a remote box. " +
+        `${help("orchestrator")}`
     ),
   notifyUrl: z
     .string()

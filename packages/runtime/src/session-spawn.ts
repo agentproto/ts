@@ -2969,7 +2969,21 @@ export async function spawnAgentSession(
     | ((sessionId: string) => () => void)
     | undefined
   let orchestratorDelegates = false
-  if (!delegationDenied && input.orchestrator !== undefined && input.orchestrator !== false) {
+  // Sandbox spawn: NOTHING that points at this daemon's host-loopback `/mcp`
+  // is mountable — the box cannot reach it (mirrors the bundle guard and the
+  // `daemonMount` skip below). An `orchestrator` request would otherwise
+  // mint a scope and inject a `/mcp/orchestrator?scope=…` URL that the child
+  // can never connect to, so the scope is never minted at all and a clear
+  // warning explains what was dropped.
+  if (input.sandbox !== undefined) {
+    if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
+      spawnWarnings.push(
+        "agent_start: `orchestrator` not mounted for a sandbox spawn — the box cannot " +
+          "reach this daemon's host-loopback /mcp/orchestrator gateway, so the session " +
+          "runs without delegation tools.",
+      )
+    }
+  } else if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
     if (!buildOrchestratorMcp) {
       return {
         ok: false,

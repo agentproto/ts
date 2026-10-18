@@ -300,4 +300,37 @@ describe("agent_start sandbox — workspace without a configured remote", () => 
     expect(pack).toContain("node_modules")
     expect(execCalls.some(c => c.command.includes("push"))).toBe(false)
   })
+
+  it("orchestrator:true on a sandbox spawn mounts NOTHING loopback — no scope minted, no /mcp/orchestrator entry, clear warning (unreachable-mount regression)", async () => {
+    const buildOrchestratorMcp = vi.fn(() => ({
+      entry: {
+        name: "agentproto",
+        transport: "http",
+        ref: "http://127.0.0.1:1/mcp/orchestrator?scope=tok",
+      } as const,
+      bindLifecycle: () => () => {},
+    }))
+    const deps = () => ({ ...makeDeps(), buildOrchestratorMcp })
+
+    const result = await spawnAgentSession(deps(), {
+      adapter: "fake-cli",
+      sandbox: "fake",
+      workspaceSlug: "scratch",
+      role: "supervisor",
+      orchestrator: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // The scope is never minted — no gateway to reach it from inside the box.
+    expect(buildOrchestratorMcp).not.toHaveBeenCalled()
+    expect(JSON.stringify(result.descriptor.mcpServers ?? [])).not.toContain("/mcp/orchestrator")
+    expect(result.warnings ?? []).toContainEqual(
+      expect.stringMatching(/orchestrator` not mounted for a sandbox spawn/),
+    )
+    expect(receivedStarts).toHaveLength(1)
+
+    registry.shutdown()
+    await rm(sessionTranscriptDir(result.descriptor.id), { recursive: true, force: true })
+  })
 })
