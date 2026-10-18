@@ -83,6 +83,20 @@ export interface RemoteProvider {
 }
 
 /**
+ * Thrown by `RemoteProvider.start()` when `stop()` landed while the start
+ * was still in flight and the provider already cleaned up its own process.
+ * This is an abort, not a failure: the registry settles the tunnel as
+ * `stopped` (so `autostart` relaunches it on the next boot) rather than
+ * `error`. Matched with `instanceof`, never by message.
+ */
+export class TunnelStartAbortedError extends Error {
+  constructor(message = "tunnel stopped during startup") {
+    super(message)
+    this.name = "TunnelStartAbortedError"
+  }
+}
+
+/**
  * Declared capabilities of a tunnel provider — pure metadata, surfaced in
  * the adapter listing (`list_tunnel_adapters`). Never carries secrets.
  */

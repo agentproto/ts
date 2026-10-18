@@ -99,13 +99,47 @@ info "Node $(node -v) ready"
 
 
 # --- 3. CLI -------------------------------------------------------------------
-info "Installing @agentproto/cli globally"
-npm i -g @agentproto/cli || die "npm i -g @agentproto/cli failed." \
-  "Run it by hand to see the full npm error: npm i -g @agentproto/cli"
+# A system Node (apt/NodeSource/dnf — what this script itself installs on
+# Linux) leaves a root-owned npm global prefix, so a plain `npm i -g` dies
+# with EACCES (#2056). When `npm prefix -g` is not writable by the current
+# user — and is not already under $HOME (nvm, Homebrew, user prefixes) —
+# install into a user-owned prefix for THIS install only: `--prefix` on the
+# command line, never a rewrite of the user's npmrc, and never sudo for the
+# CLI itself. Same fix docs/cli/guides/no-admin-install.md documents by hand.
+npm_prefix_g="$(npm prefix -g 2>/dev/null || true)"
+user_prefix=""
+reinstall_cmd="npm i -g @agentproto/cli"
+if [ -n "$npm_prefix_g" ]; then
+  case "$npm_prefix_g" in
+    "$HOME" | "$HOME"/*) : ;; # already user-owned — today's behaviour
+    *)
+      if [ ! -w "$npm_prefix_g" ]; then
+        user_prefix="$HOME/.local"
+        reinstall_cmd='npm i -g --prefix "$HOME/.local" @agentproto/cli'
+        info "npm global prefix $npm_prefix_g is not writable — installing @agentproto/cli into $user_prefix for this install only (no sudo, npmrc untouched)"
+        PATH="$user_prefix/bin:$PATH"
+        export PATH
+      fi
+      ;;
+  esac
+fi
+
+if [ -n "$user_prefix" ]; then
+  npm i -g --prefix "$user_prefix" @agentproto/cli || die \
+    "npm i -g --prefix $user_prefix @agentproto/cli failed." \
+    "Run it by hand to see the full npm error: npm i -g --prefix \"\$HOME/.local\" @agentproto/cli"
+else
+  npm i -g @agentproto/cli || die \
+    "npm i -g @agentproto/cli failed (npm global prefix: ${npm_prefix_g:-unknown})." \
+    "npm i -g --prefix \"\$HOME/.local\" @agentproto/cli   # user-owned prefix, no sudo needed"
+fi
 command_exists agentproto || die "The agentproto binary is not on PATH after install." \
-  "Open a new terminal, or check your npm global bin dir (npm bin -g), then re-run this script."
+  "Open a new terminal, or check your npm global bin dir (npm prefix -g), then re-run this script."
 agentproto --version || die "agentproto --version failed after install." \
-  "Reinstall by hand: npm i -g @agentproto/cli"
+  "Reinstall by hand: $reinstall_cmd"
+if [ -n "$user_prefix" ]; then
+  printf 'Add this line to your shell profile (~/.bashrc, ~/.zshrc, ...) so agentproto stays on PATH:\n  export PATH="$HOME/.local/bin:$PATH"\n'
+fi
 
 # --- 4. pnpm native builds ----------------------------------------------------
 info "Note: if you later develop in the agentproto monorepo itself, the first pnpm install asks to approve native builds (node-pty). Approve when prompted — this only affects repo development, not the CLI you just installed."

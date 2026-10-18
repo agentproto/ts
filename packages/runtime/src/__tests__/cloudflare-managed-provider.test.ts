@@ -12,7 +12,7 @@ import {
   MANAGED_CAPABILITIES,
 } from "../remote-providers/cloudflare-managed.js"
 import type { FetchLike } from "../remote-providers/cloudflare-api.js"
-import type { TunnelHealth } from "../remote-providers/types.js"
+import { TunnelStartAbortedError, type TunnelHealth } from "../remote-providers/types.js"
 import { FakeCloudflare } from "./helpers/fake-cloudflare.js"
 
 // ── fakes ────────────────────────────────────────────────────────────────
@@ -337,6 +337,20 @@ describe("cloudflareManagedTunnelProvider", () => {
     expect(cf.records).toHaveLength(1)
     expect(cf.liveTunnels()[0]!.ingress[0]!.service).toBe("http://127.0.0.1:9000")
     await provider.stop()
+  })
+
+  it("stop() during start aborts before spawning cloudflared (no leaked runner)", async () => {
+    const { sp, provider } = makeProvider()
+    const starting = provider.start({
+      target: { host: "127.0.0.1", port: 8081 },
+      workspace: "/nonexistent",
+      tunnel: { key: "wa", hostnames: ["wa.agentik.net"] },
+    })
+    // start() is suspended at its first await: runner is still unset, so a
+    // stop() here has nothing to kill.
+    await provider.stop()
+    await expect(starting).rejects.toBeInstanceOf(TunnelStartAbortedError)
+    expect(sp.procs).toHaveLength(0)
   })
 
   it("swap while running: both hostnames probed, then the old one retired", async () => {

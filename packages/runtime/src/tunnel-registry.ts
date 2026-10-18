@@ -37,10 +37,11 @@ import {
   builtinProviderCapabilities,
   type TunnelCreds,
 } from "./remote-providers/registry.js"
-import type {
-  RemoteProvider,
-  TunnelHealth,
-  TunnelIdentity,
+import {
+  TunnelStartAbortedError,
+  type RemoteProvider,
+  type TunnelHealth,
+  type TunnelIdentity,
 } from "./remote-providers/types.js"
 import { createLinkGuard, parseTtlMs, type LinkGuard } from "./remote-providers/link-guard.js"
 
@@ -222,6 +223,7 @@ export class TunnelRegistry {
     | undefined
   private readonly gatewayGuard: TunnelRegistryOptions["gatewayGuard"]
   private persistTimer: ReturnType<typeof setTimeout> | null = null
+  private closed = false
 
   constructor(opts: TunnelRegistryOptions = {}) {
     this.persistPath = opts.persistPath ?? TUNNELS_FILE_PATH()
@@ -381,10 +383,36 @@ export class TunnelRegistry {
       await guard?.stop().catch(() => {
         // best-effort — the provider start already failed
       })
+      // The provider saw a `stop()` land mid-start and already reaped its
+      // own process. That is an abort, not a failure: settle as `stopped`
+      // (so autostart relaunches it on the next boot) and resolve.
+      if (err instanceof TunnelStartAbortedError) {
+        this.markStopped(desc)
+        return
+      }
       desc.status = "error"
       desc.lastError = err instanceof Error ? err.message : String(err)
       this.schedulePersist()
       throw err
+    }
+
+    // The registry was shut down while this start was still in flight
+    // (shutdown only stops entries already `starting`/`active`). Do not
+    // leak the freshly-spawned child: stop it right away and keep the
+    // descriptor (and the entry) from ever going `active`.
+    if (this.closed) {
+      // `shutdown()` may already have stopped this provider; third-party
+      // providers must tolerate a repeat `stop()`.
+      await provider.stop().catch(() => {
+        // swallow — best-effort cleanup
+      })
+      try {
+        await guard?.stop()
+      } catch {
+        // swallow
+      }
+      this.markStopped(desc)
+      return
     }
 
     entry.guard = guard
@@ -401,6 +429,13 @@ export class TunnelRegistry {
     this.schedulePersist()
   }
 
+  private markStopped(desc: TunnelDescriptor): void {
+    desc.status = "stopped"
+    desc.stoppedAt = new Date().toISOString()
+    delete desc.lastError
+    this.schedulePersist()
+  }
+
   /**
    * Relaunch every `autostart` tunnel that isn't currently running. Called
    * once on daemon boot — `loadFromDisk` has already ghosted formerly-live
@@ -412,6 +447,7 @@ export class TunnelRegistry {
    * `error` and the others still come up.
    */
   async restoreOnBoot(): Promise<void> {
+    if (this.closed) return
     const toStart = Array.from(this.tunnels.values()).filter(
       e => e.desc.autostart === true && e.desc.status === "stopped",
     )
@@ -610,6 +646,7 @@ export class TunnelRegistry {
   }
 
   async shutdown(): Promise<void> {
+    this.closed = true
     const active = Array.from(this.tunnels.values()).filter(
       e => e.desc.status === "starting" || e.desc.status === "active",
     )

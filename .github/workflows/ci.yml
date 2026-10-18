@@ -238,6 +238,16 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/list-unpublished-packages.test.mjs
 
+      # Guards the bootstrap installer's npm-prefix fallback (#2056): a
+      # system Node (apt/dnf) leaves a root-owned npm global prefix and a
+      # plain `npm i -g` dies with EACCES — install.sh must fall back to a
+      # $HOME/.local --prefix for that install only. Runs install.sh end to
+      # end against fake npm/node/agentproto shims in a sandbox HOME; no
+      # real npm, no network, no sudo. Outside packages/**/adapters/**, so
+      # `pnpm test` misses it.
+      - name: Run bootstrap installer tests
+        run: bash scripts/bootstrap/install.test.sh
+
       # Spec↔codegen drift check (see scripts/check-spec-drift.mjs): the
       # sandbox package's GENERATED schema.ts must stay in sync with the
       # vendored JSON-Schema draft — a hand-edit of the generated file
