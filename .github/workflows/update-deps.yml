@@ -313,9 +313,14 @@ jobs:
           // GHSA-jmr9-qjv8-65gv, GHSA-7pqw-9j4j-h8q3: extract-zip advisories blocked by
           // @wdio/utils@^9 pinning @puppeteer/browsers major that would fix. Tracked in #1189.
           // Revisit when @puppeteer/browsers drops extract-zip or @wdio bumps major.
+          // GHSA-vfj7-8cjw-p6xm: braces stack-exhaustion DoS, no patched release at all
+          // (<=3.0.3 is every version). Dev-only, via @changesets/cli → @manypkg/get-packages
+          // → globby@11 → micromatch; inputs are our own repo globs. Revisit when braces
+          // ships a fix or @manypkg drops globby@11.
           const UNPATCHABLE_GHSAS = new Set([
             "GHSA-jmr9-qjv8-65gv",
             "GHSA-7pqw-9j4j-h8q3",
+            "GHSA-vfj7-8cjw-p6xm",
           ]);
           function load(p){ try{ return JSON.parse(fs.readFileSync(p,"utf8")); }catch(e){ return null; } }
           const prod=load("/tmp/audit-prod.json");

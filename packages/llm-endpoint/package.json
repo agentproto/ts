@@ -56,11 +56,11 @@
     "@agentproto/auth": "workspace:*",
     "@agentproto/batch": "workspace:*",
     "@agentproto/providers-store": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.9.5",
+    "@types/node": "^25.9.9",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
