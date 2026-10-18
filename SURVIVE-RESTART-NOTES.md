@@ -105,3 +105,27 @@ still destroy boxes, by design.
 `reapGcEntry` also stamps "stopped" when the provider's connect reports the
 box missing (`sandbox-gc.ts:133-135`) — that honest be-careful case marks a
 row dead because reality already did, not because we stopped it.
+
+## Box-lifetime renewal while a session is busy (e2b 60-minute cap)
+
+Verified 2026-10-18: renewal is ALREADY in place, no change needed.
+
+- The RUNTIME proxy owns it (the provider is stateless on this axis):
+  `sandbox-agent-session-proxy.ts` calls `host.extendTimeout(lifetimeMs)` on
+  every prompt dispatch + streamed box event (throttled by
+  `BOX_RENEW_THROTTLE_MS`), and a `BOX_ACTIVE_RENEW_INTERVAL_MS` (10 min)
+  heartbeat fires as long as a turn is in flight, event or not. Ahead of the
+  known deadline the guard renews once more (turn in flight) or runs a final
+  checkpoint (`BOX_DEADLINE_GUARD_LEAD_MS`).
+- The e2b provider implements it as `sandbox.setTimeout(min(ms, 1h))`
+  (`packages/sandbox-e2b/src/provider.ts:641`), which resets the countdown
+  from now. Boot sets it at `DEFAULT_SANDBOX_TIMEOUT_MS` (45 min).
+- Hard limit: on Hobby/Base plans e2b caps CONTINUOUS runtime at ~1h from box
+  CREATION regardless of renewals — nothing the daemon does can extend a busy
+  box past start+60min there. Such a death is classified
+  `endedReason: "sandbox-expired"` (clean end, work delivered), not `crashed`.
+- Tests: `sandbox-proxy-renew.test.ts` (dispatch/event/throttle/idle
+  discipline), `sandbox-proxy-deadline.test.ts` (heartbeat cadence + guard).
+
+Integration proof of the whole restart chain on the fake provider lives in
+`packages/runtime/src/__tests__/sandbox-restart-integration.test.ts`.
