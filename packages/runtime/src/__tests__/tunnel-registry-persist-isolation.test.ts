@@ -161,6 +161,7 @@ describe("shutdown during pending provider start", () => {
     const tmp = mkdtempSync(join(tmpdir(), "tunnel-registry-abort-"))
     tmpdirs.push(tmp)
     let stopped = false
+    const persistPath = join(tmp, "tunnels.json")
     let releaseStart!: () => void
     const startPending = new Promise<void>(resolve => {
       releaseStart = resolve
@@ -182,7 +183,7 @@ describe("shutdown during pending provider start", () => {
           },
         }
       }
-    })({ persistPath: join(tmp, "tunnels.json"), workspace: tmp })
+    })({ persistPath, workspace: tmp })
     registries.push(reg)
 
     const created = reg.create({
@@ -199,6 +200,18 @@ describe("shutdown during pending provider start", () => {
     expect(desc.status).toBe("stopped")
     expect(desc.lastError).toBeUndefined()
     expect(desc.stoppedAt).toBeDefined()
+
+    // A registry created later from the same persisted file must see the
+    // tunnel as `stopped` (autostart-eligible for restoreOnBoot).
+    const reloaded = new (class extends TunnelRegistry {
+      protected override async pickProviderForTest(): Promise<RemoteProvider> {
+        throw new Error("should not be constructed")
+      }
+    })({ persistPath, workspace: tmp })
+    registries.push(reloaded)
+    const persisted = reloaded.list().find(t => t.name === "aborted-start")
+    expect(persisted).toBeDefined()
+    expect(persisted!.status).toBe("stopped")
   })
 })
 
