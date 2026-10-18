@@ -1473,7 +1473,8 @@ export function registerSessionTools(
       const query = input.q?.trim() ?? ""
       const wantCold =
         input.includeCold === true ||
-        ((query !== "" || toList(filters.ids).length > 0) && rows.length === 0)
+        (query !== "" && rows.length === 0) ||
+        rows.length < new Set(toList(filters.ids)).size
       // A scope-filtered caller has no way to verify a cold row's subtree
       // membership (its parent chain may not be held by the registry
       // either), so it never sees cold rows.
