@@ -42,6 +42,13 @@ import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
+import {
+  checkSessionOwnerGate,
+  checkPromptPolicyEditor,
+  effectiveCallerSessionId,
+  ownerGateError,
+  promptCallerLabel,
+} from "./session-owner.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
 import { opaqueSchema } from "./tool-schema-opaque.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -352,6 +359,28 @@ export function registerAgentTools(
     ? `ui://${appUiToolId(SESSION_CHAT_APP_ID)}/view`
     : "ui://agentproto_session_chat/view"
 
+  // Effective caller identity for this `/mcp` request (session-owner.ts):
+  // the scoped orchestrator gateway's verified scope first, else the trusted
+  // `?callerSessionId=` query. `undefined` = the human operator.
+  const effectiveCaller = (): string | undefined =>
+    effectiveCallerSessionId(callerScope, callerSessionId)
+  // Session-owner gate for the drive tools (session-owner.ts): a call from
+  // another agent session is refused unless the caller is the target's owner
+  // (the session that spawned it), the session itself, or granted via the
+  // target's `allowPromptFrom` list. The human operator always passes.
+  const ownerGateText = (
+    target: SessionDescriptor | undefined,
+    tool: string,
+  ): string | undefined => {
+    if (!target) return undefined
+    const gate = checkSessionOwnerGate({
+      callerSessionId: effectiveCaller(),
+      target,
+      tool,
+    })
+    return gate.ok ? undefined : gate.message
+  }
+
   // ── agent_start ────────────────────────────────────────
   server.registerTool(
     "agent_start",
@@ -463,6 +492,21 @@ export function registerAgentTools(
         },
       )
       if (result.ok) {
+        // Best-effort post-spawn attaches: their failures must never sink an
+        // otherwise-successful spawn; each pushes a non-fatal warning instead.
+        const attachWarnings: string[] = []
+        // Spawn-time drive-policy opt-in (`agent_start.allowPromptFrom`):
+        // list extra caller sessions allowed to drive the new session
+        // besides its owner/the operator. The registry persists the row.
+        if (input.allowPromptFrom?.length) {
+          try {
+            registry.setPromptPolicy(result.descriptor.id, input.allowPromptFrom)
+          } catch (err) {
+            attachWarnings.push(
+              `allowPromptFrom apply failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+        }
         // Phase 4: auto-attach a windowed cost-budget governance policy on the
         // freshly-spawned session. The gate carries the spawned session id
         // explicitly (so a profile-scoped budget resolves THAT session's
@@ -571,6 +615,14 @@ export function registerAgentTools(
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_prompt")
+      // Session-owner gate: only the session's owner (the caller that
+      // spawned it, per its `parentSessionId`), the session itself, the
+      // operator, or a caller named in its `allowPromptFrom` list may drive
+      // it — any other agent session is refused here, daemon-side, so the
+      // rule doesn't depend on the caller's tool listing.
+      const caller = effectiveCaller()
+      const promptOwnerError = ownerGateText(registry.get(sessionId), "agent_prompt")
+      if (promptOwnerError) return ownerGateError("agent_prompt", promptOwnerError)
       try {
         // enqueuePrompt awaits admission (resume attempt + the dead/
         // wrong-kind/busy checks) before resolving, then fires the
@@ -614,6 +666,9 @@ export function registerAgentTools(
         // moment it's missing, so it won't be delivered until the current
         // turn ends.
         const pending = result.pending ?? result.queued
+        // Session events: record WHO sent this prompt — the calling session
+        // id, or the literal `"operator"` for a call with no caller session.
+        registry.noteSessionPrompt(sessionId, promptCallerLabel(caller), pending)
         const delivery = result.delivery ?? (result.queued ? "queued-mid-turn" : "delivered")
         const hintQueued = pending && input.interrupt === undefined
         return {
@@ -1006,6 +1061,10 @@ export function registerAgentTools(
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_kill")
+      // Session-owner gate (same rule as agent_prompt/agent_interrupt):
+      // another agent session is refused before anything else runs.
+      const killOwnerError = ownerGateText(registry.get(sessionId), "agent_kill")
+      if (killOwnerError) return ownerGateError("agent_kill", killOwnerError)
       const parsedOutcome = parseStopOutcome(input.outcome)
       if (!parsedOutcome.ok) {
         return {
@@ -1094,6 +1153,8 @@ export function registerAgentTools(
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_interrupt")
+      const interruptOwnerError = ownerGateText(registry.get(sessionId), "agent_interrupt")
+      if (interruptOwnerError) return ownerGateError("agent_interrupt", interruptOwnerError)
       try {
         const { wasBusy } = await registry.interruptSession(sessionId)
         return {
@@ -1110,6 +1171,70 @@ export function registerAgentTools(
             {
               type: "text",
               text: `agent_interrupt: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── agent_set_prompt_policy ─────────────────────────────
+  server.tool(
+    "agent_set_prompt_policy",
+    "Set who besides this session's owner (the caller that spawned it, or " +
+      "the operator for a root spawn) may drive it through the daemon's " +
+      "drive tools (`agent_prompt` / `agent_interrupt` / `agent_kill` / " +
+      "`session_restart` / `session_continue_fresh`). Pass session ids, or " +
+      "[\"any\"] for all; pass an empty array to reset to owner+operator " +
+      "only. Only the session itself, the session that spawned it, and the " +
+      "human operator may change this policy.",
+    {
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
+      allowPromptFrom: z
+        .array(z.string().min(1))
+        .describe(
+          "Session ids allowed to drive the session, or [\"any\"]. Empty array = default (owner + operator only)."
+        ),
+    },
+    async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_set_prompt_policy")
+      const target = registry.get(sessionId)
+      if (!target) {
+        return {
+          content: [
+            { type: "text", text: `agent_set_prompt_policy: no session "${sessionId}"` },
+          ],
+          isError: true,
+        }
+      }
+      const gate = checkPromptPolicyEditor({
+        callerSessionId: effectiveCaller(),
+        target,
+      })
+      if (!gate.ok) return ownerGateError("agent_set_prompt_policy", gate.message)
+      try {
+        const desc = registry.setPromptPolicy(sessionId, input.allowPromptFrom)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { ok: true, sessionId, allowPromptFrom: desc.allowPromptFrom ?? [] },
+                null,
+                2,
+              ),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `agent_set_prompt_policy: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

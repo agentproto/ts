@@ -30,6 +30,8 @@ import {
   registerAgentTools,
   registerExportSessionTool,
   collectSubtree,
+  checkSessionOwnerGate,
+  effectiveCallerSessionId,
   stripAnsi,
 } from "./agent-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
@@ -2303,6 +2305,21 @@ export function registerSessionTools(
               }),
             },
           ],
+          isError: true,
+        }
+      }
+      // Session-owner gate (session-owner.ts): the fresh-continuation
+      // target may only be driven by its owner (the session that spawned it,
+      // or the operator), itself, or an `allowPromptFrom` grantee.
+      const freshCaller = effectiveCallerSessionId(callerScope, callerSessionId)
+      const freshOwnerGate = checkSessionOwnerGate({
+        callerSessionId: freshCaller,
+        target: desc,
+        tool: "session_continue_fresh",
+      })
+      if (!freshOwnerGate.ok) {
+        return {
+          content: [{ type: "text", text: `session_continue_fresh: ${freshOwnerGate.message}` }],
           isError: true,
         }
       }
@@ -4777,6 +4794,24 @@ export function registerSessionTools(
             ],
             isError: true,
           }
+        }
+      }
+
+      // ── session-owner gate (session-owner.ts) — the same drive rule the
+      // other drive tools enforce: another agent session (neither the target's
+      // owner, the target itself, the operator, nor an `allowPromptFrom`
+      // grantee) may not restart it. Runs after the scoped-orchestrator
+      // subtree gate so orchestrator callers keep their stricter check.
+      const restartCaller = effectiveCallerSessionId(callerScope, callerSessionId)
+      const restartOwnerGate = checkSessionOwnerGate({
+        callerSessionId: restartCaller,
+        target: prev,
+        tool: "session_restart",
+      })
+      if (!restartOwnerGate.ok) {
+        return {
+          content: [{ type: "text", text: `session_restart: ${restartOwnerGate.message}` }],
+          isError: true,
         }
       }
 
