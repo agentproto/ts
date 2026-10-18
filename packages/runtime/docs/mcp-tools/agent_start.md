@@ -405,6 +405,11 @@ live session a short continuation prompt:
 
 > Continue where you stopped; the previous turn failed with: <error>
 
+Note the free-model default rotation above only applies when the spawn names
+its model explicitly: the default rotation list is built in
+`agent_start` handling before default-model resolution, so a spawn that
+leaves `model` unset never sees the free-rotate default.
+
 Shape: `{ on, action?, maxRetries?, maxMigrations?, baseDelayMs?, factor?, maxDelayMs?, retryAfterToolCalls? }`.
 Only `on` is required; the rest default to `action: "retry"`,
 `maxRetries: 3`, `maxMigrations: 2`, `baseDelayMs: 5000`, `factor: 2`,
