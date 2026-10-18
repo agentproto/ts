@@ -487,7 +487,7 @@ export const agentStartInputShape = {
   turnRetry: jsonTolerant(turnRetryInputSchema)
     .optional()
     .describe(
-      `Opt-in: re-prompt after backoff when a turn fails transiently; "rotate" switches to another (non-cooling) model first. ${help("turnRetry")}`
+      `Retries a turn after a transient failure. On by default for executor/sandbox spawns, off for supervisors; null opts out. ${help("turnRetry")}`
     ),
   contextContinuity: jsonTolerant(contextContinuityInputSchema)
     .optional()
