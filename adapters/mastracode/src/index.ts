@@ -20,7 +20,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import { listModels } from "@agentproto/model-catalog"
+import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
 import {
   deriveDeclaredCapabilities,
   type CapabilityStrategy,
@@ -151,7 +151,7 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   // chosen model — there is nothing independent to select → derived-from-model.
   routeSelection: "derived-from-model",
   models: {
-    default: "anthropic/claude-sonnet-4-5",
+    default: `anthropic/${DEFAULT_ANTHROPIC_MODEL}`,
     // Generated from the shared provider catalog so the Configuration Lab /
     // harness picker shows genuinely reachable Anthropic / OpenAI / OpenRouter
     // / Google models. The free-form `model` option still accepts any id.
@@ -206,7 +206,7 @@ export const mastracode: AgentCliHandle = defineAgentCli({
       id: "model",
       type: "string",
       description:
-        "Provider/model override for this operator binding (e.g. `anthropic/claude-sonnet-4-5`).",
+        "Provider/model override for this operator binding (e.g. `anthropic/claude-sonnet-5-5`).",
       bin_args_template: ["--model", "{value}"],
     },
     {

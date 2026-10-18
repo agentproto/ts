@@ -64,6 +64,32 @@ const WATCHDOG_PROBE_TIMEOUT_MS = 10_000
  *  "activity only, throttled, fire-and-forget" discipline. */
 export const BOX_LOGIN_REFRESH_THROTTLE_MS = 5 * 60_000
 
+/**
+ * A sandbox box that died AT OR PAST its known lifetime deadline while the
+ * session was idle. Expected expiry, not a crash: the box's work was
+ * already checkpointed/delivered, the idle box was deliberately left to run
+ * out its lifetime, and the provider reaped it on schedule. The registry's
+ * transport-death listener turns this into `status: "exited"` /
+ * `endedReason: "sandbox-expired"` — a clean end with the delivered work
+ * branch surfaced as the outcome's artifact — instead of a `crashed` row.
+ */
+export class SandboxBoxExpiredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "SandboxBoxExpiredError"
+  }
+}
+
+/** True when `err` is (or looks like) a {@link SandboxBoxExpiredError} —
+ *  also matches a plain `Error` carrying the same `name`, so the tag
+ *  survives serialization across a promise/worker boundary. */
+export function isSandboxBoxExpiredError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err instanceof SandboxBoxExpiredError || err.name === "SandboxBoxExpiredError")
+  )
+}
+
 /** Outcome of one liveness probe:
  *  - `"dead"`: the provider's edge answered non-2xx (daemon not listening,
  *    box gone);
@@ -269,6 +295,12 @@ export interface SandboxAgentSessionProxyOpts {
     failureThreshold?: number
     /** Consecutive `"dead"`/`"unresponsive"` probes before declaring death. */
     unresponsiveThreshold?: number
+    /** When the box's known lifetime deadline has already passed when the
+     *  watchdog declares death (an idle box left to expire — the designed
+     *  lifecycle), the `onDisconnect` error is tagged
+     *  `SandboxBoxExpiredError` so the registry ends the row with
+     *  `endedReason: "sandbox-expired"` / `status: "exited"` instead of
+     *  `crashed`. */
   }
 }
 
@@ -645,6 +677,12 @@ export function createSandboxAgentSessionProxy(
   // (the box was booted or re-armed by `connect` just before), pushed out by
   // every renewal the provider accepts.
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  // The absolute timestamp of the box's NEXT lifetime deadline as this proxy
+  // knows it — `boxLifetimeMs` from the last arm/rearm (renewals the provider
+  // accepted nudge it forward, a rejected renewal leaves it). The watchdog
+  // consults it when the box dies: death AT/PAST this deadline is expected
+  // expiry, not a crash.
+  let nextDeadlineAt: number | undefined
 
   /** Re-arm the box's lifetime because the session is actively working.
    *  Throttled, fire-and-forget; a failed renewal is logged, never thrown.
@@ -674,6 +712,7 @@ export function createSandboxAgentSessionProxy(
    *  running anymore". Inert for providers without `extendTimeout`. */
   function armDeadlineGuard(deadlineAt: number): void {
     if (!host.extendTimeout || closed || detached) return
+    nextDeadlineAt = deadlineAt
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
     const lead = Math.min(BOX_DEADLINE_GUARD_LEAD_MS, Math.floor(boxLifetimeMs / 3))
     deadlineTimer = setTimeout(() => void onDeadlineNear(), Math.max(0, deadlineAt - lead - Date.now()))
@@ -869,6 +908,7 @@ export function createSandboxAgentSessionProxy(
     for (const timer of timers.splice(0)) clearInterval(timer)
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
     deadlineTimer = undefined
+    nextDeadlineAt = undefined
   }
   if (host.extendTimeout) {
     // Heartbeat: re-arm the box on a fixed cadence while a turn is in flight,
@@ -915,14 +955,32 @@ export function createSandboxAgentSessionProxy(
             silent++
           }
           if (failures < threshold && silent < unresponsiveThreshold) return
+          // Capture the deadline BEFORE stopTimers() — it clears
+          // `nextDeadlineAt`, and the expiry check below would never see it.
+          const knownDeadlineAt = nextDeadlineAt
           stopTimers()
-          deadError = new Error(
-            `sandbox proxy: the box daemon for remote session "${remoteSessionId}" ` +
-              (failures >= threshold
-                ? `failed its health check ${failures} times in a row`
-                : `did not answer its health check ${silent} times in a row`) +
-              " (crash, OOM, or the box is gone).",
-          )
+          // An idle box whose DEADLINE has already passed was deliberately
+          // left to expire — the provider reaping it then is the expected
+          // lifecycle, not a crash (sess_795b8c58 / e39cd4da / 7d29436b,
+          // 2026-10-16: three e2b sessions ended exactly at the box's 1h
+          // account cap after the work was delivered, misclassified as
+          // "crashed"). Tag the death so the registry ends the row with
+          // `endedReason: "sandbox-expired"` instead of `crashed`.
+          const expired = knownDeadlineAt !== undefined && Date.now() >= knownDeadlineAt
+          deadError = expired
+            ? new SandboxBoxExpiredError(
+                `sandbox box for remote session "${remoteSessionId}" reached its ` +
+                  `${Math.round(boxLifetimeMs / 60_000)}-minute lifetime deadline while idle — ` +
+                  "the provider reaped it as scheduled (expected expiry, not a crash; " +
+                  "work was left delivered by the session's checkpoints).",
+              )
+            : new Error(
+                `sandbox proxy: the box daemon for remote session "${remoteSessionId}" ` +
+                  (failures >= threshold
+                    ? `failed its health check ${failures} times in a row`
+                    : `did not answer its health check ${silent} times in a row`) +
+                  " (crash, OOM, or the box is gone).",
+              )
           // Last-chance rescue while the VM may still be up.
           await runCheckpoint(turnsSent)
           if (closed) return

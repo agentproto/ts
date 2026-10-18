@@ -116,10 +116,10 @@ describe("adapter-pi client — lean mode argv", () => {
     spawnMock.mockReturnValue(child)
     const client = createAgentCliClient(pi)
 
-    await client.connect(connectOpts({ model: "anthropic/claude-sonnet-4-5" }))
+    await client.connect(connectOpts({ model: "anthropic/claude-sonnet-5-5" }))
 
     const [, args] = spawnMock.mock.calls[0] as [string, string[]]
-    expect(args).toEqual(["--mode", "rpc", "--model", "anthropic/claude-sonnet-4-5"])
+    expect(args).toEqual(["--mode", "rpc", "--model", "anthropic/claude-sonnet-5-5"])
 
     await client.close()
   })
@@ -131,7 +131,7 @@ describe("adapter-pi client — lean mode argv", () => {
 
     await client.connect(
       connectOpts({
-        model: "anthropic/claude-sonnet-4-5",
+        model: "anthropic/claude-sonnet-5-5",
         mode: "lean",
         mcpServers: [{ name: "agentproto", transport: "http", ref: "http://127.0.0.1:1/mcp" }],
       }),

@@ -216,6 +216,13 @@ resolved adapter's declared shape (e.g. hermes' comma-joined `--skills
 a,b`); adapters with no declared `skills` option (e.g. claude-code, which
 auto-discovers from `~/.claude/skills`) ignore this — no-op.
 
+## bundles
+
+Capability bundle ids (`bundle_list`) to attach — each expands to its
+imported MCPs (mounted as native MCP servers, never via the
+`mcp_imported_*` indirection) + skills, and optionally the daemon's own
+`/mcp`. REPLACES (not unions) config defaults when set.
+
 ## model
 
 Model identifier to pass to the adapter (e.g. 'claude-opus-4-8'). For ACP
@@ -240,6 +247,23 @@ profile.
 
 Named auth profile to bill at initial spawn; resolved from the local
 keychain.
+
+## inference
+
+Bind this spawn to a local/LAN inference endpoint instead of a cloud model.
+Accepts `{endpoint}`, `{endpoint, model}`, or the shorthand
+`{model: "<model>@<device|endpoint>"}`. A registered endpoint is a
+local/LAN inference endpoint id (`agentproto llm endpoints list`), or
+`"<id>@<device>"` for a paired device's own shared endpoint; a bare model
+id pairs with `endpoint`, or use the shorthand `"<model>@<device|endpoint>"`
+when `endpoint` is omitted. Runs a fit check (the harness's known
+first-request size vs the endpoint's loaded ctx) BEFORE spawning and refuses
+with an actionable error on a clear miss (`force` overrides the refusal;
+the check still runs and still warns). `headroomPct` is the percentage held
+back from the endpoint's loaded ctx for the fit check (default 25). Defaults
+`adapter`/`harness` to "pi" when neither is set. Mutually exclusive with
+`model`/`route`/`access` — set those directly instead of `inference`, never
+both.
 
 ## posture
 

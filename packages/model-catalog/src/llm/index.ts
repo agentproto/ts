@@ -42,6 +42,7 @@ export {
 export type { OpencodeEndpoint } from "./opencode.js"
 export { formatTokens } from "./tokens.js"
 export {
+  DEFAULT_ANTHROPIC_MODEL,
   WORKFLOW_FAST_MODEL,
   WORKFLOW_PREMIUM_MODEL,
   WORKFLOW_TINY_MODEL,

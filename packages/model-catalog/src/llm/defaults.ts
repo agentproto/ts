@@ -11,6 +11,13 @@
  * single rebuild.
  */
 
+/**
+ * Canonical Anthropic default used by the adapter manifests (`AIP-45`
+ * `models.default`, in `provider/id` form). Single source of truth for the
+ * platform-wide Claude default — bump here, not in each manifest.
+ */
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5" as const
+
 /** Fast workhorse for content workflows (outline, post, sections). */
 export const WORKFLOW_FAST_MODEL = "claude-sonnet-4-6" as const
 

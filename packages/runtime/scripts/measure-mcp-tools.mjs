@@ -12,6 +12,7 @@
  * Usage:
  *   node packages/runtime/scripts/measure-mcp-tools.mjs
  *   node packages/runtime/scripts/measure-mcp-tools.mjs --top 20
+ *   node packages/runtime/scripts/measure-mcp-tools.mjs --tool agent_start
  */
 
 import { createServer } from "node:net"
@@ -64,10 +65,37 @@ function printReport(label, measurement, top) {
   }
 }
 
+function measureTool(tool) {
+  return Buffer.byteLength(JSON.stringify({ description: tool.description, inputSchema: tool.inputSchema }), "utf8")
+}
+
+/** Per top-level-property byte breakdown for one tool — description + schema
+ *  JSON, sorted desc, so the biggest nested sub-schemas to slim are obvious. */
+function printBreakdown(tools, name) {
+  const tool = tools.find(t => t.name === name)
+  if (!tool) {
+    console.log(`\n(no tool named "${name}")`)
+    return
+  }
+  console.log(`\n=== ${name} per-property (${measureTool(tool)} bytes total) ===`)
+  const props = tool.inputSchema?.properties ?? {}
+  const rows = Object.entries(props).map(([prop, schema]) => ({
+    prop,
+    bytes: Buffer.byteLength(JSON.stringify({ [prop]: schema }), "utf8"),
+    descLen: typeof schema?.description === "string" ? schema.description.length : 0,
+  }))
+  rows.sort((a, b) => b.bytes - a.bytes)
+  for (const row of rows) {
+    console.log(`  ${row.bytes.toString().padStart(6)}  desc=${row.descLen.toString().padStart(5)}  ${row.prop}`)
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   const topIdx = argv.indexOf("--top")
   const top = topIdx !== -1 ? Number(argv[topIdx + 1]) : 10
+  const toolIdx = argv.indexOf("--tool")
+  const toolName = toolIdx !== -1 ? argv[toolIdx + 1] : undefined
 
   const [fullSurface, alwaysOn] = await Promise.all([
     listTools(undefined),
@@ -79,6 +107,7 @@ async function main() {
 
   printReport("full surface (deferredTools omitted)", fullMeasurement, top)
   printReport("deferred always-on set (deferredTools: {})", alwaysOnMeasurement, top)
+  if (toolName) printBreakdown(alwaysOn, toolName)
 
   console.log("\n=== summary ===")
   console.log(`full surface:  ${fullMeasurement.entries.length} tools, ${fullMeasurement.totalBytes.toLocaleString()} bytes`)

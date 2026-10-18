@@ -42,6 +42,7 @@ import {
   listUnpricedKnownLlmIds,
   LLM_PRICING_CATALOG,
 } from "../llm/catalog.js"
+import { DEFAULT_ANTHROPIC_MODEL } from "../llm/defaults.js"
 import {
   OPENAI_GENERATED_PRICING,
   OPENAI_GENERATED_UNPRICED_IDS,
@@ -817,6 +818,13 @@ describe("splitContextWindowHint", () => {
     expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toEqual(resolvePricingExact("claude-sonnet-4-5"))
     expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toBeDefined()
     expect(resolveAlias("claude-sonnet-4-5[1m]")).toBe(resolveAlias("claude-sonnet-4-5"))
+  })
+
+  it("DEFAULT_ANTHROPIC_MODEL resolves as a canonical catalog id", () => {
+    expect(DEFAULT_ANTHROPIC_MODEL).toBe("claude-sonnet-5-5")
+    expect(resolveAlias(DEFAULT_ANTHROPIC_MODEL)).toBe(DEFAULT_ANTHROPIC_MODEL)
+    expect(isKnownLlmId(DEFAULT_ANTHROPIC_MODEL)).toBe(true)
+    expect(resolveContextWindow(DEFAULT_ANTHROPIC_MODEL)).toBeDefined()
   })
 })
 

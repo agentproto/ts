@@ -26,7 +26,11 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import { getModelsByProvider, listModels } from "@agentproto/model-catalog"
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  getModelsByProvider,
+  listModels,
+} from "@agentproto/model-catalog"
 
 /**
  * Build OpenCode's model menu from the shared provider catalog instead of a
@@ -259,10 +263,9 @@ export const opencode: AgentCliHandle = defineAgentCli({
     },
   ],
   models: {
-    // Default to a canonical catalog model (claude-sonnet-4-5). The legacy
-    // alias `claude-sonnet-4-6` still resolves to the same model, but the
-    // generated menu uses canonical ids from the shared catalog.
-    default: "anthropic/claude-sonnet-4-5",
+    // Default to the platform-wide Anthropic canonical model declared in
+    // the shared catalog (single source of truth, `DEFAULT_ANTHROPIC_MODEL`).
+    default: `anthropic/${DEFAULT_ANTHROPIC_MODEL}`,
     // Generated from the shared provider catalog so the Configuration Lab /
     // harness picker shows genuinely runnable Anthropic / OpenAI / OpenRouter
     // / OpenCode Go / OpenCode Zen models instead of a hardcoded 3-item list.

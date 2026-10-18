@@ -30,7 +30,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import { listModels } from "@agentproto/model-catalog"
+import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
 import {
   deriveDeclaredCapabilities,
   type CapabilityStrategy,
@@ -141,7 +141,7 @@ export const jcode: AgentCliHandle = defineAgentCli({
   },
   routeSelection: "derived-from-model",
   models: {
-    default: "anthropic/claude-sonnet-4-5",
+    default: `anthropic/${DEFAULT_ANTHROPIC_MODEL}`,
     allowed: buildJcodeModelMenu(),
     env: {
       anthropic: "ANTHROPIC_API_KEY",
@@ -167,7 +167,7 @@ export const jcode: AgentCliHandle = defineAgentCli({
       id: "model",
       type: "string",
       description:
-        "Model id for this run (e.g. `claude-sonnet-4-5`). Forwarded to `--model`. " +
+        "Model id for this run (e.g. `claude-sonnet-5-5`). Forwarded to `--model`. " +
         "An id jcode can't resolve makes its CLI silently fall back to its OWN " +
         "default model — the print arm detects that from the NDJSON `start` " +
         "line's reported model and aborts the turn loudly instead " +
