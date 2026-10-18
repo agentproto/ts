@@ -51,4 +51,6 @@ export {
   scrubCommandFromMessage,
 } from "./exec-errors.js"
 
+export { SandboxQuotaError, isSandboxQuotaError } from "./quota-error.js"
+
 export { resolveLifecyclePolicy, type SandboxLifecyclePolicy } from "./lifecycle.js"

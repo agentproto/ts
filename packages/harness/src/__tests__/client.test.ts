@@ -52,3 +52,39 @@ describe("isError guard logic", () => {
     ).toThrow("Empty response")
   })
 })
+
+describe("HarnessClient.connect headers", () => {
+  async function firstRequestHeaders(
+    headers: Record<string, string> | undefined,
+  ): Promise<Record<string, string | string[] | undefined>> {
+    const { createServer } = await import("node:http")
+    const { HarnessClient } = await import("../client.js")
+    let seen: Record<string, string | string[] | undefined> | undefined
+    const server = createServer((req, res) => {
+      seen ??= req.headers
+      res.statusCode = 400
+      res.end("not an mcp server")
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    try {
+      const { port } = server.address() as { port: number }
+      await HarnessClient.connect({ url: `http://127.0.0.1:${port}/mcp`, headers }).catch(
+        () => undefined,
+      )
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+    if (!seen) throw new Error("the transport never reached the server")
+    return seen
+  }
+
+  it("sends ConnectHarnessOptions.headers on the MCP transport requests", async () => {
+    const seen = await firstRequestHeaders({ authorization: "Bearer test-token" })
+    expect(seen.authorization).toBe("Bearer test-token")
+  })
+
+  it("sends no authorization header when none is given", async () => {
+    const seen = await firstRequestHeaders(undefined)
+    expect(seen.authorization).toBeUndefined()
+  })
+})

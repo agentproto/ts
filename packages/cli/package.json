@@ -93,6 +93,7 @@
     "@agentproto/runtime-profile-standard": "workspace:*",
     "@agentproto/sandbox-box": "workspace:*",
     "@agentproto/sandbox-computer": "workspace:*",
+    "@agentproto/sandbox-instabox": "workspace:*",
     "@agentproto/sandbox-e2b": "workspace:*",
     "@agentproto/secrets": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",

@@ -113,6 +113,24 @@ describe("createSandboxAgentSessionHost", () => {
     })
   })
 
+  it("surfaces the gated daemon's auth headers on the host for raw HTTP reads", async () => {
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://18790-box.instabox.tech/mcp",
+        sandboxId: "m_box",
+        token: "box-token",
+        stop: vi.fn(async () => {}),
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({ provider, spec, secrets: { slugs: [] } })
+    expect(host.authHeaders).toEqual({ Authorization: "Bearer box-token" })
+  })
+
+  it("leaves authHeaders absent for an ungated daemon", async () => {
+    const host = await createSandboxAgentSessionHost({ provider: fakeProvider(), spec, secrets: { slugs: [] } })
+    expect(host.authHeaders).toBeUndefined()
+  })
+
   it("stop() closes the daemon host AND stops the sandbox", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     const close = vi.fn(async () => {})
