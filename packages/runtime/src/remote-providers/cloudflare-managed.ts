@@ -44,6 +44,7 @@ import type {
   TunnelIdentity,
   TunnelProviderHandle,
 } from "./types.js"
+import { TunnelStartAbortedError } from "./types.js"
 
 // Kept here for existing importers; the implementation moved to the shared runner.
 export { probeHostname, makeCloudflaredSpawner, type ProbeResult } from "./cloudflared-runner.js"
@@ -101,6 +102,10 @@ export function cloudflareManagedTunnelProvider(
 ): ManagedProvider {
   const fetchImpl: FetchLike = deps.fetch ?? (globalThis.fetch as unknown as FetchLike)
   let runner: CloudflaredRunner | null = null
+  // Set by `stop()` while `start()` is still awaiting preflight/reconcile.
+  // `runner` is only assigned after those awaits, so `stop()` finds nothing to
+  // stop; the pending `start()` checks this before spawning cloudflared.
+  let stopped = false
   let service: string | null = null
   let hostnames: string[] = []
   let rawLog: ((line: string) => void) | undefined
@@ -161,6 +166,7 @@ export function cloudflareManagedTunnelProvider(
       }
       if (runner) throw new Error("cloudflare-managed: provider already started")
       rawLog = opts.onLog
+      stopped = false
       const eng = engine()
       // Fail on config / zone problems before touching anything remote.
       eng.validateHostnames(tunnel.hostnames)
@@ -174,6 +180,12 @@ export function cloudflareManagedTunnelProvider(
       hostnames = tunnel.hostnames.map(normalizeHost)
       const rec = await eng.reconcile({ key: tunnel.key, hostnames }, service)
 
+      if (stopped) {
+        // `stop()` ran during the awaits above and found no runner. Spawning
+        // now would leak a cloudflared nobody can stop.
+        service = null
+        throw new TunnelStartAbortedError()
+      }
       runner = r
       try {
         r.start({
@@ -192,6 +204,7 @@ export function cloudflareManagedTunnelProvider(
     },
 
     async stop(): Promise<void> {
+      stopped = true
       const r = runner
       runner = null
       service = null
