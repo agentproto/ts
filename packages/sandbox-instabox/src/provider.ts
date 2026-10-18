@@ -615,8 +615,15 @@ async function reviveMachine(client: InstaboxClient, machineId: string, state: s
     try {
       await client.wake(machineId)
       return
-    } catch {
-      // Manually suspended (wake answers 409): fall through to `resume`.
+    } catch (err) {
+      // Only a CONFLICT means "manually suspended, wake refuses" (the API
+      // answers 409 machine_not_running). Any other failure — a transport
+      // error, a 5xx — must surface as itself rather than be misreported as
+      // "wake and resume both refused".
+      const conflict =
+        err instanceof InstaboxApiError &&
+        (err.status === 409 || err.code === "machine_not_running")
+      if (!conflict) throw err
     }
     const resume = await client.machineAction(machineId, "resume").catch(err => {
       throw new Error(
@@ -642,8 +649,11 @@ async function reviveMachine(client: InstaboxClient, machineId: string, state: s
  * daemon is running, so the token it returns MUST match what is installed.
  */
 async function readExistingAuthToken(client: InstaboxClient, machineId: string): Promise<string> {
+  // Read ONLY the token line: `cat`-ing the whole EnvironmentFile would pull
+  // every box secret (OPENROUTER_API_KEY, …) back into this host process for
+  // no reason. `grep` keeps the sensitive values in the box.
   const result = await client.exec(machineId, {
-    cmd: `sudo cat ${ENV_FILE_PATH} 2>/dev/null || true`,
+    cmd: `sudo grep '^${AUTH_TOKEN_ENV_VAR}=' ${ENV_FILE_PATH} 2>/dev/null || true`,
     timeoutSeconds: 60,
   })
   if (result.exitCode !== 0) {
