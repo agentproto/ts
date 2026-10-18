@@ -71,6 +71,7 @@ import { unknownModelRoleIds } from "./model-roles.js"
  *  path so `describeKey` can look one up generically. */
 export interface BootDaemonKnobs {
   "daemon.idleReapAfterMs"?: number
+  "daemon.sandboxIdleReapAfterMs"?: number
   "daemon.crashDetectIntervalMs"?: number
   "daemon.restartSweepIntervalMs"?: number
   "daemon.turnStallAfterMs"?: number
@@ -250,6 +251,8 @@ const ENV_PARSERS: Record<string, (raw: string) => unknown> = {
   AGENTPROTO_TOKEN: parseNonEmptyString,
   AGENTPROTO_WORKTREES_ROOT: parseNonEmptyString,
   AGENTPROTO_IDLE_REAP_AFTER_MS: parsePositiveInt,
+  // `0` is meaningful here (sandbox reap off), unlike the opt-in sibling above.
+  AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS: parseFiniteInt,
   AGENTPROTO_CRASH_DETECT_INTERVAL_MS: parseFiniteInt,
   AGENTPROTO_RESTART_SWEEP_INTERVAL_MS: parsePositiveInt,
   AGENTPROTO_TURN_STALL_AFTER_MS: parseFiniteInt,

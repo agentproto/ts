@@ -106,7 +106,44 @@ Creates the file if missing before launching the editor.
 | `daemon.label` | `string` | Server label sent in tunnel hello frames. |
 | `daemon.reviewSessionRetentionDays` | `number` | Days after which a terminal review-lane session dir (`~/.agentproto/sessions/<id>/`) is deleted by the retention sweep. Default `7`; `0` disables. See [`sessions gc --retention`](./sessions.md#gc). |
 | `daemon.sessionRetentionDays` | `number` | Same, for every other terminal session. Default off (unset / `0`). Pinned, `keepAlive` and live sessions are never deleted. |
+| `daemon.idleReapAfterMs` | `number` | Retire an idle agent-cli session after this many ms (SIGTERM the adapter, row `killed` / `idle-reaped`, lazily resumable). Default off (unset / `0`). Env: `AGENTPROTO_IDLE_REAP_AFTER_MS`. Needs a restart. |
+| `daemon.sandboxIdleReapAfterMs` | `number` | Shorter idle threshold for **sandboxed** sessions (a session in a provider box: e2b, …). Default `900000` (15 min); `0` turns it off. Env: `AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS`. Needs a restart. See [Sandbox idle reap](#sandbox-idle-reap). |
 | `tunnel.host` | `string` | Default tunnel URL for `serve` and `daemon install`. |
 | `tunnel.autoconnect` | `boolean` | When true, `daemon install` bakes `--connect tunnel.host` into the plist; `serve` falls back to it when `--connect` is omitted. |
 | `tunnel.e2e` | `boolean` | Opt into end-to-end encrypting the outbound tunnel (needs `tunnel.token`; the host must also support it, else it falls back to plaintext). See [`serve`](./serve.md#end-to-end-encryption-tunnele2e-opt-in). |
 | `features.pty` | `boolean` | Informational hint; the daemon detects `node-pty` at runtime regardless. |
+
+## Sandbox idle reap
+
+A finished turn does not close a session, so a sandboxed session sits idle with
+its box (a billed VM) running until the provider lifetime expires.
+`daemon.sandboxIdleReapAfterMs` bounds that: a session running in a provider
+box that has been idle this long is reaped, and its box goes with it.
+
+- **Applies to** sessions with a provider box (`sandboxId` set, not a
+  `device:` spawn). Non-sandbox sessions are unaffected and keep following
+  `daemon.idleReapAfterMs` only. If both knobs are on, a sandboxed session is
+  reaped at the shorter one; if the sandbox knob is `0`, it falls back to the
+  general knob.
+- **Never reaped** while busy, awaiting input or a permission decision, blocked
+  on a command or sub-agent, running a background task, parent of a live child
+  session, archived, or `keepAlive`.
+- **Teardown order**: final checkpoint of the box's work (uncommitted changes
+  included, capped at 2 min so a hung checkpoint cannot keep the box alive),
+  then the box session is killed, the work branch is delivered, and the box is
+  killed. A spec that asked to pause (`lifecycle.pause_after_idle`, or a `reuse`
+  boot) pauses it instead; `lifecycle.destroy_on` always kills.
+- **Ledger**: the row for the box in `~/.agentproto/sandboxes.json` ends in
+  `stopped` (or `paused`) and records `reapedAt`, `reapedIdleMs` and
+  `reapedSessionId`.
+- **Revival**: the session row stays (`killed` / `idle-reaped`). A later prompt
+  cold-boots a fresh box from the checkpoint branch (the same path as
+  `session_restart`) and delivers the prompt there. The old row is superseded
+  (`continuedTo`); later prompts to the old id are told to use the new one.
+  A failed move fails the prompt with the blocker rather than resuming an
+  adapter on the host.
+
+```sh
+agentproto config set daemon.sandboxIdleReapAfterMs 600000   # 10 min
+agentproto config set daemon.sandboxIdleReapAfterMs 0        # never reap boxes
+```

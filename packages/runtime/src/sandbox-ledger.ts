@@ -60,6 +60,13 @@ export interface SandboxLedgerEntry {
   /** ISO instant the box is expected to idle-expire — stamped only when the
    *  boot knew a window (`lifecycle.pause_after_idle`). */
   expiresAt?: string
+  /** Set when the box was torn down because its session was idle-reaped
+   *  (`daemon.sandboxIdleReapAfterMs`) rather than closed by a user: the ISO
+   *  instant, how long the session had been idle, and the host session id.
+   *  Cleared by the next boot/reconnect of the same sandboxId. */
+  reapedAt?: string
+  reapedIdleMs?: number
+  reapedSessionId?: string
   /** Last PROVIDER liveness probe verdict (`SandboxProvider.probe`) — the
    *  only signal that distinguishes box death from session death. Absent
    *  when never probed (or the provider can't probe): the ledger's `state`
@@ -239,6 +246,38 @@ export function recordSandboxState(
     if (!prior) return // Nothing boot recorded — no row to transition.
     upsertSandboxLedger(
       { ...prior, state, updatedAt: nowIso() },
+      target,
+    )
+  } catch {
+    // Best-effort, always.
+  }
+}
+
+/** Stamp the teardown of an idle-reaped sandbox session: the final state
+ *  ("stopped" for a kill, "paused" when the lifecycle policy asked to pause)
+ *  plus the reap provenance (`reapedAt` / `reapedIdleMs` / `reapedSessionId`).
+ *  Best-effort: never throws. No-op without a boot row, like
+ *  {@link recordSandboxState}. */
+export function recordSandboxReap(
+  sandboxId: string,
+  state: "paused" | "stopped",
+  info: { idleMs: number; sessionId?: string },
+  path?: string,
+): void {
+  try {
+    const target = path ?? sandboxLedgerPath()
+    const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
+    if (!prior) return
+    const ts = nowIso()
+    upsertSandboxLedger(
+      {
+        ...prior,
+        state,
+        updatedAt: ts,
+        reapedAt: ts,
+        reapedIdleMs: info.idleMs,
+        ...(info.sessionId ? { reapedSessionId: info.sessionId } : {}),
+      },
       target,
     )
   } catch {

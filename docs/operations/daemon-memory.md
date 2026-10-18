@@ -80,7 +80,8 @@ Only explicit `keepAlive: true` sessions then eagerly resume. Other sessions
 remain resumable when prompted. The separate `continueInterruptedOnBoot` opt-in
 also respects this policy when sending automatic continuation prompts. Manual
 continuation remains available for other sessions. Config takes effect on
-next daemon start. KeepAlive also exempts a session from idle reaping.
+next daemon start. KeepAlive also exempts a session from idle reaping (including
+the sandbox reap, [`daemon.sandboxIdleReapAfterMs`](../cli/verbs/config.md#sandbox-idle-reap)).
 
 HTTP `/health` and MCP `daemon_health` now expose `bootResumePolicy` and a
 `memory` object with Node RSS, heapUsed, heapTotal, external and arrayBuffers.

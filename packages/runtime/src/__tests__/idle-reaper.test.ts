@@ -193,6 +193,98 @@ describe("runIdleReapPass — candidate selection", () => {
   })
 })
 
+describe("runIdleReapPass — sandboxed sessions (sandboxIdleReapAfterMs)", () => {
+  const FIFTEEN_MIN = 15 * 60_000
+  const box = (over: Partial<SessionDescriptor> & { id: string }): SessionDescriptor =>
+    row({ remote: true, sandboxId: "bx_1", sandboxProvider: "e2b", ...over })
+
+  it("reaps a sandboxed session at the sandbox threshold while a local one idle for the same time stays", () => {
+    const { registry, reaped } = stubRegistry([
+      box({ id: "boxed", lastActivityAt: "2026-07-23T00:40:00Z" }), // 20min idle
+      row({ id: "local", lastActivityAt: "2026-07-23T00:40:00Z" }),
+    ])
+    const summary = runIdleReapPass({
+      registry,
+      idleReapAfterMs: 2 * 60 * 60_000,
+      sandboxIdleReapAfterMs: FIFTEEN_MIN,
+      now,
+    })
+    expect(summary.ids).toEqual(["boxed"])
+    expect(reaped).toEqual([{ id: "boxed", idleMs: 20 * 60_000 }])
+  })
+
+  it("is enabled by the sandbox threshold alone and never touches a local session then", () => {
+    const { registry, reaped } = stubRegistry([box({ id: "boxed" }), row({ id: "local" })])
+    const summary = runIdleReapPass({
+      registry,
+      idleReapAfterMs: undefined,
+      sandboxIdleReapAfterMs: FIFTEEN_MIN,
+      now,
+    })
+    expect(summary).toEqual({ enabled: true, candidates: 1, reaped: 1, ids: ["boxed"] })
+    expect(reaped.map(r => r.id)).toEqual(["boxed"])
+  })
+
+  it("sandbox threshold off (0) ⇒ a sandboxed session falls back to the general threshold", () => {
+    const { registry } = stubRegistry([box({ id: "boxed" })]) // 1h idle
+    expect(
+      runIdleReapPass({ registry, idleReapAfterMs: THIRTY_MIN, sandboxIdleReapAfterMs: 0, now }).ids,
+    ).toEqual(["boxed"])
+    expect(
+      runIdleReapPass({ registry, idleReapAfterMs: 2 * 60 * 60_000, sandboxIdleReapAfterMs: 0, now }).reaped,
+    ).toBe(0)
+    expect(runIdleReapPass({ registry, idleReapAfterMs: 0, sandboxIdleReapAfterMs: 0, now }).enabled).toBe(false)
+  })
+
+  it("a sandboxed session younger than the sandbox threshold stays", () => {
+    const { registry, reaped } = stubRegistry([box({ id: "young", lastActivityAt: "2026-07-23T00:50:00Z" })])
+    expect(runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now }).reaped).toBe(0)
+    expect(reaped).toEqual([])
+  })
+
+  it.each([
+    ["busy", { busy: true }],
+    ["awaiting input", { awaitingInput: true }],
+    ["awaiting permission", { awaitingPermission: true }],
+    ["keepAlive", { keepAlive: true }],
+    ["archived", { archived: true }],
+    ["blocked on a command", { blockedOn: "command" as const }],
+    ["blocked on a sub-agent", { blockedOn: "subagent" as const }],
+    [
+      "running a background task",
+      { backgroundTasks: [{ taskId: "t", status: "running" as const, startedAt: "2026-07-23T00:00:00Z" }] },
+    ],
+  ])("never reaps a sandboxed session that is %s", (_name, over) => {
+    const { registry, reaped } = stubRegistry([box({ id: "b", ...over })])
+    expect(runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now }).reaped).toBe(0)
+    expect(reaped).toEqual([])
+  })
+
+  it("a finished background task does not pin the box", () => {
+    const { registry } = stubRegistry([
+      box({
+        id: "b",
+        backgroundTasks: [{ taskId: "t", status: "completed", startedAt: "2026-07-23T00:00:00Z" }],
+      }),
+    ])
+    expect(runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now }).ids).toEqual(["b"])
+  })
+
+  it("a sandboxed parent with a live child session is not reaped (the child's work lives in the same orchestration)", () => {
+    const { registry, reaped } = stubRegistry([
+      box({ id: "parent" }),
+      row({ id: "child", parentSessionId: "parent", lastActivityAt: "2026-07-23T00:59:00Z" }),
+    ])
+    expect(runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now }).reaped).toBe(0)
+    expect(reaped).toEqual([])
+  })
+
+  it("a device: sandbox (a paired host, not a box of ours) keeps the general rules", () => {
+    const { registry } = stubRegistry([box({ id: "dev", sandboxProvider: "device:my-mac" })])
+    expect(runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now }).reaped).toBe(0)
+  })
+})
+
 // ── Layer 2: the reap action + eager-exclusion + lazy resume (real registry) ──
 
 /** A live agent session whose `close()` sets `closed.value` — so a test can
@@ -334,6 +426,217 @@ describe("registry.reapIdle — the reap action", () => {
     expect(reg.reapIdle(desc.id)).toBe(false)
     // Unknown id ⇒ false.
     expect(reg.reapIdle("nope")).toBe(false)
+    reg.shutdown()
+  })
+})
+
+describe("registry.reapIdle — sandboxed session (box teardown + fresh-box revival)", () => {
+  let tmp: string
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "idle-reap-box-"))
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  const spawnBox = (
+    reg: ReturnType<typeof createSessionsRegistry>,
+    close: ReturnType<typeof vi.fn>,
+  ): SessionDescriptor => {
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/home/user/work",
+      agentSession: { ...liveAgentSession("acp-box", { value: false }), close },
+      adapterSlug: "claude-code",
+      remote: true,
+      sandboxId: "bx_1",
+      sandboxProvider: "e2b",
+    })
+    reg.get(desc.id)!.lastActivityAt = "2020-01-01T00:00:00Z"
+    return desc
+  }
+
+  it("closes a sandboxed session with the idle-reap marker (so the proxy checkpoints + kills the box)", () => {
+    const close = vi.fn(async () => {})
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = spawnBox(reg, close)
+
+    expect(
+      runIdleReapPass({ registry: reg, idleReapAfterMs: 0, sandboxIdleReapAfterMs: 1_000, now: () => Date.now() }).ids,
+    ).toEqual([desc.id])
+
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledWith({ idleReap: { idleMs: expect.any(Number), sessionId: desc.id } })
+    expect(reg.get(desc.id)?.endedReason).toBe("idle-reaped")
+    reg.shutdown()
+  })
+
+  it("a non-sandbox reap still closes with no options (defaults untouched)", () => {
+    const close = vi.fn(async () => {})
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: { ...liveAgentSession("acp-1", { value: false }), close },
+      adapterSlug: "claude-code",
+    })
+    reg.get(desc.id)!.lastActivityAt = "2020-01-01T00:00:00Z"
+    expect(reg.reapIdle(desc.id, 5)).toBe(true)
+    expect(close).toHaveBeenCalledWith(undefined)
+    reg.shutdown()
+  })
+
+  it("a failing box teardown is surfaced on the row, not swallowed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = spawnBox(reg, vi.fn(async () => { throw new Error("provider 500") }))
+    reg.reapIdle(desc.id, 5)
+    await new Promise(res => setTimeout(res, 10))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("provider 500"))
+    warn.mockRestore()
+    reg.shutdown()
+  })
+
+  it("a prompt to the reaped row cold-boots a fresh box and delivers the prompt to the successor", async () => {
+    const moved: string[] = []
+    const prompted: string[] = []
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      resumeAgent: makeResumer([]),
+      moveReapedBox: async ({ sessionId, prev }) => {
+        moved.push(sessionId)
+        expect(prev.sandboxId).toBe("bx_1")
+        const succ = reg.spawnAgent({
+          workspaceSlug: "default",
+          cwd: "/home/user/work",
+          agentSession: {
+            sessionId: "acp-new",
+            async *send(msg: unknown) {
+              prompted.push(JSON.stringify(msg))
+              yield { kind: "turn-end", reason: "completed" }
+            },
+            async cancel() {},
+            async close() {},
+          } as AgentSessionLike,
+          adapterSlug: "claude-code",
+          remote: true,
+          sandboxId: "bx_2",
+          sandboxProvider: "e2b",
+        })
+        return { ok: true, newSessionId: succ.id }
+      },
+    })
+    const desc = spawnBox(reg, vi.fn(async () => {}))
+    reg.reapIdle(desc.id, 5)
+
+    await reg.sendPrompt(desc.id, "pick up where you left off")
+
+    expect(moved).toEqual([desc.id])
+    expect(prompted).toHaveLength(1)
+    expect(prompted[0]).toContain("pick up where you left off")
+    reg.shutdown()
+  })
+
+  it("the fresh-box move waits for the reap's own teardown (final checkpoint) to finish", async () => {
+    const order: string[] = []
+    let releaseClose!: () => void
+    const closeDone = new Promise<void>(res => { releaseClose = res })
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      moveReapedBox: async () => {
+        order.push("move")
+        return { ok: true, newSessionId: reg.spawnAgent({
+          workspaceSlug: "default",
+          cwd: "/home/user/work",
+          agentSession: liveAgentSession("acp-new", { value: false }),
+          adapterSlug: "claude-code",
+          remote: true,
+          sandboxId: "bx_2",
+          sandboxProvider: "e2b",
+        }).id }
+      },
+    })
+    const desc = spawnBox(reg, vi.fn(async () => {
+      await closeDone
+      order.push("teardown-done")
+    }))
+    reg.reapIdle(desc.id, 5)
+
+    const prompt = reg.sendPrompt(desc.id, "go")
+    await new Promise(res => setTimeout(res, 20))
+    expect(order).toEqual([]) // move held back while the teardown runs
+    releaseClose()
+    await prompt
+    expect(order).toEqual(["teardown-done", "move"])
+    reg.shutdown()
+  })
+
+  it("concurrent prompts share ONE fresh-box move", async () => {
+    let calls = 0
+    let succId = ""
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      moveReapedBox: async () => {
+        calls++
+        await new Promise(res => setTimeout(res, 20))
+        succId = reg.spawnAgent({
+          workspaceSlug: "default",
+          cwd: "/home/user/work",
+          agentSession: liveAgentSession("acp-new", { value: false }),
+          adapterSlug: "claude-code",
+          remote: true,
+          sandboxId: "bx_2",
+          sandboxProvider: "e2b",
+        }).id
+        return { ok: true, newSessionId: succId }
+      },
+    })
+    const desc = spawnBox(reg, vi.fn(async () => {}))
+    reg.reapIdle(desc.id, 5)
+
+    await Promise.all([reg.sendPrompt(desc.id, "a"), reg.sendPrompt(desc.id, "b").catch(() => undefined)])
+    expect(calls).toBe(1)
+    reg.shutdown()
+  })
+
+  it("a failed move fails the prompt loudly instead of resuming a local adapter on a box-only path", async () => {
+    const resume = makeResumer([])
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      resumeAgent: resume,
+      moveReapedBox: async () => ({ ok: false, blocker: "no workspace remote" }),
+    })
+    const desc = spawnBox(reg, vi.fn(async () => {}))
+    reg.reapIdle(desc.id, 5)
+
+    await expect(reg.sendPrompt(desc.id, "hi")).rejects.toThrow(/no workspace remote/)
+    expect(resume).not.toHaveBeenCalled()
+    reg.shutdown()
+  })
+
+  it("a reaped non-sandbox row still revives in place (no move hook involved)", async () => {
+    const moveReapedBox = vi.fn()
+    const calls: string[] = []
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      resumeAgent: makeResumer(calls),
+      moveReapedBox,
+    })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", { value: false }),
+      adapterSlug: "claude-code",
+    })
+    reg.reapIdle(desc.id, 5)
+    await reg.sendPrompt(desc.id, "continue")
+    expect(calls).toEqual([desc.id])
+    expect(moveReapedBox).not.toHaveBeenCalled()
     reg.shutdown()
   })
 })

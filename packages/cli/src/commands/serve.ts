@@ -81,6 +81,7 @@ import {
   deriveOfferTokens,
 } from "@agentproto/secrets/pairing"
 import {
+  DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS,
   createGateway,
   createPairingRegistry,
   createHostRegistry,
@@ -853,6 +854,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // off. A positive ms value arms the periodic sweep; anything else keeps
         // it off (0), so idle sessions are never auto-retired unless opted in.
         idleReapAfterMs: resolveIdleReapAfterMs(cfgDaemon.idleReapAfterMs),
+        // Shorter idle threshold for SANDBOXED sessions: env > config field >
+        // 15 min default (ON, unlike idleReapAfterMs); 0 turns it off.
+        sandboxIdleReapAfterMs: resolveSandboxIdleReapAfterMs(cfgDaemon.sandboxIdleReapAfterMs),
         // Crash-detect sweep (crash-detect PR-1). DEFAULT ON: resolution order
         // mirrors idleReapAfterMs's comment above (env > config field), but an
         // unset value here passes `undefined` through so createGateway applies
@@ -1627,6 +1631,24 @@ function resolveIdleReapAfterMs(configured: number | undefined): number {
     return 0
   }
   return typeof configured === "number" && configured > 0 ? configured : 0
+}
+
+/**
+ * Resolve the effective sandbox idle-reap threshold:
+ * `AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS` env > the
+ * `daemon.sandboxIdleReapAfterMs` config field > {@link DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS}
+ * (15 min). Unlike `resolveIdleReapAfterMs` this is DEFAULT ON, so only an
+ * explicit `0` / negative at a layer turns it off; a malformed value is ignored
+ * and the next layer decides (a typo must not silently keep boxes alive).
+ */
+function resolveSandboxIdleReapAfterMs(configured: number | undefined): number {
+  const raw = process.env.AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed)) return Math.max(parsed, 0)
+  }
+  if (typeof configured === "number" && Number.isFinite(configured)) return Math.max(configured, 0)
+  return DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS
 }
 
 /**

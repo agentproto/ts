@@ -34,7 +34,7 @@ import type {
   SandboxReattachProbe,
 } from "./sessions.js"
 import { DEFAULT_CHECKPOINT_INTERVAL_MS } from "./sandbox-delivery.js"
-import { recordSandboxState } from "./sandbox-ledger.js"
+import { recordSandboxReap, recordSandboxState } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
@@ -327,6 +327,10 @@ export const BOX_ACTIVE_RENEW_INTERVAL_MS = 10 * 60_000
  *  checkpoint while the box's filesystem is still reachable. Capped at a third
  *  of the lifetime for short-lived boxes. */
 export const BOX_DEADLINE_GUARD_LEAD_MS = 5 * 60_000
+
+/** Upper bound on the final checkpoint an idle reap runs before tearing the
+ *  box down: a checkpoint that hangs must not keep an idle box alive. */
+export const IDLE_REAP_CHECKPOINT_TIMEOUT_MS = 2 * 60_000
 
 /**
  * Best-effort extraction of the prompt text from whatever `sessions.ts`'s
@@ -1085,10 +1089,30 @@ export function createSandboxAgentSessionProxy(
       await host.interrupt(remoteSessionId)
     },
 
-    async close(closeOpts?: { daemonShutdown?: boolean }): Promise<void> {
+    async close(closeOpts?: {
+      daemonShutdown?: boolean
+      idleReap?: { idleMs: number; sessionId?: string }
+    }): Promise<void> {
       if (closed) return
       closed = true
       stopTimers()
+      // IDLE REAP: take a final checkpoint of the box's uncommitted work while
+      // its filesystem is still reachable — the teardown below is what ends the
+      // box, and the reaped session's only way back is a cold boot from this
+      // checkpoint. Bounded so a hung checkpoint can never keep the box alive.
+      if (closeOpts?.idleReap && !detached && opts.checkpoint) {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([
+          runCheckpoint(turnsSent),
+          new Promise<void>(resolve => {
+            timer = setTimeout(resolve, IDLE_REAP_CHECKPOINT_TIMEOUT_MS)
+            timer.unref?.()
+          }),
+        ])
+        if (timer) clearTimeout(timer)
+        // Timed out: stop waiting on the straggler below as well.
+        checkpointInFlight = undefined
+      }
       // Let a running checkpoint finish before the teardown delivery reuses
       // the same snapshot ref and pushes.
       await checkpointInFlight?.catch(() => undefined)
@@ -1121,10 +1145,12 @@ export function createSandboxAgentSessionProxy(
           // Inside the finally chain so even a failing teardown records
           // (best-effort: `recordSandboxState` itself never throws).
           if (opts.ledger) {
-            recordSandboxState(
-              opts.ledger.sandboxId,
-              pauseTeardown ? "paused" : "stopped",
-            )
+            const finalState = pauseTeardown ? "paused" : "stopped"
+            if (closeOpts?.idleReap) {
+              recordSandboxReap(opts.ledger.sandboxId, finalState, closeOpts.idleReap)
+            } else {
+              recordSandboxState(opts.ledger.sandboxId, finalState)
+            }
           }
         }
       }

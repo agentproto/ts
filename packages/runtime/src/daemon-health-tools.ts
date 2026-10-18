@@ -35,6 +35,10 @@ export interface RegisterDaemonHealthToolsOptions {
    *  or 0 when the reaper is off. Surfaced so an operator can confirm whether
    *  idle sessions are being retired (and thus kept out of eager resume). */
   idleReapAfterMs: number
+  /** Effective `daemon.sandboxIdleReapAfterMs` — the shorter idle threshold
+   *  (ms) for sandboxed sessions, 0 when off. Optional so a caller from before
+   *  this knob existed still type-checks; defaults to 0 where consumed. */
+  sandboxIdleReapAfterMs?: number
   /** Effective value of the `daemon.crashDetectIntervalMs` knob (crash-detect
    *  PR-1) — the sweep interval (ms) the crash-detect pass runs on, or 0 when
    *  explicitly disabled. Detection is default-on, so this is normally a
@@ -119,6 +123,7 @@ export function registerDaemonHealthTools(
         bootResumePolicy: opts.bootResumePolicy ?? "all",
         continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.idleReapAfterMs,
+        sandboxIdleReapAfterMs: opts.sandboxIdleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.turnStallAfterMs ?? 0,
