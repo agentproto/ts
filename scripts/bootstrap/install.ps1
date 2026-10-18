@@ -197,7 +197,7 @@ Write-Host "Done. Next step:" -ForegroundColor White
 if ($PolicyBlocksScripts) {
   Write-Host "  agentproto.cmd onboard" -ForegroundColor White
   Write-Host ""
-  Warn "PowerShell ExecutionPolicy is $EffectivePolicy: typing 'agentproto' will fail with 'running scripts is disabled on this system' (it resolves to agentproto.ps1)."
+  Warn "PowerShell ExecutionPolicy is ${EffectivePolicy}: typing 'agentproto' will fail with 'running scripts is disabled on this system' (it resolves to agentproto.ps1)."
   Write-Host "  Either use the .cmd shim, which needs no policy:  agentproto.cmd <command>" -ForegroundColor Yellow
   Write-Host "  or allow local scripts for your user (may be blocked by group policy on a work PC):" -ForegroundColor Yellow
   Write-Host "    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned" -ForegroundColor Yellow
