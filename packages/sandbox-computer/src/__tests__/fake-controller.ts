@@ -177,8 +177,21 @@ export class FakeController {
       }
       return { exitCode: 0, stdout: "", stderr: "" }
     }
+    if (script.startsWith("cat ") && script.includes(".agentproto-daemon.origin")) {
+      return this.daemonOrigin ? { exitCode: 0, stdout: this.daemonOrigin, stderr: "" } : { exitCode: 1, stdout: "", stderr: "" }
+    }
+    if (script.includes("pkill -f")) {
+      this.serveSeen = false
+      this.killCount++
+      return { exitCode: 0, stdout: "", stderr: "" }
+    }
     if (script.startsWith("mkdir -p") || script.startsWith(": > ") || script.includes("echo started")) {
-      if (script.includes("agentproto serve")) this.serveSeen = true
+      if (script.includes("agentproto serve")) {
+        this.serveSeen = true
+        this.serveCount++
+        const origin = /--allow-origin '([^']*)'/.exec(script)
+        this.daemonOrigin = origin?.[1]
+      }
       return { exitCode: 0, stdout: "started", stderr: "" }
     }
     if (script.includes("agentproto --version")) {
@@ -196,6 +209,10 @@ export class FakeController {
   cliBaked = false
   bakedCliVersion = "1.26.0"
   daemonDown = false
+  /** The --allow-origin recorded by the last serve command (the marker file). */
+  daemonOrigin: string | undefined = undefined
+  serveCount = 0
+  killCount = 0
   /** Set once a serve command ran (models the box's own daemon state). */
   serveSeen = false
   /** Models a daemon that refuses to become healthy even after launch. */

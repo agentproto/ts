@@ -203,6 +203,9 @@ export const USER_BIN_PATH_EXPORT = `export PATH="$HOME/.local/bin:$PATH"; `
 /** Log path for the in-box daemon. Computers run as uid 1000 and /var/log is
  *  root-owned, so the log must live under the user's home. */
 export const DAEMON_LOG_PATH = "$HOME/.agentproto-daemon.log"
+/** Records the `--allow-origin` the provider started the daemon with, so a
+ *  reconnect can tell a stale origin (host port changed) from a current one. */
+export const DAEMON_ORIGIN_PATH = "$HOME/.agentproto-daemon.origin"
 
 /** The `agentproto serve` boot script: a detached (nohup … &) daemon that
  *  outlives the synchronous exec call, logging to DAEMON_LOG_PATH so a failed
@@ -214,8 +217,10 @@ export function buildServeCommand(opts: {
   allowOrigin?: string
 }): string {
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
+  const marker = opts.allowOrigin ? `printf %s ${shQuote(opts.allowOrigin)} > "${DAEMON_ORIGIN_PATH}"; ` : ""
   return (
     USER_BIN_PATH_EXPORT +
+    marker +
     `nohup agentproto serve --port ${opts.port} --bind 0.0.0.0` +
     ` --workspace ${shQuote(opts.workspace)} --auth-token ${shQuote(opts.token)}${origin}` +
     ` </dev/null > "${DAEMON_LOG_PATH}" 2>&1 & echo started`
@@ -505,7 +510,18 @@ async function daemonHealthyOrThrow(
 ): Promise<void> {
   const probe = await hardExec(client, id, bashArgv(buildHealthCommand(port)), 10)
   const alreadyUp = probe.exitCode === 0 && !probe.stdout.includes("__down__")
-  if (alreadyUp) return
+  if (alreadyUp) {
+    // The daemon only accepts the --allow-origin it was started with; with a
+    // {hostPort} gatewayUrl the origin changes when the controller republishes
+    // the port, so restart it when the recorded origin is stale. No marker
+    // (a template-autostarted daemon) means the origin is unknown: leave it.
+    const recorded = await hardExec(client, id, bashArgv(`cat "${DAEMON_ORIGIN_PATH}" 2>/dev/null`), 10)
+    const current = recorded.exitCode === 0 ? recorded.stdout.trim() : ""
+    if (current === "" || current === mcpOrigin) return
+    await hardExec(client, id, bashArgv(`pkill -f '[a]gentproto serve' || true`), 10)
+    await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+    return
+  }
 
   if (config.updateCliOnBoot !== false && !(await cliAlreadyPresent(client, id, config))) {
     const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
@@ -524,6 +540,18 @@ async function daemonHealthyOrThrow(
     if (setup.exitCode !== 0) throw bootStepError("setup command", id, setup)
   }
 
+  await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+}
+
+async function startDaemonAndWait(
+  client: ComputerControllerClient,
+  id: string,
+  config: ComputerSandboxConfig,
+  daemonToken: string,
+  port: number,
+  workspace: string,
+  mcpOrigin: string,
+): Promise<void> {
   await hardExec(
     client,
     id,
@@ -561,7 +589,17 @@ async function cliAlreadyPresent(
   if (probe.exitCode !== 0) return false
   const pin = config.cliVersion
   if (!pin || pin === "latest") return true
-  return probe.stdout.includes(pin.replace(/^[^0-9]*/, ""))
+  const want = semverCore(pin)
+  const have = semverCore(probe.stdout)
+  return want !== null && want === have
+}
+
+/** `major.minor.patch[-prerelease]` of the first version-looking token,
+ *  ignoring a leading `v`/range operator and build metadata. A partial pin
+ *  such as "1.2" yields null, so it never matches `1.26.0`. */
+function semverCore(text: string): string | null {
+  const match = /(?:^|[^0-9.])(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(?![.\d])/.exec(text)
+  return match ? (match[1] as string) + (match[2] ?? "") : null
 }
 
 function bootStepError(

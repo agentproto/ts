@@ -203,6 +203,55 @@ describe("computerSandboxProvider.boot", () => {
     expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(true)
   })
 
+  it("compares the pinned cliVersion exactly, not as a substring", async () => {
+    controller.cliBaked = true
+    const installsFor = async (cliVersion: string): Promise<boolean> => {
+      controller.execs.length = 0
+      controller.serveSeen = false
+      await computerSandboxProvider.boot(spec(controller.url, { cliVersion }), bootOpts)
+      return controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))
+    }
+    expect(await installsFor("1.2")).toBe(true)
+    expect(await installsFor("1.26")).toBe(true)
+    expect(await installsFor("1.26.00")).toBe(true)
+    expect(await installsFor("1.26.0-beta.1")).toBe(true)
+    expect(await installsFor("1.26.0")).toBe(false)
+    expect(await installsFor("v1.26.0")).toBe(false)
+  })
+
+  it("restarts a healthy daemon on connect when its recorded origin is stale", async () => {
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    controller.options.publishedPorts = [{ host: 20011, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    expect(controller.daemonOrigin).toBe("http://127.0.0.1:20011")
+    const serves = controller.serveCount
+
+    // Same origin: the running daemon is left alone.
+    await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(controller.killCount).toBe(0)
+    expect(controller.serveCount).toBe(serves)
+
+    // Host port changed: the daemon is restarted with the new origin.
+    controller.options.publishedPorts = [{ host: 20012, guest: 18790 }]
+    controller.execs.length = 0
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(again.mcpUrl).toBe("http://127.0.0.1:20012")
+    expect(controller.killCount).toBe(1)
+    expect(controller.serveCount).toBe(serves + 1)
+    expect(controller.daemonOrigin).toBe("http://127.0.0.1:20012")
+    expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(false)
+  })
+
+  it("leaves a healthy daemon without an origin marker alone on connect", async () => {
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    controller.options.publishedPorts = [{ host: 20021, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    controller.daemonOrigin = undefined
+    controller.options.publishedPorts = [{ host: 20022, guest: 18790 }]
+    await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(controller.killCount).toBe(0)
+  })
+
   it("resolves {hostPort} in gatewayUrl from the published ports, and allows that origin on the daemon", async () => {
     controller.options.publishedPorts = [{ host: 20003, guest: 18790 }]
     const booted = await computerSandboxProvider.boot(
