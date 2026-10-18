@@ -9,6 +9,7 @@ import {
   fileSessionStore,
 } from "../remote-providers/cloudflare-provisioned.js"
 import type { FetchLike } from "../remote-providers/cloudflare-api.js"
+import { TunnelStartAbortedError } from "../remote-providers/types.js"
 import type { ProcessSpawner, SpawnRequest, SupervisedProcess } from "../remote-providers/process-supervisor.js"
 
 // ── fakes ────────────────────────────────────────────────────────────────
@@ -364,6 +365,21 @@ describe("cloudflareProvisionedTunnelProvider", () => {
     expect(requests[0]!.env).toEqual({ TUNNEL_TOKEN: "connector-secret" })
     expect(requests[0]!.args.join(" ")).not.toContain("connector-secret")
     await provider.stop()
+  })
+
+  it("stop() during start aborts before spawning cloudflared (no leaked runner)", async () => {
+    const world = new FakeWorld()
+    const { provider, requests } = await loggedInProvider(world)
+    const starting = provider.start({
+      target: { host: "127.0.0.1", port: 8081 },
+      workspace: "/x",
+      tunnel: { key: "relay-ab12", hostnames: [] },
+    })
+    // start() is suspended at its first await: runner is still unset, so a
+    // stop() here has nothing to kill.
+    await provider.stop()
+    await expect(starting).rejects.toBeInstanceOf(TunnelStartAbortedError)
+    expect(requests).toHaveLength(0)
   })
 
   it("refreshes once and retries on 401", async () => {
