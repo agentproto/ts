@@ -89,6 +89,7 @@ import {
   createReconnectLogGate,
   sweepStaleRuntimeMetas,
   sweepStaleDaemonRegistry,
+  bucketsServedByOtherLiveDaemons,
   resolveBucketSlug,
   unlinkRuntimeMeta,
   injectProviderKeysIntoEnv,
@@ -1058,9 +1059,19 @@ export async function runServe(args: readonly string[]): Promise<number> {
     // running) re-attach FIRST, to the same session ids — before the passes
     // below can mistake those rows for dead ghosts. Always on: it only acts on
     // rows that were detached.
+    // A detached row whose bucket NO other live daemon serves is ours to
+    // re-attach: its box keeps running and nothing else will ever claim it
+    // (sessions spawned into a workspace this daemon was not booted for —
+    // e.g. `agent_start({workspace})` — otherwise stay `daemon-restart`
+    // ghosts forever). Only a bucket served by another live daemon is left.
+    const otherLiveBuckets = await bucketsServedByOtherLiveDaemons(opts.port, workspacePath =>
+      resolveBucketSlug(findWorkspaceByPath(wsConfig, workspacePath)?.slug, registeredSlugs),
+    )
     const reattached = await gateway.reattachSandboxSessionsOnBoot({
-      isServed: desc =>
-        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
+      isServed: desc => {
+        const bucket = resolveBucketSlug(desc.workspaceSlug, registeredSlugs)
+        return bucket === servedBucket || !otherLiveBuckets.has(bucket)
+      },
     })
     if (reattached.candidates > 0) {
       const notes = [

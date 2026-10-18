@@ -12762,7 +12762,8 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       const banner = isProviderBoxSession(rt.desc)
         ? "── reaped after being idle past the sandbox threshold; its box was torn " +
-          "down. Re-prompt to continue on a fresh box restored from the last checkpoint. ──"
+          "down (paused instead when its work was not checkpointed). Re-prompt to " +
+          "continue on the paused box, or a fresh one restored from the last checkpoint. ──"
         : "── reaped after being idle past the threshold; the adapter process was " +
           "freed. Re-prompt to resume this session in place. ──"
       appendLine(rt, banner, "stdout")
