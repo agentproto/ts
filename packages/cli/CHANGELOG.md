@@ -1,5 +1,49 @@
 # @agentproto/cli
 
+## 1.28.0
+
+### Minor Changes
+
+- 57ae214: `branch gc` gains two safety mechanisms. Orphan refs whose tip IS a base remote's `refs/pull/<N>/head` are classified `forge-mirror` and reclaimed without running the ladder (the forge keeps those refs forever, so the local ref is never the only copy), and their restore log re-fetches the PR head instead of `update-ref`. Separately, `includeReviewed` now refuses an agreeing verdict deterministically: the tip carries `lineCoverage` (the share of its non-trivial added lines already present verbatim in base's version of the same path), and an approval below `minLineCoverage` (default 95, configurable via `agentproto branch gc --min-line-coverage PCT`, the `branch_gc` MCP tool, and the daemon HTTP surface) leaves the ref `review` with `verdictGuard` / `refused-guard` rather than reclaiming it. The repo-maintenance reviewer prompt and review-queue builder surface `lineCoverage` so reviewers account for the missing lines.
+- ca9dc5e: Add the `quota_status` MCP tool (AIP-67) and `agentproto quota status --profile <ref> [--refresh] [--json]`: live provider quota for a named auth profile, read through `@agentproto/model-intel`'s `QuotaReaderRegistry`.
+
+### Patch Changes
+
+- 5f3d569: Auth subcommand help: `agentproto auth <sub> --help` (and `-h`) printed usage instead of crashing with a bare `TypeError [ERR_PARSE_ARGS_UNKNOWN_OPTION]` for every subcommand (login, status, logout, provider, cred, profile, subaccounts, discover).
+- 8ea3ce4: Source comments and docs now use neutral example domains (`example.com` / `example.dev`) instead of real hostnames. No behaviour change.
+- 4c5f6e4: Add `agentproto sandbox checkpoint-gc` plus the underlying `@agentproto/worktree` engine (`planSandboxCheckpointGc` / `applySandboxCheckpointGc` / `reclaimOneSandboxCheckpoint`) that reaps stale remote `agentproto-checkpoint/*` refs whose rescued work is provably elsewhere (PR merged/closed, snapshot tree already in the work or base branch, or a clean snapshot whose parent landed via merge/squash/patch). Dry run is the default; `--apply` re-plans fresh before each delete. A new best-effort `SandboxCheckpointReclaimer` port is wired into the daemon so a sandboxed session's own ref is deleted at exit when superseded, never failing the session.
+- b4f7590: Sync stale CLI docs with shipped behavior: `session_list` bound/filter table (`ids?`, 50-row default + `truncated`/`total`/`nextCursor`), shared-sandbox ATTACHED column and `attachedSessions` refcount, default-on `--turn-retry` semantics for executor/`--sandbox` spawns, and the daemon init-system support matrix (macOS launchd, Linux systemd `--user` with pidfile fallback, Windows Task Scheduler). Docs-only; no code changes.
+- 13390f0: Ship `docs/mcp-tools` alongside the bundled `cli.mjs` so `tool_help` and `agentproto help <tool>` find long tool docs in the published CLI package. The CLI build now copies `runtime/docs/mcp-tools` into the CLI package and lists `docs` in `files`; a new bundled-layout test in the runtime package guards the resolution path.
+- 2bd99f7: Test-only maintenance: skip the `zip`-shelling fetch/install tests when the `zip` binary is unavailable.
+- 4c5f6e4: Sandbox checkpoint refs no longer accumulate forever. `agentproto sandbox checkpoint-gc` (dry run by default, `--apply` to delete) lists every remote `agentproto-checkpoint/*` ref with its work branch, PR state, and verdict: safe when the PR of `wt/<slug>` is merged or closed on the forge, when the snapshot's tree is already the remote work branch's or the base branch's tree, or (for a clean snapshot) when the parent's commits are merged, squash-merged or patch-merged into the base. A snapshot whose tree differs from its parent's counts as uncommitted work and can only be proven safe by the PR or tree tiers; anything else is kept. The daemon also runs the same classification best-effort at a sandboxed session's exit and deletes the session's own ref when it is superseded, logged, never failing the session.
+- 13390f0: Ship `docs/mcp-tools` alongside the bundled `cli.mjs` so `tool_help` and `agentproto help <tool>` find long tool docs in the published CLI package.
+- Updated dependencies [d81be85]
+- Updated dependencies [bec9df2]
+- Updated dependencies [305199d]
+- Updated dependencies [6d8a531]
+- Updated dependencies [bb2c1d4]
+- Updated dependencies [9ebf51d]
+- Updated dependencies [4c5f6e4]
+- Updated dependencies [57ae214]
+- Updated dependencies [d7f5063]
+- Updated dependencies [305199d]
+- Updated dependencies [d81be85]
+- Updated dependencies [4c5f6e4]
+- Updated dependencies [d7f5063]
+  - @agentproto/app-kit@2.2.0
+  - @agentproto/model-catalog@0.13.1
+  - @agentproto/acp@0.11.3
+  - @agentproto/sandbox-computer@0.2.1
+  - @agentproto/worktree@0.17.0
+  - @agentproto/apps@0.23.7
+  - create-agentproto-app@0.3.7
+  - @agentproto/driver-agent-cli@2.13.3
+  - @agentproto/pairing-host@0.2.10
+  - @agentproto/sandbox-box@0.2.34
+  - @agentproto/sandbox-e2b@0.8.4
+  - @agentproto/sandbox-instabox@0.2.1
+  - @agentproto/llm-endpoint@0.11.14
+
 ## 1.27.0
 
 ### Minor Changes

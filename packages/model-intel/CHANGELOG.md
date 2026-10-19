@@ -1,5 +1,11 @@
 # @agentproto/model-intel
 
+## 0.2.0
+
+### Minor Changes
+
+- c6ddf99: Add a Moonshot balance quota reader (`createMoonshotQuotaReader`) and a pure Codex `rate_limits` parser (`quotaFromCodexRateLimits`).
+
 ## 0.1.0
 
 ### Minor Changes

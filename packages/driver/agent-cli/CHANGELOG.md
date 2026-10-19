@@ -1,5 +1,13 @@
 # @agentproto/driver-agent-cli
 
+## 2.13.3
+
+### Patch Changes
+
+- Updated dependencies [305199d]
+- Updated dependencies [305199d]
+  - @agentproto/acp@0.11.3
+
 ## 2.13.2
 
 ### Patch Changes
