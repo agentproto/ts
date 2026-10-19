@@ -265,6 +265,24 @@ describe("session-follow HTTP routes + MCP tools", () => {
         }
       })
 
+      // The host can consume/ack with the same metadata, without storing an
+      // agentproto session id. Ack one chat without consuming the other's.
+      const hostRead = parse(await forwardBridgeTool(root, base, {
+        name: "inbox_wait", arguments: { ack: false, timeoutMs: 1000 },
+        _meta: { "x-codex-turn-metadata": { thread_id: "chat-a" } },
+      }, "codex"))
+      expect(hostRead.messages).toHaveLength(1)
+      expect(hostRead.messages[0]).toMatchObject({
+        id: gateway.sessions.listInbox("codex:chat-a")![0]!.id, urgency: "next-turn",
+      })
+      expect(gateway.sessions.listInbox("codex:chat-a")).toHaveLength(1)
+      await forwardBridgeTool(root, base, {
+        name: "inbox_ack", arguments: { ids: [hostRead.messages[0].id] },
+        _meta: { "x-codex-turn-metadata": { thread_id: "chat-a" } },
+      }, "codex")
+      expect(gateway.sessions.listInbox("codex:chat-a")).toHaveLength(0)
+      expect(gateway.sessions.listInbox("codex:chat-b")).toHaveLength(1)
+
       // No metadata on a later call must NOT reuse either chat's identity.
       const missing = parse(await forwardBridgeTool(root, base, {
         name: "session_follow", arguments: { selector: { all: true } },
