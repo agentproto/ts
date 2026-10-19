@@ -246,3 +246,20 @@ export {
   type BranchVerdictRecord,
   type BranchVerdictStore,
 } from "./branch-gc.js"
+export {
+  SANDBOX_CHECKPOINT_PREFIX,
+  planSandboxCheckpointGc,
+  applySandboxCheckpointGc,
+  reclaimOneSandboxCheckpoint,
+  classifyCheckpointRef,
+  buildCheckpointFetchSpecs,
+  renderSandboxCheckpointGcPlan,
+  setCheckpointGcForgeFactory,
+  type CheckpointGcVerdict,
+  type SandboxCheckpointGcEntry,
+  type SandboxCheckpointGcPlan,
+  type SandboxCheckpointGcInput,
+  type SandboxCheckpointGcApplyOutcome,
+  type SandboxCheckpointGcApplyResult,
+  type CheckpointSafetyVerdict,
+} from "./checkpoint-gc.js"

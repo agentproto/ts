@@ -5,6 +5,7 @@ agentproto sandbox list   [--no-probe] [--reconcile] [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
 agentproto sandbox gc     [--apply] [--pause] [--json]
+agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]
 agentproto sandbox exec   <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
                           [--file <local>:<boxPath> ...] [--json] -- <command...>
@@ -111,6 +112,46 @@ Requires a running daemon to look up origin-session statuses.
 | `--apply` | `false` | Actually tear down (or pause) the orphan boxes and stamp their ledger rows `stopped`. Without this, the command only prints the plan. |
 | `--pause` | `false` | With `--apply`: pause the boxes instead of killing them, keeping them reattachable via `sandbox attach`. Note: a paused e2b box still bills, so the default kill is usually preferable for orphans. |
 | `--json` | `false` | Print the plan / outcomes as JSON instead of the human summary. |
+
+### `checkpoint-gc`
+
+```bash
+agentproto sandbox checkpoint-gc          # dry run — table of every checkpoint ref
+agentproto sandbox checkpoint-gc --repo ~/work/repo
+agentproto sandbox checkpoint-gc --json   # machine-readable plan
+agentproto sandbox checkpoint-gc --apply  # delete every ref listed SAFE
+```
+
+Reaps **stale checkpoint branches**: every
+`agentproto-checkpoint/<work-branch>` ref on the remote that a sandbox
+session's teardown no longer needs. A box that dies with uncommitted work
+leaves its snapshot ref behind forever; this command judges each one SAFE
+when the work it rescued is provably elsewhere:
+
+* the PR of `wt/<slug>` is merged or closed on the forge (via the repo's
+  forge client, when credentials resolve one);
+* the snapshot's tree IS the remote `wt/<slug>` tip's tree or the base
+  branch's tree: the content is already there verbatim;
+* (clean snapshots only) the snapshot's parent commit is merged into base
+  or the work branch, squash-merged (`git merge-tree --write-tree` yields
+  exactly the base tree), or patch-merged (`git cherry` maps every commit
+  onto an applied patch id).
+
+A snapshot whose tree differs from its parent's carries uncommitted delta;
+deleting it can lose that work, so only the PR and tree tiers can mark
+those SAFE. Anything else comes back `keep` and stays on the remote.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--repo <dir>` | cwd | Repo to run in; the remote acted on is its `origin`. |
+| `--dry-run` | on | Table or `--json` plan; nothing is deleted. Mutually exclusive with `--apply`. |
+| `--apply` | `false` | Delete every ref classified SAFE. Each delete is preceded by a FRESH re-plan, so a stale plan never deletes a ref whose classification changed. |
+| `--json` | `false` | Print the plan (`{ refs: [...] }`) or the apply outcomes as JSON. |
+
+The daemon also runs this same classification best-effort when a
+sandboxed session exits: that session's OWN ref is deleted once it is
+superseded (logged on failure, never blocking teardown). This command
+remains the manual, repo-wide tool.
 
 ### `exec <provider>`
 

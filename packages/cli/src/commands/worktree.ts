@@ -71,6 +71,7 @@ import {
   runWithProvisionContext,
   ProvisionCancelledError,
   reclaimOneWorktree,
+  reclaimOneSandboxCheckpoint,
   type WorktreeStatusEntry,
   type GcPlanEntry,
   type GcApplyOutcome,
@@ -85,6 +86,7 @@ import {
   type WorktreeGcOutcomeView,
   type WorktreeAutoReclaimer,
   type OpenPrResolver,
+  type SandboxCheckpointReclaimer,
   type PrStateResolver,
   type PrResolvedState,
 } from "@agentproto/runtime"
@@ -675,6 +677,34 @@ export function makeWorktreeAutoReclaimer(): WorktreeAutoReclaimer {
     })
     if (outcome?.result === "failed") {
       throw new Error(`worktree auto-reclaim failed for ${worktreePath}: ${outcome.message}`)
+    }
+  }
+}
+
+/**
+ * Concrete `SandboxCheckpointReclaimer` for the daemon — the injected port
+ * behind `sessions.ts`'s exit-time checkpoint gc (`SandboxCheckpointReclaimer`):
+ * when a sandboxed session whose work branch is `wt/<slug>` ends and the work
+ * rescued onto `agentproto-checkpoint/wt/<slug>` is provably elsewhere, that
+ * ref is deleted from the remote. Delegates to `reclaimOneSandboxCheckpoint`
+ * (the same engine `sandbox checkpoint-gc` runs), scoped to the ONE ref the
+ * ended session owns. A cwd that is not inside a git repo is a silent no-op.
+ */
+export function makeSandboxCheckpointReclaimer(): SandboxCheckpointReclaimer {
+  return async ({ cwd, branch }: { cwd?: string; branch: string }): Promise<void> => {
+    const repoRoot = repoRootOf(resolve(cwd ?? process.cwd()))
+    if (!repoRoot) return
+    let forge: Pick<ForgeClient, "pullRequestsForBranch"> | null = null
+    try {
+      forge = await createForgeClient(repoRoot)
+    } catch {
+      forge = null
+    }
+    const outcome = await reclaimOneSandboxCheckpoint({ repoRoot, workBranch: branch, forge })
+    if ("skipped" in outcome) return
+    if (outcome.result === "deleted") return
+    if (outcome.result === "failed") {
+      throw new Error(`sandbox checkpoint gc aborted for ${outcome.ref}: ${outcome.message ?? "unknown"}`)
     }
   }
 }

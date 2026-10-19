@@ -140,6 +140,7 @@ import type {
   WorktreeAutoReclaimer,
   WorktreeProvisionPhase,
   WorktreeProvisionProgress,
+  SandboxCheckpointReclaimer,
 } from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
 import {
@@ -5785,6 +5786,15 @@ export function createSessionsRegistry(opts?: {
    *  (manual/scheduled `gc` is still the only way an implicit worktree gets
    *  reclaimed). */
   runWorktreeAutoReclaim?: WorktreeAutoReclaimer
+  /** Exit-time best-effort checkpoint reclaimer for SANDBOXED sessions:
+   *  when such a session reaches a terminal status and the work it rescued
+   *  onto `agentproto-checkpoint/<branch>` is provably elsewhere (PR merged
+   *  or closed, content in base or the work branch), the ref is deleted
+   *  from the workspace remote. Injected by the CLI over
+   *  `@agentproto/worktree`; omitted → nothing is deleted here, and
+   *  `agentproto sandbox checkpoint-gc` remains the manual tool. Never
+   *  fails the session: a rejection is logged and swallowed. */
+  runSandboxCheckpointGc?: SandboxCheckpointReclaimer
   /** Conversation-terminal link-probe cadence — how soon after spawn the
    *  first native-store discover runs, and how often it re-runs while the
    *  PTY is alive and unlinked. Tests pin tiny values; production default
@@ -5855,6 +5865,7 @@ export function createSessionsRegistry(opts?: {
   const sessionEvents = opts?.sessionEvents
   const resolveAgentAdapter = opts?.resolveAgentAdapter
   const runWorktreeAutoReclaim = opts?.runWorktreeAutoReclaim
+  const runSandboxCheckpointGc = opts?.runSandboxCheckpointGc
   const sessions = new Map<string, SessionRuntime>()
   const externalLivenessMs =
     typeof opts?.externalSessionLivenessMs === "number" && opts.externalSessionLivenessMs > 0
@@ -6278,6 +6289,29 @@ export function createSessionsRegistry(opts?: {
       } catch (err) {
         console.error(
           `[worktree-auto-reclaim] best-effort reclaim of ${worktreePath} threw synchronously ` +
+            `(session ${rt.desc.id}): ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+    // Exit-time sandbox checkpoint gc (best-effort, fire-and-forget, same
+    // funnel shape as the auto-reclaim above): a terminal sandboxed session
+    // whose checkpoint branch is provably superseded (PR merged/closed, or
+    // the snapshot's content already in base or the work branch) deletes
+    // that ref from the workspace remote. The gating lives in the
+    // reclaimer's own classify; absent port or absent work branch = no-op.
+    if (runSandboxCheckpointGc && rt.desc.kind === "agent-cli" && rt.desc.sandboxDeliveryTarget?.branch) {
+      const branch = rt.desc.sandboxDeliveryTarget.branch
+      const input = { cwd: rt.desc.cwd, branch }
+      try {
+        void runSandboxCheckpointGc(input).catch(err => {
+          console.error(
+            `[sandbox-checkpoint-gc] best-effort reclaim of ${branch} failed ` +
+              `(session ${rt.desc.id}): ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+      } catch (err) {
+        console.error(
+          `[sandbox-checkpoint-gc] best-effort reclaim of ${branch} threw synchronously ` +
             `(session ${rt.desc.id}): ${err instanceof Error ? err.message : String(err)}`,
         )
       }
