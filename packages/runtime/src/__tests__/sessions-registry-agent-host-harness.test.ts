@@ -18,6 +18,7 @@ import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } 
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import { SessionsRegistryAgentHost } from "../sessions-registry-agent-host.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 
 function fakeAgentSession(): AgentSessionLike {
   return {
@@ -31,7 +32,10 @@ function fakeAgentSession(): AgentSessionLike {
   }
 }
 
-function makeFixture(declaredOptions?: readonly { id: string; type: "boolean" | "integer" | "string" | "enum" }[]) {
+function makeFixture(
+  declaredOptions?: readonly { id: string; type: "boolean" | "integer" | "string" | "enum" }[],
+  authDescriptor?: AdapterAuthDescriptor,
+) {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
   const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
@@ -39,6 +43,7 @@ function makeFixture(declaredOptions?: readonly { id: string; type: "boolean" | 
     startSession,
     commandPreview: "mock-adapter",
     ...(declaredOptions ? { declaredOptions } : {}),
+    ...(authDescriptor ? { authDescriptor } : {}),
   }))
   const events: SessionEvent[] = []
   sessionEvents.onAny((ev) => events.push(ev))
@@ -109,6 +114,43 @@ describe("SessionsRegistryAgentHost.spawn — harness (host branch)", () => {
     const warning = events.find((e) => e.type === "session:harness-warning")
     expect(warning).toBeDefined()
     expect((warning as { warnings: string[] }).warnings.join(" ")).toMatch(/harness\.role/)
+  })
+
+  it("applies a route without an access profile to the spawn, not just the descriptor", async () => {
+    const { registry, sessionEvents, resolveAgentAdapter, startSession } = makeFixture(undefined, {
+      provider: "anthropic",
+    })
+    const host = new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter)
+
+    const id = await host.spawn("mock", {
+      cwd: "/tmp",
+      stepId: "s1",
+      route: "openrouter",
+      harness: { model: "claude-sonnet-5-5" },
+    })
+
+    const call = startSession.mock.calls[0]![0] as {
+      auth?: { baseUrl?: string; setEnv?: string; provider?: string }
+    }
+    expect(call.auth).toMatchObject({ baseUrl: "https://openrouter.ai/api" })
+    expect(call.auth?.setEnv).toBeTruthy()
+    expect(registry.get(id)?.route).toEqual({ gateway: "openrouter" })
+  })
+
+  it("fails loudly when a named access profile cannot be resolved", async () => {
+    const { registry, sessionEvents, resolveAgentAdapter, startSession } = makeFixture(undefined, {
+      provider: "anthropic",
+    })
+    const host = new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter)
+
+    await expect(
+      host.spawn("mock", {
+        cwd: "/tmp",
+        stepId: "s1",
+        access: { profileRef: "definitely-missing-agent-step-profile" },
+      }),
+    ).rejects.toThrow(/access profile failed \(access_profile_not_found\)/)
+    expect(startSession).not.toHaveBeenCalled()
   })
 
   it("emits no warning when harness carries only supported fields", async () => {

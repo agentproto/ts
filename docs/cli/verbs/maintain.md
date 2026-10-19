@@ -1,7 +1,7 @@
 # `agentproto maintain`
 
 ```text
-agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--review-preset <name>] [--wait] [--json]
+agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]
 ```
 
 Convenience shortcut over `agentproto workflow run-file` for the built-in
@@ -20,7 +20,10 @@ One run:
    large model otherwise. Each turn records a verdict via
    `branch_gc_verdict` — recording a verdict never deletes anything. A turn
    that ends without a stored verdict gets one same-session re-prompt, then
-   one large-model retry.
+   one large-model retry. A reviewer model role's configured `profile` and
+   `route` ride the spawn too (`access.profileRef` / `route`), so an
+   `opencode-go/...` reviewer can bill a named profile instead of ambient
+   auth.
    Branches held only because they're checked out in a linked worktree
    join the queue too, when that worktree is idle (no live session), clean,
    has no open PR, and its tip is at least 3 days old. Otherwise
@@ -30,10 +33,14 @@ One run:
    manual. The workflow input `reviewHeldWorktrees: false` turns this off.
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
    reports any gap, the verdict tally, and the `salvage` branches by name.
-4. With `--apply-merged`: applies `branch_gc` (reclaim-class only,
-   `includeReviewed: false`) and `worktree_gc`. **A `review`-class branch is
-   never reclaimed, agreed verdict or not** — see the app's README,
-   "Out of scope: the approval gate".
+4. With `--apply-merged`: applies `branch_gc` (reclaim-class only by
+   default) and `worktree_gc`. Adding `--apply-reviewed` runs the branch apply
+   with `includeReviewed: true`, so a `review`-class branch whose stored
+   verdict agreed for the same tip is reclaimed too. `branch_gc` still
+   enforces its deterministic line-coverage guard (default 95%): an approval
+   below it is refused (`refused-guard`) and listed in the report's "Human
+   decision queue" with its coverage percentage. Without `--apply-reviewed`,
+   a `review`-class branch is never reclaimed.
 5. Reports a markdown summary.
 
 | Flag | Default | Description |
@@ -41,6 +48,7 @@ One run:
 | `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
 | `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root, plus any `--repo` dirs. Prints the discovered repo list first; exits `1` if any run fails. |
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
+| `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) and reports them; ignored without `--apply-merged`. |
 | `--review-preset <name>` | daemon `modelRolePreset` | Reviewer model set for this run: `opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet` (see [`modelRolePreset`](../reference/config-schema.md#modelrolepreset-string)). Each reviewer spawns on the adapter its model needs, so `go-free` runs on opencode. |
 | `--wait` | `false` | Block until each run ends, then print its markdown report. Exit `0` when all done, `1` when any failed or was cancelled. |
 | `--json` | `false` | Print the raw `workflow_run_file` reply (with `--wait`: the finished run records, one per repo). |
@@ -63,6 +71,9 @@ agentproto maintain --repo ~/code/my-app
 # Plan + review, then apply reclaim-class branch/worktree gc
 agentproto maintain --repo ~/code/my-app --apply-merged
 
+# Also apply agreed reviewed branches (line-coverage guard still applies)
+agentproto maintain --repo ~/code/my-app --apply-merged --apply-reviewed
+
 # Run for every repo that owns worktrees under the worktrees root
 agentproto maintain --all --apply-merged
 
@@ -75,5 +86,6 @@ agentproto maintain --repo ~/code/my-app --wait
 `packages/apps/repo-maintenance/routines/` ships two AIP-41 `ROUTINE.md`
 templates targeting the same `maintain` workflow, both `enabled: false`:
 `repo-maintenance-daily` (plan + review, no apply) and
-`repo-maintenance-weekly` (`applyMerged: true`). See that directory's
-README for how to enable one per workspace.
+`repo-maintenance-weekly` (`applyMerged: true` + `applyReviewed: true`; drop
+`applyReviewed` to keep the weekly apply reclaim-class only). See that
+directory's README for how to enable one per workspace.

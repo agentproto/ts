@@ -18,6 +18,7 @@ import type {
   AgentHarness,
   AgentSandboxRef,
   AgentStep,
+  AgentStepAccess,
   AgentStepRetry,
   ApprovalDecision,
   ArtifactEntry,
@@ -767,7 +768,13 @@ async function spawnOrResolveSession(
   step: AgentStep,
   ctx: RunCtx,
   b: Bindings,
-  spawnOpts: { cwd: string | undefined; sandbox: AgentSandboxRef | undefined; harness: AgentHarness | undefined },
+  spawnOpts: {
+    cwd: string | undefined
+    sandbox: AgentSandboxRef | undefined
+    harness: AgentHarness | undefined
+    access: AgentStepAccess | undefined
+    route: string | undefined
+  },
 ): Promise<string> {
   let sessionId: string | undefined
   if (step.adapter) {
@@ -779,7 +786,7 @@ async function spawnOrResolveSession(
     // WHILE this step's own body is already running (knowledge
     // materialization, sandbox/model resolution, …), before it reaches spawn.
     if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
-    const { cwd, sandbox, harness } = spawnOpts
+    const { cwd, sandbox, harness, access, route } = spawnOpts
     try {
       sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
         cwd,
@@ -788,6 +795,8 @@ async function spawnOrResolveSession(
         ...(sandbox !== undefined ? { sandbox } : {}),
         ...(step.options !== undefined ? { options: step.options } : {}),
         ...(harness !== undefined ? { harness } : {}),
+        ...(access !== undefined ? { access } : {}),
+        ...(route !== undefined ? { route } : {}),
         ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
         ...(step.agentWarnings !== undefined ? { agentWarnings: step.agentWarnings } : {}),
         ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
@@ -895,6 +904,10 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // session's model — but an explicit `harness.model` pinning (AIP-15 P2)
   // still wins: the block is the more specific pinning layer.
   const model = step.model !== undefined ? resolveSel(step.model, b) : undefined
+  // Access profile + route are selectors too (entry handles pick them per
+  // item); a literal object/string passes through unchanged.
+  const access = typeof step.access === "function" ? step.access(b) : step.access
+  const route = typeof step.route === "function" ? step.route(b) : step.route
   const harness =
     step.harness !== undefined || model !== undefined
       ? {
@@ -924,7 +937,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   for (let attempt = 1; ; attempt++) {
     let attemptSession: string | undefined
     try {
-      attemptSession = await spawnOrResolveSession(step, ctx, b, { cwd, sandbox, harness })
+      attemptSession = await spawnOrResolveSession(step, ctx, b, { cwd, sandbox, harness, access, route })
       if (step.adapter) ctx.spawned?.push(attemptSession)
       if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
         ctx.agents!.emitHarnessWarning({
@@ -1665,6 +1678,8 @@ async function execStepBody(
         prompt: step.prompt(b),
         adapter: step.adapter ? resolveSel(step.adapter, b) : undefined,
         model: step.model ? resolveSel(step.model, b) : undefined,
+        access: typeof step.access === "function" ? step.access(b) : step.access,
+        route: typeof step.route === "function" ? step.route(b) : step.route,
         sessionRef: step.sessionRef !== undefined ? resolveSessionRef(step.sessionRef, b) : undefined,
       }
       const c = await readStepCache(ctx, step, resolved)

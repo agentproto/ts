@@ -212,13 +212,27 @@ function fakeCheckpointGc(inputs: Record<string, unknown>) {
  */
 function recordingAgentHost() {
   const byLabel = new Map<string, string>()
-  const spawns: Array<{ id: string; adapter: string; stepId?: string; stepKey?: string; model?: string }> = []
+  const spawns: Array<{
+    id: string
+    adapter: string
+    stepId?: string
+    stepKey?: string
+    model?: string
+    access?: { profileRef?: string }
+    route?: string
+  }> = []
   const sends: Array<{ sessionId: string; prompt: string }> = []
   const host: AgentSessionHost = {
     spawn: vi.fn(async (adapter, opts) => {
-      const o = opts as { stepId?: string; stepKey?: string; harness?: { model?: string } }
+      const o = opts as {
+        stepId?: string
+        stepKey?: string
+        harness?: { model?: string }
+        access?: { profileRef?: string }
+        route?: string
+      }
       const id = `sess_${spawns.length + 1}`
-      spawns.push({ id, adapter, stepId: o.stepId, stepKey: o.stepKey, model: o.harness?.model })
+      spawns.push({ id, adapter, stepId: o.stepId, stepKey: o.stepKey, model: o.harness?.model, access: o.access, route: o.route })
       if (o.stepKey) byLabel.set(o.stepKey, id)
       return id
     }),
@@ -303,7 +317,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const { output } = await runWorkflow({
       workflow: compiled,
       agents: host,
-      input: { repoRoot: "/repo", applyMerged: false },
+      input: { repoRoot: "/repo", applyMerged: false, applyReviewed: false },
     })
 
     // One reviewOne spawn per UNIQUE tip sha, not per ref — the local+remote
@@ -403,6 +417,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       input: {
         repoRoot: "/repo",
         applyMerged: true,
+        applyReviewed: false,
         notify: { channel: "telegram", address: "chat-1" },
       },
     })
@@ -423,6 +438,61 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.applyMerged).toBe(true)
     // The apply's real outcomes reach the report, not a background jobId.
     expect(result.report).toContain("worktree_gc: 1 outcome(s) — reclaimed=1")
+  })
+
+  it("applyReviewed applies with includeReviewed true and reports reclaimed reviewed branches + guard refusals", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        if (branchGcCallCount === 3) {
+          return mcpResult({
+            mode: "apply",
+            outcomes: [
+              { kind: "local", name: "wt/small-residual", sha: SHA_A, result: "deleted", reclaimReason: "reviewed" },
+              { kind: "local", name: "wt/large-residual", sha: SHA_B, result: "refused-guard", guard: "line coverage 80% of 50 added lines (< 95%)" },
+            ],
+            restoreLog: "/tmp/restore.json",
+          })
+        }
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      }
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+    })
+
+    const branchGcCalls = calls.filter(c => c.name === "branch_gc")
+    expect(branchGcCalls[2]!.inputs).toMatchObject({ apply: true, includeReviewed: true })
+
+    const result = output as { applyReviewed: boolean; report: string }
+    expect(result.applyReviewed).toBe(true)
+    expect(result.report).toContain("reviewed: 1 reclaimed (includeReviewed true), 1 refused by the line-coverage guard")
+    expect(result.report).toContain("reclaimed (1): `wt/small-residual`")
+    expect(result.report).toContain("reviewer agreed, refused by the line guard: 1")
+    expect(result.report).toContain("## Human decision queue — reviewer agreed, refused by line guard (1)")
+    expect(result.report).toContain("`wt/large-residual`")
+    expect(result.report).toContain("80% line coverage")
+    expect(result.report).toContain("line coverage 80% of 50 added lines (< 95%)")
+    expect(result.report).not.toContain("documented seam")
   })
 })
 
@@ -578,6 +648,11 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
     )).toBe(true)
     expect(prompt).not.toMatch(/pre-rewrite/)
     expect(prompt).not.toMatch(/compare base/)
+    // Agree is the reviewer's honest safety judgement; the line guard is a
+    // later, deterministic policy step and must not cause self-censoring.
+    expect(prompt).toContain("`gate.agree` is your HONEST judgement")
+    expect(prompt).toContain("do NOT lower it because lineCoverage is under minLineCoverage")
+    expect(prompt).toContain("human decision queue item")
     // A conflicting merge renders `null` explicitly, not an empty string.
     expect(prompt).toContain("or null when the merge conflicts): null. Ahead")
   })
@@ -985,6 +1060,30 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
       retry: spawns.find(s => s.stepId === "reviewRetryLarge")?.adapter,
     }
   }
+
+  it("passes the resolved role profile (as access.profileRef) and route to every reviewer spawn", async () => {
+    const profile = "opencode-developerws003"
+    const model = "opencode-go/deepseek-v4.1-flash"
+    daemonModels = {
+      "review.small": { model, profile, route: "opencode-go" },
+      "review.large": { model, profile, route: "opencode-go" },
+    }
+    try {
+      const spawns = await reviewerSpawns({})
+      const reviewSpawns = spawns.filter(s => s.stepId === "reviewOne")
+      expect(reviewSpawns).toHaveLength(2)
+      for (const spawn of reviewSpawns) {
+        expect(spawn.model).toBe(model)
+        expect(spawn.access).toEqual({ profileRef: profile })
+        expect(spawn.route).toBe("opencode-go")
+      }
+      const retry = spawns.find(s => s.stepId === "reviewRetryLarge")!
+      expect(retry.access).toEqual({ profileRef: profile })
+      expect(retry.route).toBe("opencode-go")
+    } finally {
+      daemonModels = {}
+    }
+  })
 
   it("the daemon `models` config drives the small, large and retry reviewers", async () => {
     daemonModels = { "review.small": "claude-opus-5-5", "review.large": "claude-sonnet-5-5" }

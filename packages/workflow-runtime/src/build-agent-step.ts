@@ -7,7 +7,7 @@
  * instead of drifting apart.
  */
 
-import type { AgentHarness, AgentSandboxRef, AgentStep, Bindings, Selector } from "./types.js"
+import type { AgentHarness, AgentSandboxRef, AgentStep, AgentStepAccess, Bindings, Selector } from "./types.js"
 
 export interface AgentStepFields {
   /** A literal prompt string, or a per-run selector (declarative manifest
@@ -17,6 +17,8 @@ export interface AgentStepFields {
   /** See {@link AgentStep.cwd}. */
   cwd?: Selector<string>
   model?: Selector<string> | string
+  access?: Selector<AgentStepAccess | undefined> | AgentStepAccess
+  route?: Selector<string | undefined> | string
   sessionRef?: string
   sandbox?: AgentSandboxRef
   cacheable?: boolean
@@ -41,6 +43,8 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     ...(fields.adapter !== undefined ? { adapter: fields.adapter } : {}),
     ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}),
     ...(fields.model !== undefined ? { model: fields.model } : {}),
+    ...(fields.access !== undefined ? { access: fields.access } : {}),
+    ...(fields.route !== undefined ? { route: fields.route } : {}),
     ...(fields.sessionRef !== undefined ? { sessionRef: fields.sessionRef } : {}),
     ...(fields.sandbox !== undefined ? { sandbox: fields.sandbox } : {}),
     ...(fields.cacheable ? { cacheable: true } : {}),
