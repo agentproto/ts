@@ -622,6 +622,19 @@ derive from spawn depth (root spawns default to supervisor; spawns made
 through an orchestrator default to executor — see
 `defaultRoleDepthCutoff` in config.json's `defaults` block).
 
+## allowPromptFrom
+
+Session ids allowed to drive the new session through the daemon's drive
+tools (`agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart`,
+`session_continue_fresh`), or `["any"]` to allow any caller session. By
+default the session may only be driven by its OWNER — the caller that
+spawned it — and by the human operator (a client with no caller session);
+any other agent session is refused by the daemon regardless of what tools
+its client lists. Change the list later with `agent_set_prompt_policy`
+(session ids in/out, or an empty array to reset): only the session itself,
+its owner, and the operator may. `any` never widens what a caller's own
+role allows the daemon to do.
+
 ## promptAppend
 
 One-off runtime text layered ON TOP of the resolved role's disposition and
