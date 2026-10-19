@@ -19,7 +19,9 @@ import type { AcpMcpServer } from "@agentproto/acp"
 import { resolveAccessProfileAuth, shouldInjectDaemonSelfMount, spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
 import { exportAgentSession } from "./transcript-export.js"
 import type { RoutinePolicy } from "./step-run-types.js"
-import { normalizeSkillsOption } from "./spawn-defaults.js"
+import { AuthResolutionError, normalizeSkillsOption, resolveAuthSpec, resolveSpawnDefaults } from "./spawn-defaults.js"
+import { loadConfig } from "./config.js"
+import { getProviderKey } from "./providers-store.js"
 import { loadImportedSkills, resolveSessionSkills, type ImportedSkillsConfig, type ResolvedSessionSkill } from "./skill-imports.js"
 import type { EffortLevel } from "./session-config.js"
 import {
@@ -377,6 +379,58 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         : accessAuth?.resolvedRouteGateway !== undefined
           ? { gateway: accessAuth.resolvedRouteGateway }
           : undefined
+    // Route WITHOUT a named profile: resolve an auth spec for the gateway the
+    // same way `agent_start` does, so the route actually reaches the spawn
+    // (base_url + key env + scrub) instead of only being echoed. Without this
+    // the descriptor would claim a route the adapter never used.
+    let authSpec = accessAuth?.authSpec
+    let authEcho = accessAuth?.authEcho
+    if (!accessAuth && effectiveRoute !== undefined) {
+      if (!resolved.authDescriptor) {
+        throw new Error(
+          `agent step route "${effectiveRoute.gateway}" cannot be applied: adapter '${adapter}' presents no billing-auth descriptor`,
+        )
+      }
+      const cfg = await loadConfig()
+      const spawnDefaults = resolveSpawnDefaults(cfg.defaults, adapter, {})
+      const apiKeyStoreCredential =
+        spawnDefaults.auth.explicit && spawnDefaults.auth.apiKeyCredential === undefined
+          ? await getProviderKey(effectiveRoute.gateway)
+          : undefined
+      try {
+        const result = resolveAuthSpec({
+          descriptor: resolved.authDescriptor,
+          ...(opts.harness?.model !== undefined ? { model: opts.harness.model } : {}),
+          routeGateway: effectiveRoute.gateway,
+          ...(spawnDefaults.auth.requestedMode !== undefined
+            ? { requestedMode: spawnDefaults.auth.requestedMode }
+            : {}),
+          explicit: spawnDefaults.auth.explicit,
+          ...(spawnDefaults.auth.subscriptionCredential !== undefined
+            ? { subscriptionCredential: spawnDefaults.auth.subscriptionCredential }
+            : {}),
+          ...(spawnDefaults.auth.apiKeyCredential !== undefined
+            ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
+            : {}),
+          ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
+          ...(spawnDefaults.auth.provider !== undefined
+            ? { requestedProvider: spawnDefaults.auth.provider }
+            : {}),
+          ...(spawnDefaults.auth.credentialEnvOverride !== undefined
+            ? { credentialEnvOverride: spawnDefaults.auth.credentialEnvOverride }
+            : {}),
+          ...(spawnDefaults.auth.extraEnv !== undefined ? { extraEnv: spawnDefaults.auth.extraEnv } : {}),
+          ...(spawnDefaults.auth.isolateDataHome === false ? { isolateDataHome: false } : {}),
+        })
+        authSpec = result?.spec
+        authEcho = result?.echo
+      } catch (err) {
+        if (err instanceof AuthResolutionError) {
+          throw new Error(`agent step route "${effectiveRoute.gateway}" failed: ${err.message}`)
+        }
+        throw err
+      }
+    }
     // Minted BEFORE the spawn so it can be injected as AGENTPROTO_SESSION_ID
     // into the child's own env, then reused (not re-minted) on `spawnAgent`.
     const stepSessionId = mintSessionId()
@@ -496,7 +550,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       ...(harnessOptions !== undefined ? { options: harnessOptions } : {}),
       ...(harness?.model !== undefined ? { model: harness.model } : {}),
       ...(harness?.effort !== undefined ? { effort: harness.effort } : {}),
-      ...(accessAuth?.authSpec !== undefined ? { auth: accessAuth.authSpec } : {}),
+      ...(authSpec !== undefined ? { auth: authSpec } : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
       ...(appendSystemPrompt !== undefined ? { appendSystemPrompt } : {}),
@@ -538,6 +592,17 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       ...(harness?.model !== undefined ? { model: harness.model } : {}),
       ...(harness?.effort !== undefined ? { effort: harness.effort as EffortLevel } : {}),
       ...(accessAuth ? { accessProfile: accessAuth.accessProfileEcho } : {}),
+      ...(authEcho?.fingerprint
+        ? {
+            auth: {
+              mode: authEcho.authMode,
+              fingerprint: authEcho.fingerprint,
+              provider: authEcho.provider,
+              credentialSource: authEcho.credentialSource,
+              setEnv: authEcho.setEnv,
+            },
+          }
+        : {}),
       ...(effectiveRoute !== undefined ? { route: effectiveRoute } : {}),
     })
     this.unreleased.add(desc.id)

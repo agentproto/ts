@@ -386,11 +386,6 @@ export interface OutputSchemaLike {
   jsonSchema?: unknown
 }
 
-/**
- * Spawn or reuse an agent session and send it a prompt, waiting for the
- * turn to complete. The host injects an {@link AgentSessionHost} — this
- * runtime has no knowledge of concrete session registries or event buses.
- */
 /** Named billing credential for an {@link AgentStep}'s spawn. */
 export interface AgentStepAccess {
   /** Single named auth profile. Superseded by {@link profileRefs}. */
@@ -399,6 +394,11 @@ export interface AgentStepAccess {
   profileRefs?: string[]
 }
 
+/**
+ * Spawn or reuse an agent session and send it a prompt, waiting for the
+ * turn to complete. The host injects an {@link AgentSessionHost} — this
+ * runtime has no knowledge of concrete session registries or event buses.
+ */
 export interface AgentStep {
   kind: "agent"
   id: string
