@@ -63,8 +63,9 @@ export type OwnerGateResult =
  *     descendants was already the scoped-orchestrator behavioral contract
  *     (subtree gates on `agent_kill`/`session_restart`), so the owner gate
  *     must not revoke it. Pass `parentOf` to enable the walk.
- *  5. The session's `allowPromptFrom` list (session ids, or `"any"`):
- *     allowed — an explicitly granted secondary caller.
+ *  5. The session's `allowPromptFrom` list (session ids, `label:<label>` /
+ *     `label:<prefix>*` label grants, or `"any"`): allowed — an explicitly
+ *     granted secondary caller.
  *  6. Everything else (a session that is neither an ancestor/owner nor
  *     listed): refused with a pointed error.
  */
@@ -76,10 +77,13 @@ export function checkSessionOwnerGate(input: {
   /** MCP tool name, for the error text. */
   tool: string
   /** Resolves a session's `parentSessionId` (registry lookup) — enables the
-   *  ancestor-chain rule above. Optional; tests may pass none. */
+   *  ancestor-chain rule above. Optional; tests may pass none.
+   *  `labelOf` resolves a session's label (registry lookup) — enables
+   *  `label:` entries in `allowPromptFrom`. Optional; tests may pass none. */
   parentOf?: (id: string) => string | undefined
+  labelOf?: (id: string) => string | undefined
 }): OwnerGateResult {
-  const { callerSessionId, target, tool, parentOf } = input
+  const { callerSessionId, target, tool, parentOf, labelOf } = input
   if (callerSessionId === undefined) return { ok: true }
   if (callerSessionId === target.id) return { ok: true }
   if (target.parentSessionId && callerSessionId === target.parentSessionId) {
@@ -94,6 +98,19 @@ export function checkSessionOwnerGate(input: {
   }
   const allow = target.allowPromptFrom ?? []
   if (allow.includes("any") || allow.includes(callerSessionId)) return { ok: true }
+  if (labelOf) {
+    const callerLabel = labelOf(callerSessionId)
+    if (callerLabel) {
+      for (const entry of allow) {
+        if (entry.startsWith("label:")) {
+          const pattern = entry.slice("label:".length)
+          if (pattern.endsWith("*") ? callerLabel.startsWith(pattern.slice(0, -1)) : callerLabel === pattern) {
+            return { ok: true }
+          }
+        }
+      }
+    }
+  }
   const owner =
     target.parentSessionId ??
     "the operator (the session was spawned at the root, so the human operator is its owner)"

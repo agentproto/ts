@@ -381,6 +381,7 @@ export function registerAgentTools(
       // (grandparent / orchestrator root) keeps its existing subtree
       // authority over the target — the owner gate must not revoke it.
       parentOf: id => registry.get(id)?.parentSessionId,
+      labelOf: id => registry.get(id)?.label,
     })
     return gate.ok ? undefined : gate.message
   }
@@ -1210,7 +1211,7 @@ export function registerAgentTools(
       allowPromptFrom: z
         .array(z.string().min(1))
         .describe(
-          "Session ids allowed to drive the session, or [\"any\"]. Empty array = default (owner + operator only)."
+          "Session ids allowed to drive the session, [\"any\"], or \"label:<label>\" / \"label:<prefix>*\" entries. Empty array = default (owner + operator only)."
         ),
     },
     async input => {
