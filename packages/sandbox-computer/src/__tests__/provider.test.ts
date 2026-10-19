@@ -82,7 +82,7 @@ describe("computerSandboxProvider.boot", () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
 
     expect(booted.sandboxId).toMatch(/^cmp-/)
-    expect(booted.mcpUrl).toBe(`http://${booted.sandboxId}:18790`)
+    expect(booted.mcpUrl).toBe(`http://${booted.sandboxId}:18790/mcp`)
 
     // create body: validated tenant + template + limits + only controller-shapable env
     expect(controller.createBodies[0]).toMatchObject({
@@ -115,6 +115,35 @@ describe("computerSandboxProvider.boot", () => {
     const last = controller.execs[controller.execs.length - 1] as { argv: string[] }
     expect(last.argv[0]).toBe("/bin/bash")
     expect(last.argv[1]).toBe("-lc")
+  })
+
+  it("returns the per-box daemon token and auth headers, and persists the token in the box", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    const serve = controller.execs.map((e) => e.argv[2] ?? "").find((s) => s.includes("agentproto serve")) ?? ""
+    const inBox = /--auth-token '([^']*)'/.exec(serve)?.[1]
+    expect(inBox).toMatch(/^[0-9a-f-]{36}$/)
+    expect(booted.token).toBe(inBox)
+    expect(booted.authHeaders).toEqual({ Authorization: `Bearer ${inBox}` })
+    expect(serve).toContain(`umask 077; printf %s '${inBox}' > "$HOME/.agentproto-daemon.token"`)
+    expect(serve.indexOf("printf %s")).toBeLessThan(serve.indexOf("nohup"))
+    // The controller service token is never what the host presents to the daemon.
+    expect(JSON.stringify(booted.authHeaders)).not.toContain(SERVICE_TOKEN)
+  })
+
+  it("reads the daemon token back on connect when the daemon is already up", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 99 }), bootOpts)
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, { maxSessions: 99 }), bootOpts)
+    expect(again.token).toBe(booted.token)
+    expect(again.authHeaders).toEqual(booted.authHeaders)
+    expect(controller.serveCount).toBe(1)
+  })
+
+  it("omits the token for a healthy daemon the image autostarted without one", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 99 }), bootOpts)
+    controller.daemonToken = undefined
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, { maxSessions: 99 }), bootOpts)
+    expect(again.token).toBeUndefined()
+    expect(again.authHeaders).toBeUndefined()
   })
 
   it("forwards the egress allowlist as create egress.allow, defaulting to port 443", async () => {
@@ -220,7 +249,7 @@ describe("computerSandboxProvider.boot", () => {
   })
 
   it("restarts a healthy daemon on connect when its recorded origin is stale", async () => {
-    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 99 }
     controller.options.publishedPorts = [{ host: 20011, guest: 18790 }]
     const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
     expect(controller.daemonOrigin).toBe("http://127.0.0.1:20011")
@@ -235,15 +264,58 @@ describe("computerSandboxProvider.boot", () => {
     controller.options.publishedPorts = [{ host: 20012, guest: 18790 }]
     controller.execs.length = 0
     const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
-    expect(again.mcpUrl).toBe("http://127.0.0.1:20012")
+    expect(again.mcpUrl).toBe("http://127.0.0.1:20012/mcp")
     expect(controller.killCount).toBe(1)
     expect(controller.serveCount).toBe(serves + 1)
     expect(controller.daemonOrigin).toBe("http://127.0.0.1:20012")
+    // the restarted daemon has a fresh token, and the handle carries that one
+    expect(again.token).toBe(controller.daemonToken)
+    expect(again.token).not.toBe(booted.token)
     expect(controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))).toBe(false)
   })
 
+  it("recovers the published host port from the in-box origin marker when GET omits ports", async () => {
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 99 }
+    controller.options.publishedPorts = [{ host: 20031, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    controller.options.getOmitsPorts = true
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
+    expect(again.mcpUrl).toBe("http://127.0.0.1:20031/mcp")
+    expect(again.token).toBe(booted.token)
+    expect(controller.killCount).toBe(0)
+  })
+
+  it("still fails clearly when GET omits ports and the box has no origin marker", async () => {
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 99 }
+    controller.options.publishedPorts = [{ host: 20041, guest: 18790 }]
+    const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
+    controller.options.getOmitsPorts = true
+    controller.daemonOrigin = undefined
+    await expect(
+      computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts),
+    ).rejects.toThrow(/published no host port/)
+  })
+
+  it("falls back to COMPUTER_GATEWAY_URL when the spec carries no gatewayUrl (daemon re-attach path)", async () => {
+    const previous = process.env.COMPUTER_GATEWAY_URL
+    process.env.COMPUTER_GATEWAY_URL = "http://127.0.0.1:{hostPort}"
+    try {
+      controller.options.publishedPorts = [{ host: 20051, guest: 18790 }]
+      const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+      expect(booted.mcpUrl).toBe("http://127.0.0.1:20051/mcp")
+      const explicit = await computerSandboxProvider.boot(
+        spec(controller.url, { gatewayUrl: "http://gw.test:{port}/{id}" }),
+        bootOpts,
+      )
+      expect(explicit.mcpUrl).toBe(`http://gw.test:18790/${explicit.sandboxId}/mcp`)
+    } finally {
+      if (previous === undefined) delete process.env.COMPUTER_GATEWAY_URL
+      else process.env.COMPUTER_GATEWAY_URL = previous
+    }
+  })
+
   it("leaves a healthy daemon without an origin marker alone on connect", async () => {
-    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 99 }
     controller.options.publishedPorts = [{ host: 20021, guest: 18790 }]
     const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
     controller.daemonOrigin = undefined
@@ -258,7 +330,7 @@ describe("computerSandboxProvider.boot", () => {
       spec(controller.url, { gatewayUrl: "http://127.0.0.1:{hostPort}" }),
       bootOpts,
     )
-    expect(booted.mcpUrl).toBe("http://127.0.0.1:20003")
+    expect(booted.mcpUrl).toBe("http://127.0.0.1:20003/mcp")
     const serve = controller.execs.map((e) => e.argv[2] ?? "").find((s) => s.includes("agentproto serve"))
     expect(serve).toContain("--allow-origin 'http://127.0.0.1:20003'")
     expect((await booted.expose!(18790)).url).toBe("http://127.0.0.1:20003")
@@ -273,10 +345,10 @@ describe("computerSandboxProvider.boot", () => {
 
   it("connect re-resolves {hostPort} from the controller's status", async () => {
     controller.options.publishedPorts = [{ host: 20007, guest: 18790 }]
-    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 9 }
+    const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 99 }
     const booted = await computerSandboxProvider.boot(spec(controller.url, gw), bootOpts)
     const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, gw), bootOpts)
-    expect(again.mcpUrl).toBe("http://127.0.0.1:20007")
+    expect(again.mcpUrl).toBe("http://127.0.0.1:20007/mcp")
   })
 
   it("fails the boot when a setup command exits non-zero", async () => {
@@ -322,7 +394,7 @@ describe("computerSandboxProvider.boot", () => {
       spec(controller.url, { gatewayUrl: "http://gate.internal:{port}/computers/{id}" }),
       bootOpts,
     )
-    expect(booted.mcpUrl).toBe(`http://gate.internal:18790/computers/${booted.sandboxId}`)
+    expect(booted.mcpUrl).toBe(`http://gate.internal:18790/computers/${booted.sandboxId}/mcp`)
     const exposed = await booted.expose!(3000)
     expect(exposed.url).toBe(`http://gate.internal:3000/computers/${booted.sandboxId}`)
   })

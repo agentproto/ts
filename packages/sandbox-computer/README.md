@@ -37,7 +37,7 @@ provider's `setup` (stored creds), plus env fallbacks:
 | `maxSessions` | — | `1` | How many sessions THIS process may map onto one computer. |
 | `port` | — | `18790` | Daemon port inside the computer. |
 | `workspace` | — | `/home/user` | `agentproto serve --workspace`. |
-| `gatewayUrl` | — | `http://<computer-name>:<port>` | URL template with `{port}`/`{id}`/`{hostPort}` placeholders for reaching a computer's ports (`{hostPort}` is the host port the controller published for the daemon port; the boot fails if none). Default assumes the box network is addressable by the computer's generated name; set it when computers sit behind an edge proxy. The daemon is started with `--allow-origin` for this URL's origin, recorded in `~/.agentproto-daemon.origin`; on reconnect a healthy daemon whose recorded origin differs (the host port changed) is restarted. A daemon without that file (autostarted by the template) is left as is. |
+| `gatewayUrl` | `COMPUTER_GATEWAY_URL` | `http://<computer-name>:<port>` | URL template with `{port}`/`{id}`/`{hostPort}` placeholders for reaching a computer's ports (`{hostPort}` is the host port the controller published for the daemon port; the boot fails if none). Default assumes the box network is addressable by the computer's generated name; set it when computers sit behind an edge proxy. The daemon is started with `--allow-origin` for this URL's origin, recorded in `~/.agentproto-daemon.origin`; on reconnect a healthy daemon whose recorded origin differs (the host port changed) is restarted. A daemon without that file (autostarted by the template) is left as is. The runtime exposes it as a setup field (stored provider creds fill `COMPUTER_GATEWAY_URL` when unset), which a daemon-restart re-attach needs because it carries no per-spawn config. When the controller's GET omits `ports`, a reconnect recovers the host port from the origin marker. `mcpUrl` is the resolved URL plus `/mcp`. |
 | `updateCliOnBoot`, `cliVersion`, `installPackages`, `setupCommands` | — | install on | Same semantics as sandbox-e2b's boot flow. |
 | `waitReadyTimeoutMs`, `daemonReadyTimeoutMs` | — | 120s / 30s | Boot readiness windows. |
 
@@ -67,10 +67,13 @@ enforced per process only.
 ## Secrets
 
 - The controller token travels only in the `Authorization: Bearer …` header.
-- A fresh `--auth-token` (UUID) gates the daemon inside each computer; it
-  exists only inside the box (`~/.agentproto-daemon.log`'s command
-  line is the one place it is used) and is deliberately never surfaced on
-  `BootedSandbox`.
+- A fresh `--auth-token` (UUID) gates the daemon inside each computer (the
+  published port reaches it as a non-loopback peer, so the daemon requires
+  it). It is written `0600` to `~/.agentproto-daemon.token` in the box and
+  returned on `BootedSandbox.token`/`authHeaders` for the host's
+  authenticated reads. It appears nowhere else (no logs, no errors);
+  a reconnect reads it back from that file. A daemon autostarted by the
+  template has no token file and gets no auth headers.
 - This package logs nothing and redacts the service token from every error
   message it produces (`[redacted]`).
 
