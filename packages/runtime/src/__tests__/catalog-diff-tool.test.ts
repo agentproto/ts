@@ -4,7 +4,7 @@
  * `~/.agentproto` file or `LLM_PRICING_CATALOG`.
  */
 import { describe, expect, it } from "vitest"
-import type { CatalogDiff, CatalogSnapshot } from "../catalog-diff-stub.js"
+import type { CatalogDiff, CatalogSnapshot } from "@agentproto/model-intel"
 import { readCatalogDiff } from "../catalog-diff-tool.js"
 
 function snap(entries: Record<string, [number, number]>): CatalogSnapshot {

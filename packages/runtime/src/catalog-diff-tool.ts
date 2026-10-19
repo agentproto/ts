@@ -10,15 +10,13 @@
  * profile resolution — this operates on the whole catalog, not a named
  * profile.
  *
- * The diff itself comes from `diffCatalog` in `@agentproto/model-intel`
- * (locally stubbed in `catalog-diff-stub.ts` until that package's half
- * merges).
+ * The diff itself comes from `diffCatalog` in `@agentproto/model-intel`.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { LLM_PRICING_CATALOG } from "@agentproto/model-catalog/llm"
-import { diffCatalog, type CatalogDiff, type CatalogSnapshot } from "./catalog-diff-stub.js"
+import { diffCatalog, type CatalogDiff, type CatalogSnapshot } from "@agentproto/model-intel"
 import {
   loadCatalogSnapshotStore,
   recordCatalogSnapshot,

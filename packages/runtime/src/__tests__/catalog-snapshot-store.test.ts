@@ -11,7 +11,7 @@ import {
   loadCatalogSnapshotStore,
   recordCatalogSnapshot,
 } from "../catalog-snapshot-store.js"
-import type { CatalogSnapshot } from "../catalog-diff-stub.js"
+import type { CatalogSnapshot } from "@agentproto/model-intel"
 
 function entry(inputPer1M: number, outputPer1M: number): CatalogSnapshot[string] {
   return { id: "x", inputPer1M, outputPer1M, free: inputPer1M === 0 && outputPer1M === 0 }

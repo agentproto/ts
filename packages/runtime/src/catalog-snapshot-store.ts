@@ -14,7 +14,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { z } from "zod"
-import type { CatalogSnapshot } from "./catalog-diff-stub.js"
+import type { CatalogSnapshot } from "@agentproto/model-intel"
 
 const snapshotEntrySchema = z.object({
   id: z.string(),
