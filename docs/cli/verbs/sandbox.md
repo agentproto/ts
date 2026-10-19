@@ -32,8 +32,10 @@ agentproto sandbox list --json --reconcile
 ```
 
 Prints the sandbox ledger — every box the daemon has booted, reconnected
-to, paused, or stopped — with its current state, idle-expiry, and the
-origin session that spawned it.
+to, paused, or stopped — with its current state, idle-expiry, the origin
+session that spawned it, and, for a shared box, the sessions currently
+attached to it (`ATTACHED` column; `attachedSessions` in `--json` — the
+refcount that keeps the box alive while any of them remains).
 
 The table includes a **LIVE** column showing the result of a per-row
 provider liveness probe (`yes` / `no` / `?` probe-errored / `—`
