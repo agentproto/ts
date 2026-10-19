@@ -5,7 +5,13 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { QuotaReaderRegistry, defineQuotaReader, type QuotaStatus } from "@agentproto/model-intel"
+import {
+  QuotaReaderRegistry,
+  defineQuotaReader,
+  type QuotaStatus,
+  type QuotaProfile,
+  type QuotaReadContext,
+} from "@agentproto/model-intel"
 import type { AuthProfile } from "@agentproto/auth"
 import { readQuotaStatus } from "../quota-status-tool.js"
 
@@ -18,13 +24,27 @@ function profile(overrides: Partial<AuthProfile> = {}): AuthProfile {
   } as AuthProfile
 }
 
-function fakeStatus(profileRef: string): QuotaStatus {
+/** Fixed `asOf` so reader output and the test's expectation never straddle a
+ *  real clock tick. The fake reader below reads it from `ctx.now` — the same
+ *  path `readQuotaStatus` forwards `deps.now` through to the registry — so
+ *  this also exercises that forwarding, not just working around the clock. */
+const FIXED_NOW = new Date("2026-01-01T00:00:00.000Z")
+
+function fakeStatus(profileRef: string, asOf: Date = FIXED_NOW): QuotaStatus {
   return {
     profileRef,
-    asOf: new Date().toISOString(),
+    asOf: asOf.toISOString(),
     basis: "provider",
     windows: [{ id: "5h", remainingPct: 42 }],
   }
+}
+
+function fakeReaderUsingCtxNow(supports: (p: QuotaProfile) => boolean = () => true) {
+  return defineQuotaReader({
+    id: "fake",
+    supports,
+    read: async (p, ctx: QuotaReadContext) => fakeStatus(p.profileRef, ctx.now?.() ?? new Date()),
+  })
 }
 
 describe("readQuotaStatus", () => {
@@ -38,18 +58,13 @@ describe("readQuotaStatus", () => {
   })
 
   it("falls back to the calling session's own access profile when profileRef is omitted", async () => {
-    const registry = new QuotaReaderRegistry().register(
-      defineQuotaReader({
-        id: "fake",
-        supports: () => true,
-        read: async (p) => fakeStatus(p.profileRef),
-      }),
-    )
+    const registry = new QuotaReaderRegistry().register(fakeReaderUsingCtxNow())
     const result = await readQuotaStatus(
       {},
       {
         getProfile: async (ref) => profile({ id: ref }),
         registry,
+        now: () => FIXED_NOW,
         currentProfileRef: () => "session-profile",
       },
     )
@@ -104,15 +119,11 @@ describe("readQuotaStatus", () => {
 
   it("dispatches through the matching reader and returns its QuotaStatus", async () => {
     const registry = new QuotaReaderRegistry().register(
-      defineQuotaReader({
-        id: "fake",
-        supports: (p) => p.endpoint === "moonshot",
-        read: async (p) => fakeStatus(p.profileRef),
-      }),
+      fakeReaderUsingCtxNow((p) => p.endpoint === "moonshot"),
     )
     const result = await readQuotaStatus(
       { profileRef: "p-1" },
-      { getProfile: async (ref) => profile({ id: ref }), registry },
+      { getProfile: async (ref) => profile({ id: ref }), registry, now: () => FIXED_NOW },
     )
     expect(result).toEqual({ ok: true, status: fakeStatus("p-1") })
   })
