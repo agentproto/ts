@@ -154,8 +154,12 @@ Write-Host "    Install adapters from THIS SAME PowerShell window the daemon is 
 # builds have it; fall back to the open-window serve workaround when they don't.
 $daemonOk = $false
 try {
-  $doctor = @(& $CliCmd doctor --only daemon 2>&1) -join "`n"
-  $daemonOk = ($LASTEXITCODE -eq 0) -and ($doctor -match "(?i)\bok\b")
+  # Healthy iff doctor --json exits 0 AND some daemon check reports
+  # "status": "ok". The doctor human summary always prints "N ok · N warn …",
+  # so a bare `(?i)\bok\b` match on human text can read a warn-only step
+  # (nothing running) as healthy.
+  $doctor = @(& $CliCmd doctor --only daemon --json 2>&1) -join "`n"
+  $daemonOk = ($LASTEXITCODE -eq 0) -and ($doctor -match '"status": "ok"')
 }
 catch {
   $daemonOk = $false
