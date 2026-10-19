@@ -1,7 +1,7 @@
 /**
  * @agentproto/model-intel — model intelligence primitives.
  *
- * Unified, provider-neutral quota status (AIP-67): one QuotaStatus shape with a
+ * Unified, provider-neutral quota status (quota/v1): one QuotaStatus shape with a
  * mandatory `basis`, a never-throw QuotaReader contract, and a reader registry.
  * Unknown is omitted, never fabricated.
  *
