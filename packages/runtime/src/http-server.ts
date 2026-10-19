@@ -5928,6 +5928,7 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
     code === "device_spawn_unreachable" ||
+    code === "device_offline" ||
     code === "cloud_spawn_refused"
   ) {
     return 400
@@ -6895,7 +6896,8 @@ async function handleSessions(
                   result.code === "access_profile_not_found" ||
                   result.code === "access_profile_ineligible" ||
                   result.code === "sandbox_cwd_invalid" ||
-                  result.code === "device_spawn_unreachable"
+                  result.code === "device_spawn_unreachable" ||
+                  result.code === "device_offline"
                 ? 400
                 : 500
       json(status, {

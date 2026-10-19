@@ -37,7 +37,7 @@ import type {
   SandboxSpec,
   SandboxProvider,
 } from "@agentproto/sandbox"
-import { SandboxBoxGoneError, scrubCommandFromMessage } from "@agentproto/sandbox"
+import { resolveLifecyclePolicy, SandboxBoxGoneError, scrubCommandFromMessage } from "@agentproto/sandbox"
 import {
   DEFAULT_SIZE,
   DEFAULT_TEMPLATE,
@@ -125,6 +125,13 @@ interface E2bSandboxConfig {
   workspace?: string
   /** Sandbox lifetime cap, forwarded to `Sandbox.create`. */
   timeoutMs?: number
+  /** What e2b does when `timeoutMs` runs out: `"pause"` snapshots the box
+   *  (disk + memory, reconnectable, not billed while paused), `"kill"`
+   *  destroys it. Default: `"pause"` when the spec declares
+   *  `lifecycle.pause_after_idle` (the box is meant to outlive idleness, so
+   *  the provider-side expiry must not wipe it), otherwise unset — e2b's own
+   *  default, currently `kill`. See {@link resolveOnTimeout}. */
+  onTimeout?: "pause" | "kill"
   /** How long to wait for the health probe before assuming the daemon isn't autostarted. */
   healthProbeTimeoutMs?: number
   /** How long to wait for the daemon to become healthy after starting it. */
@@ -194,6 +201,7 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
     port: typeof config.port === "number" ? config.port : undefined,
     workspace: typeof config.workspace === "string" ? config.workspace : undefined,
     timeoutMs: typeof config.timeoutMs === "number" ? config.timeoutMs : undefined,
+    onTimeout: config.onTimeout === "pause" || config.onTimeout === "kill" ? config.onTimeout : undefined,
     healthProbeTimeoutMs:
       typeof config.healthProbeTimeoutMs === "number" ? config.healthProbeTimeoutMs : undefined,
     daemonReadyTimeoutMs:
@@ -705,6 +713,21 @@ function toBootedSandbox(
   }
 }
 
+/**
+ * The e2b `lifecycle.onTimeout` for a fresh boot. An explicit
+ * `config.onTimeout` wins; otherwise a spec that declares
+ * `lifecycle.pause_after_idle` gets `"pause"`, because e2b's own default
+ * (`kill`, measured 2026-10-15) would destroy a box whose whole point is to
+ * survive going idle — a forgotten box would lose its state instead of
+ * parking it, and pausing costs nothing (a paused box is not billed and
+ * holds no concurrency slot). `undefined` leaves the field out of the create
+ * request, so every other spec keeps e2b's default untouched.
+ */
+function resolveOnTimeout(spec: SandboxSpec, config: E2bSandboxConfig): "pause" | "kill" | undefined {
+  if (config.onTimeout) return config.onTimeout
+  return resolveLifecyclePolicy(spec, false).pauseAfterIdleMs !== undefined ? "pause" : undefined
+}
+
 /** `files.read` defaults to a 60s request timeout, too short for the largest
  *  bundle the delivery path will pull (50 MiB) over a slow link. */
 const READ_FILE_TIMEOUT_MS = 5 * 60_000
@@ -717,10 +740,12 @@ export const e2bSandboxProvider: SandboxProvider = {
     const port = config.port ?? DEFAULT_PORT
     const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
+    const onTimeout = resolveOnTimeout(spec, config)
     const sandbox = await Sandbox.create(template, {
       apiKey: process.env.E2B_API_KEY,
       envs: opts.env,
       timeoutMs: config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS,
+      ...(onTimeout ? { lifecycle: { onTimeout } } : {}),
     })
 
     // Once the VM exists, EVERY failure after this point must reclaim it —

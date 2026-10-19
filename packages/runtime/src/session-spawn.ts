@@ -248,7 +248,7 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
-import { isDeviceSandboxTarget } from "./sandbox-providers/device.js"
+import { isDeviceOfflineError, isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
  *  its sandbox is a paired device (bare-string or inline-spec form). The
@@ -1767,6 +1767,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
         | "device_spawn_unreachable"
+        | "device_offline"
         | "sandbox_reuse_ambiguous"
         | "sandbox_reuse_workspace_mismatch"
         | "sandbox_app_serve_failed"
@@ -4524,6 +4525,7 @@ export async function spawnAgentSession(
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
+    let sandboxPauseAfterIdleMs: number | undefined
     let sandboxDeliveryTarget: SandboxDeliveryTarget | undefined
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
@@ -4651,6 +4653,7 @@ export async function spawnAgentSession(
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
       sandboxTeardown = booted.sandboxTeardown
+      sandboxPauseAfterIdleMs = booted.pauseAfterIdleMs
       sandboxDeliveryTarget = booted.deliveryTarget
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
@@ -4991,6 +4994,7 @@ export async function spawnAgentSession(
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
+      ...(sandboxPauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs } : {}),
       ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
       ...(sandboxDeliveryTarget && input.sandboxCheckpoint !== undefined
         ? { sandboxCheckpointOverride: input.sandboxCheckpoint }
@@ -5255,6 +5259,9 @@ export type SandboxBootResult =
        *  descriptor's `sandboxProvider` by the caller. */
       provider: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
+      /** The spec's `lifecycle.pause_after_idle` window — stamped onto the
+       *  descriptor's `sandboxPauseAfterIdleMs`. Absent when none declared. */
+      pauseAfterIdleMs?: number
       /** The work branch checked out in the box — stamped onto the descriptor
        *  so a restart can deliver it. Absent only for `worktree: false`. */
       deliveryTarget?: SandboxDeliveryTarget
@@ -5292,6 +5299,7 @@ export type SandboxBootResult =
         | "sandbox_cwd_invalid"
         | "sandbox_workspace_setup_failed"
         | "device_spawn_unreachable"
+        | "device_offline"
       message: string
       details?: Record<string, unknown>
     }
@@ -5969,7 +5977,9 @@ export async function bootSandboxAgentSession(opts: {
             `agent_start: sandbox reconnect failed (provider "${providerSlug}", sandbox ` +
             `"${reuseSandboxId}") — ${err instanceof Error ? err.message : String(err)}`,
         }
-      : {
+      : isDeviceOfflineError(err)
+        ? { ok: false, code: "device_offline", message: `agent_start: ${err.message}` }
+        : {
           ok: false,
           code: "sandbox_boot_failed",
           message:
@@ -6397,6 +6407,9 @@ export async function bootSandboxAgentSession(opts: {
     cwd: resolvedCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
+    ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
+      ? { pauseAfterIdleMs: lifecyclePolicy.pauseAfterIdleMs }
+      : {}),
     ...(deliveryTarget ? { deliveryTarget } : {}),
     ...(bootNotices.length > 0 ? { notices: bootNotices } : {}),
     ...(bootWarnings.length > 0 ? { warnings: bootWarnings } : {}),

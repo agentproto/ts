@@ -2601,6 +2601,12 @@ export interface SessionDescriptor {
    *  default, ephemeral) or `"pause"` (keeps `sandboxId` reconnectable via
    *  `agent_start.sandbox.reuse`). Only set when `remote` is true. */
   sandboxTeardown?: "kill" | "pause"
+  /** The spec's `lifecycle.pause_after_idle` window (ms), when it declared
+   *  one. The idle reaper retires an idle sandboxed row after this long when
+   *  it is shorter than `daemon.sandboxIdleReapAfterMs`, so a box that asked
+   *  to park after 2 min of idleness is not left running (and billed) for the
+   *  reaper's 15-minute default. Only set when `remote` is true. */
+  sandboxPauseAfterIdleMs?: number
   /** What teardown did with the branch the session worked on inside its box
    *  (`wt/<slug>` push + bundle fallback). Only set for a sandbox session that
    *  was spawned from a workspace `remote` with a `worktree`, once it closes. */
@@ -5375,6 +5381,8 @@ export interface SpawnAgentInput {
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
+  /** The spec's idle-pause window — see `SessionDescriptor.sandboxPauseAfterIdleMs`. */
+  sandboxPauseAfterIdleMs?: number
   /** The work branch inside the box — see `SessionDescriptor.sandboxDeliveryTarget`. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
   /** Per-spawn checkpoint override — see `SessionDescriptor.sandboxCheckpointOverride`. */
@@ -10826,6 +10834,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxPauseAfterIdleMs !== undefined
+          ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
+          : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
@@ -11008,6 +11019,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxPauseAfterIdleMs !== undefined
+          ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
+          : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }

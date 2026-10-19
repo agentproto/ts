@@ -34,7 +34,9 @@
  * lifecycle policy (kill unless the spec asked to pause). A sandboxed row
  * counts as idle only when it is ALSO not blocked on a command/sub-agent/
  * background task and has no live child session. A non-sandbox session keeps
- * the general `idleReapAfterMs` rules unchanged.
+ * the general `idleReapAfterMs` rules unchanged. A sandboxed row whose spec
+ * declared `lifecycle.pause_after_idle` (`desc.sandboxPauseAfterIdleMs`) is
+ * reaped after that window instead, when it is the shorter one.
  */
 
 import { isProviderBoxSession as isBoxSession, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
@@ -103,7 +105,12 @@ const positive = (ms: number | undefined): number | undefined =>
 function thresholdFor(desc: SessionDescriptor, t: ReapThresholds): number | undefined {
   if (!isBoxSession(desc)) return t.general
   if (t.sandbox === undefined) return t.general
-  return t.general === undefined ? t.sandbox : Math.min(t.sandbox, t.general)
+  const base = t.general === undefined ? t.sandbox : Math.min(t.sandbox, t.general)
+  // The box's own `lifecycle.pause_after_idle` asks for a shorter window:
+  // honour it while sandbox reaping is on, so a box meant to park after 2 min
+  // isn't billed for the 15-minute default.
+  const own = positive(desc.sandboxPauseAfterIdleMs)
+  return own === undefined ? base : Math.min(base, own)
 }
 
 /** Work the box is still doing that `busy` doesn't show: a command or

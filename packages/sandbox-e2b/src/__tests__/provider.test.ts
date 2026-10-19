@@ -105,6 +105,40 @@ describe("e2bSandboxProvider.boot", () => {
     expect(booted.sandboxId).toBe("sbx_abc")
   })
 
+  describe("lifecycle.onTimeout", () => {
+    const bootWith = async (bootSpec: SandboxSpec) => {
+      sandboxCreateMock.mockResolvedValue(fakeSandbox())
+      fetchMock.mockResolvedValue({ ok: true }) // daemon already healthy
+      const { e2bSandboxProvider } = await import("../provider.js")
+      await e2bSandboxProvider.boot(bootSpec, { env: {} })
+      return sandboxCreateMock.mock.calls[0]?.[1] as Record<string, unknown>
+    }
+
+    it("pauses on timeout when the spec declares pause_after_idle (a forgotten box parks instead of being wiped)", async () => {
+      const opts = await bootWith({ provider: "e2b", config: {}, lifecycle: { pause_after_idle: "idle-120" } })
+      expect(opts.lifecycle).toEqual({ onTimeout: "pause" })
+    })
+
+    it("leaves e2b's default untouched when the spec declares no idle pause", async () => {
+      const opts = await bootWith({ provider: "e2b", config: {} })
+      expect(opts).not.toHaveProperty("lifecycle")
+    })
+
+    it("lets an explicit config.onTimeout win over the derived default", async () => {
+      const opts = await bootWith({
+        provider: "e2b",
+        config: { onTimeout: "kill" },
+        lifecycle: { pause_after_idle: "idle-120" },
+      })
+      expect(opts.lifecycle).toEqual({ onTimeout: "kill" })
+    })
+
+    it("ignores an invalid config.onTimeout", async () => {
+      const opts = await bootWith({ provider: "e2b", config: { onTimeout: "explode" } })
+      expect(opts).not.toHaveProperty("lifecycle")
+    })
+  })
+
   it("installs config.installPackages alongside the CLI update in ONE npm invocation (adapter survives the update)", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)
