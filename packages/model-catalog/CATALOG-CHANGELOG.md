@@ -392,3 +392,15 @@ for that.
 
 ### llm:huggingface
 - Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, zai-org/GLM-4.6-FP8, zai-org/GLM-5.1-FP8
+
+## 2026-10-19
+
+### llm:openrouter
+- Removed: deepseek/deepseek-r1, microsoft/wizardlm-2-8x22b, sao10k/l3.3-euryale-70b
+
+### llm:requesty
+- Added: together/deepseek-v4.1-flash-1017
+
+### llm:huggingface
+- Added: CohereLabs/c4ai-command-r7b-arabic-02-2025, deepseek-ai/DeepSeek-V4.1-Flash-1017, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8
+- Removed: XiaomiMiMo/MiMo-V2.6-Pro-RL, zai-org/GLM-5.1
