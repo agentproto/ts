@@ -5,8 +5,8 @@
  *   AGENTPROTO_CF_LIVE=1
  *   CF_LIVE_API_TOKEN      Account:Cloudflare Tunnel:Edit + Zone:DNS:Edit + Zone:Read
  *   CF_LIVE_ACCOUNT_ID
- *   CF_LIVE_ZONE           e.g. agentik.net
- *   CF_LIVE_HOSTNAME       e.g. agentproto-live-check.agentik.net (must not exist yet)
+ *   CF_LIVE_ZONE           e.g. example.com
+ *   CF_LIVE_HOSTNAME       e.g. agentproto-live-check.example.com (must not exist yet)
  *
  * Creates a tunnel + CNAME, replays (no duplicates), then deletes both.
  * Does not run cloudflared. The token is read from the env by reference.

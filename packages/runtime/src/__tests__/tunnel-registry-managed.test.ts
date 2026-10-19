@@ -73,19 +73,19 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     const desc = await reg.create({
       provider: "cloudflare-managed",
       targetPort: 8081,
-      hostname: "WA.Agentik.net",
+      hostname: "WA.Example.com",
       name: "wa",
       autostart: true,
       public: true,
     })
-    expect(desc.hostname).toBe("wa.agentik.net")
-    expect(desc.hostnames).toEqual(["wa.agentik.net"])
+    expect(desc.hostname).toBe("wa.example.com")
+    expect(desc.hostnames).toEqual(["wa.example.com"])
     expect(desc.tunnelId).toBe("cf-tunnel-1")
-    expect(desc.publicUrl).toBe("https://wa.agentik.net")
+    expect(desc.publicUrl).toBe("https://wa.example.com")
     expect(desc.health).toMatchObject({ state: "degraded" })
     expect(rec.starts[0]!.tunnel).toEqual({
       key: `wa-${desc.id.slice(0, 8)}`,
-      hostnames: ["wa.agentik.net"],
+      hostnames: ["wa.example.com"],
     })
     expect(rec.starts[0]!.target).toEqual({ host: "127.0.0.1", port: 8081 })
   })
@@ -96,7 +96,7 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     const desc = await reg.create({
       provider: "cloudflare-managed",
       targetPort: 8081,
-      hostname: "wa.agentik.net",
+      hostname: "wa.example.com",
       public: true,
     })
     rec.starts[0]!.onHealth!({ state: "active", checkedAt: "t1" })
@@ -114,25 +114,25 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     const desc = await reg.create({
       provider: "cloudflare-managed",
       targetPort: 8081,
-      hostname: "wa.agentik.net",
+      hostname: "wa.example.com",
       name: "wa",
     })
-    expect(desc.url).toMatch(/^https:\/\/wa\.agentik\.net\/\?t=/)
+    expect(desc.url).toMatch(/^https:\/\/wa\.example\.com\/\?t=/)
 
-    const swapped = await reg.addHostname("wa", "wa.clipgen.co")
-    expect(swapped.hostnames).toEqual(["wa.clipgen.co", "wa.agentik.net"])
-    expect(swapped.hostname).toBe("wa.clipgen.co")
-    expect(swapped.publicUrl).toBe("https://wa.clipgen.co")
-    expect(swapped.url).toMatch(/^https:\/\/wa\.clipgen\.co\/\?t=/)
-    await expect(reg.addHostname("wa", "wa.clipgen.co")).rejects.toThrow(/already routes/)
+    const swapped = await reg.addHostname("wa", "wa.example.dev")
+    expect(swapped.hostnames).toEqual(["wa.example.dev", "wa.example.com"])
+    expect(swapped.hostname).toBe("wa.example.dev")
+    expect(swapped.publicUrl).toBe("https://wa.example.dev")
+    expect(swapped.url).toMatch(/^https:\/\/wa\.example\.dev\/\?t=/)
+    await expect(reg.addHostname("wa", "wa.example.dev")).rejects.toThrow(/already routes/)
 
-    const retired = await reg.removeHostname("wa", "wa.agentik.net")
-    expect(retired.hostnames).toEqual(["wa.clipgen.co"])
-    await expect(reg.removeHostname("wa", "wa.clipgen.co")).rejects.toThrow(/last hostname/)
-    await expect(reg.removeHostname("wa", "nope.agentik.net")).rejects.toThrow(/does not route/)
+    const retired = await reg.removeHostname("wa", "wa.example.com")
+    expect(retired.hostnames).toEqual(["wa.example.dev"])
+    await expect(reg.removeHostname("wa", "wa.example.dev")).rejects.toThrow(/last hostname/)
+    await expect(reg.removeHostname("wa", "nope.example.com")).rejects.toThrow(/does not route/)
 
-    expect(rec.calls).toContain("add wa.clipgen.co to wa.agentik.net")
-    expect(rec.calls).toContain("remove wa.agentik.net from wa.clipgen.co,wa.agentik.net")
+    expect(rec.calls).toContain("add wa.example.dev to wa.example.com")
+    expect(rec.calls).toContain("remove wa.example.com from wa.example.dev,wa.example.com")
   })
 
   it("delete: stop first, then destroy, then forget", async () => {
@@ -141,11 +141,11 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     const desc = await reg.create({
       provider: "cloudflare-managed",
       targetPort: 8081,
-      hostname: "wa.agentik.net",
+      hostname: "wa.example.com",
       public: true,
     })
     expect(await reg.delete(desc.id)).toBe(true)
-    expect(rec.calls.slice(-2)).toEqual(["stop", `destroy ${desc.id} wa.agentik.net`])
+    expect(rec.calls.slice(-2)).toEqual(["stop", `destroy ${desc.id} wa.example.com`])
     expect(reg.get(desc.id)).toBeUndefined()
     expect(await reg.delete(desc.id)).toBe(false)
   })
@@ -156,7 +156,7 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     const desc = await reg.create({
       provider: "cloudflare-managed",
       targetPort: 8081,
-      hostname: "wa.agentik.net",
+      hostname: "wa.example.com",
       public: true,
     })
     await expect(reg.delete(desc.id)).rejects.toThrow(/DELETE failed/)
@@ -197,7 +197,7 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     const desc = await reg.create({
       provider: "cloudflare-managed",
       targetPort: 8081,
-      hostname: "wa.agentik.net",
+      hostname: "wa.example.com",
       public: true,
     })
     await reg.shutdown()
@@ -206,9 +206,9 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     const restored = reg2.get(desc.id)
     expect(restored?.status).toBe("stopped")
     expect(restored?.health).toBeUndefined()
-    await reg2.addHostname(desc.id, "wa2.agentik.net")
+    await reg2.addHostname(desc.id, "wa2.example.com")
     expect(await reg2.delete(desc.id)).toBe(true)
-    expect(rec.calls.at(-1)).toBe(`destroy ${desc.id} wa2.agentik.net,wa.agentik.net`)
+    expect(rec.calls.at(-1)).toBe(`destroy ${desc.id} wa2.example.com,wa.example.com`)
   })
 })
 

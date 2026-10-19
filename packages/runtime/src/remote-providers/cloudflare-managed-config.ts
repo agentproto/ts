@@ -7,7 +7,7 @@
  * string fields:
  *
  *   zones       JSON array, one entry per zone the engine may write to:
- *               [{ "zone": "agentik.net", "accountId": "…", "tokenRef": "env:CF_TOKEN_AGENTIK",
+ *               [{ "zone": "example.com", "accountId": "…", "tokenRef": "env:CF_TOKEN_AGENTIK",
  *                  "zoneId"?: "…", "maxLabels"?: 1 }, …]
  *   zoneTokens  OPTIONAL JSON object of raw tokens, `{ "<key>": "<token>" }`,
  *               referenced from a zone as `tokenRef: "stored:<key>"`. Lives
@@ -24,7 +24,7 @@ import { readFile, stat } from "node:fs/promises"
 import { KeychainStore, type CredentialStore } from "@agentproto/auth"
 
 export interface ManagedZoneConfig {
-  /** Zone apex, e.g. "agentik.net". */
+  /** Zone apex, e.g. "example.com". */
   zone: string
   /** Cloudflare account id the zone (and its tunnels) live in. */
   accountId: string
