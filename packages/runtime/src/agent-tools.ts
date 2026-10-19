@@ -377,6 +377,10 @@ export function registerAgentTools(
       callerSessionId: effectiveCaller(),
       target,
       tool,
+      // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
+      // (grandparent / orchestrator root) keeps its existing subtree
+      // authority over the target — the owner gate must not revoke it.
+      parentOf: id => registry.get(id)?.parentSessionId,
     })
     return gate.ok ? undefined : gate.message
   }
@@ -1059,10 +1063,11 @@ export function registerAgentTools(
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_kill")
-      // Session-owner gate (same rule as agent_prompt/agent_interrupt):
-      // another agent session is refused before anything else runs.
-      const killOwnerError = ownerGateText(registry.get(sessionId), "agent_kill")
-      if (killOwnerError) return ownerGateError("agent_kill", killOwnerError)
+      // NOTE: no session-owner gate here — a scoped orchestrator's refusal
+      // shape (the structured `orchestrator_session_out_of_scope` error at
+      // the subtree check below) and its subtree authority are pre-existing
+      // behaviour; the owner gate runs after that check and only for
+      // callers without a callerScope.
       const parsedOutcome = parseStopOutcome(input.outcome)
       if (!parsedOutcome.ok) {
         return {
@@ -1120,6 +1125,18 @@ export function registerAgentTools(
             isError: true,
           }
         }
+      }
+      // Session-owner gate: only the target's owner (the caller that
+      // spawned it), an ancestor in the spawn tree, the session itself, the
+      // operator, or an `allowPromptFrom` grantee may kill it. Skipped when
+      // the scoped-orchestrator subtree check above already authorized (or
+      // refused) the call. NOTE: no session-owner gate above the
+      // scoped-orchestrator subtree check — a scoped orchestrator's refusal
+      // shape (the structured `orchestrator_session_out_of_scope` error)
+      // and its subtree authority are pre-existing behaviour.
+      if (callerScope === undefined) {
+        const killOwnerError = ownerGateText(registry.get(sessionId), "agent_kill")
+        if (killOwnerError) return ownerGateError("agent_kill", killOwnerError)
       }
       const ok = registry.kill(sessionId, undefined, endReason, outcome)
       return {

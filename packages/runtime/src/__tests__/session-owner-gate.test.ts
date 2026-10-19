@@ -119,6 +119,26 @@ describe("checkSessionOwnerGate (pure)", () => {
     ).toEqual({ ok: true })
   })
 
+  it("an ANCESTOR in the spawn tree keeps its control (scene: scoped orchestrator → grandchild)", () => {
+    // Root A spawns B, B spawns C. A (the orchestrator root) driving C —
+    // neither C's direct owner — is pre-existing subtree authority; the
+    // owner gate must not revoke it.
+    const ancestors = {
+      "sess_c": "sess_b",
+      "sess_b": "sess_a",
+      "sess_a": undefined,
+    } as Record<string, string | undefined>
+    const target = { id: "sess_c", parentSessionId: "sess_b" }
+    const parentOf = (id: string) => ancestors[id]
+    expect(
+      checkSessionOwnerGate({ callerSessionId: "sess_a", target, tool: "agent_prompt", parentOf }),
+    ).toEqual({ ok: true })
+    // A non-ancestor claimant is still refused.
+    expect(
+      checkSessionOwnerGate({ callerSessionId: "sess_stranger", target, tool: "agent_prompt", parentOf }).ok,
+    ).toBe(false)
+  })
+
   it("a depth-0 root spawn's owner is the operator — every agent caller refused", () => {
     const root = { id: "sess_root", parentSessionId: undefined }
     expect(
@@ -226,6 +246,54 @@ describe("session-owner gate over MCP", () => {
     })
     expect(reset.isError).toBeUndefined()
     expect(registry.get(child.id)?.allowPromptFrom).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("a spawn-tree ANCESTOR drives a transitive descendant over MCP (grandchild)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const a = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+    const b = registry
+      .spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: instantAgentSession(),
+        adapterSlug: "fake",
+        parentSessionId: a.id,
+      })
+      .id
+    const c = registry
+      .spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: instantAgentSession(),
+        adapterSlug: "fake",
+        parentSessionId: b,
+      })
+      .id
+
+    const rootServer = new McpServer({ name: "ancestor-server", version: "0.0.0" })
+    registerAgentTools(rootServer, { registry, callerSessionId: a.id })
+    const root = await connectClient(rootServer)
+    const ok = await callTool(root, "agent_prompt", { sessionId: c, prompt: "go" })
+    expect(ok.isError).toBeUndefined()
+
+    // The direct-child gate still applies to a NON-ancestor spawn.
+    const bServer = new McpServer({ name: "sibling-server", version: "0.0.0" })
+    registerAgentTools(bServer, { registry, callerSessionId: b })
+    const bClient = await connectClient(bServer)
+    const strangerTarget = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+    const refused = await callTool(bClient, "agent_prompt", { sessionId: strangerTarget.id, prompt: "go" })
+    expect(refused.isError).toBe(true)
     registry.shutdown()
   })
 

@@ -2315,6 +2315,10 @@ export function registerSessionTools(
         callerSessionId: freshCaller,
         target: desc,
         tool: "session_continue_fresh",
+        // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
+        // (grandparent / orchestrator root) keeps its existing subtree
+        // authority over the target.
+        parentOf: id => registry.get(id)?.parentSessionId,
       })
       if (!freshOwnerGate.ok) {
         return {
@@ -4806,6 +4810,11 @@ export function registerSessionTools(
         callerSessionId: restartCaller,
         target: prev,
         tool: "session_restart",
+        // Ancestor-chain rule (see session-owner.ts): a scoped orchestrator's
+        // subtree authority over transitive descendants is pre-existing
+        // behaviour (the subtree gate below is unchanged) — the owner gate
+        // must not revoke it.
+        parentOf: id => registry.get(id)?.parentSessionId,
       })
       if (!restartOwnerGate.ok) {
         return {

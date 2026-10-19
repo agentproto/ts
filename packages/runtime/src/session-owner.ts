@@ -15,6 +15,10 @@
  * gate then applies to any daemon serving these tools over MCP — the host
  * daemon and a box daemon inside a sandbox box alike — so a session's role
  * is enforced consistently regardless of which daemon's mount it reaches.
+ *
+ * Trust note: the gate is keyed on the daemon-trusted `?callerSessionId=`
+ * identity — the same claim every other MCP tool keys on — not an
+ * independent proof of the calling process.
  */
 
 import type { SessionDescriptor } from "./sessions.js"
@@ -46,18 +50,23 @@ export type OwnerGateResult =
   | { ok: false; message: string }
 
 /**
- * Decide a drive-tool call against the session-owner model. Pure (no fs, no
- * registry). Rules, in order:
+ * Decide a drive-tool call against the session-owner model. Pure (no fs).
+ * Rules, in order:
  *
  *  1. Human operator (no caller session): allowed — full rights, unchanged.
  *  2. The session itself: allowed — a session driving its own lifecycle
  *     (self-restart, self-interrupt) was always a legal self-action.
  *  3. Its OWNER — the session that spawned it (`parentSessionId`): allowed;
  *     this is what keeps every existing parent→child flow working.
- *  4. The session's `allowPromptFrom` list (session ids, or `"any"`):
+ *  4. AN ANCESTOR of the target in its `parentSessionId` chain (grand-
+ *     parents, orchestrator roots): allowed — ancestor control of spawned
+ *     descendants was already the scoped-orchestrator behavioral contract
+ *     (subtree gates on `agent_kill`/`session_restart`), so the owner gate
+ *     must not revoke it. Pass `parentOf` to enable the walk.
+ *  5. The session's `allowPromptFrom` list (session ids, or `"any"`):
  *     allowed — an explicitly granted secondary caller.
- *  5. Everything else (a session that is not the owner, not listed): refused
- *     with a pointed error.
+ *  6. Everything else (a session that is neither an ancestor/owner nor
+ *     listed): refused with a pointed error.
  */
 export function checkSessionOwnerGate(input: {
   /** Effective calling session id, or undefined for the human operator. */
@@ -66,12 +75,22 @@ export function checkSessionOwnerGate(input: {
   target: Pick<SessionDescriptor, "id" | "parentSessionId" | "allowPromptFrom">
   /** MCP tool name, for the error text. */
   tool: string
+  /** Resolves a session's `parentSessionId` (registry lookup) — enables the
+   *  ancestor-chain rule above. Optional; tests may pass none. */
+  parentOf?: (id: string) => string | undefined
 }): OwnerGateResult {
-  const { callerSessionId, target, tool } = input
+  const { callerSessionId, target, tool, parentOf } = input
   if (callerSessionId === undefined) return { ok: true }
   if (callerSessionId === target.id) return { ok: true }
   if (target.parentSessionId && callerSessionId === target.parentSessionId) {
     return { ok: true }
+  }
+  if (parentOf && target.parentSessionId) {
+    let ancestor: string | undefined = target.parentSessionId
+    for (let i = 0; i < 256 && ancestor; i++) {
+      if (ancestor === callerSessionId) return { ok: true }
+      ancestor = parentOf(ancestor)
+    }
   }
   const allow = target.allowPromptFrom ?? []
   if (allow.includes("any") || allow.includes(callerSessionId)) return { ok: true }
@@ -82,9 +101,10 @@ export function checkSessionOwnerGate(input: {
     ok: false,
     message:
       `${tool}: session "${target.id}" may only be driven by its owner — ` +
-      `the session that spawned it (${owner}) — by the human operator, or by ` +
-      `a caller explicitly granted access via \`allowPromptFrom\`. ` +
-      `This call came from session "${callerSessionId}", which is none of those.`,
+      `the session that spawned it (${owner}) — one of its ancestors in the ` +
+      `spawn tree, by the human operator, or by a caller explicitly granted ` +
+      `access via \`allowPromptFrom\`. This call came from session ` +
+      `"${callerSessionId}", which is none of those.`,
   }
 }
 

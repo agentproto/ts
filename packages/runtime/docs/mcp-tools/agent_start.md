@@ -628,12 +628,18 @@ Session ids allowed to drive the new session through the daemon's drive
 tools (`agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart`,
 `session_continue_fresh`), or `["any"]` to allow any caller session. By
 default the session may only be driven by its OWNER — the caller that
-spawned it — and by the human operator (a client with no caller session);
-any other agent session is refused by the daemon regardless of what tools
-its client lists. Change the list later with `agent_set_prompt_policy`
-(session ids in/out, or an empty array to reset): only the session itself,
-its owner, and the operator may. `any` never widens what a caller's own
-role allows the daemon to do.
+spawned it — one of its ancestors in the spawn tree (a grandparent or
+orchestrator root keeps its existing subtree authority), and the human
+operator (a client with no caller session); any other agent session is
+refused by the daemon regardless of what tools its client lists. Change the
+list later with `agent_set_prompt_policy` (session ids in/out, or an empty
+array to reset): only the session itself, its owner, and the operator may.
+`any` never widens what a caller's own role allows the daemon to do.
+
+Same trust note as the rest of the daemon: the gate is keyed on the
+`?callerSessionId=` identity the session's own mount carries — the same
+daemon-trusted caller identity every other MCP tool already keys on, not an
+independent proof of the calling process.
 
 ## promptAppend
 
