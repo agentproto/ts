@@ -317,6 +317,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(artifacts !== undefined ? { artifacts } : {}),
           ...(dev !== undefined ? { dev } : {}),
           ...(services !== undefined ? { services } : {}),
+          ...(setup !== undefined ? { setup } : {}),
           ...(data !== undefined ? { data } : {}),
           ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
           ...(boundaries !== undefined ? { boundaries } : {}),
