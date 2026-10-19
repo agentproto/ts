@@ -19,6 +19,8 @@ export interface FakeControllerOptions {
   onSuspend?: () => void
   /** Ports the controller reports as published (create + GET). */
   publishedPorts?: Array<{ host: number; guest: number }>
+  /** Model a controller whose GET omits `ports` (only create reports them). */
+  getOmitsPorts?: boolean
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
 }
@@ -98,7 +100,7 @@ export class FakeController {
 
     if (req.method === "GET" && url.pathname === `/v1/computers/${productIdPath(computerMatch[1] as string)}`) {
       if (this.options.statusNotFound || !this.states.has(id)) return reply(res, 404, { error: "not found" })
-      return reply(res, 200, { name: id, state: this.states.get(id), ports: this.options.publishedPorts ?? [], egress: [], pinsStale: false, pinsTtlSec: 21600 })
+      return reply(res, 200, { name: id, state: this.states.get(id), ...(this.options.getOmitsPorts ? {} : { ports: this.options.publishedPorts ?? [] }), egress: [], pinsStale: false, pinsTtlSec: 21600 })
     }
     if (req.method === "DELETE") {
       this.removed.push(id)
@@ -180,6 +182,9 @@ export class FakeController {
     if (script.startsWith("cat ") && script.includes(".agentproto-daemon.origin")) {
       return this.daemonOrigin ? { exitCode: 0, stdout: this.daemonOrigin, stderr: "" } : { exitCode: 1, stdout: "", stderr: "" }
     }
+    if (script.startsWith("cat ") && script.includes(".agentproto-daemon.token")) {
+      return this.daemonToken ? { exitCode: 0, stdout: this.daemonToken, stderr: "" } : { exitCode: 1, stdout: "", stderr: "" }
+    }
     if (script.includes("pkill -f")) {
       this.serveSeen = false
       this.killCount++
@@ -191,6 +196,7 @@ export class FakeController {
         this.serveCount++
         const origin = /--allow-origin '([^']*)'/.exec(script)
         this.daemonOrigin = origin?.[1]
+        this.daemonToken = /--auth-token '([^']*)'/.exec(script)?.[1]
       }
       return { exitCode: 0, stdout: "started", stderr: "" }
     }
@@ -211,6 +217,8 @@ export class FakeController {
   daemonDown = false
   /** The --allow-origin recorded by the last serve command (the marker file). */
   daemonOrigin: string | undefined = undefined
+  /** The --auth-token recorded by the last serve command (the token file). */
+  daemonToken: string | undefined = undefined
   serveCount = 0
   killCount = 0
   /** Set once a serve command ran (models the box's own daemon state). */
