@@ -1,5 +1,5 @@
 ---
-"@agentproto/worktree": patch
+"@agentproto/worktree": minor
 "@agentproto/runtime": patch
 "@agentproto/cli": patch
 ---

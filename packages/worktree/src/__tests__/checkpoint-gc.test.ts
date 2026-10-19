@@ -39,8 +39,8 @@ interface World {
   baseRef: string
 }
 
-/** Bare remote + a work clone with a single seed commit on main. */
-function world(): World {
+/** Bare remote + a work clone with a single seed commit on `branch`. */
+function world(branch = "main"): World {
   const root = mkdtempSync(join(tmpdir(), "ckgc-"))
   const originDir = join(root, "origin.git")
   spawnSync("git", ["init", "--bare", originDir], { encoding: "utf8" })
@@ -51,28 +51,32 @@ function world(): World {
   writeFileSync(join(workDir, "seed.txt"), "seed\n")
   git(workDir, ["add", "."])
   git(workDir, ["commit", "-q", "-m", "seed"])
-  git(workDir, ["branch", "-M", "main"])
+  git(workDir, ["branch", "-M", branch])
   git(workDir, ["remote", "add", "origin", originDir])
-  git(workDir, ["push", "-q", "origin", "main"])
+  git(workDir, ["push", "-q", "origin", branch])
+  // Point the clone's remote HEAD at the branch so detectDefaultBranch sees
+  // it even when it is neither main nor master.
+  spawnSync("git", ["-C", workDir, "symbolic-ref", `refs/remotes/origin/HEAD`, `refs/remotes/origin/${branch}`])
   return {
     cleanupPaths: [root],
     originDir,
     workDir,
-    baseRef: "refs/remotes/origin/main",
+    baseRef: `refs/remotes/origin/${branch}`,
   }
 }
 
-/** Commit `content` on a fresh branch `wt/<name>` off main and push the branch. */
+/** Commit `content` on a fresh branch `wt/<name>` off the base branch and push the branch. */
 function workBranch(w: World, name: string, fileName: string, content: string): string {
   const wDir = w.workDir
-  git(wDir, ["checkout", "-q", "main"])
+  const base = w.baseRef.replace("refs/remotes/origin/", "")
+  git(wDir, ["checkout", "-q", base])
   git(wDir, ["checkout", "-q", "-b", `wt/${name}`])
   writeFileSync(join(wDir, fileName), content)
   git(wDir, ["add", "."])
   git(wDir, ["commit", "-q", "-m", `${name} work`])
   const tip = out(wDir, ["rev-parse", "HEAD"]).trim()
   git(wDir, ["push", "-q", "--no-verify", "origin", `wt/${name}`])
-  git(wDir, ["checkout", "-q", "main"])
+  git(wDir, ["checkout", "-q", base])
   return tip
 }
 
@@ -111,16 +115,33 @@ function pushCheckpointWithUncommitted(
   return snapSha
 }
 
-/** Squash-merge `wt/<name>`'s content onto main and push (fast path: `git merge --squash`). */
-function squashIntoMain(w: World, name: string): void {
-  git(w.workDir, ["checkout", "-q", "main"])
+/** Squash-merge `wt/<name>`'s content onto the base branch and push (fast path: `git merge --squash`). */
+function squashIntoBase(w: World, branch: string, name: string): void {
+  git(w.workDir, ["checkout", "-q", branch])
   git(w.workDir, ["merge", "--squash", `wt/${name}`])
   git(w.workDir, ["commit", "-q", "-m", `squash of wt/${name}`])
-  git(w.workDir, ["push", "-q", "--no-verify", "origin", "main"])
+  git(w.workDir, ["push", "-q", "--no-verify", "origin", branch])
 }
 
-async function plan(w: World): Promise<{ entry(name: string): SandboxCheckpointGcEntry | undefined; names: string[] }> {
+interface PlanOut {
+  entry(name: string): SandboxCheckpointGcEntry | undefined
+  names: string[]
+}
+
+/** Plan with an explicit base ref. */
+async function plan(w: World): Promise<PlanOut> {
   const p = await planSandboxCheckpointGc({ repoRoot: w.workDir, remote: "origin", base: w.baseRef })
+  return {
+    entry(name) {
+      return p.refs.find(e => e.ref === `agentproto-checkpoint/wt/${name}`)
+    },
+    names: p.refs.map(e => e.ref),
+  }
+}
+
+/** Like `plan`, but lets the engine derive the base from the default branch. */
+async function planAuto(w: World): Promise<PlanOut> {
+  const p = await planSandboxCheckpointGc({ repoRoot: w.workDir, remote: "origin" })
   return {
     entry(name) {
       return p.refs.find(e => e.ref === `agentproto-checkpoint/wt/${name}`)
@@ -140,7 +161,7 @@ describe("planSandboxCheckpointGc", () => {
     cleanupPaths.push(...w.cleanupPaths)
     const parent = workBranch(w, "merged", "new.txt", "will land\n")
     pushCheckpoint(w, "merged", parent)
-    squashIntoMain(w, "merged")
+    squashIntoBase(w, "main", "merged")
 
     const p = await plan(w)
     const entry = p.entry("merged")
@@ -205,5 +226,50 @@ describe("planSandboxCheckpointGc", () => {
     )
     expect(out(w.workDir, ["ls-remote", "origin", "refs/heads/agentproto-checkpoint/wt/keep"]).trim()).not.toBe("")
     expect(out(w.workDir, ["ls-remote", "origin", "refs/heads/agentproto-checkpoint/wt/safe"]).trim()).toBe("")
+  })
+})
+
+describe("planSandboxCheckpointGc fetch hardening (PR 2092 review)", () => {
+  it("a gone work branch is not a fetch failure: its checkpoint is still safe when its content landed in the base", async () => {
+    const w = world()
+    cleanupPaths.push(...w.cleanupPaths)
+    const parent = workBranch(w, "mergedgone", "new.txt", "will land\n")
+    pushCheckpoint(w, "mergedgone", parent)
+    squashIntoBase(w, "main", "mergedgone")
+    // The main case the tool exists for: the work branch merged and was
+    // deleted on the remote (and locally) BEFORE the plan runs.
+    git(w.workDir, ["push", "-q", "--no-verify", "origin", "--delete", "wt/mergedgone"])
+    git(w.workDir, ["branch", "-q", "-D", "wt/mergedgone"])
+
+    const p = await plan(w)
+    const entry = p.entry("mergedgone")
+    expect(entry?.verdict).toBe("safe")
+    expect(entry?.workBranchOnRemote).toBe(false)
+  })
+
+  it("a master-only repo is fully classified (no hardcoded main in the fetch)", async () => {
+    const w = world("master")
+    cleanupPaths.push(...w.cleanupPaths)
+    const parent = workBranch(w, "onmaster", "new.txt", "will land\n")
+    pushCheckpoint(w, "onmaster", parent)
+    squashIntoBase(w, "master", "onmaster")
+
+    const p = await planAuto(w)
+    expect(p.names.length).toBe(1)
+    const entry = p.entry("onmaster")
+    expect(entry?.verdict).toBe("safe")
+    expect(out(w.workDir, ["rev-parse", "--verify", "-q", "refs/remotes/origin/master"]).trim()).not.toBe("")
+  })
+
+  it("a default branch that is neither main nor master is used as the base", async () => {
+    const w = world("trunk")
+    cleanupPaths.push(...w.cleanupPaths)
+    const parent = workBranch(w, "ontrunk", "new.txt", "will land\n")
+    pushCheckpoint(w, "ontrunk", parent)
+    squashIntoBase(w, "trunk", "ontrunk")
+
+    const p = await planAuto(w)
+    const entry = p.entry("ontrunk")
+    expect(entry?.verdict).toBe("safe")
   })
 })

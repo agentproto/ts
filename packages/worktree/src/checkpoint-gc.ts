@@ -141,20 +141,58 @@ function revParse(repoRoot: string, ref: string): string | null {
   return isSha(out) ? out.trim() : null
 }
 
+/** One fetch invocation, run by itself so one bad ref cannot abort the rest. */
+export interface CheckpointFetchSpec {
+  /** Human label for the spec (the ref or branch name). */
+  label: string
+  /** When true a failed fetch leaves the plan's refs `unknown`; a false
+   *  spec's failure is always ignored. Never true for an optional ref. */
+  required: boolean
+  /** argv tail for `git fetch <remote> ...`. */
+  args: string[]
+  /** Retried (as its own fetch) when `args` fails; for a forge that
+   *  refuses fetch-by-sha. A fallback failure is treated like `args`. */
+  fallbackArgs?: string[]
+}
+
 /**
- * Fetch the checkpoint refs (and the work branches + base) into
- * remote-tracking refs so the classification can resolve objects. Missing
- * work branches are not a fetch error: they are legal (merged work
- * branches), so the fetch spec for them is tried best-effort and failures
- * are ignored — the classification already handles an absent remote twin.
+ * Per-ref fetch specs: each checkpoint is fetched BY THE SHA ls-remote
+ * already returned (refetching by name could race a concurrent delete; the
+ * sha still names the object), falling back to its ref name when the forge
+ * refuses sha fetches. Work branches and the base branch are fetched one by
+ * one, best-effort: a missing work branch is legal (its work merged and the
+ * branch deleted), and a missing base only means the content tiers cannot
+ * run — never an abort. One spec per invocation so a failing ref can never
+ * abort the whole fetch and leave every ref unknown.
  */
-export function buildCheckpointFetchSpecs(workBranches: readonly string[], remote: string): string[] {
-  const specs = [
-    `+refs/heads/${CHECKPOINT_BRANCH_PREFIX}*:refs/remotes/${remote}/${CHECKPOINT_BRANCH_PREFIX}*`,
-    `+refs/heads/main:refs/remotes/${remote}/main`,
-    `+refs/heads/master:refs/remotes/${remote}/master`,
-  ]
-  for (const branch of workBranches) specs.push(`+refs/heads/${branch}:refs/remotes/${remote}/${branch}`)
+export function buildCheckpointFetchSpecs(
+  checkpoints: readonly { name: string; sha: string }[],
+  workBranches: readonly string[],
+  remote: string,
+  baseBranch: string,
+): CheckpointFetchSpec[] {
+  const specs: CheckpointFetchSpec[] = []
+  for (const c of checkpoints) {
+    const short = c.name.replace("refs/heads/", "")
+    specs.push({
+      label: short,
+      required: true,
+      args: [`+${c.sha}:refs/remotes/${remote}/${short}`],
+      fallbackArgs: [`+${c.name}:refs/remotes/${remote}/${short}`],
+    })
+  }
+  for (const branch of workBranches) {
+    specs.push({
+      label: branch,
+      required: false,
+      args: [`+refs/heads/${branch}:refs/remotes/${remote}/${branch}`],
+    })
+  }
+  specs.push({
+    label: baseBranch,
+    required: checkpoints.length > 0,
+    args: [`+refs/heads/${baseBranch}:refs/remotes/${remote}/${baseBranch}`],
+  })
   return specs
 }
 
@@ -177,7 +215,6 @@ export function classifyCheckpointRef(
   input: {
     /** `refs/remotes/origin/agentproto-checkpoint/wt/x`. */
     ckptRef: string
-    ckptSha: string
     /** Sha of `${ckptRef}^` — the work-branch head the box snapshotted on. */
     parentSha: string
     baseRef: string
@@ -269,10 +306,8 @@ export function classifyCheckpointRef(
 export async function planSandboxCheckpointGc(input: SandboxCheckpointGcInput): Promise<SandboxCheckpointGcPlan> {
   const { repoRoot } = input
   const remote = input.remote ?? "origin"
-  let base: string | undefined
   let prCheckAvailable = true
   let prCheckReason: string | undefined
-  if (input.base) base = input.base
 
   const ls = git(repoRoot, ["ls-remote", remote, `refs/heads/${CHECKPOINT_BRANCH_PREFIX}*`])
   if (ls.exitCode !== 0) {
@@ -284,31 +319,47 @@ export async function planSandboxCheckpointGc(input: SandboxCheckpointGcInput): 
     if (!isSha(sha) || !name) continue
     refs.set(name.trim(), sha.trim())
   }
-  const workBranches = [...refs.keys()].map(name =>
-    name.replace(`refs/heads/${CHECKPOINT_BRANCH_PREFIX}`, ""),
-  )
 
-  const fetchSpecs = buildCheckpointFetchSpecs(workBranches, remote)
-  const fetch = git(repoRoot, ["fetch", "--quiet", remote, ...fetchSpecs])
-  if (fetch.exitCode !== 0 && refs.size > 0) {
-    // The checkpoint namespace tracks every spec in one call, so a failed
-    // pull of one optional work-branch twin can fail the whole fetch. Check
-    // what actually landed before giving the plan an empty classification.
-    prCheckReason = prCheckReasonFor(fetch)
-  }
-
-  if (!base) {
+  // Content adjudication base: an explicit base wins; otherwise the repo's
+  // detected default branch (never hardcoded main/master). Detection runs
+  // BEFORE the fetches so the base ref itself is fetched like the rest.
+  let base: string
+  let baseBranch: string
+  if (input.base) {
+    base = input.base
+    baseBranch = base.startsWith(`refs/remotes/${remote}/`)
+      ? base.slice(`refs/remotes/${remote}/`.length)
+      : base
+  } else {
     let defaultBranch: string
     try {
       defaultBranch = await detectDefaultBranch(repoRoot)
     } catch {
       defaultBranch = "main"
     }
+    baseBranch = defaultBranch
     base = `refs/remotes/${remote}/${defaultBranch}`
   }
-  if (revParse(repoRoot, base) === null) {
-    throw new Error(`sandbox checkpoint gc: base ref ${base} does not resolve in ${repoRoot}`)
+
+  const checkpoints = [...refs].map(([name, sha]) => ({ name, sha }))
+  const workBranches = checkpoints.map(c => c.name.replace(`refs/heads/${CHECKPOINT_BRANCH_PREFIX}`, ""))
+
+  // One fetch invocation per spec: git aborts a multi-spec fetch wholesale
+  // when any concrete spec fails (exit 128, nothing lands), so a single
+  // missing optional ref here would strand every checkpoint as unknown.
+  // Required failures still surface, as a reason, not an exception.
+  for (const spec of buildCheckpointFetchSpecs(checkpoints, workBranches, remote, baseBranch)) {
+    let res = git(repoRoot, ["fetch", "--quiet", remote, ...spec.args])
+    if (res.exitCode !== 0 && spec.fallbackArgs) {
+      res = git(repoRoot, ["fetch", "--quiet", remote, ...spec.fallbackArgs])
+    }
+    if (res.exitCode !== 0 && spec.required && refs.size > 0) {
+      prCheckReason = prCheckReasonFor(res)
+    }
   }
+
+  const checkpointsOnRemote = refs.size > 0
+  const baseResolvable = revParse(repoRoot, base) !== null
 
   // PR tier: never load-bearing for correctness, so every failure degrades
   // to `pr: null` and the content tiers keep the ref honest.
@@ -370,6 +421,22 @@ export async function planSandboxCheckpointGc(input: SandboxCheckpointGcInput): 
       })
       continue
     }
+    if (!baseResolvable && checkpointsOnRemote) {
+      // No adjudication base (e.g. the detected default branch is not on the
+      // remote): the content tiers cannot run, so nothing here may be judged
+      // safe. pr res can still clear a ref, but the plan itself stays honest.
+      entries.push({
+        ref: short,
+        remote,
+        sha,
+        workBranch,
+        workBranchOnRemote: workRef !== null,
+        pr: null,
+        verdict: "unknown",
+        reason: `base ${baseBranch} does not resolve; refused for safety`,
+      })
+      continue
+    }
     const parentSha = revParse(repoRoot, `${ckptRef}^`)
     const pr = prs.get(workBranch) ?? null
     if (!parentSha) {
@@ -389,7 +456,6 @@ export async function planSandboxCheckpointGc(input: SandboxCheckpointGcInput): 
     }
     const verdict = classifyCheckpointRef(repoRoot, {
       ckptRef,
-      ckptSha: sha,
       parentSha,
       baseRef: base,
       workRef,
