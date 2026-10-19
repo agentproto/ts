@@ -1,5 +1,52 @@
 # @agentproto/sandbox
 
+## 0.12.0
+
+### Minor Changes
+
+- 629e42c: Add the InstaBox sandbox provider (`@agentproto/sandbox-instabox`, AIP-36).
+
+  - New `SandboxQuotaError` in `@agentproto/sandbox` and a `truncated` flag on `SandboxExecResult`.
+  - `instaboxSandboxProvider` boots an InstaBox VM (always `vault:false`, `onTimeout:"kill"`), installs the agentproto daemon as a systemd unit with a 0600 EnvironmentFile, publishes the daemon port through the public edge, never suspends boxes, deletes the machine on boot failure, and maps account-quota failures to `SandboxQuotaError`.
+  - Registered in the runtime provider catalog and the CLI (credential env key `INSTABOX_API_KEY`).
+
+### Patch Changes
+
+- 629e42c: Present a gated sandbox daemon's auth on the runtime's own MCP connection.
+
+  - `ConnectHarnessOptions`/`HarnessClient.connect` accept `headers`, passed to
+    the Streamable HTTP transport's `requestInit`.
+  - `connectDaemonAgentSessionHost` forwards them through.
+  - `createSandboxAgentSessionHost` sends `BootedSandbox.authHeaders` (or
+    `Authorization: Bearer <token>`) so providers whose daemon is gated at the
+    box itself — InstaBox's per-box `--auth-token` behind a public, otherwise
+    unauthenticated edge — authenticate instead of 401-ing and getting reaped.
+
+- 629e42c: Fix reattach and event streaming against a gated sandbox daemon, and a silent readFile failure.
+
+  - `SandboxAgentSessionHost` exposes `authHeaders`; the runtime sandbox proxy
+    sends them on its raw HTTP reads (`GET /sessions/:id`, the backlog read and
+    the SSE event stream). Without them a bearer-gated daemon (InstaBox) answered
+    401, so a session could never be re-attached after a host restart and the
+    event stream always fell back to polling.
+  - InstaBox `readFile` guards its `dd | base64` pipeline with `test -r`, so a
+    missing or unreadable file rejects instead of resolving to empty bytes.
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [1d09ab0]
+- Updated dependencies [629e42c]
+- Updated dependencies [f2205fd]
+- Updated dependencies [74f982c]
+- Updated dependencies [1d09ab0]
+- Updated dependencies [3a50c3d]
+- Updated dependencies [74f982c]
+- Updated dependencies [f2205fd]
+  - @agentproto/worktree@0.16.0
+  - @agentproto/define-doctype@0.1.4
+  - @agentproto/secrets@2.1.1
+  - @agentproto/workflow-runtime@0.19.1
+
 ## 0.11.2
 
 ### Patch Changes

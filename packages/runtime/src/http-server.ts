@@ -386,7 +386,7 @@ function projectSessionForHttp(
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
  * is undefined. Localhost on any port covers the user's own dev environments
  * (Guilde web dev server, playground demos, embedded panels). Production
- * origins (https://guilde.work, …) are NOT included by default — those are
+ * origins (https://example.com, …) are NOT included by default — those are
  * opt-in via `agentproto serve --allow-origin <url>`.
  */
 const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
@@ -1110,7 +1110,7 @@ export interface RuntimeHttpServerOptions {
    *  page (Guilde web UI, local dev) drive the daemon. Non-browser
    *  callers (curl, the CLI) still use the token.
    *
-   *  Match policy: exact origin (`https://guilde.work`) OR prefix
+   *  Match policy: exact origin (`https://example.com`) OR prefix
    *  with `:*` for any-port match (`http://localhost:*` matches
    *  `http://localhost:3000`).
    *
@@ -1132,7 +1132,7 @@ export interface RuntimeHttpServerOptions {
    *  gates who may CALL the daemon's mutating routes (including the app's
    *  own `tool-call` bridge), this one gates who may DISPLAY the page at
    *  all. A scheme like `vscode-webview:` or an exact origin
-   *  (`https://guilde.work`) is safe to add — each is unforgeable by a
+   *  (`https://example.com`) is safe to add — each is unforgeable by a
    *  hostile page. Never add `*` here; that would let ANY page frame the
    *  UI and drive its tool-call bridge via clickjacking, exactly what
    *  `frame-ancestors` exists to prevent. */
@@ -3433,6 +3433,9 @@ export async function startHttpServer(
           const minAgeRaw = obj.minAgeDays
           const minAgeDays =
             typeof minAgeRaw === "number" ? minAgeRaw : typeof minAgeRaw === "string" && minAgeRaw.trim() !== "" ? Number(minAgeRaw) : undefined
+          const minLineRaw = obj.minLineCoverage
+          const minLineCoverage =
+            typeof minLineRaw === "number" ? minLineRaw : typeof minLineRaw === "string" && minLineRaw.trim() !== "" ? Number(minLineRaw) : undefined
           const apply = bool("apply")
           if (apply && !scopes?.length) {
             res.writeHead(400, { "content-type": "application/json" })
@@ -3456,6 +3459,7 @@ export async function startHttpServer(
                 ...(base ? { base } : {}),
                 ...(scopes?.length ? { scopes } : {}),
                 ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
+                ...(minLineCoverage !== undefined && Number.isFinite(minLineCoverage) ? { minLineCoverage } : {}),
                 ...(anchor ? { anchor } : {}),
               }),
             )

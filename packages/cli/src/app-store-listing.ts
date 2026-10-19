@@ -10,7 +10,7 @@
  *   tagline: Chat with any agentproto session.
  *   categories: [chat, sessions]
  *   publisher: Agentik
- *   publisherUrl: https://agentik.net
+ *   publisherUrl: https://example.com
  *   homepage: https://agentproto.sh/apps/session-chat
  *   repository: https://github.com/acme/session-chat
  *   icon: store/icon.svg            # path in the app, or an https URL

@@ -1,5 +1,17 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.2.3
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/adapter-claude-sdk@0.7.27
+  - @agentproto/driver-agent-cli@2.13.2
+  - @agentproto/provider-presets@0.7.1
+
 ## 0.2.2
 
 ### Patch Changes

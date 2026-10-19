@@ -1,5 +1,49 @@
 # @agentproto/worktree
 
+## 0.16.0
+
+### Minor Changes
+
+- 629e42c: Present a gated sandbox daemon's auth on the runtime's own MCP connection.
+
+  - `ConnectHarnessOptions`/`HarnessClient.connect` accept `headers`, passed to
+    the Streamable HTTP transport's `requestInit`.
+  - `connectDaemonAgentSessionHost` forwards them through.
+  - `createSandboxAgentSessionHost` sends `BootedSandbox.authHeaders` (or
+    `Authorization: Bearer <token>`) so providers whose daemon is gated at the
+    box itself — InstaBox's per-box `--auth-token` behind a public, otherwise
+    unauthenticated edge — authenticate instead of 401-ing and getting reaped.
+
+- f2205fd: Add a recent-activity guard to `worktree gc`: a worktree whose own git index mtime is younger than `--active-minutes` (default 60, `0` disables) classifies `hold` with reason `recent-activity`, at plan time and again in apply's pre-removal re-check, so an actively-edited worktree is never reclaimed or salvaged. Plumbed end-to-end through the worktree engine (`PlanGcInput`/`ApplyGcOptions`), the runtime `worktree_gc` MCP tool and `POST /worktrees/gc` body, the `agentproto worktree gc --active-minutes` CLI flag, and the VS Code daemon client (`DaemonClient.gcWorktrees`). Apply outcomes and daemon plan/outcome views now carry the hold reason.
+- 3a50c3d: fix(runtime): sandbox proxy interrupt auth (401) + no-output-stall during tool calls
+
+  Les interrupts vers une session sandbox (E2B) échouaient tous en HTTP 401 :
+  le proxy frappait la route brute `POST /sessions/:id/interrupt` du daemon de
+  la box, qui exige un Bearer par-boot que l'hôte ne détient jamais — alors
+  que le prompt passe par le endpoint MCP, lui accessible. Correction :
+  `HarnessClient.interrupt` (`agent_interrupt`) + un `interrupt` sur le host
+  daemon ; le `cancel()` du proxy l'emprunte — le même canal MCP que le prompt
+  authentifie déjà. Le watchdog de stall ne se déclenche plus pendant un tool
+  call en cours (phase `tool-call:*` / tool call actif) : un long `pnpm
+install` n'est plus traité comme un stall.
+
+- f2205fd: `worktree gc` now refuses to touch a recently-active worktree. A worktree whose own git index was written within the last 60 minutes (the worktree's private index — checkout/add/commit/status all rewrite it, so a young mtime means someone is working in there regardless of what any session registry knows) classifies `hold` with hold reason `recent-activity`, never `reclaim`/`salvage`, at plan time and again in apply's pre-removal re-check; the index mtime is always read before gc's own `git status` so the sweep can't report itself as activity. Plumbed end-to-end as `activeMinutes` (engine `PlanGcInput`/`ApplyGcOptions`, the `worktree_gc` MCP tool and `POST /worktrees/gc` body, `agentproto worktree gc --active-minutes <n>`, and the VS Code daemon client) with default 60; `0` disables the guard. Apply outcomes and the daemon's plan/outcome views now carry the hold reason, and a plan entry that became recently active between plan and apply aborts as `aborted-reclassified` to hold instead of acting on the stale plan.
+
+### Patch Changes
+
+- 1d09ab0: `branch gc`: a tip with no history in common with base NOR with the re-root anchor (e.g. a ref fetched from another repo, like `refs/remotes/<other>/main`) now classifies `unmerged`/`unrelated` instead of crashing the whole plan with `git diff --raw … '' <sha>` on the empty `merge-base(anchor, tip)`.
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 1d09ab0: `branch gc`: a tip with no history in common with base NOR with the re-root anchor (e.g. a ref fetched from another repo, like `refs/remotes/<other>/main`) now classifies `unmerged`/`unrelated` instead of crashing the whole plan with `git diff --raw … '' <sha>` on the empty `merge-base(anchor, tip)`.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [629e42c]
+- Updated dependencies [74f982c]
+- Updated dependencies [3a50c3d]
+- Updated dependencies [74f982c]
+  - @agentproto/harness@0.6.0
+  - @agentproto/driver@0.3.3
+  - @agentproto/tool@0.5.2
+  - @agentproto/workflow-runtime@0.19.1
+
 ## 0.15.2
 
 ### Patch Changes

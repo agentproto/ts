@@ -47,7 +47,7 @@ describe("parseDaemonSection", () => {
         idleReapAfterMs: 30000,
         port: 18791,
         bind: "0.0.0.0",
-        allowedOrigins: ["https://guilde.work"],
+        allowedOrigins: ["https://example.com"],
         strictOrigins: true,
       },
       tunnel: { host: "wss://x" },
@@ -57,7 +57,7 @@ describe("parseDaemonSection", () => {
       idleReapAfterMs: 30000,
       port: 18791,
       bind: "0.0.0.0",
-      allowedOrigins: ["https://guilde.work"],
+      allowedOrigins: ["https://example.com"],
       strictOrigins: true,
     })
   })

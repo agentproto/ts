@@ -1,5 +1,103 @@
 # @agentproto/cli
 
+## 1.27.0
+
+### Minor Changes
+
+- 8c239e1: `agentproto daemon install|uninstall|start|stop|restart|status|logs` now work on Linux. When the session has a usable systemd user manager, `install` writes `~/.config/systemd/user/agentproto.service` (ExecStart from the same `buildServeArgv` snapshot and captured/self-healed PATH as the macOS plist and Windows launcher), `daemon-reload`s and `enable --now`s it; the lifecycle verbs map to `systemctl --user start|stop|restart` and `status` shows unit + active state + `/health`. Boxes with no usable systemd user session (containers, minimal VMs, E2B sandboxes) fall back to a detached `serve` managed through `~/.agentproto/agentproto-daemon.pid`, so the verbs keep working (never exit 2). `status` names the active mode either way, and `install`/`status` note when `loginctl enable-linger` is off (they never enable it themselves). The onboarding `daemon` step (and therefore `doctor`) uses the same detection instead of "no service manager support on linux yet".
+- f2205fd: Add a recent-activity guard to `worktree gc`: a worktree whose own git index mtime is younger than `--active-minutes` (default 60, `0` disables) classifies `hold` with reason `recent-activity`, at plan time and again in apply's pre-removal re-check, so an actively-edited worktree is never reclaimed or salvaged. Plumbed end-to-end through the worktree engine (`PlanGcInput`/`ApplyGcOptions`), the runtime `worktree_gc` MCP tool and `POST /worktrees/gc` body, the `agentproto worktree gc --active-minutes` CLI flag, and the VS Code daemon client (`DaemonClient.gcWorktrees`). Apply outcomes and daemon plan/outcome views now carry the hold reason.
+- 239fe1f: AIP-36 amendment "shared sandbox" — ATTACH / DETACH lifecycle. A provider box can host several sessions at once (`reuse`/`attach`): the sandbox ledger is the durable refcount (`attachedSessions`, robust to a daemon restart). Session teardown is by default a DETACH — stopping session 1 of 2 never kills the box — and only the last remaining session tears the box down. Failed boots/setup of an attaching session detach instead of stopping a shared box (survivors are preserved for a paused box), and `agentproto sandbox list` shows the attached sessions.
+- 8c239e1: `agentproto daemon` now supports Linux: `install`/`uninstall`/`start`/`stop`/`restart`/`status`/`logs` manage a systemd `--user` unit (falling back to a detached-serve pidfile daemon when the box has no usable systemd user session). The onboarding `daemon` step and doctor use the same backend detection instead of reporting "no service manager support on linux yet".
+- f915069: Reap idle sandboxed sessions and tear their box down. New `daemon.sandboxIdleReapAfterMs` (env `AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS`, default 15 min, `0` = off) applies a shorter idle threshold to sessions running in a provider box. A reap takes a final checkpoint, then stops the box per the lifecycle policy (kill unless the spec asked to pause), and records `reapedAt`/`reapedIdleMs`/`reapedSessionId` in the sandbox ledger. A later prompt to the reaped row cold-boots a fresh box from the checkpoint branch and delivers the prompt there. Non-sandbox sessions are unchanged.
+- 629e42c: Add the InstaBox sandbox provider (`@agentproto/sandbox-instabox`, AIP-36).
+
+  - New `SandboxQuotaError` in `@agentproto/sandbox` and a `truncated` flag on `SandboxExecResult`.
+  - `instaboxSandboxProvider` boots an InstaBox VM (always `vault:false`, `onTimeout:"kill"`), installs the agentproto daemon as a systemd unit with a 0600 EnvironmentFile, publishes the daemon port through the public edge, never suspends boxes, deletes the machine on boot failure, and maps account-quota failures to `SandboxQuotaError`.
+  - Registered in the runtime provider catalog and the CLI (credential env key `INSTABOX_API_KEY`).
+
+- 239fe1f: AIP-36 amendment "shared sandbox" — ATTACH / DETACH lifecycle. A provider box can host several sessions at once (`reuse`/`attach`): the sandbox ledger is the durable refcount (`attachedSessions`, robust to a daemon restart). Session teardown is by default a DETACH — stopping session 1 of 2 never kills the box — and only the last remaining session tears the box down (policy a: nothing attached; policy b: all attached idle + `destroyable`). Failed boots/setup of an attaching session detach instead of stopping a shared box; `agentproto sandbox list` shows the attached sessions.
+- f2205fd: `worktree gc` now refuses to touch a recently-active worktree. A worktree whose own git index was written within the last 60 minutes (the worktree's private index — checkout/add/commit/status all rewrite it, so a young mtime means someone is working in there regardless of what any session registry knows) classifies `hold` with hold reason `recent-activity`, never `reclaim`/`salvage`, at plan time and again in apply's pre-removal re-check; the index mtime is always read before gc's own `git status` so the sweep can't report itself as activity. Plumbed end-to-end as `activeMinutes` (engine `PlanGcInput`/`ApplyGcOptions`, the `worktree_gc` MCP tool and `POST /worktrees/gc` body, `agentproto worktree gc --active-minutes <n>`, and the VS Code daemon client) with default 60; `0` disables the guard. Apply outcomes and the daemon's plan/outcome views now carry the hold reason, and a plan entry that became recently active between plan and apply aborts as `aborted-reclassified` to hold instead of acting on the stale plan.
+
+### Patch Changes
+
+- 78a3983: Declare `@agentproto/sandbox-computer` as a dependency and keep it external in the bundle, so the `computer` sandbox provider resolves from a daemon started with `agentproto serve` instead of listing as "not installed".
+- 784ffbd: fix(bootstrap): install.ps1 works on Windows 11 with npm 11 and a Restricted ExecutionPolicy — allow-lists node-pty (`--allow-scripts=node-pty`), always calls `agentproto.cmd` (never the blocked `.ps1` shim), and prints clear guidance when the effective policy is Restricted/AllSigned
+- b324f0e: Fixed `agentproto mcp login <alias> --url <url>` always failing with `uses oauth but no keychain secret store is configured`, even right after printing the consent URL and scopes — the CLI's own `setMcpCredentialDeps` call never reached `openMcpClient`'s `createDaemonOAuthProvider`. Root cause: `@agentproto/runtime` ships `./mcp-oauth`, `./mcp-client-pool` and `./mcp-credential-deps` as separate tsup entries (`splitting: false`), so each bundles its own private copy of `mcp-credential-deps.ts`'s module state; a `setMcpCredentialDeps` call reached through one subpath is invisible to `getMcpCredentialDeps()` reached through another. `openMcpClient`'s `OpenMcpClientOptions` now accepts an explicit `oauthSecrets` override, which `mcp login`'s verify step and the daemon's `mcp-proxy.ts` both pass — the ambient singleton (kept, all three exports unchanged) is now only a same-bundle convenience fallback, never load-bearing across a subpath boundary.
+- 4e16bfb: feat(doctor): report terminal sessions as unavailable (node-pty not built) as a warning instead of leaving it silent — node-pty is an optional dependency, so a missing native build only disables PTY terminals; agent sessions are unaffected. install.ps1 keeps `--allow-scripts=node-pty` as best effort.
+- cf6085d: Documentation sync for already-shipped features. The browser-chrome README now documents the `createChromeLiveProvider({ cookieSource })` dedicated-Chrome cookie-injection seam and scopes the read-only cookie guarantee to the user's own attached Chrome. The CLI package README and `docs/cli` verb references now cover `agentproto sessions report`, `agentproto mcp login`/`logout` (OAuth 2.1 for remote imports), `agentproto workspace check` (AIP-34 `workspace/v2` tree verification), and the `AGENTPROTO_BROWSER_OBSERVER_*` daemon env vars.
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 2d61d46: fix(sandbox): sandboxed sessions survive a daemon restart and idle reap. The boot reattach pass adopts detached sandbox rows whose workspace bucket no other live daemon serves (they were otherwise stranded as unserved), a restarted sandbox row still awaiting its first prompt gets a 60 min reap grace, a busy mid-turn row is never reapable, an idle reap pauses the box instead of stopping it when the final checkpoint did not secure the work, and the CLI prefixes daemon.log lines with an ISO-8601 timestamp when output is redirected.
+- 4e16bfb: fix(bootstrap): install.ps1 works on Windows 11/Server with npm 11 under a Restricted or AllSigned ExecutionPolicy — it always invokes the `.cmd` shims (never the blocked `.ps1`), allow-lists optional `node-pty` via `--allow-scripts`, and prints effective-policy-aware next-step guidance. feat(doctor): `preflight` now reports terminal sessions as a non-blocking warning when `node-pty` is not built, since its absence only disables PTY terminals and never agent sessions.
+- f1d0c95: fix(sentinel): auto-link PRs opened by sandboxed sessions and target the live successor
+
+  A sandboxed session's cwd is a path inside its box, so the PR reconciler's branch lookup found no host checkout and every `gh` call ran in a non-existent directory — the PR was never recorded and no sentinel was created. Sandboxed sessions now resolve their PR from the box work branch (`sandboxDeliveryTarget.branch`) against the workspace's host checkout, and `gh` runs from there; `OpenPrResolver` accepts an optional `{ branch }` override. Auto-link also follows the `continuedTo` chain so a PR recorded on a row that a restart/continue superseded is watched for the live successor, without creating a duplicate sentinel.
+
+- bdd1d3b: Add a regression test and clarifying comment documenting that the idempotent-boot reattach gate and the other-daemons bucket derivation resolve the same bucket slug for a workspace missing from the workspaces config.
+- 2d61d46: fix(sandbox): sandboxed sessions survive a daemon restart and idle reap. The boot reattach pass now adopts detached sandbox rows whose workspace bucket no other live daemon serves (they were stranded as unserved), a restarted sandbox row still awaiting its first prompt gets a 60 min reap grace, and an idle reap pauses the box instead of stopping it when the final checkpoint did not secure the work.
+- f1d0c95: fix(sentinel): auto-link PRs opened by sandboxed sessions, and keep the sentinel on the live session across restart
+
+  The PR reconciler (which records a session's opened PR and so triggers sentinel auto-link) used the session's cwd to find the PR, but a sandboxed session's cwd is a path inside its box. The branch lookup found nothing, and every `gh` call ran in a directory that does not exist on the host, so the PR was never recorded and no sentinel was created. A sandboxed session's PR is now resolved from its box work branch (`sandboxDeliveryTarget.branch`), checked against the host checkout of its workspace, and `gh` runs from there. `OpenPrResolver` takes an optional `{ branch }` override for this.
+
+  Auto-link now also targets the end of the session's `continuedTo` chain. A PR recorded on a row that a restart or continue already superseded (for example a sandboxed session moved to a fresh box under a new id) is watched for the live successor, and the successor re-recording the same PR does not create a second sentinel.
+
+- bdd1d3b: Document and test that the boot reattach gate and the other-daemons bucket derivation resolve the same bucket slug for a workspace missing from the workspaces config.
+- ef1c877: Graceful turn retry by default for executor and sandbox agent starts: a
+  spawn without `turnRetry` now gets a default policy (retry on rate-limit,
+  upstream-5xx and no-output-stall; 6 retries; default backoff) instead of
+  letting a transient provider failure stop the turn. A free OpenCode model
+  also rotates onto other free ids on every covered class by default; paid
+  models never rotate by default. Explicit opt-out is `turnRetry: null`, an
+  empty `on` list, or the CLI shorthand `--turn-retry off`.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [1d09ab0]
+- Updated dependencies [7ed9762]
+- Updated dependencies [e9e2cb5]
+- Updated dependencies [743fa74]
+- Updated dependencies [8b350d5]
+- Updated dependencies [78a3983]
+- Updated dependencies [629e42c]
+- Updated dependencies [629e42c]
+- Updated dependencies [3c30cda]
+- Updated dependencies [70d533f]
+- Updated dependencies [f2205fd]
+- Updated dependencies [11f986f]
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [74f982c]
+- Updated dependencies [743fa74]
+- Updated dependencies [629e42c]
+- Updated dependencies [2760272]
+- Updated dependencies [1d09ab0]
+- Updated dependencies [11f986f]
+- Updated dependencies [629e42c]
+- Updated dependencies [3a50c3d]
+- Updated dependencies [70d533f]
+- Updated dependencies [74f982c]
+- Updated dependencies [f2205fd]
+  - @agentproto/model-catalog@0.13.0
+  - @agentproto/worktree@0.16.0
+  - @agentproto/adapter-browser@0.8.0
+  - @agentproto/sandbox-computer@0.2.0
+  - @agentproto/sandbox-instabox@0.2.0
+  - @agentproto/apps@0.23.6
+  - @agentproto/app-kit@2.1.0
+  - @agentproto/sandbox-e2b@0.8.3
+  - @agentproto/acp@0.11.2
+  - @agentproto/app-client@0.4.2
+  - @agentproto/auth@1.3.1
+  - @agentproto/driver@0.3.3
+  - @agentproto/driver-agent-cli@2.13.2
+  - @agentproto/llm-endpoint@0.11.13
+  - @agentproto/pairing-host@0.2.9
+  - @agentproto/provider-kit@0.4.7
+  - @agentproto/rendezvous@0.2.4
+  - @agentproto/runtime-profile-standard@0.1.4
+  - @agentproto/sandbox-box@0.2.33
+  - @agentproto/secrets@2.1.1
+  - @agentproto/workflow-loader@0.2.9
+  - @agentproto/workspace@1.0.1
+  - create-agentproto-app@0.3.6
+
 ## 1.26.0
 
 ### Minor Changes

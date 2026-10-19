@@ -1,5 +1,20 @@
 # @agentproto/worktree-agent-example
 
+## 0.0.34
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- Updated dependencies [1d09ab0]
+- Updated dependencies [629e42c]
+- Updated dependencies [f2205fd]
+- Updated dependencies [74f982c]
+- Updated dependencies [1d09ab0]
+- Updated dependencies [3a50c3d]
+- Updated dependencies [74f982c]
+- Updated dependencies [f2205fd]
+  - @agentproto/worktree@0.16.0
+
 ## 0.0.33
 
 ### Patch Changes

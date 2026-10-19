@@ -50,7 +50,7 @@ you say `agree: true` in your verdict, so be conservative and cite evidence.
 `sha` (the tip), the base ref + its sha, `mergeBase`, `compareBase` (only
 set for pre-rewrite history — see below), `mergedTree` (the tree base would
 have if this branch merged cleanly, `null` when the merge conflicts),
-`coverage`, `residualFiles`, and the push state.
+`coverage`, `residualFiles`, `lineCoverage`, and the push state.
 
 The push state says whether a remote holds this work: `same-tip-on-remote`
 / `contained-in-remote` (a remote ref has this tip), `diverged-from-remote`
@@ -69,6 +69,16 @@ lists only what is NOT provably in base: `evolved` (same filename exists in
 base with different content — usually base kept editing a file this branch
 also touched) and `unique` (no trace in base at all: could be a build
 artifact, could be real lost work). Spend your effort on the residual files.
+
+`lineCoverage` is the deterministic check behind your verdict: of the
+non-trivial lines this tip ADDS to its evolved and unique files, how many
+(`inBase` of `added`, `pct`) already exist verbatim in base's version of the
+same path, with up to 12 `missing` lines that don't. "Base has `foo.ts`" is
+NOT evidence — it is true of every evolved file by definition. If `pct` is
+low, the `missing` lines are the work you must account for: find where base
+has that intent (another path, another form) or say it is worth nothing. An
+agreeing verdict on a tip under 95% line coverage is refused by `branch_gc`
+regardless, so don't agree on a hunch.
 
 If a `compareBase` is present, the repo's history was re-rooted after this
 branch was cut — `compareBase` is the old-history twin of the current base.

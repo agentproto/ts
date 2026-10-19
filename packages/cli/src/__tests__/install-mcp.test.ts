@@ -1271,7 +1271,7 @@ mcp_servers:
     url: http://localhost:8830/mcp
     enabled: true
   guilde:
-    url: https://api.guilde.work/guilde/mcp
+    url: https://api.example.com/guilde/mcp
     enabled: true
 other_key:
   foo: bar
@@ -1283,7 +1283,7 @@ other_key:
     expect(out).toContain("  bureau:")
     expect(out).toContain("http://localhost:8830/mcp")
     expect(out).toContain("  guilde:")
-    expect(out).toContain("https://api.guilde.work/guilde/mcp")
+    expect(out).toContain("https://api.example.com/guilde/mcp")
     expect(out).toContain("other_key:")
     expect(out).toMatch(
       /mcp_servers:\n {2}agentproto:\n {4}url: http:\/\/127\.0\.0\.1:18790\/mcp\n {4}enabled: true\n {2}bureau:/,

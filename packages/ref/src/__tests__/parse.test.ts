@@ -72,7 +72,7 @@ describe("isResolvable", () => {
   })
 
   it("throws NotResolvable when resolving an identity-only kind", async () => {
-    const r = defineRef("email:jeremy@agentik.net")
+    const r = defineRef("email:alice@example.com")
     await expect(r.resolve({})).rejects.toThrow(/not resolvable/i)
   })
 })

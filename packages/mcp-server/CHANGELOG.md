@@ -1,5 +1,26 @@
 # @agentproto/mcp-server
 
+## 0.7.0
+
+### Minor Changes
+
+- 3c30cda: Bound `session_list` results: an unpaged call now returns at most 50 rows plus `truncated`, `total` and `nextCursor` to page on, and a new `ids` filter reads known sessions without scanning the whole list. Any contract-layer MCP tool result over 100 KB is replaced by a `{truncated, totalBytes, hint}` marker.
+- 3c30cda: fix(runtime,mcp-server): `session_list` returns at most 50 rows by default (`truncated`, `total`, `nextCursor` to page on) and accepts an `ids` filter to read known sessions; any contract-layer MCP tool result over 100 KB is replaced by `{truncated:true,totalBytes,hint}`
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/agent@0.4.1
+  - @agentproto/define-doctype@0.1.4
+  - @agentproto/driver@0.3.3
+  - @agentproto/extension@0.2.4
+  - @agentproto/manifest@0.2.4
+  - @agentproto/routine@0.3.2
+  - @agentproto/tool@0.5.2
+
 ## 0.6.5
 
 ### Patch Changes

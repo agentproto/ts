@@ -52,6 +52,7 @@ import {
   makeWorktreeStatusLister,
   makeWorktreeGcRunner,
   makeWorktreeAutoReclaimer,
+  makeSandboxCheckpointReclaimer,
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
@@ -927,6 +928,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // dep reasoning as above; a worktree the caller explicitly requested
         // is never routed through this port at all.
         runWorktreeAutoReclaim: makeWorktreeAutoReclaimer(),
+        // Injected port behind `sessions.ts`'s exit-time sandbox checkpoint
+        // gc (`SandboxCheckpointReclaimer`): a terminal sandboxed session
+        // whose `agentproto-checkpoint/<branch>` ref is provably superseded
+        // (PR merged/closed, or the snapshot's content already in base or
+        // the work branch) has that ref deleted from the workspace remote.
+        // Same dep reasoning as above; dry-run and table output stay in the
+        // `sandbox checkpoint-gc` CLI command.
+        runSandboxCheckpointGc: makeSandboxCheckpointReclaimer(),
         // Injected port behind the daemon PR-provenance reconciler: resolves the
         // open PR for a session's branch (branch→PR over @agentproto/worktree),
         // so an executor's PR gets the provenance footer even though it opened it

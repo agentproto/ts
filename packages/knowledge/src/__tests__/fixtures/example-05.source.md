@@ -4,7 +4,7 @@ id: 2026-04-27-investor-call
 path: sources/2026-04-27-investor-call.md
 title: Lead investor weekly sync, 2026-04-27
 captured_at: 2026-04-27T15:00:00Z
-captured_by: jeremy@agentik.net
+captured_by: alice@example.com
 content_hash: sha256:9f1b3c7e4d2a8f6b1c0e9d5a3f7b2c8e1d4a6f9b3c7e0d2a5f8b1c4e7d9a3f6b
 authority: primary
 language: en

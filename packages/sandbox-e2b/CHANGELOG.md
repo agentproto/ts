@@ -1,5 +1,23 @@
 # @agentproto/sandbox-e2b
 
+## 0.8.3
+
+### Patch Changes
+
+- 11f986f: runtime: classify a sandbox box that dies at/after its lifetime deadline while idle as expected expiry (`SandboxBoxExpiredError`), ending the row `status:"exited"` / `endedReason:"sandbox-expired"` instead of `crashed`; add the `sandbox-expired` end reason, a `markSandboxExpired` registry action, and a `type:"branch"` session-outcome artifact carrying the delivered work branch.
+
+  sandbox-e2b: document the plan-level continuous-runtime cap behind the lifetime constants (comment-only).
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 11f986f: Sandbox sessions whose box reaches its lifetime deadline (e2b plan cap: 1h of continuous run on Hobby/Base, active or not) now end cleanly as `endedReason: "sandbox-expired"` / `status: "exited"` instead of being classified `crashed` / `error` without an artifact. The watchdog tags a death at/past the known (renewal-pushed) deadline as expected expiry (`SandboxBoxExpiredError`), the registry ends the row through a new `markSandboxExpired` (same lazy-resumable cleanup as a crash, but no crash status and no restart policy match), and the derived outcome surfaces the delivered work branch as a `type: "branch"` artifact. The e2b provider documents the real root cause of the "active session dies at start+~60min" reports: the plan's total continuous-run window — heartbeat renewal already works and cannot extend past it (Pro plan or e2b pause/resume is the escape hatch).
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [629e42c]
+- Updated dependencies [629e42c]
+- Updated dependencies [74f982c]
+- Updated dependencies [629e42c]
+- Updated dependencies [74f982c]
+  - @agentproto/sandbox@0.12.0
+
 ## 0.8.2
 
 ### Patch Changes

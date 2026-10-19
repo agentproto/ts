@@ -1,5 +1,19 @@
 # @agentproto/workspace-brain
 
+## 0.5.3
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/adapter-knowledge-files@0.3.3
+  - @agentproto/adapter-knowledge-gbrain-doc@0.3.3
+  - @agentproto/adapter-knowledge-qdrant@0.3.3
+  - @agentproto/corpus@0.8.3
+  - @agentproto/knowledge-engine@0.3.3
+
 ## 0.5.2
 
 ### Patch Changes

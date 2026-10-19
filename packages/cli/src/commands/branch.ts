@@ -3,8 +3,8 @@
  *
  * Subcommands:
  *   gc            [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
- *                 [--min-age-days N] [--include-reviewed] [--anchor <sha>]
- *                 [--apply] [--json]
+ *                 [--min-age-days N] [--include-reviewed] [--min-line-coverage PCT]
+ *                 [--anchor <sha>] [--apply] [--json]
  *   review-queue  [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
  *
  * Thin shell over `@agentproto/worktree`'s `planBranchGc` / `applyBranchGc` —
@@ -39,8 +39,8 @@ const USAGE = `agentproto branch — classify and clean up a repo's branches
 
 Usage:
   agentproto branch gc           [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
-                                 [--min-age-days N] [--include-reviewed] [--anchor <sha>]
-                                 [--apply] [--json]
+                                 [--min-age-days N] [--include-reviewed] [--min-line-coverage PCT]
+                                 [--anchor <sha>] [--apply] [--json]
   agentproto branch review-queue [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
   agentproto branch --help
 
@@ -51,7 +51,9 @@ Usage:
                            of a merged PR), merged (ancestor), squash-merged
                            (merge-tree == base tree), patch-merged (git cherry, only on
                            conflicts), content-merged (every changed file's blob is in
-                           base at some path, or gitignored)
+                           base at some path, or gitignored), forge-mirror (an
+                           orphan ref whose tip is a refs/pull/<N>/head of the base
+                           remote: the forge keeps it, restore re-fetches it)
                   review   unmerged, older than --min-age-days (default 3), unprotected
                   hold     base/protected names, branches checked out in a worktree and
                            their remote twin, open PR heads, everything local/remote when
@@ -61,7 +63,9 @@ Usage:
                 is deleted, and writes a restore log (sha + re-create command per ref)
                 under ~/.agentproto/branch-gc/. review and hold are never touched.
                 --include-reviewed also reclaims review refs whose stored verdict
-                (branch_gc_verdict) agreed for the same tip sha.
+                (branch_gc_verdict) agreed for the same tip sha — refused when less
+                than --min-line-coverage (default 95) percent of the tip's added lines
+                are already in base.
   review-queue  Print the review candidates as JSON — one per unique tip, with base sha,
                 compare base, merge base, merged tree (or null), coverage and the files not
                 provably in base. Tips that already have a verdict are skipped unless --all.
@@ -91,6 +95,13 @@ export function parseScopes(raw: string | undefined): BranchRefKind[] | undefine
   return parts as BranchRefKind[]
 }
 
+function parseMinLineCoverage(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0 || n > 100) throw new Error(`--min-line-coverage must be a percent in [0, 100], got "${raw}"`)
+  return n
+}
+
 function parseMinAge(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined
   const n = Number(raw)
@@ -103,6 +114,7 @@ async function planFor(repoRoot: string, opts: {
   scopes?: BranchRefKind[]
   minAgeDays?: number
   includeReviewed?: boolean
+  minLineCoverage?: number
   anchor?: string
 }): Promise<BranchGcPlan> {
   const forge = await createForgeClient(repoRoot)
@@ -115,6 +127,7 @@ async function planFor(repoRoot: string, opts: {
     ...(opts.scopes ? { scopes: opts.scopes } : {}),
     ...(opts.minAgeDays !== undefined ? { minAgeDays: opts.minAgeDays } : {}),
     ...(opts.includeReviewed ? { includeReviewed: true } : {}),
+    ...(opts.minLineCoverage !== undefined ? { minLineCoverage: opts.minLineCoverage } : {}),
     ...(opts.anchor ? { anchor: opts.anchor } : {}),
   })
 }
@@ -130,6 +143,7 @@ async function runBranchGcCommand(args: readonly string[]): Promise<number> {
       scopes: { type: "string" },
       "min-age-days": { type: "string" },
       "include-reviewed": { type: "boolean" },
+      "min-line-coverage": { type: "string" },
       anchor: { type: "string" },
       apply: { type: "boolean" },
       json: { type: "boolean" },
@@ -142,9 +156,11 @@ async function runBranchGcCommand(args: readonly string[]): Promise<number> {
   }
   let scopes: BranchRefKind[] | undefined
   let minAgeDays: number | undefined
+  let minLineCoverage: number | undefined
   try {
     scopes = parseScopes(values.scopes)
     minAgeDays = parseMinAge(values["min-age-days"])
+    minLineCoverage = parseMinLineCoverage(values["min-line-coverage"])
   } catch (err) {
     process.stderr.write(`agentproto branch gc: ${err instanceof Error ? err.message : String(err)}\n`)
     return 2
@@ -158,6 +174,7 @@ async function runBranchGcCommand(args: readonly string[]): Promise<number> {
     ...(scopes ? { scopes } : {}),
     ...(minAgeDays !== undefined ? { minAgeDays } : {}),
     includeReviewed: Boolean(values["include-reviewed"]),
+    ...(minLineCoverage !== undefined ? { minLineCoverage } : {}),
     ...(values.anchor ? { anchor: values.anchor } : {}),
   })
   const summary = summarizeBranchGcPlan(plan)
@@ -212,7 +229,11 @@ function entryAction(e: BranchGcPlanEntry): string {
   if (e.class === "reclaim") return `reclaim (${e.reclaimReason})`
   if (e.class === "hold") return `hold (${e.holdReason}${e.holdDetail ? `: ${e.holdDetail}` : ""})`
   const c = e.coverage
-  return `review${c ? ` (${c.unique}u ${c.evolved}e ${c.deletes}d)` : ""}${e.pushed ? ` ${e.pushed}` : ""}`
+  const lc = e.lineCoverage
+  return (
+    `review${c ? ` (${c.unique}u ${c.evolved}e ${c.deletes}d)` : ""}${lc ? ` ${lc.pct}% of ${lc.added} lines in base` : ""}` +
+    `${e.pushed ? ` ${e.pushed}` : ""}${e.verdictGuard ? ` — verdict refused: ${e.verdictGuard}` : ""}`
+  )
 }
 
 function printPlan(plan: BranchGcPlan, summary: BranchGcSummary): void {
@@ -242,6 +263,7 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
     else if (o.result === "aborted-moved") detail = `aborted: tip moved to ${o.currentSha.slice(0, 10)} since the plan`
     else if (o.result === "aborted-reclassified") detail = `aborted: reclassified ${o.from} → ${o.to}${o.holdReason ? ` (${o.holdReason})` : ""}`
     else if (o.result === "failed") detail = `failed: ${o.message}`
+    else if (o.result === "refused-guard") detail = `verdict refused: ${o.guard}`
     process.stdout.write(`${o.kind.padEnd(6)}  ${o.name.padEnd(48)}  ${detail}\n`)
   }
   const deleted = outcomes.filter((o) => o.result === "deleted").length
@@ -256,7 +278,7 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
  * boundary already enforces dry-run-by-default and scopes-on-apply).
  */
 export function makeBranchGcRunner(): BranchGcRunner {
-  return async ({ repoRoot: candidate, apply, base, scopes, minAgeDays, includeReviewed, anchor }) => {
+  return async ({ repoRoot: candidate, apply, base, scopes, minAgeDays, includeReviewed, minLineCoverage, anchor }) => {
     const repoRoot = repoRootOf(resolve(candidate))
     if (!repoRoot) throw new Error(`branch_gc: "${candidate}" is not inside a git repository.`)
     const plan = await planFor(repoRoot, {
@@ -264,6 +286,7 @@ export function makeBranchGcRunner(): BranchGcRunner {
       ...(scopes ? { scopes } : {}),
       ...(minAgeDays !== undefined ? { minAgeDays } : {}),
       includeReviewed,
+      ...(minLineCoverage !== undefined ? { minLineCoverage } : {}),
       ...(anchor ? { anchor } : {}),
     })
     const summary = summarizeBranchGcPlan(plan)

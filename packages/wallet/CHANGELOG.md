@@ -1,5 +1,20 @@
 # @agentproto/wallet
 
+## 0.2.0
+
+### Minor Changes
+
+- cb81038: AIP-49: add a generic `qualify` partition-policy rule. `{ kind: "qualify", key, allow }` makes a lot spendable only when the spend context's caller-asserted `qualifiers[key]` is one of `allow` (`"*"` = any value, qualifier still required). Fail-closed on a spend, neutral on a pure balance read, never changes quantity, and ANDs with `spendOn`/`expire`. `PolicyContext` gains optional `qualifiers`, and `spendableLotUnderPolicy` / `spendableBalanceUnderPolicy` accept an optional trailing `qualifiers` argument. The rule is accepted by `defineAsset`'s schema and the vendored `ASSET.schema.json`.
+- cb81038: AIP-49: add a generic `qualify` partition-policy rule. `{ kind: "qualify", key, allow }` makes a lot spendable only when the spend context's caller-asserted `qualifiers[key]` is one of `allow` (`"*"` = any value, qualifier still required). It is fail-closed on a spend (a missing qualifier is ineligible), neutral on a pure balance read, never changes the quantity, and ANDs with `spendOn`/`expire`. `PolicyContext` gains optional `qualifiers`, and `spendableLotUnderPolicy` / `spendableBalanceUnderPolicy` accept an optional trailing `qualifiers` argument. The rule is accepted by `defineAsset`'s schema and vendored `ASSET.schema.json`.
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/define-doctype@0.1.4
+
 ## 0.1.4
 
 ### Patch Changes

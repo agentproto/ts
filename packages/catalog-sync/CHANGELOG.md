@@ -1,5 +1,19 @@
 # @agentproto/catalog-sync
 
+## 0.8.8
+
+### Patch Changes
+
+- 7ed9762: Sync generated catalog data from the pinned provider sources.
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [7ed9762]
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/model-catalog@0.13.0
+
 ## 0.8.7
 
 ### Patch Changes

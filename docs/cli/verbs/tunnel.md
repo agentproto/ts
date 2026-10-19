@@ -98,7 +98,7 @@ take over a hostname that is still routed to another live managed tunnel.
 ```json
 {
   "slug": "cloudflare-managed",
-  "zones": "[{\"zone\":\"agentik.net\",\"accountId\":\"<account id>\",\"tokenRef\":\"env:CF_TOKEN_AGENTIK\"},{\"zone\":\"clipgen.co\",\"accountId\":\"<account id>\",\"tokenRef\":\"keychain:cloudflare/clipgen\",\"maxLabels\":2}]"
+  "zones": "[{\"zone\":\"example.com\",\"accountId\":\"<account id>\",\"tokenRef\":\"env:CF_TOKEN_EXAMPLE_COM\"},{\"zone\":\"example.dev\",\"accountId\":\"<account id>\",\"tokenRef\":\"keychain:cloudflare/exampledev\",\"maxLabels\":2}]"
 }
 ```
 
@@ -112,7 +112,7 @@ take over a hostname that is still routed to another live managed tunnel.
   that matches no zone fails with the list of configured zones.
 - `maxLabels` (default `1`) caps how deep a hostname may be under the zone.
   Without Advanced Certificate Manager the edge certificate only covers
-  `*.<zone>`, so `relay.agentik.net` works but `wa.relay.agentik.net` is
+  `*.<zone>`, so `relay.example.com` works but `wa.relay.example.com` is
   rejected unless you raise `maxLabels` for that zone.
 - All hostnames of one tunnel must live in zones of the same account.
 
@@ -286,11 +286,11 @@ agentproto tunnel create --port 3040 --name prod-preview \
 
 # Managed Cloudflare tunnel — created through the API, survives restarts
 agentproto tunnel create --port 8081 --name wa-relay \
-  --provider cloudflare-managed --hostname wa.agentik.net --autostart --public
+  --provider cloudflare-managed --hostname wa.example.com --autostart --public
 
 # Move it to another hostname with an overlap window, then retire the old one
-agentproto tunnel add-hostname wa-relay wa.clipgen.co
-agentproto tunnel remove-hostname wa-relay wa.agentik.net
+agentproto tunnel add-hostname wa-relay wa.example.dev
+agentproto tunnel remove-hostname wa-relay wa.example.com
 
 # Delete the managed tunnel and its DNS record
 agentproto tunnel purge wa-relay

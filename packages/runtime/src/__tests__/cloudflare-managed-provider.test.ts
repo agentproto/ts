@@ -213,16 +213,16 @@ describe("probeHostname", () => {
 
 const CREDS = {
   zones: JSON.stringify([
-    { zone: "agentik.net", accountId: "acct-a", tokenRef: "stored:agentik" },
-    { zone: "clipgen.co", accountId: "acct-a", tokenRef: "stored:clipgen" },
+    { zone: "example.com", accountId: "acct-a", tokenRef: "stored:examplecom" },
+    { zone: "example.dev", accountId: "acct-a", tokenRef: "stored:exampledev" },
   ]),
-  zoneTokens: JSON.stringify({ agentik: "tok-agentik", clipgen: "tok-clipgen" }),
+  zoneTokens: JSON.stringify({ examplecom: "tok-examplecom", exampledev: "tok-exampledev" }),
 }
 
 function makeProvider(probeStatus: Record<string, number | Error> = {}) {
   const cf = new FakeCloudflare([
-    { id: "zone-agentik", name: "agentik.net", account: "acct-a", token: "tok-agentik" },
-    { id: "zone-clipgen", name: "clipgen.co", account: "acct-a", token: "tok-clipgen" },
+    { id: "zone-examplecom", name: "example.com", account: "acct-a", token: "tok-examplecom" },
+    { id: "zone-exampledev", name: "example.dev", account: "acct-a", token: "tok-exampledev" },
   ])
   const sp = fakeSpawner()
   const timers = fakeTimers()
@@ -249,26 +249,26 @@ describe("cloudflareManagedTunnelProvider", () => {
 
   it("validateSetup rejects a stored: ref with no matching token", () => {
     const p = cloudflareManagedTunnelProvider(null)
-    expect(() => p.validateSetup!({ zones: CREDS.zones, zoneTokens: '{"agentik":"x"}' })).toThrow(
-      /references stored:clipgen/,
+    expect(() => p.validateSetup!({ zones: CREDS.zones, zoneTokens: '{"examplecom":"x"}' })).toThrow(
+      /references stored:exampledev/,
     )
     expect(() => p.validateSetup!(CREDS)).not.toThrow()
   })
 
   it("start: reconciles, runs cloudflared with the token in env only, reports health", async () => {
-    const { cf, sp, provider } = makeProvider({ "wa.agentik.net": 401 })
+    const { cf, sp, provider } = makeProvider({ "wa.example.com": 401 })
     const logs: string[] = []
     const health: TunnelHealth[] = []
     const res = await provider.start({
       target: { host: "127.0.0.1", port: 8081 },
       workspace: "/nonexistent",
-      tunnel: { key: "wa", hostnames: ["wa.agentik.net"] },
+      tunnel: { key: "wa", hostnames: ["wa.example.com"] },
       onLog: l => logs.push(l),
       onHealth: h => health.push(h),
     })
     const tunnel = cf.liveTunnels()[0]!
-    expect(res).toEqual({ publicUrl: "https://wa.agentik.net", pid: sp.procs[0]!.pid, tunnelId: tunnel.id })
-    expect(tunnel.ingress[0]).toEqual({ hostname: "wa.agentik.net", service: "http://127.0.0.1:8081" })
+    expect(res).toEqual({ publicUrl: "https://wa.example.com", pid: sp.procs[0]!.pid, tunnelId: tunnel.id })
+    expect(tunnel.ingress[0]).toEqual({ hostname: "wa.example.com", service: "http://127.0.0.1:8081" })
 
     const req = sp.requests[0]!
     expect(req.env).toEqual({ TUNNEL_TOKEN: tunnel.token })
@@ -276,24 +276,24 @@ describe("cloudflareManagedTunnelProvider", () => {
     expect(req.args).toEqual(["tunnel", "--no-autoupdate", "run"])
 
     const h = await provider.probeNow()
-    expect(h).toMatchObject({ state: "active", hostnames: [{ hostname: "wa.agentik.net", ok: true }] })
+    expect(h).toMatchObject({ state: "active", hostnames: [{ hostname: "wa.example.com", ok: true }] })
     expect(health.at(-1)?.state).toBe("active")
     expect(logs.join("\n")).not.toContain(tunnel.token)
     await provider.stop()
   })
 
   it("health: degraded on edge 5xx, degraded while restarting, error on crash loop", async () => {
-    const { sp, timers, provider, status } = makeProvider({ "wa.agentik.net": 530 })
+    const { sp, timers, provider, status } = makeProvider({ "wa.example.com": 530 })
     await provider.start({
       target: { host: "127.0.0.1", port: 8081 },
       workspace: "/nonexistent",
-      tunnel: { key: "wa", hostnames: ["wa.agentik.net"] },
+      tunnel: { key: "wa", hostnames: ["wa.example.com"] },
     })
     expect(await provider.probeNow()).toMatchObject({
       state: "degraded",
-      reason: "wa.agentik.net: edge returned 530",
+      reason: "wa.example.com: edge returned 530",
     })
-    status["wa.agentik.net"] = 404
+    status["wa.example.com"] = 404
     expect((await provider.probeNow())?.state).toBe("active")
 
     sp.procs[0]!.exit(1)
@@ -312,7 +312,7 @@ describe("cloudflareManagedTunnelProvider", () => {
       provider.start({
         target: { host: "127.0.0.1", port: 8081 },
         workspace: "/nonexistent",
-        tunnel: { key: "wa", hostnames: ["a.b.agentik.net"] },
+        tunnel: { key: "wa", hostnames: ["a.b.example.com"] },
       }),
     ).rejects.toThrow(/maxLabels/)
     await expect(
@@ -327,7 +327,7 @@ describe("cloudflareManagedTunnelProvider", () => {
     const opts = {
       target: { host: "127.0.0.1", port: 8081 },
       workspace: "/nonexistent",
-      tunnel: { key: "wa", hostnames: ["wa.agentik.net"] },
+      tunnel: { key: "wa", hostnames: ["wa.example.com"] },
     }
     await provider.start(opts)
     await provider.stop()
@@ -344,7 +344,7 @@ describe("cloudflareManagedTunnelProvider", () => {
     const starting = provider.start({
       target: { host: "127.0.0.1", port: 8081 },
       workspace: "/nonexistent",
-      tunnel: { key: "wa", hostnames: ["wa.agentik.net"] },
+      tunnel: { key: "wa", hostnames: ["wa.example.com"] },
     })
     // start() is suspended at its first await: runner is still unset, so a
     // stop() here has nothing to kill.
@@ -354,23 +354,23 @@ describe("cloudflareManagedTunnelProvider", () => {
   })
 
   it("swap while running: both hostnames probed, then the old one retired", async () => {
-    const { cf, provider } = makeProvider({ "wa.agentik.net": 404, "wa.clipgen.co": 404 })
-    const identity = { key: "wa", hostnames: ["wa.agentik.net"] }
+    const { cf, provider } = makeProvider({ "wa.example.com": 404, "wa.example.dev": 404 })
+    const identity = { key: "wa", hostnames: ["wa.example.com"] }
     await provider.start({ target: { host: "127.0.0.1", port: 8081 }, workspace: "/x", tunnel: identity })
-    await provider.addHostname!(identity, "wa.clipgen.co")
+    await provider.addHostname!(identity, "wa.example.dev")
     const h = await provider.probeNow()
-    expect(h?.hostnames?.map(x => x.hostname)).toEqual(["wa.clipgen.co", "wa.agentik.net"])
+    expect(h?.hostnames?.map(x => x.hostname)).toEqual(["wa.example.dev", "wa.example.com"])
     expect(cf.records).toHaveLength(2)
 
-    await provider.removeHostname!({ key: "wa", hostnames: ["wa.clipgen.co", "wa.agentik.net"] }, "wa.agentik.net")
-    expect(cf.records.map(r => r.name)).toEqual(["wa.clipgen.co"])
-    expect((await provider.probeNow())?.hostnames?.map(x => x.hostname)).toEqual(["wa.clipgen.co"])
+    await provider.removeHostname!({ key: "wa", hostnames: ["wa.example.dev", "wa.example.com"] }, "wa.example.com")
+    expect(cf.records.map(r => r.name)).toEqual(["wa.example.dev"])
+    expect((await provider.probeNow())?.hostnames?.map(x => x.hostname)).toEqual(["wa.example.dev"])
     await provider.stop()
   })
 
   it("destroy removes CNAME and tunnel", async () => {
     const { cf, provider } = makeProvider()
-    const identity = { key: "wa", hostnames: ["wa.agentik.net"] }
+    const identity = { key: "wa", hostnames: ["wa.example.com"] }
     await provider.start({ target: { host: "127.0.0.1", port: 8081 }, workspace: "/x", tunnel: identity })
     await provider.stop()
     await provider.destroy!(identity)

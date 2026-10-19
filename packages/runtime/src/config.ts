@@ -647,7 +647,7 @@ export interface AcpAgentConfigEntry {
  *     "profiles": {
  *       "local": { "tunnel": { "host": "ws://localhost:3200/connect",
  *                              "token": "apt_local", "autoconnect": true } },
- *       "prod":  { "tunnel": { "host": "wss://tunnel.guilde.work/connect",
+ *       "prod":  { "tunnel": { "host": "wss://tunnel.example.com/connect",
  *                              "token": "apt_prod",  "autoconnect": true },
  *                  "daemon": { "port": 18791 } }
  *     }
