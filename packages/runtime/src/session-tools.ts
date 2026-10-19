@@ -4500,12 +4500,12 @@ export function registerSessionTools(
       try {
         const { repoRoot: _r, workspaceSlug: _w, operator, ...verdict } = input
         // Operator approval is a different trust boundary from the review. A
-        // session is identified here by the daemon-verified `?callerSessionId=`
-        // (never by a tool argument), so an automated reviewer cannot
-        // self-certify the guard override. The operator root MCP/HTTP surfaces
-        // arrive with no caller session and may set it; see POST
-        // /branches/gc/verdict for the authenticated REST route.
-        if (operator && callerSessionId !== undefined) {
+        // session is identified here by the daemon-verified caller identity
+        // (`?callerSessionId=` or a scoped mount's owner), never by a tool
+        // argument, so an automated reviewer cannot self-certify the guard
+        // override. The operator root MCP surface arrives with no caller and
+        // may set it; `POST /branches/gc/verdict` refuses it (no identity).
+        if (operator && effectiveCallerSessionId(callerScope, callerSessionId) !== undefined) {
           return {
             content: [
               {

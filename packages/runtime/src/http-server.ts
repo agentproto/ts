@@ -3490,6 +3490,19 @@ export async function startHttpServer(
           const obj: Record<string, unknown> =
             typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
           const { repoRoot, workspaceSlug, ...verdict } = obj
+          // This loopback REST route carries no caller identity, so it is not
+          // an operator surface: refuse `operator` here and require the
+          // authenticated operator MCP call for a guard override.
+          if ("operator" in verdict) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "operator_requires_operator_surface",
+                message: "operator approval must be recorded through the operator MCP surface, not POST /branches/gc/verdict",
+              })
+            )
+            return
+          }
           const resolved = await resolveWorktreeQueryRoot({
             repoRoot: typeof repoRoot === "string" ? repoRoot : undefined,
             workspaceSlug: typeof workspaceSlug === "string" ? workspaceSlug : undefined,
