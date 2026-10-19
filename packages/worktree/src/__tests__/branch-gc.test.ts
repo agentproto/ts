@@ -915,3 +915,181 @@ describe("branch gc — sandbox checkpoint branches", () => {
     expect(await sha(repo, `${snap}^`)).not.toBe(landed)
   })
 })
+
+// ── forge-mirror orphans ─────────────────────────────────────────────────
+
+describe("branch gc — forge-mirror orphans", () => {
+  /** Push `tip` as the bare origin's `refs/pull/<n>/head`, mirror it the way agents do, drop the local branch. */
+  async function prMirror(repo: string, n: number, branch: string, files: Record<string, string>): Promise<string> {
+    const tip = await branchWith(repo, branch, files)
+    await execGit(repo, ["push", "-q", "origin", `${tip}:refs/pull/${n}/head`])
+    await execGit(repo, ["fetch", "-q", "origin", `+refs/pull/${n}/head:refs/remotes/pr/${n}`])
+    await execGit(repo, ["branch", "-q", "-D", branch])
+    return tip
+  }
+
+  it("an orphan ref whose tip IS a refs/pull/N/head is reclaim (forge-mirror), skipping the ladder", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const tip = await prMirror(repo, 7, "tmp-pr7", { "pr7.txt": "unmerged work only in the PR\n" })
+    // Same namespace, but not a PR head: still the normal ladder.
+    const lost = await branchWith(repo, "tmp-lost", { "lost.txt": "only here\n" })
+    await execGit(repo, ["update-ref", "refs/remotes/pr/stray", lost])
+    await execGit(repo, ["branch", "-q", "-D", "tmp-lost"])
+
+    const p = await plan(repo, { base: "origin/main" })
+    expect(p.forgeMirrorCheck).toEqual({ available: true })
+    const e = entry(p, "pr/7", "orphan")
+    expect(e).toMatchObject({ sha: tip, status: "forge-mirror", class: "reclaim", reclaimReason: "forge-mirror", forgePr: 7 })
+    expect(e.coverage).toBeUndefined()
+    expect(entry(p, "pr/stray", "orphan")).toMatchObject({ class: "review", pushed: "only-copy" })
+    expect(summarizeBranchGcPlan(p).byStatus.orphan["forge-mirror"]).toBe(1)
+  })
+
+  it("apply deletes it and the restore log re-fetches the PR head, not update-ref", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const tip = await prMirror(repo, 12, "tmp-pr12", { "pr12.txt": "x\n" })
+    const p = await plan(repo, { base: "origin/main" })
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["orphan"], forge: new FakeForge(), stateDir })
+    expect(outcomes).toContainEqual({ kind: "orphan", name: "pr/12", sha: tip, result: "deleted", reclaimReason: "forge-mirror" })
+    expect(await refExists(repo, "refs/remotes/pr/12")).toBe(false)
+
+    const log = await readBranchGcRestoreLog(restoreLog as string)
+    expect(log.entries).toHaveLength(1)
+    expect(log.entries[0]?.argv).toEqual(["fetch", "origin", "+refs/pull/12/head:refs/remotes/pr/12"])
+    expect(log.entries[0]?.command).toMatch(/^git -C \S+ fetch origin \+refs\/pull\/12\/head:refs\/remotes\/pr\/12$/)
+    await execGit(repo, log.entries[0]?.argv as string[])
+    expect(await sha(repo, "refs/remotes/pr/12")).toBe(tip)
+  })
+
+  it("ls-remote failing falls back to the normal ladder (no shortcut, nothing reclaimed on faith)", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    await prMirror(repo, 3, "tmp-pr3", { "pr3.txt": "only in the PR\n" })
+    await execGit(repo, ["remote", "set-url", "origin", join(await tmp("branch-gc-gone-"), "missing.git")])
+    const p = await plan(repo, { base: "origin/main", fetch: false })
+    expect(p.forgeMirrorCheck.available).toBe(false)
+    expect(p.forgeMirrorCheck.reason).toBeTruthy()
+    expect(entry(p, "pr/3", "orphan")).toMatchObject({ status: "unmerged", class: "review", pushed: "only-copy" })
+  })
+
+  it("only orphans get the shortcut: a local branch at a PR head is classified as usual", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const tip = await branchWith(repo, "feat/pr9", { "pr9.txt": "x\n" })
+    await execGit(repo, ["push", "-q", "origin", `${tip}:refs/pull/9/head`])
+    expect(entry(await plan(repo, { base: "origin/main" }), "feat/pr9")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+})
+
+// ── line-coverage guard on reviewed verdicts ─────────────────────────────
+
+describe("branch gc — line-coverage guard", () => {
+  function agreeing(name: string, tip: string) {
+    return {
+      name,
+      sha: tip,
+      reviewer: "flash reviewer",
+      triage: { verdict: "superseded", confidence: 0.9, reason: "landed" },
+      gate: { agree: true, verdict: "superseded", reason: "base has it", evidence: ["base has src/a.ts"] },
+    }
+  }
+
+  /** An evolved file whose added lines are NOT in base (base kept editing it differently), plus a lockfile. */
+  async function lowCoverageBranch(repo: string): Promise<string> {
+    await commitFiles(repo, { "src/a.ts": "export const base = 1\n" }, "a")
+    const tip = await branchWith(repo, "feat/lost", {
+      "src/a.ts": "export const base = 1\nexport function lostWork() { return 42 }\nexport const alsoLost = 'value'\n",
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\nimporters: something-long-enough\n",
+    })
+    await commitFiles(repo, { "src/a.ts": "export const base = 2\n" }, "base edits a.ts")
+    return tip
+  }
+
+  it("unmerged entries carry lineCoverage over evolved+unique files (lockfiles skipped, trivial lines ignored)", async () => {
+    const repo = await makeRepo()
+    await lowCoverageBranch(repo)
+    const e = entry(await plan(repo), "feat/lost")
+    expect(e.class).toBe("review")
+    expect(e.lineCoverage).toEqual({
+      added: 2,
+      inBase: 0,
+      pct: 0,
+      missing: [
+        { file: "src/a.ts", line: "export function lostWork() { return 42 }" },
+        { file: "src/a.ts", line: "export const alsoLost = 'value'" },
+      ],
+    })
+  })
+
+  it("includeReviewed refuses an agreeing verdict under minLineCoverage; apply reports refused-guard", async () => {
+    const repo = await makeRepo()
+    const tip = await lowCoverageBranch(repo)
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict: agreeing("feat/lost", tip) })
+
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    expect(p.minLineCoverage).toBe(95)
+    const e = entry(p, "feat/lost")
+    expect(e).toMatchObject({ class: "review", verdict: { agree: true } })
+    expect(e.reclaimReason).toBeUndefined()
+    expect(e.verdictGuard).toBe("line coverage 0% of 2 added lines (< 95%)")
+
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: await tmp("branch-gc-state-") })
+    expect(outcomes).toContainEqual({ kind: "local", name: "feat/lost", sha: tip, result: "refused-guard", guard: e.verdictGuard })
+    expect(restoreLog).toBeNull()
+    expect(await refExists(repo, "refs/heads/feat/lost")).toBe(true)
+
+    // The threshold is configurable: at 0 the same verdict reclaims.
+    expect(entry(await plan(repo, { verdicts, includeReviewed: true, minLineCoverage: 0 }), "feat/lost")).toMatchObject({
+      class: "reclaim",
+      reclaimReason: "reviewed",
+    })
+    await expect(plan(repo, { minLineCoverage: 101 })).rejects.toThrow(/minLineCoverage/)
+  })
+
+  it("apply re-checks the guard: a plan made with a lower threshold cannot carry a refused approval through", async () => {
+    const repo = await makeRepo()
+    const tip = await lowCoverageBranch(repo)
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict: agreeing("feat/lost", tip) })
+    const loose = await plan(repo, { verdicts, includeReviewed: true, minLineCoverage: 0 })
+    expect(entry(loose, "feat/lost").class).toBe("reclaim")
+    // A tampered/stale plan: the threshold it is applied with is the plan's own, so restore the default.
+    const { outcomes } = await applyBranchGc({ ...loose, minLineCoverage: 95 }, { scopes: ["local"], forge: new FakeForge(), verdicts })
+    expect(outcomes).toContainEqual(
+      expect.objectContaining({ name: "feat/lost", result: "aborted-reclassified", from: "reclaim", to: "review" }),
+    )
+    expect(await refExists(repo, "refs/heads/feat/lost")).toBe(true)
+  })
+
+  it("an agreeing verdict on a tip whose added lines ARE in base (moved within the file) still reclaims", async () => {
+    const repo = await makeRepo()
+    await commitFiles(repo, { "src/b.ts": "header\n" }, "b")
+    const tip = await branchWith(repo, "feat/landed", { "src/b.ts": "header\nconst alpha = 1\nconst beta = 2\n" })
+    await commitFiles(repo, { "src/b.ts": "const alpha = 1\nconst beta = 2\nheader\n// base moved it\n" }, "base landed it differently")
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict: agreeing("feat/landed", tip) })
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true }), "feat/landed")
+    expect(e.status).toBe("unmerged")
+    expect(e.lineCoverage).toMatchObject({ added: 2, inBase: 2, pct: 100, missing: [] })
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.verdictGuard).toBeUndefined()
+  })
+
+  it("review queue exposes lineCoverage, taken from whichever ref sharing the tip carries it", async () => {
+    const repo = await makeRepo()
+    const tip = await lowCoverageBranch(repo)
+    await execGit(repo, ["update-ref", "refs/remotes/gone/lost", tip])
+    const p = await plan(repo)
+    // Simulate a twin without coverage listed first (e.g. a mirror entry).
+    const twin = { ...entry(p, "gone/lost", "orphan") }
+    delete twin.lineCoverage
+    const q = branchReviewQueue({ ...p, entries: [twin, ...p.entries.filter((x) => x.name !== "gone/lost")] })
+    const c = q.candidates.find((x) => x.sha === tip)
+    expect(c?.refs.sort()).toEqual(["refs/heads/feat/lost", "refs/remotes/gone/lost"])
+    expect(c?.lineCoverage).toMatchObject({ added: 2, inBase: 0, pct: 0 })
+  })
+})

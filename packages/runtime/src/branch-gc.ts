@@ -11,7 +11,7 @@
 
 export type BranchGcKind = "local" | "remote" | "orphan"
 export type BranchGcClass = "reclaim" | "review" | "hold"
-export type BranchGcStatus = "pr-merged" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
+export type BranchGcStatus = "pr-merged" | "forge-mirror" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
 export type BranchGcReclaimReason = Exclude<BranchGcStatus, "unmerged"> | "reviewed" | "checkpoint-superseded"
 export type BranchGcHoldReason = "protected" | "worktree" | "open-pr" | "pr-check-unavailable" | "young"
 export type BranchGcTriageVerdict = "obsolete" | "superseded" | "salvage" | "in-progress" | "unclear"
@@ -23,6 +23,14 @@ export interface BranchGcCoverageView {
   evolved: number
   unique: number
   deletes: number
+}
+
+/** Share of a tip's added lines already verbatim in base — mirrors `BranchLineCoverage`. */
+export interface BranchGcLineCoverageView {
+  added: number
+  inBase: number
+  pct: number
+  missing: Array<{ file: string; line: string }>
 }
 
 /** One classified ref — mirrors `BranchGcPlanEntry` structurally. */
@@ -46,14 +54,18 @@ export interface BranchGcPlanEntryView {
   coverage?: BranchGcCoverageView
   residualFiles?: string[]
   residualFileCount?: number
+  lineCoverage?: BranchGcLineCoverageView
   ageDays: number
   class: BranchGcClass
   reclaimReason?: BranchGcReclaimReason
   mergedPr?: number
+  forgePr?: number
   holdReason?: BranchGcHoldReason
   holdDetail?: string
   pushed?: string
   verdict?: { triage: BranchGcTriageVerdict; agree: boolean | null; reviewer: string }
+  /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`). */
+  verdictGuard?: string
 }
 
 export interface BranchGcPlanView {
@@ -68,6 +80,10 @@ export interface BranchGcPlanView {
   scopes: BranchGcKind[]
   minAgeDays: number
   includeReviewed: boolean
+  /** Absent on a result from before the line-coverage guard. */
+  minLineCoverage?: number
+  /** `git ls-remote <remote> refs/pull/<N>/head` for the forge-mirror shortcut. Absent on an older result. */
+  forgeMirrorCheck?: { available: boolean; reason?: string }
   generatedAt: string
   otherRemoteRefs: number
   /** true = base-remote `fetch --prune` succeeded; false = failed; null = skipped / no remote. */
@@ -89,6 +105,7 @@ export interface BranchGcOutcomeView {
     | "deleted"
     | "held"
     | "skipped-review"
+    | "refused-guard"
     | "aborted-moved"
     | "aborted-vanished"
     | "aborted-reclassified"
@@ -99,10 +116,12 @@ export interface BranchGcOutcomeView {
   from?: BranchGcClass
   to?: BranchGcClass
   message?: string
+  /** `refused-guard`: why the agreeing verdict was refused. */
+  guard?: string
 }
 
 /** Per-scope tally of apply outcomes. `skipped` = everything that was not
- *  deleted and did not fail (held, skipped-review, aborted-*); the exact
+ *  deleted and did not fail (held, skipped-review, refused-guard, aborted-*); the exact
  *  per-result counts stay in `byResult`. */
 export interface BranchGcApplyScopeCounts {
   deleted: number
@@ -256,6 +275,8 @@ export interface BranchGcRunInput {
   scopes?: BranchGcKind[]
   minAgeDays?: number
   includeReviewed: boolean
+  /** `includeReviewed` refuses an agreeing verdict below this line coverage (percent). Engine default 95. */
+  minLineCoverage?: number
   anchor?: string
 }
 
