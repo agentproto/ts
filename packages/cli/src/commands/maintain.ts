@@ -1,5 +1,5 @@
 /**
- * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--review-preset <name>] [--wait] [--json]`
+ * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]`
  *
  * Convenience shortcut over `agentproto workflow run-file` for the built-in
  * `repo-maintenance` app's `maintain` workflow (`@agentproto/apps`'s
@@ -35,7 +35,7 @@ import { MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
 Usage:
-  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--review-preset <name>] [--wait] [--json]
+  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]
   agentproto maintain --help
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
@@ -44,9 +44,14 @@ Usage:
                    a worktree under the worktrees root, plus any --repo dirs.
                    The discovered list is printed first; --apply-merged
                    applies to every repo. Exit 1 if any repo's run failed.
-  --apply-merged   After review, apply branch_gc (reclaim-class only,
-                   includeReviewed false) and worktree_gc. Default: dry run
-                   (plan + review only, nothing is deleted).
+  --apply-merged   After review, apply branch_gc (reclaim-class only by
+                   default) and worktree_gc. Default: dry run (plan + review
+                   only, nothing is deleted).
+  --apply-reviewed With --apply-merged, also reclaim review-class branches
+                   whose stored verdict agreed (includeReviewed true).
+                   branch_gc refuses approvals below its line-coverage guard
+                   (default 95%) and reports them. Ignored without
+                   --apply-merged.
   --review-preset <name>
                    Reviewer model set for this run: ${MODEL_ROLE_PRESET_NAMES.join(", ")}.
                    Default: the daemon's modelRolePreset (switch it with
@@ -66,6 +71,7 @@ on the run record (\`output.report\`) after the run ends.
 Examples:
   agentproto maintain --repo ~/code/my-app
   agentproto maintain --repo ~/code/my-app --apply-merged
+  agentproto maintain --repo ~/code/my-app --apply-merged --apply-reviewed
   agentproto maintain --all --apply-merged
   agentproto maintain --review-preset go-free --wait
   agentproto maintain --wait
@@ -101,6 +107,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			repo: { type: "string", multiple: true },
 			all: { type: "boolean", default: false },
 			"apply-merged": { type: "boolean" },
+			"apply-reviewed": { type: "boolean" },
 			"review-preset": { type: "string" },
 			wait: { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
@@ -198,6 +205,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 				input: {
 					repoRoot: repo,
 					applyMerged: values["apply-merged"] === true,
+					applyReviewed: values["apply-reviewed"] === true,
 					...(reviewPreset !== undefined ? { reviewPreset } : {}),
 				},
 			})) as Record<string, unknown>

@@ -391,6 +391,14 @@ export interface OutputSchemaLike {
  * turn to complete. The host injects an {@link AgentSessionHost} — this
  * runtime has no knowledge of concrete session registries or event buses.
  */
+/** Named billing credential for an {@link AgentStep}'s spawn. */
+export interface AgentStepAccess {
+  /** Single named auth profile. Superseded by {@link profileRefs}. */
+  profileRef?: string
+  /** Ordered candidate profiles; the runtime picks the first eligible one. */
+  profileRefs?: string[]
+}
+
 export interface AgentStep {
   kind: "agent"
   id: string
@@ -410,6 +418,14 @@ export interface AgentStep {
    *  (AIP-15 P2) still wins. Only meaningful with `adapter`; ignored on a
    *  `sessionRef` reuse. */
   model?: Selector<string> | string
+  /** Named billing credential(s) for this spawn — same semantics as
+   *  `agent_start.access`. Only meaningful with `adapter`; ignored on a
+   *  `sessionRef` reuse (the reused session keeps its own profile). */
+  access?: Selector<AgentStepAccess | undefined> | AgentStepAccess
+  /** Gateway/route override for this spawn, e.g. `"openrouter"` — same
+   *  semantics as the gateway half of `agent_start.route`. Only meaningful
+   *  with `adapter`; ignored on a `sessionRef` reuse. */
+  route?: Selector<string | undefined> | string
   /** Working directory for this spawn. Omit to fall back to the run-level `ctx.cwd`. */
   cwd?: Selector<string>
   /** Run this step's session inside a sandbox instead of on the host — a
@@ -785,6 +801,10 @@ export interface AgentSessionHost {
       options?: Record<string, boolean | number | string>
       /** Harness pinning for this spawn (see {@link AgentStep.harness}). */
       harness?: AgentHarness
+      /** Named billing credential(s) for this spawn (see {@link AgentStep.access}). */
+      access?: AgentStepAccess
+      /** Gateway/route override for this spawn (see {@link AgentStep.route}). */
+      route?: string
       /** The agent manifest's declared tools (see {@link AgentStep.agentTools}). */
       agentTools?: readonly string[]
       /** See {@link AgentStep.agentWarnings}. */

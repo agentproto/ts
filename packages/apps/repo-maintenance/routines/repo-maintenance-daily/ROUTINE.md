@@ -54,8 +54,9 @@ with `applyMerged: false`. Every run:
 
 Nothing this routine does can delete a branch, a worktree, or apply a
 recorded verdict — see `repo-maintenance-weekly/ROUTINE.md` for the
-apply-enabled sibling, and the `maintain` WORKFLOW.md's own doc for the
-documented-but-unwired `approve-reviewed` seam.
+apply-enabled sibling (`applyMerged` + `applyReviewed`), and the `maintain`
+WORKFLOW.md's own doc for how agreed verdicts are applied under
+`branch_gc`'s line-coverage guard.
 
 ## Enabling
 

@@ -24,6 +24,13 @@ inputs:
     type: boolean
     description: Execute branch_gc/worktree_gc (reclaim-class only) after review.
     default: false
+  applyReviewed:
+    type: boolean
+    description: >-
+      With `applyMerged`: also reclaim `review`-class branches whose stored
+      verdict agreed (`branch_gc` includeReviewed true). branch_gc refuses an
+      approval below its line-coverage guard (default 95%). Default false.
+    default: false
   reviewModelSmall:
     type: string
     description: >-
@@ -202,18 +209,18 @@ steps:
 
   - id: branchGcApply
     kind: tool
-    name: Apply branch gc (reclaim only)
+    name: Apply branch gc (reclaim only unless applyReviewed)
     description: >-
       `apply` is $input.applyMerged — a dry-run plan again when false.
-      `includeReviewed` stays false: this workflow never reclaims a
-      review-class branch, even an agreed one (see the approve-reviewed
-      seam below).
+      `includeReviewed` is $input.applyReviewed: only with `applyMerged` and
+      `applyReviewed` true does an agreed `review`-class verdict get applied,
+      and branch_gc's line-coverage guard (default 95%) can still refuse it.
     tool: branch_gc
     inputs:
       repoRoot: $input.repoRoot
       workspaceSlug: $input.workspaceSlug
       apply: $input.applyMerged
-      includeReviewed: false
+      includeReviewed: $input.applyReviewed
       scopes: [local, remote, orphan]
 
   - id: report
@@ -265,6 +272,7 @@ result:
   report: $steps.report
   gaps: $steps.gaps
   applyMerged: $input.applyMerged
+  applyReviewed: $input.applyReviewed
   branchGcApply: $steps.branchGcApply
   worktreeGcApply: $steps.worktreeGcApply
 ---
@@ -295,13 +303,17 @@ repo's git dir (`git log/show/diff` read the object store). Both are checked
 against git's own worktree back-pointer first, and both are read-only, so a
 reviewer still cannot stash, checkout or commit in the shared repo.
 
-## Out of scope, on purpose
+## Applying agreed verdicts
 
 Recording a verdict via `branch_gc_verdict` never reclaims a branch by
-itself — `branchGcApply` always runs with `includeReviewed: false`. A
-human-in-the-loop gate that reclaims `review`-class branches whose stored
-verdict agreed is a documented, unwired seam (`approve-reviewed`), not built
-here — see the app README, "Out of scope: the approval gate".
+itself. An opt-in `applyReviewed: true` (only meaningful together with
+`applyMerged: true`) runs `branchGcApply` with `includeReviewed: true`, so a
+`review`-class branch whose stored verdict agreed for the SAME tip can be
+reclaimed. `branch_gc` itself still enforces the deterministic line-coverage
+guard (default 95%): an approval below it is refused (`refused-guard`) and
+the branch stays. The report lists both the reclaimed reviewed branches and
+the approvals the guard refused. Default false — see the app README,
+"Applying agreed verdicts".
 
 ## Enabling
 

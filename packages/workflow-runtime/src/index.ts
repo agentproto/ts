@@ -68,6 +68,7 @@ export type {
   GroupStep,
   SubworkflowStep,
   AgentStep,
+  AgentStepAccess,
   AgentHarness,
   OutputSchemaLike,
   HarnessKnowledgeSelector,

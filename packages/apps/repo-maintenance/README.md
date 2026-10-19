@@ -24,7 +24,10 @@ The `maintain` workflow, one run:
    explicit `reviewModelSmall`/`reviewModelLarge` input wins, then the repo's
    `agentproto.json` `models`, then the daemon config `models`, then the
    built-in default — see `@agentproto/runtime`'s `model-roles.ts`; inspect
-   with the `model_roles` tool, change with `config_set models.review.small`). Three spawn
+   with the `model_roles` tool, change with `config_set models.review.small`).
+   A role's configured `profile` and `route` ride the reviewer spawn too
+   (`access.profileRef` / `route`), so e.g. an `opencode-go/...` reviewer can
+   bill a named profile instead of ambient auth. Three spawn
    failures in a row stop the fan-out (the engine's circuit breaker) and
    the report lists every distinct failure reason. Each turn records a verdict via `branch_gc_verdict` —
    recording a verdict never deletes anything. A turn that ends without a
@@ -34,21 +37,28 @@ The `maintain` workflow, one run:
    reports any gap, the verdict tally, and the `salvage` branches by name.
 4. If `applyMerged` is true: `worktree_gc` applies first (`salvageDirty:
    false`) — removing a merged worktree frees its branch — then `branch_gc`
-   applies with `includeReviewed: false` (reclaim-class refs only — merged /
-   squash-merged / patch-merged / content-merged).
-   **A `review`-class branch is never reclaimed by this workflow, agreed
-   verdict or not** — see "Out of scope" below.
+   applies. By default `includeReviewed` is false, so only reclaim-class refs
+   (merged / squash-merged / patch-merged / content-merged) are touched. With
+   `applyReviewed: true` (only meaningful together with `applyMerged: true`)
+   it also reclaims `review`-class branches whose stored verdict agreed for
+   the same tip — subject to `branch_gc`'s deterministic line-coverage guard
+   (default 95%), which refuses an approval below the threshold.
 5. Reports a markdown summary, and (only when `notify` is set AND there's a
    reclaimable ref or a review candidate) sends it to an agentpush target.
+   The report lists the reviewed branches reclaimed and any approvals the
+   line-coverage guard refused.
 
-## Out of scope: the approval gate
+## Applying agreed verdicts
 
 Recording a verdict via `branch_gc_verdict` is a report, not a license to
-delete. Reclaiming a `review`-class branch whose stored verdict agreed
-(`branch_gc`'s `includeReviewed: true`) needs a human-in-the-loop
-approval/escalation gate — deliberately not built here. `approve-reviewed`
-is the documented, unwired seam for that gate; the workflow applies nothing
-beyond `reclaim` refs, and only when `applyMerged` is true.
+delete. The opt-in `applyReviewed: true` is the gate: with `applyMerged: true`
+it runs `branch_gc` with `includeReviewed: true`, so a `review`-class branch
+whose stored verdict agreed (`gate.agree: true` for that exact tip) can be
+reclaimed. This is safe because `branch_gc` re-classifies every ref
+immediately before touching it and enforces `lineCoverageGuard`: an agreeing
+verdict under the minimum line coverage (95% by default) is refused
+(`refused-guard`) and stays a `review` branch. The default is false; the
+weekly routine template enables it, while daily never applies.
 
 ## Installing
 
