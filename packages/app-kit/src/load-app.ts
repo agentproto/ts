@@ -49,6 +49,7 @@ import type {
   AppDevDefinition,
   AppHandle,
   AppService,
+  AppSetupStep,
   AppUiBuildConfig,
   AppUiDefinition,
 } from "./types.js"
@@ -118,6 +119,7 @@ interface AppFrontmatter {
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
   readonly services?: readonly AppService[]
+  readonly setup?: readonly AppSetupStep[]
   readonly data?: AppDataDefinition
   readonly externalReadRoots?: readonly string[]
   readonly boundaries?: AppBoundariesDefinition
@@ -268,11 +270,14 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
       `'${appPath}': frontmatter 'workflows' must be an array of { id, path }.`,
     )
   }
-  // placement / requires / exposes / accepts / services: shape, enum and
-  // "exposed id is declared" checks, same rules `defineApp` re-applies.
-  // `services` additionally rejects a duplicate `name` ("two services named
-  // 'x'") and a malformed entry/port; its `entry` is read PLAINLY — never
-  // executed here (see define-app.ts's NOT-A-LAUNCHER note).
+  // placement / requires / exposes / accepts / services / setup: shape,
+  // enum and "exposed id is declared" checks, same rules `defineApp`
+  // re-applies. `services` additionally rejects a duplicate `name` ("two
+  // services named 'x'") and a malformed entry/port; its `entry` is read
+  // PLAINLY — never executed here (see define-app.ts's NOT-A-LAUNCHER
+  // note). `setup` (AIP-53) is likewise read PLAINLY — the per-kind step
+  // shape is validated here and the pipeline-wide rule-10 checks re-run
+  // in `defineApp`; no step is ever executed by the loader.
   normalizeManifestFields(
     data,
     { agents: data.agents.map(a => a.id), workflows: data.workflows.map(w => w.id) },
@@ -471,6 +476,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.artifacts !== undefined ? { artifacts: fm.artifacts } : {}),
     ...(fm.dev !== undefined ? { dev: fm.dev } : {}),
     ...(fm.services !== undefined ? { services: fm.services } : {}),
+    ...(fm.setup !== undefined ? { setup: fm.setup } : {}),
     ...(fm.data !== undefined ? { data: fm.data } : {}),
     ...(fm.externalReadRoots !== undefined ? { externalReadRoots: fm.externalReadRoots } : {}),
     ...(fm.boundaries !== undefined ? { boundaries: fm.boundaries } : {}),

@@ -30,6 +30,8 @@ import type {
   AppHandle,
   AppRequirement,
   AppService,
+  AppSetupPersist,
+  AppSetupStep,
   DoctypeHandle,
   OpenAIAppUiExtension,
   OpenAIEntrypoint,
@@ -106,6 +108,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       exposes: def.exposes,
       accepts: def.accepts,
       services: def.services,
+      setup: def.setup,
     },
     { agents: agents.map(e => e.agent.id), workflows: workflows.map(w => w.id) },
     msg => new AppDefinitionError(msg),
@@ -216,6 +219,16 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const services: readonly AppService[] | undefined = fields.services
     ? Object.freeze(fields.services.map(s => Object.freeze({ ...s })))
     : undefined
+  // AIP-53 `setup[]` — the post-install configuration pipeline. Rule 10
+  // runs PURELY here (no I/O; app-kit never executes a step — see
+  // manifest-fields.ts's setupList for the shape half), then the array is
+  // deep-frozen onto the handle and carried verbatim by emit/load.
+  if (fields.setup !== undefined) {
+    validateSetupRule10(fields.setup)
+  }
+  const setup: readonly AppSetupStep[] | undefined = fields.setup
+    ? (Object.freeze(fields.setup.map(s => freezeDeep(s))) as readonly AppSetupStep[])
+    : undefined
   const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
   const data = def.data ? Object.freeze({ ...def.data }) : undefined
   const boundaries = def.boundaries ? Object.freeze({ ...def.boundaries }) : undefined
@@ -254,6 +267,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(artifacts !== undefined ? { artifacts } : {}),
     ...(dev !== undefined ? { dev } : {}),
     ...(services !== undefined ? { services } : {}),
+    ...(setup !== undefined ? { setup } : {}),
     ...(data !== undefined ? { data } : {}),
     ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
     ...(boundaries !== undefined ? { boundaries } : {}),
@@ -442,6 +456,80 @@ function validateUniqueIds(items: readonly { id: string }[], kind: string): void
       throw new AppDefinitionError(`duplicate ${kind} id '${item.id}' in the bundle.`)
     }
     seen.add(item.id)
+  }
+}
+
+/** The four `persist` slots of `$defs.persist` — exactly one may be set. */
+const SETUP_PERSIST_SLOTS = ["env", "secret_slug", "cmd", "answer"] as const
+
+/** A step's `persist` block, when its kind declares one (vendor `x-*`
+ *  steps are open-shaped and not checked here). */
+function setupPersistOf(step: AppSetupStep): AppSetupPersist | undefined {
+  switch (step.kind) {
+    case "cmd":
+    case "prompt":
+    case "choice":
+    case "pairing":
+    case "external":
+      return step.persist
+    default:
+      return undefined
+  }
+}
+
+/**
+ * AIP-53 conformance rule 10 — the `setup[]` pipeline invariants, checked
+ * PURELY on the shape-validated array (no I/O; app-kit never executes a
+ * step). Every violation names the offending step id:
+ *
+ *   1. the array is non-empty when present;
+ *   2. step ids are unique across `setup[]`;
+ *   3. every `when.step` references an EARLIER step id;
+ *   4. a step that declares `persist` declares EXACTLY one slot
+ *      (`env` | `secret_slug` | `cmd` | `answer`);
+ *   5. `choice.default` is the `value` of one of its own options;
+ *   6. `persist.answer` is forbidden on a `type: secret` prompt — a
+ *      secret MUST land in `secret_slug` or `env`.
+ */
+function validateSetupRule10(setup: readonly AppSetupStep[]): void {
+  if (setup.length < 1) {
+    throw new AppDefinitionError("'setup' must declare at least one step when present (AIP-53 rule 10).")
+  }
+  const ids = new Set<string>()
+  for (const step of setup) {
+    if (ids.has(step.id)) {
+      throw new AppDefinitionError(
+        `setup step '${step.id}' is declared more than once — step ids must be unique across 'setup[]' (AIP-53 rule 10).`,
+      )
+    }
+    // `when.step` MUST name an EARLIER id — checked against the ids seen
+    // so far, before this step joins them.
+    if (step.when !== undefined && !ids.has(step.when.step)) {
+      throw new AppDefinitionError(
+        `setup step '${step.id}' has 'when.step' naming '${step.when.step}', which is not an EARLIER step id in 'setup[]' (AIP-53 rule 10).`,
+      )
+    }
+    ids.add(step.id)
+
+    const persist = setupPersistOf(step)
+    if (persist !== undefined) {
+      const slots = SETUP_PERSIST_SLOTS.filter(slot => persist[slot] !== undefined)
+      if (slots.length !== 1) {
+        throw new AppDefinitionError(
+          `setup step '${step.id}' declares a 'persist' block with ${slots.length} slot${slots.length === 1 ? "" : "s"}${slots.length > 0 ? ` (${slots.join(", ")})` : ""} — exactly one slot (env | secret_slug | cmd | answer) is allowed (AIP-53 rule 10).`,
+        )
+      }
+    }
+    if (step.kind === "choice" && !step.options.some(o => o.value === step.default)) {
+      throw new AppDefinitionError(
+        `setup step '${step.id}' has default '${step.default}', which is not the value of one of its options (${step.options.map(o => o.value).join(", ")}) (AIP-53 rule 10).`,
+      )
+    }
+    if (step.kind === "prompt" && step.type === "secret" && step.persist?.answer !== undefined) {
+      throw new AppDefinitionError(
+        `setup step '${step.id}' is a 'secret' prompt — 'persist.answer' MUST NOT be used with 'type: secret'; a secret MUST land in 'secret_slug' or 'env' (AIP-53 rule 10).`,
+      )
+    }
   }
 }
 

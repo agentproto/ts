@@ -1,0 +1,5 @@
+---
+"@agentproto/app-kit": minor
+---
+
+`setup[]` (AIP-53): apps can declare an ordered, idempotent post-install configuration pipeline. `types.ts` gains a discriminated `AppSetupStep` union on `kind` (`cmd`, `prompt`, `oauth`, `external`, `choice`, `auth-profile`, `pairing`, `check`, plus vendor `x-*` steps) mirroring the vendored `APP.schema.json` field-for-field, and `manifest-fields.ts` validates each step's per-kind shape (`when`/`skip_if`/`persist`/`options`/`check` sub-shapes included). `defineApp` enforces conformance rule 10 purely (no I/O, nothing executed): non-empty when present, unique step ids, `when.step` naming an EARLIER step, exactly one `persist` slot per declaring step, `choice.default` among its options, and no `persist.answer` on a `type: secret` prompt — every violation names the step id. `emit` writes `setup` verbatim into APP.md frontmatter only when set; `loadAppHandle` reads it back and re-validates. A host's setup engine runs the steps; app-kit only carries the declaration.
