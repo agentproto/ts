@@ -196,15 +196,35 @@ describe("daemon route mode", () => {
     await again.stop()
   })
 
-  it("an explicit gatewayUrl wins over the route, and carries no controller credential", async () => {
+  it("daemonRoute works without gatewayUrl", async () => {
     const booted = await computerSandboxProvider.boot(
-      spec(controller.url, { daemonRoute: true, gatewayUrl: "http://gw.test:{port}/{id}" }),
+      spec(controller.url, { daemonRoute: true }),
       bootOpts,
     )
-    expect(booted.mcpUrl).toBe(`http://gw.test:18790/${booted.sandboxId}/mcp`)
-    // Bypassing the route entirely: no controller secret belongs here either.
+    expect(booted.mcpUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
     expect(booted.authHeaders).toEqual({ Authorization: `Bearer ${booted.token}` })
     await booted.stop()
+  })
+
+  it("rejects an explicit gatewayUrl alongside daemonRoute as conflicting config", async () => {
+    await expect(
+      computerSandboxProvider.boot(
+        spec(controller.url, { daemonRoute: true, gatewayUrl: "http://gw.test:{port}/{id}" }),
+        bootOpts,
+      ),
+    ).rejects.toThrow(/mutually exclusive/)
+    expect(controller.createBodies).toEqual([])
+  })
+
+  it("rejects an env-provided gatewayUrl alongside daemonRoute for boot and connect", async () => {
+    process.env.COMPUTER_GATEWAY_URL = "http://gw.test:{port}/{id}"
+    await expect(
+      computerSandboxProvider.boot(spec(controller.url, { daemonRoute: true }), bootOpts),
+    ).rejects.toThrow(/mutually exclusive/)
+    await expect(
+      computerSandboxProvider.connect!("cmp-001", spec(controller.url, { daemonRoute: true }), bootOpts),
+    ).rejects.toThrow(/mutually exclusive/)
+    expect(controller.createBodies).toEqual([])
   })
 
   it("rejects extraPorts and expose() in true route mode instead of pointing them at the daemon", async () => {
