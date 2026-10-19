@@ -89,7 +89,16 @@
     },
     "onlyBuiltDependencies": [
       "@google/genai",
-      "node-pty"
+      "agent-browser",
+      "edgedriver",
+      "geckodriver",
+      "node-pty",
+      "protobufjs"
+    ],
+    "ignoredBuiltDependencies": [
+      "bufferutil",
+      "esbuild",
+      "onnxruntime-node"
     ]
   }
 }
