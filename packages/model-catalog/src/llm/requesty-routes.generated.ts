@@ -4894,6 +4894,14 @@ export const REQUESTY_ROUTES: Record<string, LLMPricing> = {
     vendor: "together",
     provider: "requesty",
   },
+  "together/deepseek-v4.1-flash-1017": {
+    inputPer1M: 0.3,
+    outputPer1M: 1.2,
+    cacheReadMultiplier: 0.02,
+    addedAt: "2026-10-17",
+    vendor: "together",
+    provider: "requesty",
+  },
   "together/glm-5.3": {
     inputPer1M: 1.4,
     outputPer1M: 4.4,
