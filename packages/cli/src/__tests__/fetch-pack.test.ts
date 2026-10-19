@@ -131,6 +131,11 @@ function zipUp(baseDir: string, topEntry: string, zipPath: string): void {
   if (r.status !== 0) throw new Error(`fixture zip failed: ${r.stderr}`)
 }
 
+/** The fixture builder below shells out to the `zip` CLI. Machines without
+ *  it (fresh containers) cannot produce the fixture — skip rather than fail,
+ *  same convention as the opt-in LIVE describes. */
+const HAVE_ZIP = spawnSync("zip", ["-v"], { encoding: "utf8" }).status === 0
+
 async function writeFileAt(p: string, content = "x\n"): Promise<void> {
   await mkdir(join(p, ".."), { recursive: true })
   await writeFile(p, content)
@@ -161,7 +166,7 @@ describe("runTarExtract/runUnzip + pickPackSubdir (fixture archives, offline)", 
     }
   })
 
-  it("github release zip (single <name>-v<ver>/ bundle) → picks that dir, skills present", async () => {
+  it.skipIf(!HAVE_ZIP)("github release zip (single <name>-v<ver>/ bundle) → picks that dir, skills present", async () => {
     // The GitHub Release asset is exactly what `zipPackDir` produces: a single
     // top-level `<manifest-name>-v<version>/` dir holding the BUILT pack —
     // `skills/` + `.claude-plugin/` directly under it, no repo subdir.
