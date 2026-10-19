@@ -28,12 +28,11 @@ export type PromptCaller = string | "operator"
  *  `?callerSessionId=` query. Precedence matches spawn attribution
  *  (`agent_prompt`'s `promptSource`). `undefined` ⇒ human operator. */
 export function effectiveCallerSessionId(
-  callerScope: { ownerSessionId: string } | undefined,
+  callerScope: { ownerSessionId?: string } | undefined,
   callerSessionId: string | undefined,
 ): string | undefined {
   return callerScope?.ownerSessionId ?? callerSessionId
 }
-
 /** A callerSessionId-sized label for session events: the calling session's
  *  id, or `"operator"` when the call carried no caller session (CLI/HTTP/UI
  *  operators connect without one). */

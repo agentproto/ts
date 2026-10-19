@@ -21,8 +21,8 @@ import { checkSessionOwnerGate, checkPromptPolicyEditor } from "../session-owner
 import {
   createSessionsRegistry,
   type AgentSessionLike,
-  type SessionEventBus,
 } from "../sessions.js"
+import type { SessionEvent, SessionEventBus } from "../session-event-bus.js"
 
 function instantAgentSession(): AgentSessionLike {
   return {
@@ -67,7 +67,6 @@ async function twoSessions(opts?: { allowPromptFrom?: string[] }) {
       agentSession: instantAgentSession(),
       adapterSlug: "fake",
       parentSessionId: parent.id,
-      callerSessionId: parent.id,
     }),
   }
   if (opts?.allowPromptFrom?.length) {
@@ -234,7 +233,7 @@ describe("session-owner gate over MCP", () => {
     const { registry, parent, child } = await twoSessions()
     const events: Array<{ type: string; sessionId: string; caller: string; queued?: boolean }> = []
     const bus: SessionEventBus = {
-      emit(evt) {
+      emit(evt: SessionEvent) {
         if (evt.type === "session:prompt") {
           events.push({ type: evt.type, sessionId: evt.sessionId, caller: evt.caller, queued: evt.queued })
         }
@@ -251,7 +250,6 @@ describe("session-owner gate over MCP", () => {
         cwd: "/tmp",
         agentSession: instantAgentSession(),
         adapterSlug: "fake",
-        callerSessionId: "sess_parent",
       })
       .id
     const wfChild = withBus
@@ -261,7 +259,6 @@ describe("session-owner gate over MCP", () => {
         agentSession: instantAgentSession(),
         adapterSlug: "fake",
         parentSessionId: "sess_parent",
-        callerSessionId: "sess_parent",
       })
       .id
 
