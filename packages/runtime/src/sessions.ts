@@ -1868,6 +1868,14 @@ export interface SessionDescriptor {
    *  effects on reaping, notifications, or anything else. Absent (not
    *  `false`) for every session that hasn't been pinned. */
   pinned?: boolean
+  /** Who may drive this session through the daemon MCP drive tools besides
+   *  its owner (the session that spawned it, or the operator for a root
+   *  spawn): session ids, or the wildcard `"any"` to allow any caller
+   *  session. Refusal otherwise — see `checkSessionOwnerGate`
+   *  (session-owner.ts). Set at spawn time (`agent_start.allowPromptFrom`)
+   *  and via `agent_set_prompt_policy`; only the owner, the session itself,
+   *  and the operator may change it there. Absent = owner+operator only. */
+  allowPromptFrom?: string[]
   /** Ascending position among pinned sessions — the stored order behind
    *  the pinned group of the CLI table / VS Code webview list. Set by
    *  `registry.setPinned` (append-at-end) and `registry.reorderPinned`
@@ -4594,6 +4602,17 @@ export interface SessionsRegistry {
    *  `session:pinned-reordered` on the session event bus, and returns the
    *  pinned descriptors in their new order. */
   reorderPinned(ids: string[]): SessionDescriptor[]
+  /** Set (or clear, with `undefined`/[]) the drive-tool caller allowlist
+   *  (`SessionDescriptor.allowPromptFrom`) — the "who else can prompt/drive
+   *  this session" policy. Caller is responsible for the owner/operator
+   *  gate (`agent_set_prompt_policy` checks it). Persists via
+   *  `schedulePersist` — the descriptor row is written whole. */
+  setPromptPolicy(id: string, allowPromptFrom: string[] | undefined): SessionDescriptor
+  /** Record on the session event bus that a drive-tool prompt was accepted
+   *  for `id`, and WHO sent it (`caller` = the trusted calling session id,
+   *  or the literal `"operator"`). No-op when the registry was constructed
+   *  without a `sessionEvents` bus. */
+  noteSessionPrompt(id: string, caller: string, queued: boolean): void
   /** Materialize a new artifact (or version of one) into the session's
    *  durable artifact store (`session_artifact_add` MCP verb / `POST
    *  /sessions/:id/artifacts`) — see `session-artifacts.ts`. Emits
@@ -13429,6 +13448,27 @@ export function createSessionsRegistry(opts?: {
       })
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    setPromptPolicy(id, allowPromptFrom) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setPromptPolicy: no session "${id}"`)
+      if (allowPromptFrom === undefined || allowPromptFrom.length === 0) {
+        delete rt.desc.allowPromptFrom
+      } else {
+        rt.desc.allowPromptFrom = allowPromptFrom
+      }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    noteSessionPrompt(id, caller, queued) {
+      sessionEvents?.emit({
+        type: "session:prompt",
+        sessionId: id,
+        caller,
+        queued,
+        ts: new Date().toISOString(),
+      })
     },
     reorderPinned(ids) {
       const seen = new Set<string>()

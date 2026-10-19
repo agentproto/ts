@@ -32,6 +32,7 @@ import {
   collectSubtree,
   stripAnsi,
 } from "./agent-tools.js"
+import { checkSessionOwnerGate, effectiveCallerSessionId } from "./session-owner.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import type { DiscoveredMcp } from "./mcp-discovery.js"
@@ -2303,6 +2304,25 @@ export function registerSessionTools(
               }),
             },
           ],
+          isError: true,
+        }
+      }
+      // Session-owner gate (session-owner.ts): the fresh-continuation
+      // target may only be driven by its owner (the session that spawned it,
+      // or the operator), itself, or an `allowPromptFrom` grantee.
+      const freshCaller = effectiveCallerSessionId(callerScope, callerSessionId)
+      const freshOwnerGate = checkSessionOwnerGate({
+        callerSessionId: freshCaller,
+        target: desc,
+        tool: "session_continue_fresh",
+        // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
+        // (grandparent / orchestrator root) keeps its existing subtree
+        // authority over the target.
+        parentOf: id => registry.get(id)?.parentSessionId,
+      })
+      if (!freshOwnerGate.ok) {
+        return {
+          content: [{ type: "text", text: `session_continue_fresh: ${freshOwnerGate.message}` }],
           isError: true,
         }
       }
@@ -4777,6 +4797,29 @@ export function registerSessionTools(
             ],
             isError: true,
           }
+        }
+      }
+
+      // ── session-owner gate (session-owner.ts) — the same drive rule the
+      // other drive tools enforce: another agent session (neither the target's
+      // owner, the target itself, the operator, nor an `allowPromptFrom`
+      // grantee) may not restart it. Runs after the scoped-orchestrator
+      // subtree gate so orchestrator callers keep their stricter check.
+      const restartCaller = effectiveCallerSessionId(callerScope, callerSessionId)
+      const restartOwnerGate = checkSessionOwnerGate({
+        callerSessionId: restartCaller,
+        target: prev,
+        tool: "session_restart",
+        // Ancestor-chain rule (see session-owner.ts): a scoped orchestrator's
+        // subtree authority over transitive descendants is pre-existing
+        // behaviour (the subtree gate below is unchanged) — the owner gate
+        // must not revoke it.
+        parentOf: id => registry.get(id)?.parentSessionId,
+      })
+      if (!restartOwnerGate.ok) {
+        return {
+          content: [{ type: "text", text: `session_restart: ${restartOwnerGate.message}` }],
+          isError: true,
         }
       }
 

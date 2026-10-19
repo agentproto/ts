@@ -43,6 +43,7 @@ export type SessionEventType =
   | "session:artifact-added"
   | "session:artifact-pinned-changed"
   | "session:message"
+  | "session:prompt"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -637,6 +638,23 @@ export interface SessionMessageEvent {
 }
 
 /**
+ * Emitted when a drive-tool prompt is ACCEPTED for `sessionId` (`MCP
+ * agent_prompt`) — records WHO sent it: `caller` is the calling session's
+ * id (the trusted `?callerSessionId=` / scoped-gateway identity) or the
+ * literal `"operator"` for a call with no caller session (CLI/HTTP/UI).
+ * Lets a session-level audit trail show whose prompts drive the session.
+ */
+export interface SessionPromptEvent {
+  type: "session:prompt"
+  sessionId: string
+  /** `"operator"` when no caller session; otherwise the calling session id. */
+  caller: string
+  /** True when the prompt was parked behind an in-flight turn. */
+  queued: boolean
+  ts: string
+}
+
+/**
  * Emitted when an operator pins or unpins a session for list visibility
  * (`POST /sessions/:id/pin`, the `session_set_pinned` MCP verb). Like
  * `session:renamed`, this is NOT a `SessionConfig` axis — pinning never
@@ -1167,6 +1185,7 @@ export type SessionEvent =
   | SessionArtifactAddedEvent
   | SessionArtifactPinnedEvent
   | SessionMessageEvent
+  | SessionPromptEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent
