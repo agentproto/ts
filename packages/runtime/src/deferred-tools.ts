@@ -133,8 +133,14 @@ export function resolveDeferredToolsGatewayOption(
  *  3. the harness defers MCP tools natively (manifest
  *     `capabilities.nativeToolSearch`) ⇒ `false` (eager): a second layer
  *     would hide tools from the harness's own search
- *  4. the resolved role's default (`RoleProfile.deferredTools`)
- *  5. `undefined` ⇒ no `?deferred=` on the ref, so the gateway's boot-time
+ *  4. the harness cannot drive deferred discovery (manifest
+ *     `capabilities.deferredToolDiscovery` absent/false) ⇒ `false` (eager):
+ *     it validates tool calls against its last `tools/list`, so a tool the
+ *     daemon hid is rejected client-side before the call reaches the
+ *     gateway. `tool_search` returning the schema is not enough (opencode
+ *     live: "Model tried to call unavailable tool 'branch_gc_verdict'").
+ *  5. the resolved role's default (`RoleProfile.deferredTools`)
+ *  6. `undefined` ⇒ no `?deferred=` on the ref, so the gateway's boot-time
  *     `defaults.mcp.deferredTools` applies
  *
  * Only the loading strategy changes — no tool is ever removed. Pure.
@@ -142,10 +148,12 @@ export function resolveDeferredToolsGatewayOption(
 export function resolveSpawnDeferredTools(input: {
   spawnOverride?: boolean
   nativeToolSearch?: boolean
+  deferredToolDiscovery?: boolean
   roleDefault?: boolean
 }): boolean | undefined {
   if (input.spawnOverride !== undefined) return input.spawnOverride
   if (input.nativeToolSearch === true) return false
+  if (input.deferredToolDiscovery !== true) return false
   return input.roleDefault
 }
 

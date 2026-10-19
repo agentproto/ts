@@ -405,6 +405,21 @@ export interface AgentCliCapabilities {
    * configuration; absent/false ⇒ the role / daemon default applies.
    */
   nativeToolSearch?: boolean
+  /**
+   * The harness can call an MCP tool that was never present in its last
+   * `tools/list`, once it has learned the tool's name/schema through the
+   * daemon's `tool_search` (or its own equivalent search-then-call loop).
+   * The daemon's deferred `/mcp` mount hides most tools from `tools/list`
+   * and relies on exactly this. Declare it only when verified for the
+   * harness; absent/false ⇒ the daemon defaults that mount to EAGER.
+   *
+   * This is NOT the same as `nativeToolSearch`: that harness hides tools
+   * from itself and has its own discovery loop, so the daemon must stay
+   * eager. This flag says the harness can consume the DAEMON's discovery
+   * loop. A harness that validates tool calls against the last
+   * `tools/list` (opencode does, rejecting the request client-side) cannot.
+   */
+  deferredToolDiscovery?: boolean
 }
 
 /**

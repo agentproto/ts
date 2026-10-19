@@ -2852,18 +2852,22 @@ export async function spawnAgentSession(
   // Deferred/lazy tool loading override for the self-mount (harness-parity
   // item 3): per-spawn `input.deferredTools` > harness with native MCP tool
   // search (manifest `capabilities.nativeToolSearch` ⇒ eager, so the daemon
-  // doesn't stack a second deferral layer) > the resolved role's default
-  // (`RoleProfile.deferredTools`, on for `executor`). `undefined` means none
-  // had an opinion: the self-mount ref carries no `?deferred=` and the
-  // gateway's boot-time `defaults.mcp.deferredTools` applies. Skip the
-  // adapter lookup when the spawn already decided or the box is remote.
-  const nativeToolSearch =
+  // doesn't stack a second deferral layer) > harness that cannot call a tool
+  // omitted from `tools/list` (manifest `capabilities.deferredToolDiscovery`
+  // absent/false ⇒ eager, so a hidden-but-allowed tool stays reachable) >
+  // the resolved role's default (`RoleProfile.deferredTools`, on for
+  // `executor`). `undefined` means only a discovery-capable harness had no
+  // opinion: the self-mount ref carries no `?deferred=` and the gateway's
+  // boot-time `defaults.mcp.deferredTools` applies. Skip the adapter lookup
+  // when the spawn already decided or the box is remote.
+  const adapterCaps =
     input.deferredTools === undefined && input.sandbox === undefined
-      ? (await resolveAgentAdapter(input.adapter))?.nativeToolSearch === true
-      : false
+      ? await resolveAgentAdapter(input.adapter)
+      : undefined
   const deferredToolsOverride = resolveSpawnDeferredTools({
     spawnOverride: input.deferredTools,
-    nativeToolSearch,
+    nativeToolSearch: adapterCaps?.nativeToolSearch === true,
+    deferredToolDiscovery: adapterCaps?.deferredToolDiscovery === true,
     roleDefault: role.deferredTools,
   })
   // Orchestrator role (WP3): when requested, mint a scoped

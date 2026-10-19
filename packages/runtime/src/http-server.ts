@@ -732,6 +732,15 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    * (see `resolveSpawnDeferredTools`). Omitted/`false` ⇒ role/daemon default.
    */
   nativeToolSearch?: boolean
+  /**
+   * Manifest-declared `capabilities.deferredToolDiscovery` (AIP-45) — the
+   * harness can call an MCP tool omitted from its last `tools/list` after
+   * discovering it through the daemon's `tool_search`. Absent/false ⇒ the
+   * daemon defaults the self-mount to eager (see
+   * `resolveSpawnDeferredTools`), because such a harness rejects the call
+   * client-side before it reaches the gateway.
+   */
+  deferredToolDiscovery?: boolean
 } | null>
 
 /**
