@@ -65,6 +65,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto review`](./verbs/review.md) — run, verify and scaffold REVIEW.md reviews (pre-push hook + GitHub Actions shim)
 - [`agentproto provider-preset`](./verbs/presets.md) — list provider gateway definitions + key-env status
 - [`agentproto preset`](./verbs/preset.md) — manage saved user spawn configurations
+- [`agentproto quota`](./verbs/quota.md) — live provider quota for a named auth profile (AIP-67)
 - [`agentproto remote`](./verbs/remote.md) — publish this gateway (or another local port) to the internet via Cloudflare, bearer-gated
 - [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn

@@ -33,6 +33,7 @@ import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
+import { runQuota } from "./commands/quota.js"
 import { runHost } from "./commands/host.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
@@ -121,6 +122,8 @@ Usage:
                                            OK/WARN/CRIT verdict: ok to spawn more agents? (exit 0/1/2)
   agentproto usage    rollup --window <5h|7d|P7D> [--profile <ref>] [--json]
                                            local spend estimate over a rolling window
+  agentproto quota    status --profile <ref> [--refresh] [--json]
+                                           live provider quota for a named auth profile
   agentproto brain    query "<query>" [--workspace <slug>] [--topk <n>] [--json]
                                            fuzzy search over session transcripts
   agentproto browser   install <adapter> [--force] [--dry-run]
@@ -283,6 +286,7 @@ const VERBS = new Set([
   "sessions",
   "conversation",
   "usage",
+  "quota",
   "host",
   "brain",
   "tunnel",
@@ -406,6 +410,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runHost(rest)
     case "usage":
       return runUsage(rest)
+    case "quota":
+      return runQuota(rest)
     case "brain":
       return runBrain(rest)
     case "tunnel":
