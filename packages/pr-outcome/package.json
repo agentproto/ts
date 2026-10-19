@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/pr-outcome",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Anecdotal, observation-only collector of PR outcomes (reviews, bot vs human comments, follow-up commits, CI failures, reverts) joined with the @agentproto-bot provenance footer. Never a routing input.",
   "homepage": "https://agentproto.sh",

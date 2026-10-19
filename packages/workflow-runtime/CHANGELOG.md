@@ -1,5 +1,12 @@
 # @agentproto/workflow-runtime
 
+## 0.20.0
+
+### Minor Changes
+
+- 8b228b0: Add `AgentStep.access` / `AgentStep.route` and forward model-role auth `profile` and `route` to the maintain workflow's reviewer spawns. Add the opt-in `maintain --apply-reviewed` input, which reclaims agreed `review`-class branches subject to `branch_gc`'s line-coverage guard and reports guard refusals in the run report.
+- 8b228b0: Pass a model role's auth `profile` and `route` to the maintain workflow's reviewer agent steps, and add the opt-in `applyReviewed` input that reclaims agreed reviewed branches under branch_gc's line-coverage guard.
+
 ## 0.19.1
 
 ### Patch Changes

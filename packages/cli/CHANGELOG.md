@@ -1,5 +1,39 @@
 # @agentproto/cli
 
+## 1.29.0
+
+### Minor Changes
+
+- cc06be2: Add sandbox_checkpoint_gc daemon tool and wire it into maintain workflow
+- 8b228b0: Add `AgentStep.access` / `AgentStep.route` and forward model-role auth `profile` and `route` to the maintain workflow's reviewer spawns. Add the opt-in `maintain --apply-reviewed` input, which reclaims agreed `review`-class branches subject to `branch_gc`'s line-coverage guard and reports guard refusals in the run report.
+- cc06be2: Add the `sandbox_checkpoint_gc` MCP tool (plus `sandbox_checkpoint_gc_status`) for sweeping stale `agentproto-checkpoint/*` refs, a `SandboxCheckpointGcRunner` port wired through the serve gateway, and checkpoint plan/apply steps in the repo-maintenance `maintain` workflow.
+- 8b228b0: Pass a model role's auth `profile` and `route` to the maintain workflow's reviewer agent steps, and add the opt-in `applyReviewed` input that reclaims agreed reviewed branches under branch_gc's line-coverage guard.
+
+### Patch Changes
+
+- b2593c3: Add `capabilities.deferredToolDiscovery` and wire it through the adapter resolver: a harness that cannot call a tool omitted from its last `tools/list` (opencode rejects it client-side) now gets the daemon self-mount eager, so `daemonMount` no longer hides `branch_gc_verdict` and other tools behind a `tool_search` the model cannot use.
+- Updated dependencies [7bf4955]
+- Updated dependencies [ed1462e]
+- Updated dependencies [cc06be2]
+- Updated dependencies [b2593c3]
+- Updated dependencies [e2d0b48]
+- Updated dependencies [b22adfe]
+- Updated dependencies [7bf4955]
+- Updated dependencies [8b228b0]
+- Updated dependencies [cc06be2]
+- Updated dependencies [ed1462e]
+- Updated dependencies [4d50b9b]
+- Updated dependencies [e2d0b48]
+- Updated dependencies [8b228b0]
+- Updated dependencies [4d50b9b]
+  - @agentproto/apps@0.24.0
+  - @agentproto/worktree@0.18.0
+  - @agentproto/driver-agent-cli@2.14.0
+  - @agentproto/sandbox-computer@0.3.1
+  - @agentproto/sandbox-e2b@0.9.0
+  - @agentproto/sandbox-box@0.2.35
+  - @agentproto/sandbox-instabox@0.2.2
+
 ## 1.28.1
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @agentproto/model-intel
 
+## 0.3.0
+
+### Minor Changes
+
+- 7bf4955: Add `diffCatalog` (pure catalog-snapshot diff: appeared/removed/priceChanged/freeToPaid/paidToFree) to `@agentproto/model-intel`, and a `catalog_diff` MCP tool in `@agentproto/runtime` backed by a persisted snapshot store — plus a `model-catalog-watch` app (daily cron routine + workflow: sync → diff → gate → free-model digest).
+- 7bf4955: Add `diffCatalog` (pure catalog-snapshot diff: appeared/removed/priceChanged/freeToPaid/paidToFree) to `@agentproto/model-intel`, a persisted-baseline `catalog_diff` MCP tool to `@agentproto/runtime`, and ship the `model-catalog-watch` bundled app (daily cron routine + `watch` workflow: sync → diff → gate → free-model digest) in `@agentproto/apps`.
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,5 +1,18 @@
 # @agentproto/worktree
 
+## 0.18.0
+
+### Minor Changes
+
+- ed1462e: Add operator approval to bypass branch_gc guard; make verdict writes safe
+- ed1462e: Add an optional `operator` approval to branch verdicts: with `includeReviewed`, an operator block bypasses `branch_gc`'s deterministic line-coverage guard for the exact tip and the plan records who bypassed it. Also make verdict-store writes lossless under concurrency by serialising per-file writers in-process and committing each write with a unique temp file plus atomic rename.
+
+### Patch Changes
+
+- Updated dependencies [8b228b0]
+- Updated dependencies [8b228b0]
+  - @agentproto/workflow-runtime@0.20.0
+
 ## 0.17.0
 
 ### Minor Changes

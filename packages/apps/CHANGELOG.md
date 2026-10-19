@@ -1,5 +1,23 @@
 # @agentproto/apps
 
+## 0.24.0
+
+### Minor Changes
+
+- cc06be2: Add sandbox_checkpoint_gc daemon tool and wire it into maintain workflow
+- 8b228b0: Add `AgentStep.access` / `AgentStep.route` and forward model-role auth `profile` and `route` to the maintain workflow's reviewer spawns. Add the opt-in `maintain --apply-reviewed` input, which reclaims agreed `review`-class branches subject to `branch_gc`'s line-coverage guard and reports guard refusals in the run report.
+- cc06be2: Add the `sandbox_checkpoint_gc` MCP tool (plus `sandbox_checkpoint_gc_status`) for sweeping stale `agentproto-checkpoint/*` refs, a `SandboxCheckpointGcRunner` port wired through the serve gateway, and checkpoint plan/apply steps in the repo-maintenance `maintain` workflow.
+- 8b228b0: Pass a model role's auth `profile` and `route` to the maintain workflow's reviewer agent steps, and add the opt-in `applyReviewed` input that reclaims agreed reviewed branches under branch_gc's line-coverage guard.
+
+### Patch Changes
+
+- 7bf4955: Add `diffCatalog` (pure catalog-snapshot diff: appeared/removed/priceChanged/freeToPaid/paidToFree) to `@agentproto/model-intel`, and a `catalog_diff` MCP tool in `@agentproto/runtime` backed by a persisted snapshot store — plus a `model-catalog-watch` app (daily cron routine + workflow: sync → diff → gate → free-model digest).
+- ed1462e: Add operator approval to bypass branch_gc guard; make verdict writes safe
+- e2d0b48: Send the repo-maintenance notify step through the provider-agnostic `transmit_message` primitive (with an optional `notify` target of `{ provider, alias, address, source }`) instead of a hardcoded agentpush MCP alias; allow `transmit_message` to send with `bind: false` and no `sessionId`.
+- 7bf4955: Add `diffCatalog` (pure catalog-snapshot diff: appeared/removed/priceChanged/freeToPaid/paidToFree) to `@agentproto/model-intel`, a persisted-baseline `catalog_diff` MCP tool to `@agentproto/runtime`, and ship the `model-catalog-watch` bundled app (daily cron routine + `watch` workflow: sync → diff → gate → free-model digest) in `@agentproto/apps`.
+- ed1462e: Add an optional `operator` approval to branch verdicts: with `includeReviewed`, an operator block bypasses `branch_gc`'s deterministic line-coverage guard for the exact tip and the plan records who bypassed it. Also make verdict-store writes lossless under concurrency by serialising per-file writers in-process and committing each write with a unique temp file plus atomic rename.
+- e2d0b48: Send the repo-maintenance notify step through the provider-agnostic `transmit_message` primitive (with an optional `notify` target of `{ provider, alias, address, source }`) instead of a hardcoded agentpush MCP alias, and allow `transmit_message` to send fire-and-forget with `bind: false` and no `sessionId`.
+
 ## 0.23.7
 
 ### Patch Changes

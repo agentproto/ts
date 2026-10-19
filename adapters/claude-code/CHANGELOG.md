@@ -1,5 +1,12 @@
 # @agentproto/adapter-claude-code
 
+## 2.5.14
+
+### Patch Changes
+
+- Updated dependencies [b2593c3]
+  - @agentproto/driver-agent-cli@2.14.0
+
 ## 2.5.13
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/eval
 
+## 0.3.13
+
+### Patch Changes
+
+- Updated dependencies [8b228b0]
+- Updated dependencies [8b228b0]
+  - @agentproto/workflow-runtime@0.20.0
+
 ## 0.3.12
 
 ### Patch Changes
