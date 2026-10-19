@@ -28,6 +28,7 @@ import { runAcp } from "../commands/acp.js"
 import { runWorkflow } from "../commands/workflow.js"
 import { runTask } from "../commands/task.js"
 import { runHost } from "../commands/host.js"
+import { runQuota } from "../commands/quota.js"
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -80,6 +81,7 @@ const CASES: Array<{
   { verb: "workflow", file: "../commands/workflow.ts", help: () => runWorkflow(["--help"]) },
   { verb: "task", file: "../commands/task.ts", help: () => runTask(["--help"]) },
   { verb: "host", file: "../commands/host.ts", help: () => runHost(["--help"]) },
+  { verb: "quota", file: "../commands/quota.ts", help: () => runQuota(["status", "--help"]) },
 ]
 
 describe("help completeness (every implemented flag appears in --help)", () => {

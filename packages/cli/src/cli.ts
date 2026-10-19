@@ -33,6 +33,7 @@ import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
+import { runQuota } from "./commands/quota.js"
 import { runHost } from "./commands/host.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
@@ -283,6 +284,7 @@ const VERBS = new Set([
   "sessions",
   "conversation",
   "usage",
+  "quota",
   "host",
   "brain",
   "tunnel",
@@ -406,6 +408,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runHost(rest)
     case "usage":
       return runUsage(rest)
+    case "quota":
+      return runQuota(rest)
     case "brain":
       return runBrain(rest)
     case "tunnel":
