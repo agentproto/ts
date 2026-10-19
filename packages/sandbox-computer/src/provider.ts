@@ -64,8 +64,8 @@ const READ_CHUNK_RAW = 700_000
 
 /** Per-computer session bookkeeping for THIS process (sharedSessions). */
 const activeSessions = new Map<string, number>()
-/** Computers on which this process holds a controller-side session slot. */
-const controllerSlots = new Set<string>()
+/** Controller-side session slots this process holds, per computer. */
+const controllerSlots = new Map<string, number>()
 
 // ── config ─────────────────────────────────────────────────────────────
 
@@ -284,21 +284,25 @@ function releaseSessionSlot(sandboxId: string): void {
 async function attachController(client: ComputerControllerClient, id: string): Promise<void> {
   try {
     await client.attach(id)
-    controllerSlots.add(id)
+    controllerSlots.set(id, (controllerSlots.get(id) ?? 0) + 1)
   } catch (err) {
     if (err instanceof ComputerApiError && err.status === 404) return
     throw err
   }
 }
 
-/** Release this process's controller-side slot. Returns the sessions still
- *  attached, or 0 when no slot was held or the controller cannot answer. */
-async function detachController(client: ComputerControllerClient, id: string): Promise<number> {
-  if (!controllerSlots.delete(id)) return 0
+/** Release one of this process's controller-side slots. Returns the sessions
+ *  still attached, 0 when no slot was held, or undefined when the controller
+ *  could not answer. */
+async function detachController(client: ComputerControllerClient, id: string): Promise<number | undefined> {
+  const held = controllerSlots.get(id) ?? 0
+  if (held === 0) return 0
+  if (held === 1) controllerSlots.delete(id)
+  else controllerSlots.set(id, held - 1)
   try {
     return (await client.detach(id)).sessions ?? 0
   } catch {
-    return 0
+    return undefined
   }
 }
 
@@ -458,7 +462,7 @@ async function bootOnClient(
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
     // sandbox-e2b): propagate the original error but reclaim the box.
-    await client.remove(sandboxId).catch(() => undefined)
+    await client.remove(sandboxId, { force: true }).catch(() => undefined)
     throw err
   }
 
@@ -697,8 +701,10 @@ function wrapBox(
       const remaining = await detachController(client, id)
       // Other sessions still attached keep the computer; the last one out
       // removes it.
-      if (remaining > 0) return
-      await client.remove(id)
+      if (remaining !== undefined && remaining > 0) return
+      // An unanswered detach leaves the count unknown: force the removal so
+      // the box is not leaked behind a stale slot.
+      await client.remove(id, remaining === undefined ? { force: true } : {})
       // Free the per-process bookkeeping: session slot (done above), any
       // alias pointing at this id, and the probe config captured at
       // boot/connect — the box is gone, nothing should route here anymore.

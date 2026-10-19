@@ -388,6 +388,18 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.states.get(booted.sandboxId)).toBe("running")
   })
 
+  it("two sessions on one computer in this process each release their own slot", async () => {
+    const first = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 2 }), bootOpts)
+    const second = await computerSandboxProvider.connect!(first.sandboxId, spec(controller.url, { maxSessions: 2 }), bootOpts)
+    expect(controller.sessions.get(first.sandboxId)).toBe(2)
+    await first.stop()
+    expect(controller.sessions.get(first.sandboxId)).toBe(1)
+    expect(controller.removed).toEqual([])
+    await second.stop()
+    expect(controller.sessions.get(first.sandboxId)).toBe(0)
+    expect(controller.removed).toEqual([first.sandboxId])
+  })
+
   it("pause detaches before suspending, and connect attaches again", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     await booted.pause!()
