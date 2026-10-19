@@ -54,6 +54,7 @@ describe("repo-maintenance app", () => {
       "checkpointGcApply:tool",
       "report:transform",
       "notifyBody:transform",
+      "notifyAlias:transform",
       "shouldNotify:transform",
       "maybeNotify:branch",
       "notify:tool",
@@ -180,6 +181,21 @@ describe("repo-maintenance app", () => {
     it("the reviewer AGENT.md references the review.large role instead of a model id", async () => {
       const { app } = await load()
       expect(app.agents[0]!.agent.model).toBe("role:review.large")
+    })
+  })
+
+  it("notifies through the imported agentpush MCP with notifyAlias defaulting to agentpush", async () => {
+    const app = await loadAppHandle(APP_DIR)
+    const [workflow] = app.workflows
+    const inputs = (workflow as unknown as { inputs: Record<string, { default?: unknown }> }).inputs
+    expect(inputs.notifyAlias?.default).toBe("agentpush")
+
+    const notify = workflow!.steps.find(s => s.id === "notify") as { tool: string; inputs: Record<string, unknown> }
+    expect(notify.tool).toBe("mcp_imported_call")
+    expect(notify.inputs).toEqual({
+      alias: "$steps.notifyAlias",
+      toolName: "send_message",
+      args: "$steps.notifyBody",
     })
   })
 })

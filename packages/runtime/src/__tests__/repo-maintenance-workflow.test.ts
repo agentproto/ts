@@ -267,6 +267,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "checkpointGcApply:tool",
       "report:transform",
       "notifyBody:transform",
+      "notifyAlias:transform",
       "shouldNotify:transform",
       "maybeNotify:branch",
       "notify:tool",
@@ -355,9 +356,9 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(worktreeGcCalls[0]!.inputs).toMatchObject({ apply: false, wait: true })
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: false, wait: true })
 
-    // command_execute (the notify step) is never dispatched — no notify
+    // mcp_imported_call (the notify step) is never dispatched — no notify
     // input was given at all.
-    expect(calls.some(c => c.name === "command_execute")).toBe(false)
+    expect(calls.some(c => c.name === "mcp_imported_call")).toBe(false)
 
     const result = output as { report: string; gaps: Array<{ name: string }>; applyMerged: boolean }
     expect(result.applyMerged).toBe(false)
@@ -395,8 +396,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       if (name === "branch_gc_verdict_get") {
         return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
       }
-      if (name === "command_execute") {
-        return mcpResult({ exitCode: 0, stdout: "", stderr: "" })
+      if (name === "mcp_imported_call") {
+        return mcpResult({ content: [{ type: "text", text: "ok" }] })
       }
       if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
@@ -427,12 +428,15 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const worktreeGcCalls = calls.filter(c => c.name === "worktree_gc")
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: true, salvageDirty: false, wait: true })
 
-    const notifyCall = calls.find(c => c.name === "command_execute")
+    const notifyCall = calls.find(c => c.name === "mcp_imported_call")
     expect(notifyCall).toBeDefined()
-    const stdin = notifyCall!.inputs.stdin as string
-    const body = JSON.parse(stdin) as { to: unknown; content: { text: string } }
-    expect(body.to).toEqual({ channel: "telegram", address: "chat-1" })
-    expect(body.content.text).toMatch(/wt\/large-residual/)
+    expect(notifyCall!.inputs.alias).toBe("agentpush")
+    expect(notifyCall!.inputs.toolName).toBe("send_message")
+    // notifyBody is an OBJECT of send_message arguments, not a JSON string.
+    const args = notifyCall!.inputs.args as { to: unknown; content: { text: string } }
+    expect(typeof args).toBe("object")
+    expect(args.to).toEqual({ channel: "telegram", address: "chat-1" })
+    expect(args.content.text).toMatch(/wt\/large-residual/)
 
     const result = output as { applyMerged: boolean; report: string }
     expect(result.applyMerged).toBe(true)

@@ -44,8 +44,11 @@ The `maintain` workflow, one run:
    the same tip — subject to `branch_gc`'s deterministic line-coverage guard
    (default 95%), which refuses an approval below the threshold.
 5. Reports a markdown summary, and (only when `notify` is set AND there's a
-   reclaimable ref or a review candidate) sends it to an agentpush target.
-   The report lists the reviewed branches reclaimed and any approvals the
+   reclaimable ref or a review candidate) sends it to an agentpush target
+   through the operator's imported agentpush MCP (`mcp_imported_call`,
+   `toolName: "send_message"`). The alias is `notifyAlias` (default
+   `agentpush`). No `bash` allowlist or `AGENTPUSH_API_KEY` is involved. The
+   report lists the reviewed branches reclaimed and any approvals the
    line-coverage guard refused.
 
 ## Applying agreed verdicts

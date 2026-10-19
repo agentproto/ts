@@ -675,6 +675,11 @@ export default {
       type: "object",
       description: "Optional agentpush `to` target ({ channel, address }) to notify with the report when set. Omit for no notification.",
     },
+    notifyAlias: {
+      type: "string",
+      description: "Imported MCP alias used to send the notification. Default `agentpush`.",
+      default: "agentpush",
+    },
   },
   outputs: {},
   steps: [
@@ -873,7 +878,14 @@ export default {
     {
       id: "notifyBody",
       kind: "transform",
-      compute: b => JSON.stringify({ to: b.input?.notify, content: { text: String(b.steps.report ?? "").slice(0, 3500) } }),
+      compute: b => ({ to: b.input?.notify, content: { text: String(b.steps.report ?? "").slice(0, 3500) } }),
+    },
+    {
+      // The engine does not apply `inputs.*.default`, so resolve the alias
+      // here: explicit input, else the imported MCP's conventional alias.
+      id: "notifyAlias",
+      kind: "transform",
+      compute: b => b.input?.notifyAlias || "agentpush",
     },
     {
       // Notify only when `notify` is set AND there is something to report
@@ -901,15 +913,11 @@ export default {
     {
       id: "notify",
       kind: "tool",
-      tool: "command_execute",
+      tool: "mcp_imported_call",
       inputs: {
-        command: "bash",
-        args: [
-          "-c",
-          'curl -s --max-time 30 -X POST -H "Authorization: Bearer ${AGENTPUSH_API_KEY:-}" ' +
-            '-H "Content-Type: application/json" https://api.agentpush.io/tools/send_message --data-binary @-',
-        ],
-        stdin: "$steps.notifyBody",
+        alias: "$steps.notifyAlias",
+        toolName: "send_message",
+        args: "$steps.notifyBody",
       },
     },
     {

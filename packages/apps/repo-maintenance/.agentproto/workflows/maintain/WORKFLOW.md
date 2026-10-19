@@ -72,6 +72,10 @@ inputs:
     description: >-
       Optional agentpush `to` target ({ channel, address }) to notify with
       the report when set. Omit for no notification.
+  notifyAlias:
+    type: string
+    description: Imported MCP alias used to send the notification.
+    default: agentpush
 outputs: {}
 steps:
   - id: modelRoles
@@ -258,7 +262,14 @@ steps:
   - id: notifyBody
     kind: transform
     name: Format the agentpush notification body
-    description: Entry-based — turns the report into agentpush's send_message JSON body.
+    description: Entry-based — turns the report into agentpush's send_message arguments object.
+
+  - id: notifyAlias
+    kind: transform
+    name: Resolve the imported MCP alias
+    description: >-
+      Entry-based — `notifyAlias` when set, else `agentpush`. The engine does
+      not apply `inputs.*.default`, so the fallback lives in entry.mjs.
 
   - id: shouldNotify
     kind: transform
@@ -279,16 +290,14 @@ steps:
   - id: notify
     kind: tool
     name: Send the agentpush notification
-    tool: command_execute
+    description: >-
+      Calls the operator's imported agentpush MCP through
+      `mcp_imported_call` — the alias is `notifyAlias` (default `agentpush`).
+    tool: mcp_imported_call
     inputs:
-      command: bash
-      args:
-        - "-c"
-        - >-
-          curl -s --max-time 30 -X POST -H "Authorization: Bearer
-          ${AGENTPUSH_API_KEY:-}" -H "Content-Type: application/json"
-          https://api.agentpush.io/tools/send_message --data-binary @-
-      stdin: $steps.notifyBody
+      alias: $steps.notifyAlias
+      toolName: send_message
+      args: $steps.notifyBody
 
   - id: skip-notify
     kind: gate
@@ -346,6 +355,9 @@ the approvals the guard refused. Default false — see the app README,
 
 ## Enabling
 
-`command_execute` (the `notify` step) needs `bash` allowlisted in the
-workspace's `.agentproto/allowed-commands.json`, and `AGENTPUSH_API_KEY` set
-in the daemon's environment, before passing a `notify` input.
+The `notify` step sends through the operator's imported agentpush MCP:
+`mcp_imported_call` with the alias named by `notifyAlias` (default
+`agentpush`) and `toolName: "send_message"`. No `bash` allowlist entry and no
+`AGENTPUSH_API_KEY` in the daemon environment are needed — just the imported
+agentpush MCP that every other routine already uses. If the imported server
+lives under a different alias, set `notifyAlias`.

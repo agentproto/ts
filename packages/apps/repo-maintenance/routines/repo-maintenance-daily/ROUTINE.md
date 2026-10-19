@@ -65,9 +65,11 @@ WORKFLOW.md's own doc for how agreed verdicts are applied under
    `maintain/WORKFLOW.md` actually lives in that environment, and either
    replace `target.inputs.notify` with your own agentpush target or delete
    the `notify` key entirely to run silently (report only, no page).
-3. If `notify` is kept, allowlist `bash` in that workspace's
-   `.agentproto/allowed-commands.json` (the workflow's `notify` step needs
-   it) and set `AGENTPUSH_API_KEY` in the daemon's environment.
+3. If `notify` is kept, make sure the operator's imported agentpush MCP is
+   available (the workflow's `notify` step calls it through
+   `mcp_imported_call`). Set `target.inputs.notifyAlias` if that server is
+   imported under an alias other than `agentpush`. No `bash` allowlist or
+   `AGENTPUSH_API_KEY` is needed.
 4. Reload routines so the daemon registers the schedule, or fire it once
    ad-hoc via `routine_trigger` without waiting for the schedule.
 

@@ -75,8 +75,11 @@ to `false` (or drop the key) if you want the apply pass to touch only
 Same steps as `repo-maintenance-daily/ROUTINE.md`: copy this directory to
 `<workspace>/.routines/repo-maintenance-weekly/`, set `enabled: true`, point
 `target.workflow.file` at wherever `maintain/WORKFLOW.md` lives in that
-environment, set or drop `target.inputs.notify`, allowlist `bash` +
-`AGENTPUSH_API_KEY` if `notify` is kept, then reload routines.
+environment, set or drop `target.inputs.notify`, then reload routines. If
+`notify` is kept, the notify step calls the operator's imported agentpush MCP
+via `mcp_imported_call`; set `target.inputs.notifyAlias` when that server is
+imported under an alias other than `agentpush`. No `bash` allowlist or
+`AGENTPUSH_API_KEY` is needed.
 
 Enable ONLY after you've watched `repo-maintenance-daily` run clean a few
 times — this routine deletes branches and worktrees, the daily one never
