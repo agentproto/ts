@@ -218,6 +218,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     deliveryTarget?: SandboxDeliveryTarget
     workspaceSlug?: string
     rejectResumeIds?: boolean
+    sandboxConfig?: Record<string, unknown>
   } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
@@ -238,6 +239,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       remote: true,
       sandboxId: "sbx_prev_1",
       sandboxTeardown: "pause",
+      ...(opts.sandboxConfig ? { sandboxConfig: opts.sandboxConfig } : {}),
       ...(opts.deliveryTarget ? { sandboxDeliveryTarget: opts.deliveryTarget } : {}),
     })
     if (opts.killPrev ?? true) registry.kill(prev.id)
@@ -271,6 +273,40 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(result.desc.command).toBe("sandbox:fake → fake-cli")
     expect(result.desc.cwd).toBe("/home/user")
     expect(result.desc.adapterSlug).toBe("fake-cli")
+  })
+
+  it("replays the persisted sessionHolder (and non-secret config) on the live-box re-attach", async () => {
+    const { resolver, providerResolver } = await setup({
+      sandboxConfig: { sessionHolder: "sess_holder_1", template: "tpl_1" },
+    })
+
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    expect(box.connectSpecs).toHaveLength(1)
+    expect(box.connectSpecs[0]?.config).toEqual({
+      sessionHolder: "sess_holder_1",
+      template: "tpl_1",
+    })
+    expect(result.desc.sandboxConfig).toEqual({
+      sessionHolder: "sess_holder_1",
+      template: "tpl_1",
+    })
+  })
+
+  it("a provider that ignores sessionHolder still re-attaches and restarts", async () => {
+    const { resolver, providerResolver } = await setup({
+      sandboxConfig: { sessionHolder: "sess_holder_1" },
+    })
+    // This fake provider never reads the spec config — it only uses the id.
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    expect(box.connectCalls).toEqual(["sbx_prev_1"])
+    expect(result.desc.status).toBe("running")
+    expect(result.desc.sandboxId).toBe("sbx_prev_1")
   })
 
   // A KNOWN row on the box daemon (the shape a real restart hits: the

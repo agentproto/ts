@@ -106,6 +106,10 @@ import {
 } from "./catalog-models.js"
 import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-hint.js"
 import {
+  sandboxConfigForDescriptor,
+  withSandboxSessionHolder,
+} from "./sandbox-session-holder.js"
+import {
   autoCredentialRefOf,
   buildSandboxSecretResolver,
   type SandboxSecretResolver,
@@ -4523,6 +4527,7 @@ export async function spawnAgentSession(
     let readUsage: (() => Promise<import("./usage.js").UsageReadResult | null>) | undefined
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
+    let sandboxConfig: Record<string, unknown> | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxDeliveryTarget: SandboxDeliveryTarget | undefined
     let sandboxPorts: Record<number, string> | undefined
@@ -4555,6 +4560,7 @@ export async function spawnAgentSession(
         sandbox: input.sandbox,
         resolveSandboxProvider,
         adapter: input.adapter,
+        sessionHolder: mintedSessionId,
         checkpointConfig,
         ...(input.sandboxCheckpointRestore !== undefined ? { checkpointSnapshot: input.sandboxCheckpointRestore } : {}),
         // controllers half of the #1647 pairing: the caller's EXPLICIT slug
@@ -4650,6 +4656,7 @@ export async function spawnAgentSession(
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
+      sandboxConfig = booted.sandboxConfig
       sandboxTeardown = booted.sandboxTeardown
       sandboxDeliveryTarget = booted.deliveryTarget
       sandboxPorts = booted.sandboxPorts
@@ -4990,6 +4997,7 @@ export async function spawnAgentSession(
       ...(hostSessionId ? { hostSessionId } : {}),
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
+      ...(sandboxConfig ? { sandboxConfig } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
       ...(sandboxDeliveryTarget && input.sandboxCheckpoint !== undefined
@@ -5273,6 +5281,10 @@ export type SandboxBootResult =
       /** Advisory spawn-time warnings the caller returns on the spawn result
        *  (an ignored `cwd`, a `cwd` with no workspace remote to clone). */
       warnings?: string[]
+      /** Non-secret sandbox config persisted for a later re-attach — the
+       *  effective boot spec's config minus credentials, always carrying the
+       *  stable `sessionHolder`. Stamped onto the descriptor by the caller. */
+      sandboxConfig?: Record<string, unknown>
       /** The box daemon's own `resumeVia` when `resumeSessionId` was passed
        *  and the box's adapter actually rehydrated that conversation
        *  (`"resumed via ACP"`). Absent on a fresh spawn or a resume the box
@@ -5640,6 +5652,10 @@ export async function bootSandboxAgentSession(opts: {
   worktree?: { slug?: string; base?: string } | false
   /** The host session id this box serves — names the delivery output dir. */
   sessionId?: string
+  /** The stable session holder to send to the provider (`config.sessionHolder`)
+   *  so a re-attach reuses the same controller-side session slot. Defaults to
+   *  `sessionId` when the caller does not pass one explicitly. */
+  sessionHolder?: string
   /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
   onDelivery?: (record: SandboxDeliveryRecord) => void
   /** Receives each periodic checkpoint outcome of the work branch. */
@@ -5838,7 +5854,7 @@ export async function bootSandboxAgentSession(opts: {
     }),
     hasGitToken,
   )
-  const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
+  const rawSpec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(
       withSandboxAdapterPackages(
         withoutReservedSandboxEnv(
@@ -5857,6 +5873,11 @@ export async function bootSandboxAgentSession(opts: {
           : undefined,
     },
   )
+  // The stable holder travels in the spec config: the provider process has no
+  // `AGENTPROTO_SESSION_ID`, so the runtime names it explicitly instead of
+  // relying on the env variable only the spawned agent child carries.
+  const sessionHolder = opts.sessionHolder ?? opts.sessionId
+  const spec: SandboxSpec = withSandboxSessionHolder(rawSpec, sessionHolder)
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
   // hands back its URL in `BootedSandbox.ports` (which also stamps the
@@ -6397,6 +6418,9 @@ export async function bootSandboxAgentSession(opts: {
     cwd: resolvedCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
+    ...(sessionHolder !== undefined
+      ? { sandboxConfig: sandboxConfigForDescriptor(spec.config, sessionHolder) }
+      : {}),
     ...(deliveryTarget ? { deliveryTarget } : {}),
     ...(bootNotices.length > 0 ? { notices: bootNotices } : {}),
     ...(bootWarnings.length > 0 ? { warnings: bootWarnings } : {}),

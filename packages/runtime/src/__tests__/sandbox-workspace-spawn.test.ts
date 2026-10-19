@@ -15,7 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
 import type { AddressInfo } from "node:net"
-import type { SandboxExecOpts, SandboxExecResult, SandboxProvider } from "@agentproto/sandbox"
+import type { SandboxExecOpts, SandboxExecResult, SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
 
 import { createGateway, type GatewayHandle } from "../index.js"
 import {
@@ -96,6 +96,7 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
   let execCalls: SandboxExecOpts[]
   let execImpl: (opts: SandboxExecOpts) => Promise<SandboxExecResult>
   let bootEnvs: Array<Record<string, string> | undefined>
+  let bootSpecs: SandboxSpec[]
   let stopSpy: ReturnType<typeof vi.fn>
   let pauseSpy: ReturnType<typeof vi.fn>
   let gateway: GatewayHandle
@@ -134,6 +135,7 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     receivedStarts = []
     execCalls = []
     bootEnvs = []
+    bootSpecs = []
     withExec = true
     stopSpy = vi.fn(async () => undefined)
     pauseSpy = vi.fn(async () => undefined)
@@ -173,8 +175,14 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       }
     }
     provider = {
-      boot: vi.fn(async (_spec, opts) => bootedFor(opts?.env)),
-      connect: vi.fn(async (_id, _spec, opts) => bootedFor(opts?.env)),
+      boot: vi.fn(async (spec: SandboxSpec, opts) => {
+        bootSpecs.push(spec)
+        return bootedFor(opts?.env)
+      }),
+      connect: vi.fn(async (_id: string, spec: SandboxSpec, opts) => {
+        bootSpecs.push(spec)
+        return bootedFor(opts?.env)
+      }),
     }
     registry = createSessionsRegistry({ persist: false, transcriptDir: join(hostDir, "transcripts") })
     keychain.reads.length = 0
@@ -225,6 +233,33 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(JSON.stringify(execCalls)).not.toContain(FAKE_TOKEN)
     expect(JSON.stringify(receivedStarts)).not.toContain(FAKE_TOKEN)
     expect(JSON.stringify(result.descriptor)).not.toContain(FAKE_TOKEN)
+  })
+
+  it("sends the session id as the provider sessionHolder and persists only non-secret config", async () => {
+    const result = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      sandbox: {
+        provider: "fake",
+        config: {
+          template: "tpl_1",
+          token: "provider-secret",
+          extraHeaders: { Authorization: "Bearer provider-secret" },
+        },
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(bootSpecs[0]?.config).toMatchObject({
+      sessionHolder: result.descriptor.id,
+      template: "tpl_1",
+    })
+    expect(result.descriptor.sandboxConfig).toMatchObject({
+      sessionHolder: result.descriptor.id,
+      template: "tpl_1",
+    })
+    expect(result.descriptor.sandboxConfig).not.toHaveProperty("token")
+    expect(JSON.stringify(result.descriptor)).not.toContain("provider-secret")
   })
 
   it("killing the session pushes the work branch and records the delivery before the box stops", async () => {
