@@ -1,7 +1,7 @@
 /**
  * Typed HTTP client for the computer controller. Nothing here depends on
- * any studio package — plain `fetch` plus the zod mirrors in
- * `api-types.ts`.
+ * any studio package — plain `fetch` plus the contract schemas in
+ * `@agentproto/computer-api`.
  *
  * SECURITY CONTRACT: the service token is carried ONLY in the
  * `Authorization` header of outgoing requests. It is redacted from every
@@ -10,17 +10,19 @@
 
 import {
   computerStatusSchema,
+  createComputerRequestSchema,
   createComputerResponseSchema,
   errorResponseSchema,
   execResponseSchema,
   resumeResponseSchema,
   suspendResponseSchema,
   type ComputerStatus,
+  type CreateComputerRequest,
   type CreateComputerResponse,
   type ExecResponse,
   type ResumeResponse,
   type SuspendResponse,
-} from "./api-types.js"
+} from "@agentproto/computer-api"
 
 export interface ComputerClientConfig {
   /** Controller base URL, e.g. "https://controller.internal:7110". No trailing slash. */
@@ -60,19 +62,11 @@ export function redactSecret(text: string, secrets: readonly string[]): string {
   return out
 }
 
-/** Body for `POST /v1/computers` — a strict subset of the controller's
- *  create schema (this adapter always passes tenantId explicitly). */
-export interface CreateComputerInput {
-  template: string
-  tenantId: string
-  cpus?: number
-  memoryMiB?: number
-  rootDiskMiB?: number
-  ttl?: number
-  env?: Record<string, string>
-  /** Deny-by-default egress allowlist; a computer created without one has no DNS. */
-  egress?: { allow: Array<{ host: string; port: number }> }
-}
+/** Request body for `POST /v1/computers`, re-declared out loud so the
+ *  call-site JSDoc stays local (validated by
+ *  `createComputerRequestSchema` from `@agentproto/computer-api`,
+ *  re-exported here since the client never reaches raw JSON). */
+export interface CreateComputerInput extends CreateComputerRequest {}
 
 export class ComputerControllerClient {
   private readonly baseUrl: string
@@ -168,7 +162,10 @@ export class ComputerControllerClient {
   /** `POST /v1/computers`. Rejects with 400 (validation / unknown template),
    *  429 (capacity), 500 (msb create failure). */
   async createComputer(input: CreateComputerInput): Promise<CreateComputerResponse> {
-    return this.request("POST", "/v1/computers", createComputerResponseSchema, input)
+    // Outbound bodies are contract-checked too: a mistyped input fails
+    // locally with the schema's complaint, not as a controller 400.
+    const body = createComputerRequestSchema.parse(input)
+    return this.request("POST", "/v1/computers", createComputerResponseSchema, body)
   }
 
   /** `GET /v1/computers/:id`. `null` on 404 (never mind why) — callers map
