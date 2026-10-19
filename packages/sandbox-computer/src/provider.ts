@@ -827,17 +827,17 @@ async function wrapBox(
   published: readonly PortPublish[],
   daemonToken?: string,
 ): Promise<BootedSandbox> {
-  // `routeHeaders` is only set in true daemonRoute mode (no explicit
-  // gatewayUrl override) — see `applyDaemonRoute`. The controller's
-  // daemon-proxy route reaches exactly one guest port (the daemon's), so
-  // any other port is simply unreachable through it: reject rather than
-  // hand back a URL that silently points at the wrong place.
+  // `routeHeaders` is only set in daemonRoute mode — see
+  // `applyDaemonRoute`. The controller's daemon-proxy route reaches exactly
+  // one guest port (the daemon's), so any other port is simply unreachable
+  // through it: reject rather than hand back a URL that silently points at
+  // the wrong place.
   const trueRouteMode = config.routeHeaders !== undefined
   if (trueRouteMode && (spec.extraPorts ?? []).length > 0) {
     throw new Error(
       `computer "${id}": daemonRoute mode can only reach the daemon's own port (the controller's ` +
         `daemon-proxy route proxies guest port ${port} only) — extraPorts are not reachable this way. ` +
-        "Set an explicit config.gatewayUrl with a {port} placeholder instead.",
+        "Disable daemonRoute and set an explicit config.gatewayUrl with a {port} placeholder instead.",
     )
   }
   const extraPorts: Record<number, string> = {}
@@ -881,8 +881,8 @@ async function wrapBox(
         return Promise.reject(
           new Error(
             `computer "${id}": daemonRoute mode cannot expose arbitrary ports (only the daemon's own ` +
-              "port is reachable through the controller's daemon-proxy route). Set an explicit " +
-              "config.gatewayUrl to expose ports.",
+              "port is reachable through the controller's daemon-proxy route). Disable daemonRoute " +
+              "and set an explicit config.gatewayUrl to expose ports.",
           ),
         )
       }

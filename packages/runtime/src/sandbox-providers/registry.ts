@@ -182,7 +182,7 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
       {
         name: "daemonRoute",
         description:
-          "Set to \"1\" to reach each computer's daemon through the controller (<controllerUrl>/v1/computers/{id}/daemon) instead of a per-port gatewayUrl, injected as COMPUTER_DAEMON_ROUTE. gatewayUrl is not required in this mode; supplying both is rejected as a conflicting configuration.",
+          "Set to \"1\" to reach each computer's daemon through the controller (<controllerUrl>/v1/computers/{id}/daemon) instead of a per-port gatewayUrl, injected as COMPUTER_DAEMON_ROUTE. gatewayUrl is not required in this mode and is mutually exclusive with it; supplying both is rejected as a conflicting configuration.",
         required: false,
         sensitive: false,
       },

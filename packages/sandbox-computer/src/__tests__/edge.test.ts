@@ -215,6 +215,17 @@ describe("daemon route mode", () => {
     expect(controller.createBodies).toEqual([])
   })
 
+  it("rejects an env-provided gatewayUrl alongside daemonRoute for boot and connect", async () => {
+    process.env.COMPUTER_GATEWAY_URL = "http://gw.test:{port}/{id}"
+    await expect(
+      computerSandboxProvider.boot(spec(controller.url, { daemonRoute: true }), bootOpts),
+    ).rejects.toThrow(/mutually exclusive/)
+    await expect(
+      computerSandboxProvider.connect!("cmp-001", spec(controller.url, { daemonRoute: true }), bootOpts),
+    ).rejects.toThrow(/mutually exclusive/)
+    expect(controller.createBodies).toEqual([])
+  })
+
   it("rejects extraPorts and expose() in true route mode instead of pointing them at the daemon", async () => {
     const booted = await computerSandboxProvider.boot(
       { ...spec(controller.url, { daemonRoute: true }), extraPorts: [9999] } as unknown as SandboxSpec,
