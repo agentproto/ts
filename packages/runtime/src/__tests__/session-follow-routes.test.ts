@@ -4,7 +4,7 @@
  * store + the same validation.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -15,6 +15,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import { createGateway, type GatewayHandle } from "../index.js"
 import type { AgentSessionLike } from "../sessions.js"
+// Exercise the actual stdio bridge forwarding path against the source runtime.
+import { forwardBridgeTool } from "../../../cli/src/commands/mcp-bridge-call.js"
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -220,5 +222,66 @@ describe("session-follow HTTP routes + MCP tools", () => {
     expect(removed).toMatchObject({ ok: true, removed: true })
     const again = (await mcp.callTool({ name: "session_unfollow", arguments: { id: "mcp-k" } })) as { isError?: boolean }
     expect(again.isError).toBe(true)
+  })
+
+  it("routes concurrent Desktop chats by per-call identity and exposes the host-wake boundary", async () => {
+    const base = `${gateway.url}/mcp`
+    const root = new Client({ name: "desktop-test", version: "0" })
+    await root.connect(new StreamableHTTPClientTransport(new URL(base)))
+    const parse = (r: unknown) => JSON.parse((r as { content: Array<{ text: string }> }).content[0]!.text)
+    const watched = gateway.sessions.spawnAgent({
+      workspaceSlug: "default", cwd: workspace, adapterSlug: "codex",
+      agentSession: {
+        ...liveSession(),
+        async *send() {
+          yield { kind: "text-delta", text: "Finished the watched task." }
+          yield { kind: "turn-end", reason: "completed" }
+        },
+      },
+    })
+    try {
+      const results = await Promise.all(["chat-a", "chat-b"].map(thread_id => forwardBridgeTool(root, base, {
+        name: "session_follow",
+        arguments: { selector: { sessionIds: [watched.id] }, events: ["turn-end"], batchMs: 0 },
+        _meta: { "x-codex-turn-metadata": JSON.stringify({ thread_id }) },
+      }, "codex")))
+      for (const [i, result] of results.entries()) {
+        const created = parse(result)
+        expect(created.ok).toBe(true)
+        expect(created.follow.follower).toBe(`codex:chat-${i === 0 ? "a" : "b"}`)
+        expect(created.follow.urgency).toBe("next-turn")
+        expect(created.delivery).toMatchObject({ mode: "external-inbox", wakesFollower: false })
+      }
+
+      // This is the actual daemon guarantee: the next-turn digest reaches
+      // the SAME chat's external inbox. A host must start the Desktop turn.
+      await gateway.sessions.enqueuePrompt(watched.id, "finish")
+      await vi.waitFor(() => {
+        for (const id of ["codex:chat-a", "codex:chat-b"]) {
+          const inbox = gateway.sessions.listInbox(id)!
+          expect(inbox).toHaveLength(1)
+          expect(inbox[0]).toMatchObject({ to: id, urgency: "next-turn", kind: "notice" })
+          expect(inbox[0]!.text).toContain(watched.id)
+        }
+      })
+
+      // No metadata on a later call must NOT reuse either chat's identity.
+      const missing = parse(await forwardBridgeTool(root, base, {
+        name: "session_follow", arguments: { selector: { all: true } },
+      }, "codex"))
+      expect(missing).toMatchObject({ ok: false, error: "no_follower" })
+      expect(missing.message).toContain("host wake handler")
+
+      // An explicit follower still wins even when Desktop metadata is present.
+      const explicit = parse(await forwardBridgeTool(root, base, {
+        name: "session_follow",
+        arguments: { follower: followerId, selector: { all: true } },
+        _meta: { "x-codex-turn-metadata": { thread_id: "chat-a" } },
+      }, "codex"))
+      expect(explicit.follow.follower).toBe(followerId)
+      expect(explicit).not.toHaveProperty("delivery")
+    } finally {
+      await root.close()
+    }
   })
 })
