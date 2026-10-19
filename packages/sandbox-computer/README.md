@@ -61,10 +61,11 @@ Registered under the slug `computer`:
 `sharedSessions: true` is descriptive metadata: this provider's box is
 advertised as shareable — one computer's daemon could hang off several
 agentproto sessions multiplexing over `mcpUrl`. No runtime behaviour reads
-this flag yet. `config.maxSessions` separately caps how many sessions a
-single host process books onto one computer; the controller has no
-cross-process attach/detach refcount (see gaps below), so the cap is
-enforced per process only.
+this flag yet. `config.maxSessions` is forwarded at create (the controller
+sizes the computer's CPU and RAM for it) and counted by the controller: boot
+and connect attach a session, pause and stop detach it, and a connect past the
+cap is refused. The last session to stop removes the computer. A controller
+without the attach routes falls back to a per-process count.
 
 ## Secrets
 
@@ -104,9 +105,8 @@ const booted = await computerSandboxProvider.boot(
 
 ## Known gaps (adapter needs, controller lacks)
 
-- **No attach/detach refcount**: the controller is session-agnostic, so
-  `maxSessions` cannot be authoritative across host processes, and an
-  abandoned attach cannot be detected by the controller.
+- **No attach expiry**: an attach whose process died is not detected by the
+  controller; an operator clears it with a forced delete.
 - **`resume` renames the computer**: a suspend→restore cycle rebuilds the
   box under a new generated id. The provider aliases old→new in-process; the
   session ledger may still record the pre-suspend id, so an `attach` after a

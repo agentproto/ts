@@ -375,6 +375,27 @@ describe("branch gc — re-rooted base + anchor", () => {
     expect(u.mergeBase).toBe(a)
   })
 
+  it("a tip unrelated to both base and the anchor (a ref from another repo) is unmerged/unrelated, not a diff of an empty merge-base", async () => {
+    const repo = await makeRepo("old")
+    await branchWith(repo, "feat/pre-unique", { "u.txt": "u\n" }, "old", "old")
+    const anchor = await commitFiles(repo, { "s.txt": "s\n" }, "old tip")
+    await execGit(repo, ["checkout", "-q", "--orphan", "main"])
+    await execGit(repo, ["commit", "-q", "-m", "snapshot"])
+    await commitFiles(repo, { "new.txt": "new\n" }, "post-rewrite work")
+    // A third, independent root — e.g. `refs/remotes/<other-repo>/main`.
+    await execGit(repo, ["checkout", "-q", "--orphan", "foreign"])
+    await execGit(repo, ["rm", "-rq", "--cached", "."])
+    const foreign = await commitFiles(repo, { "f.txt": "f\n" }, "foreign root")
+    await execGit(repo, ["checkout", "-q", "-f", "main"])
+
+    const p = await plan(repo, { scopes: ["local"] })
+    expect(p.anchor).toBe(anchor)
+    expect(entry(p, "foreign")).toMatchObject({ status: "unmerged", history: "unrelated" })
+    expect(entry(p, "feat/pre-unique")).toMatchObject({ status: "unmerged", history: "pre-rewrite", compareBase: anchor })
+    const ctx = await createLadderContext(repo, "main", anchor)
+    expect(await classifyTip(ctx, foreign)).toMatchObject({ status: "unmerged", history: "unrelated", conflicts: true, ahead: null })
+  })
+
   it("without history in common and no anchor, a tip is unmerged/unrelated", async () => {
     const repo = await makeRepo()
     await execGit(repo, ["checkout", "-q", "--orphan", "island"])

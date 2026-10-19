@@ -22,8 +22,8 @@ export type SandboxSpec = SandboxHandle
 /**
  * Thrown when the box booted (or reconnected to) but the daemon MCP
  * connection on top of it failed. The box itself already existed at that
- * point, so `createSandboxAgentSessionHost` reaped it (paused when the
- * provider supports it, killed otherwise) before throwing — `cleanedUp`
+ * point, so `createSandboxAgentSessionHost` reaped it (paused when it was a
+ * reconnect and the provider supports it, killed otherwise) before throwing — `cleanedUp`
  * records which. Callers use this to stamp the sandbox ledger instead of
  * leaving a live box with no owner.
  */
@@ -388,12 +388,13 @@ export async function createSandboxAgentSessionHost(
   } catch (err) {
     // The box EXISTS at this point — the daemon connection on top of it
     // failed. Reap it so a failed boot never leaves a live box behind:
-    // pause when the provider supports it (keeps a reconnected box
-    // reconnectable — it was already there before this spawn), kill
-    // otherwise. Then rethrow annotated so the caller can stamp the
-    // ledger with the actual outcome.
-    const cleanedUp = booted.pause ? "paused" : "stopped"
-    if (booted.pause) {
+    // pause a REconnected box when the provider supports it (it was already
+    // there before this spawn, so keep it reconnectable), kill a box this
+    // spawn just created (nothing earlier lives in it). Then rethrow
+    // annotated so the caller can stamp the ledger with the actual outcome.
+    const pauseIt = booted.pause !== undefined && opts.sandboxId !== undefined
+    const cleanedUp = pauseIt ? "paused" : "stopped"
+    if (pauseIt && booted.pause) {
       await booted.pause().catch(() => undefined)
     } else {
       await booted.stop().catch(() => undefined)

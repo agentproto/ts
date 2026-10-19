@@ -33,7 +33,9 @@ describe. A major bump of this package is where that constant changes.
 | POST   | `/v1/computers/:id/exec`     | `execRequestSchema`         | `execResponseSchema`         |
 | POST   | `/v1/computers/:id/suspend`  | -                           | `suspendResponseSchema`      |
 | POST   | `/v1/computers/:id/resume`   | -                           | `resumeResponseSchema`       |
-| DELETE | `/v1/computers/:id`          | -                           | `suspendResponseSchema` shape (all-optional) |
+| POST   | `/v1/computers/:id/attach`   | -                           | `sessionsResponseSchema`     |
+| POST   | `/v1/computers/:id/detach`   | -                           | `sessionsResponseSchema`     |
+| DELETE | `/v1/computers/:id`          | - (`?force=true` optional)  | `suspendResponseSchema` shape (all-optional) |
 | any    | error body                   | -                           | `errorResponseSchema`        |
 
 ## Contract tests
@@ -45,6 +47,10 @@ same schemas, so the test double cannot drift from the published contract.
 
 ## Notes
 
+- Sessions: `maxSessions` on create sizes the computer for that many
+  concurrent sessions. `attach` takes a slot (409 at the cap), `detach`
+  releases one (floors at 0), and `DELETE` answers 409 while sessions are
+  attached unless `?force=true` is passed.
 - `resume` MAY rename the computer: the controller can restore the suspend
   snapshot into a fresh computer under a NEW generated id and answer
   `{ id: <new>, state: "running" }`. Callers must treat the old id as gone

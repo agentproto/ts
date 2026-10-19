@@ -559,8 +559,16 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
     if (related) relatedMergeBase = res.stdout.trim()
   }
   if (!related && !anchor) return { status: "unmerged", history: "unrelated", conflicts: true, ahead: null, behind: null }
-  const history: BranchHistory = related ? "current" : "pre-rewrite"
   const cmp = related ? baseSha : (anchor as string)
+  // A tip unrelated to the anchor too (e.g. a ref fetched from another repo)
+  // has no merge-base to diff or merge-tree from: unrelated, not pre-rewrite.
+  let anchorMergeBase: string | undefined
+  if (!related) {
+    const res = await git(repoRoot, ["merge-base", cmp, tip])
+    if (res.exitCode !== 0) return { status: "unmerged", history: "unrelated", conflicts: true, ahead: null, behind: null }
+    anchorMergeBase = res.stdout.trim()
+  }
+  const history: BranchHistory = related ? "current" : "pre-rewrite"
   const ancestors = ctx.ancestorsOf ? await ctx.ancestorsOf(cmp) : null
   const isAncestor = ancestors
     ? ancestors.has(tip)
@@ -571,7 +579,7 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
   const counts = (await gitOk(repoRoot, ["rev-list", "--left-right", "--count", `${cmp}...${tip}`])).trim().split(/\s+/)
   const behind = Number(counts[0])
   const ahead = Number(counts[1])
-  const mergeBase = (related ? relatedMergeBase : undefined) ?? (await git(repoRoot, ["merge-base", cmp, tip])).stdout.trim()
+  const mergeBase = (related ? relatedMergeBase : anchorMergeBase) ?? (await git(repoRoot, ["merge-base", cmp, tip])).stdout.trim()
   const mtArgs = related ? [baseSha, tip] : [`--merge-base=${mergeBase}`, baseSha, tip]
   const mt = await git(repoRoot, ["merge-tree", "--write-tree", "--no-messages", ...mtArgs])
   const mergedTree = (mt.stdout.split("\n")[0] ?? "").trim()

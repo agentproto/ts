@@ -1,7 +1,9 @@
 name: AIP Sync
 
 # Re-vendors specs/resources from agentproto/agentproto main and moves the
-# pin in specs/canonical.lock.json, then opens a PR for human review.
+# pin in specs/canonical.lock.json, then opens a PR for human review. The PR
+# is opened whenever the pin moves, even with no specs/resources drift: a
+# prose-only AIP (no JSON Schema) still has to reach check-aip-refs.
 # ts CI checks canonical out AT the pinned commit (see ci.yml), so canonical
 # merges never break ts on their own: this PR is how ts catches up.
 #
@@ -50,6 +52,10 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
+          # No `pnpm install` runs in this job, so there is no store to cache;
+          # setup-node's automatic pnpm cache failed its post step on the
+          # missing path.
+          package-manager-cache: false
 
       - name: Checkout canonical specs (main)
         uses: actions/checkout@v5
@@ -66,17 +72,22 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           node scripts/sync-specs.mjs --source .canonical-specs/specs/resources --source-sha "$SHA"
 
-      # Only a real specs/resources change is worth a PR. A canonical commit
-      # that touched prose only moves nothing: restore the lock and stop.
+      # The pin moving is the signal: sync-specs rewrites the lock to the
+      # canonical HEAD, so a prose-only canonical change (no specs/resources
+      # drift) still shows up as a lock diff and gets a pin-bump PR.
       - name: Detect drift
         id: drift
         run: |
-          if git diff --quiet -- specs/resources && [ -z "$(git ls-files --others --exclude-standard -- specs/resources)" ]; then
-            git checkout -- specs/canonical.lock.json
+          if git diff --quiet -- specs/resources specs/canonical.lock.json && [ -z "$(git ls-files --others --exclude-standard -- specs/resources)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No specs/resources drift — nothing to sync."
+            echo "Pin already at ${{ steps.sync.outputs.sha }} and no specs/resources drift — nothing to sync."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            if git diff --quiet -- specs/resources && [ -z "$(git ls-files --others --exclude-standard -- specs/resources)" ]; then
+              echo "resources=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "resources=true" >> "$GITHUB_OUTPUT"
+            fi
             echo "### Spec drift from agentproto/agentproto@${{ steps.sync.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
             git status --short -- specs >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -84,6 +95,14 @@ jobs:
       - name: Check the synced tree
         if: steps.drift.outputs.changed == 'true'
         run: node scripts/sync-specs.mjs --check --source .canonical-specs/specs/resources
+
+      # Advisory here: the PR still opens so a human sees the result, and
+      # ts CI runs the same gate against the pin once the PR is up.
+      - name: Check AIP references against the new pin
+        id: refs
+        if: steps.drift.outputs.changed == 'true'
+        continue-on-error: true
+        run: node scripts/check-aip-refs.mjs --source .canonical-specs
 
       - name: Open sync PR
         if: steps.drift.outputs.changed == 'true'
@@ -98,9 +117,12 @@ jobs:
           commit-message: "specs: sync vendored specs with agentproto/agentproto@${{ steps.sync.outputs.sha }}"
           title: "specs: sync vendored specs with canonical agentproto/agentproto"
           body: |
-            Automated re-vendor of `specs/resources` from
-            agentproto/agentproto@${{ steps.sync.outputs.sha }}, and the pin in
-            `specs/canonical.lock.json` moved to that commit.
+            Automated sync with agentproto/agentproto@${{ steps.sync.outputs.sha }}:
+            the pin in `specs/canonical.lock.json` moved to that commit
+            (specs/resources drift: ${{ steps.drift.outputs.resources }}; a
+            `false` means a prose-only change, pin bump only).
+
+            `check-aip-refs` against the new pin: ${{ steps.refs.outcome }}.
 
             - Review the schema diff like any spec change: a renumbering or a new
               required field may need matching code changes in the ts packages.
