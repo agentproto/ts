@@ -4444,8 +4444,10 @@ export function registerSessionTools(
     "Record one reviewer verdict for a branch tip, keyed by repo + tip sha " +
       "(a verdict for a tip that later moves is ignored). `gate.agree: true` " +
       "is what lets `branch_gc` with `includeReviewed` reclaim an unmerged " +
-      "ref, and it must cite evidence. This tool only stores verdicts; it " +
-      "never deletes anything.",
+      "ref, and it must cite evidence. An `operator` block records a human " +
+      "approval that bypasses `branch_gc`'s line-coverage guard for this " +
+      "exact tip (recorded with `recordedAt`). This tool only stores " +
+      "verdicts; it never deletes anything.",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
@@ -4466,6 +4468,13 @@ export function registerSessionTools(
         })
         .optional(),
       reviewer: z.string().describe("Who reviewed, e.g. `claude-sonnet reviewer`."),
+      operator: z
+        .object({
+          by: z.string().describe("Who approved deletion of this exact tip."),
+          note: z.string().optional().describe("Why the operator approved despite the guard."),
+        })
+        .optional()
+        .describe("Human operator approval: lets `includeReviewed` reclaim even when the line-coverage guard refuses. Stored with `recordedAt`."),
     },
     async input => {
       if (!recordBranchGcVerdict) {

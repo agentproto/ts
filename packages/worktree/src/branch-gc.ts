@@ -227,6 +227,8 @@ export interface BranchVerdictSummary {
   triage: BranchTriageVerdict
   agree: boolean | null
   reviewer: string
+  /** Human operator approval that overrides the line-coverage guard, when present. */
+  operator?: { by: string; note?: string }
 }
 
 export interface BranchGcPlanEntry extends BranchRef, TipClassification {
@@ -243,7 +245,12 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   /** Set for unmerged local and orphan refs. */
   pushed?: BranchPushState
   verdict?: BranchVerdictSummary
-  /** Set when an agreeing verdict was REFUSED (`includeReviewed`), e.g. line coverage under `minLineCoverage`. */
+  /**
+   * `includeReviewed` guard outcome: why an agreeing verdict was refused
+   * (`review` class, e.g. line coverage under `minLineCoverage`), or
+   * `bypassed by operator <by>: <why>` when an operator approval reclaimed it
+   * despite the guard.
+   */
   verdictGuard?: string
 }
 
@@ -1180,7 +1187,12 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
     if (pushed) entry.pushed = pushed
     const stored = env.verdicts ? await env.verdicts.get(env.repoName, b.sha) : null
     if (stored) {
-      entry.verdict = { triage: stored.triage.verdict, agree: stored.gate ? stored.gate.agree : null, reviewer: stored.reviewer }
+      entry.verdict = {
+        triage: stored.triage.verdict,
+        agree: stored.gate ? stored.gate.agree : null,
+        reviewer: stored.reviewer,
+        ...(stored.operator ? { operator: stored.operator } : {}),
+      }
     }
   }
   const hold = holdFor(b, env)
@@ -1204,8 +1216,18 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
     // whose added lines are mostly NOT in base is refused, the ref stays review.
     const guard = lineCoverageGuard(entry.lineCoverage, env.minLineCoverage)
     if (guard) {
-      entry.verdictGuard = guard
-      entry.class = "review"
+      // An operator approval is the human exit from the refusal queue: it
+      // overrides the deterministic line guard for this exact tip, and the
+      // plan records who bypassed it. A reviewer-only verdict stays refused.
+      const operator = entry.verdict.operator
+      if (!operator) {
+        entry.verdictGuard = guard
+        entry.class = "review"
+        return entry
+      }
+      entry.verdictGuard = `bypassed by operator ${operator.by}${operator.note ? ` (${operator.note})` : ""}: ${guard}`
+      entry.class = "reclaim"
+      entry.reclaimReason = "reviewed"
       return entry
     }
     entry.class = "reclaim"
@@ -1597,9 +1619,13 @@ function restoreEntry(repoRoot: string, e: BranchGcPlanEntry, baseRemote: string
   }
 }
 
+let atomicWriteSeq = 0
+
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
+  // A per-call unique temp name: two writers in one process must not share
+  // (and truncate) the same temp file before either renames it.
+  const tmp = `${path}.${process.pid}.${Date.now()}.${atomicWriteSeq++}.tmp`
   await writeFile(tmp, JSON.stringify(value, null, 2) + "\n", "utf8")
   await rename(tmp, path)
 }
@@ -1791,6 +1817,13 @@ export const branchVerdictSchema = z
       })
       .optional(),
     reviewer: z.string().min(1),
+    /** Operator approval that overrides `lineCoverageGuard` for this exact tip. */
+    operator: z
+      .object({
+        by: z.string().min(1),
+        note: z.string().optional(),
+      })
+      .optional(),
   })
   .superRefine((v, ctx) => {
     if (v.gate?.agree && v.gate.evidence.length === 0) {
@@ -1818,6 +1851,31 @@ export const BRANCH_VERDICTS_PATH = (): string => resolve(homedir(), ".agentprot
 
 const verdictRecordSchema = z.intersection(branchVerdictSchema, z.object({ repo: z.string(), recordedAt: z.string() }))
 const verdictFileSchema = z.object({ entries: z.array(z.unknown()) })
+
+/**
+ * In-process per-file lock. `record` calls each construct their own
+ * `FileBranchVerdictStore`, so a per-instance lock would not serialise them;
+ * the mutex is keyed by the verdict file's path and shared by every instance
+ * in this process.
+ */
+const verdictLocks = new Map<string, Promise<void>>()
+
+async function withVerdictLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const previous = verdictLocks.get(path) ?? Promise.resolve()
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const tail = previous.then(() => held)
+  verdictLocks.set(path, tail)
+  await previous
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (verdictLocks.get(path) === tail) verdictLocks.delete(path)
+  }
+}
 
 /** `~/.agentproto/branch-gc-verdicts.json`, keyed by (repo, tip sha). */
 export class FileBranchVerdictStore implements BranchVerdictStore {
@@ -1849,9 +1907,15 @@ export class FileBranchVerdictStore implements BranchVerdictStore {
   }
 
   async set(record: BranchVerdictRecord): Promise<void> {
-    const map = await this.load()
-    map.set(verdictKey(record.repo, record.sha), record)
-    await writeJsonAtomic(this.path, { entries: [...map.values()] })
+    // Serialise every writer of this file, then re-read from disk under the
+    // lock so a write from another instance between our last load and now is
+    // merged instead of overwritten. The rename keeps readers whole.
+    await withVerdictLock(this.path, async () => {
+      this.cache = null
+      const map = await this.load()
+      map.set(verdictKey(record.repo, record.sha), record)
+      await writeJsonAtomic(this.path, { entries: [...map.values()] })
+    })
   }
 }
 

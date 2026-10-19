@@ -20,6 +20,7 @@ import {
   classifyTip,
   createLadderContext,
   InMemoryBranchVerdictStore,
+  FileBranchVerdictStore,
   BranchVerdictError,
   CHECKPOINT_BRANCH_PREFIX,
   type BranchGcPlan,
@@ -576,6 +577,30 @@ describe("branch gc — verdict store", () => {
     expect(moved.verdict).toBeUndefined()
   })
 
+  it("keeps every verdict when concurrent records race (G8)", async () => {
+    const repo = await makeRepo()
+    const path = join(await tmp("branch-gc-verdicts-"), "verdicts.json")
+    const tips: string[] = []
+    for (let i = 0; i < 12; i++) tips.push(await branchWith(repo, `feat/race-${i}`, { [`race-${i}.txt`]: `${i}\n` }))
+
+    // The daemon's recorder builds a fresh store per call; fire all of them at once.
+    await Promise.all(
+      tips.map((tip, i) =>
+        recordBranchVerdict({
+          repoRoot: repo,
+          repoName: "fixture",
+          store: new FileBranchVerdictStore(path),
+          verdict: verdictFor(`feat/race-${i}`, tip, false),
+        }),
+      ),
+    )
+
+    const reader = new FileBranchVerdictStore(path)
+    for (let i = 0; i < tips.length; i++) {
+      expect(await reader.get("fixture", tips[i] as string)).toMatchObject({ name: `feat/race-${i}`, sha: tips[i] })
+    }
+  })
+
   it("review queue: one candidate per unique tip, already-reviewed tips skipped unless all", async () => {
     const repo = await makeRepo()
     await withOrigin(repo)
@@ -1048,6 +1073,32 @@ describe("branch gc — line-coverage guard", () => {
       reclaimReason: "reviewed",
     })
     await expect(plan(repo, { minLineCoverage: 101 })).rejects.toThrow(/minLineCoverage/)
+  })
+
+  it("an operator approval reclaims a guard-refused tip, records who bypassed it, and still writes the restore log", async () => {
+    const repo = await makeRepo()
+    const tip = await lowCoverageBranch(repo)
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: { ...agreeing("feat/lost", tip), operator: { by: "jeremy", note: "checked the missing work by hand" } },
+    })
+
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    const e = entry(p, "feat/lost")
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed", verdict: { agree: true, operator: { by: "jeremy" } } })
+    expect(e.verdictGuard).toContain("bypassed by operator jeremy")
+    expect(e.verdictGuard).toContain("line coverage 0%")
+
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir })
+    expect(outcomes).toContainEqual({ kind: "local", name: "feat/lost", sha: tip, result: "deleted", reclaimReason: "reviewed" })
+    expect(restoreLog).not.toBeNull()
+    const log = await readBranchGcRestoreLog(restoreLog as string)
+    expect(log.entries).toContainEqual(expect.objectContaining({ name: "feat/lost", sha: tip }))
+    expect(await refExists(repo, "refs/heads/feat/lost")).toBe(false)
   })
 
   it("apply re-checks the guard: a plan made with a lower threshold cannot carry a refused approval through", async () => {

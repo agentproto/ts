@@ -68,7 +68,7 @@ missed, and only when the work branch is merged.
 | `--base <ref>` | `origin/main` | The ref the work must be in. |
 | `--scopes <kinds>` | all three | Comma-separated kinds. **Required with `--apply`.** |
 | `--min-age-days N` | `3` | Unmerged refs younger than this are held. |
-| `--include-reviewed` | `false` | Reclaim reviewed refs whose gate agreed (see `review-queue`). |
+| `--include-reviewed` | `false` | Reclaim reviewed refs whose gate agreed (see `review-queue`). An agreeing verdict under `--min-line-coverage` is refused unless it carries an `operator` block (see below), which bypasses the guard and is shown as `bypassed by operator <by>`. |
 | `--anchor <sha>` | auto | Old-history twin of a re-rooted base's root. It's auto-detected when base has a single root and some tips share no history with it. |
 | `--apply` | `false` | Execute the plan for `--scopes`. |
 | `--json` | `false` | Emit `{ plan, summary }` (or `{ outcomes, restoreLog }` with `--apply`) as JSON. |
@@ -88,7 +88,35 @@ merge conflicts), coverage, and the residual files. Tips that already have a
 verdict are skipped unless you pass `--all`. Reviewers record verdicts with the
 `branch_gc_verdict` MCP tool. Verdicts are keyed by repo and tip sha in
 `~/.agentproto/branch-gc-verdicts.json`, and a verdict for a tip that later
-moves is ignored.
+moves is ignored. Concurrent `branch_gc_verdict` calls are safe: the store
+serialises writes per verdict file and commits each one with an atomic
+rename, so no recorded verdict is lost.
+
+### Operator approval (bypassing the line guard)
+
+An agreeing verdict whose tip is under `--min-line-coverage` (default 95) is
+refused by `--include-reviewed`, leaving it in `review` with a `verdictGuard`
+reason. That refusal list is the human queue; to clear an entry, record an
+operator approval for the **same tip sha** with `branch_gc_verdict`:
+
+```json
+{
+  "name": "feat/lost",
+  "sha": "<full tip sha>",
+  "reviewer": "repo-maintenance-reviewer",
+  "triage": { "verdict": "superseded", "confidence": 0.9, "reason": "..." },
+  "gate": { "agree": true, "verdict": "superseded", "reason": "...", "evidence": ["..."] },
+  "operator": { "by": "jeremy", "note": "checked the residual by hand" }
+}
+```
+
+`operator.by` is required; `note` is optional. The approval is stored with the
+verdict's `recordedAt` timestamp. With `includeReviewed: true` a same-tip
+verdict that has `gate.agree: true` **and** an `operator` block reclaims
+despite the guard; the plan entry carries
+`verdictGuard: "bypassed by operator <by>...: <guard reason>"`, the apply
+still writes its restore log before deleting, and a reviewer-only verdict
+stays refused exactly as before.
 
 ## Examples
 

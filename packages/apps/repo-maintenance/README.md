@@ -50,6 +50,24 @@ approval/escalation gate — deliberately not built here. `approve-reviewed`
 is the documented, unwired seam for that gate; the workflow applies nothing
 beyond `reclaim` refs, and only when `applyMerged` is true.
 
+### Operator approvals
+
+`branch_gc_verdict` accepts an optional `operator: { by, note? }` block. A
+reviewer verdict whose tip falls under `branch_gc`'s line-coverage guard
+(default 95%) is refused and stays in `review` — that refused list is the
+human queue. Recording an operator approval for the **same tip sha**
+(`gate.agree: true` plus the `operator` block, stored with `recordedAt`) is
+the human exit: `branch_gc` with `includeReviewed: true` then reclaims it
+despite the guard, and the plan entry shows
+`verdictGuard: "bypassed by operator <by>..."` with who approved. Apply still
+writes the restore log before deleting. These verdicts are shared with any
+other `includeReviewed`-enabled run (for example the weekly routine); this
+workflow's own apply step stays `includeReviewed: false`.
+
+Verdict recording is safe under concurrency: the store serialises writes per
+verdict file and uses an atomic rename, so the parallelism-4 review fan-out
+cannot lose a verdict.
+
 ## Installing
 
 ```bash
