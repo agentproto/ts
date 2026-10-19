@@ -47,12 +47,15 @@ The `maintain` workflow, one run:
    reclaimable ref or a review candidate) sends it through the daemon's
    provider-agnostic outbound primitive, `transmit_message` (`bind: false`,
    so it needs no session). The `notify` input is
-   `{ provider?, alias?, address? }`: `provider` defaults to `telegram` and
-   the legacy `channel` field is accepted as an alias of it, `alias` names
-   the imported MCP alias (agentpush) or bot-token alias (telegram), and
-   `address` is the recipient chat id / `contact_ref`. No `bash` allowlist or
-   `AGENTPUSH_API_KEY` is involved. A provider that is not configured on the
-   daemon does not fail the run: the report ends with
+   `{ provider?, alias?, address?, source? }`: `provider` defaults to
+   `telegram` (only `telegram` and `agentpush` are implemented), `alias`
+   names the imported MCP alias (agentpush) or bot-token alias (telegram),
+   `address` is the recipient chat id / `contact_ref`, and `source` is
+   agentpush's channel (required for agentpush, ignored by telegram). The
+   legacy `channel` field still works: `channel: telegram|agentpush` names
+   the provider, any other value is the agentpush channel. No `bash`
+   allowlist or `AGENTPUSH_API_KEY` is involved. A provider that is not
+   configured on the daemon does not fail the run: the report ends with
    `notify skipped: <reason>`. The report lists the reviewed branches
    reclaimed and any approvals the line-coverage guard refused.
 

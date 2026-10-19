@@ -68,11 +68,14 @@ WORKFLOW.md's own doc for how agreed verdicts are applied under
 3. If `notify` is kept, make sure its provider is configured on the daemon.
    The notify step goes through `transmit_message` (`bind: false`): the
    default `provider: telegram` needs a bot token from
-   `telegram_bot_token_set`, and `provider: agentpush` needs the imported MCP
-   alias named by `notify.alias`. The legacy `channel` field still works as
-   an alias of `provider`. An unconfigured provider does not fail the run:
-   the report ends with `notify skipped: <reason>`. No `bash` allowlist or
-   `AGENTPUSH_API_KEY` is needed.
+   `telegram_bot_token_set` and ignores `source`; `provider: agentpush` needs
+   the imported MCP alias in `notify.alias`, the agentpush channel in
+   `notify.source`, and the recipient in `notify.address`. The legacy
+   `channel` field still works: `channel: telegram|agentpush` names the
+   provider, any other value is the agentpush channel. An unconfigured
+   provider does not fail the run: the report ends with
+   `notify skipped: <reason>`. No `bash` allowlist or `AGENTPUSH_API_KEY` is
+   needed.
 4. Reload routines so the daemon registers the schedule, or fire it once
    ad-hoc via `routine_trigger` without waiting for the schedule.
 

@@ -279,6 +279,35 @@ describe("repo-maintenance maintain workflow — shape", () => {
     })
     expect(compiled.id).toBe("maintain")
   })
+
+  it("maps the notify input to a provider-agnostic transmit_message target", async () => {
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const plan = handle.steps.find(s => s.id === "notifyPlan") as unknown as {
+      compute: (b: unknown) => Record<string, unknown>
+    }
+    const run = (notify: unknown) => plan.compute({ input: { notify }, steps: { report: "REPORT" } })
+
+    // agentpush: source is the agentpush channel, address the recipient.
+    expect(run({ provider: "agentpush", alias: "my-ap", address: "alice", source: "whatsapp" })).toMatchObject({
+      provider: "agentpush",
+      alias: "my-ap",
+      source: "whatsapp",
+      contactRef: "alice",
+      text: "REPORT",
+    })
+    // Legacy channel: `telegram`/`agentpush` name the provider...
+    expect(run({ channel: "telegram", address: "carol" })).toMatchObject({ provider: "telegram", contactRef: "carol" })
+    // ...any other value is the agentpush channel (the old meaning).
+    expect(run({ channel: "whatsapp", address: "bob" })).toMatchObject({
+      provider: "agentpush",
+      source: "whatsapp",
+      contactRef: "bob",
+    })
+    // Default provider, and telegram mirrors address into the required source.
+    expect(run({ address: "dave" })).toMatchObject({ provider: "telegram", source: "dave", contactRef: "dave" })
+    // agentpush never substitutes the recipient for the channel.
+    expect(run({ provider: "agentpush", alias: "my-ap", address: "erin" }).source).toBeUndefined()
+  })
 })
 
 describe("repo-maintenance maintain workflow — run (fake tools + fake agent)", () => {
@@ -496,6 +525,53 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
 
     const result = output as { report: string }
     expect(result.report).toContain("notify skipped: telegram_creds_not_configured")
+  })
+
+  it("dispatches agentpush's channel as source and the recipient as contact_ref", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "transmit_message") return mcpResult({ sent: true, bound: false, message_id: "m" })
+      throw new Error(`unexpected tool '${name}'`)
+    })
+
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: {
+        repoRoot: "/repo",
+        applyMerged: false,
+        applyReviewed: false,
+        notify: { provider: "agentpush", alias: "my-agentpush", address: "alice", source: "whatsapp" },
+      },
+    })
+
+    const notifyCall = calls.find(c => c.name === "transmit_message")
+    expect(notifyCall).toBeDefined()
+    expect(notifyCall!.inputs).toMatchObject({
+      provider: "agentpush",
+      alias: "my-agentpush",
+      source: "whatsapp",
+      contact_ref: "alice",
+      bind: false,
+    })
   })
 
   it("applyReviewed applies with includeReviewed true and reports reclaimed reviewed branches + guard refusals", async () => {

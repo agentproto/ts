@@ -70,12 +70,16 @@ inputs:
   notify:
     type: object
     description: >-
-      Optional operator notification target (`{ provider?, alias?, address? }`)
-      to notify with the report when set. Omit for no notification. `provider`
-      defaults to `telegram`; the legacy `channel` field is accepted as an
-      alias of `provider`. `alias` picks the imported MCP alias (agentpush) or
-      bot-token alias (telegram). `address` is the recipient (telegram chat id
-      / agentpush contact_ref).
+      Optional operator notification target
+      (`{ provider?, alias?, address?, source? }`) to notify with the report
+      when set. Omit for no notification. `provider` defaults to `telegram`
+      (the daemon's own bot token); `agentpush` is the only other implemented
+      provider. `alias` picks the imported MCP alias (agentpush) or bot-token
+      alias (telegram). `address` is the recipient (telegram chat id /
+      agentpush contact_ref). `source` is agentpush's channel (required for
+      agentpush) and is ignored by telegram. The legacy `channel` field:
+      `channel: telegram|agentpush` names the provider, any other value is the
+      agentpush channel.
 outputs: {}
 steps:
   - id: modelRoles
@@ -376,17 +380,32 @@ primitive, `transmit_message`, with `bind: false` so it needs no session. Set
 the `notify` input to choose where the report goes:
 
 ```yaml
+# Telegram (default): the daemon's own bot token, set with telegram_bot_token_set
 notify:
-  provider: telegram          # default; also: agentpush, whatsapp, slack, generic, native
-  address: "<chat id or contact_ref>"
-  # alias: <imported MCP alias (agentpush) or bot-token alias (telegram)>
+  provider: telegram
+  address: "<telegram chat id>"
+
+# agentpush (imported MCP): alias is required; source is the agentpush channel
+notify:
+  provider: agentpush
+  alias: "<imported MCP alias>"
+  address: "<recipient contact_ref>"
+  source: "<agentpush channel>"
 ```
 
-`provider` defaults to `telegram` (the daemon's own bot token, set with
-`telegram_bot_token_set`); the legacy `channel` field is accepted as an alias
-of `provider`, so an existing `{ channel: telegram, address: ... }` keeps
-working. For `provider: agentpush`, `alias` names the imported MCP alias
-(required) and `address` is the recipient `contact_ref`.
+`provider` defaults to `telegram`; only `telegram` and `agentpush` are
+implemented by `sendOutbound` today (whatsapp, slack, generic and native are
+declared in the tool schema but return `unsupported_provider`, so they are not
+advertised here). `provider: telegram` uses the daemon's own bot token
+(`telegram_bot_token_set`) and ignores `source`; `provider: agentpush` needs
+`alias`, `source` (the agentpush channel) and `address` (the recipient
+`contact_ref`).
+
+The legacy `channel` field used to name the agentpush destination channel:
+`channel: telegram` or `channel: agentpush` now names the provider, while any
+other channel value still means agentpush with that value as `source`. An
+agentpush send with no channel is skipped with a reason, never sent with the
+recipient standing in for the channel.
 
 No `bash` allowlist entry and no `AGENTPUSH_API_KEY` are needed. A provider
 that is not configured on the daemon (no bot token, no imported alias for the

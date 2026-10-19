@@ -79,10 +79,13 @@ environment, set or drop `target.inputs.notify`, then reload routines. If
 `notify` is kept, make sure its provider is configured on the daemon: the
 notify step goes through `transmit_message` (`bind: false`), so the default
 `provider: telegram` needs a bot token from `telegram_bot_token_set` and
-`provider: agentpush` needs the imported MCP alias named by `notify.alias`.
-An unconfigured provider does not fail the run: the report ends with
-`notify skipped: <reason>`. No `bash` allowlist or `AGENTPUSH_API_KEY` is
-needed.
+ignores `source`, while `provider: agentpush` needs the imported MCP alias in
+`notify.alias`, the agentpush channel in `notify.source`, and the recipient
+in `notify.address`. The legacy `channel` field still works:
+`channel: telegram|agentpush` names the provider, any other value is the
+agentpush channel. An unconfigured provider does not fail the run: the report
+ends with `notify skipped: <reason>`. No `bash` allowlist or
+`AGENTPUSH_API_KEY` is needed.
 
 Enable ONLY after you've watched `repo-maintenance-daily` run clean a few
 times — this routine deletes branches and worktrees, the daily one never

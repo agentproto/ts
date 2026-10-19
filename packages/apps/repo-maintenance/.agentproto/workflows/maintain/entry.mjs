@@ -691,9 +691,11 @@ export default {
     notify: {
       type: "object",
       description:
-        "Optional operator notification target (`{ provider?, alias?, address? }`) to notify with the report when set. " +
-        "Omit for no notification. `provider` defaults to `telegram`; the legacy `channel` field is accepted as an alias of `provider`. " +
-        "`alias` picks the imported MCP alias (agentpush) or bot-token alias (telegram). `address` is the recipient (telegram chat id / agentpush contact_ref).",
+        "Optional operator notification target (`{ provider?, alias?, address?, source? }`) to notify with the report when set. " +
+        "Omit for no notification. `provider` defaults to `telegram` (the daemon's own bot token); `agentpush` is the only other implemented provider. " +
+        "`alias` picks the imported MCP alias (agentpush) or bot-token alias (telegram). `address` is the recipient (telegram chat id / agentpush contact_ref). " +
+        "`source` is agentpush's channel (required for agentpush) and is ignored by telegram. " +
+        "The legacy `channel` field: `channel: telegram|agentpush` names the provider, any other value is the agentpush channel.",
     },
   },
   outputs: {},
@@ -892,22 +894,30 @@ export default {
     },
     {
       // Build the provider-agnostic `transmit_message` input from the
-      // `notify` input: `{ provider?, alias?, address? }`, with `channel`
-      // accepted as a back-compat alias of `provider`. The engine does not
-      // apply `inputs.*.default`, so the provider fallback (`telegram`, the
-      // daemon's own bot-token path) lives here. `targets` is a one-element
-      // array so the send below can be a tolerant (`onError: "collect"`)
-      // map — an unconfigured provider must not fail the run.
+      // `notify` input: `{ provider?, alias?, address?, source? }`. `provider`
+      // defaults to `telegram` (the daemon's own bot-token path). `channel`
+      // is accepted as a legacy alias: `channel: telegram|agentpush` names the
+      // provider, while any other channel value is the agentpush destination
+      // channel (the old meaning of `channel`) and selects provider
+      // `agentpush`. `source` is agentpush's channel; it is never inferred
+      // from `address`, and an agentpush send with no channel is skipped with
+      // a reason rather than misrouted. Telegram ignores `source`. The engine
+      // does not apply `inputs.*.default`, so the fallback lives here.
+      // `targets` is a one-element array so the send below can be a tolerant
+      // (`onError: "collect"`) map — an unconfigured provider must not fail
+      // the run.
       id: "notifyPlan",
       kind: "transform",
       compute: b => {
         const n = b.input?.notify ?? {}
         const address = n.address
+        const provider = n.provider || (n.channel === "telegram" ? "telegram" : n.channel ? "agentpush" : "telegram")
+        const source = n.source || (provider === "agentpush" ? n.channel : address)
         return {
           targets: [true],
-          provider: n.provider || n.channel || "telegram",
+          provider,
           alias: n.alias,
-          source: n.source || address,
+          source,
           contactRef: address,
           text: String(b.steps.report ?? "").slice(0, 3500),
         }
