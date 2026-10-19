@@ -33,6 +33,17 @@ export {
 } from "./build.js"
 export type { BuildQuotaStatusInput } from "./build.js"
 export { QuotaReaderRegistry, defineQuotaReader } from "./registry.js"
+
+/**
+ * Catalog watch domain: pure diff of two priced catalog snapshots.
+ */
+export { diffCatalog } from "./catalog-diff.js"
+export type {
+  CatalogDiff,
+  CatalogPriceChange,
+  CatalogSnapshot,
+  CatalogSnapshotEntry,
+} from "./catalog-diff.js"
 export { quotaFromAnthropicHeaders } from "./readers/anthropic.js"
 export { quotaFromCodexRateLimits } from "./readers/codex.js"
 export type {
