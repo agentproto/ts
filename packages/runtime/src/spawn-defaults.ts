@@ -44,9 +44,10 @@ export interface McpDefaultsConfig {
    *  stays eager, byte-identical to pre-existing behaviour — turning this
    *  on is a deliberate operator opt-in. Independent of the per-role
    *  default (`RoleProfile.deferredTools`, on for `executor`), the
-   *  harness default (`nativeToolSearch` ⇒ eager) and the
-   *  per-spawn `agent_start.deferredTools` override, and independent of
-   *  the per-mount `?deferred=1|0` query override on `/mcp` — this is only
+   *  harness defaults (`nativeToolSearch` ⇒ eager;
+   *  `deferredToolDiscovery` absent/false ⇒ eager) and the per-spawn
+   *  `agent_start.deferredTools` override, and independent of the
+   *  per-mount `?deferred=1|0` query override on `/mcp` — this is only
    *  the BOOT-TIME default for connections that specify neither. */
   deferredTools?: DeferredToolsConfig
 }

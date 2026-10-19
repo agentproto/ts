@@ -59,9 +59,13 @@ export interface RoleProfile {
    * loading (harness-parity item 3 — see `deferred-tools.ts`). Applied to
    * the injected `mcpServers` entry (`session-spawn.ts`'s
    * `shouldInjectDaemonSelfMount` path) as `?deferred=1|0` when the spawn
-   * itself didn't pass an explicit `deferredTools` override. Undefined ⇒
-   * no role-level opinion, the gateway's own boot-time default
-   * (`defaults.mcp.deferredTools` in config.json) applies unchanged.
+   * itself didn't pass an explicit `deferredTools` override AND the adapter
+   * declares `capabilities.deferredToolDiscovery: true` (a harness that
+   * validates calls against its last `tools/list` is always eager — it
+   * cannot call a tool `tool_search` only described). Undefined ⇒ no
+   * role-level opinion, the gateway's own boot-time default
+   * (`defaults.mcp.deferredTools` in config.json) applies unchanged (same
+   * capability gate).
    */
   deferredTools?: boolean
   /**

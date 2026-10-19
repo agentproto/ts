@@ -1564,13 +1564,17 @@ export interface SpawnAgentSessionInput {
   /** Per-spawn override for the daemon self-mount's deferred/lazy
    *  `tools/list` loading (harness-parity item 3 — see `deferred-tools.ts`).
    *  Wins over a harness with native tool search (manifest
-   *  `capabilities.nativeToolSearch` ⇒ eager) and the resolved role's own
-   *  default (`RoleProfile.deferredTools` — on for `executor`), which only
-   *  apply when this is omitted (`resolveSpawnDeferredTools`). Threaded onto the injected `mcpServers` self-mount ref as
-   *  `?deferred=1|0` (`shouldInjectDaemonSelfMount` path below); has no
-   *  effect on a caller-supplied `mcpServers` (that URL is the caller's to
-   *  compose). Omitted entirely ⇒ no override at all — the gateway's own
-   *  boot-time `defaults.mcp.deferredTools` default applies unchanged. */
+   *  `capabilities.nativeToolSearch` ⇒ eager), a harness that cannot call a
+   *  tool omitted from its last `tools/list` (manifest
+   *  `capabilities.deferredToolDiscovery` absent/false ⇒ eager), and the
+   *  resolved role's own default (`RoleProfile.deferredTools` — on for
+   *  `executor`), which only apply when this is omitted
+   *  (`resolveSpawnDeferredTools`). Threaded onto the injected `mcpServers`
+   *  self-mount ref as `?deferred=1|0` (`shouldInjectDaemonSelfMount` path
+   *  below); has no effect on a caller-supplied `mcpServers` (that URL is
+   *  the caller's to compose). Omitted entirely ⇒ no override at all — the
+   *  gateway's own boot-time `defaults.mcp.deferredTools` default applies
+   *  unchanged, unless the harness lacks `deferredToolDiscovery`. */
   deferredTools?: boolean
   /** Give the agent its own isolated headless Chrome: a per-session
    *  chrome-devtools-mcp stdio server appended to `mcpServers` (named
