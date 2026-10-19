@@ -650,6 +650,23 @@ export function buildReport(b) {
   return lines.join("\n")
 }
 
+/** The human-readable reason from a `transmit_message` rejection: its
+ *  `unwrapDispatchResult` error is the tool's own JSON payload, so prefer the
+ *  `error`/`blocked_reason` field over the raw string when it parses. */
+function notifySkipReason(error) {
+  const raw = String(error ?? "unknown")
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.error === "string" && parsed.error) return parsed.error
+      if (typeof parsed.blocked_reason === "string" && parsed.blocked_reason) return parsed.blocked_reason
+    }
+  } catch {
+    // Not the tool's JSON payload — fall back to the raw message.
+  }
+  return raw
+}
+
 export default {
   name: "Repo Maintenance",
   id: "maintain",
@@ -658,7 +675,7 @@ export default {
     "`maxReviews` unreviewed branch candidates, newest first (small model for " +
     "a small residual, large model otherwise), verify every candidate got a " +
     "verdict, optionally apply " +
-    "(reclaim-only) worktree/branch gc, and report — plus an agentpush " +
+    "(reclaim-only) worktree/branch gc, and report — plus an operator " +
     "notification when `notify` is set.",
   version: "0.1.0",
   inputs: {
@@ -673,7 +690,12 @@ export default {
     reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). The report lists each verdict and the removal command when the reviewer agreed; nothing is removed automatically. Default true.`, default: true },
     notify: {
       type: "object",
-      description: "Optional agentpush `to` target ({ channel, address }) to notify with the report when set. Omit for no notification.",
+      description:
+        "Optional operator notification target (`{ provider?, alias?, address?, source? }`) to notify with the report when set. " +
+        "Omit for no notification. `provider` defaults to `telegram` (the daemon's own bot token); `agentpush` is the only other implemented provider. " +
+        "`alias` picks the imported MCP alias (agentpush) or bot-token alias (telegram). `address` is the recipient (telegram chat id / agentpush contact_ref). " +
+        "`source` is agentpush's channel (required for agentpush) and is ignored by telegram. " +
+        "The legacy `channel` field: `channel: telegram|agentpush` names the provider, any other value is the agentpush channel.",
     },
   },
   outputs: {},
@@ -871,9 +893,48 @@ export default {
       compute: b => buildReport(b),
     },
     {
-      id: "notifyBody",
+      // Build the provider-agnostic `transmit_message` input from the
+      // `notify` input: `{ provider?, alias?, address?, source? }`. `provider`
+      // defaults to `telegram` (the daemon's own bot-token path). `channel`
+      // is accepted as a legacy alias: `channel: telegram|agentpush` names the
+      // provider, while any other channel value is the agentpush destination
+      // channel (the old meaning of `channel`) and selects provider
+      // `agentpush`. `source` is agentpush's channel; it is never inferred
+      // from `address`, and an agentpush send with no channel is skipped with
+      // a reason rather than misrouted. Telegram ignores `source`. The engine
+      // does not apply `inputs.*.default`, so the fallback lives here.
+      // `targets` is a one-element array so the send below can be a tolerant
+      // (`onError: "collect"`) map — an unconfigured provider must not fail
+      // the run.
+      id: "notifyPlan",
       kind: "transform",
-      compute: b => JSON.stringify({ to: b.input?.notify, content: { text: String(b.steps.report ?? "").slice(0, 3500) } }),
+      compute: b => {
+        const configured = !!b.input?.notify
+        const n = b.input?.notify ?? {}
+        const address = n.address
+        // `channel` is a legacy alias: `telegram`/`agentpush` name the
+        // provider, so they are NOT a channel value; anything else is the
+        // agentpush destination channel.
+        const legacyChannel = n.channel === "telegram" || n.channel === "agentpush" ? undefined : n.channel
+        const provider = n.provider || (n.channel ? (legacyChannel ? "agentpush" : n.channel) : "telegram")
+        const source = n.source || (provider === "agentpush" ? legacyChannel : address)
+        // Only a CONFIGURED notify target can be under-specified; with no
+        // `notify` input there is simply nothing to check.
+        let skipReason
+        if (configured && !address) skipReason = "address required"
+        else if (configured && provider === "agentpush" && !source) skipReason = "agentpush source/channel required"
+        return {
+          // Empty when the target is under-specified: the send is skipped
+          // with a clean reason instead of failing transmit_message's schema.
+          targets: skipReason ? [] : [true],
+          ...(skipReason ? { skipReason } : {}),
+          provider,
+          alias: n.alias,
+          source,
+          contactRef: address,
+          text: String(b.steps.report ?? "").slice(0, 3500),
+        }
+      },
     },
     {
       // Notify only when `notify` is set AND there is something to report
@@ -897,25 +958,65 @@ export default {
       kind: "branch",
       branches: [{ when: "$steps.shouldNotify", next: "notify" }],
       default: "skip-notify",
+      join: "reportFinal",
     },
     {
+      // A notification is best-effort: `onError: "collect"` turns a rejected
+      // send (unconfigured provider, missing alias, unapproved template) into
+      // a recorded outcome instead of aborting the run. `reportFinal` folds
+      // that outcome into the report.
       id: "notify",
-      kind: "tool",
-      tool: "command_execute",
-      inputs: {
-        command: "bash",
-        args: [
-          "-c",
-          'curl -s --max-time 30 -X POST -H "Authorization: Bearer ${AGENTPUSH_API_KEY:-}" ' +
-            '-H "Content-Type: application/json" https://api.agentpush.io/tools/send_message --data-binary @-',
-        ],
-        stdin: "$steps.notifyBody",
-      },
+      kind: "map",
+      over: "$steps.notifyPlan.targets",
+      parallelism: 1,
+      onError: "collect",
+      steps: [
+        {
+          id: "notifySend",
+          kind: "tool",
+          tool: "transmit_message",
+          inputs: {
+            provider: "$steps.notifyPlan.provider",
+            alias: "$steps.notifyPlan.alias",
+            source: "$steps.notifyPlan.source",
+            contact_ref: "$steps.notifyPlan.contactRef",
+            text: "$steps.notifyPlan.text",
+            bind: false,
+          },
+        },
+      ],
     },
     {
       id: "skip-notify",
       kind: "gate",
       command: "true",
+    },
+    {
+      // Append the delivery outcome so an unconfigured/skipped provider is
+      // visible in the run report instead of silently vanishing.
+      id: "reportFinal",
+      kind: "transform",
+      compute: b => {
+        const base = String(b.steps.report ?? "")
+        // A target notifyPlan already knew it could not deliver (missing
+        // address, agentpush with no channel) never reached transmit_message.
+        // Gated on `shouldNotify`: a run that never requested a notification
+        // (no `notify`, or nothing to report) must not grow a skip line.
+        const planned = b.steps.notifyPlan
+        if (
+          b.steps.shouldNotify === true &&
+          planned &&
+          typeof planned === "object" &&
+          typeof planned.skipReason === "string"
+        ) {
+          return `${base}\n\nnotify skipped: ${planned.skipReason}`
+        }
+        const fan = b.steps.notify
+        if (!fan || typeof fan !== "object" || (fan.succeeded ?? 0) > 0) return base
+        const first = Array.isArray(fan.results) ? fan.results[0] : undefined
+        if (!first || first.status !== "rejected") return base
+        return `${base}\n\nnotify skipped: ${notifySkipReason(first.error)}`
+      },
     },
   ],
   // Always runs — success, failure or cancel: no review worktree outlives the run.
@@ -928,7 +1029,7 @@ export default {
     },
   ],
   result: {
-    report: "$steps.report",
+    report: "$steps.reportFinal",
     gaps: "$steps.gaps",
     applyMerged: "$input.applyMerged",
     applyReviewed: "$input.applyReviewed",

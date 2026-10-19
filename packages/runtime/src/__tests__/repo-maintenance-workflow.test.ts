@@ -266,17 +266,62 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "branchGcApply:tool",
       "checkpointGcApply:tool",
       "report:transform",
-      "notifyBody:transform",
+      "notifyPlan:transform",
       "shouldNotify:transform",
       "maybeNotify:branch",
-      "notify:tool",
+      "notify:map",
       "skip-notify:gate",
+      "reportFinal:transform",
     ])
     const compiled = compileWorkflow(handle, {
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
     expect(compiled.id).toBe("maintain")
+  })
+
+  it("maps the notify input to a provider-agnostic transmit_message target", async () => {
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const plan = handle.steps.find(s => s.id === "notifyPlan") as unknown as {
+      compute: (b: unknown) => Record<string, unknown>
+    }
+    const run = (notify: unknown) => plan.compute({ input: { notify }, steps: { report: "REPORT" } })
+
+    // agentpush: source is the agentpush channel, address the recipient.
+    expect(run({ provider: "agentpush", alias: "my-ap", address: "alice", source: "whatsapp" })).toMatchObject({
+      provider: "agentpush",
+      alias: "my-ap",
+      source: "whatsapp",
+      contactRef: "alice",
+      text: "REPORT",
+    })
+    // Legacy channel: `telegram`/`agentpush` name the provider...
+    expect(run({ channel: "telegram", address: "carol" })).toMatchObject({ provider: "telegram", contactRef: "carol" })
+    // ...any other value is the agentpush channel (the old meaning).
+    expect(run({ channel: "whatsapp", address: "bob" })).toMatchObject({
+      provider: "agentpush",
+      source: "whatsapp",
+      contactRef: "bob",
+    })
+    // Default provider, and telegram mirrors address into the required source.
+    expect(run({ address: "dave" })).toMatchObject({ provider: "telegram", source: "dave", contactRef: "dave" })
+    // agentpush never substitutes the recipient for the channel: no source
+    // means no send, with a clean skipReason instead of a schema failure.
+    const noChannel = run({ provider: "agentpush", alias: "my-ap", address: "erin" })
+    expect(noChannel.source).toBeUndefined()
+    expect(noChannel.skipReason).toBe("agentpush source/channel required")
+    expect(noChannel.targets).toEqual([])
+    // `channel: agentpush` names the provider, not a channel: same skip.
+    const keywordChannel = run({ channel: "agentpush", alias: "my-ap", address: "frank" })
+    expect(keywordChannel.provider).toBe("agentpush")
+    expect(keywordChannel.source).toBeUndefined()
+    expect(keywordChannel.skipReason).toBe("agentpush source/channel required")
+    expect(keywordChannel.targets).toEqual([])
+    // A missing address is skipped before any schema validation too.
+    expect(run({ provider: "telegram" }).skipReason).toBe("address required")
+    // No notify input at all: nothing to check, no skipReason.
+    expect(run(undefined).skipReason).toBeUndefined()
+    expect(run(undefined).targets).toEqual([true])
   })
 })
 
@@ -355,11 +400,13 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(worktreeGcCalls[0]!.inputs).toMatchObject({ apply: false, wait: true })
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: false, wait: true })
 
-    // command_execute (the notify step) is never dispatched — no notify
+    // transmit_message (the notify step) is never dispatched — no notify
     // input was given at all.
-    expect(calls.some(c => c.name === "command_execute")).toBe(false)
+    expect(calls.some(c => c.name === "transmit_message")).toBe(false)
 
     const result = output as { report: string; gaps: Array<{ name: string }>; applyMerged: boolean }
+    // No notify input: the report must not grow a skip line.
+    expect(result.report).not.toContain("notify skipped")
     expect(result.applyMerged).toBe(false)
     expect(result.gaps).toEqual([{ name: "wt/large-residual", sha: SHA_B, refs: ["refs/heads/wt/large-residual"] }])
     expect(result.report).toMatch(/wt\/large-residual/)
@@ -395,8 +442,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       if (name === "branch_gc_verdict_get") {
         return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
       }
-      if (name === "command_execute") {
-        return mcpResult({ exitCode: 0, stdout: "", stderr: "" })
+      if (name === "transmit_message") {
+        return mcpResult({ sent: true, bound: false, message_id: "msg-1" })
       }
       if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
@@ -427,17 +474,162 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const worktreeGcCalls = calls.filter(c => c.name === "worktree_gc")
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: true, salvageDirty: false, wait: true })
 
-    const notifyCall = calls.find(c => c.name === "command_execute")
+    const notifyCall = calls.find(c => c.name === "transmit_message")
     expect(notifyCall).toBeDefined()
-    const stdin = notifyCall!.inputs.stdin as string
-    const body = JSON.parse(stdin) as { to: unknown; content: { text: string } }
-    expect(body.to).toEqual({ channel: "telegram", address: "chat-1" })
-    expect(body.content.text).toMatch(/wt\/large-residual/)
+    expect(notifyCall!.inputs.provider).toBe("telegram")
+    expect(notifyCall!.inputs.contact_ref).toBe("chat-1")
+    expect(notifyCall!.inputs.bind).toBe(false)
+    expect(typeof notifyCall!.inputs.text).toBe("string")
+    expect(notifyCall!.inputs.text).toMatch(/wt\/large-residual/)
 
     const result = output as { applyMerged: boolean; report: string }
     expect(result.applyMerged).toBe(true)
     // The apply's real outcomes reach the report, not a background jobId.
     expect(result.report).toContain("worktree_gc: 1 outcome(s) — reclaimed=1")
+    // A successful send adds no skip note.
+    expect(result.report).not.toContain("notify skipped")
+  })
+
+  it("does not fail the run when the notify provider is unconfigured; the report records the skip", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "transmit_message") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ sent: false, bound: false, error: "telegram_creds_not_configured" }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      throw new Error(`unexpected tool '${name}'`)
+    })
+
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: {
+        repoRoot: "/repo",
+        applyMerged: false,
+        applyReviewed: false,
+        notify: { provider: "telegram", address: "chat-1" },
+      },
+    })
+
+    const notifyCall = calls.find(c => c.name === "transmit_message")
+    expect(notifyCall).toBeDefined()
+    expect(notifyCall!.inputs.bind).toBe(false)
+
+    const result = output as { report: string }
+    expect(result.report).toContain("notify skipped: telegram_creds_not_configured")
+  })
+
+  it("dispatches agentpush's channel as source and the recipient as contact_ref", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "transmit_message") return mcpResult({ sent: true, bound: false, message_id: "m" })
+      throw new Error(`unexpected tool '${name}'`)
+    })
+
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: {
+        repoRoot: "/repo",
+        applyMerged: false,
+        applyReviewed: false,
+        notify: { provider: "agentpush", alias: "my-agentpush", address: "alice", source: "whatsapp" },
+      },
+    })
+
+    const notifyCall = calls.find(c => c.name === "transmit_message")
+    expect(notifyCall).toBeDefined()
+    expect(notifyCall!.inputs).toMatchObject({
+      provider: "agentpush",
+      alias: "my-agentpush",
+      source: "whatsapp",
+      contact_ref: "alice",
+      bind: false,
+    })
+  })
+
+  it("skips instead of dispatching when the legacy channel is the provider keyword agentpush", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "transmit_message") return mcpResult({ sent: true, bound: false })
+      throw new Error(`unexpected tool '${name}'`)
+    })
+
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: {
+        repoRoot: "/repo",
+        applyMerged: false,
+        applyReviewed: false,
+        notify: { channel: "agentpush", alias: "my-agentpush", address: "alice" },
+      },
+    })
+
+    expect(calls.some(c => c.name === "transmit_message")).toBe(false)
+    const result = output as { report: string }
+    expect(result.report).toContain("notify skipped: agentpush source/channel required")
   })
 
   it("applyReviewed applies with includeReviewed true and reports reclaimed reviewed branches + guard refusals", async () => {

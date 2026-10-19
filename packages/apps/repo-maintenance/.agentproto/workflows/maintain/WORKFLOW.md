@@ -5,7 +5,7 @@ description: >-
   Plan worktree_gc + branch_gc, fan a review agent out over up to
   `maxReviews` unreviewed branch candidates, newest first (small model for a
   small residual, large model otherwise), verify every candidate got a verdict, optionally apply
-  (reclaim-only) worktree/branch gc, and report — plus an agentpush
+  (reclaim-only) worktree/branch gc, and report — plus an operator
   notification when `notify` is set. Entry-based (see entry.mjs): the
   `review` map step's per-candidate model selector is a real run-time
   function, which the pure-.md path cannot express (`defineWorkflow` rejects
@@ -70,8 +70,16 @@ inputs:
   notify:
     type: object
     description: >-
-      Optional agentpush `to` target ({ channel, address }) to notify with
-      the report when set. Omit for no notification.
+      Optional operator notification target
+      (`{ provider?, alias?, address?, source? }`) to notify with the report
+      when set. Omit for no notification. `provider` defaults to `telegram`
+      (the daemon's own bot token); `agentpush` is the only other implemented
+      provider. `alias` picks the imported MCP alias (agentpush) or bot-token
+      alias (telegram). `address` is the recipient (telegram chat id /
+      agentpush contact_ref). `source` is agentpush's channel (required for
+      agentpush) and is ignored by telegram. The legacy `channel` field:
+      `channel: telegram|agentpush` names the provider, any other value is the
+      agentpush channel.
 outputs: {}
 steps:
   - id: modelRoles
@@ -255,10 +263,15 @@ steps:
     name: Build the markdown summary
     description: Entry-based — see entry.mjs's buildReport.
 
-  - id: notifyBody
+  - id: notifyPlan
     kind: transform
-    name: Format the agentpush notification body
-    description: Entry-based — turns the report into agentpush's send_message JSON body.
+    name: Resolve the provider-agnostic notification target
+    description: >-
+      Entry-based — turns the `notify` input into a `transmit_message` call
+      (`provider`, `alias`, `source`, `contact_ref`, `text`), defaulting the
+      provider to `telegram` and accepting `channel` as a legacy alias of it.
+      The engine does not apply `inputs.*.default`, so the fallback lives in
+      entry.mjs.
 
   - id: shouldNotify
     kind: transform
@@ -275,28 +288,44 @@ steps:
       - when: $steps.shouldNotify
         next: notify
     default: skip-notify
+    join: reportFinal
 
   - id: notify
-    kind: tool
-    name: Send the agentpush notification
-    tool: command_execute
-    inputs:
-      command: bash
-      args:
-        - "-c"
-        - >-
-          curl -s --max-time 30 -X POST -H "Authorization: Bearer
-          ${AGENTPUSH_API_KEY:-}" -H "Content-Type: application/json"
-          https://api.agentpush.io/tools/send_message --data-binary @-
-      stdin: $steps.notifyBody
+    kind: map
+    name: Send the operator notification
+    description: >-
+      One `transmit_message` send (provider-agnostic; `bind: false` so no
+      session is needed). `onError: "collect"` makes the send best-effort: an
+      unconfigured provider is reported as skipped, never fatal.
+    over: $steps.notifyPlan.targets
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: notifySend
+        kind: tool
+        tool: transmit_message
+        inputs:
+          provider: $steps.notifyPlan.provider
+          alias: $steps.notifyPlan.alias
+          source: $steps.notifyPlan.source
+          contact_ref: $steps.notifyPlan.contactRef
+          text: $steps.notifyPlan.text
+          bind: false
 
   - id: skip-notify
     kind: gate
     name: No notification requested
     command: "true"
 
+  - id: reportFinal
+    kind: transform
+    name: Append the notification outcome to the report
+    description: >-
+      Entry-based — appends `notify skipped: <reason>` when the send was
+      rejected (unconfigured provider, missing alias, unapproved template).
+
 result:
-  report: $steps.report
+  report: $steps.reportFinal
   gaps: $steps.gaps
   applyMerged: $input.applyMerged
   applyReviewed: $input.applyReviewed
@@ -310,7 +339,7 @@ result:
 `worktree_gc` + `branch_gc` + `sandbox_checkpoint_gc` plan → fan a reviewer
 agent out over every unmerged branch (small model for a small residual, large
 model otherwise) → verify every candidate got a verdict → optionally apply
-(reclaim-class only) → markdown report, plus an agentpush notification when
+(reclaim-class only) → markdown report, plus an operator notification when
 `notify` is set.
 
 Entry-based (`entry.mjs`) for one reason: `review`'s per-candidate `model`
@@ -346,6 +375,39 @@ the approvals the guard refused. Default false — see the app README,
 
 ## Enabling
 
-`command_execute` (the `notify` step) needs `bash` allowlisted in the
-workspace's `.agentproto/allowed-commands.json`, and `AGENTPUSH_API_KEY` set
-in the daemon's environment, before passing a `notify` input.
+The `notify` step delivers through the daemon's provider-agnostic outbound
+primitive, `transmit_message`, with `bind: false` so it needs no session. Set
+the `notify` input to choose where the report goes:
+
+```yaml
+# Telegram (default): the daemon's own bot token, set with telegram_bot_token_set
+notify:
+  provider: telegram
+  address: "<telegram chat id>"
+
+# agentpush (imported MCP): alias is required; source is the agentpush channel
+notify:
+  provider: agentpush
+  alias: "<imported MCP alias>"
+  address: "<recipient contact_ref>"
+  source: "<agentpush channel>"
+```
+
+`provider` defaults to `telegram`; only `telegram` and `agentpush` are
+implemented by `sendOutbound` today (whatsapp, slack, generic and native are
+declared in the tool schema but return `unsupported_provider`, so they are not
+advertised here). `provider: telegram` uses the daemon's own bot token
+(`telegram_bot_token_set`) and ignores `source`; `provider: agentpush` needs
+`alias`, `source` (the agentpush channel) and `address` (the recipient
+`contact_ref`).
+
+The legacy `channel` field used to name the agentpush destination channel:
+`channel: telegram` or `channel: agentpush` now names the provider, while any
+other channel value still means agentpush with that value as `source`. An
+agentpush send with no channel is skipped with a reason, never sent with the
+recipient standing in for the channel.
+
+No `bash` allowlist entry and no `AGENTPUSH_API_KEY` are needed. A provider
+that is not configured on the daemon (no bot token, no imported alias for the
+named alias) does not fail the run: the report ends with
+`notify skipped: <reason>`.

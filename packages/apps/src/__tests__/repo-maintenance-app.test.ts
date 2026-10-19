@@ -53,11 +53,12 @@ describe("repo-maintenance app", () => {
       "branchGcApply:tool",
       "checkpointGcApply:tool",
       "report:transform",
-      "notifyBody:transform",
+      "notifyPlan:transform",
       "shouldNotify:transform",
       "maybeNotify:branch",
-      "notify:tool",
+      "notify:map",
       "skip-notify:gate",
+      "reportFinal:transform",
     ])
     const reviewStep = workflow!.steps.find(s => s.id === "review") as {
       steps: Array<{ id: string; kind: string; agent?: { ref: string }; sessionRef?: string }>
@@ -180,6 +181,32 @@ describe("repo-maintenance app", () => {
     it("the reviewer AGENT.md references the review.large role instead of a model id", async () => {
       const { app } = await load()
       expect(app.agents[0]!.agent.model).toBe("role:review.large")
+    })
+  })
+
+  it("notifies through the provider-agnostic transmit_message primitive, not a hardcoded MCP alias", async () => {
+    const app = await loadAppHandle(APP_DIR)
+    const [workflow] = app.workflows
+    const inputs = (workflow as unknown as { inputs: Record<string, { default?: unknown }> }).inputs
+    expect(inputs.notifyAlias).toBeUndefined()
+
+    const notify = workflow!.steps.find(s => s.id === "notify") as {
+      kind: string
+      over: string
+      onError?: string
+      steps: Array<{ id: string; kind: string; tool: string; inputs: Record<string, unknown> }>
+    }
+    expect(notify.kind).toBe("map")
+    expect(notify.over).toBe("$steps.notifyPlan.targets")
+    expect(notify.onError).toBe("collect")
+    expect(notify.steps.map(s => `${s.id}:${s.kind}:${s.tool}`)).toEqual(["notifySend:tool:transmit_message"])
+    expect(notify.steps[0]!.inputs).toEqual({
+      provider: "$steps.notifyPlan.provider",
+      alias: "$steps.notifyPlan.alias",
+      source: "$steps.notifyPlan.source",
+      contact_ref: "$steps.notifyPlan.contactRef",
+      text: "$steps.notifyPlan.text",
+      bind: false,
     })
   })
 })

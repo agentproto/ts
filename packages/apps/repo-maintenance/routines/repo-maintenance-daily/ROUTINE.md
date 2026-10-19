@@ -21,7 +21,7 @@ target:
   inputs:
     applyMerged: false
     notify:
-      channel: telegram
+      provider: telegram
       address: "<REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID>"
 retry:
   max_attempts: 1
@@ -63,11 +63,19 @@ WORKFLOW.md's own doc for how agreed verdicts are applied under
 1. Copy this directory to `<workspace>/.routines/repo-maintenance-daily/`.
 2. Set `enabled: true`, update `target.workflow.file` to wherever this repo's
    `maintain/WORKFLOW.md` actually lives in that environment, and either
-   replace `target.inputs.notify` with your own agentpush target or delete
+   replace `target.inputs.notify` with your own target or delete
    the `notify` key entirely to run silently (report only, no page).
-3. If `notify` is kept, allowlist `bash` in that workspace's
-   `.agentproto/allowed-commands.json` (the workflow's `notify` step needs
-   it) and set `AGENTPUSH_API_KEY` in the daemon's environment.
+3. If `notify` is kept, make sure its provider is configured on the daemon.
+   The notify step goes through `transmit_message` (`bind: false`): the
+   default `provider: telegram` needs a bot token from
+   `telegram_bot_token_set` and ignores `source`; `provider: agentpush` needs
+   the imported MCP alias in `notify.alias`, the agentpush channel in
+   `notify.source`, and the recipient in `notify.address`. The legacy
+   `channel` field still works: `channel: telegram|agentpush` names the
+   provider, any other value is the agentpush channel. An unconfigured
+   provider does not fail the run: the report ends with
+   `notify skipped: <reason>`. No `bash` allowlist or `AGENTPUSH_API_KEY` is
+   needed.
 4. Reload routines so the daemon registers the schedule, or fire it once
    ad-hoc via `routine_trigger` without waiting for the schedule.
 
