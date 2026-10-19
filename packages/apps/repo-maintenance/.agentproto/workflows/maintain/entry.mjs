@@ -96,7 +96,10 @@ const REVIEW_PROMPT =
   "{{#item.compareBase}}, compare base {{item.compareBase}} (pre-rewrite history — commit " +
   "shas from that history do not exist on the current base; compare CONTENT, not shas){{/item.compareBase}}. " +
   "\n\nCoverage already proved what's in base by content: {{item.coverage}}. The residual files " +
-  "NOT provably in base are: {{item.residualFiles}}. Merge base: {{item.mergeBase}}. Merged tree " +
+  "NOT provably in base are: {{item.residualFiles}}. Line coverage of what this tip adds to those " +
+  "files ({ added, inBase, pct, missing: up to 12 added lines NOT verbatim in base's same path }): " +
+  "{{item.lineCoverage}} — \"base has the file\" is not evidence; account for the missing lines. " +
+  "An agreeing verdict under 95% line coverage is refused. Merge base: {{item.mergeBase}}. Merged tree " +
   "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
   "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
   "Refs of this branch (across its tips): {{item.refs}}." +
@@ -253,6 +256,8 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
     const seen = bySha.get(e.sha)
     if (seen) {
       seen.refs.push(e.ref)
+      // Refs sharing a tip: keep the line coverage from whichever carries it.
+      if (!seen.lineCoverage && e.lineCoverage) seen.lineCoverage = e.lineCoverage
       continue
     }
     bySha.set(e.sha, {
@@ -278,6 +283,7 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
       coverage: e.coverage ?? null,
       residualFiles: e.residualFiles ?? [],
       residualFileCount: e.residualFileCount ?? 0,
+      lineCoverage: e.lineCoverage ?? null,
       refs: [e.ref],
       ...(heldWorktreeOf(e, heldWorktrees) ? { worktree: heldWorktreeOf(e, heldWorktrees) } : {}),
     })

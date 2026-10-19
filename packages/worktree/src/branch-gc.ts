@@ -41,10 +41,31 @@
  *                   base's tree (any path — survives moves/reorgs) or
  *                   gitignored there, with zero `evolved` (same basename in
  *                   base, other content), zero `unique`, zero `deletes`
+ *   forge-mirror    (orphan refs only, checked BEFORE the ladder) the tip IS a
+ *                   `refs/pull/<N>/head` of the base remote (one `git
+ *                   ls-remote` per plan). GitHub keeps those forever, so the
+ *                   ref is a mirror, never the only copy — agents create them
+ *                   in bulk with `git fetch origin '+refs/pull/N/head:refs/remotes/pr/N'`.
+ *                   Its restore command re-fetches the PR head (the local
+ *                   commits may have been gc'd). ls-remote failing = no
+ *                   shortcut, the ladder runs as usual.
  *
  * Anything else is `unmerged` and — once older than `minAgeDays` and not
  * protected — becomes `review`, carrying everything a reviewer needs (coverage
- * summary, the files NOT provably in base, push state).
+ * summary, the files NOT provably in base, the share of added lines already in
+ * base, push state).
+ *
+ * LINE-COVERAGE GUARD. `evolved` only says "a file with that name exists in
+ * base" — always true for a file both sides edited — which a reviewer can
+ * mistake for "the change landed". So every unmerged tip also carries
+ * `lineCoverage`: of the non-trivial lines it adds to its evolved + unique
+ * files, the share found verbatim in base's version of the same path. A stored
+ * verdict with `gate.agree: true` only reclaims (`includeReviewed`) when that
+ * share is at least `minLineCoverage` (default 95); below it the entry stays
+ * `review` with `verdictGuard` saying why, and apply reports it as
+ * `refused-guard`. Ported from the reference script after a flash-model
+ * reviewer approved 158/167 tips citing "base has foo.ts", some at 0-15%
+ * line coverage.
  *
  * One ref family is classified against something other than base: a SANDBOX
  * CHECKPOINT branch (remote kind, name `agentproto-checkpoint/<work>` — the
@@ -84,8 +105,8 @@ export type BranchRefKind = (typeof BRANCH_GC_SCOPES)[number]
  *  against its WORK branch, not against base. */
 export const CHECKPOINT_BRANCH_PREFIX = "agentproto-checkpoint/"
 
-/** The verdict for one tip, in order of increasing cost (`pr-merged` is the forge shortcut that overrides an "unmerged" ladder verdict, not a check that skips the ladder). */
-export type BranchStatus = "pr-merged" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
+/** The verdict for one tip, in order of increasing cost (`pr-merged` is the forge shortcut that overrides an "unmerged" ladder verdict, not a check that skips the ladder; `forge-mirror` is the orphan-only shortcut that DOES skip it). */
+export type BranchStatus = "pr-merged" | "forge-mirror" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
 
 /**
  * `current`: the tip shares history with base. `pre-rewrite`: it doesn't, but
@@ -149,6 +170,21 @@ export interface BranchCoverage {
   deletes: number
 }
 
+/**
+ * Of the non-trivial lines (≥ 8 chars once trimmed) a tip adds to its evolved
+ * and unique files (`git diff -U0 mergeBase..tip`; lockfiles, images and
+ * `*.enc.env` skipped — their lines never match), how many exist verbatim in
+ * base's version of the same path. `pct` is 100 when nothing was added.
+ */
+export interface BranchLineCoverage {
+  added: number
+  inBase: number
+  /** One decimal, e.g. 87.5. */
+  pct: number
+  /** Up to 12 added lines NOT in base (each cut to 120 chars), in residual-file order. */
+  missing: Array<{ file: string; line: string }>
+}
+
 export interface TipClassification {
   status: BranchStatus
   history: BranchHistory
@@ -167,6 +203,8 @@ export interface TipClassification {
   /** The files a reviewer must look at: unique, then evolved, then deletes. Capped at 200. */
   residualFiles?: string[]
   residualFileCount?: number
+  /** Set for `unmerged`: see {@link BranchLineCoverage}. */
+  lineCoverage?: BranchLineCoverage
 }
 
 export interface BranchRef {
@@ -200,9 +238,13 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   holdDetail?: string
   /** Set when the status is `pr-merged`: the number of the merged PR whose head commit IS this tip. */
   mergedPr?: number
+  /** Set when the status is `forge-mirror`: the PR whose `refs/pull/<N>/head` IS this tip. */
+  forgePr?: number
   /** Set for unmerged local and orphan refs. */
   pushed?: BranchPushState
   verdict?: BranchVerdictSummary
+  /** Set when an agreeing verdict was REFUSED (`includeReviewed`), e.g. line coverage under `minLineCoverage`. */
+  verdictGuard?: string
 }
 
 export interface BranchGcPlan {
@@ -219,6 +261,10 @@ export interface BranchGcPlan {
   scopes: BranchRefKind[]
   minAgeDays: number
   includeReviewed: boolean
+  /** An agreeing verdict only reclaims when the tip's line coverage is at least this (percent). */
+  minLineCoverage: number
+  /** `git ls-remote <remote> refs/pull/<N>/head` for the forge-mirror shortcut: unavailable = no shortcut. */
+  forgeMirrorCheck: { available: boolean; reason?: string }
   generatedAt: string
   /** Refs of OTHER configured remotes: never classified, never touched. */
   otherRemoteRefs: number
@@ -543,6 +589,67 @@ async function coverage(ctx: LadderContext, tip: string, mergeBase: string): Pro
   return c
 }
 
+export const DEFAULT_MIN_LINE_COVERAGE = 95
+/** Lockfiles, images and sops-encrypted envs: their lines never match by construction. */
+const LINE_SKIP_RE = /(\.lock|lock\.ya?ml|package-lock\.json|\.enc\.env|\.(png|jpe?g|gif|webp|svg|ico|pdf))$/
+const LINE_MIN_LENGTH = 8
+const LINE_MISSING_CAP = 12
+
+/**
+ * {@link BranchLineCoverage} of `files` (the tip's evolved + unique files):
+ * per file, the `+` lines of `git diff -U0 mergeBase tip` against the set of
+ * trimmed lines of base's blob at the SAME path (none for a unique file). A
+ * file whose diff fails is skipped, never counted as covered.
+ */
+async function lineCoverage(ctx: LadderContext, tip: string, mergeBase: string, files: readonly string[]): Promise<BranchLineCoverage> {
+  const idx = await ctx.index()
+  const perFile = await pool(
+    files.filter((f) => !LINE_SKIP_RE.test(f)),
+    4,
+    async (file) => {
+      const d = await git(ctx.repoRoot, ["--literal-pathspecs", "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", "--no-textconv", mergeBase, tip, "--", file])
+      if (d.exitCode !== 0) return null
+      const blob = idx.byPath.get(file)
+      const baseLines = new Set<string>()
+      if (blob) {
+        const shown = await git(ctx.repoRoot, ["cat-file", "blob", blob])
+        if (shown.exitCode === 0) for (const l of shown.stdout.split("\n")) baseLines.add(l.trim())
+      }
+      let added = 0
+      let inBase = 0
+      const missing: BranchLineCoverage["missing"] = []
+      let inHunk = false
+      for (const l of d.stdout.split("\n")) {
+        // Everything before the first `@@` is the file header (`+++ b/…`).
+        if (l.startsWith("@@")) inHunk = true
+        if (!inHunk || !l.startsWith("+")) continue
+        const line = l.slice(1).trim()
+        if (line.length < LINE_MIN_LENGTH) continue
+        added++
+        if (baseLines.has(line)) inBase++
+        else if (missing.length < LINE_MISSING_CAP) missing.push({ file, line: line.slice(0, 120) })
+      }
+      return { added, inBase, missing }
+    },
+  )
+  let added = 0
+  let inBase = 0
+  const missing: BranchLineCoverage["missing"] = []
+  for (const r of perFile) {
+    if (!r) continue
+    added += r.added
+    inBase += r.inBase
+    for (const m of r.missing) if (missing.length < LINE_MISSING_CAP) missing.push(m)
+  }
+  return { added, inBase, pct: added ? Math.round((1000 * inBase) / added) / 10 : 100, missing }
+}
+
+/** Why an agreeing verdict must NOT reclaim this entry, or `null` when its line coverage backs it (or was never computed). */
+export function lineCoverageGuard(lc: BranchLineCoverage | undefined, minLineCoverage: number): string | null {
+  if (!lc || lc.pct >= minLineCoverage) return null
+  return `line coverage ${lc.pct}% of ${lc.added} added lines (< ${minLineCoverage}%)`
+}
+
 /**
  * Run the ladder for one tip against `ctx`'s base. Pure read. A tip with no
  * history in common with base is checked against the anchor when there is one
@@ -616,6 +723,7 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
     coverage: summary,
     residualFiles: residualFiles.slice(0, 200),
     residualFileCount: residualFiles.length,
+    lineCoverage: await lineCoverage(ctx, tip, mergeBase, [...cov.uniqueFiles, ...cov.evolvedFiles]),
   }
 }
 
@@ -795,6 +903,38 @@ async function mergedPrIndex(forge: ForgeClient | undefined): Promise<MergedPrIn
   }
 }
 
+interface ForgePrHeads {
+  available: boolean
+  reason?: string
+  /** `refs/pull/<N>/head` sha → N. */
+  heads: Map<string, number>
+}
+
+/**
+ * Every `refs/pull/<N>/head` of `remote`, by tip sha — ONE `git ls-remote` per
+ * snapshot. GitHub keeps these refs forever, so an orphan ref whose tip is one
+ * of them is a mirror, never the only copy. Never throws: a failure (offline,
+ * no auth, a forge without pull refs) just means no forge-mirror shortcut.
+ */
+async function forgePrHeadsOf(repoRoot: string, remote: string | null): Promise<ForgePrHeads> {
+  if (!remote) return { available: false, reason: "no base remote", heads: new Map() }
+  try {
+    const res = await git(repoRoot, ["ls-remote", remote, "refs/pull/*/head"], { GIT_TERMINAL_PROMPT: "0" })
+    if (res.exitCode !== 0) {
+      return { available: false, reason: (res.stderr.trim().split("\n")[0] ?? "") || `ls-remote exit ${res.exitCode}`, heads: new Map() }
+    }
+    const heads = new Map<string, number>()
+    for (const line of res.stdout.split("\n")) {
+      const [sha, ref] = line.split("\t")
+      const m = ref ? /^refs\/pull\/(\d+)\/head$/.exec(ref) : null
+      if (sha && m) heads.set(sha, Number(m[1]))
+    }
+    return { available: true, heads }
+  } catch (err) {
+    return { available: false, reason: (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "ls-remote error", heads: new Map() }
+  }
+}
+
 // ── classification of one ref ──────────────────────────────────────────
 
 /** For a remote checkpoint ref (`agentproto-checkpoint/<work>`), the WORK
@@ -929,6 +1069,8 @@ interface ClassifyEnv {
   prs: OpenPrHeads
   /** Merged PR head sha → PR number (`pr-merged` shortcut). Empty = no shortcut available. */
   mergedPrShas: Map<string, number>
+  /** `refs/pull/<N>/head` of the base remote (forge-mirror shortcut for orphan refs). */
+  forgePrHeads: ForgePrHeads
   /** Merged PR head ref name → { number, headRefOid } (checkpoint supersession when the work branch is gone — the snapshot's parent must equal `headRefOid`). */
   mergedPrNames: Map<string, { number: number; headRefOid: string }>
   /** Work-branch name → its local/remote refs, for classifying checkpoint branches against their work branch. */
@@ -947,6 +1089,7 @@ interface ClassifyEnv {
   localOrRemoteReachable?: () => Promise<Set<string> | null>
   minAgeDays: number
   includeReviewed: boolean
+  minLineCoverage: number
   verdicts?: BranchVerdictStore
   repoName: string
   nowMs: number
@@ -988,9 +1131,33 @@ async function pushStateOf(b: BranchRef, env: ClassifyEnv): Promise<BranchPushSt
   return undefined
 }
 
+/** Without the ladder: what is already known about a tip's history. */
+function knownHistory(env: ClassifyEnv, sha: string): BranchHistory {
+  const related = env.ctx.related?.get(sha)
+  if (related === false) return env.ctx.anchor ? "pre-rewrite" : "unrelated"
+  return "current"
+}
+
 async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlanEntry> {
   const checkpointWork = checkpointWorkBranchOf(b)
   if (checkpointWork !== undefined) return classifyCheckpointRef(b, checkpointWork, env)
+  // Forge-mirror shortcut, BEFORE the ladder: an orphan ref whose tip is a PR
+  // head the forge keeps forever is never the only copy (and a bulk
+  // `fetch '+refs/pull/*/head:…'` creates hundreds of them — no ladder, no review).
+  const forgePr = b.kind === "orphan" ? env.forgePrHeads.heads.get(b.sha) : undefined
+  if (forgePr !== undefined) {
+    return {
+      ...b,
+      status: "forge-mirror",
+      history: knownHistory(env, b.sha),
+      ahead: null,
+      behind: null,
+      ageDays: Math.floor((env.nowMs - new Date(b.date).getTime()) / 86_400_000),
+      class: "reclaim",
+      reclaimReason: "forge-mirror",
+      forgePr,
+    }
+  }
   let pending = env.tips.get(b.sha)
   if (!pending) {
     pending = classifyTip(env.ctx, b.sha)
@@ -1033,6 +1200,14 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
     return entry
   }
   if (env.includeReviewed && entry.verdict?.agree === true) {
+    // The deterministic line check outranks the reviewer: an approval of a tip
+    // whose added lines are mostly NOT in base is refused, the ref stays review.
+    const guard = lineCoverageGuard(entry.lineCoverage, env.minLineCoverage)
+    if (guard) {
+      entry.verdictGuard = guard
+      entry.class = "review"
+      return entry
+    }
     entry.class = "reclaim"
     entry.reclaimReason = "reviewed"
     return entry
@@ -1058,6 +1233,7 @@ async function snapshot(input: {
   verdicts?: BranchVerdictStore
   minAgeDays: number
   includeReviewed: boolean
+  minLineCoverage: number
   nowMs: number
   /** Default true: `git fetch --prune <baseRemote>` before listing refs (best-effort). */
   fetch?: boolean
@@ -1070,11 +1246,12 @@ async function snapshot(input: {
   if (remote && input.fetch !== false) {
     fetched = (await git(input.repoRoot, ["fetch", "--prune", "--quiet", remote])).exitCode === 0
   }
-  const [{ refs, otherRemoteRefs }, worktrees, prs, mergedPrs] = await Promise.all([
+  const [{ refs, otherRemoteRefs }, worktrees, prs, mergedPrs, forgePrHeads] = await Promise.all([
     listBranchRefs(input.repoRoot, remote, remotes),
     worktreeBranches(input.repoRoot),
     openPrHeads(input.forge),
     mergedPrIndex(input.forge),
+    forgePrHeadsOf(input.repoRoot, remote),
   ])
   const baseSha = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.base}^{commit}`])).trim()
   let anchor: string | null
@@ -1120,6 +1297,7 @@ async function snapshot(input: {
       prs,
       mergedPrShas: mergedPrs.shas,
       mergedPrNames: mergedPrs.names,
+      forgePrHeads,
       workBranchRefs,
       remoteShas: new Set(remoteRefs.map((r) => r.sha)),
       remoteNames: new Set(remoteRefs.map((r) => r.name)),
@@ -1131,6 +1309,7 @@ async function snapshot(input: {
         : {}),
       minAgeDays: input.minAgeDays,
       includeReviewed: input.includeReviewed,
+      minLineCoverage: input.minLineCoverage,
       ...(input.verdicts ? { verdicts: input.verdicts } : {}),
       repoName: input.repoName,
       nowMs: input.nowMs,
@@ -1153,6 +1332,8 @@ export interface PlanBranchGcInput {
   minAgeDays?: number
   /** Promote a `review` ref whose stored verdict agreed for the same tip sha to `reclaim` (`reviewed`). Default false. */
   includeReviewed?: boolean
+  /** `includeReviewed` refuses an agreeing verdict when the tip's line coverage is below this percent. Default 95. */
+  minLineCoverage?: number
   /** Explicit anchor for a re-rooted base. Omitted → auto-detected. */
   anchor?: string
   /** Open-PR detection (`listOpenPullRequests`). Omitted or unable → every local/remote ref is `hold` (`pr-check-unavailable`). */
@@ -1182,6 +1363,10 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
   const scopes = normalizeScopes(input.scopes)
   const minAgeDays = input.minAgeDays ?? DEFAULT_BRANCH_GC_MIN_AGE_DAYS
   const includeReviewed = Boolean(input.includeReviewed)
+  const minLineCoverage = input.minLineCoverage ?? DEFAULT_MIN_LINE_COVERAGE
+  if (!Number.isFinite(minLineCoverage) || minLineCoverage < 0 || minLineCoverage > 100) {
+    throw new Error(`branch gc: minLineCoverage must be a percent in [0, 100], got ${minLineCoverage}`)
+  }
   const nowMs = input.nowMs ?? Date.now()
   const snap = await snapshot({
     repoRoot: input.repoRoot,
@@ -1192,6 +1377,7 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
     ...(input.verdicts ? { verdicts: input.verdicts } : {}),
     minAgeDays,
     includeReviewed,
+    minLineCoverage,
     nowMs,
     ...(input.fetch === false ? { fetch: false } : {}),
   })
@@ -1209,6 +1395,10 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
     scopes,
     minAgeDays,
     includeReviewed,
+    minLineCoverage,
+    forgeMirrorCheck: snap.env.forgePrHeads.available
+      ? { available: true }
+      : { available: false, ...(snap.env.forgePrHeads.reason ? { reason: snap.env.forgePrHeads.reason } : {}) },
     generatedAt: new Date(nowMs).toISOString(),
     otherRemoteRefs: snap.otherRemoteRefs,
     fetched: snap.fetched,
@@ -1265,6 +1455,7 @@ export interface BranchReviewCandidate {
   coverage?: BranchCoverage
   residualFiles?: string[]
   residualFileCount?: number
+  lineCoverage?: BranchLineCoverage
   /** Every ref sharing this tip (a local branch and its remote twin share one review). */
   refs: string[]
   verdict?: BranchVerdictSummary
@@ -1290,6 +1481,8 @@ export function branchReviewQueue(plan: BranchGcPlan, options: { all?: boolean }
     const seen = bySha.get(e.sha)
     if (seen) {
       seen.refs.push(e.ref)
+      // Refs sharing a tip: keep the line coverage from whichever carries it.
+      if (!seen.lineCoverage && e.lineCoverage) seen.lineCoverage = e.lineCoverage
       continue
     }
     bySha.set(e.sha, {
@@ -1311,6 +1504,7 @@ export function branchReviewQueue(plan: BranchGcPlan, options: { all?: boolean }
       ...(e.coverage ? { coverage: e.coverage } : {}),
       ...(e.residualFiles ? { residualFiles: e.residualFiles } : {}),
       ...(e.residualFileCount !== undefined ? { residualFileCount: e.residualFileCount } : {}),
+      ...(e.lineCoverage ? { lineCoverage: e.lineCoverage } : {}),
       refs: [e.ref],
       ...(e.verdict ? { verdict: e.verdict } : {}),
     })
@@ -1325,6 +1519,8 @@ export type BranchGcApplyOutcome =
   | { kind: BranchRefKind; name: string; sha: string; result: "held"; holdReason?: BranchGcHoldReason }
   /** `review` class: never touched by apply — the review/approval path decides these. */
   | { kind: BranchRefKind; name: string; sha: string; result: "skipped-review" }
+  /** `review` class whose agreeing verdict was refused by a deterministic guard (`verdictGuard`, e.g. line coverage). */
+  | { kind: BranchRefKind; name: string; sha: string; result: "refused-guard"; guard: string }
   /** The ref now points somewhere else than the plan saw — never delete what wasn't classified. */
   | { kind: BranchRefKind; name: string; sha: string; result: "aborted-moved"; currentSha: string }
   /** The ref no longer exists. */
@@ -1380,13 +1576,16 @@ export interface BranchGcRestoreLog {
 
 const shellQuote = (s: string): string => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`)
 
-function restoreEntry(repoRoot: string, e: BranchGcPlanEntry): BranchGcRestoreEntry {
+function restoreEntry(repoRoot: string, e: BranchGcPlanEntry, baseRemote: string | null): BranchGcRestoreEntry {
   const argv =
     e.kind === "local"
       ? ["branch", e.name, e.sha]
       : e.kind === "remote"
         ? ["push", e.remote as string, `${e.sha}:refs/heads/${e.name}`]
-        : ["update-ref", e.ref, e.sha]
+        : // A forge mirror's commits may be gc'd locally; the forge still has them.
+          e.status === "forge-mirror" && e.forgePr !== undefined && baseRemote
+          ? ["fetch", baseRemote, `+refs/pull/${e.forgePr}/head:${e.ref}`]
+          : ["update-ref", e.ref, e.sha]
   return {
     kind: e.kind,
     name: e.name,
@@ -1428,6 +1627,8 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
     ...(options.verdicts ? { verdicts: options.verdicts } : {}),
     minAgeDays: plan.minAgeDays,
     includeReviewed: plan.includeReviewed,
+    // A plan from before the guard existed carries no threshold: the default applies.
+    minLineCoverage: plan.minLineCoverage ?? DEFAULT_MIN_LINE_COVERAGE,
     nowMs: options.nowMs ?? Date.now(),
     ...(options.fetch === false ? { fetch: false } : {}),
   })
@@ -1443,7 +1644,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
       continue
     }
     if (e.class === "review") {
-      outcomes.push({ ...id, result: "skipped-review" })
+      outcomes.push(e.verdictGuard ? { ...id, result: "refused-guard", guard: e.verdictGuard } : { ...id, result: "skipped-review" })
       continue
     }
     const fresh = current.get(e.ref)
@@ -1477,7 +1678,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
     base: plan.base,
     baseSha: snap.env.ctx.baseSha,
     createdAt,
-    entries: confirmed.map((e) => restoreEntry(repoRoot, e)),
+    entries: confirmed.map((e) => restoreEntry(repoRoot, e, snap.env.remote)),
   }
   const logPath = join(options.stateDir ?? BRANCH_GC_STATE_DIR(), plan.repoName, `restore-${createdAt.replace(/[:.]/g, "-")}.json`)
   await writeJsonAtomic(logPath, log)

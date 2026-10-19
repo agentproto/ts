@@ -4244,9 +4244,11 @@ export function registerSessionTools(
       "classifying every local branch, base-remote branch and orphan tracking " +
       "ref (refs/remotes/<ns>/* of a removed remote) as `reclaim` (work " +
       "provably in base: the head commit of a merged PR, merged, " +
-      "squash-merged, patch-merged or content-merged), `review` (unmerged, " +
-      "old enough, not protected — " +
-      "carries coverage + the files not provably in base for a reviewer), or " +
+      "squash-merged, patch-merged or content-merged; or an orphan ref whose " +
+      "tip is a `refs/pull/<N>/head` of the base remote, `forge-mirror`), " +
+      "`review` (unmerged, old enough, not protected — carries coverage, the " +
+      "files not provably in base and `lineCoverage` (share of added lines " +
+      "already in base) for a reviewer), or " +
       "`hold` (base/protected, checked out in a worktree or its remote twin, " +
       "open PR head, PR check unavailable, or younger than `minAgeDays`). " +
       "`apply: true` (requires explicit `scopes`) deletes only `reclaim` " +
@@ -4276,8 +4278,11 @@ export function registerSessionTools(
       includeReviewed: mcpBool
         .optional()
         .describe(
-          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`). Default false.",
+          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`) — unless its line coverage is under `minLineCoverage`, then it stays `review` with `verdictGuard` (apply reports `refused-guard`). Default false.",
         ),
+      minLineCoverage: mcpNumber
+        .optional()
+        .describe("Percent (0-100) of a tip's added lines that must already be in base for `includeReviewed` to honour an agreeing verdict. Default 95."),
       anchor: z.string().optional().describe("Explicit anchor commit for a re-rooted base. Auto-detected when omitted."),
       apply: mcpBool.optional().describe("When true, EXECUTE the plan for `scopes`. Default false — a dry run."),
       wait: mcpBool
@@ -4322,6 +4327,7 @@ export function registerSessionTools(
           ...(input.base ? { base: input.base } : {}),
           ...(input.scopes?.length ? { scopes: input.scopes } : {}),
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
+          ...(input.minLineCoverage !== undefined ? { minLineCoverage: input.minLineCoverage } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
         }
         const { job, promise } = branchGcJobs.start(async () => withBranchGcApplySummary(await runBranchGc(runInput)))
@@ -4371,7 +4377,7 @@ export function registerSessionTools(
       scopes: z.array(branchGcKind).optional().describe("Keep these ref kinds (local, remote, orphan)."),
       results: z
         .array(
-          z.enum(["deleted", "held", "skipped-review", "aborted-moved", "aborted-vanished", "aborted-reclassified", "failed"]),
+          z.enum(["deleted", "held", "skipped-review", "refused-guard", "aborted-moved", "aborted-vanished", "aborted-reclassified", "failed"]),
         )
         .optional()
         .describe("Outcomes only: keep these outcome results."),

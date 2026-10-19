@@ -3433,6 +3433,9 @@ export async function startHttpServer(
           const minAgeRaw = obj.minAgeDays
           const minAgeDays =
             typeof minAgeRaw === "number" ? minAgeRaw : typeof minAgeRaw === "string" && minAgeRaw.trim() !== "" ? Number(minAgeRaw) : undefined
+          const minLineRaw = obj.minLineCoverage
+          const minLineCoverage =
+            typeof minLineRaw === "number" ? minLineRaw : typeof minLineRaw === "string" && minLineRaw.trim() !== "" ? Number(minLineRaw) : undefined
           const apply = bool("apply")
           if (apply && !scopes?.length) {
             res.writeHead(400, { "content-type": "application/json" })
@@ -3456,6 +3459,7 @@ export async function startHttpServer(
                 ...(base ? { base } : {}),
                 ...(scopes?.length ? { scopes } : {}),
                 ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
+                ...(minLineCoverage !== undefined && Number.isFinite(minLineCoverage) ? { minLineCoverage } : {}),
                 ...(anchor ? { anchor } : {}),
               }),
             )
