@@ -305,8 +305,20 @@ describe("repo-maintenance maintain workflow — shape", () => {
     })
     // Default provider, and telegram mirrors address into the required source.
     expect(run({ address: "dave" })).toMatchObject({ provider: "telegram", source: "dave", contactRef: "dave" })
-    // agentpush never substitutes the recipient for the channel.
-    expect(run({ provider: "agentpush", alias: "my-ap", address: "erin" }).source).toBeUndefined()
+    // agentpush never substitutes the recipient for the channel: no source
+    // means no send, with a clean skipReason instead of a schema failure.
+    const noChannel = run({ provider: "agentpush", alias: "my-ap", address: "erin" })
+    expect(noChannel.source).toBeUndefined()
+    expect(noChannel.skipReason).toBe("agentpush source/channel required")
+    expect(noChannel.targets).toEqual([])
+    // `channel: agentpush` names the provider, not a channel: same skip.
+    const keywordChannel = run({ channel: "agentpush", alias: "my-ap", address: "frank" })
+    expect(keywordChannel.provider).toBe("agentpush")
+    expect(keywordChannel.source).toBeUndefined()
+    expect(keywordChannel.skipReason).toBe("agentpush source/channel required")
+    expect(keywordChannel.targets).toEqual([])
+    // A missing address is skipped before any schema validation too.
+    expect(run({ provider: "telegram" }).skipReason).toBe("address required")
   })
 })
 
@@ -572,6 +584,47 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       contact_ref: "alice",
       bind: false,
     })
+  })
+
+  it("skips instead of dispatching when the legacy channel is the provider keyword agentpush", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "transmit_message") return mcpResult({ sent: true, bound: false })
+      throw new Error(`unexpected tool '${name}'`)
+    })
+
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: {
+        repoRoot: "/repo",
+        applyMerged: false,
+        applyReviewed: false,
+        notify: { channel: "agentpush", alias: "my-agentpush", address: "alice" },
+      },
+    })
+
+    expect(calls.some(c => c.name === "transmit_message")).toBe(false)
+    const result = output as { report: string }
+    expect(result.report).toContain("notify skipped: agentpush source/channel required")
   })
 
   it("applyReviewed applies with includeReviewed true and reports reclaimed reviewed branches + guard refusals", async () => {

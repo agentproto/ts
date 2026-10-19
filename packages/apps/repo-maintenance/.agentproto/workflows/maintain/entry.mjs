@@ -911,10 +911,20 @@ export default {
       compute: b => {
         const n = b.input?.notify ?? {}
         const address = n.address
-        const provider = n.provider || (n.channel === "telegram" ? "telegram" : n.channel ? "agentpush" : "telegram")
-        const source = n.source || (provider === "agentpush" ? n.channel : address)
+        // `channel` is a legacy alias: `telegram`/`agentpush` name the
+        // provider, so they are NOT a channel value; anything else is the
+        // agentpush destination channel.
+        const legacyChannel = n.channel === "telegram" || n.channel === "agentpush" ? undefined : n.channel
+        const provider = n.provider || (n.channel ? (legacyChannel ? "agentpush" : n.channel) : "telegram")
+        const source = n.source || (provider === "agentpush" ? legacyChannel : address)
+        let skipReason
+        if (!address) skipReason = "address required"
+        else if (provider === "agentpush" && !source) skipReason = "agentpush source/channel required"
         return {
-          targets: [true],
+          // Empty when the target is under-specified: the send is skipped
+          // with a clean reason instead of failing transmit_message's schema.
+          targets: skipReason ? [] : [true],
+          ...(skipReason ? { skipReason } : {}),
           provider,
           alias: n.alias,
           source,
@@ -985,6 +995,12 @@ export default {
       kind: "transform",
       compute: b => {
         const base = String(b.steps.report ?? "")
+        // A target notifyPlan already knew it could not deliver (missing
+        // address, agentpush with no channel) never reached transmit_message.
+        const planned = b.steps.notifyPlan
+        if (planned && typeof planned === "object" && typeof planned.skipReason === "string") {
+          return `${base}\n\nnotify skipped: ${planned.skipReason}`
+        }
         const fan = b.steps.notify
         if (!fan || typeof fan !== "object" || (fan.succeeded ?? 0) > 0) return base
         const first = Array.isArray(fan.results) ? fan.results[0] : undefined
