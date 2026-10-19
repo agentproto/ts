@@ -2319,7 +2319,7 @@ export function registerSessionTools(
         // (grandparent / orchestrator root) keeps its existing subtree
         // authority over the target.
         parentOf: id => registry.get(id)?.parentSessionId,
-        labelOf: id => registry.get(id)?.label,
+        operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })
       if (!freshOwnerGate.ok) {
         return {
@@ -4822,7 +4822,7 @@ export function registerSessionTools(
         // behaviour (the subtree gate below is unchanged) — the owner gate
         // must not revoke it.
         parentOf: id => registry.get(id)?.parentSessionId,
-        labelOf: id => registry.get(id)?.label,
+        operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })
       if (!restartOwnerGate.ok) {
         return {
