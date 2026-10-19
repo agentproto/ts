@@ -33,8 +33,8 @@ describe. A major bump of this package is where that constant changes.
 | POST   | `/v1/computers/:id/exec`     | `execRequestSchema`         | `execResponseSchema`         |
 | POST   | `/v1/computers/:id/suspend`  | -                           | `suspendResponseSchema`      |
 | POST   | `/v1/computers/:id/resume`   | -                           | `resumeResponseSchema`       |
-| POST   | `/v1/computers/:id/attach`   | -                           | `sessionsResponseSchema`     |
-| POST   | `/v1/computers/:id/detach`   | -                           | `sessionsResponseSchema`     |
+| POST   | `/v1/computers/:id/attach`   | `attachRequestSchema` (optional body) | `sessionsResponseSchema` |
+| POST   | `/v1/computers/:id/detach`   | `attachRequestSchema` (optional body) | `sessionsResponseSchema` |
 | DELETE | `/v1/computers/:id`          | - (`?force=true` optional)  | `suspendResponseSchema` shape (all-optional) |
 | any    | error body                   | -                           | `errorResponseSchema`        |
 

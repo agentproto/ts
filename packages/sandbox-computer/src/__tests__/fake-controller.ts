@@ -7,6 +7,7 @@
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
 import {
+  attachRequestSchema,
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
@@ -62,6 +63,10 @@ export class FakeController {
   readonly suspended: string[] = []
   readonly resumed: string[] = []
   readonly removed: string[] = []
+  /** Bodies of the attach/detach calls, for holder assertions. `holder` is
+   *  undefined for a body-less legacy call. */
+  readonly attachBodies: Array<{ id: string; holder?: string }> = []
+  readonly detachBodies: Array<{ id: string; holder?: string }> = []
   readonly daemonProxyRequests: Array<{
     id: string
     path: string
@@ -188,6 +193,9 @@ export class FakeController {
       return reply(res, 200, responseBody)
     }
     if (url.pathname.endsWith("/attach") && req.method === "POST" && !this.options.noSessionRoutes) {
+      const parsed = parseSessionBody(body)
+      assertContract(attachRequestSchema, parsed)
+      this.attachBodies.push({ id, holder: parsed.holder })
       const held = this.sessions.get(id) ?? 0
       const max = this.maxSessions.get(id) ?? 1
       if (held >= max) return reply(res, 409, { error: "session limit reached", sessions: held, maxSessions: max })
@@ -197,6 +205,9 @@ export class FakeController {
       return reply(res, 200, attachBody)
     }
     if (url.pathname.endsWith("/detach") && req.method === "POST" && !this.options.noSessionRoutes) {
+      const parsed = parseSessionBody(body)
+      assertContract(attachRequestSchema, parsed)
+      this.detachBodies.push({ id, holder: parsed.holder })
       if (this.options.detachStatus) return reply(res, this.options.detachStatus, { error: "detach failed" })
       const held = Math.max((this.sessions.get(id) ?? 0) - 1, 0)
       this.sessions.set(id, held)
@@ -348,6 +359,14 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on("data", (c: Buffer) => (data += c.toString()))
     req.on("end", () => resolve(data))
   })
+}
+
+/** A body-less attach/detach is the legacy `{}`; a body must match
+ *  `attachRequestSchema` (the `holder` may be absent). */
+function parseSessionBody(body: string): { holder?: string } {
+  if (body.trim() === "") return {}
+  const parsed: unknown = JSON.parse(body)
+  return attachRequestSchema.parse(parsed)
 }
 
 function reply(res: ServerResponse, status: number, body: unknown): void {

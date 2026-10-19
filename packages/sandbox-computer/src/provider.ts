@@ -104,6 +104,16 @@ interface ComputerSandboxConfig {
   egress?: Array<{ host: string; port: number }>
   /** How many sessions this process may map onto one computer. Default 1. */
   maxSessions?: number
+  /**
+   * Stable holder identity sent on attach/detach (the controller of PR
+   * agentproto/ts "feat(sandbox-computer): send a stable session holder on
+   * attach and relayed requests" makes a re-attach by the same holder
+   * idempotent, so a daemon restart no longer hits the 409 session limit
+   * against the slot its dead predecessor still held). Falls back to the
+   * `AGENTPROTO_SESSION_ID` env var when this process runs inside a spawned
+   * agent session; absent means the body-less legacy attach.
+   */
+  sessionHolder?: string
   /** Port the agentproto daemon listens on inside the computer. Default 18790. */
   port?: number
   /** `--workspace` passed to `agentproto serve`. Default `/home/user`. */
@@ -201,6 +211,24 @@ function envExtraHeaders(): Record<string, string> {
   return out
 }
 
+/** A holder id the controller will accept: 1..128 chars, single line. An
+ *  overlong or control-character value is dropped (legacy attach), never
+ *  forwarded: the controller would 400 the whole call. */
+function validHolder(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  if (value.length === 0 || value.length > 128 || /[\r\n\0]/.test(value)) return undefined
+  return value
+}
+
+/** Resolve the holder identity for attach/detach: explicit config wins,
+ *  then the `AGENTPROTO_SESSION_ID` env var this process was spawned with
+ *  (the session id of the agentproto daemon behind the provider). */
+function resolveSessionHolder(config: Record<string, unknown>): string | undefined {
+  return validHolder(
+    typeof config.sessionHolder === "string" ? config.sessionHolder : process.env.AGENTPROTO_SESSION_ID,
+  )
+}
+
 function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
   const config = (spec.config ?? {}) as Record<string, unknown>
   const int = (v: unknown): number | undefined =>
@@ -217,6 +245,7 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     ttlSeconds: int(config.ttlSeconds),
     egress: parseEgress(config.egress),
     maxSessions: int(config.maxSessions),
+    sessionHolder: resolveSessionHolder(config),
     port: int(config.port),
     workspace: str(config.workspace),
     gatewayUrl: str(config.gatewayUrl) ?? str(process.env.COMPUTER_GATEWAY_URL),
@@ -279,6 +308,13 @@ function applyDaemonRoute(config: ComputerSandboxConfig, client: ComputerClientC
       ...sanitizeExtraHeaders(client.extraHeaders),
       "X-Controller-Authorization": `Bearer ${client.token}`,
       "X-Tenant-Id": client.tenantId,
+      // Holder identity on every relayed request: the controller's proxy
+      // attributes the activity to this holder's session slot, keeping the
+      // slot's lease alive while this daemon talks. Dropped from the map
+      // (no header) when no holder resolved.
+      ...(config.sessionHolder !== undefined
+        ? { "X-Computer-Session-Holder": config.sessionHolder }
+        : {}),
     },
   }
 }
@@ -380,10 +416,17 @@ function releaseSessionSlot(sandboxId: string): void {
 }
 
 /** Take a controller-held session slot. A controller without the attach
- *  route (404) is tolerated: the process-local count still applies. */
-async function attachController(client: ComputerControllerClient, id: string): Promise<void> {
+ *  route (404) is tolerated: the process-local count still applies. The
+ *  holder, when resolved, makes a controller that tracks holders treat the
+ *  attach as idempotent for that holder (a restarted daemon re-attaches
+ *  onto the slot its dead predecessor still held). */
+async function attachController(
+  client: ComputerControllerClient,
+  id: string,
+  holder: string | undefined,
+): Promise<void> {
   try {
-    await client.attach(id)
+    await client.attach(id, holder !== undefined ? { holder } : {})
     controllerSlots.set(id, (controllerSlots.get(id) ?? 0) + 1)
   } catch (err) {
     if (err instanceof ComputerApiError && err.status === 404) return
@@ -393,13 +436,18 @@ async function attachController(client: ComputerControllerClient, id: string): P
 
 /** Release one of this process's controller-side slots. Returns the sessions
  *  still attached, 0 when no slot was held, or undefined when the controller
- *  could not answer. */
-async function detachController(client: ComputerControllerClient, id: string): Promise<number | undefined> {
+ *  could not answer. The holder scopes the release to that holder's slot on
+ *  a controller that tracks holders (an unknown holder is a no-op there). */
+async function detachController(
+  client: ComputerControllerClient,
+  id: string,
+  holder: string | undefined,
+): Promise<number | undefined> {
   const held = controllerSlots.get(id) ?? 0
   if (held === 0) return 0
   let remaining: number
   try {
-    remaining = (await client.detach(id)).sessions ?? 0
+    remaining = (await client.detach(id, holder !== undefined ? { holder } : {})).sessions ?? 0
   } catch {
     // The slot stays counted so a retried stop detaches it again.
     return undefined
@@ -564,7 +612,7 @@ async function bootOnClient(
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
     daemonToken = await daemonHealthyOrThrow(client, sandboxId, config, randomUUID(), port, workspace, mcpOrigin)
-    await attachController(client, sandboxId)
+    await attachController(client, sandboxId, config.sessionHolder)
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
     // sandbox-e2b): propagate the original error but reclaim the box. The
@@ -620,7 +668,7 @@ async function connectOnClient(
     )
   }
   try {
-    await attachController(client, currentId)
+    await attachController(client, currentId, config.sessionHolder)
   } catch (err) {
     releaseSessionSlot(currentId)
     if (err instanceof ComputerApiError && err.status === 409) {
@@ -880,7 +928,7 @@ async function wrapBox(
     async stop(): Promise<void> {
       closeProxy()
       releaseSessionSlot(id)
-      const remaining = await detachController(client, id)
+      const remaining = await detachController(client, id, config.sessionHolder)
       // Other sessions still attached keep the computer; the last one out
       // removes it.
       if (remaining !== undefined && remaining > 0) return
@@ -905,7 +953,7 @@ async function wrapBox(
     async pause(): Promise<void> {
       closeProxy()
       releaseSessionSlot(id)
-      await detachController(client, id)
+      await detachController(client, id, config.sessionHolder)
       await client.suspend(id)
     },
     async extendTimeout(): Promise<void> {
