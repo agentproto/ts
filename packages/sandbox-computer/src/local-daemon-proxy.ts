@@ -27,6 +27,19 @@ export interface LocalDaemonProxy {
 
 const STRIPPED_REQUEST_HEADERS = new Set(["host", "connection", "keep-alive", "content-length"])
 
+// The agentproto daemon's own HTTP surface (its startup banner lists exactly
+// these: "/mcp · /sessions · /events · /sessions/:id/pty (WS)"). Anything
+// else reaching this loopback port is not a request this proxy's one caller
+// (connectDaemonAgentSessionHost, handed only `mcpUrl`) would ever send, so
+// it is refused here rather than forwarded upstream with the controller
+// credential attached.
+const ALLOWED_PATH_RE = /^\/(mcp|sessions|events)(?:[/?]|$)/
+
+function isAllowedPath(url: string | undefined): boolean {
+  if (!url) return false
+  return ALLOWED_PATH_RE.test(url.split("?")[0] ?? "")
+}
+
 /** Starts the proxy: every request to `url` is forwarded to `remoteBase`
  *  (same path and query) with `extraHeaders` merged in; the caller's own
  *  headers (notably `Authorization`, which carries the box's per-box
@@ -37,9 +50,17 @@ export async function startLocalDaemonProxy(
 ): Promise<LocalDaemonProxy> {
   const target = new URL(remoteBase)
   const server: Server = createServer((req, res) => {
+    if (!isAllowedPath(req.url)) {
+      res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: "not found" }))
+      return
+    }
     forwardHttp(req, res, target, extraHeaders)
   })
   server.on("upgrade", (req, socket, head) => {
+    if (!isAllowedPath(req.url)) {
+      socket.end("HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+      return
+    }
     forwardUpgrade(req, socket, head, target, extraHeaders)
   })
   await new Promise<void>((resolve, reject) => {
@@ -49,17 +70,31 @@ export async function startLocalDaemonProxy(
   const port = (server.address() as AddressInfo).port
   return {
     url: `http://127.0.0.1:${port}`,
-    close: () => server.close(),
+    close: () => {
+      // Deterministic teardown: closeAllConnections drops any open
+      // keep-alive sockets right away instead of leaving them to idle out
+      // (Node's default keep-alive timeout is 5s), so a caller that awaits
+      // the box's own stop()/pause() never has a lingering local listener.
+      server.close()
+      server.closeAllConnections()
+    },
   }
 }
 
 function mergedHeaders(
   incoming: IncomingMessage["headers"],
-  extraHeaders: Record<string, string>
+  extraHeaders: Record<string, string>,
+  // An upgrade handshake needs its own `connection: Upgrade`: stripping it
+  // (as forwardHttp must, to let the upstream client set its own framing)
+  // would stop the upstream daemon from ever recognizing the request as an
+  // upgrade at all.
+  keepConnectionHeader = false
 ): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {}
   for (const [k, v] of Object.entries(incoming)) {
-    if (v === undefined || STRIPPED_REQUEST_HEADERS.has(k.toLowerCase())) continue
+    const low = k.toLowerCase()
+    if (v === undefined) continue
+    if (STRIPPED_REQUEST_HEADERS.has(low) && !(keepConnectionHeader && low === "connection")) continue
     out[k] = v
   }
   for (const [k, v] of Object.entries(extraHeaders)) out[k] = v
@@ -111,7 +146,7 @@ function forwardUpgrade(
   upstream.once(isTls ? "secureConnect" : "connect", () => {
     const path = `${target.pathname.replace(/\/+$/, "")}${req.url ?? ""}`
     const lines = [`${req.method ?? "GET"} ${path} HTTP/1.1`, `host: ${target.host}`]
-    const headers = mergedHeaders(req.headers, extraHeaders)
+    const headers = mergedHeaders(req.headers, extraHeaders, true)
     for (const [k, v] of Object.entries(headers)) {
       if (k.toLowerCase() === "host") continue
       const values = Array.isArray(v) ? v : [v]
