@@ -125,6 +125,12 @@ box that has been idle this long is reaped, and its box goes with it.
   `daemon.idleReapAfterMs` only. If both knobs are on, a sandboxed session is
   reaped at the shorter one; if the sandbox knob is `0`, it falls back to the
   general knob.
+- **A box's own idle window wins when shorter**: a spec that declares
+  `lifecycle.pause_after_idle` (e.g. `idle-120`) is reaped, and so paused,
+  after that window rather than the knob's, while the sandbox knob is on. On
+  e2b, such a box is also created with `lifecycle.onTimeout: "pause"`, so a box
+  that outlives its provider timeout is parked rather than destroyed
+  (override with the provider's `config.onTimeout`).
 - **Never reaped** while busy, awaiting input or a permission decision, blocked
   on a command or sub-agent, running a background task, parent of a live child
   session, archived, or `keepAlive`.

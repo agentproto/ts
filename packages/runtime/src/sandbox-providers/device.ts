@@ -41,6 +41,71 @@ export function isDeviceSandboxTarget(
   return slug.startsWith("device:")
 }
 
+/** How long `boot()` waits for a live `/health` answer from a device that
+ *  is not already known online before calling it offline. A paired host
+ *  that answers at all answers in well under this; a sleeping laptop never
+ *  does, and the caller (a placement policy) wants that verdict fast. */
+export const DEVICE_LIVENESS_PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * The target device did not answer — asleep, shut down, or off the network.
+ * Carries `code: "device_offline"` so `agent_start` reports a typed failure a
+ * caller can branch on (fall back to a sandbox, queue the task, ask the
+ * user) instead of parsing a transport error out of a generic boot failure.
+ */
+export class DeviceOfflineError extends Error {
+  readonly code = "device_offline" as const
+  constructor(
+    readonly target: string,
+    readonly lastSeen: string | undefined,
+    cause: unknown,
+  ) {
+    super(
+      `device sandbox: paired host device "${target}" is offline (no answer to a liveness probe` +
+        `${lastSeen ? `; last seen ${lastSeen}` : ""}) — ${cause instanceof Error ? cause.message : String(cause)}`,
+    )
+    this.name = "DeviceOfflineError"
+  }
+}
+
+export function isDeviceOfflineError(err: unknown): err is DeviceOfflineError {
+  return (
+    err instanceof DeviceOfflineError ||
+    (typeof err === "object" && err !== null && (err as { code?: unknown }).code === "device_offline")
+  )
+}
+
+/**
+ * Prove the device answers before handing the caller a bridge onto it.
+ * `isOnline` alone can't decide this: it only stays true for a grace window
+ * after the last successful dial, and a manually paired host isn't polled in
+ * the background — so "not known online" just means "not dialled lately",
+ * and gets one live `GET /health` (bounded by
+ * {@link DEVICE_LIVENESS_PROBE_TIMEOUT_MS}) before it counts as offline.
+ */
+async function assertDeviceReachable(
+  hostRegistry: HostRegistry,
+  host: { fingerprint: string; lastSeen?: string },
+  target: string,
+  probeTimeoutMs: number,
+): Promise<void> {
+  if (hostRegistry.isOnline(host.fingerprint)) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const res = await Promise.race([
+      hostRegistry.forwardHttp(host.fingerprint, { method: "GET", path: "/health" }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer within ${probeTimeoutMs} ms`)), probeTimeoutMs)
+      }),
+    ])
+    if (res.status >= 500) throw new Error(`/health answered ${res.status}`)
+  } catch (err) {
+    throw new DeviceOfflineError(target, host.lastSeen, err)
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 /**
  * Build the `device:<name>` sandbox provider for a specific target device.
  * `target` is whatever `HostRegistry.forwardHttp/forwardHttpStream` accepts
@@ -49,6 +114,7 @@ export function isDeviceSandboxTarget(
 export function createDeviceSandboxProvider(
   target: string,
   hostRegistry: HostRegistry,
+  opts: { probeTimeoutMs?: number } = {},
 ): SandboxProvider {
   return {
     async boot(_spec: SandboxSpec, _opts: SandboxBootOpts): Promise<BootedSandbox> {
@@ -61,6 +127,13 @@ export function createDeviceSandboxProvider(
             "offer --host` run ON that device). Check `agentproto devices list` for known devices.",
         )
       }
+
+      await assertDeviceReachable(
+        hostRegistry,
+        known,
+        target,
+        opts.probeTimeoutMs ?? DEVICE_LIVENESS_PROBE_TIMEOUT_MS,
+      )
 
       const bridge = await startDeviceSandboxBridge({ hostRegistry, target })
       return {

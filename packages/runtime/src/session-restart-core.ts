@@ -1876,6 +1876,9 @@ export async function restartAgentSession(
       sandboxId: host.sandboxId,
       provider: providerSlug,
       sandboxTeardown: lifecyclePolicy.teardown,
+      ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
+        ? { pauseAfterIdleMs: lifecyclePolicy.pauseAfterIdleMs }
+        : {}),
       sandboxConfig,
       ...(boxResumed ? { resumeVia: "resumed via ACP" as const } : {}),
       ...(deliveryTarget ? { deliveryTarget } : {}),
@@ -2075,6 +2078,7 @@ export async function restartAgentSession(
       sandboxId: booted.sandboxId,
       provider: booted.provider,
       sandboxTeardown: booted.sandboxTeardown,
+      ...(booted.pauseAfterIdleMs !== undefined ? { pauseAfterIdleMs: booted.pauseAfterIdleMs } : {}),
       cwd: booted.cwd,
       ...(booted.sandboxConfig ? { sandboxConfig: booted.sandboxConfig } : {}),
       ...(booted.resumeVia ? { resumeVia: "resumed via ACP" as const } : {}),
@@ -2093,6 +2097,7 @@ export async function restartAgentSession(
       sandboxId: string
       provider: string
       sandboxTeardown: "kill" | "pause"
+      pauseAfterIdleMs?: number
       /** The box-side cwd when it moved (a fresh box's checkout). */
       cwd?: string
       /** The box daemon's own `resumeVia` — set only when ITS adapter
@@ -2162,6 +2167,7 @@ export async function restartAgentSession(
       sandboxProvider: box.provider,
       ...(box.sandboxConfig ? { sandboxConfig: box.sandboxConfig } : {}),
       sandboxTeardown: box.sandboxTeardown,
+      ...(box.pauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs: box.pauseAfterIdleMs } : {}),
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
       ...(deliveryTarget && prev.sandboxCheckpointOverride !== undefined
         ? { sandboxCheckpointOverride: prev.sandboxCheckpointOverride }

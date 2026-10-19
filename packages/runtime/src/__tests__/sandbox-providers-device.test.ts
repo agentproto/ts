@@ -10,11 +10,25 @@
 
 import { describe, it, expect, vi, afterEach } from "vitest"
 import type { HostRegistry, HostRecord } from "../host-registry.js"
-import { createDeviceSandboxProvider } from "../sandbox-providers/device.js"
+import {
+  createDeviceSandboxProvider,
+  DeviceOfflineError,
+  isDeviceOfflineError,
+} from "../sandbox-providers/device.js"
 
-function fakeHostRegistry(hosts: Partial<HostRecord>[]): HostRegistry {
+function fakeHostRegistry(
+  hosts: Partial<HostRecord>[],
+  liveness: { online?: boolean; forwardHttp?: HostRegistry["forwardHttp"] } = {},
+): HostRegistry {
   return {
     list: vi.fn(async () => hosts as HostRecord[]),
+    isOnline: vi.fn(() => liveness.online ?? true),
+    forwardHttp: vi.fn(
+      liveness.forwardHttp ??
+        (async () => {
+          throw new Error("not used in this test")
+        }),
+    ),
     forwardHttpStream: vi.fn(async () => {
       throw new Error("not used in this test")
     }),
@@ -48,6 +62,75 @@ describe("createDeviceSandboxProvider", () => {
     const booted2 = await provider2.boot({ provider: "device:abc123", config: {} }, { env: {} })
     bootedStops.push(booted2.stop)
     expect(booted2.mcpUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+  })
+
+  it("boot() skips the liveness probe for a device already known online", async () => {
+    const hostRegistry = fakeHostRegistry([{ fingerprint: "abc123", name: "work-mac" }], { online: true })
+    const booted = await createDeviceSandboxProvider("work-mac", hostRegistry).boot(
+      { provider: "device:work-mac", config: {} },
+      { env: {} },
+    )
+    bootedStops.push(booted.stop)
+    expect(hostRegistry.forwardHttp).not.toHaveBeenCalled()
+  })
+
+  it("boot() probes /health on a device not known online and proceeds when it answers", async () => {
+    const forwardHttp = vi.fn(async () => ({ status: 200, headers: {}, body: new Uint8Array() }))
+    const hostRegistry = fakeHostRegistry([{ fingerprint: "abc123", name: "work-mac" }], {
+      online: false,
+      forwardHttp,
+    })
+    const booted = await createDeviceSandboxProvider("work-mac", hostRegistry).boot(
+      { provider: "device:work-mac", config: {} },
+      { env: {} },
+    )
+    bootedStops.push(booted.stop)
+    expect(forwardHttp).toHaveBeenCalledWith("abc123", { method: "GET", path: "/health" })
+  })
+
+  it("boot() throws a typed device_offline error when the probe fails", async () => {
+    const hostRegistry = fakeHostRegistry(
+      [{ fingerprint: "abc123", name: "work-mac", lastSeen: "2026-10-19T08:00:00.000Z" }],
+      {
+        online: false,
+        forwardHttp: async () => {
+          throw new Error("rendezvous: peer not connected")
+        },
+      },
+    )
+    const err = await createDeviceSandboxProvider("work-mac", hostRegistry)
+      .boot({ provider: "device:work-mac", config: {} }, { env: {} })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeviceOfflineError)
+    expect(isDeviceOfflineError(err)).toBe(true)
+    expect((err as DeviceOfflineError).code).toBe("device_offline")
+    expect((err as Error).message).toMatch(/"work-mac" is offline.*last seen 2026-10-19T08:00:00.000Z.*peer not connected/)
+  })
+
+  it("boot() calls a device offline when the probe never answers", async () => {
+    const hostRegistry = fakeHostRegistry([{ fingerprint: "abc123", name: "work-mac" }], {
+      online: false,
+      forwardHttp: () => new Promise(() => {}),
+    })
+    await expect(
+      createDeviceSandboxProvider("work-mac", hostRegistry, { probeTimeoutMs: 20 }).boot(
+        { provider: "device:work-mac", config: {} },
+        { env: {} },
+      ),
+    ).rejects.toThrow(/offline.*no answer within 20 ms/)
+  })
+
+  it("boot() calls a device offline when /health answers a 5xx", async () => {
+    const hostRegistry = fakeHostRegistry([{ fingerprint: "abc123", name: "work-mac" }], {
+      online: false,
+      forwardHttp: async () => ({ status: 502, headers: {}, body: new Uint8Array() }),
+    })
+    await expect(
+      createDeviceSandboxProvider("work-mac", hostRegistry).boot(
+        { provider: "device:work-mac", config: {} },
+        { env: {} },
+      ),
+    ).rejects.toSatisfy(isDeviceOfflineError)
   })
 
   it("stop() only closes the local bridge — never calls back into hostRegistry", async () => {

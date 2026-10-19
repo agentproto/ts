@@ -213,6 +213,32 @@ describe("runIdleReapPass — sandboxed sessions (sandboxIdleReapAfterMs)", () =
     expect(reaped).toEqual([{ id: "boxed", idleMs: 20 * 60_000 }])
   })
 
+  it("reaps a box at its own shorter pause_after_idle window", () => {
+    const { registry, reaped } = stubRegistry([
+      box({ id: "parks-fast", lastActivityAt: "2026-07-23T00:57:00Z", sandboxPauseAfterIdleMs: 2 * 60_000 }), // 3min idle
+      box({ id: "default", lastActivityAt: "2026-07-23T00:57:00Z" }), // 3min idle, 15min rule
+    ])
+    const summary = runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now })
+    expect(summary.ids).toEqual(["parks-fast"])
+    expect(reaped).toEqual([{ id: "parks-fast", idleMs: 3 * 60_000 }])
+  })
+
+  it("a pause_after_idle window longer than the sandbox threshold does not extend it", () => {
+    const { registry } = stubRegistry([
+      box({ id: "slow", lastActivityAt: "2026-07-23T00:40:00Z", sandboxPauseAfterIdleMs: 60 * 60_000 }), // 20min idle
+    ])
+    expect(
+      runIdleReapPass({ registry, sandboxIdleReapAfterMs: FIFTEEN_MIN, idleReapAfterMs: 0, now }).ids,
+    ).toEqual(["slow"])
+  })
+
+  it("sandbox reaping off (0) ⇒ the box's own pause_after_idle window is not applied either", () => {
+    const { registry } = stubRegistry([
+      box({ id: "parks-fast", lastActivityAt: "2026-07-23T00:57:00Z", sandboxPauseAfterIdleMs: 2 * 60_000 }),
+    ])
+    expect(runIdleReapPass({ registry, sandboxIdleReapAfterMs: 0, idleReapAfterMs: 0, now }).reaped).toBe(0)
+  })
+
   it("is enabled by the sandbox threshold alone and never touches a local session then", () => {
     const { registry, reaped } = stubRegistry([box({ id: "boxed" }), row({ id: "local" })])
     const summary = runIdleReapPass({
