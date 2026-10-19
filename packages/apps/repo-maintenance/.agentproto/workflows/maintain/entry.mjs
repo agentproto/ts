@@ -112,7 +112,11 @@ const REVIEW_PROMPT =
   "NOT provably in base are: {{item.residualFiles}}. Line coverage of what this tip adds to those " +
   "files ({ added, inBase, pct, missing: up to 12 added lines NOT verbatim in base's same path }): " +
   "{{item.lineCoverage}} — \"base has the file\" is not evidence; account for the missing lines. " +
-  "An agreeing verdict under 95% line coverage is refused. Merge base: {{item.mergeBase}}. Merged tree " +
+  "`gate.agree` is your HONEST judgement about whether deleting this tip loses anything of value — " +
+  "do NOT lower it because lineCoverage is under minLineCoverage. `branch_gc` applies that guard " +
+  "deterministically after you: an honest agreement it refuses becomes a human decision queue item, " +
+  "and self-censoring would make \"safe but guard-blocked\" indistinguishable from \"not safe\". " +
+  "Merge base: {{item.mergeBase}}. Merged tree " +
   "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
   "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
   "Refs of this branch (across its tips): {{item.refs}}." +
@@ -352,6 +356,13 @@ export function formatNameList(names, cap = REPORT_LIST_CAP) {
   return names.length > cap ? `${shown}, … and ${names.length - cap} more` : shown
 }
 
+/** The coverage percentage in a `branch_gc` `verdictGuard` string
+ *  (`"line coverage 80% of 50 added lines (< 95%)"`), or null when absent. */
+export function lineCoveragePctOfGuard(guard) {
+  const m = /line coverage\s+([\d.]+)%/i.exec(String(guard ?? ""))
+  return m ? Number(m[1]) : null
+}
+
 /** `error` with the per-candidate parts — its review worktree path, branch
  *  name and tip sha, then any other full sha — replaced by placeholders, so
  *  one systemic failure hitting N candidates groups as ONE reason instead of
@@ -588,15 +599,12 @@ export function buildReport(b) {
       lines.push("- reclaimed: none")
     }
     if (refusedByGuard.length > 0) {
-      lines.push(`- **refused by the guard (${refusedByGuard.length})**:`)
-      for (const o of refusedByGuard.slice(0, REPORT_LIST_CAP)) {
-        lines.push(`  - \`${o.name}\` (${o.sha.slice(0, 10)}) — ${o.guard}`)
-      }
-      if (refusedByGuard.length > REPORT_LIST_CAP) {
-        lines.push(`  - … and ${refusedByGuard.length - REPORT_LIST_CAP} more`)
-      }
+      lines.push(
+        `- reviewer agreed, refused by the line guard: ${refusedByGuard.length} — see the ` +
+          "\"Human decision queue\" section below",
+      )
     } else {
-      lines.push("- refused by the guard: none")
+      lines.push("- reviewer agreed, refused by the line guard: none")
     }
   } else {
     lines.push(
@@ -604,6 +612,24 @@ export function buildReport(b) {
         "did not opt in: set `applyReviewed: true` (with `applyMerged: true`) to apply agreed verdicts. " +
         "`branch_gc` then enforces its line-coverage guard (default 95%) and refuses an approval below it.",
     )
+  }
+  if (applyReviewed && refusedByGuard.length > 0) {
+    lines.push("")
+    lines.push(`## Human decision queue — reviewer agreed, refused by line guard (${refusedByGuard.length})`)
+    lines.push(
+      "The reviewer's `gate.agree` was an honest safety judgement, not a policy decision. " +
+        "`branch_gc` refused it deterministically because line coverage was below the guard; " +
+        "these are for a human to decide, NOT evidence that the reviewer said the work was unsafe.",
+    )
+    for (const o of refusedByGuard.slice(0, REPORT_LIST_CAP)) {
+      const pct = lineCoveragePctOfGuard(o.guard)
+      lines.push(
+        `- \`${o.name}\` (${o.sha.slice(0, 10)}) — ${pct !== null ? `${pct}%` : "unknown"} line coverage — ${o.guard}`,
+      )
+    }
+    if (refusedByGuard.length > REPORT_LIST_CAP) {
+      lines.push(`- … and ${refusedByGuard.length - REPORT_LIST_CAP} more`)
+    }
   }
   return lines.join("\n")
 }

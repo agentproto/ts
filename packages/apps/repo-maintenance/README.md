@@ -57,8 +57,12 @@ whose stored verdict agreed (`gate.agree: true` for that exact tip) can be
 reclaimed. This is safe because `branch_gc` re-classifies every ref
 immediately before touching it and enforces `lineCoverageGuard`: an agreeing
 verdict under the minimum line coverage (95% by default) is refused
-(`refused-guard`) and stays a `review` branch. The default is false; the
-weekly routine template enables it, while daily never applies.
+(`refused-guard`) and stays a `review` branch. The report lists those as a
+separate "Human decision queue" with their coverage percentage — the
+reviewer's `gate.agree` remains its honest safety judgement, not a statement
+that the guard's policy threshold should be applied by the reviewer. The
+default is false; the weekly routine template enables it, while daily never
+applies.
 
 ## Installing
 

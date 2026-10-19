@@ -464,8 +464,10 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.applyReviewed).toBe(true)
     expect(result.report).toContain("reviewed: 1 reclaimed (includeReviewed true), 1 refused by the line-coverage guard")
     expect(result.report).toContain("reclaimed (1): `wt/small-residual`")
-    expect(result.report).toContain("refused by the guard (1)")
+    expect(result.report).toContain("reviewer agreed, refused by the line guard: 1")
+    expect(result.report).toContain("## Human decision queue — reviewer agreed, refused by line guard (1)")
     expect(result.report).toContain("`wt/large-residual`")
+    expect(result.report).toContain("80% line coverage")
     expect(result.report).toContain("line coverage 80% of 50 added lines (< 95%)")
     expect(result.report).not.toContain("documented seam")
   })
@@ -621,6 +623,11 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
     )).toBe(true)
     expect(prompt).not.toMatch(/pre-rewrite/)
     expect(prompt).not.toMatch(/compare base/)
+    // Agree is the reviewer's honest safety judgement; the line guard is a
+    // later, deterministic policy step and must not cause self-censoring.
+    expect(prompt).toContain("`gate.agree` is your HONEST judgement")
+    expect(prompt).toContain("do NOT lower it because lineCoverage is under minLineCoverage")
+    expect(prompt).toContain("human decision queue item")
     // A conflicting merge renders `null` explicitly, not an empty string.
     expect(prompt).toContain("or null when the merge conflicts): null. Ahead")
   })

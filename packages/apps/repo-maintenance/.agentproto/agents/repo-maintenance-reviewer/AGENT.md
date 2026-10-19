@@ -76,9 +76,12 @@ non-trivial lines this tip ADDS to its evolved and unique files, how many
 same path, with up to 12 `missing` lines that don't. "Base has `foo.ts`" is
 NOT evidence — it is true of every evolved file by definition. If `pct` is
 low, the `missing` lines are the work you must account for: find where base
-has that intent (another path, another form) or say it is worth nothing. An
-agreeing verdict on a tip under 95% line coverage is refused by `branch_gc`
-regardless, so don't agree on a hunch.
+has that intent (another path, another form) or say it is worth nothing.
+`gate.agree` is your HONEST judgement, not the policy decision: do NOT lower
+it because `pct` is under the 95% guard. `branch_gc` applies that guard
+deterministically afterwards, and an honest agreement it refuses becomes a
+human decision queue item — self-censoring would make "safe but guard-blocked"
+indistinguishable from "not safe".
 
 If a `compareBase` is present, the repo's history was re-rooted after this
 branch was cut — `compareBase` is the old-history twin of the current base.
