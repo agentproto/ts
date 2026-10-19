@@ -64,6 +64,34 @@ that the guard's policy threshold should be applied by the reviewer. The
 default is false; the weekly routine template enables it, while daily never
 applies.
 
+### Operator approvals
+
+`branch_gc_verdict` accepts an optional `operator: { by, note? }` block. A
+reviewer verdict whose tip falls under `branch_gc`'s line-coverage guard
+(default 95%) is refused and stays in `review` — that refused list is the
+human queue. Recording an operator approval for the **same tip sha**
+(`gate.agree: true` plus the `operator` block, stored with `recordedAt`) is
+the human exit: `branch_gc` with `includeReviewed: true` then reclaims it
+despite the guard, and the plan entry shows
+`verdictGuard: "bypassed by operator <by>..."` with who approved. Apply still
+writes the restore log before deleting. These verdicts are shared with any
+other `includeReviewed`-enabled run (for example the weekly routine); this
+workflow's own apply step stays `includeReviewed: false`.
+
+Verdict recording is safe under concurrency: an in-process mutex plus an OS
+lock file serialise writers, the file is re-read under the lock, and each
+write lands with an atomic rename, so the parallelism-4 review fan-out cannot
+lose a verdict. Readers revalidate against the file's mtime/size, so a
+long-lived store also observes writes made elsewhere.
+
+The approval is accepted only through the operator MCP surface:
+`branch_gc_verdict` refuses an `operator` block when the daemon-verified caller
+is an agent session (including a scoped mount's owner), `POST
+/branches/gc/verdict` refuses it because that route carries no caller identity,
+and `operator.by` must name someone other than the verdict's `reviewer`. The
+reviewer agent therefore cannot self-certify the override it is guarded
+against. An operator block without `gate.agree: true` is not an approval.
+
 ## Installing
 
 ```bash

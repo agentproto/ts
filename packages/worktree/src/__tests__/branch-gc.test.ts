@@ -5,7 +5,7 @@
  * The forge is always a test double.
  */
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath, chmod } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, chmod, stat, utimes } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
@@ -20,6 +20,7 @@ import {
   classifyTip,
   createLadderContext,
   InMemoryBranchVerdictStore,
+  FileBranchVerdictStore,
   BranchVerdictError,
   CHECKPOINT_BRANCH_PREFIX,
   type BranchGcPlan,
@@ -553,6 +554,23 @@ describe("branch gc — verdict store", () => {
     await expect(
       recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: { ...verdictFor("feat/x", tip, false), triage: { verdict: "maybe" } } }),
     ).rejects.toThrow(/triage/)
+    // The operator override is a separate trust boundary: a reviewer cannot self-certify.
+    await expect(
+      recordBranchVerdict({
+        repoRoot: repo,
+        repoName: "fixture",
+        store,
+        verdict: { ...verdictFor("feat/x", tip, false), operator: { by: "TEST" } },
+      }),
+    ).rejects.toThrow(/other than the reviewer/)
+    await expect(
+      recordBranchVerdict({
+        repoRoot: repo,
+        repoName: "fixture",
+        store,
+        verdict: { ...verdictFor("feat/x", tip, false), operator: { by: "   " } },
+      }),
+    ).rejects.toThrow(/operator\.by/)
   })
 
   it("includeReviewed promotes a review ref only for the SAME tip sha", async () => {
@@ -574,6 +592,65 @@ describe("branch gc — verdict store", () => {
     const moved = entry(await plan(repo, { verdicts: store, includeReviewed: true }), "feat/reviewed")
     expect(moved.class).toBe("review")
     expect(moved.verdict).toBeUndefined()
+  })
+
+  it("keeps every verdict when concurrent records race (G8)", async () => {
+    const repo = await makeRepo()
+    const path = join(await tmp("branch-gc-verdicts-"), "verdicts.json")
+    const tips: string[] = []
+    for (let i = 0; i < 12; i++) tips.push(await branchWith(repo, `feat/race-${i}`, { [`race-${i}.txt`]: `${i}\n` }))
+
+    // The daemon's recorder builds a fresh store per call; fire all of them at once.
+    await Promise.all(
+      tips.map((tip, i) =>
+        recordBranchVerdict({
+          repoRoot: repo,
+          repoName: "fixture",
+          store: new FileBranchVerdictStore(path),
+          verdict: verdictFor(`feat/race-${i}`, tip, false),
+        }),
+      ),
+    )
+
+    const reader = new FileBranchVerdictStore(path)
+    for (let i = 0; i < tips.length; i++) {
+      expect(await reader.get("fixture", tips[i] as string)).toMatchObject({ name: `feat/race-${i}`, sha: tips[i] })
+    }
+  })
+
+  it("reaps a stale lock and leaves no lock behind", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/locked", { "locked.txt": "locked\n" })
+    const path = join(await tmp("branch-gc-verdicts-"), "verdicts.json")
+    const lockPath = `${path}.lock`
+    await writeFile(lockPath, "dead-process:dead-token\n")
+    const old = new Date(Date.now() - 120_000)
+    await utimes(lockPath, old, old)
+
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: new FileBranchVerdictStore(path),
+      verdict: verdictFor("feat/locked", tip, false),
+    })
+    await expect(stat(lockPath)).rejects.toThrow()
+    expect(await new FileBranchVerdictStore(path).get("fixture", tip)).toMatchObject({ name: "feat/locked" })
+  })
+
+  it("a long-lived reader observes a verdict another store wrote (no stale cache)", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/later", { "later.txt": "later\n" })
+    const path = join(await tmp("branch-gc-verdicts-"), "verdicts.json")
+    const reader = new FileBranchVerdictStore(path)
+    expect(await reader.get("fixture", tip)).toBeNull()
+
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: new FileBranchVerdictStore(path),
+      verdict: verdictFor("feat/later", tip, false),
+    })
+    expect(await reader.get("fixture", tip)).toMatchObject({ name: "feat/later", sha: tip })
   })
 
   it("review queue: one candidate per unique tip, already-reviewed tips skipped unless all", async () => {
@@ -1048,6 +1125,49 @@ describe("branch gc — line-coverage guard", () => {
       reclaimReason: "reviewed",
     })
     await expect(plan(repo, { minLineCoverage: 101 })).rejects.toThrow(/minLineCoverage/)
+  })
+
+  it("an operator approval reclaims a guard-refused tip, records who bypassed it, and still writes the restore log", async () => {
+    const repo = await makeRepo()
+    const tip = await lowCoverageBranch(repo)
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: { ...agreeing("feat/lost", tip), operator: { by: "jeremy", note: "checked the missing work by hand" } },
+    })
+
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    const e = entry(p, "feat/lost")
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed", verdict: { agree: true, operator: { by: "jeremy" } } })
+    expect(e.verdictGuard).toContain("bypassed by operator jeremy")
+    expect(e.verdictGuard).toContain("line coverage 0%")
+
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir })
+    expect(outcomes).toContainEqual({ kind: "local", name: "feat/lost", sha: tip, result: "deleted", reclaimReason: "reviewed" })
+    expect(restoreLog).not.toBeNull()
+    const log = await readBranchGcRestoreLog(restoreLog as string)
+    expect(log.entries).toContainEqual(expect.objectContaining({ name: "feat/lost", sha: tip }))
+    expect(await refExists(repo, "refs/heads/feat/lost")).toBe(false)
+  })
+
+  it("an operator block without gate.agree is not an approval: the tip stays review", async () => {
+    const repo = await makeRepo()
+    const tip = await lowCoverageBranch(repo)
+    const verdicts = new InMemoryBranchVerdictStore()
+    const verdict = agreeing("feat/lost", tip)
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: { ...verdict, gate: { ...verdict.gate, agree: false }, operator: { by: "jeremy" } },
+    })
+
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true }), "feat/lost")
+    expect(e).toMatchObject({ class: "review", verdict: { agree: false, operator: { by: "jeremy" } } })
+    expect(e.verdictGuard).toBeUndefined()
   })
 
   it("apply re-checks the guard: a plan made with a lower threshold cannot carry a refused approval through", async () => {

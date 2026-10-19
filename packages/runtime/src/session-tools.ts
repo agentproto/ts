@@ -4636,8 +4636,11 @@ export function registerSessionTools(
     "Record one reviewer verdict for a branch tip, keyed by repo + tip sha " +
       "(a verdict for a tip that later moves is ignored). `gate.agree: true` " +
       "is what lets `branch_gc` with `includeReviewed` reclaim an unmerged " +
-      "ref, and it must cite evidence. This tool only stores verdicts; it " +
-      "never deletes anything.",
+      "ref, and it must cite evidence. An `operator` block records a human " +
+      "approval that bypasses `branch_gc`'s line-coverage guard for this " +
+      "exact tip (recorded with `recordedAt`); it is accepted only on the " +
+      "operator surface, never from an agent session. This tool only stores " +
+      "verdicts; it never deletes anything.",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
@@ -4658,6 +4661,13 @@ export function registerSessionTools(
         })
         .optional(),
       reviewer: z.string().describe("Who reviewed, e.g. `claude-sonnet reviewer`."),
+      operator: z
+        .object({
+          by: z.string().describe("Who approved deletion of this exact tip. Must differ from `reviewer`."),
+          note: z.string().optional().describe("Why the operator approved despite the guard."),
+        })
+        .optional()
+        .describe("Human operator approval: lets `includeReviewed` reclaim even when the line-coverage guard refuses. Stored with `recordedAt`."),
     },
     async input => {
       if (!recordBranchGcVerdict) {
@@ -4680,10 +4690,27 @@ export function registerSessionTools(
         return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
       }
       try {
-        const { repoRoot: _r, workspaceSlug: _w, ...verdict } = input
+        const { repoRoot: _r, workspaceSlug: _w, operator, ...verdict } = input
+        // Operator approval is a different trust boundary from the review. A
+        // session is identified here by the daemon-verified caller identity
+        // (`?callerSessionId=` or a scoped mount's owner), never by a tool
+        // argument, so an automated reviewer cannot self-certify the guard
+        // override. The operator root MCP surface arrives with no caller and
+        // may set it; `POST /branches/gc/verdict` refuses it (no identity).
+        if (operator && effectiveCallerSessionId(callerScope, callerSessionId) !== undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "branch_gc_verdict failed: operator approval must be recorded through the operator surface, not by a session",
+              },
+            ],
+            isError: true,
+          }
+        }
         // A reviewer names its review worktree; the verdict keys on the repo.
         const repoRoot = await ownerRepoOfReviewWorktree(resolved.repoRoot)
-        const record = await recordBranchGcVerdict({ repoRoot, verdict })
+        const record = await recordBranchGcVerdict({ repoRoot, verdict: { ...verdict, ...(operator ? { operator } : {}) } })
         return { content: [{ type: "text", text: JSON.stringify({ recorded: true, record }) }] }
       } catch (err) {
         return {

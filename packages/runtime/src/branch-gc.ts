@@ -63,8 +63,13 @@ export interface BranchGcPlanEntryView {
   holdReason?: BranchGcHoldReason
   holdDetail?: string
   pushed?: string
-  verdict?: { triage: BranchGcTriageVerdict; agree: boolean | null; reviewer: string }
-  /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`). */
+  verdict?: {
+    triage: BranchGcTriageVerdict
+    agree: boolean | null
+    reviewer: string
+    operator?: { by: string; note?: string }
+  }
+  /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`), or that an operator bypassed that guard. */
   verdictGuard?: string
 }
 
@@ -296,6 +301,8 @@ export interface BranchGcVerdictRecordView {
   triage: { verdict: BranchGcTriageVerdict; confidence: number; reason: string; salvage?: string }
   gate?: { agree: boolean; verdict: BranchGcTriageVerdict; reason: string; evidence: string[] }
   reviewer: string
+  /** Human operator approval overriding the line-coverage guard for this exact tip. */
+  operator?: { by: string; note?: string }
 }
 
 /** Injected port: validate + store one reviewer verdict, keyed by repo + tip sha. Throws on an invalid verdict. */

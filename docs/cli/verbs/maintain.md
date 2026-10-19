@@ -43,6 +43,14 @@ One run:
    a `review`-class branch is never reclaimed.
 5. Reports a markdown summary.
 
+Verdicts are recorded with `branch_gc_verdict`, which also accepts an
+`operator: { by, note? }` block. A reviewer verdict under the line-coverage
+guard is refused by `branch_gc`; an operator approval for the same tip sha is
+the human exit from that queue and lets `includeReviewed` reclaim it despite
+the guard (the plan shows `verdictGuard: bypassed by operator <by>`). The
+maintain workflow itself applies with `includeReviewed: false`, so it records
+and reports verdicts but never deletes a `review`-class branch.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
