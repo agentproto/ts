@@ -19,6 +19,8 @@ export interface FakeControllerOptions {
   onSuspend?: () => void
   /** Ports the controller reports as published (create + GET). */
   publishedPorts?: Array<{ host: number; guest: number }>
+  /** Model a controller without the attach/detach routes (404). */
+  noSessionRoutes?: boolean
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
 }
@@ -32,6 +34,9 @@ export class FakeController {
   readonly resumed: string[] = []
   readonly removed: string[] = []
   readonly states = new Map<string, string>()
+  /** Controller-held session refcount and per-computer cap. */
+  readonly sessions = new Map<string, number>()
+  readonly maxSessions = new Map<string, number>()
   readonly fileSystem = new Map<string, string>()
   private nextId = 1
   private nextStateSnapshot: string | undefined = undefined
@@ -89,6 +94,7 @@ export class FakeController {
       const state = this.nextStateSnapshot ?? this.lastCreateState
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
+      this.maxSessions.set(id, typeof parsed.maxSessions === "number" ? parsed.maxSessions : 1)
       return reply(res, 201, { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] })
     }
 
@@ -100,7 +106,23 @@ export class FakeController {
       if (this.options.statusNotFound || !this.states.has(id)) return reply(res, 404, { error: "not found" })
       return reply(res, 200, { name: id, state: this.states.get(id), ports: this.options.publishedPorts ?? [], egress: [], pinsStale: false, pinsTtlSec: 21600 })
     }
+    if (url.pathname.endsWith("/attach") && req.method === "POST" && !this.options.noSessionRoutes) {
+      const held = this.sessions.get(id) ?? 0
+      const max = this.maxSessions.get(id) ?? 1
+      if (held >= max) return reply(res, 409, { error: "session limit reached", sessions: held, maxSessions: max })
+      this.sessions.set(id, held + 1)
+      return reply(res, 200, { sessions: held + 1, maxSessions: max })
+    }
+    if (url.pathname.endsWith("/detach") && req.method === "POST" && !this.options.noSessionRoutes) {
+      const held = Math.max((this.sessions.get(id) ?? 0) - 1, 0)
+      this.sessions.set(id, held)
+      return reply(res, 200, { sessions: held, maxSessions: this.maxSessions.get(id) ?? 1 })
+    }
     if (req.method === "DELETE") {
+      const attached = this.sessions.get(id) ?? 0
+      if (attached > 0 && url.searchParams.get("force") !== "true") {
+        return reply(res, 409, { error: "computer has attached sessions", sessions: attached })
+      }
       this.removed.push(id)
       this.states.delete(id)
       return reply(res, 200, { ok: true })

@@ -99,6 +99,14 @@ export const resumeResponseSchema = z.object({
 
 export type ResumeResponse = z.infer<typeof resumeResponseSchema>
 
+/** `POST /v1/computers/:id/attach|detach` — 200 response body. */
+export const sessionsResponseSchema = z.object({
+  sessions: z.number().int().optional(),
+  maxSessions: z.number().int().optional(),
+}).passthrough()
+
+export type SessionsResponse = z.infer<typeof sessionsResponseSchema>
+
 /** Controller error bodies are always `{ error: string }` (sometimes with a
  *  `detail` array of validation issues). */
 export const errorResponseSchema = z.object({

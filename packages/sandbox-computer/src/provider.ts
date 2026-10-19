@@ -16,10 +16,12 @@
  *
  * SHARED SESSIONS: this provider declares `sharedSessions: true` —
  * descriptive metadata marking the box as advertised shareable; no runtime
- * behaviour reads the flag yet. `config.maxSessions` independently caps
- * how many sessions this PROCESS maps onto one computer (default 1); the
- * controller has no attach/detach refcount, so cross-process counting is a
- * known gap (see README).
+ * behaviour reads the flag yet. `config.maxSessions` caps how many sessions
+ * map onto one computer (default 1): it is forwarded at create so the
+ * controller sizes the computer for it, and counted by the controller through
+ * attach (boot, connect) and detach (pause, stop), so the cap holds across
+ * processes. Against a controller without those routes the count stays
+ * process-local.
  *
  * TOKENS: the controller service token travels only in the Authorization
  * header; the per-box daemon token travels only inside the serve command
@@ -62,6 +64,8 @@ const READ_CHUNK_RAW = 700_000
 
 /** Per-computer session bookkeeping for THIS process (sharedSessions). */
 const activeSessions = new Map<string, number>()
+/** Computers on which this process holds a controller-side session slot. */
+const controllerSlots = new Set<string>()
 
 // ── config ─────────────────────────────────────────────────────────────
 
@@ -275,6 +279,29 @@ function releaseSessionSlot(sandboxId: string): void {
   else activeSessions.set(sandboxId, held - 1)
 }
 
+/** Take a controller-held session slot. A controller without the attach
+ *  route (404) is tolerated: the process-local count still applies. */
+async function attachController(client: ComputerControllerClient, id: string): Promise<void> {
+  try {
+    await client.attach(id)
+    controllerSlots.add(id)
+  } catch (err) {
+    if (err instanceof ComputerApiError && err.status === 404) return
+    throw err
+  }
+}
+
+/** Release this process's controller-side slot. Returns the sessions still
+ *  attached, or 0 when no slot was held or the controller cannot answer. */
+async function detachController(client: ComputerControllerClient, id: string): Promise<number> {
+  if (!controllerSlots.delete(id)) return 0
+  try {
+    return (await client.detach(id)).sessions ?? 0
+  } catch {
+    return 0
+  }
+}
+
 // ── fork identity bookkeeping ─────────────────────────────────────────
 // Resume can rebuild a computer under a NEW generated name (full restore
 // into a fresh unit). Map old → new within this process so probe()/exec on
@@ -403,6 +430,7 @@ async function bootOnClient(
       ...(config.memoryMiB !== undefined ? { memoryMiB: config.memoryMiB } : {}),
       ...(config.rootDiskMiB !== undefined ? { rootDiskMiB: config.rootDiskMiB } : {}),
       ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
+      ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
       ...(config.egress ? { egress: { allow: config.egress } } : {}),
       env: createEnv,
     })
@@ -426,6 +454,7 @@ async function bootOnClient(
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
     await daemonHealthyOrThrow(client, sandboxId, config, daemonToken, port, workspace, mcpOrigin)
+    await attachController(client, sandboxId)
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
     // sandbox-e2b): propagate the original error but reclaim the box.
@@ -475,6 +504,18 @@ async function connectOnClient(
       `computer "${currentId}" already hosts the maximum number of sessions this process tracks ` +
         `(${maxSessions}); attach to the existing session instead of opening a new one`,
     )
+  }
+  try {
+    await attachController(client, currentId)
+  } catch (err) {
+    releaseSessionSlot(currentId)
+    if (err instanceof ComputerApiError && err.status === 409) {
+      throw new Error(
+        `computer "${currentId}" already hosts the maximum number of sessions the controller allows; ` +
+          "attach to the existing session instead of opening a new one",
+      )
+    }
+    throw err
   }
   return wrapBox(client, currentId, spec, config, port, published)
 }
@@ -653,6 +694,10 @@ function wrapBox(
     },
     async stop(): Promise<void> {
       releaseSessionSlot(id)
+      const remaining = await detachController(client, id)
+      // Other sessions still attached keep the computer; the last one out
+      // removes it.
+      if (remaining > 0) return
       await client.remove(id)
       // Free the per-process bookkeeping: session slot (done above), any
       // alias pointing at this id, and the probe config captured at
@@ -665,6 +710,8 @@ function wrapBox(
       probeClientConfigs.delete(id)
     },
     async pause(): Promise<void> {
+      releaseSessionSlot(id)
+      await detachController(client, id)
       await client.suspend(id)
     },
     async extendTimeout(): Promise<void> {
