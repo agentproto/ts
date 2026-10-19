@@ -33,3 +33,4 @@ export {
 } from "./build.js"
 export type { BuildQuotaStatusInput } from "./build.js"
 export { QuotaReaderRegistry, defineQuotaReader } from "./registry.js"
+export { quotaFromAnthropicHeaders } from "./readers/anthropic.js"
