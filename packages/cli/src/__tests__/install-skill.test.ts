@@ -287,7 +287,12 @@ describe("install-skill claude-code emit", () => {
     ).toBe(true)
   })
 
-  it("emits a plugin zip when `zip` is available", () => {
+  // Only meaningful when the `zip` binary exists — the CLI's plugin-zip
+  // emission is best-effort and silently skips without it. On machines
+  // without `zip` this test used to fail through the missing archive even
+  // though the CLI behaved exactly as documented.
+  const r = spawnSync("zip", ["-v"], { encoding: "utf8" })
+  it.skipIf(r.status !== 0)("emits a plugin zip when `zip` is available", () => {
     const { code } = runCli([
       "skill/ap-spawn-agent",
       "--target",
