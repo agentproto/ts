@@ -393,6 +393,15 @@ export const agentStartInputShape = {
     .describe(
       `Delegation gate: 'executor' = leaf (cannot delegate), 'supervisor' = may delegate. ${help("role")}`
     ),
+  allowPromptFrom: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      "Session ids allowed to drive the new session through the daemon's drive tools " +
+        "(agent_prompt / agent_interrupt / agent_kill / session_restart / session_continue_fresh), " +
+        "or [\"any\"] to allow any caller session. By default only the session's owner " +
+        "(the caller that spawned it) and the human operator may drive it."
+    ),
   promptAppend: z
     .string()
     .optional()

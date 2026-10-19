@@ -400,6 +400,17 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.removed).toEqual([first.sandboxId])
   })
 
+  it("stop keeps the computer when the detach is not answered", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    controller.options.detachStatus = 500
+    await expect(booted.stop()).rejects.toThrow(/left in place/)
+    expect(controller.removed).toEqual([])
+    expect(controller.states.get(booted.sandboxId)).toBe("running")
+    controller.options.detachStatus = undefined
+    await booted.stop()
+    expect(controller.removed).toEqual([booted.sandboxId])
+  })
+
   it("pause detaches before suspending, and connect attaches again", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     await booted.pause!()

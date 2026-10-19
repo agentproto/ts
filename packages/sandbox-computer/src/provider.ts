@@ -42,7 +42,7 @@ import type {
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
 import { ComputerApiError, ComputerControllerClient, type ComputerClientConfig } from "./client.js"
-import type { ComputerStatus, PortPublish } from "./api-types.js"
+import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 export const DEFAULT_PORT = 18790
@@ -297,13 +297,17 @@ async function attachController(client: ComputerControllerClient, id: string): P
 async function detachController(client: ComputerControllerClient, id: string): Promise<number | undefined> {
   const held = controllerSlots.get(id) ?? 0
   if (held === 0) return 0
-  if (held === 1) controllerSlots.delete(id)
-  else controllerSlots.set(id, held - 1)
+  let remaining: number
   try {
-    return (await client.detach(id)).sessions ?? 0
+    remaining = (await client.detach(id)).sessions ?? 0
   } catch {
+    // The slot stays counted so a retried stop detaches it again.
     return undefined
   }
+  const now = controllerSlots.get(id) ?? 0
+  if (now <= 1) controllerSlots.delete(id)
+  else controllerSlots.set(id, now - 1)
+  return remaining
 }
 
 // ── fork identity bookkeeping ─────────────────────────────────────────
@@ -461,7 +465,9 @@ async function bootOnClient(
     await attachController(client, sandboxId)
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
-    // sandbox-e2b): propagate the original error but reclaim the box.
+    // sandbox-e2b): propagate the original error but reclaim the box. The
+    // box was created here and no session has attached to it, so force is
+    // safe and keeps a stray controller-held slot from blocking the cleanup.
     await client.remove(sandboxId, { force: true }).catch(() => undefined)
     throw err
   }
@@ -702,9 +708,14 @@ function wrapBox(
       // Other sessions still attached keep the computer; the last one out
       // removes it.
       if (remaining !== undefined && remaining > 0) return
-      // An unanswered detach leaves the count unknown: force the removal so
-      // the box is not leaked behind a stale slot.
-      await client.remove(id, remaining === undefined ? { force: true } : {})
+      // An unanswered detach leaves the count unknown: keep the computer
+      // (another session may still use it) and report it; a retried stop
+      // removes it once the controller answers, and its TTL reclaims it
+      // otherwise.
+      if (remaining === undefined) {
+        throw new Error(`computer ${id}: could not release the controller session slot, computer left in place`)
+      }
+      await client.remove(id)
       // Free the per-process bookkeeping: session slot (done above), any
       // alias pointing at this id, and the probe config captured at
       // boot/connect — the box is gone, nothing should route here anymore.
