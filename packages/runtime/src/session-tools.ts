@@ -198,6 +198,14 @@ import {
   type BranchGcVerdictRecorder,
   type BranchGcVerdictReader,
 } from "./branch-gc.js"
+import {
+  summarizeSandboxCheckpointGcApply,
+  summarizeSandboxCheckpointGcPlan,
+  withSandboxCheckpointGcApplySummary,
+  type SandboxCheckpointGcResult,
+  type SandboxCheckpointGcRunInput,
+  type SandboxCheckpointGcRunner,
+} from "./sandbox-checkpoint-gc.js"
 import { basename, join } from "node:path"
 import { homedir } from "node:os"
 import {
@@ -743,6 +751,13 @@ export interface RegisterSessionToolsOptions {
    * → `branch_gc` returns a clear "not enabled" error.
    */
   runBranchGc?: BranchGcRunner
+  /**
+   * Optional sandbox-checkpoint-`gc` runner powering
+   * `sandbox_checkpoint_gc` — same injection reason as `runBranchGc` (the
+   * engine lives in `@agentproto/worktree`). Omitted → the tool returns a
+   * clear "not enabled" error.
+   */
+  runSandboxCheckpointGcSweep?: SandboxCheckpointGcRunner
   /** Optional verdict recorder powering `branch_gc_verdict`. Same injection reason. */
   recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional verdict reader powering `branch_gc_verdict_get`. Same injection reason. */
@@ -752,6 +767,10 @@ export interface RegisterSessionToolsOptions {
    *  `~/.agentproto/branch-gc/jobs`. Injectable so tests can point it at a
    *  temp dir instead of the real home directory. */
   branchGcJobsDir?: string
+  /** Same, for `sandbox_checkpoint_gc`'s background jobs
+   *  (`sandbox_checkpoint_gc_status`). Defaults to
+   *  `~/.agentproto/sandbox-checkpoint-gc/jobs`. */
+  sandboxCheckpointGcJobsDir?: string
   /** Same, for `worktree_gc`'s background jobs (`worktree_gc_status`).
    *  Defaults to `~/.agentproto/worktree-gc/jobs`. */
   worktreeGcJobsDir?: string
@@ -1118,6 +1137,10 @@ const branchGcJobs = createBackgroundJobRegistry<BranchGcResult>({
   idPrefix: "bgc_",
   defaultDir: join(homedir(), ".agentproto", "branch-gc", "jobs"),
 })
+const sandboxCheckpointGcJobs = createBackgroundJobRegistry<SandboxCheckpointGcResult>({
+  idPrefix: "scg_",
+  defaultDir: join(homedir(), ".agentproto", "sandbox-checkpoint-gc", "jobs"),
+})
 const worktreeGcJobs = createBackgroundJobRegistry<WorktreeGcResult>({
   idPrefix: "wgc_",
   defaultDir: join(homedir(), ".agentproto", "worktree-gc", "jobs"),
@@ -1202,6 +1225,34 @@ const branchGcDoneView = (
       }
     : {}),
   ...(slice ? sliceBranchGcResult(result, slice) : {}),
+})
+
+const sandboxCheckpointGcBackgroundView = (job: BackgroundJob<SandboxCheckpointGcResult>): object =>
+  sandboxCheckpointGcJobs.backgroundView(job, {
+    tool: "sandbox_checkpoint_gc_status",
+    hint:
+      "Running in the background; a first plan fetch on a big repo can take a " +
+      "minute. Call sandbox_checkpoint_gc_status with this jobId about every " +
+      "30 s. When done it returns the safe/keep/unknown summary (plus " +
+      "deleted/skipped/failed on an apply) and a resultPath holding the full result.",
+  })
+
+/** The `done` view `sandbox_checkpoint_gc_status` returns — identical for an
+ *  in-memory job and one rebuilt from its on-disk result file. */
+const sandboxCheckpointGcDoneView = (
+  jobId: string,
+  resultPath: string | undefined,
+  result: SandboxCheckpointGcResult,
+  endedAt?: string,
+): object => ({
+  jobId,
+  status: "done",
+  ...(endedAt !== undefined ? { endedAt } : {}),
+  ...(resultPath !== undefined ? { resultPath } : {}),
+  summary: result.summary,
+  ...(result.mode === "apply"
+    ? { applySummary: result.applySummary ?? summarizeSandboxCheckpointGcApply(result) }
+    : {}),
 })
 
 const worktreeGcBackgroundView = (job: BackgroundJob<WorktreeGcResult>): object =>
@@ -1290,6 +1341,7 @@ export function registerSessionTools(
     listWorktreeStatuses,
     runWorktreeGc,
     runBranchGc,
+    runSandboxCheckpointGcSweep,
     recordBranchGcVerdict,
     readBranchGcVerdict,
     listCatalogModels,
@@ -1305,6 +1357,7 @@ export function registerSessionTools(
   // Point the module-level branch_gc job registry at the injected dir (tests
   // use this to avoid writing into the real home directory). Last write wins.
   if (opts.branchGcJobsDir) branchGcJobs.setDir(opts.branchGcJobsDir)
+  if (opts.sandboxCheckpointGcJobsDir) sandboxCheckpointGcJobs.setDir(opts.sandboxCheckpointGcJobsDir)
   if (opts.worktreeGcJobsDir) worktreeGcJobs.setDir(opts.worktreeGcJobsDir)
   if (opts.sessionWrapupJobsDir) sessionWrapupJobs.setDir(opts.sessionWrapupJobsDir)
   if (opts.sessionWrapupApplyJobsDir) sessionWrapupApplyJobs.setDir(opts.sessionWrapupApplyJobsDir)
@@ -4435,6 +4488,145 @@ export function registerSessionTools(
         return { content: [{ type: "text", text: JSON.stringify(branchGcJobs.progressView(job)) }] }
       }
       return doneView(job.id, job.resultPath, job.result!, slice, job.endedAt)
+    },
+  )
+
+  server.tool(
+    "sandbox_checkpoint_gc",
+    "Garbage-collect stale `agentproto-checkpoint/*` refs on a repo's remote " +
+      "(the uncommitted-work snapshots a dead sandbox left behind). DEFAULTS " +
+      "TO A DRY RUN and classifies every ref against its work branch: `safe` " +
+      "(the work it rescued is provably elsewhere — the work branch's PR is " +
+      "merged/closed, or the snapshot's content is verbatim in the work " +
+      "branch/base, or the parent merged plus the snapshot was clean, or " +
+      "squash-/patch-merged), `keep` (no proof — possibly the only copy of " +
+      "that work), or `unknown` (objects not fetched / no adjudication base). " +
+      "`apply: true` deletes only `safe` refs, RE-PLANNING and " +
+      "re-classifying every ref immediately before deleting it, and returns " +
+      "`applySummary` (deleted/skipped/failed) plus the full result saved to " +
+      "`resultPath`. A sweep can outlast an MCP caller's timeout: pass " +
+      "`wait: false` (or `waitMs`) and poll `sandbox_checkpoint_gc_status` " +
+      "with the returned jobId.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z
+        .string()
+        .optional()
+        .describe("Workspace slug from `agentproto workspace list`. The active workspace when omitted."),
+      remote: z.string().optional().describe("Remote to sweep. Default `origin`."),
+      base: z.string().optional().describe("Content adjudication base. Default the repo's detected default branch as `origin/<default>`."),
+      apply: mcpBool.optional().describe("When true, EXECUTE the fresh plan and delete `safe` refs. Default false — a dry run."),
+      wait: mcpBool
+        .optional()
+        .describe("Block until the sweep finishes (default true). false ⇒ return a jobId immediately; poll `sandbox_checkpoint_gc_status`."),
+      waitMs: mcpNumber
+        .optional()
+        .describe("Block at most this many milliseconds, then fall back to background: returns `{ jobId, status: \"running\" }` to poll with `sandbox_checkpoint_gc_status`. Only meaningful with the default `wait: true`."),
+    },
+    async input => {
+      if (!runSandboxCheckpointGcSweep) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "sandbox_checkpoint_gc is not enabled — the daemon was started " +
+                "without a sandbox checkpoint gc runner. The host must wire " +
+                "`runSandboxCheckpointGcSweep` in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({
+        repoRoot: input.repoRoot,
+        workspaceSlug: input.workspaceSlug,
+      })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        const runInput: SandboxCheckpointGcRunInput = {
+          repoRoot: resolved.repoRoot,
+          apply: input.apply === true,
+          ...(input.base ? { base: input.base } : {}),
+          ...(input.remote ? { remote: input.remote } : {}),
+        }
+        const { job, promise } = sandboxCheckpointGcJobs.start(async () =>
+          withSandboxCheckpointGcApplySummary(await runSandboxCheckpointGcSweep(runInput)),
+        )
+        if (input.wait === false) {
+          return { content: [{ type: "text", text: JSON.stringify(sandboxCheckpointGcBackgroundView(job)) }] }
+        }
+        if (input.waitMs !== undefined && (await timedOutWaiting(promise, input.waitMs))) {
+          return { content: [{ type: "text", text: JSON.stringify(sandboxCheckpointGcBackgroundView(job)) }] }
+        }
+        const result = await promise
+        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `sandbox_checkpoint_gc failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "sandbox_checkpoint_gc_status",
+    "Poll a sandbox_checkpoint_gc run started with `wait: false` (or one that " +
+      "fell back to the background via `waitMs`). While running: status + " +
+      "elapsed time. When done: the plan's `summary` (safe/keep/unknown " +
+      "counts; plus `applySummary` deleted/skipped/failed on an apply) and the " +
+      "path of the full result saved on disk (`resultPath`). While running " +
+      "the view carries `followUp.pollAfterMs` (poll every 30 s). When failed: " +
+      "the error.",
+    {
+      jobId: z.string().describe("Job id returned by `sandbox_checkpoint_gc` (`scg_…`)."),
+    },
+    async input => {
+      const job = sandboxCheckpointGcJobs.get(input.jobId)
+      if (!job) {
+        // A job from a prior daemon lifetime is not in the map, but its full
+        // result is still on disk — fall back to the file before declaring it lost.
+        const parsed = await sandboxCheckpointGcJobs.readResultFile(input.jobId)
+        if (!parsed) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `sandbox_checkpoint_gc job '${input.jobId}' not found (no running job and no result file at ${sandboxCheckpointGcJobs.resultPathFor(input.jobId)})`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                sandboxCheckpointGcDoneView(
+                  input.jobId,
+                  sandboxCheckpointGcJobs.resultPathFor(input.jobId),
+                  parsed,
+                ),
+              ),
+            },
+          ],
+        }
+      }
+      if (job.status !== "done") {
+        return { content: [{ type: "text", text: JSON.stringify(sandboxCheckpointGcJobs.progressView(job)) }] }
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(sandboxCheckpointGcDoneView(job.id, job.resultPath, job.result!, job.endedAt)),
+          },
+        ],
+      }
     },
   )
 

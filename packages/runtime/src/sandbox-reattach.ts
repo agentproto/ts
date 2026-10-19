@@ -52,6 +52,7 @@ import { loadConfig } from "./config.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import { recordSandboxState } from "./sandbox-ledger.js"
 import { resolveSandboxSecretFromBroker } from "./session-restart-core.js"
+import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import { readTarTarget, tarCheckpointProxyOpts } from "./sandbox-tar-checkpoint.js"
 import {
@@ -254,7 +255,10 @@ export async function runSandboxReattachPass(opts: {
       }
     }
     state.handle = handle
-    const spec: SandboxSpec = { provider: providerSlug, config: {} }
+    const spec: SandboxSpec = {
+      provider: providerSlug,
+      config: sandboxConfigForReattach(desc.sandboxConfig, desc.id),
+    }
     let host: SandboxAgentSessionHost
     try {
       host = await createSandboxAgentSessionHost({

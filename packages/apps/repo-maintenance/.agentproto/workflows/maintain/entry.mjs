@@ -515,6 +515,15 @@ export function buildReport(b) {
   }
   if (plan?.otherRemoteRefs) lines.push(`- (${plan.otherRemoteRefs} ref(s) of other configured remotes left alone)`)
   lines.push("")
+  lines.push("## Sandbox checkpoints")
+  const ckPlan = b.steps.checkpointGcPlan
+  const ckSummary = ckPlan?.summary
+  lines.push(`- ${ckSummary?.total ?? 0} \`agentproto-checkpoint/*\` ref(s) classified`)
+  lines.push(`- safe=${ckSummary?.safe ?? 0} keep=${ckSummary?.keep ?? 0} unknown=${ckSummary?.unknown ?? 0}`)
+  if (ckPlan?.plan?.prCheckAvailable === false) {
+    lines.push(`- PR check unavailable (${ckPlan.plan.prCheckReason ?? "unknown"}) — content tiers still applied`)
+  }
+  lines.push("")
   lines.push(`## Review (${reviewCandidates.length} candidate(s) this run)`)
   const backlog = reviewQueue.queue.length - reviewCandidates.length
   lines.push(
@@ -576,6 +585,13 @@ export function buildReport(b) {
     )
     const wtOutcomes = Array.isArray(worktreeGcApply?.outcomes) ? worktreeGcApply.outcomes : []
     lines.push(`- worktree_gc: ${wtOutcomes.length} outcome(s)${wtOutcomes.length > 0 ? ` — ${formatTally(tally(wtOutcomes.map(o => o.result)))}` : ""}`)
+    const ckApply = b.steps.checkpointGcApply
+    const ckCounts = ckApply?.applySummary
+    lines.push(
+      `- sandbox_checkpoint_gc: ${ckCounts?.deleted ?? countOutcomes(ckApply?.outcomes, "deleted")} deleted, ` +
+        `${ckCounts?.skipped ?? countOutcomes(ckApply?.outcomes, "skipped-keep")} skipped, ` +
+        `${ckCounts?.failed ?? countOutcomes(ckApply?.outcomes, "failed")} failed`,
+    )
     if (applyReviewed) {
       lines.push(
         `- reviewed: ${reclaimedReviewed.length} reclaimed (includeReviewed true), ` +
@@ -692,6 +708,14 @@ export default {
       kind: "tool",
       tool: "branch_gc",
       inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, includeReviewed: false },
+    },
+    {
+      id: "checkpointGcPlan",
+      kind: "tool",
+      tool: "sandbox_checkpoint_gc",
+      // Always a dry run: the plan classifies the stale
+      // `agentproto-checkpoint/*` refs; only checkpointGcApply deletes.
+      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, wait: true },
     },
     {
       id: "reviewQueue",
@@ -828,6 +852,20 @@ export default {
       },
     },
     {
+      id: "checkpointGcApply",
+      kind: "tool",
+      tool: "sandbox_checkpoint_gc",
+      // Gated exactly like the other apply steps: false ⇒ the tool plans
+      // again (a dry run), true ⇒ the engine re-plans and deletes only the
+      // refs it re-classifies `safe` immediately before each delete.
+      inputs: {
+        repoRoot: "$input.repoRoot",
+        workspaceSlug: "$input.workspaceSlug",
+        apply: "$input.applyMerged",
+        wait: true,
+      },
+    },
+    {
       id: "report",
       kind: "transform",
       compute: b => buildReport(b),
@@ -896,5 +934,6 @@ export default {
     applyReviewed: "$input.applyReviewed",
     branchGcApply: "$steps.branchGcApply",
     worktreeGcApply: "$steps.worktreeGcApply",
+    checkpointGcApply: "$steps.checkpointGcApply",
   },
 }
