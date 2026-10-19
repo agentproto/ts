@@ -2037,7 +2037,7 @@ export async function restartAgentSession(
         booted.sandboxId,
         {
           provider: providerSlug,
-          config: sandboxConfigForReattach(prev.sandboxConfig, prev.id),
+          config: sandboxConfigForReattach(booted.sandboxConfig, restartedSessionId),
         },
         { env: {} },
       )

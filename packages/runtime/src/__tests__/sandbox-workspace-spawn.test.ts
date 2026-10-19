@@ -244,6 +244,8 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
           template: "tpl_1",
           token: "provider-secret",
           extraHeaders: { Authorization: "Bearer provider-secret" },
+          connectionString: "postgres://user:provider-secret@db.example/app",
+          buildEnv: { DATABASE_URL: "postgres://user:provider-secret@db.example/app" },
         },
       },
     })
@@ -259,6 +261,8 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       template: "tpl_1",
     })
     expect(result.descriptor.sandboxConfig).not.toHaveProperty("token")
+    expect(result.descriptor.sandboxConfig).not.toHaveProperty("connectionString")
+    expect(result.descriptor.sandboxConfig).not.toHaveProperty("buildEnv")
     expect(JSON.stringify(result.descriptor)).not.toContain("provider-secret")
   })
 

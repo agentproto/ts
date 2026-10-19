@@ -11,10 +11,13 @@
  * (session_restart and the boot-time reattach pass) replay the same value
  * instead of rebuilding an empty `config: {}`.
  *
- * Secrets never reach the descriptor: a key that names a credential is
- * dropped on the way in (token, extraHeaders, …). Providers that do not know
- * `sessionHolder` simply ignore the extra config field (their config readers
- * pick the fields they understand), so e2b/instabox/box keep working.
+ * Secrets never reach the descriptor: only an allowlist of provider config
+ * fields known to be non-secret is persisted (plus the holder). Everything
+ * else — tokens, headers, connection strings, env maps, arbitrary caller keys —
+ * is dropped, so an unknown key cannot smuggle a credential onto disk.
+ * Providers that do not know `sessionHolder` simply ignore the extra config
+ * field (their config readers pick the fields they understand), so
+ * e2b/instabox/box keep working.
  */
 
 import type { SandboxSpec } from "@agentproto/sandbox"
@@ -22,24 +25,34 @@ import type { SandboxSpec } from "@agentproto/sandbox"
 /** Config field naming the stable holder on the provider spec. */
 export const SANDBOX_SESSION_HOLDER_KEY = "sessionHolder"
 
-/** Provider-agnostic credential markers — any config key matching one is not
- *  persisted to the descriptor (no token, no auth header). */
-const SECRET_KEY_RE =
-  /(token|secret|password|passwd|passphrase|api[-_]?key|authorization|cookie|credential|private[-_]?key|client[-_]?secret|access[-_]?key|headers?)/i
-
-function sanitizeValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sanitizeValue)
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {}
-    for (const [key, entry] of Object.entries(value)) {
-      if (SECRET_KEY_RE.test(key)) continue
-      if (entry === undefined) continue
-      out[key] = sanitizeValue(entry)
-    }
-    return out
-  }
-  return value
-}
+/** Provider config keys known to carry no credentials. Deliberately an
+ *  allowlist: `input.sandbox.config` is caller-supplied and arbitrary, so a
+ *  denylist would persist any secret hiding under a key it does not name. */
+const SAFE_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "template",
+  "size",
+  "cpus",
+  "memoryMiB",
+  "rootDiskMiB",
+  "ttlSeconds",
+  "port",
+  "workspace",
+  "egress",
+  "maxSessions",
+  "daemonRoute",
+  "tenantId",
+  "installPackages",
+  "installAdapters",
+  "updateCliOnBoot",
+  "cliVersion",
+  "timeoutMs",
+  "healthProbeTimeoutMs",
+  "daemonReadyTimeoutMs",
+  "pollIntervalMs",
+  "updateCliTimeoutMs",
+  "waitReadyTimeoutMs",
+  "swapMb",
+])
 
 /**
  * Build the config persisted on a descriptor from the effective boot spec:
@@ -51,14 +64,19 @@ export function sandboxConfigForDescriptor(
   config: Record<string, unknown> | undefined,
   holder: string,
 ): Record<string, unknown> {
-  const clean = sanitizeValue(config ?? {}) as Record<string, unknown>
+  const clean: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(config ?? {})) {
+    if (value !== undefined && SAFE_CONFIG_KEYS.has(key)) clean[key] = value
+  }
   return { ...clean, [SANDBOX_SESSION_HOLDER_KEY]: holder }
 }
 
 /**
  * Config to hand a provider on re-attach: the persisted non-secret config when
- * the descriptor has one, otherwise just the stable holder. `fallback` is the
- * descriptor's own session id — the holder a pre-fix spawn effectively used.
+ * the descriptor has one, otherwise just the stable holder. `fallbackHolder` is
+ * the descriptor's own session id — used for descriptors written before
+ * `sandboxConfig` existed, which never sent a holder; their first re-attach
+ * injects one so the provider can create/reuse a slot deterministically.
  */
 export function sandboxConfigForReattach(
   sandboxConfig: Record<string, unknown> | undefined,

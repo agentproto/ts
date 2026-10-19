@@ -668,8 +668,11 @@ describe("restartAgentSession on a sandboxed session", () => {
       baseSha: "c".repeat(40),
     }
 
+    const freshConnectSpecs: SandboxSpec[] = []
+
     afterEach(() => {
       wsConfigState.value = { version: 1, workspaces: [] }
+      freshConnectSpecs.length = 0
     })
 
     function goneBoxResolver(
@@ -687,7 +690,8 @@ describe("restartAgentSession on a sandboxed session", () => {
           ...handle,
           defaultCwd: "/home/user",
           provider: {
-            async connect(sandboxId: string): Promise<never> {
+            async connect(sandboxId: string, spec: SandboxSpec): Promise<never> {
+              freshConnectSpecs.push(spec)
               throw new SandboxBoxGoneError(sandboxId, new Error("Sandbox not found"))
             },
             async boot() {
@@ -776,6 +780,15 @@ describe("restartAgentSession on a sandboxed session", () => {
       expect(boots.count).toBe(1)
       expect(result.desc.sandboxId).toBe("sbx_fresh_2")
       expect(result.desc.cwd).toBe("/home/user/agentproto")
+      // The live-box attempt replays the old holder; the post-boot transcript
+      // reconnect to the FRESH box uses the holder it was just booted with,
+      // never the dead session's.
+      expect(freshConnectSpecs).toHaveLength(2)
+      expect(freshConnectSpecs[0]?.config).toMatchObject({ sessionHolder: prev.id })
+      expect(freshConnectSpecs[1]?.config).toMatchObject({
+        sessionHolder: result.desc.id,
+      })
+      expect(result.desc.sandboxConfig).toMatchObject({ sessionHolder: result.desc.id })
       expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
       // A FRESH box holds no prior conversation — the adapter starts blank
       // (never with the dead box's resume id), keeping the digest path.
