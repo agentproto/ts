@@ -52,6 +52,63 @@ export interface ContextContinuityCheckpointSections {
 }
 
 /**
+ * Idle-compaction arm/fire mode (AIP-46 §Context continuity and idle
+ * compaction). `off` — never armed (the default: an unconfigured host takes
+ * none of the new actions). `auto` — on fire the daemon performs `action`
+ * by itself. `ask` — on fire only a structured question (continue/keep-going)
+ * is raised; nothing is mutated until an operator answers.
+ */
+export type ContextContinuityIdleCompactMode = "off" | "ask" | "auto"
+
+/** What an `idleCompact` fire performs. `compact` — checkpoint + the
+ *  harness's own in-place compaction on the live session;
+ *  `continue-fresh` — checkpoint + a fresh continuation session. */
+export type ContextContinuityIdleCompactAction = "compact" | "continue-fresh"
+
+/** Cold-wake-guard mode: `off` (default) — a prompt runs on the session as
+ *  it is; `auto` — deterministic checkpoint, then the prompt is handed to a
+ *  fresh continuation; `ask` — checkpoint + a continue-fresh question, and
+ *  the prompt is admitted to the current session. */
+export type ContextContinuityColdWakeMode = "off" | "ask" | "auto"
+
+/** User-facing `idleCompact` fragment — see {@link ContextContinuityPolicy}. */
+export interface ContextContinuityIdleCompact {
+  mode?: ContextContinuityIdleCompactMode
+  /** Arm only above this context percentage. Default 50. */
+  atPct?: number
+  /** Arm this long before `cacheWarmUntil`. Default 60_000 ms. */
+  beforeCacheExpiryMs?: number
+  /** What a fire performs. Default "compact". */
+  action?: ContextContinuityIdleCompactAction
+}
+
+/** User-facing `coldWakeGuard` fragment — see {@link ContextContinuityPolicy}. */
+export interface ContextContinuityColdWakeGuard {
+  mode?: ContextContinuityColdWakeMode
+  /** Guard only above this context percentage. Default 75. */
+  atPct?: number
+}
+
+/** Fully-resolved {@link ContextContinuityIdleCompact}. */
+export interface ResolvedContextContinuityIdleCompact {
+  mode: ContextContinuityIdleCompactMode
+  atPct: number
+  beforeCacheExpiryMs: number
+  action: ContextContinuityIdleCompactAction
+}
+
+/** Fully-resolved {@link ContextContinuityColdWakeGuard}. */
+export interface ResolvedContextContinuityColdWakeGuard {
+  mode: ContextContinuityColdWakeMode
+  atPct: number
+}
+
+/** Prompt-cache TTL floor (ms) a host uses when the adapter declares no
+ *  `metadata.promptCacheTtlMs` — the 5-minute default every adapter at least
+ *  matches (AIP-46 §Descriptor fields). */
+export const IDLE_COMPACT_DEFAULT_CACHE_TTL_MS = 300_000
+
+/**
  * User-supplied policy fragment. Every field optional; missing values are
  * filled from the next precedence layer or from safe defaults.
  */
