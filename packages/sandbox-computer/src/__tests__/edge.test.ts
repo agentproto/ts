@@ -22,6 +22,7 @@ const ENV_KEYS = [
   "COMPUTER_EXTRA_HEADERS",
   "COMPUTER_DAEMON_ROUTE",
   "COMPUTER_GATEWAY_URL",
+  "AGENTPROTO_SESSION_ID",
 ]
 
 describe("sanitizeExtraHeaders", () => {

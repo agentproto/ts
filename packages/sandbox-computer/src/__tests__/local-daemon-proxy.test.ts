@@ -105,6 +105,46 @@ describe("local daemon proxy path filter", () => {
     expect(seen.at(-1)).toBe("/v1/computers/cmp-1/daemon/sessions/def")
   })
 
+  it("forwards extra headers (the session holder) on both the HTTP and the upgrade leg", async () => {
+    proxy = await startLocalDaemonProxy(`http://127.0.0.1:${upstreamPort}/v1/computers/cmp-1/daemon`, {
+      "X-Controller-Authorization": "Bearer secret",
+      "X-Computer-Session-Holder": "sess_holder_1",
+    })
+    let httpHeaders: IncomingMessage["headers"] | undefined
+    let upgradeHeaders: IncomingMessage["headers"] | undefined
+    upstream.removeAllListeners("request")
+    upstream.on("request", (req, res) => {
+      httpHeaders = req.headers
+      res.writeHead(200).end()
+    })
+    const res = await fetch(`${proxy.url}/mcp`)
+    expect(res.status).toBe(200)
+    expect(httpHeaders?.["x-computer-session-holder"]).toBe("sess_holder_1")
+    expect(httpHeaders?.["x-controller-authorization"]).toBe("Bearer secret")
+    await new Promise<void>((resolve) => {
+      upstream.once("upgrade", (req, socket) => {
+        upgradeHeaders = req.headers
+        socket.write("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\r\n")
+        socket.on("error", () => undefined)
+        socket.destroy()
+        resolve()
+      })
+      const req = httpRequest({
+        host: "127.0.0.1",
+        port: proxyPort(),
+        path: "/sessions/abc/pty",
+        headers: { connection: "Upgrade", upgrade: "websocket" },
+      })
+      req.on("response", (r) => {
+        r.resume()
+        resolve()
+      })
+      req.on("error", () => resolve())
+      req.end()
+    })
+    expect(upgradeHeaders?.["x-computer-session-holder"]).toBe("sess_holder_1")
+  })
+
   it("applies the same filter to a WebSocket upgrade", async () => {
     const upgrade = (path: string): Promise<number> =>
       new Promise((resolve) => {

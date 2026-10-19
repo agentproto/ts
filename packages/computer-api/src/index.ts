@@ -25,6 +25,7 @@ export {
   execResponseSchema,
   suspendResponseSchema,
   resumeResponseSchema,
+  attachRequestSchema,
   sessionsResponseSchema,
 } from "./schemas.js"
 
@@ -39,5 +40,6 @@ export type {
   ExecResponse,
   SuspendResponse,
   ResumeResponse,
+  AttachRequest,
   SessionsResponse,
 } from "./schemas.js"

@@ -429,13 +429,20 @@ describe("computerSandboxProvider.boot", () => {
 
 describe("computerSandboxProvider shared sessions", () => {
   let controller: FakeController
+  // The ambient AGENTPROTO_SESSION_ID (present whenever the tests run inside
+  // a spawned agent session) would resolve as the holder; pin it away so the
+  // no-holder tests are deterministic.
+  const savedSessionId = process.env.AGENTPROTO_SESSION_ID
 
   beforeEach(async () => {
+    delete process.env.AGENTPROTO_SESSION_ID
     controller = new FakeController({ token: SERVICE_TOKEN })
     await controller.start()
   })
   afterEach(async () => {
     await controller.stop()
+    if (savedSessionId === undefined) delete process.env.AGENTPROTO_SESSION_ID
+    else process.env.AGENTPROTO_SESSION_ID = savedSessionId
   })
 
   it("forwards maxSessions at create and attaches the booting session", async () => {
@@ -506,6 +513,92 @@ describe("computerSandboxProvider shared sessions", () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     await booted.stop()
     expect(controller.removed).toEqual([booted.sandboxId])
+  })
+
+  it("attach and detach carry the configured holder", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { sessionHolder: "sess_holder_1" }),
+      bootOpts,
+    )
+    expect(controller.attachBodies).toEqual([{ id: booted.sandboxId, holder: "sess_holder_1" }])
+    await booted.stop()
+    expect(controller.detachBodies.at(-1)).toEqual({ id: booted.sandboxId, holder: "sess_holder_1" })
+  })
+
+  it("re-attaching the same holder at maxSessions answers 200 without taking another slot", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 1, sessionHolder: "sess_holder_1" }),
+      bootOpts,
+    )
+    const client = new ComputerControllerClient({
+      baseUrl: controller.url,
+      token: SERVICE_TOKEN,
+      tenantId: "tenant-a",
+    })
+    await expect(client.attach(booted.sandboxId, { holder: "sess_holder_1" })).resolves.toMatchObject({
+      sessions: 1,
+      maxSessions: 1,
+    })
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    await booted.stop()
+  })
+
+  it("a different holder at maxSessions is refused with 409", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 1, sessionHolder: "sess_holder_1" }),
+      bootOpts,
+    )
+    const client = new ComputerControllerClient({
+      baseUrl: controller.url,
+      token: SERVICE_TOKEN,
+      tenantId: "tenant-a",
+    })
+    await expect(client.attach(booted.sandboxId, { holder: "sess_holder_2" })).rejects.toMatchObject({
+      status: 409,
+    })
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    await booted.stop()
+  })
+
+  it("the holder falls back to AGENTPROTO_SESSION_ID when the config names none", async () => {
+    const saved = process.env.AGENTPROTO_SESSION_ID
+    process.env.AGENTPROTO_SESSION_ID = "sess_from_env"
+    try {
+      const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+      expect(controller.attachBodies).toEqual([{ id: booted.sandboxId, holder: "sess_from_env" }])
+      await booted.stop()
+      expect(controller.detachBodies.at(-1)?.holder).toBe("sess_from_env")
+    } finally {
+      if (saved === undefined) delete process.env.AGENTPROTO_SESSION_ID
+      else process.env.AGENTPROTO_SESSION_ID = saved
+    }
+  })
+
+  it("an overlong or malformed holder is dropped, keeping the legacy body-less attach", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { sessionHolder: `x`.repeat(129) }),
+      bootOpts,
+    )
+    expect(controller.attachBodies).toEqual([{ id: booted.sandboxId, holder: undefined }])
+    await booted.stop()
+  })
+
+  it("no holder configured sends the body-less legacy attach", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    expect(controller.attachBodies).toEqual([{ id: booted.sandboxId, holder: undefined }])
+    await booted.stop()
+  })
+
+  it("daemonRoute relays every request with the holder header, HTTP and upgrade", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { daemonRoute: true, sessionHolder: "sess_holder_1" }),
+      bootOpts,
+    )
+    expect(booted.mcpUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+    const res = await fetch(booted.mcpUrl, { headers: booted.authHeaders })
+    expect(res.status).toBe(200)
+    expect(controller.daemonProxyRequests.at(-1)?.headers["x-computer-session-holder"]).toBe("sess_holder_1")
+    await booted.stop()
   })
 })
 

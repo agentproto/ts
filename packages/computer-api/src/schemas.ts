@@ -146,10 +146,26 @@ export type ResumeResponse = z.infer<typeof resumeResponseSchema>
 // ── POST /v1/computers/:id/attach | detach ────────────────────────────
 
 /**
+ * Optional request body of `POST /v1/computers/:id/attach` and `.../detach`:
+ * a stable holder identity (the agentproto session id of the daemon taking
+ * or releasing the slot). A controller that knows the holder can make
+ * re-attach idempotent (a restarted daemon re-attaches onto the slot its
+ * dead predecessor still held instead of hitting the 409 session limit) and
+ * scope the detach to that holder's slot. Absent on both routes: a body-less
+ * attach/detach keeps the legacy anonymous counting. `detach` ignores the
+ * holder of an unknown slot (no-op for that holder).
+ */
+export const attachRequestSchema = z.object({
+  holder: z.string().min(1).max(128).optional(),
+}).passthrough()
+export type AttachRequest = z.infer<typeof attachRequestSchema>
+
+/**
  * 200 response body of `POST /v1/computers/:id/attach` and `.../detach`:
  * the controller-held session count after the call and the cap the computer
- * was sized for. Neither route takes a body. Attach answers 409 when the
- * computer already hosts `maxSessions` sessions; detach floors at 0.
+ * was sized for. Attach answers 409 when the computer already hosts
+ * `maxSessions` sessions (an attach by a holder that already holds a slot
+ * is idempotent: 200 with the count unchanged); detach floors at 0.
  * `DELETE /v1/computers/:id` answers 409 while sessions are attached unless
  * the `force=true` query parameter is passed.
  */

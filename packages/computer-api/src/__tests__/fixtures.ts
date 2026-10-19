@@ -7,6 +7,7 @@
  */
 import type { z } from "zod"
 import {
+  attachRequestSchema,
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
@@ -158,6 +159,13 @@ export const fixtures: Fixture[] = [
     futureField: true,
   }),
   create("sessionsResponse: fractional sessions", sessionsResponseSchema, false, { sessions: 0.5 }),
+  create("attachRequest: holder", attachRequestSchema, true, { holder: "sess_1a2b3c" }),
+  create("attachRequest: body-less {}", attachRequestSchema, true, {}),
+  create("attachRequest: empty holder rejected", attachRequestSchema, false, { holder: "" }),
+  create("attachRequest: holder not a string", attachRequestSchema, false, { holder: 42 }),
+  create("attachRequest: overlong holder rejected", attachRequestSchema, false, {
+    holder: "x".repeat(129),
+  }),
   create(
     "errorResponse",
     errorResponseSchema,

@@ -9,6 +9,7 @@
  */
 
 import {
+  attachRequestSchema,
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
@@ -251,14 +252,49 @@ export class ComputerControllerClient {
   }
 
   /** `POST /v1/computers/:id/attach` — take a controller-held session slot.
-   *  409 when the computer already hosts `maxSessions` sessions. */
-  async attach(id: string): Promise<SessionsResponse> {
-    return this.request("POST", `/v1/computers/${encodeURIComponent(id)}/attach`, sessionsResponseSchema)
+   *  409 when the computer already hosts `maxSessions` sessions. An optional
+   *  `holder` (stable session identity) makes a controller that tracks
+   *  holders treat the attach as idempotent for that holder — a restarted
+   *  daemon re-attaches onto the slot its dead predecessor still held. No
+   *  holder sent: body-less legacy attach. */
+  async attach(id: string, opts: { holder?: string } = {}): Promise<SessionsResponse> {
+    return this.request(
+      "POST",
+      `/v1/computers/${encodeURIComponent(id)}/attach`,
+      sessionsResponseSchema,
+      this.attachBody(opts),
+    )
   }
 
-  /** `POST /v1/computers/:id/detach` — release a session slot (floors at 0). */
-  async detach(id: string): Promise<SessionsResponse> {
-    return this.request("POST", `/v1/computers/${encodeURIComponent(id)}/detach`, sessionsResponseSchema)
+  /** `POST /v1/computers/:id/detach` — release a session slot (floors at 0).
+   *  With `holder`, a controller that tracks holders releases exactly that
+   *  holder's slot; without it the legacy anonymous decrement applies. */
+  async detach(id: string, opts: { holder?: string } = {}): Promise<SessionsResponse> {
+    return this.request(
+      "POST",
+      `/v1/computers/${encodeURIComponent(id)}/detach`,
+      sessionsResponseSchema,
+      this.attachBody(opts),
+    )
+  }
+
+  /** Contract-checked attach/detach body: `{ holder }` when a holder is
+   *  given, `undefined` (body-less legacy request) when not. */
+  private attachBody(opts: { holder?: string }): { holder?: string } | undefined {
+    if (opts.holder === undefined) return undefined
+    const parsed = attachRequestSchema.safeParse({ holder: opts.holder })
+    if (!parsed.success) {
+      throw new ComputerApiError(
+        400,
+        redactSecret(
+          `attach/detach holder rejected before it reached the controller: ${parsed.error.issues
+            .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+            .join("; ")}`,
+          this.secrets(),
+        ),
+      )
+    }
+    return parsed.data
   }
 
   /** `DELETE /v1/computers/:id` — rm + snapshot cleanup. 409 while sessions
