@@ -266,12 +266,12 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "branchGcApply:tool",
       "checkpointGcApply:tool",
       "report:transform",
-      "notifyBody:transform",
-      "notifyAlias:transform",
+      "notifyPlan:transform",
       "shouldNotify:transform",
       "maybeNotify:branch",
-      "notify:tool",
+      "notify:map",
       "skip-notify:gate",
+      "reportFinal:transform",
     ])
     const compiled = compileWorkflow(handle, {
       ...createDaemonToolRegistry(handle, dispatchTool),
@@ -356,9 +356,9 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(worktreeGcCalls[0]!.inputs).toMatchObject({ apply: false, wait: true })
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: false, wait: true })
 
-    // mcp_imported_call (the notify step) is never dispatched — no notify
+    // transmit_message (the notify step) is never dispatched — no notify
     // input was given at all.
-    expect(calls.some(c => c.name === "mcp_imported_call")).toBe(false)
+    expect(calls.some(c => c.name === "transmit_message")).toBe(false)
 
     const result = output as { report: string; gaps: Array<{ name: string }>; applyMerged: boolean }
     expect(result.applyMerged).toBe(false)
@@ -396,8 +396,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       if (name === "branch_gc_verdict_get") {
         return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
       }
-      if (name === "mcp_imported_call") {
-        return mcpResult({ content: [{ type: "text", text: "ok" }] })
+      if (name === "transmit_message") {
+        return mcpResult({ sent: true, bound: false, message_id: "msg-1" })
       }
       if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
@@ -428,20 +428,74 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const worktreeGcCalls = calls.filter(c => c.name === "worktree_gc")
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: true, salvageDirty: false, wait: true })
 
-    const notifyCall = calls.find(c => c.name === "mcp_imported_call")
+    const notifyCall = calls.find(c => c.name === "transmit_message")
     expect(notifyCall).toBeDefined()
-    expect(notifyCall!.inputs.alias).toBe("agentpush")
-    expect(notifyCall!.inputs.toolName).toBe("send_message")
-    // notifyBody is an OBJECT of send_message arguments, not a JSON string.
-    const args = notifyCall!.inputs.args as { to: unknown; content: { text: string } }
-    expect(typeof args).toBe("object")
-    expect(args.to).toEqual({ channel: "telegram", address: "chat-1" })
-    expect(args.content.text).toMatch(/wt\/large-residual/)
+    expect(notifyCall!.inputs.provider).toBe("telegram")
+    expect(notifyCall!.inputs.contact_ref).toBe("chat-1")
+    expect(notifyCall!.inputs.bind).toBe(false)
+    expect(typeof notifyCall!.inputs.text).toBe("string")
+    expect(notifyCall!.inputs.text).toMatch(/wt\/large-residual/)
 
     const result = output as { applyMerged: boolean; report: string }
     expect(result.applyMerged).toBe(true)
     // The apply's real outcomes reach the report, not a background jobId.
     expect(result.report).toContain("worktree_gc: 1 outcome(s) — reclaimed=1")
+    // A successful send adds no skip note.
+    expect(result.report).not.toContain("notify skipped")
+  })
+
+  it("does not fail the run when the notify provider is unconfigured; the report records the skip", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "transmit_message") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ sent: false, bound: false, error: "telegram_creds_not_configured" }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      throw new Error(`unexpected tool '${name}'`)
+    })
+
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: {
+        repoRoot: "/repo",
+        applyMerged: false,
+        applyReviewed: false,
+        notify: { provider: "telegram", address: "chat-1" },
+      },
+    })
+
+    const notifyCall = calls.find(c => c.name === "transmit_message")
+    expect(notifyCall).toBeDefined()
+    expect(notifyCall!.inputs.bind).toBe(false)
+
+    const result = output as { report: string }
+    expect(result.report).toContain("notify skipped: telegram_creds_not_configured")
   })
 
   it("applyReviewed applies with includeReviewed true and reports reclaimed reviewed branches + guard refusals", async () => {

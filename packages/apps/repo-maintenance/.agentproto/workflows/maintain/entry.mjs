@@ -650,6 +650,23 @@ export function buildReport(b) {
   return lines.join("\n")
 }
 
+/** The human-readable reason from a `transmit_message` rejection: its
+ *  `unwrapDispatchResult` error is the tool's own JSON payload, so prefer the
+ *  `error`/`blocked_reason` field over the raw string when it parses. */
+function notifySkipReason(error) {
+  const raw = String(error ?? "unknown")
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.error === "string" && parsed.error) return parsed.error
+      if (typeof parsed.blocked_reason === "string" && parsed.blocked_reason) return parsed.blocked_reason
+    }
+  } catch {
+    // Not the tool's JSON payload — fall back to the raw message.
+  }
+  return raw
+}
+
 export default {
   name: "Repo Maintenance",
   id: "maintain",
@@ -658,7 +675,7 @@ export default {
     "`maxReviews` unreviewed branch candidates, newest first (small model for " +
     "a small residual, large model otherwise), verify every candidate got a " +
     "verdict, optionally apply " +
-    "(reclaim-only) worktree/branch gc, and report — plus an agentpush " +
+    "(reclaim-only) worktree/branch gc, and report — plus an operator " +
     "notification when `notify` is set.",
   version: "0.1.0",
   inputs: {
@@ -673,12 +690,10 @@ export default {
     reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). The report lists each verdict and the removal command when the reviewer agreed; nothing is removed automatically. Default true.`, default: true },
     notify: {
       type: "object",
-      description: "Optional agentpush `to` target ({ channel, address }) to notify with the report when set. Omit for no notification.",
-    },
-    notifyAlias: {
-      type: "string",
-      description: "Imported MCP alias used to send the notification. Default `agentpush`.",
-      default: "agentpush",
+      description:
+        "Optional operator notification target (`{ provider?, alias?, address? }`) to notify with the report when set. " +
+        "Omit for no notification. `provider` defaults to `telegram`; the legacy `channel` field is accepted as an alias of `provider`. " +
+        "`alias` picks the imported MCP alias (agentpush) or bot-token alias (telegram). `address` is the recipient (telegram chat id / agentpush contact_ref).",
     },
   },
   outputs: {},
@@ -876,16 +891,27 @@ export default {
       compute: b => buildReport(b),
     },
     {
-      id: "notifyBody",
+      // Build the provider-agnostic `transmit_message` input from the
+      // `notify` input: `{ provider?, alias?, address? }`, with `channel`
+      // accepted as a back-compat alias of `provider`. The engine does not
+      // apply `inputs.*.default`, so the provider fallback (`telegram`, the
+      // daemon's own bot-token path) lives here. `targets` is a one-element
+      // array so the send below can be a tolerant (`onError: "collect"`)
+      // map — an unconfigured provider must not fail the run.
+      id: "notifyPlan",
       kind: "transform",
-      compute: b => ({ to: b.input?.notify, content: { text: String(b.steps.report ?? "").slice(0, 3500) } }),
-    },
-    {
-      // The engine does not apply `inputs.*.default`, so resolve the alias
-      // here: explicit input, else the imported MCP's conventional alias.
-      id: "notifyAlias",
-      kind: "transform",
-      compute: b => b.input?.notifyAlias || "agentpush",
+      compute: b => {
+        const n = b.input?.notify ?? {}
+        const address = n.address
+        return {
+          targets: [true],
+          provider: n.provider || n.channel || "telegram",
+          alias: n.alias,
+          source: n.source || address,
+          contactRef: address,
+          text: String(b.steps.report ?? "").slice(0, 3500),
+        }
+      },
     },
     {
       // Notify only when `notify` is set AND there is something to report
@@ -909,21 +935,52 @@ export default {
       kind: "branch",
       branches: [{ when: "$steps.shouldNotify", next: "notify" }],
       default: "skip-notify",
+      join: "reportFinal",
     },
     {
+      // A notification is best-effort: `onError: "collect"` turns a rejected
+      // send (unconfigured provider, missing alias, unapproved template) into
+      // a recorded outcome instead of aborting the run. `reportFinal` folds
+      // that outcome into the report.
       id: "notify",
-      kind: "tool",
-      tool: "mcp_imported_call",
-      inputs: {
-        alias: "$steps.notifyAlias",
-        toolName: "send_message",
-        args: "$steps.notifyBody",
-      },
+      kind: "map",
+      over: "$steps.notifyPlan.targets",
+      parallelism: 1,
+      onError: "collect",
+      steps: [
+        {
+          id: "notifySend",
+          kind: "tool",
+          tool: "transmit_message",
+          inputs: {
+            provider: "$steps.notifyPlan.provider",
+            alias: "$steps.notifyPlan.alias",
+            source: "$steps.notifyPlan.source",
+            contact_ref: "$steps.notifyPlan.contactRef",
+            text: "$steps.notifyPlan.text",
+            bind: false,
+          },
+        },
+      ],
     },
     {
       id: "skip-notify",
       kind: "gate",
       command: "true",
+    },
+    {
+      // Append the delivery outcome so an unconfigured/skipped provider is
+      // visible in the run report instead of silently vanishing.
+      id: "reportFinal",
+      kind: "transform",
+      compute: b => {
+        const base = String(b.steps.report ?? "")
+        const fan = b.steps.notify
+        if (!fan || typeof fan !== "object" || (fan.succeeded ?? 0) > 0) return base
+        const first = Array.isArray(fan.results) ? fan.results[0] : undefined
+        if (!first || first.status !== "rejected") return base
+        return `${base}\n\nnotify skipped: ${notifySkipReason(first.error)}`
+      },
     },
   ],
   // Always runs — success, failure or cancel: no review worktree outlives the run.
@@ -936,7 +993,7 @@ export default {
     },
   ],
   result: {
-    report: "$steps.report",
+    report: "$steps.reportFinal",
     gaps: "$steps.gaps",
     applyMerged: "$input.applyMerged",
     applyReviewed: "$input.applyReviewed",

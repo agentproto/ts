@@ -5,7 +5,7 @@ description: >-
   Plan worktree_gc + branch_gc, fan a review agent out over up to
   `maxReviews` unreviewed branch candidates, newest first (small model for a
   small residual, large model otherwise), verify every candidate got a verdict, optionally apply
-  (reclaim-only) worktree/branch gc, and report — plus an agentpush
+  (reclaim-only) worktree/branch gc, and report — plus an operator
   notification when `notify` is set. Entry-based (see entry.mjs): the
   `review` map step's per-candidate model selector is a real run-time
   function, which the pure-.md path cannot express (`defineWorkflow` rejects
@@ -70,12 +70,12 @@ inputs:
   notify:
     type: object
     description: >-
-      Optional agentpush `to` target ({ channel, address }) to notify with
-      the report when set. Omit for no notification.
-  notifyAlias:
-    type: string
-    description: Imported MCP alias used to send the notification.
-    default: agentpush
+      Optional operator notification target (`{ provider?, alias?, address? }`)
+      to notify with the report when set. Omit for no notification. `provider`
+      defaults to `telegram`; the legacy `channel` field is accepted as an
+      alias of `provider`. `alias` picks the imported MCP alias (agentpush) or
+      bot-token alias (telegram). `address` is the recipient (telegram chat id
+      / agentpush contact_ref).
 outputs: {}
 steps:
   - id: modelRoles
@@ -259,17 +259,15 @@ steps:
     name: Build the markdown summary
     description: Entry-based — see entry.mjs's buildReport.
 
-  - id: notifyBody
+  - id: notifyPlan
     kind: transform
-    name: Format the agentpush notification body
-    description: Entry-based — turns the report into agentpush's send_message arguments object.
-
-  - id: notifyAlias
-    kind: transform
-    name: Resolve the imported MCP alias
+    name: Resolve the provider-agnostic notification target
     description: >-
-      Entry-based — `notifyAlias` when set, else `agentpush`. The engine does
-      not apply `inputs.*.default`, so the fallback lives in entry.mjs.
+      Entry-based — turns the `notify` input into a `transmit_message` call
+      (`provider`, `alias`, `source`, `contact_ref`, `text`), defaulting the
+      provider to `telegram` and accepting `channel` as a legacy alias of it.
+      The engine does not apply `inputs.*.default`, so the fallback lives in
+      entry.mjs.
 
   - id: shouldNotify
     kind: transform
@@ -286,26 +284,44 @@ steps:
       - when: $steps.shouldNotify
         next: notify
     default: skip-notify
+    join: reportFinal
 
   - id: notify
-    kind: tool
-    name: Send the agentpush notification
+    kind: map
+    name: Send the operator notification
     description: >-
-      Calls the operator's imported agentpush MCP through
-      `mcp_imported_call` — the alias is `notifyAlias` (default `agentpush`).
-    tool: mcp_imported_call
-    inputs:
-      alias: $steps.notifyAlias
-      toolName: send_message
-      args: $steps.notifyBody
+      One `transmit_message` send (provider-agnostic; `bind: false` so no
+      session is needed). `onError: "collect"` makes the send best-effort: an
+      unconfigured provider is reported as skipped, never fatal.
+    over: $steps.notifyPlan.targets
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: notifySend
+        kind: tool
+        tool: transmit_message
+        inputs:
+          provider: $steps.notifyPlan.provider
+          alias: $steps.notifyPlan.alias
+          source: $steps.notifyPlan.source
+          contact_ref: $steps.notifyPlan.contactRef
+          text: $steps.notifyPlan.text
+          bind: false
 
   - id: skip-notify
     kind: gate
     name: No notification requested
     command: "true"
 
+  - id: reportFinal
+    kind: transform
+    name: Append the notification outcome to the report
+    description: >-
+      Entry-based — appends `notify skipped: <reason>` when the send was
+      rejected (unconfigured provider, missing alias, unapproved template).
+
 result:
-  report: $steps.report
+  report: $steps.reportFinal
   gaps: $steps.gaps
   applyMerged: $input.applyMerged
   applyReviewed: $input.applyReviewed
@@ -319,7 +335,7 @@ result:
 `worktree_gc` + `branch_gc` + `sandbox_checkpoint_gc` plan → fan a reviewer
 agent out over every unmerged branch (small model for a small residual, large
 model otherwise) → verify every candidate got a verdict → optionally apply
-(reclaim-class only) → markdown report, plus an agentpush notification when
+(reclaim-class only) → markdown report, plus an operator notification when
 `notify` is set.
 
 Entry-based (`entry.mjs`) for one reason: `review`'s per-candidate `model`
@@ -355,9 +371,24 @@ the approvals the guard refused. Default false — see the app README,
 
 ## Enabling
 
-The `notify` step sends through the operator's imported agentpush MCP:
-`mcp_imported_call` with the alias named by `notifyAlias` (default
-`agentpush`) and `toolName: "send_message"`. No `bash` allowlist entry and no
-`AGENTPUSH_API_KEY` in the daemon environment are needed — just the imported
-agentpush MCP that every other routine already uses. If the imported server
-lives under a different alias, set `notifyAlias`.
+The `notify` step delivers through the daemon's provider-agnostic outbound
+primitive, `transmit_message`, with `bind: false` so it needs no session. Set
+the `notify` input to choose where the report goes:
+
+```yaml
+notify:
+  provider: telegram          # default; also: agentpush, whatsapp, slack, generic, native
+  address: "<chat id or contact_ref>"
+  # alias: <imported MCP alias (agentpush) or bot-token alias (telegram)>
+```
+
+`provider` defaults to `telegram` (the daemon's own bot token, set with
+`telegram_bot_token_set`); the legacy `channel` field is accepted as an alias
+of `provider`, so an existing `{ channel: telegram, address: ... }` keeps
+working. For `provider: agentpush`, `alias` names the imported MCP alias
+(required) and `address` is the recipient `contact_ref`.
+
+No `bash` allowlist entry and no `AGENTPUSH_API_KEY` are needed. A provider
+that is not configured on the daemon (no bot token, no imported alias for the
+named alias) does not fail the run: the report ends with
+`notify skipped: <reason>`.

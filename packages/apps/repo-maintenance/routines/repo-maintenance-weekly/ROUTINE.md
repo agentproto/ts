@@ -28,7 +28,7 @@ target:
     # Drop this key (or set false) to apply reclaim-class refs only.
     applyReviewed: true
     notify:
-      channel: telegram
+      provider: telegram
       address: "<REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID>"
 retry:
   max_attempts: 1
@@ -76,10 +76,13 @@ Same steps as `repo-maintenance-daily/ROUTINE.md`: copy this directory to
 `<workspace>/.routines/repo-maintenance-weekly/`, set `enabled: true`, point
 `target.workflow.file` at wherever `maintain/WORKFLOW.md` lives in that
 environment, set or drop `target.inputs.notify`, then reload routines. If
-`notify` is kept, the notify step calls the operator's imported agentpush MCP
-via `mcp_imported_call`; set `target.inputs.notifyAlias` when that server is
-imported under an alias other than `agentpush`. No `bash` allowlist or
-`AGENTPUSH_API_KEY` is needed.
+`notify` is kept, make sure its provider is configured on the daemon: the
+notify step goes through `transmit_message` (`bind: false`), so the default
+`provider: telegram` needs a bot token from `telegram_bot_token_set` and
+`provider: agentpush` needs the imported MCP alias named by `notify.alias`.
+An unconfigured provider does not fail the run: the report ends with
+`notify skipped: <reason>`. No `bash` allowlist or `AGENTPUSH_API_KEY` is
+needed.
 
 Enable ONLY after you've watched `repo-maintenance-daily` run clean a few
 times — this routine deletes branches and worktrees, the daily one never

@@ -472,6 +472,58 @@ describe("transmit_message", () => {
     expect(bindingStore.get("agentpush", "+33600000000", "bob")).toBeUndefined()
   })
 
+  it("bind:false sends without a sessionId (fire-and-forget, no binding)", async () => {
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "msg-nosess" }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+
+    const client = await connectTools(registry, mcpProxy, bindingStore)
+
+    const res = (await client.callTool({
+      name: "transmit_message",
+      arguments: {
+        alias: "agentpush",
+        source: "+33600000000",
+        contact_ref: "dave",
+        text: "hi dave",
+        bind: false,
+      },
+    })) as ToolResult
+
+    expect(res.isError).toBeFalsy()
+    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: false, message_id: "msg-nosess" })
+    expect(bindingStore.get("agentpush", "+33600000000", "dave")).toBeUndefined()
+  })
+
+  it("default bind without a sessionId is refused before sending", async () => {
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "never" }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+
+    const client = await connectTools(registry, mcpProxy, bindingStore)
+
+    const res = (await client.callTool({
+      name: "transmit_message",
+      arguments: {
+        alias: "agentpush",
+        source: "+33600000000",
+        contact_ref: "erin",
+        text: "hi erin",
+      },
+    })) as ToolResult
+
+    expect(res.isError).toBe(true)
+    expect(JSON.parse(textOf(res))).toMatchObject({ sent: false, bound: false, error: expect.stringContaining("sessionId required") })
+    expect(callTool).not.toHaveBeenCalled()
+    expect(bindingStore.get("agentpush", "+33600000000", "erin")).toBeUndefined()
+  })
+
   it("surfaces a send failure as an error without binding", async () => {
     const callTool = vi.fn(
       async (): Promise<ProxyCallOutcome> => ({ ok: false, error: "upstream down" }),

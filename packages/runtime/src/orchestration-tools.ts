@@ -2465,7 +2465,12 @@ export function registerOrchestrationTools(
         sessionId: z
           .string()
           .min(1)
-          .describe("Session to bind as the reply target for this contact. Required for bind."),
+          .optional()
+          .describe(
+            "Session to bind as the reply target for this contact. Required when " +
+              "`bind` is true (the default); optional for a fire-and-forget send " +
+              "with `bind: false`.",
+          ),
         bind: z
           .boolean()
           .optional()
@@ -2491,6 +2496,18 @@ export function registerOrchestrationTools(
           return {
             content: [
               { type: "text", text: JSON.stringify({ sent: false, bound: false, error: "text or attachments required" }) },
+            ],
+            isError: true,
+          }
+        }
+
+        if (input.bind !== false && !input.sessionId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ sent: false, bound: false, error: "sessionId required to bind; pass bind:false to send without binding" }),
+              },
             ],
             isError: true,
           }
@@ -2547,7 +2564,7 @@ export function registerOrchestrationTools(
             alias: input.alias ?? "default",
             source: input.source,
             contactRef: input.contact_ref,
-            sessionId: input.sessionId,
+            sessionId: input.sessionId!,
             mode: "route-or-spawn",
             provider,
           })

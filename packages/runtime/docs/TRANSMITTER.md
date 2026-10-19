@@ -74,6 +74,10 @@ and, by default, binds the recipient to the calling session:
   ```
   Supported types: `photo`, `document`, `video`, `audio`. Multiple attachments
   are sent as an album/media group where the provider supports it.
+- `sessionId` — the session future inbound replies route into. Required when
+  `bind` is true (the default); a `bind: false` fire-and-forget send needs no
+  session and is refused before sending when `bind` is left at its default and
+  no `sessionId` is given.
 - `bind` defaults to `true` — on a successful send, upserts a binding
   `(alias, source, contact_ref) -> sessionId` with `mode: "route-or-spawn"` and
   the chosen `provider`. Pass `bind: false` to send without binding.
