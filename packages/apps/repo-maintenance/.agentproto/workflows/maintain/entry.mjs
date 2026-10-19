@@ -909,6 +909,7 @@ export default {
       id: "notifyPlan",
       kind: "transform",
       compute: b => {
+        const configured = !!b.input?.notify
         const n = b.input?.notify ?? {}
         const address = n.address
         // `channel` is a legacy alias: `telegram`/`agentpush` name the
@@ -917,9 +918,11 @@ export default {
         const legacyChannel = n.channel === "telegram" || n.channel === "agentpush" ? undefined : n.channel
         const provider = n.provider || (n.channel ? (legacyChannel ? "agentpush" : n.channel) : "telegram")
         const source = n.source || (provider === "agentpush" ? legacyChannel : address)
+        // Only a CONFIGURED notify target can be under-specified; with no
+        // `notify` input there is simply nothing to check.
         let skipReason
-        if (!address) skipReason = "address required"
-        else if (provider === "agentpush" && !source) skipReason = "agentpush source/channel required"
+        if (configured && !address) skipReason = "address required"
+        else if (configured && provider === "agentpush" && !source) skipReason = "agentpush source/channel required"
         return {
           // Empty when the target is under-specified: the send is skipped
           // with a clean reason instead of failing transmit_message's schema.
@@ -997,8 +1000,15 @@ export default {
         const base = String(b.steps.report ?? "")
         // A target notifyPlan already knew it could not deliver (missing
         // address, agentpush with no channel) never reached transmit_message.
+        // Gated on `shouldNotify`: a run that never requested a notification
+        // (no `notify`, or nothing to report) must not grow a skip line.
         const planned = b.steps.notifyPlan
-        if (planned && typeof planned === "object" && typeof planned.skipReason === "string") {
+        if (
+          b.steps.shouldNotify === true &&
+          planned &&
+          typeof planned === "object" &&
+          typeof planned.skipReason === "string"
+        ) {
           return `${base}\n\nnotify skipped: ${planned.skipReason}`
         }
         const fan = b.steps.notify

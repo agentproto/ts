@@ -319,6 +319,9 @@ describe("repo-maintenance maintain workflow — shape", () => {
     expect(keywordChannel.targets).toEqual([])
     // A missing address is skipped before any schema validation too.
     expect(run({ provider: "telegram" }).skipReason).toBe("address required")
+    // No notify input at all: nothing to check, no skipReason.
+    expect(run(undefined).skipReason).toBeUndefined()
+    expect(run(undefined).targets).toEqual([true])
   })
 })
 
@@ -402,6 +405,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(calls.some(c => c.name === "transmit_message")).toBe(false)
 
     const result = output as { report: string; gaps: Array<{ name: string }>; applyMerged: boolean }
+    // No notify input: the report must not grow a skip line.
+    expect(result.report).not.toContain("notify skipped")
     expect(result.applyMerged).toBe(false)
     expect(result.gaps).toEqual([{ name: "wt/large-residual", sha: SHA_B, refs: ["refs/heads/wt/large-residual"] }])
     expect(result.report).toMatch(/wt\/large-residual/)
