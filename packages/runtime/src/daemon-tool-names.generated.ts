@@ -95,6 +95,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "bundle_list",
   "bundle_update",
   "capabilities_inventory",
+  "catalog_diff",
   "catalog_models",
   "catalog_provider_models",
   "command_execute",
