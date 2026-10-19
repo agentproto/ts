@@ -52,14 +52,17 @@ packages/catalog-sync/generated/
 # agentproto daemon runtime state (workspace-local, never commit)
 .agentproto/
 
-# Exception: the repo-maintenance and session-steward apps' checked-in bundled-app source
-# (APP.md + agents/ + workflows/) — a hand-authored bundle, not daemon
-# runtime state. `loadAppHandle`'s contract hardcodes `<dir>/.agentproto/
-# APP.md`, so this directory name can't be avoided for a real app bundle.
+# Exception: the repo-maintenance, session-steward and model-catalog-watch
+# apps' checked-in bundled-app source (APP.md + agents/ + workflows/) — a
+# hand-authored bundle, not daemon runtime state. `loadAppHandle`'s contract
+# hardcodes `<dir>/.agentproto/APP.md`, so this directory name can't be
+# avoided for a real app bundle.
 !packages/apps/repo-maintenance/.agentproto/
 !packages/apps/repo-maintenance/.agentproto/**
 !packages/apps/session-steward/.agentproto/
 !packages/apps/session-steward/.agentproto/**
+!packages/apps/model-catalog-watch/.agentproto/
+!packages/apps/model-catalog-watch/.agentproto/**
 
 # git worktrees for parallel agent WPs (orchestration-local, never commit).
 # Kept inside the repo root so the cowork sandbox can reach them; ignored here
