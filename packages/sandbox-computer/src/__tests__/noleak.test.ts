@@ -54,16 +54,26 @@ describe("token hygiene", () => {
     for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled()
   })
 
-  it("the per-box daemon token never leaves the serve argv (no handle/error surface carries it)", async () => {
+  it("the per-box daemon token only surfaces as the handle's token/authHeaders, never elsewhere or in errors", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     const serveScript = controller.execs.map((e) => e.argv[2] ?? "").find((s) => s.includes("agentproto serve"))
     expect(serveScript).toBeDefined()
     const daemonToken = DAEMON_TOKEN_RE.exec(serveScript as string)?.[1]
     expect(daemonToken).toBeDefined()
 
-    // The handle surface (mcpUrl/ports/token/everything serializable) must
-    // not carry it; the BootedSandbox contract has no daemon token field.
-    const surfaced = JSON.stringify({ ...booted, exec: undefined, readFile: undefined, writeFile: undefined, expose: undefined })
+    // The host authenticates with it via token/authHeaders; no other handle
+    // field (mcpUrl, ports, id, ...) may carry it.
+    expect(booted.token).toBe(daemonToken)
+    expect(booted.authHeaders).toEqual({ Authorization: `Bearer ${daemonToken}` })
+    const surfaced = JSON.stringify({
+      ...booted,
+      token: undefined,
+      authHeaders: undefined,
+      exec: undefined,
+      readFile: undefined,
+      writeFile: undefined,
+      expose: undefined,
+    })
     expect(surfaced).not.toContain(daemonToken)
 
     // An exec failure message must not embed the serve command (the only

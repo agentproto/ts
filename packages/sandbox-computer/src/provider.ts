@@ -24,10 +24,19 @@
  * process-local.
  *
  * TOKENS: the controller service token travels only in the Authorization
- * header; the per-box daemon token travels only inside the serve command
- * executed IN the box. Neither is ever logged by this package, embedded in
- * the create `env` payload, or included in an error message (the client
- * redacts the service token; this file never puts a token into a message).
+ * header of this process's OWN calls to the controller — never in anything
+ * handed back to a caller. The per-box daemon token is generated per boot,
+ * written into the serve command executed IN the box (and a 0600 file
+ * there, so a reconnect can read it back) and returned as
+ * `BootedSandbox.token`/`authHeaders` for the host to authenticate with: in
+ * `daemonRoute` mode that is the ONLY credential a caller ever sees —
+ * `wrapBox` fronts the controller's daemon-proxy route with a local
+ * loopback proxy (`local-daemon-proxy.ts`) that attaches the controller
+ * bearer and any edge Access secret itself, so neither can end up in a
+ * persisted session descriptor or a paste-ready `.mcp.json`. Neither token
+ * is ever logged by this package, embedded in the create `env` payload, or
+ * included in an error message (the client redacts the service token; this
+ * file never puts a token into a message).
  */
 
 import { randomUUID } from "node:crypto"
@@ -41,7 +50,13 @@ import type {
   SandboxProvider,
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
-import { ComputerApiError, ComputerControllerClient, type ComputerClientConfig } from "./client.js"
+import {
+  ComputerApiError,
+  ComputerControllerClient,
+  sanitizeExtraHeaders,
+  type ComputerClientConfig,
+} from "./client.js"
+import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
 import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
@@ -105,6 +120,24 @@ interface ComputerSandboxConfig {
    * computers sit behind an edge/proxy instead.
    */
   gatewayUrl?: string
+  /**
+   * Reach each computer's daemon THROUGH the controller instead of a
+   * per-port gateway: `gatewayUrl` defaults to
+   * `<controllerUrl>/v1/computers/{id}/daemon`, and the controller credential
+   * and tenant travel as `X-Controller-Authorization` / `X-Tenant-Id`
+   * alongside the daemon's own `Authorization`. Overrides nothing when
+   * `gatewayUrl` is set explicitly. Env: `COMPUTER_DAEMON_ROUTE=1`.
+   */
+  daemonRoute?: boolean
+  /**
+   * Extra headers sent on every controller call (and, in `daemonRoute` mode,
+   * on every daemon call), e.g. the credentials an edge proxy in front of the
+   * controller requires. Treated as secrets: never logged, redacted from
+   * errors. Merged over `COMPUTER_EXTRA_HEADERS` (a JSON object) and the
+   * `COMPUTER_ACCESS_CLIENT_ID` / `COMPUTER_ACCESS_CLIENT_SECRET` pair, which
+   * map to `CF-Access-Client-Id` / `CF-Access-Client-Secret`.
+   */
+  extraHeaders?: Record<string, string>
   /** Run `npm i -g @agentproto/cli@<cliVersion>` before starting the daemon
    *  when the health probe finds it not already up. Default true. */
   updateCliOnBoot?: boolean
@@ -120,6 +153,8 @@ interface ComputerSandboxConfig {
   waitReadyTimeoutMs?: number
   /** How long to wait for the daemon health probe after starting it. */
   daemonReadyTimeoutMs?: number
+  /** Internal: headers added to `authHeaders` in `daemonRoute` mode. */
+  routeHeaders?: Record<string, string>
 }
 
 function parseEgress(value: unknown): Array<{ host: string; port: number }> | undefined {
@@ -142,6 +177,30 @@ function parseEgress(value: unknown): Array<{ host: string; port: number }> | un
   return rules.length > 0 ? rules : undefined
 }
 
+const TRUTHY = new Set(["1", "true", "on", "yes"])
+
+function envExtraHeaders(): Record<string, string> {
+  const out: Record<string, string> = {}
+  const raw = process.env.COMPUTER_EXTRA_HEADERS
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") out[k] = v
+      }
+    } catch {
+      // A malformed value is ignored rather than echoed: it may hold a secret.
+    }
+  }
+  const id = process.env.COMPUTER_ACCESS_CLIENT_ID
+  const secret = process.env.COMPUTER_ACCESS_CLIENT_SECRET
+  if (id && secret) {
+    out["CF-Access-Client-Id"] = id
+    out["CF-Access-Client-Secret"] = secret
+  }
+  return out
+}
+
 function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
   const config = (spec.config ?? {}) as Record<string, unknown>
   const int = (v: unknown): number | undefined =>
@@ -160,7 +219,17 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     maxSessions: int(config.maxSessions),
     port: int(config.port),
     workspace: str(config.workspace),
-    gatewayUrl: str(config.gatewayUrl),
+    gatewayUrl: str(config.gatewayUrl) ?? str(process.env.COMPUTER_GATEWAY_URL),
+    daemonRoute:
+      typeof config.daemonRoute === "boolean"
+        ? config.daemonRoute
+        : TRUTHY.has((process.env.COMPUTER_DAEMON_ROUTE ?? "").toLowerCase()),
+    extraHeaders: sanitizeExtraHeaders({
+      ...envExtraHeaders(),
+      ...(config.extraHeaders && typeof config.extraHeaders === "object"
+        ? (config.extraHeaders as Record<string, string>)
+        : {}),
+    }),
     updateCliOnBoot: typeof config.updateCliOnBoot === "boolean" ? config.updateCliOnBoot : undefined,
     cliVersion: str(config.cliVersion),
     installPackages: Array.isArray(config.installPackages)
@@ -186,6 +255,31 @@ function resolveClientConfig(spec: SandboxSpec, config: ComputerSandboxConfig): 
     baseUrl,
     token,
     tenantId: config.tenantId ?? process.env.COMPUTER_TENANT_ID ?? DEFAULT_TENANT_ID,
+    ...(config.extraHeaders && Object.keys(config.extraHeaders).length > 0
+      ? { extraHeaders: config.extraHeaders }
+      : {}),
+  }
+}
+
+/** In `daemonRoute` mode (and only when the caller did not already supply
+ *  its own `gatewayUrl` — that means a direct network path to the box, so
+ *  there is nothing to route through the controller and no controller
+ *  credential belongs on daemon calls), point the gateway at the
+ *  controller's daemon route and compute the headers every call against it
+ *  must carry. `routeHeaders` being set is `wrapBox`'s signal to put a
+ *  LOCAL loopback proxy in front of that URL instead of handing the real
+ *  one — with the controller credential — to the caller; see
+ *  `local-daemon-proxy.ts`. Identity otherwise. */
+function applyDaemonRoute(config: ComputerSandboxConfig, client: ComputerClientConfig): ComputerSandboxConfig {
+  if (!config.daemonRoute || config.gatewayUrl) return config
+  return {
+    ...config,
+    gatewayUrl: `${client.baseUrl.replace(/\/+$/, "")}/v1/computers/{id}/daemon`,
+    routeHeaders: {
+      ...sanitizeExtraHeaders(client.extraHeaders),
+      "X-Controller-Authorization": `Bearer ${client.token}`,
+      "X-Tenant-Id": client.tenantId,
+    },
   }
 }
 
@@ -210,6 +304,10 @@ export const DAEMON_LOG_PATH = "$HOME/.agentproto-daemon.log"
 /** Records the `--allow-origin` the provider started the daemon with, so a
  *  reconnect can tell a stale origin (host port changed) from a current one. */
 export const DAEMON_ORIGIN_PATH = "$HOME/.agentproto-daemon.origin"
+/** The daemon's `--auth-token`, kept (0600) inside the box so a reconnect from
+ *  a fresh host process can present it. It never leaves the box except in the
+ *  returned `BootedSandbox.token`. */
+export const DAEMON_TOKEN_PATH = "$HOME/.agentproto-daemon.token"
 
 /** The `agentproto serve` boot script: a detached (nohup … &) daemon that
  *  outlives the synchronous exec call, logging to DAEMON_LOG_PATH so a failed
@@ -222,9 +320,11 @@ export function buildServeCommand(opts: {
 }): string {
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
   const marker = opts.allowOrigin ? `printf %s ${shQuote(opts.allowOrigin)} > "${DAEMON_ORIGIN_PATH}"; ` : ""
+  const tokenFile = `umask 077; printf %s ${shQuote(opts.token)} > "${DAEMON_TOKEN_PATH}"; `
   return (
     USER_BIN_PATH_EXPORT +
     marker +
+    tokenFile +
     `nohup agentproto serve --port ${opts.port} --bind 0.0.0.0` +
     ` --workspace ${shQuote(opts.workspace)} --auth-token ${shQuote(opts.token)}${origin}` +
     ` </dev/null > "${DAEMON_LOG_PATH}" 2>&1 & echo started`
@@ -373,8 +473,9 @@ async function probeComputer(sandboxId: string, clientConfig: ComputerClientConf
 
 export const computerSandboxProvider: SandboxProvider = {
   async boot(spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
-    const config = readComputerConfig(spec)
-    const clientConfig = resolveClientConfig(spec, config)
+    const base = readComputerConfig(spec)
+    const clientConfig = resolveClientConfig(spec, base)
+    const config = applyDaemonRoute(base, clientConfig)
     const client = new ComputerControllerClient(clientConfig)
     const booted = await bootOnClient(client, spec, config, opts)
     probeClientConfigs.set(booted.sandboxId, clientConfig)
@@ -382,8 +483,9 @@ export const computerSandboxProvider: SandboxProvider = {
   },
 
   async connect(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
-    const config = readComputerConfig(spec)
-    const clientConfig = resolveClientConfig(spec, config)
+    const base = readComputerConfig(spec)
+    const clientConfig = resolveClientConfig(spec, base)
+    const config = applyDaemonRoute(base, clientConfig)
     const client = new ComputerControllerClient(clientConfig)
     const booted = await connectOnClient(client, sandboxId, spec, config, opts)
     probeClientConfigs.set(booted.sandboxId, clientConfig)
@@ -454,14 +556,14 @@ async function bootOnClient(
     throw err
   }
   const sandboxId = created.id
-  const daemonToken = randomUUID()
+  let daemonToken: string | undefined
   let published: readonly PortPublish[] = []
 
   try {
     const status = await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
-    await daemonHealthyOrThrow(client, sandboxId, config, daemonToken, port, workspace, mcpOrigin)
+    daemonToken = await daemonHealthyOrThrow(client, sandboxId, config, randomUUID(), port, workspace, mcpOrigin)
     await attachController(client, sandboxId)
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
@@ -473,7 +575,7 @@ async function bootOnClient(
   }
 
   acquireSessionSlot(sandboxId, config.maxSessions ?? 1)
-  return wrapBox(client, sandboxId, spec, config, port, published)
+  return wrapBox(client, sandboxId, spec, config, port, published, daemonToken)
 }
 
 async function connectOnClient(
@@ -501,12 +603,14 @@ async function connectOnClient(
     const running = await waitRunning(client, currentId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
     published = running.ports ?? []
   }
+  if (config.gatewayUrl?.includes("{hostPort}") && !published.some((p) => p.guest === port)) {
+    published = await recoverPublishedPort(client, currentId, port, published)
+  }
 
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
-  const daemonToken = randomUUID()
   const mcpOrigin = new URL(boxUrl(currentId, port, config.gatewayUrl, published)).origin
-  await daemonHealthyOrThrow(client, currentId, config, daemonToken, port, workspace, mcpOrigin)
+  const daemonToken = await daemonHealthyOrThrow(client, currentId, config, randomUUID(), port, workspace, mcpOrigin)
 
   const maxSessions = config.maxSessions ?? 1
   if (!acquireSessionSlot(currentId, maxSessions)) {
@@ -527,7 +631,28 @@ async function connectOnClient(
     }
     throw err
   }
-  return wrapBox(client, currentId, spec, config, port, published)
+  return wrapBox(client, currentId, spec, config, port, published, daemonToken)
+}
+
+/** The controller's GET may omit `ports` (the create response is the only
+ *  place some deployments report them). The daemon this provider started
+ *  recorded its `--allow-origin`, which for a `{hostPort}` gateway carries the
+ *  host port: read it back so a reconnect from a fresh process still resolves
+ *  the same URL. Returns `published` unchanged when nothing can be recovered. */
+async function recoverPublishedPort(
+  client: ComputerControllerClient,
+  id: string,
+  port: number,
+  published: readonly PortPublish[],
+): Promise<readonly PortPublish[]> {
+  const recorded = await hardExec(client, id, bashArgv(`cat "${DAEMON_ORIGIN_PATH}" 2>/dev/null`), 10)
+  if (recorded.exitCode !== 0) return published
+  try {
+    const hostPort = Number(new URL(recorded.stdout.trim()).port)
+    return Number.isInteger(hostPort) && hostPort > 0 ? [...published, { host: hostPort, guest: port }] : published
+  } catch {
+    return published
+  }
 }
 
 /** Poll until the computer reports `running`, or throw with the last state. */
@@ -558,7 +683,7 @@ async function daemonHealthyOrThrow(
   port: number,
   workspace: string,
   mcpOrigin: string,
-): Promise<void> {
+): Promise<string | undefined> {
   const probe = await hardExec(client, id, bashArgv(buildHealthCommand(port)), 10)
   const alreadyUp = probe.exitCode === 0 && !probe.stdout.includes("__down__")
   if (alreadyUp) {
@@ -568,10 +693,14 @@ async function daemonHealthyOrThrow(
     // (a template-autostarted daemon) means the origin is unknown: leave it.
     const recorded = await hardExec(client, id, bashArgv(`cat "${DAEMON_ORIGIN_PATH}" 2>/dev/null`), 10)
     const current = recorded.exitCode === 0 ? recorded.stdout.trim() : ""
-    if (current === "" || current === mcpOrigin) return
-    await hardExec(client, id, bashArgv(`pkill -f '[a]gentproto serve' || true`), 10)
-    await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
-    return
+    if (current !== "" && current !== mcpOrigin) {
+      await hardExec(client, id, bashArgv(`pkill -f '[a]gentproto serve' || true`), 10)
+      await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+      return daemonToken
+    }
+    // The running daemon keeps the token it was started with: read it back.
+    const stored = await hardExec(client, id, bashArgv(`cat "${DAEMON_TOKEN_PATH}" 2>/dev/null`), 10)
+    return stored.exitCode === 0 && stored.stdout.trim() !== "" ? stored.stdout.trim() : undefined
   }
 
   if (config.updateCliOnBoot !== false && !(await cliAlreadyPresent(client, id, config))) {
@@ -592,6 +721,7 @@ async function daemonHealthyOrThrow(
   }
 
   await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+  return daemonToken
 }
 
 async function startDaemonAndWait(
@@ -677,32 +807,78 @@ async function hardExec(
 
 // ── handle wrapping ───────────────────────────────────────────────────
 
-function wrapBox(
+async function wrapBox(
   client: ComputerControllerClient,
   id: string,
   spec: SandboxSpec,
   config: ComputerSandboxConfig,
   port: number,
   published: readonly PortPublish[],
-): BootedSandbox {
+  daemonToken?: string,
+): Promise<BootedSandbox> {
+  // `routeHeaders` is only set in true daemonRoute mode (no explicit
+  // gatewayUrl override) — see `applyDaemonRoute`. The controller's
+  // daemon-proxy route reaches exactly one guest port (the daemon's), so
+  // any other port is simply unreachable through it: reject rather than
+  // hand back a URL that silently points at the wrong place.
+  const trueRouteMode = config.routeHeaders !== undefined
+  if (trueRouteMode && (spec.extraPorts ?? []).length > 0) {
+    throw new Error(
+      `computer "${id}": daemonRoute mode can only reach the daemon's own port (the controller's ` +
+        `daemon-proxy route proxies guest port ${port} only) — extraPorts are not reachable this way. ` +
+        "Set an explicit config.gatewayUrl with a {port} placeholder instead.",
+    )
+  }
   const extraPorts: Record<number, string> = {}
-  for (const extra of spec.extraPorts ?? []) {
-    extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl, published)
+  if (!trueRouteMode) {
+    for (const extra of spec.extraPorts ?? []) {
+      extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl, published)
+    }
   }
 
+  // In true daemonRoute mode, a LOCAL loopback proxy stands in for the real
+  // controller URL: it is the one place `routeHeaders` (the tenant-wide
+  // controller bearer, and any edge Access secret) gets attached, so
+  // `mcpUrl`/`authHeaders` below — which a caller may persist into a
+  // session descriptor or a paste-ready `.mcp.json` — only ever carry the
+  // box's own per-box daemon token. See `local-daemon-proxy.ts`.
+  let localProxy: LocalDaemonProxy | undefined
+  let mcpUrl: string
+  if (trueRouteMode) {
+    const remoteDaemonUrl = boxUrl(id, port, config.gatewayUrl, published)
+    localProxy = await startLocalDaemonProxy(remoteDaemonUrl, config.routeHeaders as Record<string, string>)
+    mcpUrl = `${localProxy.url}/mcp`
+  } else {
+    mcpUrl = `${boxUrl(id, port, config.gatewayUrl, published).replace(/\/+$/, "")}/mcp`
+  }
+  const closeProxy = (): void => localProxy?.close()
+
   return {
-    mcpUrl: boxUrl(id, port, config.gatewayUrl, published),
+    mcpUrl,
     sandboxId: id,
-    // `expose: "private"` (the attach path) asks for a durable token-gated
-    // URL. This daemon IS token-gated (`--auth-token`), but the token lives
-    // only inside the box and is deliberately never surfaced here — callers
-    // that require a token must treat a missing one as "not gated" per the
-    // SandboxBootOpts contract; attach fails closed on its side.
+    // The daemon is gated by its per-box `--auth-token` regardless of
+    // `opts.expose` (the controller's port publish, or the daemon-proxy
+    // route, is never a loopback hop inside the guest, so an open daemon
+    // would answer `tunnel_unauthorized`). The host presents it via
+    // `authHeaders`; a reconnect reads it back from the box. Absent only for
+    // a template-autostarted daemon that was never given one — in which
+    // case there is nothing for a caller to present either.
+    ...(daemonToken ? { token: daemonToken, authHeaders: { Authorization: `Bearer ${daemonToken}` } } : {}),
     ...(Object.keys(extraPorts).length > 0 ? { ports: extraPorts } : {}),
-    expose(port: number): Promise<{ url: string }> {
-      return Promise.resolve({ url: boxUrl(id, port, config.gatewayUrl, published) })
+    expose(exposePort: number): Promise<{ url: string }> {
+      if (trueRouteMode) {
+        return Promise.reject(
+          new Error(
+            `computer "${id}": daemonRoute mode cannot expose arbitrary ports (only the daemon's own ` +
+              "port is reachable through the controller's daemon-proxy route). Set an explicit " +
+              "config.gatewayUrl to expose ports.",
+          ),
+        )
+      }
+      return Promise.resolve({ url: boxUrl(id, exposePort, config.gatewayUrl, published) })
     },
     async stop(): Promise<void> {
+      closeProxy()
       releaseSessionSlot(id)
       const remaining = await detachController(client, id)
       // Other sessions still attached keep the computer; the last one out
@@ -727,6 +903,7 @@ function wrapBox(
       probeClientConfigs.delete(id)
     },
     async pause(): Promise<void> {
+      closeProxy()
       releaseSessionSlot(id)
       await detachController(client, id)
       await client.suspend(id)

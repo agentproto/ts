@@ -33,8 +33,28 @@ export interface ComputerClientConfig {
   /** Tenant owning the computers created through this client
    *  (`X-Tenant-Id` header required by every /v1 route). */
   tenantId: string
+  /** Extra request headers sent on every controller call, e.g. credentials
+   *  an edge proxy in front of the controller requires. Values are secrets:
+   *  redacted from every error message. `Authorization`, `X-Tenant-Id` and
+   *  `Content-Type` are owned by the client and cannot be overridden. */
+  extraHeaders?: Record<string, string>
   /** Injectable for tests. Defaults to global `fetch`. */
   fetchImpl?: typeof fetch
+}
+
+const RESERVED_HEADERS = new Set(["authorization", "x-tenant-id", "content-type"])
+const HEADER_NAME_RE = /^[A-Za-z0-9-]{1,64}$/
+
+/** Keep only well-formed extra headers: token-shaped names, single-line
+ *  values, and nothing the client itself owns. */
+export function sanitizeExtraHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (!HEADER_NAME_RE.test(name) || RESERVED_HEADERS.has(name.toLowerCase())) continue
+    if (typeof value !== "string" || value === "" || value.length > 4096 || /[\r\n\0]/.test(value)) continue
+    out[name] = value
+  }
+  return out
 }
 
 /** Controller error mapped to a typed exception. The service token is
@@ -85,21 +105,24 @@ export class ComputerControllerClient {
   private readonly baseUrl: string
   private readonly token: string
   private readonly tenantId: string
+  private readonly extraHeaders: Record<string, string>
   private readonly fetchImpl: typeof fetch
 
   constructor(config: ComputerClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "")
     this.token = config.token
     this.tenantId = config.tenantId
+    this.extraHeaders = sanitizeExtraHeaders(config.extraHeaders)
     this.fetchImpl = config.fetchImpl ?? fetch
   }
 
   private secrets(): string[] {
-    return [this.token]
+    return [this.token, ...Object.values(this.extraHeaders)]
   }
 
   private headers(): Record<string, string> {
     return {
+      ...this.extraHeaders,
       Authorization: `Bearer ${this.token}`,
       "X-Tenant-Id": this.tenantId,
       "Content-Type": "application/json",

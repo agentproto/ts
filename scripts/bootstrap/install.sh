@@ -10,6 +10,10 @@ set -euo pipefail
 
 MIN_NODE="20.9.0"
 LTS_LINE="22" # Node 22 LTS
+# Minimum kept at major.minor granularity — `node_major_minor` returns e.g.
+# "20.9", so the constant must be normalized or `sort -V` ranks "20.9.0"
+# above it and the exact minimum looks below the floor.
+MIN_MM="20.9"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 info() { printf '==> %s\n' "$1"; }
@@ -43,11 +47,15 @@ node_major_minor() { node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1,2; }
 
 node_version_ok() {
   command_exists node || return 1
-  # compare "20.9" >= "20.9" numerically, field by field
+  # version compare on major.minor strings: have >= floor iff floor sorts
+  # first (or equal). Do NOT compare the minor field with `[ ... -ge ... ]`:
+  # the minimum carried a patch field (".0"), which bash rejects
+  # ("integer expression expected"), so any Node 20.10.x … 20.99.x — and the
+  # exact minimum 20.9.0 — was read as "too old" and reinstalled (#2057).
   local have="$1"
-  [ "$(printf '%s\n%s\n' "${have%%.*}" "$MIN_NODE" | head -1)" -gt "${MIN_NODE%%.*}" ] && return 0
-  [ "$(printf '%s\n%s\n' "${have%%.*}" "$MIN_NODE" | head -1)" -lt "${MIN_NODE%%.*}" ] && return 1
-  [ "${have#*.}" -ge "${MIN_NODE#*.}" ] 2>/dev/null
+  local lower
+  lower="$(printf '%s\n' "$have" "$MIN_MM" | sort -V | head -1)"
+  [ "$lower" = "$MIN_MM" ]
 }
 
 install_lts_node() {

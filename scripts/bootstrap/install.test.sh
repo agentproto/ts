@@ -96,7 +96,7 @@ EOF
 cat >"$FAKES/node" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-v" ]; then
-  echo "v22.0.0"
+  printf 'v%s\n' "${FAKE_NODE_VERSION:-22.0.0}"
   exit 0
 fi
 exit 0
@@ -118,6 +118,7 @@ run_install() {
     NPM_LOG="$scen/npm.log" \
     AGENTPROTO_LOG="$scen/agentproto.log" \
     FAKE_NPM_FAIL="${FAKE_NPM_FAIL:-}" \
+    FAKE_NODE_VERSION="${FAKE_NODE_VERSION:-}" \
     bash "$INSTALL" >"$scen/out.log" 2>&1
   SCEN_STATUS=$?
   set -e
@@ -187,6 +188,23 @@ assert_not_in "$SCEN/npm.log" "--prefix" \
   "prefix under \$HOME: --prefix is never passed"
 assert_not_in "$SCEN/out.log" 'export PATH="$HOME/.local/bin:$PATH"' \
   "prefix under \$HOME: no shell-profile hint"
+
+# --- 3.1 an existing Node >= the minimum is kept, never reinstalled ------------
+# #2057: `node_version_ok` compared the minor field against "${MIN_NODE#*.}"
+# ("9.0" — non-integer), so bash's `[ -ge` rejected it and any Node 20.10+
+# (and exactly 20.9.x) was declared too old. Red: the installer rushes into
+# install_lts_node and dies "no supported package manager" in a bare sandbox.
+for v in 20.10.0 20.9.0; do
+  new_scenario "keep-node-$v"
+  PREFIX_K="$SCEN/home/.nvm/x"
+  FAKE_NODE_VERSION="$v" run_install "$SCEN" "$PREFIX_K" 2>/dev/null || true
+  unset FAKE_NODE_VERSION
+  assert_exit 0 "existing Node v$v satisfies >= 20.9.0 and is kept (exit 0)"
+  assert_in "$SCEN/out.log" "already installed — keeping it" \
+    "existing Node v$v: prints the keep message instead of installing LTS"
+  assert_not_in "$SCEN/out.log" "too old" \
+    "existing Node v$v: never says Node is too old"
+done
 
 # --- 5. daemon health: a warn/broken doctor must NOT read as healthy ----------
 # #2097: `ensure_daemon` grepped the doctor human output for 'ok|pass', and

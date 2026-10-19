@@ -146,6 +146,168 @@ describe("checkSessionOwnerGate (pure)", () => {
     ).toBe(false)
   })
 
+  describe("label-based `allowPromptFrom` grants", () => {
+    const labels = {
+      "sess_brain": "pygmalion-brain-persistent",
+      "sess_agent_1": "pygmalion-agent-alpha",
+      "sess_agent_2": "pygmalion-agent-beta",
+      "sess_unlabeled": undefined,
+    } as Record<string, string | undefined>
+    const operatorLabelOf = (id: string) => labels[id]
+
+    it("an exact `label:` entry allows a caller with that registered label", () => {
+      const target = {
+        id: "sess_child",
+        parentSessionId: undefined,
+        allowPromptFrom: ["label:pygmalion-brain-persistent"],
+      }
+      const gate = checkSessionOwnerGate({
+        callerSessionId: "sess_brain",
+        target,
+        tool: "agent_prompt",
+        operatorLabelOf,
+      })
+      expect(gate).toEqual({ ok: true })
+    })
+
+    it("a `label:<prefix>*` entry allows a caller whose label starts with the prefix", () => {
+      const target = {
+        id: "sess_child",
+        parentSessionId: undefined,
+        allowPromptFrom: ["label:pygmalion-agent-*"],
+      }
+      expect(
+        checkSessionOwnerGate({ callerSessionId: "sess_agent_1", target, tool: "agent_prompt", operatorLabelOf }),
+      ).toEqual({ ok: true })
+      expect(
+        checkSessionOwnerGate({ callerSessionId: "sess_agent_2", target, tool: "agent_prompt", operatorLabelOf }),
+      ).toEqual({ ok: true })
+    })
+
+    it("a non-matching label is refused", () => {
+      const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-agent-*"] }
+      expect(
+        checkSessionOwnerGate({ callerSessionId: "sess_brain", target, tool: "agent_prompt", operatorLabelOf }).ok,
+      ).toBe(false)
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_other",
+          target: { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-brain-persistent"] },
+          tool: "agent_prompt",
+          operatorLabelOf,
+        }).ok,
+      ).toBe(false)
+    })
+
+    it("a caller session whose label is missing never matches a `label:` entry", () => {
+      const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-agent-*"] }
+      expect(
+        checkSessionOwnerGate({ callerSessionId: "sess_unlabeled", target, tool: "agent_prompt", operatorLabelOf }).ok,
+      ).toBe(false)
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_unknown",
+          target,
+          tool: "agent_prompt",
+          operatorLabelOf,
+        }).ok,
+      ).toBe(false)
+    })
+
+    it("raw ids and `any` still work alongside `label:` entries", () => {
+      const raw = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["sess_stranger"] }
+      expect(checkSessionOwnerGate({ callerSessionId: "sess_stranger", target: raw, tool: "agent_prompt" })).toEqual({
+        ok: true,
+      })
+      const open = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["any"] }
+      expect(
+        checkSessionOwnerGate({ callerSessionId: "sess_whomever", target: open, tool: "agent_prompt" }),
+      ).toEqual({ ok: true })
+    })
+
+    it("the default (no list) still refuses a foreign session", () => {
+      const target = { id: "sess_child", parentSessionId: undefined }
+      expect(
+        checkSessionOwnerGate({ callerSessionId: "sess_brain", target, tool: "agent_prompt", operatorLabelOf }).ok,
+      ).toBe(false)
+    })
+
+    it("a `label:` grant survives the granted caller's id changing (same label, new id)", () => {
+      const target = {
+        id: "sess_child",
+        parentSessionId: undefined,
+        allowPromptFrom: ["label:pygmalion-brain-persistent"],
+      }
+      // The brain restarted: a brand-new session id, same registered label.
+      const restarted = { ...labels, "sess_brain_new": "pygmalion-brain-persistent" } as Record<string, string | undefined>
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_brain_new",
+          target,
+          tool: "agent_prompt",
+          operatorLabelOf: id => restarted[id],
+        }),
+      ).toEqual({ ok: true })
+    })
+  })
+
+  describe("`label:` grants key on the immutable operatorLabel, never the mutable label", () => {
+    const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-brain-persistent"] }
+
+    it("a caller that only RENAMED itself to the granted label (no operatorLabel) is refused", () => {
+      // session_rename sets `label`, never `operatorLabel`.
+      const res = checkSessionOwnerGate({
+        callerSessionId: "sess_spoofer",
+        target,
+        tool: "agent_prompt",
+        operatorLabelOf: () => undefined,
+      })
+      expect(res.ok).toBe(false)
+    })
+
+    it("a CHILD spawned by a session holding the label is refused (it has a parent)", () => {
+      const parents: Record<string, string | undefined> = { sess_kid: "sess_brain" }
+      const res = checkSessionOwnerGate({
+        callerSessionId: "sess_kid",
+        target,
+        tool: "agent_prompt",
+        parentOf: id => parents[id],
+        operatorLabelOf: () => "pygmalion-brain-persistent",
+      })
+      expect(res.ok).toBe(false)
+    })
+
+    it("an operator-spawned root with the label is allowed (exact and prefix)", () => {
+      const op = (id: string) => (id === "sess_brain" ? "pygmalion-brain-persistent" : undefined)
+      const parentOf = () => undefined
+      expect(
+        checkSessionOwnerGate({ callerSessionId: "sess_brain", target, tool: "agent_prompt", parentOf, operatorLabelOf: op }),
+      ).toEqual({ ok: true })
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_brain",
+          target: { ...target, allowPromptFrom: ["label:pygmalion-brain-*"] },
+          tool: "agent_prompt",
+          parentOf,
+          operatorLabelOf: op,
+        }),
+      ).toEqual({ ok: true })
+    })
+
+    it("`label:` and `label:*` (empty prefix) match nothing", () => {
+      for (const entry of ["label:", "label:*"]) {
+        expect(
+          checkSessionOwnerGate({
+            callerSessionId: "sess_brain",
+            target: { ...target, allowPromptFrom: [entry] },
+            tool: "agent_prompt",
+            operatorLabelOf: () => "pygmalion-brain-persistent",
+          }).ok,
+        ).toBe(false)
+      }
+    })
+  })
+
   describe("the policy editor gate", () => {
     const target2 = { id: "sess_child", parentSessionId: "sess_parent" }
     it("operator, self, and owner may change the policy; a stranger may not", () => {

@@ -10,7 +10,7 @@ owns the mechanics; open it for tool signatures and recipes.
 
 | I want to… | Open |
 | ---------- | ---- |
-| Bundle agents+workflows+UI as an APP | `ap-apps`, then `pb-build-app` |
+| Bundle agents+workflows+UI as an APP | `ap-apps`, then `agentproto-apps` |
 | Build multi-stage session pipelines | `ap-workflows` |
 | Register and call external MCP servers | `ap-import-mcp` |
 | Install agent CLI adapters | `ap-adapters` |
@@ -21,5 +21,5 @@ Surface choice in one line: MCP tools for interactive ops, the `agentproto`
 CLI for long-lived processes, plain HTTP GETs for cheap checks.
 
 Start here if the capability should be reusable and self-contained: it is an
-APP (`ap-apps` → `pb-build-app`). If it is a one-off multi-session run, it is
+APP (`ap-apps` → `agentproto-apps`). If it is a one-off multi-session run, it is
 a workflow (`ap-workflows`).

@@ -1877,6 +1877,15 @@ export interface SessionDescriptor {
    *  and via `agent_set_prompt_policy`; only the owner, the session itself,
    *  and the operator may change it there. Absent = owner+operator only. */
   allowPromptFrom?: string[]
+  /** The operator-assigned, IMMUTABLE label of a root session: set only by
+   *  the daemon, at `agent_start` time, when the spawn carried NO caller
+   *  session (i.e. the human operator or an operator-side client spawned it),
+   *  and carried across restart / continue-fresh. Unlike `label`, no tool
+   *  can change it (`session_rename` only touches `label`), so a
+   *  `label:` entry in another session's `allowPromptFrom` can safely key on
+   *  it — see `checkSessionOwnerGate`. Absent for every session spawned by
+   *  another session. */
+  operatorLabel?: string
   /** Ascending position among pinned sessions — the stored order behind
    *  the pinned group of the CLI table / VS Code webview list. Set by
    *  `registry.setPinned` (append-at-end) and `registry.reorderPinned`
@@ -4609,6 +4618,11 @@ export interface SessionsRegistry {
    *  gate (`agent_set_prompt_policy` checks it). Persists via
    *  `schedulePersist` — the descriptor row is written whole. */
   setPromptPolicy(id: string, allowPromptFrom: string[] | undefined): SessionDescriptor
+  /** Stamp (or clear) the immutable `operatorLabel` (see
+   *  `SessionDescriptor.operatorLabel`). Daemon-internal: called only by the
+   *  `agent_start` handler for operator spawns and by the restart /
+   *  continue-fresh carry-forward — never exposed as an MCP tool. */
+  setOperatorLabel(id: string, operatorLabel: string | undefined): SessionDescriptor
   /** Record on the session event bus that a drive-tool prompt was accepted
    *  for `id`, and WHO sent it (`caller` = the trusted calling session id,
    *  or the literal `"operator"`). No-op when the registry was constructed
@@ -13490,6 +13504,18 @@ export function createSessionsRegistry(opts?: {
         delete rt.desc.allowPromptFrom
       } else {
         rt.desc.allowPromptFrom = allowPromptFrom
+      }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setOperatorLabel(id, operatorLabel) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setOperatorLabel: no session "${id}"`)
+      if (operatorLabel === undefined || operatorLabel === "") {
+        delete rt.desc.operatorLabel
+      } else {
+        rt.desc.operatorLabel = operatorLabel
       }
       schedulePersist()
       stampReadLiveness(rt.desc)
