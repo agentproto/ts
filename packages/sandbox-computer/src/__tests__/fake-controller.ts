@@ -17,17 +17,15 @@ import {
   suspendResponseSchema,
 } from "@agentproto/computer-api"
 
-/** Contract guard: the fake must emit controller-shaped bodies. A failure
- *  here means the fake has drifted from the published contract, exactly
- *  what the schema gate exists for. */
+/** Contract guard: the fake must emit controller-shaped bodies (the
+ *  package's `contract.test.ts` pins those same schemas with fixtures). A
+ *  failure here means the fake has drifted from the published contract,
+ *  exactly what the schema gate exists for. */
 function assertContract(
   schema: { parse: (v: unknown) => unknown },
   value: unknown,
-  site: string,
 ): void {
-  const out = schema.parse(value)
-  void out
-  void site
+  schema.parse(value)
 }
 
 export interface FakeControllerOptions {
@@ -105,18 +103,18 @@ export class FakeController {
     if (url.pathname === "/v1/computers" && req.method === "POST") {
       if (this.options.createStatus) {
         const body = { error: this.options.createError ?? "failed" }
-        assertContract(errorResponseSchema, body, "create error")
+        assertContract(errorResponseSchema, body)
         return reply(res, this.options.createStatus, body)
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
-      assertContract(createComputerRequestSchema, parsed, "create request")
+      assertContract(createComputerRequestSchema, parsed)
       this.createBodies.push(parsed)
       const id = `cmp-${(this.nextId++).toString().padStart(3, "0")}`
       const state = this.nextStateSnapshot ?? this.lastCreateState
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
       const responseBody = { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] }
-      assertContract(createComputerResponseSchema, responseBody, "create response")
+      assertContract(createComputerResponseSchema, responseBody)
       return reply(res, 201, responseBody)
     }
 
@@ -127,24 +125,24 @@ export class FakeController {
     if (req.method === "GET" && url.pathname === `/v1/computers/${productIdPath(computerMatch[1] as string)}`) {
       if (this.options.statusNotFound || !this.states.has(id)) return reply(res, 404, { error: "not found" })
       const responseBody = { name: id, state: this.states.get(id), ports: this.options.publishedPorts ?? [], egress: [], pinsStale: false, pinsTtlSec: 21600 }
-      assertContract(computerStatusSchema, responseBody, "status response")
+      assertContract(computerStatusSchema, responseBody)
       return reply(res, 200, responseBody)
     }
     if (req.method === "DELETE") {
       this.removed.push(id)
       this.states.delete(id)
       const deleteBody = { ok: true }
-      assertContract(suspendResponseSchema, deleteBody, "delete response")
+      assertContract(suspendResponseSchema, deleteBody)
       return reply(res, 200, deleteBody)
     }
     if (url.pathname.endsWith("/exec") && req.method === "POST") {
       if (this.options.execStatus) return reply(res, this.options.execStatus, { error: "exec failed" })
       const parsed = JSON.parse(body) as { argv: string[]; timeoutSec: number }
-      assertContract(execRequestSchema, parsed, "exec request")
+      assertContract(execRequestSchema, parsed)
       this.execs.push({ id, argv: parsed.argv, timeoutSec: parsed.timeoutSec })
       if (this.states.get(id) !== "running") return reply(res, 409, { error: "sandbox not running", state: this.states.get(id) })
       const out = this.runExec(id, parsed.argv, parsed)
-      assertContract(execResponseSchema, out, "exec response")
+      assertContract(execResponseSchema, out)
       return reply(res, 200, out)
     }
     if (url.pathname.endsWith("/suspend")) {
@@ -152,7 +150,7 @@ export class FakeController {
       this.states.set(id, "stopped")
       this.options.onSuspend?.()
       const suspendBody = { ok: true, snapshot: `snap-${id}-0`, state: "stopped" }
-      assertContract(suspendResponseSchema, suspendBody, "suspend response")
+      assertContract(suspendResponseSchema, suspendBody)
       return reply(res, 200, suspendBody)
     }
     if (url.pathname.endsWith("/resume")) {
@@ -163,7 +161,7 @@ export class FakeController {
       this.states.set(newId, "running")
       this.states.delete(id)
       const resumeBody = { ok: true, id: newId, state: "running" }
-      assertContract(resumeResponseSchema, resumeBody, "resume response")
+      assertContract(resumeResponseSchema, resumeBody)
       return reply(res, 201, resumeBody)
     }
     if (url.pathname.endsWith("/fork")) return reply(res, 201, { id: `cmp-fork-${this.nextId++}`, tenantId: "tenant-a" })

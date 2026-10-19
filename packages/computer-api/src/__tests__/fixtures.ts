@@ -1,8 +1,9 @@
 /**
  * Contract fixtures for the computer API schemas: one valid and one
- * invalid example per endpoint payload. Both the package tests and the
- * `@agentproto/sandbox-computer` fake controller run these, so the fake
- * controller cannot drift from the published contract either.
+ * invalid example per endpoint payload. The package tests pin these
+ * shapes, and the `@agentproto/sandbox-computer` fake controller runs the
+ * same schemas over its own replies, so the fake cannot drift from the
+ * published contract either.
  */
 import type { z } from "zod"
 import {

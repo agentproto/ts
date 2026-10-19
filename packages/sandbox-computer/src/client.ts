@@ -17,7 +17,6 @@ import {
   resumeResponseSchema,
   suspendResponseSchema,
   type ComputerStatus,
-  type CreateComputerRequest,
   type CreateComputerResponse,
   type ExecResponse,
   type ResumeResponse,
@@ -62,11 +61,21 @@ export function redactSecret(text: string, secrets: readonly string[]): string {
   return out
 }
 
-/** Request body for `POST /v1/computers`, re-declared out loud so the
- *  call-site JSDoc stays local (validated by
- *  `createComputerRequestSchema` from `@agentproto/computer-api`,
- *  re-exported here since the client never reaches raw JSON). */
-export interface CreateComputerInput extends CreateComputerRequest {}
+/** Body for `POST /v1/computers` — declared explicitly for excess-property
+ *  checking at call sites (typos fail to compile) and mirrored by
+ *  `createComputerRequestSchema` in `@agentproto/computer-api`, which
+ *  validates the same shape on the wire in `createComputer`. */
+export interface CreateComputerInput {
+  template: string
+  tenantId: string
+  cpus?: number
+  memoryMiB?: number
+  rootDiskMiB?: number
+  ttl?: number
+  env?: Record<string, string>
+  /** Deny-by-default egress allowlist; a computer created without one has no DNS. */
+  egress?: { allow: Array<{ host: string; port: number }> }
+}
 
 export class ComputerControllerClient {
   private readonly baseUrl: string
@@ -163,9 +172,21 @@ export class ComputerControllerClient {
    *  429 (capacity), 500 (msb create failure). */
   async createComputer(input: CreateComputerInput): Promise<CreateComputerResponse> {
     // Outbound bodies are contract-checked too: a mistyped input fails
-    // locally with the schema's complaint, not as a controller 400.
-    const body = createComputerRequestSchema.parse(input)
-    return this.request("POST", "/v1/computers", createComputerResponseSchema, body)
+    // locally, wrapped in a redacted ComputerApiError, not as a
+    // controller 400 or a raw ZodError.
+    const body = createComputerRequestSchema.safeParse(input)
+    if (!body.success) {
+      throw new ComputerApiError(
+        400,
+        redactSecret(
+          `computer sandbox create input rejected before it reached the controller: ${body.error.issues
+            .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+            .join("; ")}`,
+          this.secrets(),
+        ),
+      )
+    }
+    return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data)
   }
 
   /** `GET /v1/computers/:id`. `null` on 404 (never mind why) — callers map

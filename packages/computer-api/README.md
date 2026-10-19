@@ -40,8 +40,8 @@ describe. A major bump of this package is where that constant changes.
 
 `src/__tests__/fixtures.ts` carries a valid and an invalid fixture per
 payload; `contract.test.ts` pins them. The fake controller used by
-`@agentproto/sandbox-computer` validates its recorded responses against the
-same fixtures, so the test double cannot drift from the published contract.
+`@agentproto/sandbox-computer` validates everything it emits against the
+same schemas, so the test double cannot drift from the published contract.
 
 ## Notes
 
