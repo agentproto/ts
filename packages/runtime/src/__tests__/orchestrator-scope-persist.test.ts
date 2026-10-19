@@ -30,6 +30,7 @@ import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
   adoptLegacyOrchestratorScopes,
+  pruneOrchestratorScopesOnBoot,
 } from "../orchestrator-gateway.js"
 import { startHttpServer } from "../http-server.js"
 import { createSessionsRegistry } from "../sessions.js"
@@ -251,6 +252,109 @@ describe("adoptLegacyOrchestratorScopes", () => {
     expect(adopted).toBe(0)
     expect(scopes.verify("b".repeat(64))).toBeNull()
     expect(unrelated.id).toBeTruthy()
+  })
+})
+
+describe("pruneOrchestratorScopesOnBoot", () => {
+  function makeRegistry() {
+    const sessionEvents = createSessionEventBus()
+    const eventRing = createEventRing()
+    eventRing.wire(sessionEvents)
+    return createSessionsRegistry({
+      sessionEvents,
+      persist: false,
+      transcriptDir: tmpTranscriptDir(),
+    })
+  }
+
+  const orchRef = (token: string) =>
+    `http://127.0.0.1:18790/mcp/orchestrator?scope=${token}`
+
+  it("drops an owned scope whose owner is absent from the registry; keeps killed+resumable; drops exited+non-resumable", () => {
+    const sessions = makeRegistry()
+    const scopes = createScopeTokenRegistry()
+
+    // (a) owner absent → dropped.
+    const orphanOwned = scopes.mint()
+    scopes.bindOwner(orphanOwned.token, "ses_gone_forever")
+
+    // (b) owner killed but still resumable (boot-killed history row) → KEPT.
+    const killable = sessions.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession("prune_resumable"),
+      adapterSlug: "mock",
+      depth: 0,
+    })
+    const killedResumable = scopes.mint()
+    scopes.bindOwner(killedResumable.token, killable.id)
+    sessions.kill(killable.id)
+
+    // (c) owner exited AND non-resumable → dropped.
+    const doomed = sessions.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession("prune_doomed"),
+      adapterSlug: "mock",
+      depth: 0,
+    })
+    const exitedDoomed = scopes.mint()
+    scopes.bindOwner(exitedDoomed.token, doomed.id)
+    sessions.kill(doomed.id)
+    doomed.adapterSessionId = undefined // strip resume essentials
+
+    const dropped = pruneOrchestratorScopesOnBoot(scopes, sessions.list())
+    expect(dropped).toBe(2)
+    expect(scopes.verify(orphanOwned.token)).toBeNull()
+    expect(scopes.verify(exitedDoomed.token)).toBeNull()
+    expect(scopes.verify(killedResumable.token)).not.toBeNull()
+  })
+
+  it("drops an unowned scope no descriptor references; keeps one an alive descriptor still carries", () => {
+    const sessions = makeRegistry()
+    const scopes = createScopeTokenRegistry()
+
+    // Unowned + unreferenced (spawn died before bindOwner) → garbage.
+    const garbage = scopes.mint()
+
+    // Unowned + still referenced by a live child's persisted mcpServers
+    // (crash between adapter start and bindOwner) → kept.
+    const live = scopes.mint()
+    sessions.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession("prune_unowned_live"),
+      adapterSlug: "mock",
+      depth: 0,
+      mcpServers: [
+        { name: "agentproto", transport: "http", ref: orchRef(live.token) },
+      ],
+    })
+
+    const dropped = pruneOrchestratorScopesOnBoot(scopes, sessions.list())
+    expect(dropped).toBe(1)
+    expect(scopes.verify(garbage.token)).toBeNull()
+    expect(scopes.verify(live.token)).not.toBeNull()
+  })
+
+  it("prune is persisted — a reload after boot prune does not resurrect the dropped tokens", () => {
+    const sessions = makeRegistry()
+    const persistPath = tmpPersistPath()
+    const scopes = createScopeTokenRegistry({ persistPath })
+    // Owned by a session the registry does not know → dropped.
+    const ownedOrphan = scopes.mint()
+    scopes.bindOwner(ownedOrphan.token, "ses_absent")
+    // Unowned and unreferenced → dropped.
+    const unowned = scopes.mint()
+    scopes.flushSync()
+
+    const boot = createScopeTokenRegistry({ persistPath })
+    expect(pruneOrchestratorScopesOnBoot(boot, sessions.list())).toBe(2)
+    boot.flushSync()
+
+    const reloaded = createScopeTokenRegistry({ persistPath })
+    expect(reloaded.verify(ownedOrphan.token)).toBeNull()
+    expect(reloaded.verify(unowned.token)).toBeNull()
   })
 })
 

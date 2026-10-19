@@ -132,7 +132,6 @@ import {
 } from "./http-server.js"
 import {
   createSessionsRegistry,
-  isResumable,
   SANDBOX_GONE_DEFAULT_RESTART_POLICY,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
@@ -294,6 +293,7 @@ import {
   reapOrphanedDescendants,
   orchestratorScopesFile,
   adoptLegacyOrchestratorScopes,
+  pruneOrchestratorScopesOnBoot,
   type OrchestratorScope,
 } from "./orchestrator-gateway.js"
 
@@ -1299,6 +1299,8 @@ export {
   createOrchestratorInjector,
   orchestratorScopesFile,
   adoptLegacyOrchestratorScopes,
+  collectReferencedOrchestratorScopeTokens,
+  pruneOrchestratorScopesOnBoot,
   type OrchestratorScope,
   type ScopeTokenRegistry,
   type ScopeTokenRegistryOptions,
@@ -3306,20 +3308,15 @@ export async function createGateway(
     persist ? { persistPath: orchestratorScopesFile() } : undefined,
   )
 
-  // Boot prune: drop persisted scopes whose owning session is gone from
-  // the registry entirely, or ended in a state that can never be revived
-  // — so the file does not grow forever. Sessions merely marked killed by
-  // this boot's history load are KEPT: they are exactly the resumable rows
-  // whose persisted `mcpServers` still carry the `/mcp/orchestrator?scope=`
-  // URL this persistence exists to keep working (a NORMAL exit already
-  // revoked its token through the session:exited lifecycle handler).
-  scopeTokens.prune(ownerId => {
-    const desc = sessions.get(ownerId)
-    if (!desc) return true
-    const ended =
-      desc.status === "exited" || desc.status === "killed" || desc.status === "error"
-    return ended && !isResumable(desc)
-  })
+  // Boot prune: drop scopes that can never be needed again — dead-owner
+  // scopes and orphaned unowned tokens no alive/resumable descriptor
+  // references — so the file does not grow forever. (The predicate itself
+  // lives in `pruneOrchestratorScopesOnBoot` and deliberately KEEPS the
+  // killed-but-resumable rows this boot's history load just marked: they
+  // are the ones whose persisted `mcpServers` still carry the
+  // `/mcp/orchestrator?scope=` URL this persistence exists to keep
+  // working.)
+  pruneOrchestratorScopesOnBoot(scopeTokens, sessions.list())
   // Legacy migration: tokens minted by an older (pre-persistence) daemon
   // are absent from orchestrator-scopes.json but still baked into live /
   // resumable session descriptors' mcpServers — adopt them so those

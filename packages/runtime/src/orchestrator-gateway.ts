@@ -219,9 +219,10 @@ export interface ScopeTokenRegistry {
    *  `adoptLegacyOrchestratorScopes`). No-op when the token is already
    *  known, so a live registry entry always wins over an adopted one. */
   adopt(token: string, scope: Omit<OrchestratorScope, "token">): void
-  /** Drop every scope whose `ownerSessionId` is set and passes
-   *  `shouldDrop`. Returns how many were dropped (0 → no persist write). */
-  prune(shouldDrop: (ownerSessionId: string) => boolean): number
+  /** Drop every scope for which `shouldDrop` returns true (receives the
+   *  full scope so the caller can branch on owner vs unowned). Returns
+   *  how many were dropped (0 → no persist write). */
+  prune(shouldDrop: (scope: OrchestratorScope) => boolean): number
   /** Synchronous flush of the pending debounced persist write (shutdown
    *  path). No-op when persistence is off. */
   flushSync(): void
@@ -398,6 +399,11 @@ export function createScopeTokenRegistry(opts?: ScopeTokenRegistryOptions): Scop
       persistTimer = null
       writeNow(JSON.stringify(snapshot(), null, 2) + "\n")
     }, debounceMs)
+    // Don't let a pending debounced write hold the event loop open after
+    // the last mutation — the shutdown path's flushSync covers the final
+    // write, and a write that lands while the process is otherwise idle
+    // is pure bookkeeping.
+    persistTimer.unref?.()
   }
 
   const flushSync = (): void => {
@@ -445,10 +451,7 @@ export function createScopeTokenRegistry(opts?: ScopeTokenRegistryOptions): Scop
     prune(shouldDrop) {
       let dropped = 0
       for (const [token, scope] of [...scopes]) {
-        if (
-          scope.ownerSessionId !== undefined &&
-          shouldDrop(scope.ownerSessionId)
-        ) {
+        if (shouldDrop(scope)) {
           scopes.delete(token)
           dropped++
         }
@@ -494,6 +497,80 @@ function ancestorDepth(
   return depth
 }
 
+/** Only a session that is still alive OR could be revived in place is
+ *  worth resurrecting / keeping a token for — a terminal non-resumable
+ *  row's URL will never be dialed again. Shared by the legacy adoption
+ *  scan and the unowned-scope boot prune. */
+function isTokenRelevantDesc(desc: SessionDescriptor): boolean {
+  return (
+    desc.status === "running" ||
+    desc.status === "starting" ||
+    isResumable(desc)
+  )
+}
+
+/**
+ * Every `/mcp/orchestrator?scope=<token>` token referenced by the given
+ * descriptors' persisted `mcpServers` — the boot prune's "still needed?"
+ * set for UNOWNED scopes: a token minted in a previous daemon life whose
+ * spawn died before `bindOwner` is garbage, EXCEPT when an alive /
+ * resumable descriptor still carries its URL (crash between the adapter
+ * start that mounted the config and the late owner bind).
+ */
+export function collectReferencedOrchestratorScopeTokens(
+  descriptors: readonly SessionDescriptor[],
+): Set<string> {
+  const out = new Set<string>()
+  for (const desc of descriptors) {
+    if (!isTokenRelevantDesc(desc)) continue
+    if (!desc.mcpServers) continue
+    for (const entry of desc.mcpServers) {
+      if (entry.transport !== "http" || !entry.ref) continue
+      const token = extractOrchestratorScopeToken(entry.ref)
+      if (token) out.add(token)
+    }
+  }
+  return out
+}
+
+/**
+ * Boot-time prune of a freshly-loaded persisted registry (see the call
+ * site in `index.ts`). Drops:
+ *   - owned scopes whose owning session is gone from `descriptors`
+ *     entirely, or ended (`exited`/`killed`/`error`) in a state that can
+ *     never be revived (`!isResumable`);
+ *   - UNOWNED scopes (minted in a previous daemon life whose spawn died
+ *     before `bindOwner`, so nothing ever revokes them) that no alive /
+ *     resumable descriptor still references — a crash between the adapter
+ *     start that mounted the URL and the late owner bind keeps its token,
+ *     everything else is garbage.
+ * Sessions merely marked killed by the boot history load are KEPT: they
+ * are exactly the resumable rows whose persisted `mcpServers` still carry
+ * the `/mcp/orchestrator?scope=` URL this persistence exists to keep
+ * working (a NORMAL exit already revoked its token through the
+ * `session:exited` lifecycle handler). Exported so the tests exercise the
+ * production predicate, not a copy.
+ */
+export function pruneOrchestratorScopesOnBoot(
+  registry: ScopeTokenRegistry,
+  descriptors: readonly SessionDescriptor[],
+): number {
+  const byId = new Map(descriptors.map(d => [d.id, d]))
+  const referenced = collectReferencedOrchestratorScopeTokens(descriptors)
+  return registry.prune(scope => {
+    if (scope.ownerSessionId === undefined) {
+      return !referenced.has(scope.token)
+    }
+    const desc = byId.get(scope.ownerSessionId)
+    if (!desc) return true
+    const ended =
+      desc.status === "exited" ||
+      desc.status === "killed" ||
+      desc.status === "error"
+    return ended && !isResumable(desc)
+  })
+}
+
 /**
  * Legacy migration for tokens minted by a daemon that predates scope-token
  * persistence: those tokens live on only inside the persisted `mcpServers`
@@ -501,6 +578,14 @@ function ancestorDepth(
  * absent from `orchestrator-scopes.json`. Re-adopt each such token with the
  * referencing session as owner so its already-baked URL keeps authorizing
  * after a restart, with no session restart required.
+ *
+ * POSTURE NOTE: this runs on every boot with no migration marker, so a
+ * legacy token whose owning session is still resumable is re-adopted even
+ * after a restart — i.e. resumable-session tokens no longer die with the
+ * process, which is exactly the behaviour the migration exists to restore.
+ * Retire this function (and its call site) once every pre-persistence
+ * daemon life has been flushed out; the persisted registry alone then
+ * covers every live token.
  *
  * Fail-safe tools: the original mint's narrowing is unknowable from the URL
  * alone, so an adopted scope gets exactly the DEFAULT orchestrator subset —
@@ -520,16 +605,7 @@ export function adoptLegacyOrchestratorScopes(
   const byId = new Map(descriptors.map(d => [d.id, d]))
   let adopted = 0
   for (const desc of descriptors) {
-    // Only a session that is still alive OR could be revived in place is
-    // worth resurrecting a token for — a terminal non-resumable row's URL
-    // will never be dialed again.
-    if (
-      desc.status !== "running" &&
-      desc.status !== "starting" &&
-      !isResumable(desc)
-    ) {
-      continue
-    }
+    if (!isTokenRelevantDesc(desc)) continue
     if (!desc.mcpServers) continue
     for (const entry of desc.mcpServers) {
       if (entry.transport !== "http" || !entry.ref) continue
