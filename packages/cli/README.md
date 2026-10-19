@@ -170,7 +170,7 @@ threshold to `0` to disable.
 
 ## `daemon` — run as a background service
 
-Wraps the host's init system so you don't keep a terminal open. macOS `launchd` ships today; Linux `systemd --user` and Windows are on the follow-up list (the verb prints a clear "not yet" until then).
+Wraps the host's init system so you don't keep a terminal open. macOS `launchd`, Linux `systemd --user` (with a detached-serve pidfile fallback when the box has no usable systemd user session), and Windows Task Scheduler ship today.
 
 ```bash
 agentproto config set daemon.workspace ~/code/my-project   # one-time
@@ -184,7 +184,7 @@ agentproto daemon restart                                  # kill + relaunch
 agentproto daemon uninstall                                # bootout + delete plist
 ```
 
-`install` reads the current `config.json` and bakes its `daemon.*` keys into the plist's `ProgramArguments`. Re-run `install` after any config change to refresh. Logs land in `~/.agentproto/daemon.log` (stdout + stderr merged).
+`install` reads the current `config.json` and bakes its `daemon.*` keys into the service's argv snapshot (the macOS plist's `ProgramArguments`, the Linux unit's `ExecStart`, the Windows launcher `.cmd`). Re-run `install` after any config change to refresh. Logs land in `~/.agentproto/daemon.log` (stdout + stderr merged).
 
 ## `auth` — talk to a remote host
 
