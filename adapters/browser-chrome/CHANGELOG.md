@@ -1,5 +1,35 @@
 # @agentproto/adapter-browser-chrome
 
+## 0.7.0
+
+### Minor Changes
+
+- e9e2cb5: `chrome-live` gains two agent-surface features, exposed as new MCP tools in `@agentproto/runtime`:
+
+  - **File upload onto a real `<input type=file>`** — `browser_upload_file { sessionId, selector, paths, tabId? }` attaches local files through CDP `DOM.querySelector` + `DOM.setFileInputFiles` (the same mechanism devtools uses; the input is fed, never written back out). Every path must be absolute+existing and live inside an upload allowlist: the agent's workspace + `~/.pygmalion/data` by default, extendable via `AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS` (a `:`-separated dir list). Outside the allowlist → typed refusal, the driver is never touched.
+  - **Several tabs in the agent's own window** — `browser_new_tab { sessionId, url? }` opens a FRESH tab (the same activate-anchor → `Target.createTarget` → `getWindowForTarget` flow as the first tab, never a reuse, never the user's windows), `browser_list_tabs { sessionId }` lists the agent-owned tabs (`{ targetId, url, windowId }[]`), and every existing browser tool already accepts those `tabId`s.
+
+  `ChromeLiveInstance` grew `uploadFileOwnedTarget` / `newTabOwnedTarget` / `listOwnedTabs`; `evalRaw` on `ChromeCdpDriver` became `protected` so the live driver can probe the file input first (`no <input type=file> matches selector …`).
+
+- e9e2cb5: `chrome-live` gains two agent-surface features, exposed as new MCP tools in `@agentproto/runtime`:
+
+  - **File upload onto a real `<input type=file>`** — `browser_upload_file { sessionId, selector, paths, tabId? }` attaches local files through CDP `DOM.querySelector` + `DOM.setFileInputFiles`. Every path must be absolute+existing and live inside an upload allowlist (the agent's workspace + `~/.pygmalion/data` by default, extendable via `AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS`).
+  - **Several tabs in the agent's own window** — `browser_new_tab { sessionId, url? }` opens a FRESH tab, `browser_list_tabs { sessionId }` lists the agent-owned tabs, and every existing browser tool already accepts those `tabId`s.
+
+  `ChromeLiveInstance` grew `uploadFileOwnedTarget` / `newTabOwnedTarget` / `listOwnedTabs`; `evalRaw` on `ChromeCdpDriver` became `protected` so the live driver can probe the file input first.
+
+  Note: an equivalent changeset (`.changeset/chrome-live-upload-multitab.md`) is already present in this PR with the same package list and bumps.
+
+### Patch Changes
+
+- cf6085d: Documentation sync for already-shipped features. The browser-chrome README now documents the `createChromeLiveProvider({ cookieSource })` dedicated-Chrome cookie-injection seam and scopes the read-only cookie guarantee to the user's own attached Chrome. The CLI package README and `docs/cli` verb references now cover `agentproto sessions report`, `agentproto mcp login`/`logout` (OAuth 2.1 for remote imports), `agentproto workspace check` (AIP-34 `workspace/v2` tree verification), and the `AGENTPROTO_BROWSER_OBSERVER_*` daemon env vars.
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/driver-browser@0.3.1
+  - @agentproto/tool@0.5.2
+
 ## 0.6.0
 
 ### Minor Changes

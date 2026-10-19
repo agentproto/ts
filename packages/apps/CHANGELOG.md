@@ -1,5 +1,21 @@
 # @agentproto/apps
 
+## 0.23.6
+
+### Patch Changes
+
+- 3c30cda: fix(apps): follow the `session_list` cursor in every first-party panel (sessions-panel, agents-overview, bureau-sessions, session-story, ops-panel, session-viewer) so the new default 50-row bound no longer silently truncates their lists
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [70d533f]
+- Updated dependencies [74f982c]
+- Updated dependencies [70d533f]
+- Updated dependencies [74f982c]
+  - @agentproto/app-kit@2.1.0
+  - @agentproto/agent@0.4.1
+  - @agentproto/app-client@0.4.2
+  - @agentproto/workflow@0.7.2
+
 ## 0.23.5
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @agentproto/pair-page
 
+## 0.0.13
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/pair-client@1.0.4
+
 ## 0.0.12
 
 ### Patch Changes

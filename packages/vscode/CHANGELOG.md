@@ -1,5 +1,64 @@
 # agentproto-vscode
 
+## 0.24.0
+
+### Minor Changes
+
+- f2205fd: Add a recent-activity guard to `worktree gc`: a worktree whose own git index mtime is younger than `--active-minutes` (default 60, `0` disables) classifies `hold` with reason `recent-activity`, at plan time and again in apply's pre-removal re-check, so an actively-edited worktree is never reclaimed or salvaged. Plumbed end-to-end through the worktree engine (`PlanGcInput`/`ApplyGcOptions`), the runtime `worktree_gc` MCP tool and `POST /worktrees/gc` body, the `agentproto worktree gc --active-minutes` CLI flag, and the VS Code daemon client (`DaemonClient.gcWorktrees`). Apply outcomes and daemon plan/outcome views now carry the hold reason.
+- f2205fd: `worktree gc` now refuses to touch a recently-active worktree. A worktree whose own git index was written within the last 60 minutes (the worktree's private index — checkout/add/commit/status all rewrite it, so a young mtime means someone is working in there regardless of what any session registry knows) classifies `hold` with hold reason `recent-activity`, never `reclaim`/`salvage`, at plan time and again in apply's pre-removal re-check; the index mtime is always read before gc's own `git status` so the sweep can't report itself as activity. Plumbed end-to-end as `activeMinutes` (engine `PlanGcInput`/`ApplyGcOptions`, the `worktree_gc` MCP tool and `POST /worktrees/gc` body, `agentproto worktree gc --active-minutes <n>`, and the VS Code daemon client) with default 60; `0` disables the guard. Apply outcomes and the daemon's plan/outcome views now carry the hold reason, and a plan entry that became recently active between plan and apply aborts as `aborted-reclassified` to hold instead of acting on the stale plan.
+
+### Patch Changes
+
+- 8adcb70: Fix cross-route model switches in the VS Code extension. `model` and `access` are independent restart axes, but the daemon validates the pair, so moving a session to a model on another route (e.g. `opencode/x` → `opencode-go/x`) with the old auth profile carried forward failed with a 400. The restart flows now resolve the target route's eligible profiles and, when the attached wallet is not among them, attach the first eligible profile in the same `session_restart` override (or surface a clear error when the target route has no eligible profile). The daemon's eligibility rule is unchanged.
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- Updated dependencies [e9e2cb5]
+- Updated dependencies [46244e2]
+- Updated dependencies [743fa74]
+- Updated dependencies [78a3983]
+- Updated dependencies [80f0060]
+- Updated dependencies [e736c7c]
+- Updated dependencies [01ea248]
+- Updated dependencies [629e42c]
+- Updated dependencies [b324f0e]
+- Updated dependencies [3c30cda]
+- Updated dependencies [70d533f]
+- Updated dependencies [7e5ffd8]
+- Updated dependencies [f2205fd]
+- Updated dependencies [ef1c877]
+- Updated dependencies [11f986f]
+- Updated dependencies [c30bf32]
+- Updated dependencies [239fe1f]
+- Updated dependencies [e9e2cb5]
+- Updated dependencies [3c30cda]
+- Updated dependencies [9b99d62]
+- Updated dependencies [74f982c]
+- Updated dependencies [2d61d46]
+- Updated dependencies [9b836b4]
+- Updated dependencies [743fa74]
+- Updated dependencies [f1d0c95]
+- Updated dependencies [0b43b1f]
+- Updated dependencies [7e5ffd8]
+- Updated dependencies [11f986f]
+- Updated dependencies [f915069]
+- Updated dependencies [629e42c]
+- Updated dependencies [3a50c3d]
+- Updated dependencies [2d61d46]
+- Updated dependencies [f1d0c95]
+- Updated dependencies [3c30cda]
+- Updated dependencies [0b43b1f]
+- Updated dependencies [9b836b4]
+- Updated dependencies [239fe1f]
+- Updated dependencies [c30bf32]
+- Updated dependencies [7d7aaf9]
+- Updated dependencies [9b99d62]
+- Updated dependencies [ef1c877]
+- Updated dependencies [70d533f]
+- Updated dependencies [74f982c]
+- Updated dependencies [f2205fd]
+  - @agentproto/runtime@5.26.0
+  - @agentproto/apps@0.23.6
+  - @agentproto/mcp-app-host@0.1.4
+
 ## 0.23.2
 
 ### Patch Changes

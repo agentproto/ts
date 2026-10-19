@@ -1,5 +1,59 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.40
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [e9e2cb5]
+- Updated dependencies [46244e2]
+- Updated dependencies [743fa74]
+- Updated dependencies [78a3983]
+- Updated dependencies [80f0060]
+- Updated dependencies [e736c7c]
+- Updated dependencies [01ea248]
+- Updated dependencies [629e42c]
+- Updated dependencies [b324f0e]
+- Updated dependencies [70d533f]
+- Updated dependencies [7e5ffd8]
+- Updated dependencies [f2205fd]
+- Updated dependencies [ef1c877]
+- Updated dependencies [11f986f]
+- Updated dependencies [c30bf32]
+- Updated dependencies [239fe1f]
+- Updated dependencies [e9e2cb5]
+- Updated dependencies [3c30cda]
+- Updated dependencies [9b99d62]
+- Updated dependencies [74f982c]
+- Updated dependencies [2d61d46]
+- Updated dependencies [9b836b4]
+- Updated dependencies [743fa74]
+- Updated dependencies [f1d0c95]
+- Updated dependencies [0b43b1f]
+- Updated dependencies [7e5ffd8]
+- Updated dependencies [11f986f]
+- Updated dependencies [f915069]
+- Updated dependencies [629e42c]
+- Updated dependencies [3a50c3d]
+- Updated dependencies [2d61d46]
+- Updated dependencies [f1d0c95]
+- Updated dependencies [3c30cda]
+- Updated dependencies [0b43b1f]
+- Updated dependencies [9b836b4]
+- Updated dependencies [239fe1f]
+- Updated dependencies [c30bf32]
+- Updated dependencies [7d7aaf9]
+- Updated dependencies [9b99d62]
+- Updated dependencies [ef1c877]
+- Updated dependencies [70d533f]
+- Updated dependencies [74f982c]
+- Updated dependencies [f2205fd]
+  - @agentproto/runtime@5.26.0
+  - @agentproto/agent@0.4.1
+  - @agentproto/driver-agent-cli@2.13.2
+  - @agentproto/mastra@0.2.19
+
 ## 0.7.39
 
 ### Patch Changes

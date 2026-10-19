@@ -1,5 +1,19 @@
 # @agentproto/work
 
+## 0.2.0
+
+### Minor Changes
+
+- 12639d6: AIP-20 redesign port — view mode is gone. Regenerates `schema.ts` + `types.ts` from the redesigned `WORK.schema.json` draft (re-vendored in this PR): `extends`, `appliesTo`, `version`, `agency`, `playbook`, `scope`, `display`, `defaults.approvalClass` and the old `statusRollup.policy` / lint kinds are no longer part of the WORK manifest, replaced by `containment` (child→allowed parents, maxDepth), `coordination` (lease TTL / stale-lock age), `statusRollup.rules[].category`, and `views` (saved queries). The `appliesTo` ⇒ `extends` cross-field rule in `defineWork` was deleted with the view mode it guarded; workspace-tree fixtures now write the view-mode-free WORK.md shape.
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/define-doctype@0.1.4
+
 ## 0.1.4
 
 ### Patch Changes
