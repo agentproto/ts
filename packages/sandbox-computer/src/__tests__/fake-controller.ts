@@ -6,6 +6,27 @@
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
+import {
+  computerStatusSchema,
+  createComputerRequestSchema,
+  createComputerResponseSchema,
+  errorResponseSchema,
+  execRequestSchema,
+  execResponseSchema,
+  resumeResponseSchema,
+  suspendResponseSchema,
+} from "@agentproto/computer-api"
+
+/** Contract guard: the fake must emit controller-shaped bodies (the
+ *  package's `contract.test.ts` pins those same schemas with fixtures). A
+ *  failure here means the fake has drifted from the published contract,
+ *  exactly what the schema gate exists for. */
+function assertContract(
+  schema: { parse: (v: unknown) => unknown },
+  value: unknown,
+): void {
+  schema.parse(value)
+}
 
 export interface FakeControllerOptions {
   token: string
@@ -81,15 +102,20 @@ export class FakeController {
 
     if (url.pathname === "/v1/computers" && req.method === "POST") {
       if (this.options.createStatus) {
-        return reply(res, this.options.createStatus, { error: this.options.createError ?? "failed" })
+        const body = { error: this.options.createError ?? "failed" }
+        assertContract(errorResponseSchema, body)
+        return reply(res, this.options.createStatus, body)
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
+      assertContract(createComputerRequestSchema, parsed)
       this.createBodies.push(parsed)
       const id = `cmp-${(this.nextId++).toString().padStart(3, "0")}`
       const state = this.nextStateSnapshot ?? this.lastCreateState
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
-      return reply(res, 201, { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] })
+      const responseBody = { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] }
+      assertContract(createComputerResponseSchema, responseBody)
+      return reply(res, 201, responseBody)
     }
 
     const computerMatch = /^\/v1\/computers\/([^/]+)/.exec(url.pathname)
@@ -98,25 +124,34 @@ export class FakeController {
 
     if (req.method === "GET" && url.pathname === `/v1/computers/${productIdPath(computerMatch[1] as string)}`) {
       if (this.options.statusNotFound || !this.states.has(id)) return reply(res, 404, { error: "not found" })
-      return reply(res, 200, { name: id, state: this.states.get(id), ports: this.options.publishedPorts ?? [], egress: [], pinsStale: false, pinsTtlSec: 21600 })
+      const responseBody = { name: id, state: this.states.get(id), ports: this.options.publishedPorts ?? [], egress: [], pinsStale: false, pinsTtlSec: 21600 }
+      assertContract(computerStatusSchema, responseBody)
+      return reply(res, 200, responseBody)
     }
     if (req.method === "DELETE") {
       this.removed.push(id)
       this.states.delete(id)
-      return reply(res, 200, { ok: true })
+      const deleteBody = { ok: true }
+      assertContract(suspendResponseSchema, deleteBody)
+      return reply(res, 200, deleteBody)
     }
     if (url.pathname.endsWith("/exec") && req.method === "POST") {
       if (this.options.execStatus) return reply(res, this.options.execStatus, { error: "exec failed" })
       const parsed = JSON.parse(body) as { argv: string[]; timeoutSec: number }
+      assertContract(execRequestSchema, parsed)
       this.execs.push({ id, argv: parsed.argv, timeoutSec: parsed.timeoutSec })
       if (this.states.get(id) !== "running") return reply(res, 409, { error: "sandbox not running", state: this.states.get(id) })
-      return reply(res, 200, this.runExec(id, parsed.argv, parsed))
+      const out = this.runExec(id, parsed.argv, parsed)
+      assertContract(execResponseSchema, out)
+      return reply(res, 200, out)
     }
     if (url.pathname.endsWith("/suspend")) {
       this.suspended.push(id)
       this.states.set(id, "stopped")
       this.options.onSuspend?.()
-      return reply(res, 200, { ok: true, snapshot: `snap-${id}-0`, state: "stopped" })
+      const suspendBody = { ok: true, snapshot: `snap-${id}-0`, state: "stopped" }
+      assertContract(suspendResponseSchema, suspendBody)
+      return reply(res, 200, suspendBody)
     }
     if (url.pathname.endsWith("/resume")) {
       this.resumed.push(id)
@@ -125,7 +160,9 @@ export class FakeController {
       const newId = `cmp-restored-${(this.nextId++).toString().padStart(3, "0")}`
       this.states.set(newId, "running")
       this.states.delete(id)
-      return reply(res, 201, { ok: true, id: newId, state: "running" })
+      const resumeBody = { ok: true, id: newId, state: "running" }
+      assertContract(resumeResponseSchema, resumeBody)
+      return reply(res, 201, resumeBody)
     }
     if (url.pathname.endsWith("/fork")) return reply(res, 201, { id: `cmp-fork-${this.nextId++}`, tenantId: "tenant-a" })
     return reply(res, 404, { error: "not found" })

@@ -40,7 +40,7 @@ import type {
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
 import { ComputerApiError, ComputerControllerClient, type ComputerClientConfig } from "./client.js"
-import type { ComputerStatus, PortPublish } from "./api-types.js"
+import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 export const DEFAULT_PORT = 18790

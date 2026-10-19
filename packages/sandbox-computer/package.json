@@ -50,6 +50,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/computer-api": "workspace:*",
     "@agentproto/sandbox": "workspace:*",
     "zod": "^4.6.5"
   },
