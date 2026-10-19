@@ -280,6 +280,193 @@ export interface AppService {
 }
 
 /**
+ * AIP-53 `setup[]` — one step's `when` condition: run only if the EARLIER
+ * step named by `step` recorded the answer `equals`, or is / is not
+ * complete (`done: true | false`). Exactly one of `equals` / `done`.
+ */
+export interface AppSetupWhen {
+  /** Id of an EARLIER step. */
+  readonly step: string
+  /** Run only when that step's recorded answer equals this value. */
+  readonly equals?: unknown
+  /** Run only when that step is (true) / is not (false) complete. */
+  readonly done?: boolean
+}
+
+/** AIP-29 `skip_if`, reused by AIP-53 `cmd`/`prompt` steps: when `cmd`
+ *  exits with `exit_code` (default 0) the step is skipped and ledgered as
+ *  `skippedViaSkipIf`. */
+export interface AppSetupSkipIf {
+  readonly cmd: string
+  readonly exit_code?: number
+}
+
+/**
+ * Where a captured setup value lands. EXACTLY one slot. `env`,
+ * `secret_slug` and `cmd` are exactly AIP-29's; `answer` is AIP-53's
+ * NON-SECRET dotted key under the setup record's `answers` map — it MUST
+ * NOT be used with a `prompt` step of `type: secret` (a secret MUST land
+ * in `secret_slug` or `env`).
+ */
+export interface AppSetupPersist {
+  readonly env?: string
+  readonly secret_slug?: string
+  readonly cmd?: string
+  readonly answer?: string
+}
+
+/** One option of a `choice` step / `select` prompt. */
+export interface AppSetupOption {
+  readonly value: string
+  readonly label: string
+  readonly description?: string
+}
+
+/** Fields every AIP-53 setup step shares (`$defs.setupStep` common keys). */
+export interface AppSetupStepBase {
+  /** Stable step identifier, kebab-case, unique across `setup[]`. Keys the
+   *  ledger, audit records and `--only`. */
+  readonly id: string
+  /** What a surface shows above the step. */
+  readonly title?: string
+  readonly description?: string
+  /** The user MAY decline the step, or leave it pending, without blocking
+   *  `ready`. Default false. */
+  readonly optional?: boolean
+  /** Conditional on an earlier step (see {@link AppSetupWhen}). */
+  readonly when?: AppSetupWhen
+}
+
+/** Run a shell command (AIP-29 semantics). */
+export interface AppSetupCmdStep extends AppSetupStepBase {
+  readonly kind: "cmd"
+  readonly cmd: string
+  readonly skip_if?: AppSetupSkipIf
+  readonly persist?: AppSetupPersist
+}
+
+/** Ask for one value: `type: text | select | boolean | secret`. */
+export interface AppSetupPromptStep extends AppSetupStepBase {
+  readonly kind: "prompt"
+  readonly type?: "text" | "select" | "boolean" | "secret"
+  readonly prompt: string
+  readonly default?: unknown
+  readonly options?: readonly AppSetupOption[]
+  readonly skip_if?: AppSetupSkipIf
+  readonly persist?: AppSetupPersist
+}
+
+/**
+ * Pick exactly one of a closed set of options, with a default. `default`
+ * MUST equal one option's `value`; a non-interactive run (`--yes`) applies
+ * it. Later steps branch on the answer with
+ * `when: { step: <choice-id>, equals: <value> }`.
+ */
+export interface AppSetupChoiceStep extends AppSetupStepBase {
+  readonly kind: "choice"
+  readonly prompt: string
+  /** At least two options. */
+  readonly options: readonly AppSetupOption[]
+  /** The `value` of one option. Pre-selected, and applied by `--yes`. */
+  readonly default: string
+  readonly persist?: AppSetupPersist
+}
+
+/** Ensure the host's auth-profile store holds enough usable model logins. */
+export interface AppSetupAuthProfileStep extends AppSetupStepBase {
+  readonly kind: "auth-profile"
+  /** Complete when at least this many enabled auth profiles exist. Default 1. */
+  readonly min?: number
+  /** Only count profiles usable by these harness slugs. Absent = any. */
+  readonly harnesses?: readonly string[]
+}
+
+/** Bind an external chat identity to this install (a QR, link or code the
+ *  user acts on elsewhere). `channel` is an open set: `telegram` is defined
+ *  by AIP-53; other values are host-defined. */
+export interface AppSetupPairingStep extends AppSetupStepBase {
+  readonly kind: "pairing"
+  readonly channel: string
+  readonly display?: "qr" | "link" | "code"
+  /** Default 300. */
+  readonly timeout_sec?: number
+  readonly persist?: AppSetupPersist
+}
+
+/** Drive an AIP-19 OAuth flow; tokens land in the named secret slug. */
+export interface AppSetupOauthStep extends AppSetupStepBase {
+  readonly kind: "oauth"
+  readonly secret_slug: string
+}
+
+/** Open an `https` URL and wait for the user (AIP-29 semantics). */
+export interface AppSetupExternalStep extends AppSetupStepBase {
+  readonly kind: "external"
+  /** Non-empty `https://` URL. */
+  readonly url: string
+  readonly persist?: AppSetupPersist
+}
+
+/** The `check` probe body: exactly one of `cmd` or `tool`. */
+export interface AppSetupCheck {
+  readonly cmd?: {
+    readonly run: string
+    readonly exit_code?: number
+  }
+  readonly tool?: {
+    readonly id: string
+    readonly args?: Readonly<Record<string, unknown>>
+    /** Subset the tool's result object MUST contain. */
+    readonly expect?: Readonly<Record<string, unknown>>
+  }
+}
+
+/** A read-only readiness probe. Never prompts, never mutates; re-evaluated
+ *  on every run, so `ready` always reflects the live system. */
+export interface AppSetupCheckStep extends AppSetupStepBase {
+  readonly kind: "check"
+  readonly check: AppSetupCheck
+  /** `required` (default) fails the pipeline with `setup_failed`; `warn`
+   *  reports and continues. */
+  readonly severity?: "required" | "warn"
+}
+
+/**
+ * Vendor extension step — the ONLY place in APP.md where unknown keys are
+ * tolerated. A host that does not implement the kind MUST fail with
+ * `setup_unsupported_step`, never skip it silently (unless `optional`).
+ */
+export interface AppSetupVendorStep {
+  readonly id: string
+  /** Vendor kind, matching `/^x-[a-z0-9-]+$/`. */
+  readonly kind: `x-${string}`
+  readonly title?: string
+  readonly description?: string
+  readonly optional?: boolean
+  readonly when?: AppSetupWhen
+  readonly [key: string]: unknown
+}
+
+/**
+ * One AIP-53 `setup[]` step — a discriminated union on `kind` (`cmd`,
+ * `prompt`, `oauth`, `external`, `choice`, `auth-profile`, `pairing`,
+ * `check`, plus vendor `x-*`). Ordered, idempotent post-install
+ * configuration the host runs after install and before the app is
+ * `ready`. app-kit validates and carries the field verbatim; it never
+ * executes a step (the host's setup engine does).
+ */
+export type AppSetupStep =
+  | AppSetupCmdStep
+  | AppSetupPromptStep
+  | AppSetupChoiceStep
+  | AppSetupAuthProfileStep
+  | AppSetupPairingStep
+  | AppSetupOauthStep
+  | AppSetupExternalStep
+  | AppSetupCheckStep
+  | AppSetupVendorStep
+
+/**
  * Where the app's durable data lives (the `app_data_*` plane). `dir` is a
  * path RELATIVE to the app dir — `"data"` means `<appDir>/data`, which is
  * also what the daemon uses when the hint is absent. It is a hint: an
@@ -453,6 +640,16 @@ export interface AppDefinition {
    * non-empty with unique kebab-case names when present.
    */
   readonly services?: readonly AppService[]
+  /**
+   * Ordered, idempotent post-install configuration pipeline (AIP-53
+   * `setup[]`): the values only the user can supply and the one-time
+   * bindings that outlive the install. Non-empty when present; step ids
+   * unique; `when.step` references an EARLIER step (conformance rule 10 —
+   * see `defineApp`). app-kit validates and carries the field verbatim;
+   * it never runs a step — the host's setup engine does, after the
+   * install record is written and before the app is `ready`.
+   */
+  readonly setup?: readonly AppSetupStep[]
   /** Default data directory hint for the `app_data_*` plane (relative to
    *  the app dir; see {@link AppDataDefinition}). */
   readonly data?: AppDataDefinition
@@ -556,6 +753,9 @@ export interface AppHandle {
    *  supervised service process per entry, carried verbatim. NOT executed by
    *  app-kit — the host runs each `entry` at install time (later work item). */
   readonly services?: readonly AppService[]
+  /** AIP-53 `setup[]` (see {@link AppDefinition.setup}): validated,
+   *  frozen, carried verbatim. Absent when the app declares no setup. */
+  readonly setup?: readonly AppSetupStep[]
   /** Default data directory hint (see {@link AppDataDefinition}). Resolved
    *  against the app dir at install time in `performInstall`. */
   readonly data?: AppDataDefinition
