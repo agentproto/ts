@@ -53,7 +53,7 @@ const STORE_BLOCK =
   `  tagline: Chat with any agentproto session.\n` +
   `  categories: [chat, sessions]\n` +
   `  publisher: Agentik\n` +
-  `  publisherUrl: https://agentik.net\n` +
+  `  publisherUrl: https://example.com\n` +
   `  homepage: https://agentproto.sh/apps/shop-app\n` +
   `  repository: https://github.com/acme/shop-app\n` +
   `  icon: store/icon.svg\n` +
@@ -115,7 +115,7 @@ describe("readStoreListing", () => {
     expect(listing?.fields).toEqual({
       tagline: "Chat with any agentproto session.",
       publisher: "Agentik",
-      publisherUrl: "https://agentik.net",
+      publisherUrl: "https://example.com",
       homepage: "https://agentproto.sh/apps/shop-app",
       repository: "https://github.com/acme/shop-app",
       categories: ["chat", "sessions"],
@@ -137,7 +137,7 @@ describe("readStoreListing", () => {
     ["a screenshot without alt", STORE_BLOCK.replace("      alt: A session replayed as a chat thread\n", ""), "alt is required"],
     ["a path outside the app", STORE_BLOCK.replace("store/screenshots/thread.png", "../../etc/passwd"), "points outside the app"],
     ["an http homepage", STORE_BLOCK.replace("https://agentproto.sh/apps/shop-app", "http://agentproto.sh"), "homepage must be an https URL"],
-    ["an http publisher URL", STORE_BLOCK.replace("https://agentik.net", "http://agentik.net"), "publisherUrl must be an https URL"],
+    ["an http publisher URL", STORE_BLOCK.replace("https://example.com", "http://example.com"), "publisherUrl must be an https URL"],
     ["a bad category", STORE_BLOCK.replace("[chat, sessions]", "[Chat Apps]"), "category 'Chat Apps'"],
     ["a gif screenshot", STORE_BLOCK.replace("thread.png\n", "anim.gif\n"), "cannot read"],
   ])("rejects %s", async (_label, store, message) => {
@@ -180,7 +180,7 @@ describe("app pack --release --entry with a store listing", () => {
     }
     const base = "https://raw.githubusercontent.com/agentproto/apps/main/media/@acme/shop-app/1.2.0"
     expect(entry.tagline).toBe("Chat with any agentproto session.")
-    expect(entry.publisherUrl).toBe("https://agentik.net")
+    expect(entry.publisherUrl).toBe("https://example.com")
     expect(entry.icon).toBe(`${base}/icon.svg`)
     expect((entry.screenshots as Array<{ url: string }>)[0]!.url).toBe(`${base}/thread.png`)
     expect(entry.longDescription).toContain("Buy **things**.")
@@ -268,7 +268,7 @@ describe("catalog verify: store listing", () => {
     const root = await mktmp()
     const { entryFile, bundle, appId } = await packed(root)
     const entry = JSON.parse(await readFile(entryFile, "utf8"))
-    entry.publisherUrl = "http://agentik.net"
+    entry.publisherUrl = "http://example.com"
     await writeFile(entryFile, JSON.stringify(entry))
     const res = await capture(() =>
       runCatalog(["verify", entryFile, "--json", "--offline-file", `${appId}=${bundle}`]).catch((e: Error) => {

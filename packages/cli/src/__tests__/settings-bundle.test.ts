@@ -109,7 +109,7 @@ function fakeGatherDeps(overrides: Partial<SettingsGatherDeps> = {}): SettingsGa
     loadConfig: async () =>
       ({
         daemon: { authToken: "super-secret-token", workspace: "/Users/jeremy/.agentproto/workspace" },
-        remote: { host: "wss://guilde.work/api/v1/agentproto/tunnel" },
+        remote: { host: "wss://example.com/api/v1/agentproto/tunnel" },
         profiles: { local: { tunnel: { token: "apt_local_secret_value" } } },
       }) as never,
     credentialStore: fakeCredentialStore({
@@ -197,9 +197,9 @@ describe("sanitizeConfigForExport", () => {
 
   it("filters offending values out of arrays without dropping the whole key", () => {
     const { config } = sanitizeConfigForExport({
-      daemon: { allowedOrigins: ["https://guilde.work", "http://localhost:3000"] },
+      daemon: { allowedOrigins: ["https://example.com", "http://localhost:3000"] },
     })
-    expect(config).toEqual({ daemon: { allowedOrigins: ["https://guilde.work"] } })
+    expect(config).toEqual({ daemon: { allowedOrigins: ["https://example.com"] } })
   })
 
   // Regression: `profiles.<name>.tunnel.token` mirrors the top-level
@@ -210,7 +210,7 @@ describe("sanitizeConfigForExport", () => {
     const { config, skipped } = sanitizeConfigForExport({
       profiles: {
         local: { tunnel: { host: "ws://localhost:3200/connect", token: "apt_local_secret_value" } },
-        prod: { tunnel: { host: "wss://tunnel.guilde.work/connect", token: "apt_prod_secret_value" } },
+        prod: { tunnel: { host: "wss://tunnel.example.com/connect", token: "apt_prod_secret_value" } },
       },
     })
     expect(JSON.stringify(config)).not.toContain("apt_local_secret_value")
@@ -268,7 +268,7 @@ describe("gatherSettingsBundle", () => {
     const { bundle } = await gatherSettingsBundle({}, fakeGatherDeps())
     expect(bundle.config).toEqual({
       daemon: {},
-      remote: { host: "wss://guilde.work/api/v1/agentproto/tunnel" },
+      remote: { host: "wss://example.com/api/v1/agentproto/tunnel" },
       profiles: { local: { tunnel: {} } },
     })
     expect(bundle.configSkipped).toEqual(

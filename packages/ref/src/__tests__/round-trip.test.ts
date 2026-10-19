@@ -37,7 +37,7 @@ const fixtures: Array<{ name: string; compact: string }> = [
     compact:
       "ipfs:bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi:nested/file.json",
   },
-  { name: "email", compact: "email:jeremy@agentik.net" },
+  { name: "email", compact: "email:alice@example.com" },
   { name: "operator", compact: "operator:atlas" },
   { name: "operator with workspace", compact: "operator:atlas@acme-co" },
   { name: "user", compact: "user:abc123" },

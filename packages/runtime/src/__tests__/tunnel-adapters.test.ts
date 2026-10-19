@@ -538,8 +538,8 @@ describe("setup_tunnel_provider — ngrok", () => {
 
 describe("setup_tunnel_provider — cloudflare-managed", () => {
   const ZONES = JSON.stringify([
-    { zone: "agentik.net", accountId: "acct", tokenRef: "stored:agentik" },
-    { zone: "clipgen.co", accountId: "acct", tokenRef: "env:CF_TOKEN_CLIPGEN", maxLabels: 2 },
+    { zone: "example.com", accountId: "acct", tokenRef: "stored:examplecom" },
+    { zone: "example.dev", accountId: "acct", tokenRef: "env:CF_TOKEN_EXAMPLE_DEV", maxLabels: 2 },
   ])
   const TOKEN = "cf-api-token-should-never-be-echoed"
 
@@ -557,14 +557,14 @@ describe("setup_tunnel_provider — cloudflare-managed", () => {
     const res = await tool.handler({
       slug: "cloudflare-managed",
       zones: ZONES,
-      zoneTokens: JSON.stringify({ agentik: TOKEN }),
+      zoneTokens: JSON.stringify({ examplecom: TOKEN }),
     })
     expect(res.isError).toBeFalsy()
     expect(res.content[0]!.text).not.toContain(TOKEN)
     const store = makeTunnelCredsStore(home)
     expect(await store.read("cloudflare-managed")).toEqual({
       zones: ZONES,
-      zoneTokens: JSON.stringify({ agentik: TOKEN }),
+      zoneTokens: JSON.stringify({ examplecom: TOKEN }),
     })
     const { statSync } = await import("node:fs")
     const mode = statSync(join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-managed.json")).mode
@@ -575,7 +575,7 @@ describe("setup_tunnel_provider — cloudflare-managed", () => {
     const tool = await setupTool()
     const bad = await tool.handler({
       slug: "cloudflare-managed",
-      zones: JSON.stringify([{ zone: "agentik.net", accountId: "acct", tokenRef: TOKEN }]),
+      zones: JSON.stringify([{ zone: "example.com", accountId: "acct", tokenRef: TOKEN }]),
     })
     expect(bad.isError).toBe(true)
     expect(bad.content[0]!.text).toMatch(/reference/)
@@ -583,7 +583,7 @@ describe("setup_tunnel_provider — cloudflare-managed", () => {
 
     const dangling = await tool.handler({ slug: "cloudflare-managed", zones: ZONES })
     expect(dangling.isError).toBe(true)
-    expect(dangling.content[0]!.text).toMatch(/stored:agentik/)
+    expect(dangling.content[0]!.text).toMatch(/stored:examplecom/)
     expect(existsSync(join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-managed.json"))).toBe(false)
   })
 })
