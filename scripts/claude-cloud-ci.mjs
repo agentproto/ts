@@ -4,8 +4,9 @@
 
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, resolve } from 'node:path'
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf8',
@@ -50,7 +51,31 @@ async function waitForDaemon() {
   throw new Error(`agentproto daemon did not become healthy; see ${logFile}`)
 }
 
+// A clean runner has no ~/.claude.json, so `claude --cloud` (driven under a
+// PTY by the relay) opens the first-run onboarding — the theme picker — and
+// waits there until the relay's 120s start timeout, which surfaces as an
+// empty turn. Seed onboarding + trust for this checkout so the start goes
+// straight to the session, whatever job calls this script.
+function seedClaudeConfig() {
+  const configFile = process.env.CLAUDE_CONFIG_DIR
+    ? resolve(process.env.CLAUDE_CONFIG_DIR, '.claude.json')
+    : resolve(homedir(), '.claude.json')
+  let config = {}
+  try {
+    config = JSON.parse(readFileSync(configFile, 'utf8'))
+  } catch {}
+  config.hasCompletedOnboarding = true
+  config.theme ||= 'dark'
+  config.projects ||= {}
+  for (const dir of new Set([ROOT, realpathSync(ROOT)])) {
+    config.projects[dir] = { ...config.projects[dir], hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true }
+  }
+  mkdirSync(dirname(configFile), { recursive: true })
+  writeFileSync(configFile, JSON.stringify(config, null, 2))
+}
+
 async function main() {
+  seedClaudeConfig()
   const logFd = openSync(logFile, 'a')
   const daemon = spawn(process.execPath, [cli, 'serve', '--workspace', ROOT, '--port', String(port)], {
     cwd: ROOT,
