@@ -1,5 +1,13 @@
 # @agentproto/catalog-sync
 
+## 0.8.9
+
+### Patch Changes
+
+- bec9df2: Sync generated catalog data from the pinned provider sources.
+- Updated dependencies [bec9df2]
+  - @agentproto/model-catalog@0.13.1
+
 ## 0.8.8
 
 ### Patch Changes

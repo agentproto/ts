@@ -1,5 +1,48 @@
 # @agentproto/runtime
 
+## 5.27.0
+
+### Minor Changes
+
+- 9a90833: Persist the orchestrator scope-token registry to `orchestrator-scopes.json` (mode 0600, atomic debounced writes) so `/mcp/orchestrator?scope=` URLs already baked into session descriptors keep authorizing across a daemon restart, prune dead-owner and orphaned unowned tokens at boot, and adopt legacy tokens minted by older daemons from the session descriptors that still reference them (never wider than the default tool subset). Adds new exported API: `orchestratorScopesFile()`, `adoptLegacyOrchestratorScopes()`, `collectReferencedOrchestratorScopeTokens()`, the `ScopeTokenRegistryOptions` type, and an optional `opts` parameter on `createScopeTokenRegistry()`.
+- 57ae214: `branch gc` gains two safety mechanisms. Orphan refs whose tip IS a base remote's `refs/pull/<N>/head` are classified `forge-mirror` and reclaimed without running the ladder (the forge keeps those refs forever, so the local ref is never the only copy), and their restore log re-fetches the PR head instead of `update-ref`. Separately, `includeReviewed` now refuses an agreeing verdict deterministically: the tip carries `lineCoverage` (the share of its non-trivial added lines already present verbatim in base's version of the same path), and an approval below `minLineCoverage` (default 95, configurable via `agentproto branch gc --min-line-coverage PCT`, the `branch_gc` MCP tool, and the daemon HTTP surface) leaves the ref `review` with `verdictGuard` / `refused-guard` rather than reclaiming it. The repo-maintenance reviewer prompt and review-queue builder surface `lineCoverage` so reviewers account for the missing lines.
+- 9a90833: Persist the orchestrator scope-token registry to `orchestrator-scopes.json` (mode 0600, atomic debounced writes) so `/mcp/orchestrator?scope=` URLs already baked into session descriptors keep authorizing across a daemon restart, prune tokens whose owning session is gone or unrecoverable at boot, and adopt legacy tokens minted by older daemons from the session descriptors that still reference them (never wider than the default tool subset). This also adds new exported API — `orchestratorScopesFile()`, `adoptLegacyOrchestratorScopes()`, the `ScopeTokenRegistryOptions` type, and an optional `opts` parameter on `createScopeTokenRegistry()`.
+- ca9dc5e: Add the `quota_status` MCP tool (AIP-67) and `agentproto quota status --profile <ref> [--refresh] [--json]`: live provider quota for a named auth profile, read through `@agentproto/model-intel`'s `QuotaReaderRegistry`.
+
+### Patch Changes
+
+- 6d8a531: `computer` sandbox provider: optional extra request headers (`extraHeaders` config, `COMPUTER_EXTRA_HEADERS`, and the `COMPUTER_ACCESS_CLIENT_ID` / `COMPUTER_ACCESS_CLIENT_SECRET` pair mapped to `CF-Access-Client-Id` / `CF-Access-Client-Secret`) for a controller reached through an authenticating proxy. Values are never logged and are redacted from errors.
+
+  New `daemonRoute` mode (`config.daemonRoute` or `COMPUTER_DAEMON_ROUTE=1`): drive a computer through the controller's own URL instead of a per-port gateway. The provider keeps controller credentials out of client-facing handles — `BootedSandbox.mcpUrl`/`authHeaders` only ever carry the box's own per-box daemon token, never the controller-wide credential or the edge Access secret, so nothing persisted into a session descriptor or an exported MCP config can leak them. `expose()`/`extraPorts` are rejected with a clear error in this mode (the controller route reaches only the daemon's own port). The runtime setup fields gain `daemonRoute`, `accessClientId` and `accessClientSecret`.
+
+  Also carries the daemon bearer / `/mcp` / `COMPUTER_GATEWAY_URL` / published-port recovery fixes from the previous provider change that did not reach main.
+
+- 8ea3ce4: Source comments and docs now use neutral example domains (`example.com` / `example.dev`) instead of real hostnames. No behaviour change.
+- 4c5f6e4: Add `agentproto sandbox checkpoint-gc` plus the underlying `@agentproto/worktree` engine (`planSandboxCheckpointGc` / `applySandboxCheckpointGc` / `reclaimOneSandboxCheckpoint`) that reaps stale remote `agentproto-checkpoint/*` refs whose rescued work is provably elsewhere (PR merged/closed, snapshot tree already in the work or base branch, or a clean snapshot whose parent landed via merge/squash/patch). Dry run is the default; `--apply` re-plans fresh before each delete. A new best-effort `SandboxCheckpointReclaimer` port is wired into the daemon so a sandboxed session's own ref is deleted at exit when superseded, never failing the session.
+- 13390f0: Ship `docs/mcp-tools` alongside the bundled `cli.mjs` so `tool_help` and `agentproto help <tool>` find long tool docs in the published CLI package. The CLI build now copies `runtime/docs/mcp-tools` into the CLI package and lists `docs` in `files`; a new bundled-layout test in the runtime package guards the resolution path.
+- 22ab84f: `allowPromptFrom` entries may now name callers by session label: `label:<exact label>` grants a caller whose registered label matches, and `label:<prefix>*` grants any caller whose label starts with the prefix. Covering this PR's runtime change; note the PR already ships `.changeset/prompt-allow-by-label.md` for the same package, and the review flags that mutable labels are a weak authorization key.
+- 22ab84f: `allowPromptFrom` entries may now name callers by label: `label:<exact label>` grants a root caller session (no parent) whose operator-assigned, immutable label matches, and `label:<prefix>*` grants any such caller whose label starts with the prefix. The label (`operatorLabel`) is stamped only when the human operator spawns the session via `agent_start`, carries over `session_restart` and `session_continue_fresh`, and cannot be changed with `session_rename` or by child sessions, so the grant survives the caller restarting under a new session id without being spoofable.
+- 4c5f6e4: Sandbox checkpoint refs no longer accumulate forever. `agentproto sandbox checkpoint-gc` (dry run by default, `--apply` to delete) lists every remote `agentproto-checkpoint/*` ref with its work branch, PR state, and verdict: safe when the PR of `wt/<slug>` is merged or closed on the forge, when the snapshot's tree is already the remote work branch's or the base branch's tree, or (for a clean snapshot) when the parent's commits are merged, squash-merged or patch-merged into the base. A snapshot whose tree differs from its parent's counts as uncommitted work and can only be proven safe by the PR or tree tiers; anything else is kept. The daemon also runs the same classification best-effort at a sandboxed session's exit and deletes the session's own ref when it is superseded, logged, never failing the session.
+- 13390f0: Ship `docs/mcp-tools` alongside the bundled `cli.mjs` so `tool_help` and `agentproto help <tool>` find long tool docs in the published CLI package.
+- Updated dependencies [d81be85]
+- Updated dependencies [bec9df2]
+- Updated dependencies [305199d]
+- Updated dependencies [9ebf51d]
+- Updated dependencies [c6ddf99]
+- Updated dependencies [57ae214]
+- Updated dependencies [305199d]
+- Updated dependencies [d81be85]
+  - @agentproto/app-kit@2.2.0
+  - @agentproto/model-catalog@0.13.1
+  - @agentproto/acp@0.11.3
+  - @agentproto/sandbox@0.12.1
+  - @agentproto/model-intel@0.2.0
+  - @agentproto/apps@0.23.7
+  - @agentproto/providers-store@0.3.32
+  - @agentproto/driver-agent-cli@2.13.3
+  - @agentproto/pairing-host@0.2.10
+  - @agentproto/llm-endpoint@0.11.14
+
 ## 5.26.0
 
 ### Minor Changes

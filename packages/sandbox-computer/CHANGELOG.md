@@ -1,5 +1,24 @@
 # @agentproto/sandbox-computer
 
+## 0.2.1
+
+### Patch Changes
+
+- 6d8a531: `computer` sandbox provider: optional extra request headers (`extraHeaders` config, `COMPUTER_EXTRA_HEADERS`, and the `COMPUTER_ACCESS_CLIENT_ID` / `COMPUTER_ACCESS_CLIENT_SECRET` pair mapped to `CF-Access-Client-Id` / `CF-Access-Client-Secret`) for a controller reached through an authenticating proxy. Values are never logged and are redacted from errors.
+
+  New `daemonRoute` mode (`config.daemonRoute` or `COMPUTER_DAEMON_ROUTE=1`): drive a computer through the controller's own URL instead of a per-port gateway. The provider keeps controller credentials out of client-facing handles — `BootedSandbox.mcpUrl`/`authHeaders` only ever carry the box's own per-box daemon token, never the controller-wide credential or the edge Access secret, so nothing persisted into a session descriptor or an exported MCP config can leak them. `expose()`/`extraPorts` are rejected with a clear error in this mode (the controller route reaches only the daemon's own port). The runtime setup fields gain `daemonRoute`, `accessClientId` and `accessClientSecret`.
+
+  Also carries the daemon bearer / `/mcp` / `COMPUTER_GATEWAY_URL` / published-port recovery fixes from the previous provider change that did not reach main.
+
+- bb2c1d4: `computer` sandbox provider, `daemonRoute` mode: the local loopback proxy now relays only the agentproto daemon's own endpoints (`/mcp`, `/sessions`, `/events`, `/sessions/:id/pty`, `/health`), normalizing `.`/`..` segments (including percent-encoded ones) before checking and forwarding so a raw traversal path cannot slip past the allowlist, and answers everything else with 404 without ever reaching the controller. A WebSocket upgrade handshake through the proxy now forwards correctly (the `Connection` header was dropped on that path, which kept the upstream daemon from ever recognizing the request as an upgrade). `close()` also drops any open keep-alive connection and terminates a live upgraded tunnel (e.g. `/sessions/:id/pty`) immediately instead of leaving either to idle out, so teardown is deterministic.
+- 9ebf51d: `computer` sandbox provider: session refcount. `config.maxSessions` is forwarded at create so the controller sizes the computer for it, boot and connect attach a session, pause and stop detach it, and the last session to stop removes the computer. A stop whose detach is not answered leaves the computer in place and reports it. A connect past the controller's cap is refused. A controller without the attach routes keeps the per-process count. `@agentproto/computer-api` gains `maxSessions` on the create request and `sessionsResponseSchema` for attach and detach.
+
+  A daemon-connect failure on a freshly booted box now removes the box instead of pausing it; a reconnected box is still paused.
+
+- Updated dependencies [9ebf51d]
+  - @agentproto/computer-api@0.2.1
+  - @agentproto/sandbox@0.12.1
+
 ## 0.2.0
 
 ### Minor Changes

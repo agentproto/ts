@@ -1,5 +1,16 @@
 # @agentproto/worktree
 
+## 0.17.0
+
+### Minor Changes
+
+- 57ae214: `branch gc` gains two safety mechanisms. Orphan refs whose tip IS a base remote's `refs/pull/<N>/head` are classified `forge-mirror` and reclaimed without running the ladder (the forge keeps those refs forever, so the local ref is never the only copy), and their restore log re-fetches the PR head instead of `update-ref`. Separately, `includeReviewed` now refuses an agreeing verdict deterministically: the tip carries `lineCoverage` (the share of its non-trivial added lines already present verbatim in base's version of the same path), and an approval below `minLineCoverage` (default 95, configurable via `agentproto branch gc --min-line-coverage PCT`, the `branch_gc` MCP tool, and the daemon HTTP surface) leaves the ref `review` with `verdictGuard` / `refused-guard` rather than reclaiming it. The repo-maintenance reviewer prompt and review-queue builder surface `lineCoverage` so reviewers account for the missing lines.
+- 4c5f6e4: Sandbox checkpoint refs no longer accumulate forever. `agentproto sandbox checkpoint-gc` (dry run by default, `--apply` to delete) lists every remote `agentproto-checkpoint/*` ref with its work branch, PR state, and verdict: safe when the PR of `wt/<slug>` is merged or closed on the forge, when the snapshot's tree is already the remote work branch's or the base branch's tree, or (for a clean snapshot) when the parent's commits are merged, squash-merged or patch-merged into the base. A snapshot whose tree differs from its parent's counts as uncommitted work and can only be proven safe by the PR or tree tiers; anything else is kept. The daemon also runs the same classification best-effort at a sandboxed session's exit and deletes the session's own ref when it is superseded, logged, never failing the session.
+
+### Patch Changes
+
+- 4c5f6e4: Add `agentproto sandbox checkpoint-gc` plus the underlying `@agentproto/worktree` engine (`planSandboxCheckpointGc` / `applySandboxCheckpointGc` / `reclaimOneSandboxCheckpoint`) that reaps stale remote `agentproto-checkpoint/*` refs whose rescued work is provably elsewhere (PR merged/closed, snapshot tree already in the work or base branch, or a clean snapshot whose parent landed via merge/squash/patch). Dry run is the default; `--apply` re-plans fresh before each delete. A new best-effort `SandboxCheckpointReclaimer` port is wired into the daemon so a sandboxed session's own ref is deleted at exit when superseded, never failing the session.
+
 ## 0.16.0
 
 ### Minor Changes

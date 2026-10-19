@@ -1,5 +1,12 @@
 # @agentproto/sandbox-instabox
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [9ebf51d]
+  - @agentproto/sandbox@0.12.1
+
 ## 0.2.0
 
 ### Minor Changes

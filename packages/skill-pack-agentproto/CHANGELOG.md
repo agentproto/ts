@@ -1,5 +1,12 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.8.10
+
+### Patch Changes
+
+- d7f5063: Replace the stale `pb-build-app` skill with the rewritten `agentproto-apps` authoring skill (updating the manifest, README, and every cross-reference), and fix the book/react-ts/vanilla scaffold templates' invalid `cost_class: cheap` to the accepted `trivial`.
+- d7f5063: Replace the stale `pb-build-app` skill with the rewritten `agentproto-apps` authoring skill, and fix the scaffold templates' invalid `cost_class: cheap` to `trivial`.
+
 ## 0.8.9
 
 ### Patch Changes
