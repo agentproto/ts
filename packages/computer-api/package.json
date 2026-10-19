@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/computer-api",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "@agentproto/computer-api — versioned public contract for the computer controller HTTP API: zod schemas and inferred types for create/get/exec/suspend/resume/rm of computers, published ports, status and the error envelope.",
   "keywords": [
     "agentproto",

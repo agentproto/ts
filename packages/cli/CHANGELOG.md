@@ -1,5 +1,14 @@
 # @agentproto/cli
 
+## 1.28.1
+
+### Patch Changes
+
+- Updated dependencies [7411ddf]
+- Updated dependencies [3abaa5d]
+- Updated dependencies [3abaa5d]
+  - @agentproto/sandbox-computer@0.3.0
+
 ## 1.28.0
 
 ### Minor Changes
