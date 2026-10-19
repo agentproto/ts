@@ -132,6 +132,7 @@ import {
 } from "./http-server.js"
 import {
   createSessionsRegistry,
+  isResumable,
   SANDBOX_GONE_DEFAULT_RESTART_POLICY,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
@@ -291,6 +292,8 @@ import {
   createOrchestratorMcpServerFactory,
   createOrchestratorInjector,
   reapOrphanedDescendants,
+  orchestratorScopesFile,
+  adoptLegacyOrchestratorScopes,
   type OrchestratorScope,
 } from "./orchestrator-gateway.js"
 
@@ -1294,8 +1297,11 @@ export {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
   createOrchestratorInjector,
+  orchestratorScopesFile,
+  adoptLegacyOrchestratorScopes,
   type OrchestratorScope,
   type ScopeTokenRegistry,
+  type ScopeTokenRegistryOptions,
   type OrchestratorMcpServerFactory,
   type OrchestratorGatewayDeps,
   type OrchestratorInjector,
@@ -3291,8 +3297,34 @@ export async function createGateway(
   // Scope-token registry (WP2) — mints/validates the per-child tokens
   // that gate `/mcp/orchestrator` and carry each orchestrator's identity
   // (owner session, depth, tools, limits — WP4). The injector + scoped
-  // factory below both close over it.
-  const scopeTokens = createScopeTokenRegistry()
+  // factory below both close over it. Persisted (when `persist` is on) so
+  // the `/mcp/orchestrator?scope=` URLs already baked into session
+  // descriptors keep authorizing across a daemon restart — the registry
+  // loads the file synchronously here, after the sessions registry above
+  // has already restored its history.
+  const scopeTokens = createScopeTokenRegistry(
+    persist ? { persistPath: orchestratorScopesFile() } : undefined,
+  )
+
+  // Boot prune: drop persisted scopes whose owning session is gone from
+  // the registry entirely, or ended in a state that can never be revived
+  // — so the file does not grow forever. Sessions merely marked killed by
+  // this boot's history load are KEPT: they are exactly the resumable rows
+  // whose persisted `mcpServers` still carry the `/mcp/orchestrator?scope=`
+  // URL this persistence exists to keep working (a NORMAL exit already
+  // revoked its token through the session:exited lifecycle handler).
+  scopeTokens.prune(ownerId => {
+    const desc = sessions.get(ownerId)
+    if (!desc) return true
+    const ended =
+      desc.status === "exited" || desc.status === "killed" || desc.status === "error"
+    return ended && !isResumable(desc)
+  })
+  // Legacy migration: tokens minted by an older (pre-persistence) daemon
+  // are absent from orchestrator-scopes.json but still baked into live /
+  // resumable session descriptors' mcpServers — adopt them so those
+  // already-persisted URLs keep authorizing without a session restart.
+  adoptLegacyOrchestratorScopes(scopeTokens, sessions.list())
 
   // Orchestrator auto-injection (WP3). Closed over the scope-token
   // registry + the session-event bus + the HTTP port: when
@@ -4741,6 +4773,10 @@ export async function createGateway(
       // `sessions`).
       sentinelRuntime.stop()
       sentinelStore.flushSync()
+      // Flush the orchestrator scope-token registry so a token minted /
+      // bound / revoked just before a restart isn't lost inside the
+      // debounce window — same reasoning as the sentinel flush above.
+      scopeTokens.flushSync()
       // Drop pending follow batches (sessions are going away) and persist
       // the follow records.
       sessionFollow.dispose()
