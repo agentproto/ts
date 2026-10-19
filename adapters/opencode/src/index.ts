@@ -302,6 +302,13 @@ export const opencode: AgentCliHandle = defineAgentCli({
     // `native-resume` continuation strategy for cold-start reattach.
     resumable: true,
     bidirectional: true,
+    // opencode validates a model's tool call against the tools it was last
+    // given via `tools/list`: a tool the daemon hid behind `?deferred=1` is
+    // rejected client-side ("Model tried to call unavailable tool") even
+    // after `tool_search` returned its schema, so the daemon must mount
+    // itself eagerly for this adapter (G5, sess_cfa279bb). Explicit false so
+    // the intent is visible; absent would mean the same thing.
+    deferredToolDiscovery: false,
   },
   // `modes[]` carries ONE entry, the `context` axis (`lean`). opencode's
   // operation profiles (default / plan / build) are POSTURE, which no longer

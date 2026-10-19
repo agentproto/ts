@@ -611,6 +611,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.nativeToolSearch === true
           ? { nativeToolSearch: true }
           : {}),
+        ...(adapter.handle.capabilities?.deferredToolDiscovery === true
+          ? { deferredToolDiscovery: true }
+          : {}),
       }
     } catch (err) {
       console.warn(
