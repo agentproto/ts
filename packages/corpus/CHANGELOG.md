@@ -1,5 +1,23 @@
 # @agentproto/corpus
 
+## 0.8.3
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [4bab543]
+- Updated dependencies [74f982c]
+- Updated dependencies [4bab543]
+- Updated dependencies [74f982c]
+  - @agentproto/knowledge@0.1.5
+  - @agentproto/collection@0.1.5
+  - @agentproto/operator@0.1.5
+  - @agentproto/playbook@0.1.5
+  - @agentproto/registry@0.1.2
+  - @agentproto/routine@0.3.2
+  - @agentproto/workflow@0.7.2
+
 ## 0.8.2
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @agentproto/workspace
 
+## 1.0.1
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 2760272: Sync `packages/workspace/README.md` with the shipped `workspace/v2` API: replace the stale `0.1.0-alpha` / scaffold-generated note and the outdated example with the current `defineWorkspace` shape (`schema`, `id`, `version`, `name`, `type`, `owner`, `storage`) and accurate prose describing the node fields.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [12639d6]
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/work@0.2.0
+  - @agentproto/define-doctype@0.1.4
+
 ## 1.0.0
 
 ### Major Changes

@@ -1,5 +1,17 @@
 # @agentproto/knowledge
 
+## 0.1.5
+
+### Patch Changes
+
+- 4bab543: AIP-10 `knowledge.entry/v1` and `knowledge.source/v1` now accept a `title` of up to 1000 characters (was 200), so verbatim official legal headings no longer have to be truncated. `slug` and source `id` stay at 96. The change comes from the vendored `KNOWLEDGE.schema.json` (spec: agentproto/agentproto#79) and the regenerated zod in `@agentproto/knowledge`; `@agentproto/corpus-cli` bundles the schema at build, so `validate` / `lint` pick it up on its next publish. Relaxing a maximum is backwards compatible: every previously valid document stays valid.
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 4bab543: AIP-10 `knowledge.entry/v1` and `knowledge.source/v1` now accept a `title` of up to 1000 characters (was 200), so verbatim official legal headings no longer have to be truncated. `slug`, source `id`, and `knowledge.workspace/v1`'s title are unchanged. The change comes from the vendored `KNOWLEDGE.schema.json` (spec: agentproto/agentproto#79) and the regenerated zod in `@agentproto/knowledge`; relaxing a maximum is backwards compatible, so every previously valid document stays valid.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/define-doctype@0.1.4
+
 ## 0.1.4
 
 ### Patch Changes

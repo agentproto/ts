@@ -1,5 +1,237 @@
 # @agentproto/runtime
 
+## 5.26.0
+
+### Minor Changes
+
+- e9e2cb5: `chrome-live` gains two agent-surface features, exposed as new MCP tools in `@agentproto/runtime`:
+
+  - **File upload onto a real `<input type=file>`** — `browser_upload_file { sessionId, selector, paths, tabId? }` attaches local files through CDP `DOM.querySelector` + `DOM.setFileInputFiles` (the same mechanism devtools uses; the input is fed, never written back out). Every path must be absolute+existing and live inside an upload allowlist: the agent's workspace + `~/.pygmalion/data` by default, extendable via `AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS` (a `:`-separated dir list). Outside the allowlist → typed refusal, the driver is never touched.
+  - **Several tabs in the agent's own window** — `browser_new_tab { sessionId, url? }` opens a FRESH tab (the same activate-anchor → `Target.createTarget` → `getWindowForTarget` flow as the first tab, never a reuse, never the user's windows), `browser_list_tabs { sessionId }` lists the agent-owned tabs (`{ targetId, url, windowId }[]`), and every existing browser tool already accepts those `tabId`s.
+
+  `ChromeLiveInstance` grew `uploadFileOwnedTarget` / `newTabOwnedTarget` / `listOwnedTabs`; `evalRaw` on `ChromeCdpDriver` became `protected` so the live driver can probe the file input first (`no <input type=file> matches selector …`).
+
+- 46244e2: Decouple the compaction handoff turn from `/compact`. A `/compact` or `/compress` prompt still writes a checkpoint before the harness compacts ("no checkpoint, no compaction" unchanged), but does so from the transcript alone by default — no billed handoff turn put to the live session. New `contextContinuity.compactHandoffTurn` flag (default `false`) restores the previous behaviour: when `true`, the prompt asks the live session for a handoff turn (goal, decisions, risks) before building the checkpoint. The context-rescue path (`runtime:context-rescue`) never asks, and explicit handoffs (`session_checkpoint`, `session_continue_fresh`) are unchanged.
+- 743fa74: New sandbox provider `@agentproto/sandbox-computer` (slug `computer`): boots the agentproto daemon on a self-hosted microVM computer through its controller HTTP API, with suspend=pause, resume (adopting the controller's rebuilt id), rm=stop, liveness probing, chunked exec-based file IO, and `sharedSessions: true` capability plus a per-process `maxSessions` cap. The runtime registry adds the `sharedSessions` capability field (default `false`) and stores token/controllerUrl credentials for the provider.
+- f2205fd: Add a recent-activity guard to `worktree gc`: a worktree whose own git index mtime is younger than `--active-minutes` (default 60, `0` disables) classifies `hold` with reason `recent-activity`, at plan time and again in apply's pre-removal re-check, so an actively-edited worktree is never reclaimed or salvaged. Plumbed end-to-end through the worktree engine (`PlanGcInput`/`ApplyGcOptions`), the runtime `worktree_gc` MCP tool and `POST /worktrees/gc` body, the `agentproto worktree gc --active-minutes` CLI flag, and the VS Code daemon client (`DaemonClient.gcWorktrees`). Apply outcomes and daemon plan/outcome views now carry the hold reason.
+- ef1c877: Default `turnRetry` for executor and sandbox spawns: a spawn that names no policy now retries transient failures (rate-limit, upstream-5xx, no-output-stall; 6 retries; default backoff) instead of stopping the turn, and a free OpenCode model rotates onto other free ids by default. Supervisor spawns stay opt-in, and an explicit `turnRetry: null` or empty `on` disables retrying.
+- 11f986f: runtime: classify a sandbox box that dies at/after its lifetime deadline while idle as expected expiry (`SandboxBoxExpiredError`), ending the row `status:"exited"` / `endedReason:"sandbox-expired"` instead of `crashed`; add the `sandbox-expired` end reason, a `markSandboxExpired` registry action, and a `type:"branch"` session-outcome artifact carrying the delivered work branch.
+
+  sandbox-e2b: document the plan-level continuous-runtime cap behind the lifetime constants (comment-only).
+
+- 239fe1f: AIP-36 amendment "shared sandbox" — ATTACH / DETACH lifecycle. A provider box can host several sessions at once (`reuse`/`attach`): the sandbox ledger is the durable refcount (`attachedSessions`, robust to a daemon restart). Session teardown is by default a DETACH — stopping session 1 of 2 never kills the box — and only the last remaining session tears the box down. Failed boots/setup of an attaching session detach instead of stopping a shared box (survivors are preserved for a paused box), and `agentproto sandbox list` shows the attached sessions.
+- e9e2cb5: `chrome-live` gains two agent-surface features, exposed as new MCP tools in `@agentproto/runtime`:
+
+  - **File upload onto a real `<input type=file>`** — `browser_upload_file { sessionId, selector, paths, tabId? }` attaches local files through CDP `DOM.querySelector` + `DOM.setFileInputFiles`. Every path must be absolute+existing and live inside an upload allowlist (the agent's workspace + `~/.pygmalion/data` by default, extendable via `AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS`).
+  - **Several tabs in the agent's own window** — `browser_new_tab { sessionId, url? }` opens a FRESH tab, `browser_list_tabs { sessionId }` lists the agent-owned tabs, and every existing browser tool already accepts those `tabId`s.
+
+  `ChromeLiveInstance` grew `uploadFileOwnedTarget` / `newTabOwnedTarget` / `listOwnedTabs`; `evalRaw` on `ChromeCdpDriver` became `protected` so the live driver can probe the file input first.
+
+  Note: an equivalent changeset (`.changeset/chrome-live-upload-multitab.md`) is already present in this PR with the same package list and bumps.
+
+- 3c30cda: Bound `session_list` results: an unpaged call now returns at most 50 rows plus `truncated`, `total` and `nextCursor` to page on, and a new `ids` filter reads known sessions without scanning the whole list. Any contract-layer MCP tool result over 100 KB is replaced by a `{truncated, totalBytes, hint}` marker.
+- 9b836b4: Per-session git worktrees on a shared sandbox box. A spawn that attaches to a box other sessions may be using (`sandbox.reuse`) now gives the session its own git worktree of the shared per-workspace clone at `<home>/.worktrees/<workspaceSlug>/<slug>` instead of re-checking out that clone and switching the branch (and mixing uncommitted files) out from under the other sessions. Concurrent mutators on the shared clone serialize on an in-box `flock`; the base clone's checkout is not re-pointed at a session's branch. On detach from a still-shared box the session's worktree is removed through the box's exec, but only when it is clean and its branch is fully pushed — leftover work keeps the worktree and logs a notice. A session alone on a fresh box keeps the previous checkout behaviour.
+- 743fa74: New sandbox provider `@agentproto/sandbox-computer` (slug `computer`): boots the agentproto daemon on a self-hosted microVM computer through its controller HTTP API, with suspend=pause, resume (adopting the controller's rebuilt id), rm=stop, liveness probing, chunked exec-based file IO, and a `sharedSessions: true` capability plus a per-process `maxSessions` cap.
+
+  `@agentproto/runtime` gains the optional `sharedSessions` sandbox-provider capability field (default `false`) and stores controller token/URL credentials for the provider.
+
+- 0b43b1f: Session-owner prompt gate: `agent_prompt` / `agent_interrupt` / `agent_kill` /
+  `session_restart` / `session_continue_fresh` now refuse calls from another agent
+  session unless the caller is the target's owner (the spawner, via
+  `parentSessionId`, or any ancestor with subtree authority for transitive
+  descendants), the target itself, the operator, or named in the target's
+  spawn-time `allowPromptFrom` option (session ids or the `"any"` wildcard). Adds
+  the `agent_set_prompt_policy` MCP tool for changing the allow-list later, the
+  `allowPromptFrom` spawn option and `SessionDescriptor.allowPromptFrom` field,
+  exported `session-owner.ts` gate helpers, and a `session:prompt` audit event
+  recording who sent each accepted prompt. Spawn-time roles are also forwarded
+  onto sandbox box daemons so delegation gates apply consistently.
+- f915069: Reap idle sandboxed sessions and tear their box down. New `daemon.sandboxIdleReapAfterMs` (env `AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS`, default 15 min, `0` = off) applies a shorter idle threshold to sessions running in a provider box. A reap takes a final checkpoint, then stops the box per the lifecycle policy (kill unless the spec asked to pause), and records `reapedAt`/`reapedIdleMs`/`reapedSessionId` in the sandbox ledger. A later prompt to the reaped row cold-boots a fresh box from the checkpoint branch and delivers the prompt there. Non-sandbox sessions are unchanged.
+- 629e42c: Add the InstaBox sandbox provider (`@agentproto/sandbox-instabox`, AIP-36).
+
+  - New `SandboxQuotaError` in `@agentproto/sandbox` and a `truncated` flag on `SandboxExecResult`.
+  - `instaboxSandboxProvider` boots an InstaBox VM (always `vault:false`, `onTimeout:"kill"`), installs the agentproto daemon as a systemd unit with a 0600 EnvironmentFile, publishes the daemon port through the public edge, never suspends boxes, deletes the machine on boot failure, and maps account-quota failures to `SandboxQuotaError`.
+  - Registered in the runtime provider catalog and the CLI (credential env key `INSTABOX_API_KEY`).
+
+- 3c30cda: fix(runtime,mcp-server): `session_list` returns at most 50 rows by default (`truncated`, `total`, `nextCursor` to page on) and accepts an `ids` filter to read known sessions; any contract-layer MCP tool result over 100 KB is replaced by `{truncated:true,totalBytes,hint}`
+- 0b43b1f: Only a session's owner can drive it through the daemon's drive tools. The owner
+  of a session is the caller that spawned it (its `parentSessionId`), or the human
+  operator for a root spawn. `agent_prompt`, `agent_interrupt`, `agent_kill`,
+  `session_restart`, and `session_continue_fresh` now refuse calls coming from
+  ANOTHER agent session, unless the target's spawn-time `allowPromptFrom` spawn
+  option (session ids, or the wildcard `"any"`) names the caller. The
+  `agent_set_prompt_policy` MCP tool changes the list later — only the session
+  itself, its owner, or the operator may. The operator (a CLI/HTTP/UI client with
+  no caller session) keeps full rights, and all existing parent→child flows keep
+  working: the session owner always passes.
+
+  Every accepted `agent_prompt` now also records WHO sent it in the session
+  events (`session:prompt`: the trusted callerSessionId, or the literal
+  `"operator"` for a no-caller call) — a session-level audit trail of whose
+  prompts drive it.
+
+  Role enforcement is consistent in box daemons too: a spawn-time role is
+  forwarded onto a sandbox box's own `agent_start`, so the box daemon applies the
+  same delegation gate (denyTools on its own daemon self-mount) the host would,
+  instead of re-resolving the role from nothing executor-side.
+
+- 9b836b4: Per-session git worktrees on a shared sandbox box (AIP-36 follow-up). A spawn that attaches to a box other sessions may be using (`sandbox.reuse`) no longer re-checks out the shared per-workspace clone — which switched the branch out from under the other sessions and mixed their uncommitted files. Instead it keeps the `<home>/<workspaceSlug>` clone as the shared base and gives the session its own git worktree at `<home>/.worktrees/<workspaceSlug>/<slug>` (`wt/<slug>` cut from `baseRef`, or from `origin/<branch>` when a previous box pushed the work), with kindred branch precedence to the fresh-box checkout. Concurrent `git fetch` / `worktree add` on the shared clone serialize on a `flock` inside the box (`<home>/.worktrees/<workspaceSlug>.lock`); the base clone's own checkout is detached-never-re-pointed. All per-session paths (delivery/checkpoint, restore, cwd resolution, branch learning, teardown) now target the session's worktree. On detach from a still-shared box the session's worktree is removed through the box's exec — but only when it is clean and its branch is fully pushed; any leftover work keeps the worktree and logs a notice. A session alone on a fresh box keeps the exact previous checkout behaviour (no worktree layering, no lock, byte-identical commands).
+- 239fe1f: AIP-36 amendment "shared sandbox" — ATTACH / DETACH lifecycle. A provider box can host several sessions at once (`reuse`/`attach`): the sandbox ledger is the durable refcount (`attachedSessions`, robust to a daemon restart). Session teardown is by default a DETACH — stopping session 1 of 2 never kills the box — and only the last remaining session tears the box down (policy a: nothing attached; policy b: all attached idle + `destroyable`). Failed boots/setup of an attaching session detach instead of stopping a shared box; `agentproto sandbox list` shows the attached sessions.
+- ef1c877: Graceful turn retry by default for executor and sandbox agent starts: a
+  spawn without `turnRetry` now gets a default policy (retry on rate-limit,
+  upstream-5xx and no-output-stall; 6 retries; default backoff) instead of
+  letting a transient provider failure stop the turn. A free OpenCode model
+  also rotates onto other free ids on every covered class by default; paid
+  models never rotate by default. Explicit opt-out is `turnRetry: null`, an
+  empty `on` list, or the CLI shorthand `--turn-retry off`.
+- f2205fd: `worktree gc` now refuses to touch a recently-active worktree. A worktree whose own git index was written within the last 60 minutes (the worktree's private index — checkout/add/commit/status all rewrite it, so a young mtime means someone is working in there regardless of what any session registry knows) classifies `hold` with hold reason `recent-activity`, never `reclaim`/`salvage`, at plan time and again in apply's pre-removal re-check; the index mtime is always read before gc's own `git status` so the sweep can't report itself as activity. Plumbed end-to-end as `activeMinutes` (engine `PlanGcInput`/`ApplyGcOptions`, the `worktree_gc` MCP tool and `POST /worktrees/gc` body, `agentproto worktree gc --active-minutes <n>`, and the VS Code daemon client) with default 60; `0` disables the guard. Apply outcomes and the daemon's plan/outcome views now carry the hold reason, and a plan entry that became recently active between plan and apply aborts as `aborted-reclassified` to hold instead of acting on the stale plan.
+
+### Patch Changes
+
+- 78a3983: `computer` sandbox provider: forward a configurable `egress` allowlist on create (the controller denies all egress, DNS included, without one), and add an optional `tenantId` setup field that fills `COMPUTER_TENANT_ID` from the stored provider profile.
+
+  Boot now works for the unprivileged guest user: the CLI installs under `~/.local` (global `/usr/local` is root-owned), the daemon log moves from `/var/log` (not writable) to `~/.agentproto-daemon.log`, and a non-zero exit from the CLI install or a setup command fails the boot with the step's output instead of timing out on health.
+
+  The boot skips the npm CLI install when the image already carries an `agentproto` CLI (an extra `installPackages` list or a non-matching pinned `cliVersion` still installs), and `gatewayUrl` accepts a `{hostPort}` placeholder resolved from the host port the controller published for the daemon port, so a daemon outside the controller's network can reach a computer through a port forward.
+
+  The pinned `cliVersion` is compared by exact version (a partial pin such as `1.2` no longer matches `1.26.0`), and a reconnect restarts a healthy in-box daemon whose recorded `--allow-origin` no longer matches the current `{hostPort}` origin.
+
+- 80f0060: test(runtime): deflake `registry.recordNotice` — wait for the notice record itself, not just for `events.jsonl` to exist (the write stream creates the file empty before its first queued write lands).
+- e736c7c: A `sandbox` spawn with `orchestrator` now forwards the request onto the box's own `agentproto serve` daemon, so the sandboxed supervisor orchestrates children on the same box instead of being handed the host's unreachable loopback `/mcp/orchestrator` mount.
+- 01ea248: The imported-MCP passthrough mount `/mcp/imported/<id>` now honours the same `?denyTools=` / `?allowTools=` query contract as `/mcp` (#2050). Filtered tools are hidden from `tools/list`, and a `tools/call` for a filtered name is rejected with a JSON-RPC error (`InvalidParams`) before it ever reaches the upstream import — enforcement, not just hiding. Deny is applied after allow; a name on both lists is excluded. Requests without the params behave exactly as before.
+- 629e42c: Fix reattach and event streaming against a gated sandbox daemon, and a silent readFile failure.
+
+  - `SandboxAgentSessionHost` exposes `authHeaders`; the runtime sandbox proxy
+    sends them on its raw HTTP reads (`GET /sessions/:id`, the backlog read and
+    the SSE event stream). Without them a bearer-gated daemon (InstaBox) answered
+    401, so a session could never be re-attached after a host restart and the
+    event stream always fell back to polling.
+  - InstaBox `readFile` guards its `dd | base64` pipeline with `test -r`, so a
+    missing or unreadable file rejects instead of resolving to empty bytes.
+
+- b324f0e: Fixed `agentproto mcp login <alias> --url <url>` always failing with `uses oauth but no keychain secret store is configured`, even right after printing the consent URL and scopes — the CLI's own `setMcpCredentialDeps` call never reached `openMcpClient`'s `createDaemonOAuthProvider`. Root cause: `@agentproto/runtime` ships `./mcp-oauth`, `./mcp-client-pool` and `./mcp-credential-deps` as separate tsup entries (`splitting: false`), so each bundles its own private copy of `mcp-credential-deps.ts`'s module state; a `setMcpCredentialDeps` call reached through one subpath is invisible to `getMcpCredentialDeps()` reached through another. `openMcpClient`'s `OpenMcpClientOptions` now accepts an explicit `oauthSecrets` override, which `mcp login`'s verify step and the daemon's `mcp-proxy.ts` both pass — the ambient singleton (kept, all three exports unchanged) is now only a same-bundle convenience fallback, never load-bearing across a subpath boundary.
+- 70d533f: `@agentproto/app-kit` adds newly exported `parseServiceList` (and its `ServiceListResult` type) — a non-throwing wrapper around the `services:` manifest validator shared with `defineApp`/`loadAppHandle`, so callers outside the throw-based `normalizeManifestFields` flow get the same rule set.
+
+  `@agentproto/runtime`'s `parseAppServices` now delegates to app-kit's `parseServiceList` instead of carrying its own duplicate validator, unifying the two previously-divergent `services:` rule sets. Install-time validation tightens accordingly (leading-letter names, no unknown object fields, fail-fast on the first bad entry, and an explicitly-present empty `services: []` is rejected).
+
+- 7e5ffd8: fix(agent_start): a `cwd` on a `sandbox` + `workspaceSlug` spawn no longer cancels the in-box workspace setup. The workspace remote is always cloned into the box with the git token and delivery branch, and `cwd` is read as a path inside the box (relative to the checkout, or absolute under the box home); a host-only path or a path outside the box home is ignored with a warning. A sandbox spawn with a `cwd` but no workspace remote now returns an advisory warning that the box has no repo, git token or delivery branch.
+- c30bf32: Slim the always-on MCP `tools/list` payload by advertising `agent_start`'s
+  (and five other always-on tools') rarely-used nested object options as opaque
+  values, with the real zod validation still enforced at call time and the full
+  sub-field detail moved to `docs/mcp-tools/*.md` fetched via `tool_help`.
+- 9b99d62: Test gateways (`persist: false`) no longer read or write the user's real `~/.agentproto/tunnels.json`, no longer relaunch that file's autostart tunnels (which spawned real `cloudflared` processes with the test workspace as cwd), and persist tunnel state to `<workspace>/.agentproto/tunnels.json` instead. `TunnelRegistry.shutdown()` and the cloudflared providers now also stop a tunnel whose `start()` completes after the shutdown (SIGTERM, then SIGKILL after 3 s), instead of letting it come up and outlive the registry.
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 2d61d46: fix(sandbox): sandboxed sessions survive a daemon restart and idle reap. The boot reattach pass adopts detached sandbox rows whose workspace bucket no other live daemon serves (they were otherwise stranded as unserved), a restarted sandbox row still awaiting its first prompt gets a 60 min reap grace, a busy mid-turn row is never reapable, an idle reap pauses the box instead of stopping it when the final checkpoint did not secure the work, and the CLI prefixes daemon.log lines with an ISO-8601 timestamp when output is redirected.
+- f1d0c95: fix(sentinel): auto-link PRs opened by sandboxed sessions and target the live successor
+
+  A sandboxed session's cwd is a path inside its box, so the PR reconciler's branch lookup found no host checkout and every `gh` call ran in a non-existent directory — the PR was never recorded and no sentinel was created. Sandboxed sessions now resolve their PR from the box work branch (`sandboxDeliveryTarget.branch`) against the workspace's host checkout, and `gh` runs from there; `OpenPrResolver` accepts an optional `{ branch }` override. Auto-link also follows the `continuedTo` chain so a PR recorded on a row that a restart/continue superseded is watched for the live successor, without creating a duplicate sentinel.
+
+- 7e5ffd8: fix(agent_start): a `cwd` no longer cancels the sandbox workspace setup. With `sandbox` + `workspaceSlug`, the git remote is always cloned into the box with the git token and delivery branch, and `cwd` is read as a path inside the box (relative to the checkout, or absolute under the box home); a host path is ignored with a warning. A sandbox spawn with a `cwd` but no workspace remote now returns a warning that the box has no repo, git token or delivery branch.
+- 11f986f: Sandbox sessions whose box reaches its lifetime deadline (e2b plan cap: 1h of continuous run on Hobby/Base, active or not) now end cleanly as `endedReason: "sandbox-expired"` / `status: "exited"` instead of being classified `crashed` / `error` without an artifact. The watchdog tags a death at/past the known (renewal-pushed) deadline as expected expiry (`SandboxBoxExpiredError`), the registry ends the row through a new `markSandboxExpired` (same lazy-resumable cleanup as a crash, but no crash status and no restart policy match), and the derived outcome surfaces the delivered work branch as a `type: "branch"` artifact. The e2b provider documents the real root cause of the "active session dies at start+~60min" reports: the plan's total continuous-run window — heartbeat renewal already works and cannot extend past it (Pro plan or e2b pause/resume is the escape hatch).
+- 3a50c3d: fix(runtime): sandbox proxy interrupt auth (401) + no-output-stall during tool calls
+
+  Les interrupts vers une session sandbox (E2B) échouaient tous en HTTP 401 :
+  le proxy frappait la route brute `POST /sessions/:id/interrupt` du daemon de
+  la box, qui exige un Bearer par-boot que l'hôte ne détient jamais — alors
+  que le prompt passe par le endpoint MCP, lui accessible. Correction :
+  `HarnessClient.interrupt` (`agent_interrupt`) + un `interrupt` sur le host
+  daemon ; le `cancel()` du proxy l'emprunte — le même canal MCP que le prompt
+  authentifie déjà. Le watchdog de stall ne se déclenche plus pendant un tool
+  call en cours (phase `tool-call:*` / tool call actif) : un long `pnpm
+install` n'est plus traité comme un stall.
+
+- 2d61d46: fix(sandbox): sandboxed sessions survive a daemon restart and idle reap. The boot reattach pass now adopts detached sandbox rows whose workspace bucket no other live daemon serves (they were stranded as unserved), a restarted sandbox row still awaiting its first prompt gets a 60 min reap grace, and an idle reap pauses the box instead of stopping it when the final checkpoint did not secure the work.
+- f1d0c95: fix(sentinel): auto-link PRs opened by sandboxed sessions, and keep the sentinel on the live session across restart
+
+  The PR reconciler (which records a session's opened PR and so triggers sentinel auto-link) used the session's cwd to find the PR, but a sandboxed session's cwd is a path inside its box. The branch lookup found nothing, and every `gh` call ran in a directory that does not exist on the host, so the PR was never recorded and no sentinel was created. A sandboxed session's PR is now resolved from its box work branch (`sandboxDeliveryTarget.branch`), checked against the host checkout of its workspace, and `gh` runs from there. `OpenPrResolver` takes an optional `{ branch }` override for this.
+
+  Auto-link now also targets the end of the session's `continuedTo` chain. A PR recorded on a row that a restart or continue already superseded (for example a sandboxed session moved to a fresh box under a new id) is watched for the live successor, and the successor re-recording the same PR does not create a second sentinel.
+
+- c30bf32: Slim the daemon's always-on MCP `tools/list` payload again. `agent_start`
+  drops from ~28.2 KB to ~9.8 KB and the deferred always-on set from ~63.0 KB
+  to ~39.0 KB, with no parameter rename, behaviour, default or runtime-validation
+  change.
+
+  The remaining weight was structural: roughly fifty parameters, many rarely
+  used, with nested object schemas enumerating every sub-field. `agent_start`'s
+  structured nested options (`sandbox`, `worktree`, `orchestrator`, `inference`,
+  `auth`, `access`, `mcpServers`, `contextContinuity`, `restartPolicy`,
+  `costBudget`, `appServe`, `attach`, `options`, `route`, `browser`, `prompt`)
+  are now advertised as opaque values (`tool-schema-opaque.ts`, the
+  `sandboxCheckpoint` pattern) so `tools/list` sends `{description}` instead of
+  every sub-field, while the REAL zod validation at spawn time still runs,
+  returns the schema's parsed output (transforms, defaults and unknown-key
+  stripping all preserved, e.g. `browser: true` still normalizes to
+  `"headless"`) and still reports the original issue path and message (e.g.
+  `access.profileRef: ...`). The full sub-field detail moved to
+  `docs/mcp-tools/*.md`, fetched on demand via
+  `tool_help {name:"agent_start", topic:"<field>"}`.
+
+  The next five always-on tools (`session_list`, `task_create`, `task_update`,
+  `agent_prompt`, `message_parent`) get the same treatment at smaller scale, with
+  new `tool_help` docs for their opaque nested options. `turnRetry` is untouched
+  (another change edits it). The schema-budget test now also caps any single
+  always-on tool at 12 KB.
+
+- 7d7aaf9: The `cloudflare-managed` and `cloudflare-provisioned` tunnel providers no longer spawn `cloudflared` when `stop()` ran while `start()` was still awaiting preflight or remote provisioning. `start()` now throws `TunnelStartAbortedError` (settled as `stopped` by the registry) instead of starting a process nothing can stop. Same race `cloudflare-named` and `cloudflare-quick` were already fixed for.
+- 9b99d62: Test gateways (`persist: false`) no longer read or write the user's real `~/.agentproto/tunnels.json`, no longer relaunch that file's autostart tunnels (which spawned real `cloudflared` processes with the test workspace as cwd — an orphaned-process leak), and persist tunnel state to `<workspace>/.agentproto/tunnels.json` instead. `TunnelRegistry.shutdown()` and the cloudflared providers now also stop a tunnel whose `start()` completes after the shutdown (SIGTERM, then SIGKILL after 3 s), instead of letting it come up and outlive the registry. A provider that reaps its own process after a mid-start `stop()` now throws the new exported `TunnelStartAbortedError`, which the registry settles as `stopped` (not `error`), so `autostart` tunnels caught mid-start by a restart are relaunched on the next boot.
+- 70d533f: `@agentproto/app-kit` exports a new `parseServiceList` — a non-throwing wrapper around the `services:` manifest validator already used by `defineApp`/`loadAppHandle` — so callers outside the throw-based `normalizeManifestFields` flow get the same single rule set.
+
+  `@agentproto/runtime`'s `parseAppServices` now delegates to `@agentproto/app-kit`'s `parseServiceList` instead of carrying its own duplicate validator, unifying the two previously-divergent `services:` rule sets. This changes install-time validation behavior: service names must now start with a letter (a digit-leading name like `0abc` is rejected, though consecutive/trailing hyphens are now allowed), unknown object fields on a service entry are now rejected, validation now fails fast on the first bad entry instead of accumulating every entry's errors, and an explicitly-present but empty `services: []` is now rejected instead of being treated as a no-op.
+
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [7ed9762]
+- Updated dependencies [e9e2cb5]
+- Updated dependencies [629e42c]
+- Updated dependencies [629e42c]
+- Updated dependencies [3c30cda]
+- Updated dependencies [70d533f]
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [3c30cda]
+- Updated dependencies [74f982c]
+- Updated dependencies [629e42c]
+- Updated dependencies [3c30cda]
+- Updated dependencies [70d533f]
+- Updated dependencies [74f982c]
+  - @agentproto/model-catalog@0.13.0
+  - @agentproto/adapter-browser@0.8.0
+  - @agentproto/sandbox@0.12.0
+  - @agentproto/apps@0.23.6
+  - @agentproto/app-kit@2.1.0
+  - @agentproto/mcp-server@0.7.0
+  - @agentproto/a2a@0.2.2
+  - @agentproto/acp@0.11.2
+  - @agentproto/agent@0.4.1
+  - @agentproto/app-client@0.4.2
+  - @agentproto/auth@1.3.1
+  - @agentproto/command-sandbox@0.3.1
+  - @agentproto/driver@0.3.3
+  - @agentproto/driver-agent-cli@2.13.2
+  - @agentproto/driver-browser@0.3.1
+  - @agentproto/driver-http@0.1.13
+  - @agentproto/eval-reporters@0.2.26
+  - @agentproto/governance@0.1.6
+  - @agentproto/governance-engine@0.1.13
+  - @agentproto/llm-endpoint@0.11.13
+  - @agentproto/manifest@0.2.4
+  - @agentproto/pairing-host@0.2.9
+  - @agentproto/plugin-local-browser@0.3.6
+  - @agentproto/provider-kit@0.4.7
+  - @agentproto/provider-presets@0.7.1
+  - @agentproto/providers-store@0.3.31
+  - @agentproto/redaction@0.2.4
+  - @agentproto/review@0.6.2
+  - @agentproto/routine@0.3.2
+  - @agentproto/secrets@2.1.1
+  - @agentproto/storage-github@0.2.1
+  - @agentproto/telemetry-langfuse@0.2.24
+  - @agentproto/tool@0.5.2
+  - @agentproto/workflow@0.7.2
+  - @agentproto/workflow-loader@0.2.9
+  - @agentproto/workflow-runtime@0.19.1
+  - @agentproto/workspace-brain@0.5.3
+
 ## 5.25.0
 
 ### Minor Changes

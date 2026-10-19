@@ -1,5 +1,34 @@
 # @agentproto/app-kit
 
+## 2.1.0
+
+### Minor Changes
+
+- 70d533f: `@agentproto/app-kit` adds newly exported `parseServiceList` (and its `ServiceListResult` type) — a non-throwing wrapper around the `services:` manifest validator shared with `defineApp`/`loadAppHandle`, so callers outside the throw-based `normalizeManifestFields` flow get the same rule set.
+
+  `@agentproto/runtime`'s `parseAppServices` now delegates to app-kit's `parseServiceList` instead of carrying its own duplicate validator, unifying the two previously-divergent `services:` rule sets. Install-time validation tightens accordingly (leading-letter names, no unknown object fields, fail-fast on the first bad entry, and an explicitly-present empty `services: []` is rejected).
+
+- 70d533f: `@agentproto/app-kit` exports a new `parseServiceList` — a non-throwing wrapper around the `services:` manifest validator already used by `defineApp`/`loadAppHandle` — so callers outside the throw-based `normalizeManifestFields` flow get the same single rule set.
+
+  `@agentproto/runtime`'s `parseAppServices` now delegates to `@agentproto/app-kit`'s `parseServiceList` instead of carrying its own duplicate validator, unifying the two previously-divergent `services:` rule sets. This changes install-time validation behavior: service names must now start with a letter (a digit-leading name like `0abc` is rejected, though consecutive/trailing hyphens are now allowed), unknown object fields on a service entry are now rejected, validation now fails fast on the first bad entry instead of accumulating every entry's errors, and an explicitly-present but empty `services: []` is now rejected instead of being treated as a no-op.
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [74f982c]
+- Updated dependencies [2760272]
+- Updated dependencies [74f982c]
+  - @agentproto/agent@0.4.1
+  - @agentproto/driver@0.3.3
+  - @agentproto/driver-cli@0.2.5
+  - @agentproto/driver-http@0.1.13
+  - @agentproto/mastra@0.2.19
+  - @agentproto/tool@0.5.2
+  - @agentproto/workflow@0.7.2
+  - @agentproto/workflow-loader@0.2.9
+  - @agentproto/workspace@1.0.1
+
 ## 2.0.0
 
 ### Major Changes

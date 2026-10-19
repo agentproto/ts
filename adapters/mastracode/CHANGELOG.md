@@ -1,5 +1,25 @@
 # @agentproto/adapter-mastracode
 
+## 0.4.0
+
+### Minor Changes
+
+- a6f7c8b: chore(adapters): default Anthropic model is claude-sonnet-5-5
+- a6f7c8b: Introduce `DEFAULT_ANTHROPIC_MODEL` (`claude-sonnet-5-5`) in `@agentproto/model-catalog` as the single source of truth for the platform-wide Anthropic default, and repoint the jcode, mastracode, mastracode-inprocess, opencode, and pi adapter manifests' `models.default` (and, where present, the default menu entry) at it. `adapter-mastracode-inprocess` additionally declares its new `@agentproto/model-catalog` workspace dependency.
+
+### Patch Changes
+
+- 74f982c: Weekly dependency refresh (minor/patch within declared ranges) across the workspace. `@agentproto/runtime` moves to defuddle 0.19, which lifts a title-like `<h1>` into `title` instead of leading `text`, affecting `fetch_page`/`browser_extract_text` output.
+- 74f982c: Weekly dependency refresh: minor/patch bumps within declared ranges across the workspace. `@agentproto/runtime` moves to defuddle 0.19 (GHSA-jg4p-g6xj-4qmf); `fetch_page`/`browser_extract_text` now return a title-like `<h1>` in `title` rather than repeating it at the top of `text`.
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [7ed9762]
+- Updated dependencies [a6f7c8b]
+- Updated dependencies [74f982c]
+- Updated dependencies [74f982c]
+  - @agentproto/model-catalog@0.13.0
+  - @agentproto/driver-agent-cli@2.13.2
+  - @agentproto/provider-kit@0.4.7
+
 ## 0.3.42
 
 ### Patch Changes
