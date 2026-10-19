@@ -38,10 +38,12 @@ const stateSchema = z.string().transform((v): ComputerState => {
   return (COMPUTER_STATES as readonly string[]).includes(v) ? (v as ComputerState) : "unknown"
 })
 
-const portPublishSchema = z.object({
+export const portPublishSchema = z.object({
   host: z.number().int(),
   guest: z.number().int(),
 })
+
+export type PortPublish = z.infer<typeof portPublishSchema>
 
 /** `GET /v1/computers/:id` response (status + egress metadata, extras ignored). */
 export const computerStatusSchema = z.object({
@@ -59,6 +61,7 @@ export const createComputerResponseSchema = z.object({
   id: z.string(),
   template: z.string(),
   state: z.string(),
+  ports: z.array(portPublishSchema).optional(),
 }).passthrough()
 
 export type CreateComputerResponse = z.infer<typeof createComputerResponseSchema>

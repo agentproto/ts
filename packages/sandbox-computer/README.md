@@ -29,14 +29,15 @@ provider's `setup` (stored creds), plus env fallbacks:
 | --- | --- | --- | --- |
 | `controllerUrl` | `COMPUTER_CONTROLLER_URL` | — | Controller base URL, e.g. `http://host:7110`. |
 | `token` (secret) | `COMPUTER_CONTROLLER_TOKEN` | — | Controller bearer service token. Resolved from a credential ref by the runtime (`setup_sandbox_provider` → stored creds → env), **never** logged or written anywhere else. |
-| `tenantId` | `COMPUTER_TENANT_ID` | `agentproto` | Sent as `X-Tenant-Id` on every request; computers are created under it. |
+| `tenantId` | `COMPUTER_TENANT_ID` | `agentproto` | Sent as `X-Tenant-Id` on every request; computers are created under it. A stored `setup_sandbox_provider` value fills the env var when unset. |
+| `egress` | — | none | Allowlist forwarded as the create body's `egress.allow`: entries `"host"`, `"host:port"` (port defaults to 443) or `{host, port?}`. The reference controller denies ALL egress, DNS included, when this is absent, so the on-boot `npm i -g @agentproto/cli` needs at least `registry.npmjs.org`. |
 | `template` | — | `agentproto-workstation` | Controller template id. The reference controller's stock registry currently only ships `base`/`node`/`browser` — point this at whatever template id your controller advertises (or ask the controller admin to register a workstation template). |
 | `cpus`, `memoryMiB`, `rootDiskMiB` | — | — | Resource limits forwarded to create. |
 | `ttlSeconds` | — | — | Computer TTL sent as create `ttl`. |
 | `maxSessions` | — | `1` | How many sessions THIS process may map onto one computer. |
 | `port` | — | `18790` | Daemon port inside the computer. |
 | `workspace` | — | `/home/user` | `agentproto serve --workspace`. |
-| `gatewayUrl` | — | `http://<computer-name>:<port>` | URL template with `{port}`/`{id}` placeholders for reaching a computer's ports. Default assumes the box network is addressable by the computer's generated name; set it when computers sit behind an edge proxy. |
+| `gatewayUrl` | — | `http://<computer-name>:<port>` | URL template with `{port}`/`{id}`/`{hostPort}` placeholders for reaching a computer's ports (`{hostPort}` is the host port the controller published for the daemon port; the boot fails if none). Default assumes the box network is addressable by the computer's generated name; set it when computers sit behind an edge proxy. The daemon is started with `--allow-origin` for this URL's origin, recorded in `~/.agentproto-daemon.origin`; on reconnect a healthy daemon whose recorded origin differs (the host port changed) is restarted. A daemon without that file (autostarted by the template) is left as is. |
 | `updateCliOnBoot`, `cliVersion`, `installPackages`, `setupCommands` | — | install on | Same semantics as sandbox-e2b's boot flow. |
 | `waitReadyTimeoutMs`, `daemonReadyTimeoutMs` | — | 120s / 30s | Boot readiness windows. |
 
@@ -67,7 +68,7 @@ enforced per process only.
 
 - The controller token travels only in the `Authorization: Bearer …` header.
 - A fresh `--auth-token` (UUID) gates the daemon inside each computer; it
-  exists only inside the box (`/var/log/agentproto-daemon.log`'s command
+  exists only inside the box (`~/.agentproto-daemon.log`'s command
   line is the one place it is used) and is deliberately never surfaced on
   `BootedSandbox`.
 - This package logs nothing and redacts the service token from every error

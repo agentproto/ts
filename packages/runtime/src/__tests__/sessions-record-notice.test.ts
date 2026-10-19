@@ -16,17 +16,27 @@ import { join } from "node:path"
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { sessionEventsPath } from "../transcript-writer.js"
 
-/** `createWriteStream`'s fd open is async, so a `recordNotice` call can
- *  return before the file exists on disk — poll instead of a fixed sleep. */
-async function waitForEvents(sessionId: string, dir: string, timeoutMs = 2000): Promise<Array<Record<string, unknown>>> {
+/** `createWriteStream` opens the fd (creating an EMPTY events.jsonl) before it
+ *  flushes the first queued write, so a `recordNotice` call can return while
+ *  the file is missing, empty, or ends in a half-written line. Poll until the
+ *  record we are waiting for is actually readable instead of treating "file
+ *  exists" as "event landed". */
+async function waitForEvent(
+  sessionId: string,
+  dir: string,
+  match: (event: Record<string, unknown>) => boolean,
+  timeoutMs = 5000,
+): Promise<Record<string, unknown>> {
   const until = Date.now() + timeoutMs
   for (;;) {
     try {
-      return readEvents(sessionId, dir)
+      const found = readEvents(sessionId, dir).find(match)
+      if (found) return found
     } catch {
-      if (Date.now() > until) throw new Error(`events.jsonl for ${sessionId} never appeared in ${dir}`)
-      await new Promise(r => setTimeout(r, 10))
+      // not created yet, or a partial last line - retry
     }
+    if (Date.now() > until) throw new Error(`no matching event in events.jsonl for ${sessionId} within ${timeoutMs}ms`)
+    await new Promise(r => setTimeout(r, 10))
   }
 }
 
@@ -70,8 +80,7 @@ describe("registry.recordNotice", () => {
       adapterSlug: "fake",
     })
     expect(registry.recordNotice(desc.id, "review pass ab12345..cd67890 (review-xyz)")).toBe(true)
-    const events = await waitForEvents(desc.id, tmp)
-    const notice = events.find(e => e.kind === "notice")
+    const notice = await waitForEvent(desc.id, tmp, e => e.kind === "notice")
     expect(notice).toMatchObject({ kind: "notice", text: "review pass ab12345..cd67890 (review-xyz)" })
     registry.shutdown()
   })
