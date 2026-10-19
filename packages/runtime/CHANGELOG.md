@@ -1,5 +1,55 @@
 # @agentproto/runtime
 
+## 5.28.0
+
+### Minor Changes
+
+- 7bf4955: Add `diffCatalog` (pure catalog-snapshot diff: appeared/removed/priceChanged/freeToPaid/paidToFree) to `@agentproto/model-intel`, and a `catalog_diff` MCP tool in `@agentproto/runtime` backed by a persisted snapshot store — plus a `model-catalog-watch` app (daily cron routine + workflow: sync → diff → gate → free-model digest).
+- ed1462e: Add operator approval to bypass branch_gc guard; make verdict writes safe
+- cc06be2: Add sandbox_checkpoint_gc daemon tool and wire it into maintain workflow
+- e2d0b48: Send the repo-maintenance notify step through the provider-agnostic `transmit_message` primitive (with an optional `notify` target of `{ provider, alias, address, source }`) instead of a hardcoded agentpush MCP alias; allow `transmit_message` to send with `bind: false` and no `sessionId`.
+- 7bf4955: Add `diffCatalog` (pure catalog-snapshot diff: appeared/removed/priceChanged/freeToPaid/paidToFree) to `@agentproto/model-intel`, a persisted-baseline `catalog_diff` MCP tool to `@agentproto/runtime`, and ship the `model-catalog-watch` bundled app (daily cron routine + `watch` workflow: sync → diff → gate → free-model digest) in `@agentproto/apps`.
+- 8b228b0: Add `AgentStep.access` / `AgentStep.route` and forward model-role auth `profile` and `route` to the maintain workflow's reviewer spawns. Add the opt-in `maintain --apply-reviewed` input, which reclaims agreed `review`-class branches subject to `branch_gc`'s line-coverage guard and reports guard refusals in the run report.
+- cc06be2: Add the `sandbox_checkpoint_gc` MCP tool (plus `sandbox_checkpoint_gc_status`) for sweeping stale `agentproto-checkpoint/*` refs, a `SandboxCheckpointGcRunner` port wired through the serve gateway, and checkpoint plan/apply steps in the repo-maintenance `maintain` workflow.
+- ed1462e: Add an optional `operator` approval to branch verdicts: with `includeReviewed`, an operator block bypasses `branch_gc`'s deterministic line-coverage guard for the exact tip and the plan records who bypassed it. Also make verdict-store writes lossless under concurrency by serialising per-file writers in-process and committing each write with a unique temp file plus atomic rename.
+- 4d50b9b: Sandbox cost guardrails and device liveness:
+
+  - e2b: a box whose spec declares `lifecycle.pause_after_idle` is created with `lifecycle.onTimeout: "pause"`, so a box that outlives its provider timeout is parked instead of destroyed. New `config.onTimeout` (`"pause" | "kill"`) overrides it.
+  - runtime: the idle reaper honours a box's own `lifecycle.pause_after_idle` window when it is shorter than `daemon.sandboxIdleReapAfterMs` (new descriptor field `sandboxPauseAfterIdleMs`).
+  - runtime: `device:` spawns probe the paired host's `/health` when it isn't already known online, and fail fast with a typed `device_offline` code (HTTP 400) instead of a generic `sandbox_boot_failed`, so a caller can fall back to a sandbox or queue the work.
+
+- e2d0b48: Send the repo-maintenance notify step through the provider-agnostic `transmit_message` primitive (with an optional `notify` target of `{ provider, alias, address, source }`) instead of a hardcoded agentpush MCP alias, and allow `transmit_message` to send fire-and-forget with `bind: false` and no `sessionId`.
+- 8b228b0: Pass a model role's auth `profile` and `route` to the maintain workflow's reviewer agent steps, and add the opt-in `applyReviewed` input that reclaims agreed reviewed branches under branch_gc's line-coverage guard.
+- 4d50b9b: Sandbox cost guardrails and device liveness:
+
+  - e2b: a box whose spec declares `lifecycle.pause_after_idle` is created with `lifecycle.onTimeout: "pause"`, so a box that outlives its provider timeout is parked instead of destroyed. New `config.onTimeout` (`"pause" | "kill"`) overrides it.
+  - runtime: the idle reaper honours a box's own `lifecycle.pause_after_idle` window when it is shorter than `daemon.sandboxIdleReapAfterMs` (new descriptor field `sandboxPauseAfterIdleMs`).
+  - runtime: `device:` spawns probe the paired host's `/health` when it isn't already known online, and fail fast with a typed `device_offline` code (HTTP 400) instead of a generic `sandbox_boot_failed`, so a caller can fall back to a sandbox or queue the work.
+
+### Patch Changes
+
+- b2593c3: Add `capabilities.deferredToolDiscovery` and wire it through the adapter resolver: a harness that cannot call a tool omitted from its last `tools/list` (opencode rejects it client-side) now gets the daemon self-mount eager, so `daemonMount` no longer hides `branch_gc_verdict` and other tools behind a `tool_search` the model cannot use.
+- f641bc8: Persist the sandbox session holder on the session descriptor and replay it on both re-attach paths (`session_restart` and the boot-time reattach pass). Sandbox spawns now send the agentproto session id to the provider as `config.sessionHolder`, and no secret is persisted.
+- Updated dependencies [7bf4955]
+- Updated dependencies [ed1462e]
+- Updated dependencies [cc06be2]
+- Updated dependencies [b2593c3]
+- Updated dependencies [e2d0b48]
+- Updated dependencies [7bf4955]
+- Updated dependencies [8b228b0]
+- Updated dependencies [cc06be2]
+- Updated dependencies [ed1462e]
+- Updated dependencies [e2d0b48]
+- Updated dependencies [8b228b0]
+  - @agentproto/model-intel@0.3.0
+  - @agentproto/apps@0.24.0
+  - @agentproto/driver-agent-cli@2.14.0
+  - @agentproto/workflow-runtime@0.20.0
+  - @agentproto/sandbox@0.12.2
+  - @agentproto/review@0.6.2
+  - @agentproto/eval-reporters@0.2.27
+  - @agentproto/telemetry-langfuse@0.2.25
+
 ## 5.27.1
 
 ### Patch Changes
