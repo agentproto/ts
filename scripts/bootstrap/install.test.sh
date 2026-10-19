@@ -58,9 +58,30 @@ printf 'agentproto %s\n' "$*" >>"${AGENTPROTO_LOG:?}"
 case "${1:-}" in
   doctor)
     case " $* " in
-      *" --only daemon "*) echo "daemon: ok" ;;
+      *"--json "*)
+        if [ "${FAKE_DAEMON_DOWN:-}" = "1" ]; then
+          echo '{"steps":[{"checks":[{"status": "warn"}]}]}'
+        else
+          echo '{"steps":[{"checks":[{"status": "ok"}]}]}'
+        fi
+        ;;
+      *" --only daemon "*)
+        # Human daemon output. Down here simulates the reachable fragility:
+        # doctor exits 0 with a warn-only step and NO ok check — the human
+        # summary still contains "0 ok · …", which the pre-#2097 grep
+        # 'ok|pass' matched, printing "Daemon already healthy" with nothing
+        # running.
+        if [ "${FAKE_DAEMON_DOWN:-}" = "1" ]; then
+          printf 'Daemon\n  !! Detached serve (pidfile)  no usable systemd user session\n0 ok · 1 warn · 0 missing · 0 broken\n'
+          exit 0
+        fi
+        printf 'Daemon\n  ✓ Daemon /health  up\n0 ok · 1 warn · 0 missing · 0 broken\n'
+        ;;
       *) echo "doctor: ok" ;;
     esac
+    ;;
+  serve)
+    printf 'serve %s\n' "$*" >>"${AGENTPROTO_LOG:?}"
     ;;
   adapters) echo "opencode" ;;
   *) echo "0.0.0-fake" ;;
@@ -75,7 +96,7 @@ EOF
 cat >"$FAKES/node" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-v" ]; then
-  echo "v22.0.0"
+  printf 'v%s\n' "${FAKE_NODE_VERSION:-22.0.0}"
   exit 0
 fi
 exit 0
@@ -97,6 +118,7 @@ run_install() {
     NPM_LOG="$scen/npm.log" \
     AGENTPROTO_LOG="$scen/agentproto.log" \
     FAKE_NPM_FAIL="${FAKE_NPM_FAIL:-}" \
+    FAKE_NODE_VERSION="${FAKE_NODE_VERSION:-}" \
     bash "$INSTALL" >"$scen/out.log" 2>&1
   SCEN_STATUS=$?
   set -e
@@ -166,6 +188,62 @@ assert_not_in "$SCEN/npm.log" "--prefix" \
   "prefix under \$HOME: --prefix is never passed"
 assert_not_in "$SCEN/out.log" 'export PATH="$HOME/.local/bin:$PATH"' \
   "prefix under \$HOME: no shell-profile hint"
+
+# --- 3.1 an existing Node >= the minimum is kept, never reinstalled ------------
+# #2057: `node_version_ok` compared the minor field against "${MIN_NODE#*.}"
+# ("9.0" — non-integer), so bash's `[ -ge` rejected it and any Node 20.10+
+# (and exactly 20.9.x) was declared too old. Red: the installer rushes into
+# install_lts_node and dies "no supported package manager" in a bare sandbox.
+for v in 20.10.0 20.9.0; do
+  new_scenario "keep-node-$v"
+  PREFIX_K="$SCEN/home/.nvm/x"
+  FAKE_NODE_VERSION="$v" run_install "$SCEN" "$PREFIX_K" 2>/dev/null || true
+  unset FAKE_NODE_VERSION
+  assert_exit 0 "existing Node v$v satisfies >= 20.9.0 and is kept (exit 0)"
+  assert_in "$SCEN/out.log" "already installed — keeping it" \
+    "existing Node v$v: prints the keep message instead of installing LTS"
+  assert_not_in "$SCEN/out.log" "too old" \
+    "existing Node v$v: never says Node is too old"
+done
+
+# --- 5. daemon health: a warn/broken doctor must NOT read as healthy ----------
+# #2097: `ensure_daemon` grepped the doctor human output for 'ok|pass', and
+# the human summary line always contains "N ok · N warn …" — so a machine
+# with the daemon DOWN was told "Daemon already healthy" and never started it.
+
+new_scenario "daemon-healthy"
+PREFIX_5="$ROOT/daemon-healthy/global"
+mkdir -p "$PREFIX_5"
+run_install "$SCEN" "$PREFIX_5"
+assert_exit 0 "daemon healthy: install.sh exits 0"
+assert_in "$SCEN/out.log" "Daemon already healthy" \
+  "daemon healthy: recognised as healthy"
+assert_not_in "$SCEN/agentproto.log" "serve" \
+  "daemon healthy: the running daemon is not restarted"
+
+new_scenario "daemon-down"
+PREFIX_5="$ROOT/daemon-down/global"
+mkdir -p "$PREFIX_5"
+: >"$SCEN/npm.log"
+: >"$SCEN/agentproto.log"
+set +e
+env -i \
+  HOME="$SCEN/home" \
+  PATH="$FAKES:$PREFIX_5/bin:/usr/bin:/bin" \
+  FAKE_GLOBAL_PREFIX="$PREFIX_5" \
+  NPM_LOG="$SCEN/npm.log" \
+  AGENTPROTO_LOG="$SCEN/agentproto.log" \
+  FAKE_NPM_FAIL="${FAKE_NPM_FAIL:-}" \
+  FAKE_NODE_VERSION="${FAKE_NODE_VERSION:-}" \
+  FAKE_DAEMON_DOWN=1 \
+  bash "$INSTALL" >"$SCEN/out.log" 2>&1
+SCEN_STATUS=$?
+set -e
+assert_exit 0 "daemon down: install.sh still completes (detached serve)"
+assert_not_in "$SCEN/out.log" "Daemon already healthy" \
+  "daemon down: never claimed already healthy"
+assert_in "$SCEN/agentproto.log" "serve" \
+  "daemon down: a detached serve is started"
 
 # --- 4. failed plain install → die names the prefix + user-prefix command -----
 new_scenario "die-message"

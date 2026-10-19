@@ -677,11 +677,19 @@ export async function createAcpClient(
     initMeta,
     steeringSupported,
     async newSession(params) {
-      const response = await connection.newSession({
-        cwd: params.cwd,
-        mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
-        ...(params.meta ? { _meta: params.meta } : {}),
-      } as never)
+      let response: Awaited<ReturnType<ClientSideConnection["newSession"]>>
+      try {
+        response = await connection.newSession({
+          cwd: params.cwd,
+          mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
+          ...(params.meta ? { _meta: params.meta } : {}),
+        } as never)
+      } catch (err) {
+        // The detail travels in `error.data.details`, not the message —
+        // a refused spawn (bad repo source, missing credential, vendor
+        // API error) would otherwise surface as a bare "Internal error".
+        throw enrichInternalAcpError(err)
+      }
       options.onActivity?.()
       const sessionId = (response as { sessionId: string }).sessionId
       const configOptions = response.configOptions ?? []
@@ -718,12 +726,19 @@ export async function createAcpClient(
       // fresh `SessionState` so subsequent `prompt` calls have a slot
       // to flush events into — same lifecycle shape as a brand-new
       // session.
-      const response = await connection.loadSession({
-        sessionId: params.sessionId,
-        cwd: params.cwd,
-        mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
-        ...(params.meta ? { _meta: params.meta } : {}),
-      } as never)
+      let response: Awaited<ReturnType<ClientSideConnection["loadSession"]>>
+      try {
+        response = await connection.loadSession({
+          sessionId: params.sessionId,
+          cwd: params.cwd,
+          mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
+          ...(params.meta ? { _meta: params.meta } : {}),
+        } as never)
+      } catch (err) {
+        // Same as newSession: the real refusal (e.g. a cloud adapter naming
+        // the vendor id it cannot re-attach to) travels in data.details.
+        throw enrichInternalAcpError(err)
+      }
       options.onActivity?.()
       const configOptions = response.configOptions ?? []
       const { modes, currentModeId } = sessionModes(response.modes, configOptions)
@@ -965,8 +980,13 @@ function buildSession(
             )
             return
           }
+          // A server-side throw during the turn arrives as a JSON-RPC
+          // -32603 whose message is just "Internal error" — surface the
+          // `error.data.details` cause (the vendor's API error, a missing
+          // credential, …) in the message instead.
+          const cause = enrichInternalAcpError(err)
           const message =
-            err instanceof Error ? err.message : String(err)
+            cause instanceof Error ? cause.message : String(cause)
           enqueue(state, {
             kind: "error",
             sessionId,
@@ -1655,6 +1675,41 @@ function translateAsyncTaskUpdate(
     ...(str("toolCallId") ? { toolCallId: str("toolCallId") } : {}),
   }
   return { kind: "background-task", sessionId, phase, task }
+}
+
+/**
+ * The ACP SDK maps a server-side thrown error to a JSON-RPC `-32603` whose
+ * `message` is JUST "Internal error" — `RequestError.internalError` never
+ * embeds the cause in the message; the useful text travels in
+ * `error.data.details` (e.g. a managed cloud adapter naming the credential
+ * that is missing, or the vendor's API error). Surface that detail in the
+ * message AND carry `code`/`data`/`name` through, so a host that reads only
+ * `error.message` shows the real cause instead of a bare "Internal error",
+ * and a host that inspects `error.code` still sees -32603. Returns the
+ * original error untouched when it isn't such an opaque re-wrapping.
+ */
+export function enrichInternalAcpError<T>(err: T): T | Error {
+  if (
+    typeof err !== "object" ||
+    err === null ||
+    !("message" in err) ||
+    (err as { message?: unknown }).message !== "Internal error"
+  ) {
+    return err
+  }
+  const data = (err as unknown as { data?: unknown }).data
+  const details =
+    typeof data === "object" && data !== null ? (data as { details?: unknown }).details : undefined
+  if (typeof details !== "string" || details.trim().length === 0) return err
+  const wrapped = err as unknown as { name?: unknown; code?: unknown; stack?: unknown }
+  const enriched = new Error(`Internal error: ${details}`)
+  Object.assign(enriched, {
+    ...(typeof wrapped.name === "string" ? { name: wrapped.name } : {}),
+    ...(typeof wrapped.code === "number" ? { code: wrapped.code } : {}),
+    data,
+  })
+  if (typeof wrapped.stack === "string") enriched.stack = wrapped.stack
+  return enriched
 }
 
 /**

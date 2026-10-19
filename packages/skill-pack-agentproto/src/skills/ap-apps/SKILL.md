@@ -70,4 +70,4 @@ app_uninstall({ "appId": "..." })   // remove the record (refuses while applied 
 - agentproto — daemon overview; AIP-53 app bundle spec.
 - ap-workflows — the workflow engine app WORKFLOW.md files compile into.
 - ap-spawn-agent — what an app run does under the hood, one spawn per agent.
-- pb-build-app — packaged authoring workflow for new apps.
+- agentproto-apps — packaged authoring workflow for new apps.

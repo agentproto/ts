@@ -455,6 +455,39 @@ describe("agentproto auth discover", () => {
   })
 })
 
+describe("agentproto auth — subcommand help", () => {
+  // #2096: `agentproto auth <sub> --help` fell through into the subcommand's
+  // strict parseArgs and crashed with a bare
+  // `TypeError [ERR_PARSE_ARGS_UNKNOWN_OPTION]: Unknown option '--help'`
+  // instead of printing usage. Every subcommand must answer --help/-h.
+  for (const sub of [
+    "login",
+    "status",
+    "logout",
+    "provider",
+    "cred",
+    "profile",
+    "subaccounts",
+    "discover",
+  ]) {
+    it(`${sub} --help prints usage (not a TypeError)`, async () => {
+      const { out, restore } = capture()
+      const code = await runAuth([sub, "--help"])
+      restore()
+      expect(code).toBe(0)
+      expect(out.join("")).toContain("agentproto auth —")
+      expect(out.join("")).not.toContain("ERR_PARSE_ARGS")
+    })
+    it(`${sub} -h prints usage (not a TypeError)`, async () => {
+      const { out, restore } = capture()
+      const code = await runAuth([sub, "-h"])
+      restore()
+      expect(code).toBe(0)
+      expect(out.join("")).toContain("agentproto auth —")
+    })
+  }
+})
+
 describe("agentproto auth profile import", () => {
   it("rejects an unknown origin before any store write", async () => {
     const { writes } = spyOnKeychain()

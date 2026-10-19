@@ -94,7 +94,7 @@ commands, cron, task boards, completion policies, apps, and workflows.
 | pb-supervise-parallel-mission | Fan out parallel workers with fan-in and gates. |
 | pb-nested-orchestrator | An orchestrator session that spawns its own workers. |
 | pb-boss-checkins | Scheduled cron check-ins re-pinging your session. |
-| pb-build-app | Author, install, and run an agentproto APP. |
+| agentproto-apps | Author, build, and package an agentproto APP. |
 | pb-build-pack | Author and import company/agency/knowledge packs. |
 
 ## CLI orientation

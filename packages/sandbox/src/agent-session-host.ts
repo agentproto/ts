@@ -61,14 +61,23 @@ export interface BootedSandbox {
   mcpUrl: string
   /** Provider-assigned sandbox id, for logging / lookup. */
   sandboxId: string
-  /** Opaque secret gating `mcpUrl`, present when `opts.expose === "private"`
-   *  was honoured (see `SandboxBootOpts.expose`). Absent for the default
-   *  public-exposure path (boot-and-drive) and for providers/paths that
-   *  can't gate the port at all — a caller that needs a gated URL (e.g.
-   *  `attachSandbox`) MUST treat a missing token as "not gated", not as
-   *  "no auth needed". The token is the raw secret; how a client must
-   *  PRESENT it (bearer header, cookie, …) is provider-specific — see
-   *  `authHeaders`. */
+  /** Opaque secret gating `mcpUrl`. Present either when `opts.expose ===
+   *  "private"` was honoured (see `SandboxBootOpts.expose`), OR when the
+   *  provider's own daemon is gated unconditionally regardless of `expose`
+   *  (e.g. `computer`, whose in-box daemon always requires its own
+   *  per-box bearer because the controller's port publish / daemon-proxy
+   *  route is never a loopback hop inside the guest). Absent for the
+   *  default public-exposure path on providers that don't gate it, and for
+   *  providers/paths that can't gate the port at all — a caller that needs
+   *  a gated URL (e.g. `attachSandbox`) MUST treat a missing token as "not
+   *  gated", not as "no auth needed". The token is the raw secret; how a
+   *  client must PRESENT it (bearer header, cookie, …) is provider-specific
+   *  — see `authHeaders`. NEVER a tenant-wide or provider-infrastructure
+   *  credential: a provider that needs one of those to reach the box (e.g.
+   *  through an authenticated proxy route) MUST keep it internal and
+   *  inject it only on its own outgoing requests, never here — this field
+   *  is handed to callers and may be persisted (session descriptor,
+   *  `buildMcpConfigSnippet`'s paste-ready `.mcp.json`). */
   token?: string
   /** Exact HTTP header(s) a client must send to authenticate against the
    *  gated `mcpUrl` — the provider's own answer to "how do I present the

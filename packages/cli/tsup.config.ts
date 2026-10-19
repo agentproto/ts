@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process"
-import { copyFile } from "node:fs/promises"
+import { copyFile, cp } from "node:fs/promises"
 import { readFileSync } from "node:fs"
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
@@ -161,6 +161,15 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     await copyFile(
       new URL("./src/stageboard/stageboard.js", import.meta.url),
       new URL("./dist/stageboard.js", import.meta.url),
+    )
+    // The runtime is bundled into cli.mjs, so tool-help.ts resolves its docs
+    // relative to THIS package's root (`<root>/docs/mcp-tools`, one level above
+    // the bundle in dist/). Copy them from the runtime package so the published
+    // tarball ships them and `tool_help` / `agentproto help <tool>` find them.
+    await cp(
+      new URL("../runtime/docs/mcp-tools", import.meta.url),
+      new URL("./docs/mcp-tools", import.meta.url),
+      { recursive: true },
     )
   },
 })

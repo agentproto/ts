@@ -98,6 +98,14 @@ import {
 export async function runAuth(args: readonly string[]): Promise<number> {
   const sub = args[0]
   const rest = args.slice(1)
+  // `agentproto auth <sub> --help` used to fall through into the subcommand's
+  // strict parseArgs, which threw a bare node TypeError for an unknown
+  // option. Help is handled here for every subcommand: it is never a
+  // positional or option any `auth` subcommand consumes.
+  if (sub !== undefined && (rest.includes("--help") || rest.includes("-h"))) {
+    process.stdout.write(USAGE)
+    return 0
+  }
   switch (sub) {
     case "login":
       return runAuthLogin(rest)

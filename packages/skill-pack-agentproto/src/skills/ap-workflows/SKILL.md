@@ -153,4 +153,4 @@ The answer is injected into the awaiting session and the stage resumes.
 - agentproto — daemon overview; the workflow engine's stage/barrier model.
 - ap-spawn-agent / ap-prompt-agent — the per-session primitives workflow steps wrap.
 - ap-read-output — fetching a session's reply for downstream stages.
-- pb-build-app — apps bundle WORKFLOW.md files; this is their runtime.
+- agentproto-apps — apps bundle WORKFLOW.md files; this is their runtime.

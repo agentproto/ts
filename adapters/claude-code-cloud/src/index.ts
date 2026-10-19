@@ -102,10 +102,31 @@ export const claudeCodeCloud: AgentCliHandle = defineAgentCli({
     idle_timeout_ms: 1_800_000,
     context_carryover: true,
   },
-  // NO `models` menu: the vendor picks and bills the model inside its own
-  // harness; the host has no model to select or route (AIP-66 §4 — `model`
-  // is only meaningful when the vendor client accepts it, and this CLI's
-  // cloud path exposes no model flag).
+  // Runtime-configurable options: `model` only. The vendor still picks ITS
+  // default when the caller omits it, but the vendor client (`claude --cloud`
+  // / `claude -p … --cloud`) honors ANTHROPIC_MODEL (the same env the local
+  // claude-code adapter uses), so the caller may pin the model — the id rides
+  // the spawn env into every relay-spawned claude child.
+  options: [
+    {
+      id: "model",
+      // string (not enum) so any valid Anthropic model ID is accepted
+      // without requiring a code change to expand the list. Applied via
+      // ANTHROPIC_MODEL env var so the relay's spawned claude children pick
+      // it up directly (start/send both breathe the same env).
+      type: "string" as const,
+      description:
+        "Anthropic model ID the vendor harness should run (e.g. " +
+        "'claude-opus-5-5', 'claude-sonnet-5'). Set via ANTHROPIC_MODEL env " +
+        "var on the relay's claude children. Omit to use the vendor's own " +
+        "default model.",
+      env: { ANTHROPIC_MODEL: "{value}" },
+    },
+  ],
+  // No curated `models` menu: the vendor bills its OWN models and the host
+  // does not route or gate them (AIP-66 §4). `model` above is a free-form
+  // hint — an id the vendor cannot honor fails at the vendor API, which the
+  // sessions-API observer reports on the turn.
   capabilities: {
     // Turns stream back as ACP updates while the vendor runs them.
     streaming: true,

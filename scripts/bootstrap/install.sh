@@ -10,6 +10,10 @@ set -euo pipefail
 
 MIN_NODE="20.9.0"
 LTS_LINE="22" # Node 22 LTS
+# Minimum kept at major.minor granularity — `node_major_minor` returns e.g.
+# "20.9", so the constant must be normalized or `sort -V` ranks "20.9.0"
+# above it and the exact minimum looks below the floor.
+MIN_MM="20.9"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 info() { printf '==> %s\n' "$1"; }
@@ -43,11 +47,15 @@ node_major_minor() { node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1,2; }
 
 node_version_ok() {
   command_exists node || return 1
-  # compare "20.9" >= "20.9" numerically, field by field
+  # version compare on major.minor strings: have >= floor iff floor sorts
+  # first (or equal). Do NOT compare the minor field with `[ ... -ge ... ]`:
+  # the minimum carried a patch field (".0"), which bash rejects
+  # ("integer expression expected"), so any Node 20.10.x … 20.99.x — and the
+  # exact minimum 20.9.0 — was read as "too old" and reinstalled (#2057).
   local have="$1"
-  [ "$(printf '%s\n%s\n' "${have%%.*}" "$MIN_NODE" | head -1)" -gt "${MIN_NODE%%.*}" ] && return 0
-  [ "$(printf '%s\n%s\n' "${have%%.*}" "$MIN_NODE" | head -1)" -lt "${MIN_NODE%%.*}" ] && return 1
-  [ "${have#*.}" -ge "${MIN_NODE#*.}" ] 2>/dev/null
+  local lower
+  lower="$(printf '%s\n' "$have" "$MIN_MM" | sort -V | head -1)"
+  [ "$lower" = "$MIN_MM" ]
 }
 
 install_lts_node() {
@@ -157,7 +165,20 @@ printf '    Install adapters later from the SAME shell that launched the daemon 
 
 # --- 6. Daemon ----------------------------------------------------------------
 ensure_daemon() {
-  if agentproto doctor --only daemon >/dev/null 2>&1 && agentproto doctor --only daemon 2>/dev/null | grep -qiE 'ok|pass'; then
+  # The doctor human summary always prints "N ok · N warn …" — a bare grep
+  # for 'ok|pass' matched that line even with the daemon down, so a fresh
+  # machine was told "Daemon already healthy" with nothing running. Look at
+  # the machine-readable output instead: healthy iff exit 0 AND some daemon
+  # check has status "ok" (a warn-only step reports no ok status; warn/broken
+  # detail text can never inject one).
+  # Healthy iff `--json` exits 0 AND some daemon check reports
+  # `"status": "ok"`. Do NOT grep the human output for 'ok|pass': the doctor
+  # summary always prints "N ok · N warn …", which matches even when NO
+  # check is ok — so a warn-only daemon step (or any status drift in
+  # doctor's check text) printed "Daemon already healthy" with nothing
+  # running. The machine-readable status is the contract.
+  if agentproto doctor --only daemon --json >/dev/null 2>&1 &&
+    agentproto doctor --only daemon --json 2>/dev/null | grep -q '"status": "ok"'; then
     info "Daemon already healthy"
     return 0
   fi
