@@ -922,6 +922,7 @@ import { createDeviceRegistry, type DevicePromptSessionsLike } from "./device-re
 import { registerDeviceTools } from "./device-tools.js"
 import { syncDeviceMirror } from "./device-mirror.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
+import { registerQuotaStatusTool } from "./quota-status-tool.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
@@ -1882,6 +1883,7 @@ export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "task_create",
   "task_list",
   "task_update",
+  "quota_status",
 ]
 
 export interface GatewayHandle {
@@ -3539,6 +3541,16 @@ export async function createGateway(
     // fetch side of the slimmed-description contract every tool's schema
     // now points at. Always-on (see DEFAULT_ALWAYS_ON_TOOLS) and tiny.
     registerToolHelpTool(server)
+    // Live provider quota for a named auth profile (AIP-67). Always-on (see
+    // DEFAULT_ALWAYS_ON_TOOLS). `currentProfileRef` resolves the CALLING
+    // session's own access profile from the trusted `callerSessionId`, the
+    // same identity plumbing `boundary` above reads, so a caller that omits
+    // `profileRef` gets its own quota rather than inventing a fallback.
+    registerQuotaStatusTool(server, {
+      currentProfileRef: callerSessionId
+        ? () => sessions.get(callerSessionId)?.accessProfile?.profileRef
+        : undefined,
+    })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at

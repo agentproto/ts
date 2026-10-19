@@ -190,6 +190,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "policy_cancel",
   "policy_list",
   "policy_status",
+  "quota_status",
   "remote_disable",
   "remote_enable",
   "remote_status",
