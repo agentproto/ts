@@ -365,7 +365,7 @@ describe("createSandboxAgentSessionHost", () => {
     expect(host.ports).toBeUndefined()
   })
 
-  it("a daemon-connect failure reaps the box (pause when supported) and throws SandboxHostBootFailedError", async () => {
+  it("a daemon-connect failure on a freshly booted box removes it even when the provider can pause", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     connectDaemonAgentSessionHostMock.mockImplementation(async () => {
       throw new Error("could not reach the daemon")
@@ -382,6 +382,32 @@ describe("createSandboxAgentSessionHost", () => {
     })
     await expect(
       createSandboxAgentSessionHost({ provider, spec, secrets: { slugs: [FAKE_SLUG] } }),
+    ).rejects.toMatchObject({
+      name: "SandboxHostBootFailedError",
+      sandboxId: "sbx_123",
+      cleanedUp: "stopped",
+    })
+    expect(stopFn).toHaveBeenCalledTimes(1)
+    expect(pauseFn).not.toHaveBeenCalled()
+  })
+
+  it("a daemon-connect failure on a reconnected box pauses it when supported", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    connectDaemonAgentSessionHostMock.mockImplementation(async () => {
+      throw new Error("could not reach the daemon")
+    })
+    const pauseFn = vi.fn(async () => {})
+    const stopFn = vi.fn(async () => {})
+    const provider = fakeProvider({
+      connect: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: stopFn,
+        pause: pauseFn,
+      })),
+    })
+    await expect(
+      createSandboxAgentSessionHost({ provider, spec, sandboxId: "sbx_123", secrets: { slugs: [FAKE_SLUG] } }),
     ).rejects.toMatchObject({
       name: "SandboxHostBootFailedError",
       sandboxId: "sbx_123",

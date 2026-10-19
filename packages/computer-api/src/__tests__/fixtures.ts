@@ -14,6 +14,7 @@ import {
   execRequestSchema,
   execResponseSchema,
   resumeResponseSchema,
+  sessionsResponseSchema,
   suspendResponseSchema,
 } from "../index.js"
 
@@ -44,6 +45,7 @@ export const fixtures: Fixture[] = [
       memoryMiB: 4096,
       rootDiskMiB: 20480,
       ttl: 3600,
+      maxSessions: 2,
       env: { FOO: "bar" },
       egress: { allow: [{ host: "example.com", port: 443 }] },
     },
@@ -60,6 +62,11 @@ export const fixtures: Fixture[] = [
     false,
     { tenantId: "acme" },
   ),
+  create("createComputerRequest: fractional maxSessions", createComputerRequestSchema, false, {
+    template: "workstation",
+    tenantId: "acme",
+    maxSessions: 1.5,
+  }),
   create("createComputerRequest: wrong cpus type", createComputerRequestSchema, false, {
     template: "workstation",
     tenantId: "acme",
@@ -144,6 +151,13 @@ export const fixtures: Fixture[] = [
     state: "running",
   }),
   create("resumeResponse: id not a string", resumeResponseSchema, false, { id: 12 }),
+  create("sessionsResponse", sessionsResponseSchema, true, { sessions: 1, maxSessions: 2 }),
+  create("sessionsResponse: unknown extra fields tolerated", sessionsResponseSchema, true, {
+    sessions: 0,
+    maxSessions: 1,
+    futureField: true,
+  }),
+  create("sessionsResponse: fractional sessions", sessionsResponseSchema, false, { sessions: 0.5 }),
   create(
     "errorResponse",
     errorResponseSchema,

@@ -355,6 +355,88 @@ describe("computerSandboxProvider.boot", () => {
   })
 })
 
+describe("computerSandboxProvider shared sessions", () => {
+  let controller: FakeController
+
+  beforeEach(async () => {
+    controller = new FakeController({ token: SERVICE_TOKEN })
+    await controller.start()
+  })
+  afterEach(async () => {
+    await controller.stop()
+  })
+
+  it("forwards maxSessions at create and attaches the booting session", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 3 }), bootOpts)
+    expect(controller.createBodies[0]?.maxSessions).toBe(3)
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+  })
+
+  it("stop detaches, then removes the computer when it was the last session", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    await booted.stop()
+    expect(controller.sessions.get(booted.sandboxId)).toBe(0)
+    expect(controller.removed).toEqual([booted.sandboxId])
+  })
+
+  it("stop leaves the computer in place while another session is attached", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 2 }), bootOpts)
+    controller.sessions.set(booted.sandboxId, 2)
+    await booted.stop()
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    expect(controller.removed).toEqual([])
+    expect(controller.states.get(booted.sandboxId)).toBe("running")
+  })
+
+  it("two sessions on one computer in this process each release their own slot", async () => {
+    const first = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 2 }), bootOpts)
+    const second = await computerSandboxProvider.connect!(first.sandboxId, spec(controller.url, { maxSessions: 2 }), bootOpts)
+    expect(controller.sessions.get(first.sandboxId)).toBe(2)
+    await first.stop()
+    expect(controller.sessions.get(first.sandboxId)).toBe(1)
+    expect(controller.removed).toEqual([])
+    await second.stop()
+    expect(controller.sessions.get(first.sandboxId)).toBe(0)
+    expect(controller.removed).toEqual([first.sandboxId])
+  })
+
+  it("stop keeps the computer when the detach is not answered", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    controller.options.detachStatus = 500
+    await expect(booted.stop()).rejects.toThrow(/left in place/)
+    expect(controller.removed).toEqual([])
+    expect(controller.states.get(booted.sandboxId)).toBe("running")
+    controller.options.detachStatus = undefined
+    await booted.stop()
+    expect(controller.removed).toEqual([booted.sandboxId])
+  })
+
+  it("pause detaches before suspending, and connect attaches again", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    await booted.pause!()
+    expect(controller.sessions.get(booted.sandboxId)).toBe(0)
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url), bootOpts)
+    expect(controller.sessions.get(again.sandboxId) ?? 0).toBe(1)
+    await again.stop()
+  })
+
+  it("connect is refused when the controller reports the computer full", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 1 }), bootOpts)
+    // A second process: the local count is not shared, the controller's is.
+    await expect(
+      computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, { maxSessions: 5 }), bootOpts),
+    ).rejects.toThrow(/maximum number of sessions/)
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+  })
+
+  it("works against a controller without the attach routes", async () => {
+    controller.options.noSessionRoutes = true
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    await booted.stop()
+    expect(controller.removed).toEqual([booted.sandboxId])
+  })
+})
+
 describe("computerSandboxProvider.connect + probe", () => {
   let controller: FakeController
 

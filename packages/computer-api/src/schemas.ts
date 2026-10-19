@@ -7,7 +7,9 @@
  *   POST   /v1/computers/:id/exec   synchronous exec of an argv array
  *   POST   /v1/computers/:id/suspend  full snapshot + stop
  *   POST   /v1/computers/:id/resume   restore into a FRESH computer
- *   DELETE /v1/computers/:id        rm + snapshot cleanup
+ *   POST   /v1/computers/:id/attach   take a session slot
+ *   POST   /v1/computers/:id/detach   release a session slot
+ *   DELETE /v1/computers/:id        rm + snapshot cleanup (?force=true skips the session check)
  *
  * These are deliberately MINIMAL: only the fields a client actually
  * consumes are declared, and every schema allows (and preserves) extra
@@ -63,6 +65,8 @@ export const createComputerRequestSchema = z.object({
   rootDiskMiB: z.number().int().optional(),
   /** Computer TTL seconds. */
   ttl: z.number().int().optional(),
+  /** Concurrent sessions the computer is sized for (controller default 1). */
+  maxSessions: z.number().int().optional(),
   /** Environment variables injected into the computer. */
   env: z.record(z.string(), z.string()).optional(),
   /** Deny-by-default egress allowlist; a computer created without one has no DNS. */
@@ -138,3 +142,19 @@ export const resumeResponseSchema = z.object({
   state: z.string().optional(),
 }).passthrough()
 export type ResumeResponse = z.infer<typeof resumeResponseSchema>
+
+// ── POST /v1/computers/:id/attach | detach ────────────────────────────
+
+/**
+ * 200 response body of `POST /v1/computers/:id/attach` and `.../detach`:
+ * the controller-held session count after the call and the cap the computer
+ * was sized for. Neither route takes a body. Attach answers 409 when the
+ * computer already hosts `maxSessions` sessions; detach floors at 0.
+ * `DELETE /v1/computers/:id` answers 409 while sessions are attached unless
+ * the `force=true` query parameter is passed.
+ */
+export const sessionsResponseSchema = z.object({
+  sessions: z.number().int().optional(),
+  maxSessions: z.number().int().optional(),
+}).passthrough()
+export type SessionsResponse = z.infer<typeof sessionsResponseSchema>

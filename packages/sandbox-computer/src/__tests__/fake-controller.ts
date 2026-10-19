@@ -14,6 +14,7 @@ import {
   execRequestSchema,
   execResponseSchema,
   resumeResponseSchema,
+  sessionsResponseSchema,
   suspendResponseSchema,
 } from "@agentproto/computer-api"
 
@@ -40,6 +41,10 @@ export interface FakeControllerOptions {
   onSuspend?: () => void
   /** Ports the controller reports as published (create + GET). */
   publishedPorts?: Array<{ host: number; guest: number }>
+  /** Model a controller without the attach/detach routes (404). */
+  noSessionRoutes?: boolean
+  /** Make detach answer this status instead of releasing the slot. */
+  detachStatus?: number
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
 }
@@ -53,8 +58,19 @@ export class FakeController {
   readonly resumed: string[] = []
   readonly removed: string[] = []
   readonly states = new Map<string, string>()
+  /** Controller-held session refcount and per-computer cap. */
+  readonly sessions = new Map<string, number>()
+  readonly maxSessions = new Map<string, number>()
   readonly fileSystem = new Map<string, string>()
-  private nextId = 1
+  // Process-wide so ids never repeat across instances: the provider keeps
+  // per-id bookkeeping at module level.
+  private static idCounter = 1
+  private get nextId(): number {
+    return FakeController.idCounter
+  }
+  private set nextId(value: number) {
+    FakeController.idCounter = value
+  }
   private nextStateSnapshot: string | undefined = undefined
   private lastCreateState = "running"
 
@@ -113,6 +129,7 @@ export class FakeController {
       const state = this.nextStateSnapshot ?? this.lastCreateState
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
+      this.maxSessions.set(id, typeof parsed.maxSessions === "number" ? parsed.maxSessions : 1)
       const responseBody = { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] }
       assertContract(createComputerResponseSchema, responseBody)
       return reply(res, 201, responseBody)
@@ -128,7 +145,28 @@ export class FakeController {
       assertContract(computerStatusSchema, responseBody)
       return reply(res, 200, responseBody)
     }
+    if (url.pathname.endsWith("/attach") && req.method === "POST" && !this.options.noSessionRoutes) {
+      const held = this.sessions.get(id) ?? 0
+      const max = this.maxSessions.get(id) ?? 1
+      if (held >= max) return reply(res, 409, { error: "session limit reached", sessions: held, maxSessions: max })
+      this.sessions.set(id, held + 1)
+      const attachBody = { sessions: held + 1, maxSessions: max }
+      assertContract(sessionsResponseSchema, attachBody)
+      return reply(res, 200, attachBody)
+    }
+    if (url.pathname.endsWith("/detach") && req.method === "POST" && !this.options.noSessionRoutes) {
+      if (this.options.detachStatus) return reply(res, this.options.detachStatus, { error: "detach failed" })
+      const held = Math.max((this.sessions.get(id) ?? 0) - 1, 0)
+      this.sessions.set(id, held)
+      const detachBody = { sessions: held, maxSessions: this.maxSessions.get(id) ?? 1 }
+      assertContract(sessionsResponseSchema, detachBody)
+      return reply(res, 200, detachBody)
+    }
     if (req.method === "DELETE") {
+      const attached = this.sessions.get(id) ?? 0
+      if (attached > 0 && url.searchParams.get("force") !== "true") {
+        return reply(res, 409, { error: "computer has attached sessions", sessions: attached })
+      }
       this.removed.push(id)
       this.states.delete(id)
       const deleteBody = { ok: true }

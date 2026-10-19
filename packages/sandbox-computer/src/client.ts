@@ -15,11 +15,13 @@ import {
   errorResponseSchema,
   execResponseSchema,
   resumeResponseSchema,
+  sessionsResponseSchema,
   suspendResponseSchema,
   type ComputerStatus,
   type CreateComputerResponse,
   type ExecResponse,
   type ResumeResponse,
+  type SessionsResponse,
   type SuspendResponse,
 } from "@agentproto/computer-api"
 
@@ -72,6 +74,8 @@ export interface CreateComputerInput {
   memoryMiB?: number
   rootDiskMiB?: number
   ttl?: number
+  /** Concurrent sessions the computer is sized for (controller default 1). */
+  maxSessions?: number
   env?: Record<string, string>
   /** Deny-by-default egress allowlist; a computer created without one has no DNS. */
   egress?: { allow: Array<{ host: string; port: number }> }
@@ -223,8 +227,24 @@ export class ComputerControllerClient {
     return this.request("POST", `/v1/computers/${encodeURIComponent(id)}/resume`, resumeResponseSchema)
   }
 
-  /** `DELETE /v1/computers/:id` — rm + snapshot cleanup. */
-  async remove(id: string): Promise<void> {
-    await this.request("DELETE", `/v1/computers/${encodeURIComponent(id)}`, suspendResponseSchema)
+  /** `POST /v1/computers/:id/attach` — take a controller-held session slot.
+   *  409 when the computer already hosts `maxSessions` sessions. */
+  async attach(id: string): Promise<SessionsResponse> {
+    return this.request("POST", `/v1/computers/${encodeURIComponent(id)}/attach`, sessionsResponseSchema)
+  }
+
+  /** `POST /v1/computers/:id/detach` — release a session slot (floors at 0). */
+  async detach(id: string): Promise<SessionsResponse> {
+    return this.request("POST", `/v1/computers/${encodeURIComponent(id)}/detach`, sessionsResponseSchema)
+  }
+
+  /** `DELETE /v1/computers/:id` — rm + snapshot cleanup. 409 while sessions
+   *  are attached, unless `force`. */
+  async remove(id: string, options: { force?: boolean } = {}): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/v1/computers/${encodeURIComponent(id)}${options.force ? "?force=true" : ""}`,
+      suspendResponseSchema,
+    )
   }
 }
