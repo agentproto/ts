@@ -4446,7 +4446,8 @@ export function registerSessionTools(
       "is what lets `branch_gc` with `includeReviewed` reclaim an unmerged " +
       "ref, and it must cite evidence. An `operator` block records a human " +
       "approval that bypasses `branch_gc`'s line-coverage guard for this " +
-      "exact tip (recorded with `recordedAt`). This tool only stores " +
+      "exact tip (recorded with `recordedAt`); it is accepted only on the " +
+      "operator surface, never from an agent session. This tool only stores " +
       "verdicts; it never deletes anything.",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
@@ -4497,10 +4498,27 @@ export function registerSessionTools(
         return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
       }
       try {
-        const { repoRoot: _r, workspaceSlug: _w, ...verdict } = input
+        const { repoRoot: _r, workspaceSlug: _w, operator, ...verdict } = input
+        // Operator approval is a different trust boundary from the review. A
+        // session is identified here by the daemon-verified `?callerSessionId=`
+        // (never by a tool argument), so an automated reviewer cannot
+        // self-certify the guard override. The operator root MCP/HTTP surfaces
+        // arrive with no caller session and may set it; see POST
+        // /branches/gc/verdict for the authenticated REST route.
+        if (operator && callerSessionId !== undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "branch_gc_verdict failed: operator approval must be recorded through the operator surface, not by a session",
+              },
+            ],
+            isError: true,
+          }
+        }
         // A reviewer names its review worktree; the verdict keys on the repo.
         const repoRoot = await ownerRepoOfReviewWorktree(resolved.repoRoot)
-        const record = await recordBranchGcVerdict({ repoRoot, verdict })
+        const record = await recordBranchGcVerdict({ repoRoot, verdict: { ...verdict, ...(operator ? { operator } : {}) } })
         return { content: [{ type: "text", text: JSON.stringify({ recorded: true, record }) }] }
       } catch (err) {
         return {

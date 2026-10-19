@@ -84,6 +84,7 @@
  */
 
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -1800,7 +1801,7 @@ export type BranchTriageVerdict = (typeof BRANCH_TRIAGE_VERDICTS)[number]
  */
 export const branchVerdictSchema = z
   .object({
-    name: z.string().min(1),
+    name: z.string().trim().min(1),
     sha: z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/, "sha must be a full 40- or 64-char lowercase hex object id"),
     triage: z.object({
       verdict: z.enum(BRANCH_TRIAGE_VERDICTS),
@@ -1816,12 +1817,12 @@ export const branchVerdictSchema = z
         evidence: z.array(z.string().min(1)),
       })
       .optional(),
-    reviewer: z.string().min(1),
+    reviewer: z.string().trim().min(1),
     /** Operator approval that overrides `lineCoverageGuard` for this exact tip. */
     operator: z
       .object({
-        by: z.string().min(1),
-        note: z.string().optional(),
+        by: z.string().trim().min(1),
+        note: z.string().trim().min(1).optional(),
       })
       .optional(),
   })
@@ -1877,10 +1878,17 @@ const VERDICT_LOCK_STALE_MS = 60_000
 async function acquireVerdictFileLock(lockPath: string): Promise<() => Promise<void>> {
   const deadline = Date.now() + VERDICT_LOCK_TIMEOUT_MS
   for (;;) {
+    const token = `${process.pid}:${randomUUID()}`
     try {
-      await writeFile(lockPath, `${process.pid}\n`, { encoding: "utf8", flag: "wx" })
+      await writeFile(lockPath, `${token}\n`, { encoding: "utf8", flag: "wx" })
       return async () => {
-        await unlink(lockPath).catch(() => {})
+        // Only release our own lock: if we stalled past the stale window and
+        // another process reaped and replaced it, its lock must survive.
+        try {
+          if ((await readFile(lockPath, "utf8")).trim() === token) await unlink(lockPath)
+        } catch {
+          // Already gone (or reaped) — nothing to release.
+        }
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err

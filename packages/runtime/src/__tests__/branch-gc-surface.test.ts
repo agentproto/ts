@@ -254,10 +254,17 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       recordBranchGcVerdict?: BranchGcVerdictRecorder
       readBranchGcVerdict?: BranchGcVerdictReader
       branchGcJobsDir?: string
+      callerSessionId?: string
     } = {},
   ) {
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
-    registerSessionTools(server, { workspace: process.cwd(), registry: createSessionsRegistry({ persist: false }), ...opts })
+    const { callerSessionId, ...deps } = opts
+    registerSessionTools(server, {
+      workspace: process.cwd(),
+      registry: createSessionsRegistry({ persist: false }),
+      ...deps,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     const client = new Client({ name: "test", version: "0.0.1" })
@@ -337,6 +344,37 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(text(r)).toContain("gate.evidence")
     } finally {
       await failing.close()
+    }
+  })
+
+  it("branch_gc_verdict refuses an operator approval from a session caller", async () => {
+    const { recorder, seen } = recordingRecorder()
+    const client = await harness({ recordBranchGcVerdict: recorder, callerSessionId: "sess_reviewer" })
+    try {
+      const refused = await client.callTool({
+        name: "branch_gc_verdict",
+        arguments: { repoRoot: "/repo", ...VERDICT, operator: { by: "Jeremy" } },
+      })
+      expect(isError(refused)).toBe(true)
+      expect(text(refused)).toContain("operator surface")
+      expect(seen()).toBeUndefined()
+      const reviewerOnly = await client.callTool({ name: "branch_gc_verdict", arguments: { repoRoot: "/repo", ...VERDICT } })
+      expect(isError(reviewerOnly)).toBe(false)
+    } finally {
+      await client.close()
+    }
+
+    const { recorder: operatorRecorder, seen: operatorSeen } = recordingRecorder()
+    const operatorClient = await harness({ recordBranchGcVerdict: operatorRecorder })
+    try {
+      const accepted = await operatorClient.callTool({
+        name: "branch_gc_verdict",
+        arguments: { repoRoot: "/repo", ...VERDICT, operator: { by: "Jeremy" } },
+      })
+      expect(isError(accepted)).toBe(false)
+      expect(operatorSeen()).toMatchObject({ verdict: { operator: { by: "Jeremy" } } })
+    } finally {
+      await operatorClient.close()
     }
   })
 

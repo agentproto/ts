@@ -5,7 +5,7 @@
  * The forge is always a test double.
  */
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath, chmod } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, chmod, stat, utimes } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
@@ -563,6 +563,14 @@ describe("branch gc — verdict store", () => {
         verdict: { ...verdictFor("feat/x", tip, false), operator: { by: "TEST" } },
       }),
     ).rejects.toThrow(/other than the reviewer/)
+    await expect(
+      recordBranchVerdict({
+        repoRoot: repo,
+        repoName: "fixture",
+        store,
+        verdict: { ...verdictFor("feat/x", tip, false), operator: { by: "   " } },
+      }),
+    ).rejects.toThrow(/operator\.by/)
   })
 
   it("includeReviewed promotes a review ref only for the SAME tip sha", async () => {
@@ -608,6 +616,25 @@ describe("branch gc — verdict store", () => {
     for (let i = 0; i < tips.length; i++) {
       expect(await reader.get("fixture", tips[i] as string)).toMatchObject({ name: `feat/race-${i}`, sha: tips[i] })
     }
+  })
+
+  it("reaps a stale lock and leaves no lock behind", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/locked", { "locked.txt": "locked\n" })
+    const path = join(await tmp("branch-gc-verdicts-"), "verdicts.json")
+    const lockPath = `${path}.lock`
+    await writeFile(lockPath, "dead-process:dead-token\n")
+    const old = new Date(Date.now() - 120_000)
+    await utimes(lockPath, old, old)
+
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: new FileBranchVerdictStore(path),
+      verdict: verdictFor("feat/locked", tip, false),
+    })
+    await expect(stat(lockPath)).rejects.toThrow()
+    expect(await new FileBranchVerdictStore(path).get("fixture", tip)).toMatchObject({ name: "feat/locked" })
   })
 
   it("a long-lived reader observes a verdict another store wrote (no stale cache)", async () => {

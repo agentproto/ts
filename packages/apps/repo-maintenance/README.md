@@ -70,9 +70,12 @@ write lands with an atomic rename, so the parallelism-4 review fan-out cannot
 lose a verdict. Readers revalidate against the file's mtime/size, so a
 long-lived store also observes writes made elsewhere.
 
-`operator.by` must name someone other than the verdict's `reviewer`: the
-reviewer agent cannot self-certify the override it is guarded against. An
-operator block without `gate.agree: true` is not an approval.
+The approval is accepted only through an operator surface: `branch_gc_verdict`
+refuses an `operator` block when the daemon-verified caller is an agent
+session, and `operator.by` must name someone other than the verdict's
+`reviewer`. The reviewer agent therefore cannot self-certify the override it is
+guarded against. An operator block without `gate.agree: true` is not an
+approval.
 
 ## Installing
 

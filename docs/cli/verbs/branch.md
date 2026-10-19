@@ -114,10 +114,13 @@ operator approval for the **same tip sha** with `branch_gc_verdict`:
 ```
 
 `operator.by` is required; `note` is optional. The approval is stored with the
-verdict's `recordedAt` timestamp. `operator.by` must name someone other than
-the verdict's `reviewer` — an automated reviewer cannot self-certify the
-override it is guarded against — and an operator block without
-`gate.agree: true` is not an approval. With `includeReviewed: true` a same-tip
+verdict's `recordedAt` timestamp. It is accepted only through an operator
+surface: the `branch_gc_verdict` MCP tool refuses an operator block when the
+daemon-verified caller is an agent session (the `?callerSessionId=` identity),
+and `operator.by` must name someone other than the verdict's `reviewer`, so an
+automated reviewer cannot self-certify the override it is guarded against. An
+operator block without `gate.agree: true` is not an approval. With
+`includeReviewed: true` a same-tip
 verdict that has `gate.agree: true` **and** an `operator` block reclaims
 despite the guard; the plan entry carries
 `verdictGuard: "bypassed by operator <by>...: <guard reason>"`, the apply
