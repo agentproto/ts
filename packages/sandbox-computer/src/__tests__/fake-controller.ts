@@ -62,6 +62,12 @@ export class FakeController {
   readonly suspended: string[] = []
   readonly resumed: string[] = []
   readonly removed: string[] = []
+  readonly daemonProxyRequests: Array<{
+    id: string
+    path: string
+    method: string
+    headers: Record<string, string | string[] | undefined>
+  }> = []
   readonly states = new Map<string, string>()
   /** Controller-held session refcount and per-computer cap. */
   readonly sessions = new Map<string, number>()
@@ -114,6 +120,33 @@ export class FakeController {
     this.requestHeaders.push(req.headers)
     for (const [name, value] of Object.entries(this.options.requireHeaders ?? {})) {
       if (req.headers[name] !== value) return reply(res, 403, { error: "edge refused" })
+    }
+
+    // Daemon-proxy route: mirrors the real controller's
+    // `/v1/computers/:id/daemon/*` — gated by `X-Controller-Authorization` +
+    // `X-Tenant-Id`, NOT the regular `Authorization` bearer (which belongs
+    // to the box's own daemon and passes through untouched). Bypasses the
+    // generic auth check below entirely, same as the real route.
+    const daemonMatch = /^\/v1\/computers\/([^/]+)\/daemon(\/.*)?$/.exec(url.pathname)
+    if (daemonMatch) {
+      const id = decodeURIComponent(daemonMatch[1] as string)
+      const ctrlAuth = req.headers["x-controller-authorization"]
+      if (ctrlAuth !== `Bearer ${this.options.token}`) return reply(res, 401, { error: "unauthorized" })
+      if (req.headers["x-tenant-id"] !== "tenant-a") {
+        return reply(res, 403, { error: "missing X-Tenant-Id header" })
+      }
+      const daemonPath = (daemonMatch[2] ?? "/") + url.search
+      this.daemonProxyRequests.push({
+        id,
+        path: daemonPath,
+        method: req.method ?? "GET",
+        headers: { ...req.headers },
+      })
+      return reply(res, 200, {
+        echoPath: daemonPath,
+        echoMethod: req.method ?? "GET",
+        sawAuthorization: req.headers.authorization ?? null,
+      })
     }
 
     // Auth: bearer + tenant header, exactly the real middleware's shape.

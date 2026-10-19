@@ -151,38 +151,90 @@ describe("daemon route mode", () => {
     }
   })
 
-  it("points the daemon URL at the controller route and carries both credentials", async () => {
+  it("fronts the controller route with a local loopback proxy — the controller token and edge secret never leave this process", async () => {
     const booted = await computerSandboxProvider.boot(
       spec(controller.url, { daemonRoute: true, extraHeaders: { "CF-Access-Client-Id": "id-1" } }),
       bootOpts,
     )
-    expect(booted.mcpUrl).toBe(`${controller.url}/v1/computers/${booted.sandboxId}/daemon/mcp`)
-    expect(booted.authHeaders?.["X-Controller-Authorization"]).toBe(`Bearer ${SERVICE_TOKEN}`)
-    expect(booted.authHeaders?.["X-Tenant-Id"]).toBe("tenant-a")
-    expect(booted.authHeaders?.["CF-Access-Client-Id"]).toBe("id-1")
-    // The daemon keeps its own bearer in Authorization.
-    expect(booted.authHeaders?.Authorization).toBe(`Bearer ${booted.token}`)
-    expect(booted.authHeaders?.Authorization).not.toContain(SERVICE_TOKEN)
+    // mcpUrl is a local loopback address, not the controller's own URL.
+    expect(booted.mcpUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+    expect(booted.mcpUrl).not.toContain(controller.url.replace(/^http:\/\//, ""))
+    // The only header a caller gets is the box's own per-box bearer — never
+    // the controller's tenant-wide token or the edge Access secret. This is
+    // exactly what a caller would persist into a session descriptor or a
+    // paste-ready .mcp.json (buildMcpConfigSnippet), so it is the whole
+    // point of the fix.
+    expect(booted.authHeaders).toEqual({ Authorization: `Bearer ${booted.token}` })
+    const snippet = JSON.stringify(booted)
+    expect(snippet).not.toContain(SERVICE_TOKEN)
+    expect(snippet).not.toContain("id-1")
+    expect(snippet).not.toContain("X-Controller-Authorization")
+
+    // The local proxy still gets the request through to the real route,
+    // with the controller credential and the edge secret attached there —
+    // the daemon's own Authorization passes through untouched.
+    const res = await fetch(`${booted.mcpUrl}?q=1`, { headers: booted.authHeaders })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { echoPath: string; sawAuthorization: string | null }
+    expect(body.echoPath).toBe("/mcp?q=1")
+    expect(body.sawAuthorization).toBe(`Bearer ${booted.token}`)
+    const seen = controller.daemonProxyRequests.at(-1)
+    expect(seen?.headers["x-controller-authorization"]).toBe(`Bearer ${SERVICE_TOKEN}`)
+    expect(seen?.headers["x-tenant-id"]).toBe("tenant-a")
+    expect(seen?.headers["cf-access-client-id"]).toBe("id-1")
     await booted.stop()
   })
 
-  it("is enabled by COMPUTER_DAEMON_ROUTE and survives a reconnect", async () => {
+  it("is enabled by COMPUTER_DAEMON_ROUTE and survives a reconnect, still never exposing the controller token", async () => {
     process.env.COMPUTER_DAEMON_ROUTE = "1"
     const shared = { maxSessions: 99 }
     const booted = await computerSandboxProvider.boot(spec(controller.url, shared), bootOpts)
     const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, shared), bootOpts)
-    expect(again.mcpUrl).toBe(`${controller.url}/v1/computers/${booted.sandboxId}/daemon/mcp`)
-    expect(again.authHeaders?.["X-Controller-Authorization"]).toBe(`Bearer ${SERVICE_TOKEN}`)
+    expect(again.mcpUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+    expect(again.authHeaders).toEqual({ Authorization: `Bearer ${again.token}` })
     await again.stop()
   })
 
-  it("an explicit gatewayUrl wins over the route", async () => {
+  it("an explicit gatewayUrl wins over the route, and carries no controller credential", async () => {
     const booted = await computerSandboxProvider.boot(
       spec(controller.url, { daemonRoute: true, gatewayUrl: "http://gw.test:{port}/{id}" }),
       bootOpts,
     )
     expect(booted.mcpUrl).toBe(`http://gw.test:18790/${booted.sandboxId}/mcp`)
+    // Bypassing the route entirely: no controller secret belongs here either.
+    expect(booted.authHeaders).toEqual({ Authorization: `Bearer ${booted.token}` })
     await booted.stop()
+  })
+
+  it("rejects extraPorts and expose() in true route mode instead of pointing them at the daemon", async () => {
+    const booted = await computerSandboxProvider.boot(
+      { ...spec(controller.url, { daemonRoute: true }), extraPorts: [9999] } as unknown as SandboxSpec,
+      bootOpts,
+    ).catch((err: unknown) => err as Error)
+    expect((booted as Error).message).toMatch(/extraPorts are not reachable/)
+
+    const ok = await computerSandboxProvider.boot(spec(controller.url, { daemonRoute: true }), bootOpts)
+    await expect(ok.expose!(9999)).rejects.toThrow(/cannot expose arbitrary ports/)
+    await ok.stop()
+  })
+
+  it("restarts a stale-origin daemon through the route on reconnect, same as the gatewayUrl path", async () => {
+    const shared = { daemonRoute: true, maxSessions: 99 }
+    const booted = await computerSandboxProvider.boot(spec(controller.url, shared), bootOpts)
+    const first = controller.daemonOrigin
+    expect(first).toBeTruthy()
+    // Model the controller republishing under a route that resolves to a
+    // different origin (e.g. a tunnel hostname change) by booting fresh and
+    // reconnecting against a controller whose recorded origin no longer
+    // matches what this reconnect would compute — same staleness check the
+    // {hostPort} gatewayUrl path already relies on.
+    controller.daemonOrigin = "http://stale.invalid"
+    const again = await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, shared), bootOpts)
+    // A restart was forced: the recorded origin is the current one again,
+    // not the stale value we injected.
+    expect(controller.daemonOrigin).not.toBe("http://stale.invalid")
+    expect(again.mcpUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+    await again.stop()
   })
 
   it("leaves authHeaders unchanged when the route mode is off", async () => {

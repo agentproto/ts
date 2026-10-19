@@ -24,13 +24,19 @@
  * process-local.
  *
  * TOKENS: the controller service token travels only in the Authorization
- * header. The per-box daemon token is generated per boot, written into the
- * serve command executed IN the box (and a 0600 file there, so a reconnect
- * can read it back) and returned only as `BootedSandbox.token`/`authHeaders`
- * for the host to authenticate with. Neither is ever logged by this package,
- * embedded in the create `env` payload, or included in an error message (the
- * client redacts the service token; this file never puts a token into a
- * message).
+ * header of this process's OWN calls to the controller — never in anything
+ * handed back to a caller. The per-box daemon token is generated per boot,
+ * written into the serve command executed IN the box (and a 0600 file
+ * there, so a reconnect can read it back) and returned as
+ * `BootedSandbox.token`/`authHeaders` for the host to authenticate with: in
+ * `daemonRoute` mode that is the ONLY credential a caller ever sees —
+ * `wrapBox` fronts the controller's daemon-proxy route with a local
+ * loopback proxy (`local-daemon-proxy.ts`) that attaches the controller
+ * bearer and any edge Access secret itself, so neither can end up in a
+ * persisted session descriptor or a paste-ready `.mcp.json`. Neither token
+ * is ever logged by this package, embedded in the create `env` payload, or
+ * included in an error message (the client redacts the service token; this
+ * file never puts a token into a message).
  */
 
 import { randomUUID } from "node:crypto"
@@ -50,6 +56,7 @@ import {
   sanitizeExtraHeaders,
   type ComputerClientConfig,
 } from "./client.js"
+import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
 import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
@@ -254,14 +261,20 @@ function resolveClientConfig(spec: SandboxSpec, config: ComputerSandboxConfig): 
   }
 }
 
-/** In `daemonRoute` mode, point the gateway at the controller's daemon route
- *  (unless one was set explicitly) and compute the headers every daemon call
- *  must carry. Identity otherwise. */
+/** In `daemonRoute` mode (and only when the caller did not already supply
+ *  its own `gatewayUrl` — that means a direct network path to the box, so
+ *  there is nothing to route through the controller and no controller
+ *  credential belongs on daemon calls), point the gateway at the
+ *  controller's daemon route and compute the headers every call against it
+ *  must carry. `routeHeaders` being set is `wrapBox`'s signal to put a
+ *  LOCAL loopback proxy in front of that URL instead of handing the real
+ *  one — with the controller credential — to the caller; see
+ *  `local-daemon-proxy.ts`. Identity otherwise. */
 function applyDaemonRoute(config: ComputerSandboxConfig, client: ComputerClientConfig): ComputerSandboxConfig {
-  if (!config.daemonRoute) return config
+  if (!config.daemonRoute || config.gatewayUrl) return config
   return {
     ...config,
-    gatewayUrl: config.gatewayUrl ?? `${client.baseUrl.replace(/\/+$/, "")}/v1/computers/{id}/daemon`,
+    gatewayUrl: `${client.baseUrl.replace(/\/+$/, "")}/v1/computers/{id}/daemon`,
     routeHeaders: {
       ...sanitizeExtraHeaders(client.extraHeaders),
       "X-Controller-Authorization": `Bearer ${client.token}`,
@@ -794,7 +807,7 @@ async function hardExec(
 
 // ── handle wrapping ───────────────────────────────────────────────────
 
-function wrapBox(
+async function wrapBox(
   client: ComputerControllerClient,
   id: string,
   spec: SandboxSpec,
@@ -802,30 +815,70 @@ function wrapBox(
   port: number,
   published: readonly PortPublish[],
   daemonToken?: string,
-): BootedSandbox {
+): Promise<BootedSandbox> {
+  // `routeHeaders` is only set in true daemonRoute mode (no explicit
+  // gatewayUrl override) — see `applyDaemonRoute`. The controller's
+  // daemon-proxy route reaches exactly one guest port (the daemon's), so
+  // any other port is simply unreachable through it: reject rather than
+  // hand back a URL that silently points at the wrong place.
+  const trueRouteMode = config.routeHeaders !== undefined
+  if (trueRouteMode && (spec.extraPorts ?? []).length > 0) {
+    throw new Error(
+      `computer "${id}": daemonRoute mode can only reach the daemon's own port (the controller's ` +
+        `daemon-proxy route proxies guest port ${port} only) — extraPorts are not reachable this way. ` +
+        "Set an explicit config.gatewayUrl with a {port} placeholder instead.",
+    )
+  }
   const extraPorts: Record<number, string> = {}
-  for (const extra of spec.extraPorts ?? []) {
-    extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl, published)
+  if (!trueRouteMode) {
+    for (const extra of spec.extraPorts ?? []) {
+      extraPorts[extra] = boxUrl(id, extra, config.gatewayUrl, published)
+    }
   }
 
+  // In true daemonRoute mode, a LOCAL loopback proxy stands in for the real
+  // controller URL: it is the one place `routeHeaders` (the tenant-wide
+  // controller bearer, and any edge Access secret) gets attached, so
+  // `mcpUrl`/`authHeaders` below — which a caller may persist into a
+  // session descriptor or a paste-ready `.mcp.json` — only ever carry the
+  // box's own per-box daemon token. See `local-daemon-proxy.ts`.
+  let localProxy: LocalDaemonProxy | undefined
+  let mcpUrl: string
+  if (trueRouteMode) {
+    const remoteDaemonUrl = boxUrl(id, port, config.gatewayUrl, published)
+    localProxy = await startLocalDaemonProxy(remoteDaemonUrl, config.routeHeaders as Record<string, string>)
+    mcpUrl = `${localProxy.url}/mcp`
+  } else {
+    mcpUrl = `${boxUrl(id, port, config.gatewayUrl, published).replace(/\/+$/, "")}/mcp`
+  }
+  const closeProxy = (): void => localProxy?.close()
+
   return {
-    mcpUrl: `${boxUrl(id, port, config.gatewayUrl, published).replace(/\/+$/, "")}/mcp`,
+    mcpUrl,
     sandboxId: id,
-    // The daemon is gated by its per-box `--auth-token` (the controller's
-    // port publish is not a loopback hop inside the guest, so an open daemon
+    // The daemon is gated by its per-box `--auth-token` regardless of
+    // `opts.expose` (the controller's port publish, or the daemon-proxy
+    // route, is never a loopback hop inside the guest, so an open daemon
     // would answer `tunnel_unauthorized`). The host presents it via
-    // `authHeaders`; a reconnect reads it back from the box. Absent only for a
-    // template-autostarted daemon that was never given one.
-    ...(daemonToken
-      ? { token: daemonToken, authHeaders: { ...config.routeHeaders, Authorization: `Bearer ${daemonToken}` } }
-      : config.routeHeaders
-        ? { authHeaders: config.routeHeaders }
-        : {}),
+    // `authHeaders`; a reconnect reads it back from the box. Absent only for
+    // a template-autostarted daemon that was never given one — in which
+    // case there is nothing for a caller to present either.
+    ...(daemonToken ? { token: daemonToken, authHeaders: { Authorization: `Bearer ${daemonToken}` } } : {}),
     ...(Object.keys(extraPorts).length > 0 ? { ports: extraPorts } : {}),
-    expose(port: number): Promise<{ url: string }> {
-      return Promise.resolve({ url: boxUrl(id, port, config.gatewayUrl, published) })
+    expose(exposePort: number): Promise<{ url: string }> {
+      if (trueRouteMode) {
+        return Promise.reject(
+          new Error(
+            `computer "${id}": daemonRoute mode cannot expose arbitrary ports (only the daemon's own ` +
+              "port is reachable through the controller's daemon-proxy route). Set an explicit " +
+              "config.gatewayUrl to expose ports.",
+          ),
+        )
+      }
+      return Promise.resolve({ url: boxUrl(id, exposePort, config.gatewayUrl, published) })
     },
     async stop(): Promise<void> {
+      closeProxy()
       releaseSessionSlot(id)
       const remaining = await detachController(client, id)
       // Other sessions still attached keep the computer; the last one out
@@ -850,6 +903,7 @@ function wrapBox(
       probeClientConfigs.delete(id)
     },
     async pause(): Promise<void> {
+      closeProxy()
       releaseSessionSlot(id)
       await detachController(client, id)
       await client.suspend(id)
