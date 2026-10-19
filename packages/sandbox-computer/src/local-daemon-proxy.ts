@@ -186,6 +186,13 @@ function forwardUpgrade(
   const upstream: Socket | TLSSocket = isTls
     ? tlsConnect({ host: target.hostname, port, servername: target.hostname })
     : netConnect({ host: target.hostname, port })
+  // The client socket is already handed off by the HTTP server at this
+  // point (before the upstream TCP/TLS handshake even completes), so this
+  // is the only chance for close() to reach it: tracking inside the
+  // connect callback leaves a window, between this call and that callback,
+  // where close() finds nothing to destroy.
+  tracked.add(socket)
+  tracked.add(upstream)
   const teardown = (): void => {
     upstream.destroy()
     socket.destroy()
@@ -205,6 +212,13 @@ function forwardUpgrade(
     forget()
   })
   upstream.once(isTls ? "secureConnect" : "connect", () => {
+    // A close() that ran during the handshake already destroyed both ends:
+    // piping now would resurrect the tunnel past teardown.
+    if (socket.destroyed || upstream.destroyed) {
+      upstream.destroy()
+      socket.destroy()
+      return
+    }
     const path = `${target.pathname.replace(/\/+$/, "")}${resolved.path}${resolved.search}`
     const lines = [`${req.method ?? "GET"} ${path} HTTP/1.1`, `host: ${target.host}`]
     const headers = mergedHeaders(req.headers, extraHeaders, true)
@@ -215,8 +229,6 @@ function forwardUpgrade(
     }
     upstream.write(`${lines.join("\r\n")}\r\n\r\n`)
     if (head.length > 0) upstream.write(head)
-    tracked.add(socket)
-    tracked.add(upstream)
     socket.pipe(upstream)
     upstream.pipe(socket)
   })
