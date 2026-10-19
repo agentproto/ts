@@ -382,6 +382,16 @@ const capabilitiesSchema = z.object({
    */
   nativeToolSearch: z.boolean().optional(),
   /**
+   * Harness can call an MCP tool that was never present in its last
+   * `tools/list`, after discovering it through the daemon's `tool_search`
+   * (or any search-then-call loop). Makes the daemon's deferred `?deferred=1`
+   * self-mount safe for this adapter. Absent/false ⇒ the daemon defaults the
+   * self-mount to eager, because a harness that validates calls against the
+   * advertised tool set rejects the hidden tool before the request ever
+   * reaches the gateway (opencode: "Model tried to call unavailable tool").
+   */
+  deferredToolDiscovery: z.boolean().optional(),
+  /**
    * Adapter can ingest a filesystem path that the host UI just placed
    * on disk (host-side drag-drop into a terminal pastes the path
    * here). Implies the adapter has a Read-file tool wired so the

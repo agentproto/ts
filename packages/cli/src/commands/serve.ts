@@ -53,6 +53,7 @@ import {
   makeWorktreeGcRunner,
   makeWorktreeAutoReclaimer,
   makeSandboxCheckpointReclaimer,
+  makeSandboxCheckpointGcRunner,
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
@@ -610,6 +611,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.nativeToolSearch === true
           ? { nativeToolSearch: true }
           : {}),
+        ...(adapter.handle.capabilities?.deferredToolDiscovery === true
+          ? { deferredToolDiscovery: true }
+          : {}),
       }
     } catch (err) {
       console.warn(
@@ -919,6 +923,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // /branches/gc[/verdict]`): the branch-gc engine over
         // @agentproto/worktree (defaults to a dry run), same dep reasoning.
         runBranchGc: makeBranchGcRunner(),
+        // Injected port behind `sandbox_checkpoint_gc`: the sandbox
+        // checkpoint-gc engine over @agentproto/worktree (dry run by default,
+        // re-classifies before each delete on apply).
+        runSandboxCheckpointGcSweep: makeSandboxCheckpointGcRunner(),
         recordBranchGcVerdict: makeBranchGcVerdictRecorder(),
         readBranchGcVerdict: makeBranchGcVerdictReader(),
         // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim

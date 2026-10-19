@@ -54,6 +54,10 @@ export interface ModelRolesOutput {
   models: Record<string, string>
   /** role → adapter its model requires, only for roles whose model id requires one. */
   adapters: Record<string, string>
+  /** role → named auth profile the role's session should bill, when one is configured. */
+  profiles: Record<string, string>
+  /** role → gateway/route the role's model should be reached through, when one is configured. */
+  routes: Record<string, string>
   /** The preset in effect (per-call `preset` > daemon `modelRolePreset`), when one is set. */
   preset?: string
   /** Every built-in preset: name → { description, roles }. */
@@ -109,6 +113,8 @@ export async function modelRoles(input: ModelRolesInput, deps: ModelRolesDeps = 
     roles,
     models: Object.fromEntries(roles.map(r => [r.role, r.model])),
     adapters: Object.fromEntries(roles.flatMap(r => (r.adapter !== undefined ? [[r.role, r.adapter]] : []))),
+    profiles: Object.fromEntries(roles.flatMap(r => (r.profile !== undefined ? [[r.role, r.profile]] : []))),
+    routes: Object.fromEntries(roles.flatMap(r => (r.route !== undefined ? [[r.role, r.route]] : []))),
     ...(preset !== undefined ? { preset } : {}),
     presets: MODEL_ROLE_PRESETS,
     ...(workspace && workspaceRoot ? { workspaceRoot } : {}),
@@ -127,8 +133,8 @@ export function registerModelRolesTools(server: McpServer, deps: ModelRolesDeps 
       "`modelRolePreset`) > `default` (built-in table). A role no layer knows is omitted. " +
       `Built-in roles: ${Object.keys(DEFAULT_MODEL_ROLES).join(", ")}. Presets: ` +
       `${Object.keys(MODEL_ROLE_PRESETS).join(", ")}. Returns \`roles\` (role, model, source, route?, profile?, ` +
-      "adapter?), flat `models` and `adapters` maps for use as a workflow step output, the `preset` in effect " +
-      "and every preset's definition.",
+      "adapter?), flat `models`, `adapters`, `profiles` and `routes` maps for use as a workflow step output, " +
+      "the `preset` in effect and every preset's definition.",
     {
       roles: z.array(z.string()).optional().describe("Only these roles. Omit for every built-in + configured role."),
       inputs: z

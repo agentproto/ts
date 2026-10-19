@@ -208,26 +208,50 @@ describe("resolveDeferredToolsGatewayOption — config.json's defaults.mcp.defer
 })
 
 describe("resolveSpawnDeferredTools", () => {
-  // spawnOverride × nativeToolSearch × roleDefault ⇒ ?deferred= override
-  // (undefined ⇒ none: the gateway's defaults.mcp.deferredTools applies).
-  const table: Array<[boolean | undefined, boolean | undefined, boolean | undefined, boolean | undefined]> = [
-    [undefined, undefined, undefined, undefined],
-    [undefined, undefined, true, true],
-    [undefined, undefined, false, false],
-    [undefined, false, true, true],
-    [undefined, true, undefined, false],
-    [undefined, true, true, false],
-    [undefined, true, false, false],
-    [true, true, undefined, true],
-    [true, true, false, true],
-    [false, true, true, false],
-    [true, false, false, true],
-    [false, undefined, true, false],
+  // spawnOverride × nativeToolSearch × deferredToolDiscovery × roleDefault
+  // ⇒ ?deferred= override (undefined ⇒ none: the gateway's
+  // defaults.mcp.deferredTools applies).
+  const table: Array<
+    [
+      boolean | undefined,
+      boolean | undefined,
+      boolean | undefined,
+      boolean | undefined,
+      boolean | undefined,
+    ]
+  > = [
+    // No capability declared: eager, even with no role default — a harness
+    // that cannot call a hidden tool must never receive ?deferred=1 (G5).
+    [undefined, undefined, undefined, undefined, false],
+    [undefined, undefined, false, undefined, false],
+    [undefined, undefined, false, true, false],
+    [undefined, undefined, true, undefined, undefined],
+    [undefined, undefined, true, true, true],
+    [undefined, undefined, true, false, false],
+    // A native-search harness gets the daemon eager to avoid double deferral.
+    [undefined, true, undefined, undefined, false],
+    [undefined, true, true, true, false],
+    [undefined, true, true, undefined, false],
+    [undefined, true, true, false, false],
+    [undefined, true, false, true, false],
+    // Spawn override always wins, capability or not.
+    [true, true, false, undefined, true],
+    [true, true, false, false, true],
+    [false, true, true, true, false],
+    [true, false, false, false, true],
+    [false, undefined, undefined, true, false],
   ]
   it.each(table)(
-    "spawn=%s native=%s role=%s ⇒ %s",
-    (spawnOverride, nativeToolSearch, roleDefault, expected) => {
-      expect(resolveSpawnDeferredTools({ spawnOverride, nativeToolSearch, roleDefault })).toBe(expected)
+    "spawn=%s native=%s discovery=%s role=%s ⇒ %s",
+    (spawnOverride, nativeToolSearch, deferredToolDiscovery, roleDefault, expected) => {
+      expect(
+        resolveSpawnDeferredTools({
+          spawnOverride,
+          nativeToolSearch,
+          deferredToolDiscovery,
+          roleDefault,
+        }),
+      ).toBe(expected)
     },
   )
 })

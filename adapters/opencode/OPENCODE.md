@@ -97,7 +97,7 @@ characters per token), prompt "Reply with exactly: OK. Do not use any tool.":
 | Clean `HOME`, empty dir, `daemonMount` eager (280 tools) | 428,530 | ~107k |
 | Clean `HOME`, empty dir, `daemonMount` + `deferredTools` |  96,608 | ~24k |
 | After: executor default (`lean`), `model-bench`        |  33,751 | ~8.4k |
-| After: executor default (`lean`) + `daemonMount` (deferred) | 67,385 | ~17k |
+| After: executor default (`lean`) + `daemonMount` (deferred, opt-in) | 67,385 | ~17k |
 
 Real counts, same probe on `opencode-go/longcat-2.5-preview-free` in
 `model-bench` (the provider's reported `tokensIn`): 140,909 with
@@ -123,9 +123,16 @@ supervisor in with `contextProfile: "lean"`.
 Caveats: `lean` drops the repo's `AGENTS.md` and project opencode config, so
 the agent no longer sees repo conventions unless the task prompt carries them.
 Only the global `agentproto` MCP server is disabled — other MCP servers a user
-declared globally stay on (opencode has no flag to drop them). A supervisor
-with a `daemonMount` still gets the eager daemon tool list unless
-`deferredTools: true`.
+declared globally stay on (opencode has no flag to drop them).
+
+`daemonMount` is **eager by default** for opencode (manifest
+`capabilities.deferredToolDiscovery: false`), regardless of role: opencode
+validates a model's tool call against the tools it last received from
+`tools/list`, so a tool hidden by the daemon's `?deferred=1` is rejected
+client-side even after `tool_search` returns its schema. `deferredTools: true`
+still opts in (and is useful only when the model already knows exact tool
+names from the prompt), at the cost of the failure mode above when it does
+not.
 
 Imported skills (`skill_import`) still reach a `lean` session: the adapter's
 `metadata.sessionSkills` copies each resolved skill into

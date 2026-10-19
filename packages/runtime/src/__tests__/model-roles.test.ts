@@ -182,6 +182,22 @@ describe("model_roles tool + config_set", () => {
     expect(out.workspaceRoot).toBe(repo)
   })
 
+  it("exposes each role's profile and route as flat maps alongside models/adapters", async () => {
+    const cfg: AgentprotoConfig = {
+      models: {
+        "review.small": { model: "opencode-go/deepseek-v4.1-flash", profile: "opencode-developerws003", route: "opencode-go" },
+        "review.large": { model: "openrouter/z-ai/glm-5.3-flash", route: "openrouter" },
+      },
+    }
+    await saveConfig(cfg, configPath)
+    const out = await modelRoles(
+      { roles: ["review.small", "review.large"] },
+      { loadCfg: () => loadConfig(configPath), resolveRoot: async () => undefined },
+    )
+    expect(out.profiles).toEqual({ "review.small": "opencode-developerws003" })
+    expect(out.routes).toEqual({ "review.small": "opencode-go", "review.large": "openrouter" })
+  })
+
   it("tolerates a missing / unreadable agentproto.json and no resolvable workspace", async () => {
     const out = await modelRoles({ roles: ["review.small"] }, { loadCfg: async () => ({}), resolveRoot: async () => repo })
     expect(out.roles).toEqual([

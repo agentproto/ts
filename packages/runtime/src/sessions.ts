@@ -2597,6 +2597,14 @@ export interface SessionDescriptor {
    *  just THAT one exists — the VS Code panel's sandbox chip names it in its
    *  tooltip alongside `sandboxId`. */
   sandboxProvider?: string
+  /**
+   * Non-secret sandbox spec config persisted for a later re-attach — the
+   * effective boot config minus credentials, always carrying the stable
+   * `sessionHolder`. Both `session_restart` and the boot-time reattach pass
+   * replay it instead of rebuilding an empty `config: {}`. Never contains a
+   * token, auth header, or other secret.
+   */
+  sandboxConfig?: Record<string, unknown>
   /** What session close does to the box (PR3 lifecycle) — `"kill"` (the
    *  default, ephemeral) or `"pause"` (keeps `sandboxId` reconnectable via
    *  `agent_start.sandbox.reuse`). Only set when `remote` is true. */
@@ -5378,6 +5386,9 @@ export interface SpawnAgentInput {
   /** Sandbox provider slug, when `remote` is true — see
    *  `SessionDescriptor.sandboxProvider`. */
   sandboxProvider?: string
+  /** Non-secret sandbox config replayed on re-attach — see
+   *  `SessionDescriptor.sandboxConfig`. */
+  sandboxConfig?: Record<string, unknown>
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
@@ -10833,6 +10844,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPauseAfterIdleMs !== undefined
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
@@ -11018,6 +11030,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPauseAfterIdleMs !== undefined
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }

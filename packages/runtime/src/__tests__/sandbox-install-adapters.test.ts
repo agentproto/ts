@@ -199,6 +199,7 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
         "@agentproto/adapter-claude-code@latest",
         "@anthropic-ai/claude-code@latest",
       ],
+      sessionHolder: expect.any(String),
     })
   })
 
@@ -223,6 +224,7 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
         "@anthropic-ai/claude-code@latest",
       ],
       installAdapters: ["claude-code"],
+      sessionHolder: expect.any(String),
     })
   })
 
@@ -245,6 +247,7 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
         "@agentproto/adapter-hermes@0.4.12",
       ],
       installAdapters: ["hermes"],
+      sessionHolder: expect.any(String),
     })
   })
 
@@ -257,6 +260,7 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
     expect(result.ok).toBe(true)
     expect(bootSpecs[0]?.config).toEqual({
       installPackages: ["@agentproto/adapter-hermes@latest"],
+      sessionHolder: expect.any(String),
     })
   })
 })

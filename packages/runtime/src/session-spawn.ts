@@ -106,6 +106,10 @@ import {
 } from "./catalog-models.js"
 import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-hint.js"
 import {
+  sandboxConfigForDescriptor,
+  withSandboxSessionHolder,
+} from "./sandbox-session-holder.js"
+import {
   autoCredentialRefOf,
   buildSandboxSecretResolver,
   type SandboxSecretResolver,
@@ -1564,13 +1568,17 @@ export interface SpawnAgentSessionInput {
   /** Per-spawn override for the daemon self-mount's deferred/lazy
    *  `tools/list` loading (harness-parity item 3 — see `deferred-tools.ts`).
    *  Wins over a harness with native tool search (manifest
-   *  `capabilities.nativeToolSearch` ⇒ eager) and the resolved role's own
-   *  default (`RoleProfile.deferredTools` — on for `executor`), which only
-   *  apply when this is omitted (`resolveSpawnDeferredTools`). Threaded onto the injected `mcpServers` self-mount ref as
-   *  `?deferred=1|0` (`shouldInjectDaemonSelfMount` path below); has no
-   *  effect on a caller-supplied `mcpServers` (that URL is the caller's to
-   *  compose). Omitted entirely ⇒ no override at all — the gateway's own
-   *  boot-time `defaults.mcp.deferredTools` default applies unchanged. */
+   *  `capabilities.nativeToolSearch` ⇒ eager), a harness that cannot call a
+   *  tool omitted from its last `tools/list` (manifest
+   *  `capabilities.deferredToolDiscovery` absent/false ⇒ eager), and the
+   *  resolved role's own default (`RoleProfile.deferredTools` — on for
+   *  `executor`), which only apply when this is omitted
+   *  (`resolveSpawnDeferredTools`). Threaded onto the injected `mcpServers`
+   *  self-mount ref as `?deferred=1|0` (`shouldInjectDaemonSelfMount` path
+   *  below); has no effect on a caller-supplied `mcpServers` (that URL is
+   *  the caller's to compose). Omitted entirely ⇒ no override at all — the
+   *  gateway's own boot-time `defaults.mcp.deferredTools` default applies
+   *  unchanged, unless the harness lacks `deferredToolDiscovery`. */
   deferredTools?: boolean
   /** Give the agent its own isolated headless Chrome: a per-session
    *  chrome-devtools-mcp stdio server appended to `mcpServers` (named
@@ -2853,18 +2861,22 @@ export async function spawnAgentSession(
   // Deferred/lazy tool loading override for the self-mount (harness-parity
   // item 3): per-spawn `input.deferredTools` > harness with native MCP tool
   // search (manifest `capabilities.nativeToolSearch` ⇒ eager, so the daemon
-  // doesn't stack a second deferral layer) > the resolved role's default
-  // (`RoleProfile.deferredTools`, on for `executor`). `undefined` means none
-  // had an opinion: the self-mount ref carries no `?deferred=` and the
-  // gateway's boot-time `defaults.mcp.deferredTools` applies. Skip the
-  // adapter lookup when the spawn already decided or the box is remote.
-  const nativeToolSearch =
+  // doesn't stack a second deferral layer) > harness that cannot call a tool
+  // omitted from `tools/list` (manifest `capabilities.deferredToolDiscovery`
+  // absent/false ⇒ eager, so a hidden-but-allowed tool stays reachable) >
+  // the resolved role's default (`RoleProfile.deferredTools`, on for
+  // `executor`). `undefined` means only a discovery-capable harness had no
+  // opinion: the self-mount ref carries no `?deferred=` and the gateway's
+  // boot-time `defaults.mcp.deferredTools` applies. Skip the adapter lookup
+  // when the spawn already decided or the box is remote.
+  const adapterCaps =
     input.deferredTools === undefined && input.sandbox === undefined
-      ? (await resolveAgentAdapter(input.adapter))?.nativeToolSearch === true
-      : false
+      ? await resolveAgentAdapter(input.adapter)
+      : undefined
   const deferredToolsOverride = resolveSpawnDeferredTools({
     spawnOverride: input.deferredTools,
-    nativeToolSearch,
+    nativeToolSearch: adapterCaps?.nativeToolSearch === true,
+    deferredToolDiscovery: adapterCaps?.deferredToolDiscovery === true,
     roleDefault: role.deferredTools,
   })
   // Orchestrator role (WP3): when requested, mint a scoped
@@ -4524,6 +4536,7 @@ export async function spawnAgentSession(
     let readUsage: (() => Promise<import("./usage.js").UsageReadResult | null>) | undefined
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
+    let sandboxConfig: Record<string, unknown> | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxPauseAfterIdleMs: number | undefined
     let sandboxDeliveryTarget: SandboxDeliveryTarget | undefined
@@ -4557,6 +4570,7 @@ export async function spawnAgentSession(
         sandbox: input.sandbox,
         resolveSandboxProvider,
         adapter: input.adapter,
+        sessionHolder: mintedSessionId,
         checkpointConfig,
         ...(input.sandboxCheckpointRestore !== undefined ? { checkpointSnapshot: input.sandboxCheckpointRestore } : {}),
         // controllers half of the #1647 pairing: the caller's EXPLICIT slug
@@ -4652,6 +4666,7 @@ export async function spawnAgentSession(
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
+      sandboxConfig = booted.sandboxConfig
       sandboxTeardown = booted.sandboxTeardown
       sandboxPauseAfterIdleMs = booted.pauseAfterIdleMs
       sandboxDeliveryTarget = booted.deliveryTarget
@@ -4993,6 +5008,7 @@ export async function spawnAgentSession(
       ...(hostSessionId ? { hostSessionId } : {}),
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
+      ...(sandboxConfig ? { sandboxConfig } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs } : {}),
       ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
@@ -5280,6 +5296,10 @@ export type SandboxBootResult =
       /** Advisory spawn-time warnings the caller returns on the spawn result
        *  (an ignored `cwd`, a `cwd` with no workspace remote to clone). */
       warnings?: string[]
+      /** Non-secret sandbox config persisted for a later re-attach — the
+       *  effective boot spec's config minus credentials, always carrying the
+       *  stable `sessionHolder`. Stamped onto the descriptor by the caller. */
+      sandboxConfig?: Record<string, unknown>
       /** The box daemon's own `resumeVia` when `resumeSessionId` was passed
        *  and the box's adapter actually rehydrated that conversation
        *  (`"resumed via ACP"`). Absent on a fresh spawn or a resume the box
@@ -5648,6 +5668,10 @@ export async function bootSandboxAgentSession(opts: {
   worktree?: { slug?: string; base?: string } | false
   /** The host session id this box serves — names the delivery output dir. */
   sessionId?: string
+  /** The stable session holder to send to the provider (`config.sessionHolder`)
+   *  so a re-attach reuses the same controller-side session slot. Defaults to
+   *  `sessionId` when the caller does not pass one explicitly. */
+  sessionHolder?: string
   /** Receives the teardown delivery outcome (push + bundle) of the work branch. */
   onDelivery?: (record: SandboxDeliveryRecord) => void
   /** Receives each periodic checkpoint outcome of the work branch. */
@@ -5846,7 +5870,7 @@ export async function bootSandboxAgentSession(opts: {
     }),
     hasGitToken,
   )
-  const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
+  const rawSpec: SandboxSpec = await withSandboxAuthAutoPassthrough(
     withSandboxInstallAdapters(
       withSandboxAdapterPackages(
         withoutReservedSandboxEnv(
@@ -5865,6 +5889,11 @@ export async function bootSandboxAgentSession(opts: {
           : undefined,
     },
   )
+  // The stable holder travels in the spec config: the provider process has no
+  // `AGENTPROTO_SESSION_ID`, so the runtime names it explicitly instead of
+  // relying on the env variable only the spawned agent child carries.
+  const sessionHolder = opts.sessionHolder ?? opts.sessionId
+  const spec: SandboxSpec = withSandboxSessionHolder(rawSpec, sessionHolder)
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
   // hands back its URL in `BootedSandbox.ports` (which also stamps the
@@ -6409,6 +6438,9 @@ export async function bootSandboxAgentSession(opts: {
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
       ? { pauseAfterIdleMs: lifecyclePolicy.pauseAfterIdleMs }
+      : {}),
+    ...(sessionHolder !== undefined
+      ? { sandboxConfig: sandboxConfigForDescriptor(spec.config, sessionHolder) }
       : {}),
     ...(deliveryTarget ? { deliveryTarget } : {}),
     ...(bootNotices.length > 0 ? { notices: bootNotices } : {}),

@@ -44,6 +44,19 @@ export function reviewModel(b, role) {
 export function reviewAdapter(b, role) {
   return b.steps?.modelRoles?.adapters?.[role] || undefined
 }
+/** Named billing profile for `role` (e.g. `opencode-developerws003`), as the
+ *  `modelRoles` step resolved it. Passed to the reviewer spawn as
+ *  `access.profileRef`, so the reviewer bills that profile instead of the
+ *  daemon's ambient credential. Undefined leaves the spawn's own default. */
+export function reviewAccess(b, role) {
+  const profile = b.steps?.modelRoles?.profiles?.[role]
+  return profile ? { profileRef: profile } : undefined
+}
+/** Gateway/router `role`'s model should reach (e.g. `openrouter`), as the
+ *  `modelRoles` step resolved it. Undefined keeps the model id's own route. */
+export function reviewRoute(b, role) {
+  return b.steps?.modelRoles?.routes?.[role] || undefined
+}
 /** Small model for a residual of 3 files or fewer, large otherwise. */
 function reviewRole(b) {
   return (b.item?.residualFileCount ?? 0) <= 3 ? ROLE_REVIEW_SMALL : ROLE_REVIEW_LARGE
@@ -99,7 +112,11 @@ const REVIEW_PROMPT =
   "NOT provably in base are: {{item.residualFiles}}. Line coverage of what this tip adds to those " +
   "files ({ added, inBase, pct, missing: up to 12 added lines NOT verbatim in base's same path }): " +
   "{{item.lineCoverage}} — \"base has the file\" is not evidence; account for the missing lines. " +
-  "An agreeing verdict under 95% line coverage is refused. Merge base: {{item.mergeBase}}. Merged tree " +
+  "`gate.agree` is your HONEST judgement about whether deleting this tip loses anything of value — " +
+  "do NOT lower it because lineCoverage is under minLineCoverage. `branch_gc` applies that guard " +
+  "deterministically after you: an honest agreement it refuses becomes a human decision queue item, " +
+  "and self-censoring would make \"safe but guard-blocked\" indistinguishable from \"not safe\". " +
+  "Merge base: {{item.mergeBase}}. Merged tree " +
   "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
   "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
   "Refs of this branch (across its tips): {{item.refs}}." +
@@ -339,6 +356,13 @@ export function formatNameList(names, cap = REPORT_LIST_CAP) {
   return names.length > cap ? `${shown}, … and ${names.length - cap} more` : shown
 }
 
+/** The coverage percentage in a `branch_gc` `verdictGuard` string
+ *  (`"line coverage 80% of 50 added lines (< 95%)"`), or null when absent. */
+export function lineCoveragePctOfGuard(guard) {
+  const m = /line coverage\s+([\d.]+)%/i.exec(String(guard ?? ""))
+  return m ? Number(m[1]) : null
+}
+
 /** `error` with the per-candidate parts — its review worktree path, branch
  *  name and tip sha, then any other full sha — replaced by placeholders, so
  *  one systemic failure hitting N candidates groups as ONE reason instead of
@@ -465,8 +489,13 @@ export function buildReport(b) {
   const gaps = b.steps.gaps ?? []
   const verdicts = collectCandidateVerdicts(reviewCandidates, b.steps.branchGcVerify)
   const applyMerged = b.input?.applyMerged === true
+  // Only meaningful with applyMerged: a dry-run never deletes either way.
+  const applyReviewed = applyMerged && b.input?.applyReviewed === true
   const branchGcApply = b.steps.branchGcApply
   const worktreeGcApply = b.steps.worktreeGcApply
+  const applyOutcomes = Array.isArray(branchGcApply?.outcomes) ? branchGcApply.outcomes : []
+  const reclaimedReviewed = applyOutcomes.filter(o => o.result === "deleted" && o.reclaimReason === "reviewed")
+  const refusedByGuard = applyOutcomes.filter(o => o.result === "refused-guard")
 
   const lines = []
   lines.push(`# Repo maintenance — ${plan?.repoName ?? plan?.repoRoot ?? "unknown repo"}`)
@@ -485,6 +514,15 @@ export function buildReport(b) {
     lines.push(`- **${kind}**: reclaim=${c.reclaim} review=${c.review} hold=${c.hold}`)
   }
   if (plan?.otherRemoteRefs) lines.push(`- (${plan.otherRemoteRefs} ref(s) of other configured remotes left alone)`)
+  lines.push("")
+  lines.push("## Sandbox checkpoints")
+  const ckPlan = b.steps.checkpointGcPlan
+  const ckSummary = ckPlan?.summary
+  lines.push(`- ${ckSummary?.total ?? 0} \`agentproto-checkpoint/*\` ref(s) classified`)
+  lines.push(`- safe=${ckSummary?.safe ?? 0} keep=${ckSummary?.keep ?? 0} unknown=${ckSummary?.unknown ?? 0}`)
+  if (ckPlan?.plan?.prCheckAvailable === false) {
+    lines.push(`- PR check unavailable (${ckPlan.plan.prCheckReason ?? "unknown"}) — content tiers still applied`)
+  }
   lines.push("")
   lines.push(`## Review (${reviewCandidates.length} candidate(s) this run)`)
   const backlog = reviewQueue.queue.length - reviewCandidates.length
@@ -547,17 +585,68 @@ export function buildReport(b) {
     )
     const wtOutcomes = Array.isArray(worktreeGcApply?.outcomes) ? worktreeGcApply.outcomes : []
     lines.push(`- worktree_gc: ${wtOutcomes.length} outcome(s)${wtOutcomes.length > 0 ? ` — ${formatTally(tally(wtOutcomes.map(o => o.result)))}` : ""}`)
-    lines.push("- only `reclaim`-class refs were touched — `includeReviewed` was false, so no reviewed-but-agreed branch was reclaimed by this run.")
+    const ckApply = b.steps.checkpointGcApply
+    const ckCounts = ckApply?.applySummary
+    lines.push(
+      `- sandbox_checkpoint_gc: ${ckCounts?.deleted ?? countOutcomes(ckApply?.outcomes, "deleted")} deleted, ` +
+        `${ckCounts?.skipped ?? countOutcomes(ckApply?.outcomes, "skipped-keep")} skipped, ` +
+        `${ckCounts?.failed ?? countOutcomes(ckApply?.outcomes, "failed")} failed`,
+    )
+    if (applyReviewed) {
+      lines.push(
+        `- reviewed: ${reclaimedReviewed.length} reclaimed (includeReviewed true), ` +
+          `${refusedByGuard.length} refused by the line-coverage guard`,
+      )
+    } else {
+      lines.push("- only `reclaim`-class refs were touched — `includeReviewed` was false, so no reviewed-but-agreed branch was reclaimed by this run.")
+    }
   }
   lines.push("")
-  lines.push("## approve-reviewed (documented seam, not wired)")
-  lines.push(
-    "Recording a verdict via `branch_gc_verdict` never reclaims a branch by itself. " +
-      "A human-in-the-loop gate that reclaims `review`-class branches whose stored " +
-      "verdict agreed (`branch_gc`'s `includeReviewed: true`) is a deliberate, " +
-      "documented seam — not built here. See the repo-maintenance app README, " +
-      "\"Out of scope: the approval gate\".",
-  )
+  lines.push("## Reviewed branches")
+  if (applyReviewed) {
+    lines.push(
+      "`applyReviewed` is true — `branch_gc` applied with `includeReviewed: true`: a `review`-class " +
+        "branch was reclaimed only when its stored verdict agreed AND the deterministic line-coverage " +
+        "guard (default 95%) did not refuse it.",
+    )
+    if (reclaimedReviewed.length > 0) {
+      lines.push(`- reclaimed (${reclaimedReviewed.length}): ${formatNameList(reclaimedReviewed.map(o => o.name))}`)
+    } else {
+      lines.push("- reclaimed: none")
+    }
+    if (refusedByGuard.length > 0) {
+      lines.push(
+        `- reviewer agreed, refused by the line guard: ${refusedByGuard.length} — see the ` +
+          "\"Human decision queue\" section below",
+      )
+    } else {
+      lines.push("- reviewer agreed, refused by the line guard: none")
+    }
+  } else {
+    lines.push(
+      "Recording a verdict via `branch_gc_verdict` never reclaims a branch by itself, and this run " +
+        "did not opt in: set `applyReviewed: true` (with `applyMerged: true`) to apply agreed verdicts. " +
+        "`branch_gc` then enforces its line-coverage guard (default 95%) and refuses an approval below it.",
+    )
+  }
+  if (applyReviewed && refusedByGuard.length > 0) {
+    lines.push("")
+    lines.push(`## Human decision queue — reviewer agreed, refused by line guard (${refusedByGuard.length})`)
+    lines.push(
+      "The reviewer's `gate.agree` was an honest safety judgement, not a policy decision. " +
+        "`branch_gc` refused it deterministically because line coverage was below the guard; " +
+        "these are for a human to decide, NOT evidence that the reviewer said the work was unsafe.",
+    )
+    for (const o of refusedByGuard.slice(0, REPORT_LIST_CAP)) {
+      const pct = lineCoveragePctOfGuard(o.guard)
+      lines.push(
+        `- \`${o.name}\` (${o.sha.slice(0, 10)}) — ${pct !== null ? `${pct}%` : "unknown"} line coverage — ${o.guard}`,
+      )
+    }
+    if (refusedByGuard.length > REPORT_LIST_CAP) {
+      lines.push(`- … and ${refusedByGuard.length - REPORT_LIST_CAP} more`)
+    }
+  }
   return lines.join("\n")
 }
 
@@ -576,6 +665,7 @@ export default {
     repoRoot: { type: "string", description: "Absolute path to the git repo. Wins over `workspaceSlug`." },
     workspaceSlug: { type: "string", description: "Workspace slug. The active workspace when both are omitted." },
     applyMerged: { type: "boolean", description: "Execute branch_gc/worktree_gc (reclaim-class only) after review. Default false.", default: false },
+    applyReviewed: { type: "boolean", description: "With `applyMerged`: also reclaim `review`-class branches whose stored verdict agreed (`branch_gc` includeReviewed true). branch_gc refuses an approval below its line-coverage guard (default 95%). Default false.", default: false },
     reviewModelSmall: { type: "string", description: `Model for a review candidate with residualFileCount <= 3. Default: the \`${ROLE_REVIEW_SMALL}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     reviewPreset: { type: "string", description: "Model role preset for this run (opus, sonnet, haiku, go-free, free-sonnet — see `model_roles`). Default: the daemon's `modelRolePreset`, else the built-in roles. `reviewModelSmall`/`reviewModelLarge` still win." },
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
@@ -620,6 +710,14 @@ export default {
       inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, includeReviewed: false },
     },
     {
+      id: "checkpointGcPlan",
+      kind: "tool",
+      tool: "sandbox_checkpoint_gc",
+      // Always a dry run: the plan classifies the stale
+      // `agentproto-checkpoint/*` refs; only checkpointGcApply deletes.
+      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, wait: true },
+    },
+    {
       id: "reviewQueue",
       kind: "transform",
       compute: b => buildReviewQueue(b.steps.branchGcPlan, b.steps.worktreeGcPlan, { reviewHeldWorktrees: b.input?.reviewHeldWorktrees !== false }),
@@ -653,6 +751,8 @@ export default {
           prompt: REVIEW_PROMPT,
           model: b => reviewModel(b, reviewRole(b)),
           adapter: b => reviewAdapter(b, reviewRole(b)),
+          access: b => reviewAccess(b, reviewRole(b)),
+          route: b => reviewRoute(b, reviewRole(b)),
         },
         // A reviewer can end its turn announcing calls it never made. Check
         // the store for EVERY tip of this item (the per-tip map below); if
@@ -695,6 +795,8 @@ export default {
             "Recording the verdict with branch_gc_verdict IS the deliverable — do not end your turn without it.",
           model: b => reviewModel(b, ROLE_REVIEW_LARGE),
           adapter: b => reviewAdapter(b, ROLE_REVIEW_LARGE),
+          access: b => reviewAccess(b, ROLE_REVIEW_LARGE),
+          route: b => reviewRoute(b, ROLE_REVIEW_LARGE),
         },
         {
           id: "reviewSettled",
@@ -745,8 +847,22 @@ export default {
         repoRoot: "$input.repoRoot",
         workspaceSlug: "$input.workspaceSlug",
         apply: "$input.applyMerged",
-        includeReviewed: false,
+        includeReviewed: "$input.applyReviewed",
         scopes: ["local", "remote", "orphan"],
+      },
+    },
+    {
+      id: "checkpointGcApply",
+      kind: "tool",
+      tool: "sandbox_checkpoint_gc",
+      // Gated exactly like the other apply steps: false ⇒ the tool plans
+      // again (a dry run), true ⇒ the engine re-plans and deletes only the
+      // refs it re-classifies `safe` immediately before each delete.
+      inputs: {
+        repoRoot: "$input.repoRoot",
+        workspaceSlug: "$input.workspaceSlug",
+        apply: "$input.applyMerged",
+        wait: true,
       },
     },
     {
@@ -815,7 +931,9 @@ export default {
     report: "$steps.report",
     gaps: "$steps.gaps",
     applyMerged: "$input.applyMerged",
+    applyReviewed: "$input.applyReviewed",
     branchGcApply: "$steps.branchGcApply",
     worktreeGcApply: "$steps.worktreeGcApply",
+    checkpointGcApply: "$steps.checkpointGcApply",
   },
 }

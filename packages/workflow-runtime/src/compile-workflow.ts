@@ -852,6 +852,8 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     ...(cwd !== undefined ? { cwd } : {}),
     ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
     ...(model !== undefined ? { model: model as Selector<string> | string } : {}),
+    ...(step.access !== undefined ? { access: step.access } : {}),
+    ...(step.route !== undefined ? { route: step.route } : {}),
     ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
     ...(step.cacheable ? { cacheable: true } : {}),
     ...(options !== undefined ? { options } : {}),

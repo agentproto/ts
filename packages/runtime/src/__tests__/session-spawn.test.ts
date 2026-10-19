@@ -714,7 +714,7 @@ describe("spawnAgentSession", () => {
     // session.
     const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
     expect(captured[0]?.mcpServers).toEqual([
-      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${ownId}` },
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}` },
     ])
   })
 
@@ -778,7 +778,7 @@ describe("spawnAgentSession", () => {
     expect(result.ok).toBe(true)
     const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
     expect(captured[0]?.mcpServers).toEqual([
-      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${ownId}` },
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}` },
     ])
   })
 
@@ -1660,7 +1660,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=${result.descriptor.id}`,
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1683,7 +1683,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=${result.descriptor.id}`,
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1703,7 +1703,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: `http://127.0.0.1:18790/mcp?callerSessionId=${result.descriptor.id}`,
+          ref: `http://127.0.0.1:18790/mcp?deferred=0&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1754,18 +1754,38 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
   describe("self-mount `deferred` resolution: spawn override > native tool search > role > gateway default", () => {
     const DAEMON_MCP_URL = "http://127.0.0.1:18790/mcp"
     type Expected = "deferred=1" | "deferred=0" | "none"
-    // [label, adapter, harness declares nativeToolSearch, role, agent_start.deferredTools, expected `?deferred=`]
-    const table: Array<[string, string, boolean, "executor" | "supervisor", boolean | undefined, Expected]> = [
-      ["claude-code executor, no override ⇒ native search beats the role's ON", "claude-code", true, "executor", undefined, "deferred=0"],
-      ["claude-code supervisor, no override ⇒ eager (also beats a deferred gateway default)", "claude-code", true, "supervisor", undefined, "deferred=0"],
-      ["claude-code executor, deferredTools:true ⇒ spawn override wins over native", "claude-code", true, "executor", true, "deferred=1"],
-      ["claude-code supervisor, deferredTools:false ⇒ eager", "claude-code", true, "supervisor", false, "deferred=0"],
-      ["hermes executor (no native search) ⇒ role default ON", "hermes", false, "executor", undefined, "deferred=1"],
-      ["hermes supervisor (no native search) ⇒ no opinion, gateway default applies", "hermes", false, "supervisor", undefined, "none"],
-      ["hermes executor, deferredTools:false ⇒ eager", "hermes", false, "executor", false, "deferred=0"],
-      ["hermes supervisor, deferredTools:true ⇒ deferred", "hermes", false, "supervisor", true, "deferred=1"],
+    // [label, adapter, nativeToolSearch, deferredToolDiscovery, role, agent_start.deferredTools, expected `?deferred=`]
+    const table: Array<
+      [
+        string,
+        string,
+        boolean,
+        boolean,
+        "executor" | "supervisor",
+        boolean | undefined,
+        Expected,
+      ]
+    > = [
+      ["claude-code executor, no override ⇒ native search beats the role's ON", "claude-code", true, false, "executor", undefined, "deferred=0"],
+      ["claude-code supervisor, no override ⇒ eager (also beats a deferred gateway default)", "claude-code", true, false, "supervisor", undefined, "deferred=0"],
+      ["claude-code executor, deferredTools:true ⇒ spawn override wins over native", "claude-code", true, false, "executor", true, "deferred=1"],
+      ["claude-code supervisor, deferredTools:false ⇒ eager", "claude-code", true, false, "supervisor", false, "deferred=0"],
+      // G5 regression: opencode cannot call a tool omitted from tools/list
+      // (it rejects the call client-side), so the daemon must be eager even
+      // though the executor role defaults deferredTools ON.
+      ["opencode executor (no deferred discovery) ⇒ eager despite role default ON", "hermes", false, false, "executor", undefined, "deferred=0"],
+      ["opencode supervisor (no deferred discovery) ⇒ eager, ignores deferred gateway default", "hermes", false, false, "supervisor", undefined, "deferred=0"],
+      ["opencode executor, deferredTools:true ⇒ explicit spawn override still wins", "hermes", false, false, "executor", true, "deferred=1"],
+      ["opencode executor, deferredTools:false ⇒ eager", "hermes", false, false, "executor", false, "deferred=0"],
+      ["hermes executor (no deferred discovery) ⇒ eager despite role default ON", "hermes", false, false, "executor", undefined, "deferred=0"],
+      ["hermes supervisor (no deferred discovery) ⇒ eager, ignores deferred gateway default", "hermes", false, false, "supervisor", undefined, "deferred=0"],
+      ["hermes supervisor, deferredTools:true ⇒ deferred", "hermes", false, false, "supervisor", true, "deferred=1"],
+      // A harness that declares the capability keeps the role/gateway default.
+      ["discovery harness executor ⇒ role default ON", "hermes", false, true, "executor", undefined, "deferred=1"],
+      ["discovery harness supervisor ⇒ no opinion, gateway default applies", "hermes", false, true, "supervisor", undefined, "none"],
+      ["discovery harness supervisor, deferredTools:false ⇒ eager", "hermes", false, true, "supervisor", false, "deferred=0"],
     ]
-    it.each(table)("%s", async (_label, adapter, nativeToolSearch, role, deferredTools, expected) => {
+    it.each(table)("%s", async (_label, adapter, nativeToolSearch, deferredToolDiscovery, role, deferredTools, expected) => {
       const startSession = vi.fn(async () => fakeAgentSession())
       const { deps } = baseDeps({
         daemonMcpUrl: DAEMON_MCP_URL,
@@ -1774,6 +1794,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           startSession: startSession as any,
           commandPreview: "mock-adapter",
           ...(nativeToolSearch ? { nativeToolSearch: true } : {}),
+          ...(deferredToolDiscovery ? { deferredToolDiscovery: true } : {}),
         }),
       })
       const result = await spawnAgentSession(deps, {

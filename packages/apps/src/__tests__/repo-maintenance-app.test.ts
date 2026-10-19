@@ -41,6 +41,7 @@ describe("repo-maintenance app", () => {
       "modelRoles:tool",
       "worktreeGcPlan:tool",
       "branchGcPlan:tool",
+      "checkpointGcPlan:tool",
       "reviewQueue:transform",
       "reviewCandidates:transform",
       "reviewWorktreePaths:transform",
@@ -50,6 +51,7 @@ describe("repo-maintenance app", () => {
       "gaps:transform",
       "worktreeGcApply:tool",
       "branchGcApply:tool",
+      "checkpointGcApply:tool",
       "report:transform",
       "notifyBody:transform",
       "shouldNotify:transform",
@@ -82,11 +84,13 @@ describe("repo-maintenance app", () => {
     expect(reviewStep.steps.find(s => s.id === "reviewRetryLarge")!.agent?.ref).toBe("@agentproto/repo-maintenance-reviewer")
   })
 
-  it("never reclaims a reviewed branch on apply — includeReviewed stays false on branchGcApply", async () => {
+  it("reclaims reviewed branches only through the opt-in applyReviewed input (default false)", async () => {
     const app = await loadAppHandle(APP_DIR)
     const [workflow] = app.workflows
+    const inputs = (workflow as unknown as { inputs: Record<string, { default?: unknown }> }).inputs
+    expect(inputs.applyReviewed?.default).toBe(false)
     const applyStep = workflow!.steps.find(s => s.id === "branchGcApply") as { inputs: Record<string, unknown> }
-    expect(applyStep.inputs.includeReviewed).toBe(false)
+    expect(applyStep.inputs.includeReviewed).toBe("$input.applyReviewed")
   })
 
   describe("reviewer models come from model roles", () => {
@@ -95,11 +99,25 @@ describe("repo-maintenance app", () => {
       const app = await loadAppHandle(APP_DIR)
       const [workflow] = app.workflows
       const review = workflow!.steps.find(s => s.id === "review") as { steps: Array<{ id: string; model?: unknown }> }
+      type AccessSel = (b: unknown) => { profileRef?: string } | undefined
+      type RouteSel = (b: unknown) => string | undefined
+      const one = review.steps.find(s => s.id === "reviewOne") as unknown as {
+        access: AccessSel
+        route: RouteSel
+      }
+      const large = review.steps.find(s => s.id === "reviewRetryLarge") as unknown as {
+        access: AccessSel
+        route: RouteSel
+      }
       return {
         app,
         workflow: workflow!,
         small: (review.steps.find(s => s.id === "reviewOne")!.model) as Sel,
         retry: (review.steps.find(s => s.id === "reviewRetryLarge")!.model) as Sel,
+        smallAccess: one.access,
+        smallRoute: one.route,
+        retryAccess: large.access,
+        retryRoute: large.route,
       }
     }
     // What the daemon's `model_roles` tool returns for the `modelRoles` step.
@@ -137,6 +155,21 @@ describe("repo-maintenance app", () => {
       expect(small({ input, steps, item: { residualFileCount: 1 } })).toBe("in-small")
       expect(small({ input, steps, item: { residualFileCount: 9 } })).toBe("in-large")
       expect(retry({ input, steps })).toBe("in-large")
+    })
+
+    it("passes the resolved profile and route to the small, large and retry reviewers", async () => {
+      const { smallAccess, smallRoute, retryAccess, retryRoute } = await load()
+      const steps = {
+        modelRoles: {
+          profiles: { "review.small": "opencode-developerws003", "review.large": "opencode-developerws003" },
+          routes: { "review.small": "opencode-go", "review.large": "opencode-go" },
+        },
+      }
+      expect(smallAccess({ input: {}, steps, item: { residualFileCount: 1 } })).toEqual({ profileRef: "opencode-developerws003" })
+      expect(smallAccess({ input: {}, steps, item: { residualFileCount: 9 } })).toEqual({ profileRef: "opencode-developerws003" })
+      expect(smallRoute({ input: {}, steps, item: { residualFileCount: 1 } })).toBe("opencode-go")
+      expect(retryAccess({ input: {}, steps })).toEqual({ profileRef: "opencode-developerws003" })
+      expect(retryRoute({ input: {}, steps })).toBe("opencode-go")
     })
 
     it("with no role resolution at all the selector yields undefined, leaving the reviewer AGENT.md model in charge", async () => {

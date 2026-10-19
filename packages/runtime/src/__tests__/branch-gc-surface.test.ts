@@ -35,6 +35,7 @@ import type {
   BranchGcPlanView,
 } from "../branch-gc.js"
 import { summarizeBranchGcApply, withBranchGcApplySummary } from "../branch-gc.js"
+import type { OrchestratorScope } from "../orchestrator-gateway.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -245,6 +246,23 @@ describe("POST /branches/gc + /branches/gc/verdict — HTTP routes", () => {
       await failing.stop()
     }
   })
+
+  it("verdict: refuses an operator block on the identity-less REST route", async () => {
+    const { recorder, seen } = recordingRecorder()
+    const http = await start({ recordBranchGcVerdict: recorder })
+    try {
+      const res = await post(http, "/branches/gc/verdict", {
+        repoRoot: "/repo",
+        ...VERDICT,
+        operator: { by: "Jeremy" },
+      })
+      expect(res.status).toBe(400)
+      expect(((await res.json()) as { message: string }).message).toContain("operator MCP surface")
+      expect(seen()).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
 })
 
 describe("branch_gc + branch_gc_verdict — MCP tools", () => {
@@ -254,10 +272,19 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       recordBranchGcVerdict?: BranchGcVerdictRecorder
       readBranchGcVerdict?: BranchGcVerdictReader
       branchGcJobsDir?: string
+      callerSessionId?: string
+      callerScope?: OrchestratorScope
     } = {},
   ) {
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
-    registerSessionTools(server, { workspace: process.cwd(), registry: createSessionsRegistry({ persist: false }), ...opts })
+    const { callerSessionId, callerScope, ...deps } = opts
+    registerSessionTools(server, {
+      workspace: process.cwd(),
+      registry: createSessionsRegistry({ persist: false }),
+      ...deps,
+      ...(callerSessionId ? { callerSessionId } : {}),
+      ...(callerScope ? { callerScope } : {}),
+    })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     const client = new Client({ name: "test", version: "0.0.1" })
@@ -337,6 +364,55 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(text(r)).toContain("gate.evidence")
     } finally {
       await failing.close()
+    }
+  })
+
+  it("branch_gc_verdict refuses an operator approval from a session caller", async () => {
+    const { recorder, seen } = recordingRecorder()
+    const client = await harness({ recordBranchGcVerdict: recorder, callerSessionId: "sess_reviewer" })
+    try {
+      const refused = await client.callTool({
+        name: "branch_gc_verdict",
+        arguments: { repoRoot: "/repo", ...VERDICT, operator: { by: "Jeremy" } },
+      })
+      expect(isError(refused)).toBe(true)
+      expect(text(refused)).toContain("operator surface")
+      expect(seen()).toBeUndefined()
+      const reviewerOnly = await client.callTool({ name: "branch_gc_verdict", arguments: { repoRoot: "/repo", ...VERDICT } })
+      expect(isError(reviewerOnly)).toBe(false)
+    } finally {
+      await client.close()
+    }
+
+    const { recorder: operatorRecorder, seen: operatorSeen } = recordingRecorder()
+    const operatorClient = await harness({ recordBranchGcVerdict: operatorRecorder })
+    try {
+      const accepted = await operatorClient.callTool({
+        name: "branch_gc_verdict",
+        arguments: { repoRoot: "/repo", ...VERDICT, operator: { by: "Jeremy" } },
+      })
+      expect(isError(accepted)).toBe(false)
+      expect(operatorSeen()).toMatchObject({ verdict: { operator: { by: "Jeremy" } } })
+    } finally {
+      await operatorClient.close()
+    }
+
+    // A scoped mount has an owner session even when it passes no callerSessionId.
+    const { recorder: scopedRecorder, seen: scopedSeen } = recordingRecorder()
+    const scopedClient = await harness({
+      recordBranchGcVerdict: scopedRecorder,
+      callerScope: { token: "t", tools: new Set(), ownerSessionId: "sess_owner", depth: 0, maxDepth: 2, maxChildren: 4, role: "supervisor" },
+    })
+    try {
+      const refused = await scopedClient.callTool({
+        name: "branch_gc_verdict",
+        arguments: { repoRoot: "/repo", ...VERDICT, operator: { by: "Jeremy" } },
+      })
+      expect(isError(refused)).toBe(true)
+      expect(text(refused)).toContain("operator surface")
+      expect(scopedSeen()).toBeUndefined()
+    } finally {
+      await scopedClient.close()
     }
   })
 

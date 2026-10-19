@@ -731,7 +731,14 @@ describe("runSandboxReattachPass", () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  function seedDetached(rows: Array<{ id: string; sandboxId?: string; provider?: string }>): void {
+  function seedDetached(
+    rows: Array<{
+      id: string
+      sandboxId?: string
+      provider?: string
+      sandboxConfig?: Record<string, unknown>
+    }>,
+  ): void {
     writeFileSync(
       persistPath,
       JSON.stringify({
@@ -751,6 +758,7 @@ describe("runSandboxReattachPass", () => {
           remote: true,
           sandboxId: r.sandboxId ?? "sbx_1",
           sandboxProvider: r.provider ?? "e2b",
+          ...(r.sandboxConfig ? { sandboxConfig: r.sandboxConfig } : {}),
           hostDetached: true,
           sandboxReattach: {
             remoteSessionId: "remote_1",
@@ -786,6 +794,32 @@ describe("runSandboxReattachPass", () => {
     expect(registry.get("s1")?.hostDetached).toBeUndefined()
     // Reattached ⇒ detachable again for the next restart.
     expect(registry.sandboxSessionStats().attached).toBe(1)
+    registry.shutdown()
+  })
+
+  it("replays the persisted sessionHolder (and non-secret config) on the boot re-attach", async () => {
+    seedDetached([
+      {
+        id: "s1",
+        sandboxConfig: { sessionHolder: "sess_holder_1", template: "tpl_1" },
+      },
+    ])
+    providerMock.create.mockResolvedValue(makeHost())
+    stubBox({ session: () => json({ busy: false, status: "running" }) })
+    const registry = newRegistry()
+
+    const summary = await runSandboxReattachPass({ registry, resolveSandboxProvider: resolver })
+
+    expect(summary).toMatchObject({ candidates: 1, reattached: 1 })
+    expect(providerMock.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxId: "sbx_1",
+        spec: {
+          provider: "e2b",
+          config: { sessionHolder: "sess_holder_1", template: "tpl_1" },
+        },
+      }),
+    )
     registry.shutdown()
   })
 

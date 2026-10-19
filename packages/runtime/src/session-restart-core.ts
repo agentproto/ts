@@ -93,6 +93,7 @@ import {
 } from "./spawn-defaults.js"
 import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
 import { bootSandboxAgentSession, stampDaemonCallerSessionId, uploadBoxLoginCopy } from "./session-spawn.js"
+import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
 import { createBoxLoginRefresher, type BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 import { findWorkspace, loadWorkspacesConfig } from "./workspaces-config.js"
 import { SANDBOX_BRANCH_PREFIX, resolveSharedBoxWorktreeTeardown } from "./sandbox-workspace-remote.js"
@@ -1561,7 +1562,8 @@ export async function restartAgentSession(
       )
     }
     const sandboxMcpServers = buildRestartMcpServers(restartedSessionId)
-    const spec: SandboxSpec = { provider: providerSlug, config: {} }
+    const sandboxConfig = sandboxConfigForReattach(prev.sandboxConfig, prev.id)
+    const spec: SandboxSpec = { provider: providerSlug, config: sandboxConfig }
     const lifecyclePolicy = resolveLifecyclePolicy(spec, true)
     let host: SandboxAgentSessionHost
     try {
@@ -1877,6 +1879,7 @@ export async function restartAgentSession(
       ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
         ? { pauseAfterIdleMs: lifecyclePolicy.pauseAfterIdleMs }
         : {}),
+      sandboxConfig,
       ...(boxResumed ? { resumeVia: "resumed via ACP" as const } : {}),
       ...(deliveryTarget ? { deliveryTarget } : {}),
       ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
@@ -1977,6 +1980,7 @@ export async function restartAgentSession(
       resolveSandboxProvider: opts.resolveSandboxProvider,
       checkpointConfig,
       adapter: adapterSlug,
+      sessionHolder: restartedSessionId,
       // Replaced by the fresh checkout's path (`explicitCwd: false`).
       cwd: prev.cwd ?? "",
       explicitCwd: false,
@@ -2034,7 +2038,10 @@ export async function restartAgentSession(
         : null
       const freshBox = await freshHandle?.provider.connect?.(
         booted.sandboxId,
-        { provider: providerSlug, config: {} },
+        {
+          provider: providerSlug,
+          config: sandboxConfigForReattach(booted.sandboxConfig, restartedSessionId),
+        },
         { env: {} },
       )
       if (freshBox) {
@@ -2073,6 +2080,7 @@ export async function restartAgentSession(
       sandboxTeardown: booted.sandboxTeardown,
       ...(booted.pauseAfterIdleMs !== undefined ? { pauseAfterIdleMs: booted.pauseAfterIdleMs } : {}),
       cwd: booted.cwd,
+      ...(booted.sandboxConfig ? { sandboxConfig: booted.sandboxConfig } : {}),
       ...(booted.resumeVia ? { resumeVia: "resumed via ACP" as const } : {}),
       ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
@@ -2100,6 +2108,8 @@ export async function restartAgentSession(
       resumeVia?: "resumed via ACP"
       deliveryTarget?: SandboxDeliveryTarget
       sandboxPorts?: Record<number, string>
+      /** Non-secret re-attach config (with the stable holder) to persist. */
+      sandboxConfig?: Record<string, unknown>
     },
   ): SessionDescriptor => {
     const { agentSession, deliveryTarget } = box
@@ -2155,6 +2165,7 @@ export async function restartAgentSession(
       remote: true,
       sandboxId: box.sandboxId,
       sandboxProvider: box.provider,
+      ...(box.sandboxConfig ? { sandboxConfig: box.sandboxConfig } : {}),
       sandboxTeardown: box.sandboxTeardown,
       ...(box.pauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs: box.pauseAfterIdleMs } : {}),
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),

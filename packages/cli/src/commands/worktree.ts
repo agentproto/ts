@@ -72,6 +72,8 @@ import {
   ProvisionCancelledError,
   reclaimOneWorktree,
   reclaimOneSandboxCheckpoint,
+  planSandboxCheckpointGc,
+  applySandboxCheckpointGc,
   type WorktreeStatusEntry,
   type GcPlanEntry,
   type GcApplyOutcome,
@@ -87,6 +89,8 @@ import {
   type WorktreeAutoReclaimer,
   type OpenPrResolver,
   type SandboxCheckpointReclaimer,
+  type SandboxCheckpointGcRunner,
+  summarizeSandboxCheckpointGcPlan,
   type PrStateResolver,
   type PrResolvedState,
 } from "@agentproto/runtime"
@@ -706,6 +710,31 @@ export function makeSandboxCheckpointReclaimer(): SandboxCheckpointReclaimer {
     if (outcome.result === "failed") {
       throw new Error(`sandbox checkpoint gc aborted for ${outcome.ref}: ${outcome.message ?? "unknown"}`)
     }
+  }
+}
+
+/**
+ * Concrete `SandboxCheckpointGcRunner` for the daemon — the injected port
+ * behind `sandbox_checkpoint_gc`. Same engine as `agentproto sandbox
+ * checkpoint-gc`: always plans; only an `apply` deletes, and the engine
+ * re-plans and re-classifies every ref immediately before each delete so a
+ * plan that went stale can never remove work that has since changed.
+ */
+export function makeSandboxCheckpointGcRunner(): SandboxCheckpointGcRunner {
+  return async ({ repoRoot: candidate, apply, base, remote }) => {
+    const repoRoot = repoRootOf(resolve(candidate))
+    if (!repoRoot) throw new Error(`sandbox_checkpoint_gc: "${candidate}" is not inside a git repository.`)
+    const input = {
+      repoRoot,
+      ...(base ? { base } : {}),
+      ...(remote ? { remote } : {}),
+    }
+    const plan = await planSandboxCheckpointGc(input)
+    if (!apply) return { mode: "plan", plan, summary: summarizeSandboxCheckpointGcPlan(plan) }
+    // `applySandboxCheckpointGc` re-plans internally; this first plan is the
+    // report's pre-apply view, never the basis for a delete.
+    const result = await applySandboxCheckpointGc(input)
+    return { mode: "apply", plan, summary: summarizeSandboxCheckpointGcPlan(plan), outcomes: result.outcomes }
   }
 }
 
