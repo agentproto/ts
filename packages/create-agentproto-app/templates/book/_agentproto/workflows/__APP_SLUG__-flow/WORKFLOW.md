@@ -14,7 +14,7 @@ steps:
       ref: '__APP_SLUG__-assistant'
     prompt: >-
       Replace this prompt with the step's real task.
-cost_class: cheap
+cost_class: trivial
 tags:
   - scaffold
 ---
