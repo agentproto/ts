@@ -922,6 +922,7 @@ import { createDeviceRegistry, type DevicePromptSessionsLike } from "./device-re
 import { registerDeviceTools } from "./device-tools.js"
 import { syncDeviceMirror } from "./device-mirror.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
+import { registerCatalogDiffTool } from "./catalog-diff-tool.js"
 import { registerQuotaStatusTool } from "./quota-status-tool.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
@@ -3551,6 +3552,10 @@ export async function createGateway(
         ? () => sessions.get(callerSessionId)?.accessProfile?.profileRef
         : undefined,
     })
+    // Occasional/admin tool (deliberately NOT in DEFAULT_ALWAYS_ON_TOOLS):
+    // diffs the LLM pricing catalog against the last call's stored baseline
+    // and re-records "now" as the new baseline.
+    registerCatalogDiffTool(server, {})
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at
