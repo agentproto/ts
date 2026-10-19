@@ -175,14 +175,14 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
       {
         name: "gatewayUrl",
         description:
-          "URL template for reaching a computer's daemon from this host (placeholders {port}, {id}, {hostPort}), injected as COMPUTER_GATEWAY_URL. Needed for the daemon to re-attach after a restart, which carries no per-spawn config.",
+          "URL template for reaching a computer's daemon from this host (placeholders {port}, {id}, {hostPort}), injected as COMPUTER_GATEWAY_URL. Optional: not needed when daemonRoute is enabled (the two are mutually exclusive), and needed for the daemon to re-attach after a restart, which carries no per-spawn config.",
         required: false,
         sensitive: false,
       },
       {
         name: "daemonRoute",
         description:
-          "Set to \"1\" to reach each computer's daemon through the controller (<controllerUrl>/v1/computers/{id}/daemon) instead of a per-port gatewayUrl, injected as COMPUTER_DAEMON_ROUTE.",
+          "Set to \"1\" to reach each computer's daemon through the controller (<controllerUrl>/v1/computers/{id}/daemon) instead of a per-port gatewayUrl, injected as COMPUTER_DAEMON_ROUTE. gatewayUrl is not required in this mode; supplying both is rejected as a conflicting configuration.",
         required: false,
         sensitive: false,
       },

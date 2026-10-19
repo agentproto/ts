@@ -117,7 +117,9 @@ interface ComputerSandboxConfig {
    * the published port range. Default:
    * `http://<computer-name>:<port>` — the microVM is assumed addressable by
    * its generated name from the network this process lives on. Set this when
-   * computers sit behind an edge/proxy instead.
+   * computers sit behind an edge/proxy instead. Optional: in `daemonRoute`
+   * mode it is not needed, and supplying both is rejected as a conflicting
+   * configuration (see `daemonRoute`).
    */
   gatewayUrl?: string
   /**
@@ -125,8 +127,10 @@ interface ComputerSandboxConfig {
    * per-port gateway: `gatewayUrl` defaults to
    * `<controllerUrl>/v1/computers/{id}/daemon`, and the controller credential
    * and tenant travel as `X-Controller-Authorization` / `X-Tenant-Id`
-   * alongside the daemon's own `Authorization`. Overrides nothing when
-   * `gatewayUrl` is set explicitly. Env: `COMPUTER_DAEMON_ROUTE=1`.
+   * alongside the daemon's own `Authorization`. `gatewayUrl` is not required
+   * in this mode; supplying an explicit `gatewayUrl` too is rejected with a
+   * clear error rather than silently picking one route. Env:
+   * `COMPUTER_DAEMON_ROUTE=1`.
    */
   daemonRoute?: boolean
   /**
@@ -261,17 +265,24 @@ function resolveClientConfig(spec: SandboxSpec, config: ComputerSandboxConfig): 
   }
 }
 
-/** In `daemonRoute` mode (and only when the caller did not already supply
- *  its own `gatewayUrl` — that means a direct network path to the box, so
- *  there is nothing to route through the controller and no controller
- *  credential belongs on daemon calls), point the gateway at the
- *  controller's daemon route and compute the headers every call against it
- *  must carry. `routeHeaders` being set is `wrapBox`'s signal to put a
+/** In `daemonRoute` mode, point the gateway at the controller's daemon
+ *  route and compute the headers every call against it must carry.
+ *  `gatewayUrl` is optional here (there is nothing to configure: the route
+ *  comes from `controllerUrl`). Supplying both is a contradiction — a
+ *  `gatewayUrl` means a direct network path to the box, with no controller
+ *  credential on daemon calls — so it is rejected instead of silently
+ *  picking one. `routeHeaders` being set is `wrapBox`'s signal to put a
  *  LOCAL loopback proxy in front of that URL instead of handing the real
  *  one — with the controller credential — to the caller; see
  *  `local-daemon-proxy.ts`. Identity otherwise. */
 function applyDaemonRoute(config: ComputerSandboxConfig, client: ComputerClientConfig): ComputerSandboxConfig {
-  if (!config.daemonRoute || config.gatewayUrl) return config
+  if (!config.daemonRoute) return config
+  if (config.gatewayUrl) {
+    throw new Error(
+      'computer sandbox: config.gatewayUrl and config.daemonRoute are mutually exclusive; ' +
+        'remove config.gatewayUrl (or COMPUTER_GATEWAY_URL) when daemonRoute is enabled',
+    )
+  }
   return {
     ...config,
     gatewayUrl: `${client.baseUrl.replace(/\/+$/, "")}/v1/computers/{id}/daemon`,

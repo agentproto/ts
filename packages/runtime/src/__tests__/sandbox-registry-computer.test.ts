@@ -28,6 +28,16 @@ describe("sandbox provider registry: computer", () => {
     ])
   })
 
+  it("declares gatewayUrl optional so daemonRoute can be configured alone", async () => {
+    const handle = await resolveSandboxProvider("computer", {
+      importPackage: async () => ({ computerSandboxProvider }),
+    })
+    const gatewayUrl = handle!.setupFields?.find((f) => f.name === "gatewayUrl")
+    const daemonRoute = handle!.setupFields?.find((f) => f.name === "daemonRoute")
+    expect(gatewayUrl?.required).toBe(false)
+    expect(daemonRoute?.required).toBe(false)
+  })
+
   it("reports the catalog placeholder as null when the package is missing", async () => {
     const probeMissing = () => null
     const handle = await resolveSandboxProvider("computer", { importPackage: async () => { throw new Error("nope") } })
