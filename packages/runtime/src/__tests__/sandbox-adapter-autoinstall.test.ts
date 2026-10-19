@@ -180,7 +180,10 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
     })
     expect(result.ok).toBe(true)
     expect(bootSpecs).toHaveLength(1)
-    expect(bootSpecs[0]?.config).toEqual({ installPackages: ["@agentproto/adapter-hermes@latest"] })
+    expect(bootSpecs[0]?.config).toEqual({
+      installPackages: ["@agentproto/adapter-hermes@latest"],
+      sessionHolder: expect.any(String),
+    })
   })
 
   it("injects @anthropic-ai/claude-code@latest for the claude-code adapter", async () => {
@@ -195,6 +198,7 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
         "@agentproto/adapter-claude-code@latest",
         "@anthropic-ai/claude-code@latest",
       ],
+      sessionHolder: expect.any(String),
     })
   })
 
@@ -207,6 +211,7 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
     expect(result.ok).toBe(true)
     expect(bootSpecs[0]?.config).toEqual({
       installPackages: ["@agentproto/adapter-hermes@0.4.12"],
+      sessionHolder: expect.any(String),
     })
   })
 
@@ -222,6 +227,7 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
     expect(result.ok).toBe(true)
     expect(bootSpecs[0]?.config).toEqual({
       installPackages: ["@agentproto/adapter-hermes@latest", "left-pad@1.3.0"],
+      sessionHolder: expect.any(String),
     })
   })
 })
