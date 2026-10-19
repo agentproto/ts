@@ -4640,6 +4640,10 @@ export async function spawnAgentSession(
         ...(sandboxOrchestratorForward !== undefined
           ? { orchestrator: sandboxOrchestratorForward }
           : {}),
+        // ROLE FORWARD — the host-resolved spawn-time role rides to the box
+        // so the box daemon enforces the executor/supervisor delegation rule
+        // consistently (see `bootSandboxAgentSession`'s `role` opt).
+        ...(input.sandbox !== undefined ? { role: role.name } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -5596,6 +5600,13 @@ export async function bootSandboxAgentSession(opts: {
    *  verify: the stamp is applied ONLY after a successful write, so a box
    *  never spawns unauthenticated on a copy that never landed. */
   boxLogin?: BoxLoginDecl
+  /** The HOST-resolved spawn-time role (`role.name`), forwarded onto the
+   *  BOX's own `agent_start` so the box daemon resolves the session's role
+   *  the same way the host did — its delegation gate (`denyTools` on the
+   *  box's own daemon self-mount) and any role-based defaults then apply
+   *  box-side, instead of the box re-resolving from nothing. Absent for
+   *  every non-sandbox spawn. */
+  role?: string
   /** The caller's `agent_start.orchestrator`, normalized — forwarded onto
    *  the BOX's own `agent_start` so the box daemon mints a scope and mounts
    *  `/mcp/orchestrator` on ITS loopback (reachable by the adapter inside
@@ -6207,6 +6218,12 @@ export async function bootSandboxAgentSession(opts: {
       // opts comment above): the box daemon mints the scope and mounts
       // /mcp/orchestrator on its own loopback, reachable inside the box.
       ...(opts.orchestrator !== undefined ? { orchestrator: opts.orchestrator } : {}),
+      // ROLE FORWARD — the host-resolved spawn-time role (see the opts
+      // comment): the box daemon applies the same delegation gate
+      // (`?denyTools=` on ITS OWN daemon self-mount) and role defaults the
+      // host would have, so an executor's role is enforced consistently
+      // wherever the spawn runs — no re-resolution-from-nothing box-side.
+      ...(opts.role !== undefined ? { role: opts.role } : {}),
     }
     const remoteDesc =
       deviceTarget !== undefined
