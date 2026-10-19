@@ -179,6 +179,27 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
         required: false,
         sensitive: false,
       },
+      {
+        name: "daemonRoute",
+        description:
+          "Set to \"1\" to reach each computer's daemon through the controller (<controllerUrl>/v1/computers/{id}/daemon) instead of a per-port gatewayUrl, injected as COMPUTER_DAEMON_ROUTE.",
+        required: false,
+        sensitive: false,
+      },
+      {
+        name: "accessClientId",
+        description:
+          "Edge access service-token id sent as CF-Access-Client-Id on controller calls, injected as COMPUTER_ACCESS_CLIENT_ID.",
+        required: false,
+        sensitive: false,
+      },
+      {
+        name: "accessClientSecret",
+        description:
+          "Edge access service-token secret sent as CF-Access-Client-Secret on controller calls (stored, injected as COMPUTER_ACCESS_CLIENT_SECRET).",
+        required: false,
+        sensitive: true,
+      },
     ],
     /** Setup-field name → env var the provider package reads it from —
      *  filled in `importThirdPartyProvider` when the process env is unset. */
@@ -187,6 +208,9 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
       { name: "controllerUrl", envVar: "COMPUTER_CONTROLLER_URL" },
       { name: "tenantId", envVar: "COMPUTER_TENANT_ID" },
       { name: "gatewayUrl", envVar: "COMPUTER_GATEWAY_URL" },
+      { name: "daemonRoute", envVar: "COMPUTER_DAEMON_ROUTE" },
+      { name: "accessClientId", envVar: "COMPUTER_ACCESS_CLIENT_ID" },
+      { name: "accessClientSecret", envVar: "COMPUTER_ACCESS_CLIENT_SECRET" },
     ],
   },
   e2b: {

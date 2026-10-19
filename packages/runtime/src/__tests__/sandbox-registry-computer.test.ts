@@ -17,7 +17,15 @@ describe("sandbox provider registry: computer", () => {
       sharedSessions: true,
     })
     expect(handle!.defaultCwd).toBe("/home/user")
-    expect(handle!.setupFields?.map((f) => f.name)).toEqual(["apiKey", "controllerUrl", "tenantId", "gatewayUrl"])
+    expect(handle!.setupFields?.map((f) => f.name)).toEqual([
+      "apiKey",
+      "controllerUrl",
+      "tenantId",
+      "gatewayUrl",
+      "daemonRoute",
+      "accessClientId",
+      "accessClientSecret",
+    ])
   })
 
   it("reports the catalog placeholder as null when the package is missing", async () => {
@@ -59,6 +67,29 @@ describe("sandbox provider registry: computer", () => {
       else process.env.COMPUTER_CONTROLLER_TOKEN = previousToken
       if (previousUrl === undefined) delete process.env.COMPUTER_CONTROLLER_URL
       else process.env.COMPUTER_CONTROLLER_URL = previousUrl
+    }
+  })
+})
+
+describe("sandbox provider registry: computer edge fields", () => {
+  it("stored creds fill the daemon route and access env vars when unset", async () => {
+    const keys = ["COMPUTER_DAEMON_ROUTE", "COMPUTER_ACCESS_CLIENT_ID", "COMPUTER_ACCESS_CLIENT_SECRET"]
+    const saved = keys.map((k) => process.env[k])
+    for (const k of keys) delete process.env[k]
+    try {
+      await resolveSandboxProvider("computer", {
+        importPackage: async () => ({ computerSandboxProvider }),
+        creds: { daemonRoute: "1", accessClientId: "id-1", accessClientSecret: "secret-1" },
+      })
+      expect(process.env.COMPUTER_DAEMON_ROUTE).toBe("1")
+      expect(process.env.COMPUTER_ACCESS_CLIENT_ID).toBe("id-1")
+      expect(process.env.COMPUTER_ACCESS_CLIENT_SECRET).toBe("secret-1")
+    } finally {
+      keys.forEach((k, i) => {
+        const v = saved[i]
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      })
     }
   })
 })

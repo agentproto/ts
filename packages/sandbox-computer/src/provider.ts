@@ -42,7 +42,12 @@ import type {
   SandboxProvider,
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
-import { ComputerApiError, ComputerControllerClient, type ComputerClientConfig } from "./client.js"
+import {
+  ComputerApiError,
+  ComputerControllerClient,
+  sanitizeExtraHeaders,
+  type ComputerClientConfig,
+} from "./client.js"
 import type { ComputerStatus, PortPublish } from "./api-types.js"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
@@ -104,6 +109,24 @@ interface ComputerSandboxConfig {
    * computers sit behind an edge/proxy instead.
    */
   gatewayUrl?: string
+  /**
+   * Reach each computer's daemon THROUGH the controller instead of a
+   * per-port gateway: `gatewayUrl` defaults to
+   * `<controllerUrl>/v1/computers/{id}/daemon`, and the controller credential
+   * and tenant travel as `X-Controller-Authorization` / `X-Tenant-Id`
+   * alongside the daemon's own `Authorization`. Overrides nothing when
+   * `gatewayUrl` is set explicitly. Env: `COMPUTER_DAEMON_ROUTE=1`.
+   */
+  daemonRoute?: boolean
+  /**
+   * Extra headers sent on every controller call (and, in `daemonRoute` mode,
+   * on every daemon call), e.g. the credentials an edge proxy in front of the
+   * controller requires. Treated as secrets: never logged, redacted from
+   * errors. Merged over `COMPUTER_EXTRA_HEADERS` (a JSON object) and the
+   * `COMPUTER_ACCESS_CLIENT_ID` / `COMPUTER_ACCESS_CLIENT_SECRET` pair, which
+   * map to `CF-Access-Client-Id` / `CF-Access-Client-Secret`.
+   */
+  extraHeaders?: Record<string, string>
   /** Run `npm i -g @agentproto/cli@<cliVersion>` before starting the daemon
    *  when the health probe finds it not already up. Default true. */
   updateCliOnBoot?: boolean
@@ -119,6 +142,8 @@ interface ComputerSandboxConfig {
   waitReadyTimeoutMs?: number
   /** How long to wait for the daemon health probe after starting it. */
   daemonReadyTimeoutMs?: number
+  /** Internal: headers added to `authHeaders` in `daemonRoute` mode. */
+  routeHeaders?: Record<string, string>
 }
 
 function parseEgress(value: unknown): Array<{ host: string; port: number }> | undefined {
@@ -141,6 +166,30 @@ function parseEgress(value: unknown): Array<{ host: string; port: number }> | un
   return rules.length > 0 ? rules : undefined
 }
 
+const TRUTHY = new Set(["1", "true", "on", "yes"])
+
+function envExtraHeaders(): Record<string, string> {
+  const out: Record<string, string> = {}
+  const raw = process.env.COMPUTER_EXTRA_HEADERS
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") out[k] = v
+      }
+    } catch {
+      // A malformed value is ignored rather than echoed: it may hold a secret.
+    }
+  }
+  const id = process.env.COMPUTER_ACCESS_CLIENT_ID
+  const secret = process.env.COMPUTER_ACCESS_CLIENT_SECRET
+  if (id && secret) {
+    out["CF-Access-Client-Id"] = id
+    out["CF-Access-Client-Secret"] = secret
+  }
+  return out
+}
+
 function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
   const config = (spec.config ?? {}) as Record<string, unknown>
   const int = (v: unknown): number | undefined =>
@@ -160,6 +209,16 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     port: int(config.port),
     workspace: str(config.workspace),
     gatewayUrl: str(config.gatewayUrl) ?? str(process.env.COMPUTER_GATEWAY_URL),
+    daemonRoute:
+      typeof config.daemonRoute === "boolean"
+        ? config.daemonRoute
+        : TRUTHY.has((process.env.COMPUTER_DAEMON_ROUTE ?? "").toLowerCase()),
+    extraHeaders: sanitizeExtraHeaders({
+      ...envExtraHeaders(),
+      ...(config.extraHeaders && typeof config.extraHeaders === "object"
+        ? (config.extraHeaders as Record<string, string>)
+        : {}),
+    }),
     updateCliOnBoot: typeof config.updateCliOnBoot === "boolean" ? config.updateCliOnBoot : undefined,
     cliVersion: str(config.cliVersion),
     installPackages: Array.isArray(config.installPackages)
@@ -185,6 +244,25 @@ function resolveClientConfig(spec: SandboxSpec, config: ComputerSandboxConfig): 
     baseUrl,
     token,
     tenantId: config.tenantId ?? process.env.COMPUTER_TENANT_ID ?? DEFAULT_TENANT_ID,
+    ...(config.extraHeaders && Object.keys(config.extraHeaders).length > 0
+      ? { extraHeaders: config.extraHeaders }
+      : {}),
+  }
+}
+
+/** In `daemonRoute` mode, point the gateway at the controller's daemon route
+ *  (unless one was set explicitly) and compute the headers every daemon call
+ *  must carry. Identity otherwise. */
+function applyDaemonRoute(config: ComputerSandboxConfig, client: ComputerClientConfig): ComputerSandboxConfig {
+  if (!config.daemonRoute) return config
+  return {
+    ...config,
+    gatewayUrl: config.gatewayUrl ?? `${client.baseUrl.replace(/\/+$/, "")}/v1/computers/{id}/daemon`,
+    routeHeaders: {
+      ...sanitizeExtraHeaders(client.extraHeaders),
+      "X-Controller-Authorization": `Bearer ${client.token}`,
+      "X-Tenant-Id": client.tenantId,
+    },
   }
 }
 
@@ -347,8 +425,9 @@ async function probeComputer(sandboxId: string, clientConfig: ComputerClientConf
 
 export const computerSandboxProvider: SandboxProvider = {
   async boot(spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
-    const config = readComputerConfig(spec)
-    const clientConfig = resolveClientConfig(spec, config)
+    const base = readComputerConfig(spec)
+    const clientConfig = resolveClientConfig(spec, base)
+    const config = applyDaemonRoute(base, clientConfig)
     const client = new ComputerControllerClient(clientConfig)
     const booted = await bootOnClient(client, spec, config, opts)
     probeClientConfigs.set(booted.sandboxId, clientConfig)
@@ -356,8 +435,9 @@ export const computerSandboxProvider: SandboxProvider = {
   },
 
   async connect(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
-    const config = readComputerConfig(spec)
-    const clientConfig = resolveClientConfig(spec, config)
+    const base = readComputerConfig(spec)
+    const clientConfig = resolveClientConfig(spec, base)
+    const config = applyDaemonRoute(base, clientConfig)
     const client = new ComputerControllerClient(clientConfig)
     const booted = await connectOnClient(client, sandboxId, spec, config, opts)
     probeClientConfigs.set(booted.sandboxId, clientConfig)
@@ -686,8 +766,10 @@ function wrapBox(
     // `authHeaders`; a reconnect reads it back from the box. Absent only for a
     // template-autostarted daemon that was never given one.
     ...(daemonToken
-      ? { token: daemonToken, authHeaders: { Authorization: `Bearer ${daemonToken}` } }
-      : {}),
+      ? { token: daemonToken, authHeaders: { ...config.routeHeaders, Authorization: `Bearer ${daemonToken}` } }
+      : config.routeHeaders
+        ? { authHeaders: config.routeHeaders }
+        : {}),
     ...(Object.keys(extraPorts).length > 0 ? { ports: extraPorts } : {}),
     expose(port: number): Promise<{ url: string }> {
       return Promise.resolve({ url: boxUrl(id, port, config.gatewayUrl, published) })

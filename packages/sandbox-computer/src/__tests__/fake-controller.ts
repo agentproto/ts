@@ -21,6 +21,8 @@ export interface FakeControllerOptions {
   publishedPorts?: Array<{ host: number; guest: number }>
   /** Model a controller whose GET omits `ports` (only create reports them). */
   getOmitsPorts?: boolean
+  /** Edge emulation: every request must carry these headers (lowercase name → value) or it is refused with 403 before auth. */
+  requireHeaders?: Record<string, string>
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
 }
@@ -28,6 +30,7 @@ export interface FakeControllerOptions {
 /** Everything recorded, for assertions (no secrets captured in plain logs). */
 export class FakeController {
   readonly server: Server
+  readonly requestHeaders: Array<Record<string, string | string[] | undefined>> = []
   readonly createBodies: Array<Record<string, unknown>> = []
   readonly execs: Array<{ id: string; argv: string[]; timeoutSec: number }> = []
   readonly suspended: string[] = []
@@ -71,6 +74,10 @@ export class FakeController {
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", `http://127.0.0.1`)
     const body = await readBody(req)
+    this.requestHeaders.push(req.headers)
+    for (const [name, value] of Object.entries(this.options.requireHeaders ?? {})) {
+      if (req.headers[name] !== value) return reply(res, 403, { error: "edge refused" })
+    }
 
     // Auth: bearer + tenant header, exactly the real middleware's shape.
     const auth = req.headers.authorization ?? ""
