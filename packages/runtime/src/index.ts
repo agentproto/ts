@@ -943,7 +943,7 @@ import {
 } from "./sandbox-adapters.js"
 import { registerSandboxAttachTool } from "./sandbox-attach.js"
 import { registerSandboxExecTool } from "./sandbox-exec.js"
-import type { WorktreeProvisioner, WorktreeAutoReclaimer } from "./worktree-isolation.js"
+import type { WorktreeProvisioner, WorktreeAutoReclaimer, SandboxCheckpointReclaimer } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
@@ -1103,6 +1103,7 @@ export type {
   WorktreeIsolationMode,
   WorktreeProvisioner,
   WorktreeAutoReclaimer,
+  SandboxCheckpointReclaimer,
   WorktreeProvisionRequest,
   WorktreeProvisionOutcome,
   WorktreeProvisionPhase,
@@ -1727,6 +1728,15 @@ export interface CreateGatewayOptions {
    * worktree is still reclaimable manually or via a scheduled `gc` sweep.
    */
   runWorktreeAutoReclaim?: WorktreeAutoReclaimer
+  /**
+   * Optional best-effort exit-time deletion of one sandboxed session's
+   * `agentproto-checkpoint/<branch>` remote ref once its work is provably
+   * elsewhere (see `sandbox-checkpoint-gc`, the engine over
+   * `@agentproto/worktree`). Injected like `runWorktreeAutoReclaim` because
+   * the classify/delete logic runs there. Omitted → nothing is deleted at
+   * exit; `agentproto sandbox checkpoint-gc` remains the manual tool.
+   */
+  runSandboxCheckpointGc?: SandboxCheckpointReclaimer
   /**
    * Optional resolver: given a session's cwd, return the OPEN PR for that
    * cwd's git branch (or null). Powers the daemon PR-provenance reconciler,
@@ -2528,6 +2538,7 @@ export async function createGateway(
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
+    ...(opts.runSandboxCheckpointGc ? { runSandboxCheckpointGc: opts.runSandboxCheckpointGc } : {}),
     ...(langfuseTracer ? { langfuseTracer } : {}),
     langfuseTracingDefault: configDefaults?.langfuseTracing ?? false,
     ...(configDefaults?.backgroundTaskWake

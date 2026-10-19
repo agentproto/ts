@@ -171,6 +171,23 @@ export type WorktreeProvisioner = (
  */
 export type WorktreeAutoReclaimer = (worktreePath: string) => Promise<void>
 
+/**
+ * Exit-time best-effort reclaimer for a sandboxed session's checkpoint
+ * branch: when a `wt/<slug>` session ends and the work it rescued onto
+ * `agentproto-checkpoint/<branch>` is provably elsewhere (PR merged/closed,
+ * content in base or the work branch, squash- or patch-merged), the ref may
+ * be deleted from the workspace remote. Same contract as
+ * {@link WorktreeAutoReclaimer}: a rejection is "couldn't reclaim this time"
+ * — `sessions.ts` logs it and never lets it interrupt summarisation or the
+ * `session:exited` event. Absent on a bare runtime: nothing is ever deleted
+ * by the session sweep itself, and `agentproto sandbox checkpoint-gc` remains
+ * the manual tool.
+ */
+export type SandboxCheckpointReclaimer = (input: {
+  cwd?: string
+  branch: string
+}) => Promise<void>
+
 /** The pure decision's three outcomes. `spawn-in-place` may carry a `warn`:
  *  a non-fatal notice the caller should surface (the child is about to run in
  *  a shared, dirty checkout it doesn't own). A `warn` never blocks the spawn —

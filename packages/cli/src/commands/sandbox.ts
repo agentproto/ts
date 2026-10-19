@@ -31,6 +31,7 @@ import { readFile } from "node:fs/promises"
 import http from "node:http"
 import https from "node:https"
 import { createInterface } from "node:readline/promises"
+import { resolve } from "node:path"
 import { parseArgs } from "node:util"
 import {
   attachSandbox,
@@ -46,6 +47,14 @@ import {
   type SandboxLedgerEntry,
 } from "@agentproto/runtime"
 import { parseDuration } from "../util/duration.js"
+import { repoRootOf } from "./worktree.js"
+import {
+  planSandboxCheckpointGc,
+  applySandboxCheckpointGc,
+  renderSandboxCheckpointGcPlan,
+  type SandboxCheckpointGcPlan,
+  type SandboxCheckpointGcApplyResult,
+} from "@agentproto/worktree"
 import { discoverDaemon, httpGetJson, type DaemonDiscoveryReport } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto sandbox — connect to sandbox providers
@@ -55,6 +64,7 @@ Usage:
   agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
   agentproto sandbox rm <sandboxId|label|id-prefix> [--box] [--yes] [--json]
   agentproto sandbox gc [--apply] [--pause] [--json]
+  agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]
   agentproto sandbox exec <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
                           [--file <local>:<boxPath> ...] [--json] -- <command...>
@@ -116,6 +126,22 @@ gc     Reap ORPHAN boxes: ledger entries whose origin session ended in a
            them attachable later) — note a paused e2b box still bills, so
            the default kill is usually what you want for orphans.
   --json   Print the plan / outcomes as JSON.
+
+checkpoint-gc
+       Reap stale checkpoint branches: every remote
+       \`agentproto-checkpoint/<work-branch>\` ref a dead or finished session
+       left behind. A ref is listed as SAFE when the work it rescued is
+       provably elsewhere: the work branch's PR is merged or closed (via the
+       repo's forge, when \`gh\` credentials are available), the snapshot's
+       parent commit is merged or squash/patch-merged into the default
+       branch, or its content is already in the remote work branch. Dry run
+       (table or --json) is the default; only --apply deletes.
+
+  --repo <dir>  Repo to run in (default: cwd's git repo). The remote to act
+                on is that repo's \`origin\`.
+  --apply       Delete every ref classified SAFE, re-classifying a FRESH plan
+                right before the deletes (push --no-verify, hooks skipped).
+  --json        Print the plan / apply outcomes as JSON.
 
 exec   Runs ONE command inside a sandbox, through the running daemon
        (\`POST /sandboxes/exec\`, same function as the \`sandbox_exec\` MCP
@@ -198,6 +224,7 @@ export async function runSandbox(
   if (sub === "list") return runList(args.slice(1))
   if (sub === "rm") return runRm(args.slice(1))
   if (sub === "gc") return runGc(args.slice(1), gcDeps)
+  if (sub === "checkpoint-gc") return runCheckpointGc(args.slice(1))
   if (sub === "exec") return runExec(args.slice(1), execDeps)
 
   if (!sub) {
@@ -208,6 +235,70 @@ export async function runSandbox(
     `agentproto sandbox: unknown subcommand "${sub}"\n` + `  Known: list, attach, rm, gc, exec\n`,
   )
   return 2
+}
+
+/** `agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]`.
+ *  Dry run is the default; only --apply deletes, and each delete re-plans
+ *  fresh so a stale plan never deletes anything. Never exits nonzero just
+ *  because refs remain: only a plan that could not run does. */
+export async function runCheckpointGc(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: {
+      repo: { type: "string" },
+      "dry-run": { type: "boolean" },
+      apply: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
+  if (!repoRoot) {
+    process.stderr.write("agentproto sandbox checkpoint-gc: not inside a git repository; pass --repo <dir>.\n")
+    return 2
+  }
+  if (values.apply && values["dry-run"]) {
+    process.stderr.write("agentproto sandbox checkpoint-gc: --apply and --dry-run are mutually exclusive.\n")
+    return 2
+  }
+  let plan: SandboxCheckpointGcPlan
+  try {
+    plan = await planSandboxCheckpointGc({ repoRoot })
+  } catch (err) {
+    process.stderr.write(`agentproto sandbox checkpoint-gc: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+  if (!values.apply) {
+    if (values.json) process.stdout.write(JSON.stringify(plan, null, 2) + "\n")
+    else process.stdout.write(renderSandboxCheckpointGcPlan(plan) + "\n")
+    const safe = plan.refs.filter(e => e.verdict === "safe").length
+    process.stdout.write(
+      `Dry run - ${plan.refs.length} checkpoint ref(s), ${safe} safe to delete. Pass --apply to delete them.\n`,
+    )
+    return 0
+  }
+  let result: SandboxCheckpointGcApplyResult
+  try {
+    result = await applySandboxCheckpointGc({ repoRoot })
+  } catch (err) {
+    process.stderr.write(`agentproto sandbox checkpoint-gc: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+  if (values.json) process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+  else {
+    for (const o of result.outcomes) {
+      let detail: string = o.result
+      if (o.result === "deleted") detail = "deleted"
+      else if (o.result === "skipped-keep") detail = `skipped (${o.verdict}: ${o.message ?? "no proof"})`
+      else if (o.result === "failed") detail = `failed: ${o.message ?? "git push --delete failed"}`
+      process.stdout.write(`${o.ref.padEnd(50)}  ${detail}\n`)
+    }
+    const deleted = result.outcomes.filter(o => o.result === "deleted").length
+    const failed = result.outcomes.filter(o => o.result === "failed").length
+    process.stdout.write(`\n${deleted} deleted, ${failed} failed.\n`)
+  }
+  return result.outcomes.some(o => o.result === "failed") ? 1 : 0
 }
 
 /** Resolve a ledger row from an exact label, full sandboxId, or unique
