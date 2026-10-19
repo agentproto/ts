@@ -1507,6 +1507,7 @@ export async function restartAgentSession(
       resumedFrom: prev.id,
       resumeVia,
     })
+    if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     liveSessionId = desc.id
     return desc
   }
@@ -2159,6 +2160,7 @@ export async function restartAgentSession(
       resumedFrom: prev.id,
       resumeVia: box.resumeVia ?? "",
     })
+    if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     return desc
   }
 

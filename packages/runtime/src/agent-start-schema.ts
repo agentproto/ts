@@ -399,7 +399,8 @@ export const agentStartInputShape = {
     .describe(
       "Session ids allowed to drive the new session through the daemon's drive tools " +
         "(agent_prompt / agent_interrupt / agent_kill / session_restart / session_continue_fresh), " +
-        "or [\"any\"] to allow any caller session. By default only the session's owner " +
+        "or [\"any\"] to allow any caller session, or \"label:<label>\" / \"label:<prefix>*\" " +
+        "entries to allow a ROOT caller session (no parent) whose operator-assigned, immutable label matches (set by agent_start when the human operator spawns it; session_rename does not count). By default only the session's owner " +
         "(the caller that spawned it) and the human operator may drive it."
     ),
   promptAppend: z

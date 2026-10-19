@@ -244,6 +244,7 @@ export async function continueAgentSessionFresh(
   }
 
   const fresh = result.descriptor
+  if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
   fresh.continuedFrom = prev.id
   fresh.checkpointId = checkpoint.checkpointId
   if (opts.stampHandoff !== false) {

@@ -381,6 +381,7 @@ export function registerAgentTools(
       // (grandparent / orchestrator root) keeps its existing subtree
       // authority over the target — the owner gate must not revoke it.
       parentOf: id => registry.get(id)?.parentSessionId,
+      operatorLabelOf: id => registry.get(id)?.operatorLabel,
     })
     return gate.ok ? undefined : gate.message
   }
@@ -503,6 +504,20 @@ export function registerAgentTools(
         // list extra caller sessions allowed to drive the new session
         // besides its owner/the operator. The registry persists the row.
         const attachWarnings: string[] = []
+        // Operator-assigned immutable label (`SessionDescriptor.operatorLabel`):
+        // stamped ONLY when this spawn carried no caller session (human
+        // operator / operator-side client) and created a fresh session. It is
+        // what `label:` entries in `allowPromptFrom` match on.
+        const spawnLabel = input.label?.trim()
+        if (spawnLabel && !result.deduped && effectiveCaller() === undefined) {
+          try {
+            registry.setOperatorLabel(result.descriptor.id, spawnLabel)
+          } catch (err) {
+            attachWarnings.push(
+              `operatorLabel apply failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+        }
         if (input.allowPromptFrom?.length) {
           try {
             registry.setPromptPolicy(result.descriptor.id, input.allowPromptFrom)
@@ -1210,7 +1225,7 @@ export function registerAgentTools(
       allowPromptFrom: z
         .array(z.string().min(1))
         .describe(
-          "Session ids allowed to drive the session, or [\"any\"]. Empty array = default (owner + operator only)."
+          "Session ids allowed to drive the session, [\"any\"], or \"label:<label>\" / \"label:<prefix>*\" entries. Empty array = default (owner + operator only)."
         ),
     },
     async input => {
