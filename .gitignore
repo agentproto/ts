@@ -8,6 +8,11 @@ dist
 .tsbuildinfo
 *.tsbuildinfo
 
+# `docs/mcp-tools` copied into the cli package by its tsup `onSuccess` step —
+# tool-help.ts resolves them from the package root of the bundle (cli.mjs), so
+# the published tarball ships them via the `files` array; never committed.
+packages/cli/docs/
+
 # Generated source — regenerated from canonical fixtures by prebuild hooks
 packages/corpus-presets/src/marketing/files.ts
 packages/corpus-presets/src/research/files.ts
