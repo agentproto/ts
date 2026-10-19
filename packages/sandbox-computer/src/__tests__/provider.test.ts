@@ -525,6 +525,41 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.detachBodies.at(-1)).toEqual({ id: booted.sandboxId, holder: "sess_holder_1" })
   })
 
+  it("re-attaching the same holder at maxSessions answers 200 without taking another slot", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 1, sessionHolder: "sess_holder_1" }),
+      bootOpts,
+    )
+    const client = new ComputerControllerClient({
+      baseUrl: controller.url,
+      token: SERVICE_TOKEN,
+      tenantId: "tenant-a",
+    })
+    await expect(client.attach(booted.sandboxId, { holder: "sess_holder_1" })).resolves.toMatchObject({
+      sessions: 1,
+      maxSessions: 1,
+    })
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    await booted.stop()
+  })
+
+  it("a different holder at maxSessions is refused with 409", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 1, sessionHolder: "sess_holder_1" }),
+      bootOpts,
+    )
+    const client = new ComputerControllerClient({
+      baseUrl: controller.url,
+      token: SERVICE_TOKEN,
+      tenantId: "tenant-a",
+    })
+    await expect(client.attach(booted.sandboxId, { holder: "sess_holder_2" })).rejects.toMatchObject({
+      status: 409,
+    })
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    await booted.stop()
+  })
+
   it("the holder falls back to AGENTPROTO_SESSION_ID when the config names none", async () => {
     const saved = process.env.AGENTPROTO_SESSION_ID
     process.env.AGENTPROTO_SESSION_ID = "sess_from_env"

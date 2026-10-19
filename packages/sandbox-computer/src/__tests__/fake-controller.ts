@@ -77,6 +77,8 @@ export class FakeController {
   /** Controller-held session refcount and per-computer cap. */
   readonly sessions = new Map<string, number>()
   readonly maxSessions = new Map<string, number>()
+  /** Holders currently occupying a session slot, per computer. */
+  readonly sessionHolders = new Map<string, Set<string>>()
   readonly fileSystem = new Map<string, string>()
   // Process-wide so ids never repeat across instances: the provider keeps
   // per-id bookkeeping at module level.
@@ -117,6 +119,16 @@ export class FakeController {
 
   async stop(): Promise<void> {
     await new Promise<void>((resolve) => this.server.close(() => resolve()))
+  }
+
+  /** Holders occupying a slot on this computer, created on first use. */
+  private holders(id: string): Set<string> {
+    let holders = this.sessionHolders.get(id)
+    if (!holders) {
+      holders = new Set()
+      this.sessionHolders.set(id, holders)
+    }
+    return holders
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -194,11 +206,22 @@ export class FakeController {
     }
     if (url.pathname.endsWith("/attach") && req.method === "POST" && !this.options.noSessionRoutes) {
       const parsed = parseSessionBody(body)
-      assertContract(attachRequestSchema, parsed)
-      this.attachBodies.push({ id, holder: parsed.holder })
+      if (!parsed.ok) return reply(res, parsed.status, { error: parsed.error })
+      this.attachBodies.push({ id, holder: parsed.body.holder })
       const held = this.sessions.get(id) ?? 0
       const max = this.maxSessions.get(id) ?? 1
-      if (held >= max) return reply(res, 409, { error: "session limit reached", sessions: held, maxSessions: max })
+      const holders = this.holders(id)
+      if (parsed.body.holder !== undefined) {
+        if (holders.has(parsed.body.holder)) {
+          const attachBody = { sessions: held, maxSessions: max }
+          assertContract(sessionsResponseSchema, attachBody)
+          return reply(res, 200, attachBody)
+        }
+        if (held >= max) return reply(res, 409, { error: "session limit reached", sessions: held, maxSessions: max })
+        holders.add(parsed.body.holder)
+      } else if (held >= max) {
+        return reply(res, 409, { error: "session limit reached", sessions: held, maxSessions: max })
+      }
       this.sessions.set(id, held + 1)
       const attachBody = { sessions: held + 1, maxSessions: max }
       assertContract(sessionsResponseSchema, attachBody)
@@ -206,12 +229,20 @@ export class FakeController {
     }
     if (url.pathname.endsWith("/detach") && req.method === "POST" && !this.options.noSessionRoutes) {
       const parsed = parseSessionBody(body)
-      assertContract(attachRequestSchema, parsed)
-      this.detachBodies.push({ id, holder: parsed.holder })
+      if (!parsed.ok) return reply(res, parsed.status, { error: parsed.error })
+      this.detachBodies.push({ id, holder: parsed.body.holder })
       if (this.options.detachStatus) return reply(res, this.options.detachStatus, { error: "detach failed" })
-      const held = Math.max((this.sessions.get(id) ?? 0) - 1, 0)
-      this.sessions.set(id, held)
-      const detachBody = { sessions: held, maxSessions: this.maxSessions.get(id) ?? 1 }
+      const held = this.sessions.get(id) ?? 0
+      const holders = this.holders(id)
+      if (parsed.body.holder !== undefined && !holders.has(parsed.body.holder)) {
+        const noopBody = { sessions: held, maxSessions: this.maxSessions.get(id) ?? 1 }
+        assertContract(sessionsResponseSchema, noopBody)
+        return reply(res, 200, noopBody)
+      }
+      if (parsed.body.holder !== undefined) holders.delete(parsed.body.holder)
+      const remaining = Math.max(held - 1, 0)
+      this.sessions.set(id, remaining)
+      const detachBody = { sessions: remaining, maxSessions: this.maxSessions.get(id) ?? 1 }
       assertContract(sessionsResponseSchema, detachBody)
       return reply(res, 200, detachBody)
     }
@@ -361,12 +392,21 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
+type ParsedSessionBody =
+  | { ok: true; body: { holder?: string } }
+  | { ok: false; status: 400; error: string }
+
 /** A body-less attach/detach is the legacy `{}`; a body must match
- *  `attachRequestSchema` (the `holder` may be absent). */
-function parseSessionBody(body: string): { holder?: string } {
-  if (body.trim() === "") return {}
-  const parsed: unknown = JSON.parse(body)
-  return attachRequestSchema.parse(parsed)
+ *  `attachRequestSchema` (the `holder` may be absent). A malformed body is
+ *  a request error (400), never an exception escaping the handler. */
+function parseSessionBody(body: string): ParsedSessionBody {
+  if (body.trim() === "") return { ok: true, body: {} }
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return { ok: true, body: attachRequestSchema.parse(parsed) }
+  } catch (err) {
+    return { ok: false, status: 400, error: err instanceof Error ? err.message : "invalid session body" }
+  }
 }
 
 function reply(res: ServerResponse, status: number, body: unknown): void {
