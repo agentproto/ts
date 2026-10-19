@@ -64,9 +64,15 @@ writes the restore log before deleting. These verdicts are shared with any
 other `includeReviewed`-enabled run (for example the weekly routine); this
 workflow's own apply step stays `includeReviewed: false`.
 
-Verdict recording is safe under concurrency: the store serialises writes per
-verdict file and uses an atomic rename, so the parallelism-4 review fan-out
-cannot lose a verdict.
+Verdict recording is safe under concurrency: an in-process mutex plus an OS
+lock file serialise writers, the file is re-read under the lock, and each
+write lands with an atomic rename, so the parallelism-4 review fan-out cannot
+lose a verdict. Readers revalidate against the file's mtime/size, so a
+long-lived store also observes writes made elsewhere.
+
+`operator.by` must name someone other than the verdict's `reviewer`: the
+reviewer agent cannot self-certify the override it is guarded against. An
+operator block without `gate.agree: true` is not an approval.
 
 ## Installing
 

@@ -84,7 +84,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
@@ -1829,6 +1829,16 @@ export const branchVerdictSchema = z
     if (v.gate?.agree && v.gate.evidence.length === 0) {
       ctx.addIssue({ code: "custom", path: ["gate", "evidence"], message: "gate.agree=true requires at least one evidence entry" })
     }
+    // The operator approval is a separate trust boundary from the review: an
+    // automated reviewer must not self-certify the override it is being
+    // guarded against by putting its own name in `operator.by`.
+    if (v.operator && v.operator.by.trim().toLowerCase() === v.reviewer.trim().toLowerCase()) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["operator", "by"],
+        message: "operator.by must name someone other than the reviewer",
+      })
+    }
   })
 
 export type BranchVerdict = z.infer<typeof branchVerdictSchema>
@@ -1860,19 +1870,54 @@ const verdictFileSchema = z.object({ entries: z.array(z.unknown()) })
  */
 const verdictLocks = new Map<string, Promise<void>>()
 
+const VERDICT_LOCK_TIMEOUT_MS = 10_000
+const VERDICT_LOCK_STALE_MS = 60_000
+
+/** Cross-process lock: `writeFile(..., { flag: "wx" })` is atomic; a stale lock (a crashed writer) is reaped after a minute. */
+async function acquireVerdictFileLock(lockPath: string): Promise<() => Promise<void>> {
+  const deadline = Date.now() + VERDICT_LOCK_TIMEOUT_MS
+  for (;;) {
+    try {
+      await writeFile(lockPath, `${process.pid}\n`, { encoding: "utf8", flag: "wx" })
+      return async () => {
+        await unlink(lockPath).catch(() => {})
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
+      try {
+        const st = await stat(lockPath)
+        if (Date.now() - st.mtimeMs > VERDICT_LOCK_STALE_MS) {
+          await unlink(lockPath).catch(() => {})
+          continue
+        }
+      } catch {
+        continue
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`branch verdict store: timed out waiting for ${lockPath}`)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10 + Math.floor(Math.random() * 15)))
+    }
+  }
+}
+
 async function withVerdictLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  await mkdir(dirname(path), { recursive: true })
   const previous = verdictLocks.get(path) ?? Promise.resolve()
-  let release!: () => void
+  let releaseInProcess!: () => void
   const held = new Promise<void>((resolve) => {
-    release = resolve
+    releaseInProcess = resolve
   })
   const tail = previous.then(() => held)
   verdictLocks.set(path, tail)
   await previous
+  let releaseFile: (() => Promise<void>) | undefined
   try {
+    releaseFile = await acquireVerdictFileLock(`${path}.lock`)
     return await fn()
   } finally {
-    release()
+    if (releaseFile) await releaseFile()
+    releaseInProcess()
     if (verdictLocks.get(path) === tail) verdictLocks.delete(path)
   }
 }
@@ -1880,25 +1925,41 @@ async function withVerdictLock<T>(path: string, fn: () => Promise<T>): Promise<T
 /** `~/.agentproto/branch-gc-verdicts.json`, keyed by (repo, tip sha). */
 export class FileBranchVerdictStore implements BranchVerdictStore {
   private cache: Map<string, BranchVerdictRecord> | null = null
+  private cacheStamp: string | null = null
 
   constructor(private readonly path: string = BRANCH_VERDICTS_PATH()) {}
 
+  /** mtime + size, so a `get` on a long-lived instance observes another writer's rename. */
+  private async fileStamp(): Promise<string | null> {
+    try {
+      const st = await stat(this.path)
+      return `${st.mtimeMs}:${st.size}`
+    } catch {
+      return null
+    }
+  }
+
   private async load(): Promise<Map<string, BranchVerdictRecord>> {
-    if (this.cache) return this.cache
+    const stamp = await this.fileStamp()
+    if (this.cache && stamp === this.cacheStamp) return this.cache
     const map = new Map<string, BranchVerdictRecord>()
-    this.cache = map
     let parsed: unknown
     try {
       parsed = JSON.parse(await readFile(this.path, "utf8"))
     } catch {
+      this.cache = map
+      this.cacheStamp = stamp
       return map
     }
     const file = verdictFileSchema.safeParse(parsed)
-    if (!file.success) return map
-    for (const raw of file.data.entries) {
-      const rec = verdictRecordSchema.safeParse(raw)
-      if (rec.success) map.set(verdictKey(rec.data.repo, rec.data.sha), rec.data)
+    if (file.success) {
+      for (const raw of file.data.entries) {
+        const rec = verdictRecordSchema.safeParse(raw)
+        if (rec.success) map.set(verdictKey(rec.data.repo, rec.data.sha), rec.data)
+      }
     }
+    this.cache = map
+    this.cacheStamp = stamp
     return map
   }
 
@@ -1912,9 +1973,14 @@ export class FileBranchVerdictStore implements BranchVerdictStore {
     // merged instead of overwritten. The rename keeps readers whole.
     await withVerdictLock(this.path, async () => {
       this.cache = null
+      this.cacheStamp = null
       const map = await this.load()
       map.set(verdictKey(record.repo, record.sha), record)
       await writeJsonAtomic(this.path, { entries: [...map.values()] })
+      // A different process may write immediately after this rename: drop the
+      // cache so the next read sees the file, not this writer's snapshot.
+      this.cache = null
+      this.cacheStamp = null
     })
   }
 }

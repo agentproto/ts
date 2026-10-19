@@ -4470,7 +4470,7 @@ export function registerSessionTools(
       reviewer: z.string().describe("Who reviewed, e.g. `claude-sonnet reviewer`."),
       operator: z
         .object({
-          by: z.string().describe("Who approved deletion of this exact tip."),
+          by: z.string().describe("Who approved deletion of this exact tip. Must differ from `reviewer`."),
           note: z.string().optional().describe("Why the operator approved despite the guard."),
         })
         .optional()

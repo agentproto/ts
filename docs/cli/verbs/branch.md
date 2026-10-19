@@ -88,9 +88,12 @@ merge conflicts), coverage, and the residual files. Tips that already have a
 verdict are skipped unless you pass `--all`. Reviewers record verdicts with the
 `branch_gc_verdict` MCP tool. Verdicts are keyed by repo and tip sha in
 `~/.agentproto/branch-gc-verdicts.json`, and a verdict for a tip that later
-moves is ignored. Concurrent `branch_gc_verdict` calls are safe: the store
-serialises writes per verdict file and commits each one with an atomic
-rename, so no recorded verdict is lost.
+moves is ignored. Concurrent `branch_gc_verdict` calls are safe in-process and
+across processes: the store serialises writers with an in-process mutex plus
+an OS lock file, re-reads under the lock, and commits each write with an
+atomic rename, so no recorded verdict is lost. `get` also revalidates its
+cache against the file's mtime/size, so a long-lived reader observes writes
+from another store.
 
 ### Operator approval (bypassing the line guard)
 
@@ -111,7 +114,10 @@ operator approval for the **same tip sha** with `branch_gc_verdict`:
 ```
 
 `operator.by` is required; `note` is optional. The approval is stored with the
-verdict's `recordedAt` timestamp. With `includeReviewed: true` a same-tip
+verdict's `recordedAt` timestamp. `operator.by` must name someone other than
+the verdict's `reviewer` — an automated reviewer cannot self-certify the
+override it is guarded against — and an operator block without
+`gate.agree: true` is not an approval. With `includeReviewed: true` a same-tip
 verdict that has `gate.agree: true` **and** an `operator` block reclaims
 despite the guard; the plan entry carries
 `verdictGuard: "bypassed by operator <by>...: <guard reason>"`, the apply
