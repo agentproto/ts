@@ -48,9 +48,10 @@ same schemas, so the test double cannot drift from the published contract.
 ## Notes
 
 - Sessions: `maxSessions` on create sizes the computer for that many
-  concurrent sessions. `attach` takes a slot (409 at the cap), `detach`
-  releases one (floors at 0), and `DELETE` answers 409 while sessions are
-  attached unless `?force=true` is passed.
+  concurrent sessions. `attach` takes a slot (409 at the cap; an attach
+  by a `holder` that already holds a slot is idempotent: 200 with the
+  count unchanged), `detach` releases one (floors at 0), and `DELETE`
+  answers 409 while sessions are attached unless `?force=true` is passed.
 - `resume` MAY rename the computer: the controller can restore the suspend
   snapshot into a fresh computer under a NEW generated id and answer
   `{ id: <new>, state: "running" }`. Callers must treat the old id as gone

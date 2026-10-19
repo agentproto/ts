@@ -65,8 +65,9 @@ agentproto sessions multiplexing over `mcpUrl`. No runtime behaviour reads
 this flag yet. `config.maxSessions` is forwarded at create (the controller
 sizes the computer's CPU and RAM for it) and counted by the controller: boot
 and connect attach a session, pause and stop detach it, and a connect past the
-cap is refused. The last session to stop removes the computer. A controller
-without the attach routes falls back to a per-process count.
+cap is refused — except a re-connect by the same `sessionHolder`, which is
+idempotent and keeps its slot. The last session to stop removes the computer.
+A controller without the attach routes falls back to a per-process count.
 
 ## Secrets
 
