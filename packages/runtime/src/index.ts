@@ -120,6 +120,7 @@ import {
 } from "./worktree-status.js"
 import type { WorktreeGcRunner } from "./worktree-gc.js"
 import type { BranchGcRunner, BranchGcVerdictRecorder, BranchGcVerdictReader } from "./branch-gc.js"
+import type { SandboxCheckpointGcRunner } from "./sandbox-checkpoint-gc.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -356,6 +357,22 @@ export type {
   BranchGcApplyScopeCounts,
 } from "./branch-gc.js"
 export { summarizeBranchGcApply, withBranchGcApplySummary } from "./branch-gc.js"
+export type {
+  SandboxCheckpointGcRunner,
+  SandboxCheckpointGcRunInput,
+  SandboxCheckpointGcResult,
+  SandboxCheckpointGcPlanView,
+  SandboxCheckpointGcEntryView,
+  SandboxCheckpointGcVerdict,
+  SandboxCheckpointGcSummaryView,
+  SandboxCheckpointGcApplyOutcomeView,
+  SandboxCheckpointGcApplySummaryView,
+} from "./sandbox-checkpoint-gc.js"
+export {
+  summarizeSandboxCheckpointGcApply,
+  summarizeSandboxCheckpointGcPlan,
+  withSandboxCheckpointGcApplySummary,
+} from "./sandbox-checkpoint-gc.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { createActivityProjector } from "./activities.js"
@@ -1722,6 +1739,12 @@ export interface CreateGatewayOptions {
    * returns a clear "not enabled" error.
    */
   runBranchGc?: BranchGcRunner
+  /**
+   * Optional sandbox-checkpoint-`gc` runner powering
+   * `sandbox_checkpoint_gc`. Injected for the same reason as `runBranchGc`.
+   * Omitted → the tool returns a clear "not enabled" error.
+   */
+  runSandboxCheckpointGcSweep?: SandboxCheckpointGcRunner
   /** Optional verdict recorder powering `branch_gc_verdict` (+ `POST /branches/gc/verdict`). */
   recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional verdict reader powering `branch_gc_verdict_get`. */
@@ -3686,6 +3709,9 @@ export async function createGateway(
         : {}),
       ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
       ...(opts.runBranchGc ? { runBranchGc: opts.runBranchGc } : {}),
+      ...(opts.runSandboxCheckpointGcSweep
+        ? { runSandboxCheckpointGcSweep: opts.runSandboxCheckpointGcSweep }
+        : {}),
       ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
       ...(opts.readBranchGcVerdict ? { readBranchGcVerdict: opts.readBranchGcVerdict } : {}),
       isSessionChatInstalled,
@@ -4356,6 +4382,9 @@ export async function createGateway(
       : {}),
     ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
       ...(opts.runBranchGc ? { runBranchGc: opts.runBranchGc } : {}),
+      ...(opts.runSandboxCheckpointGcSweep
+        ? { runSandboxCheckpointGcSweep: opts.runSandboxCheckpointGcSweep }
+        : {}),
       ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
     ...(opts.resolveBrowserAdapter
       ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }

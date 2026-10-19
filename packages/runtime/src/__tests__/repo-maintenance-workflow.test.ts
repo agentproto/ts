@@ -186,6 +186,24 @@ function fakeWorktreeGc(inputs: Record<string, unknown>, applyOutcomes: Array<Re
   return mcpResult(inputs.apply ? { mode: "apply", outcomes: applyOutcomes } : worktreeGcPlanFixture())
 }
 
+
+/** A fake `sandbox_checkpoint_gc`: an empty plan, or an empty apply. */
+function fakeCheckpointGc(inputs: Record<string, unknown>) {
+  const plan = {
+    repoRoot: "/repo",
+    remote: "origin",
+    base: "refs/remotes/origin/main",
+    prCheckAvailable: true,
+    refs: [],
+  }
+  const summary = { total: 0, safe: 0, keep: 0, unknown: 0 }
+  return mcpResult(
+    inputs.apply
+      ? { mode: "apply", plan, summary, outcomes: [], applySummary: { status: "noop", deleted: 0, skipped: 0, failed: 0 } }
+      : { mode: "plan", plan, summary },
+  )
+}
+
 /**
  * A mock host that behaves like `SessionsRegistryAgentHost` where the retry
  * path cares: every spawn is indexed under its `stepKey` (`reviewOne[0]`), so
@@ -222,6 +240,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "modelRoles:tool",
       "worktreeGcPlan:tool",
       "branchGcPlan:tool",
+      "checkpointGcPlan:tool",
       "reviewQueue:transform",
       "reviewCandidates:transform",
       "reviewWorktreePaths:transform",
@@ -231,6 +250,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "gaps:transform",
       "worktreeGcApply:tool",
       "branchGcApply:tool",
+      "checkpointGcApply:tool",
       "report:transform",
       "notifyBody:transform",
       "shouldNotify:transform",
@@ -268,6 +288,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
         const missing = inputs.sha !== SHA_A
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
       }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
@@ -363,6 +384,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       if (name === "command_execute") {
         return mcpResult({ exitCode: 0, stdout: "", stderr: "" })
       }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
@@ -423,6 +445,7 @@ describe("repo-maintenance maintain workflow — missing-verdict retry", () => {
         if (inputs.sha === SHA_B) missing = checksOfB.n++ < landsAfter
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
       }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
@@ -521,6 +544,7 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
       if (name === "worktree_gc") return mcpResult({ mode: "plan", outcomes: [] })
       if (name === "branch_gc") return mcpResult(plan)
       if (name === "branch_gc_verdict_get") return mcpResult({ found: true, missing: false })
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
@@ -748,6 +772,7 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
         const missing = opts.verdictLands !== true
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: null })
       }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
@@ -928,6 +953,7 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
         const missing = inputs.sha !== SHA_A
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
       }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
@@ -1111,6 +1137,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
       }
       if (name === "branch_gc") return mcpResult(branchPlan(++branchGcCalls >= 2))
       if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)

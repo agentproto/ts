@@ -104,6 +104,19 @@ steps:
       apply: false
       includeReviewed: false
 
+  - id: checkpointGcPlan
+    kind: tool
+    name: Plan sandbox checkpoint gc
+    description: >-
+      Always a dry run: classifies the stale `agentproto-checkpoint/*` refs a
+      dead sandbox left on the remote as safe / keep / unknown.
+    tool: sandbox_checkpoint_gc
+    inputs:
+      repoRoot: $input.repoRoot
+      workspaceSlug: $input.workspaceSlug
+      apply: false
+      wait: true
+
   - id: reviewQueue
     kind: transform
     name: Queue unreviewed review candidates, one per branch name
@@ -216,6 +229,20 @@ steps:
       includeReviewed: false
       scopes: [local, remote, orphan]
 
+  - id: checkpointGcApply
+    kind: tool
+    name: Apply sandbox checkpoint gc
+    description: >-
+      `apply` is $input.applyMerged — a dry-run plan again when false. On
+      apply the engine re-plans and re-classifies every ref immediately
+      before deleting it, so a stale plan never deletes changed work.
+    tool: sandbox_checkpoint_gc
+    inputs:
+      repoRoot: $input.repoRoot
+      workspaceSlug: $input.workspaceSlug
+      apply: $input.applyMerged
+      wait: true
+
   - id: report
     kind: transform
     name: Build the markdown summary
@@ -267,14 +294,16 @@ result:
   applyMerged: $input.applyMerged
   branchGcApply: $steps.branchGcApply
   worktreeGcApply: $steps.worktreeGcApply
+  checkpointGcApply: $steps.checkpointGcApply
 ---
 
 # Repo Maintenance — `maintain` workflow
 
-`worktree_gc` + `branch_gc` plan → fan a reviewer agent out over every
-unmerged branch (small model for a small residual, large model otherwise) →
-verify every candidate got a verdict → optionally apply (reclaim-class only)
-→ markdown report, plus an agentpush notification when `notify` is set.
+`worktree_gc` + `branch_gc` + `sandbox_checkpoint_gc` plan → fan a reviewer
+agent out over every unmerged branch (small model for a small residual, large
+model otherwise) → verify every candidate got a verdict → optionally apply
+(reclaim-class only) → markdown report, plus an agentpush notification when
+`notify` is set.
 
 Entry-based (`entry.mjs`) for one reason: `review`'s per-candidate `model`
 selector is a real run-time function, which only the entry-loader path can
