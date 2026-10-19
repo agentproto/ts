@@ -30,10 +30,9 @@ import {
   registerAgentTools,
   registerExportSessionTool,
   collectSubtree,
-  checkSessionOwnerGate,
-  effectiveCallerSessionId,
   stripAnsi,
 } from "./agent-tools.js"
+import { checkSessionOwnerGate, effectiveCallerSessionId } from "./session-owner.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import type { DiscoveredMcp } from "./mcp-discovery.js"

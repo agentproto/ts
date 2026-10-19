@@ -494,10 +494,11 @@ export function registerAgentTools(
       if (result.ok) {
         // Best-effort post-spawn attaches: their failures must never sink an
         // otherwise-successful spawn; each pushes a non-fatal warning instead.
-        const attachWarnings: string[] = []
+        //
         // Spawn-time drive-policy opt-in (`agent_start.allowPromptFrom`):
         // list extra caller sessions allowed to drive the new session
         // besides its owner/the operator. The registry persists the row.
+        const attachWarnings: string[] = []
         if (input.allowPromptFrom?.length) {
           try {
             registry.setPromptPolicy(result.descriptor.id, input.allowPromptFrom)
@@ -507,15 +508,12 @@ export function registerAgentTools(
             )
           }
         }
-        // Phase 4: auto-attach a windowed cost-budget governance policy on the
         // freshly-spawned session. The gate carries the spawned session id
         // explicitly (so a profile-scoped budget resolves THAT session's
         // profileRef) and `then: "emit"` trips `policy:failed` on windowed
         // overage — it never kills the session (that's the orthogonal scalar
-        // `maxCostUsd` cap). Best-effort: a supervisor-attach failure must not
-        // sink an otherwise-successful spawn, so its policyId rides back as a
+        // `maxCostUsd` cap). Best-effort: the attach failure rides back as a
         // non-fatal warning rather than turning the spawn into an error.
-        const attachWarnings: string[] = []
         let costBudgetPolicyId: string | undefined
         if (input.costBudget && supervisor && !result.deduped) {
           try {
