@@ -165,7 +165,20 @@ printf '    Install adapters later from the SAME shell that launched the daemon 
 
 # --- 6. Daemon ----------------------------------------------------------------
 ensure_daemon() {
-  if agentproto doctor --only daemon >/dev/null 2>&1 && agentproto doctor --only daemon 2>/dev/null | grep -qiE 'ok|pass'; then
+  # The doctor human summary always prints "N ok · N warn …" — a bare grep
+  # for 'ok|pass' matched that line even with the daemon down, so a fresh
+  # machine was told "Daemon already healthy" with nothing running. Look at
+  # the machine-readable output instead: healthy iff exit 0 AND some daemon
+  # check has status "ok" (a warn-only step reports no ok status; warn/broken
+  # detail text can never inject one).
+  # Healthy iff `--json` exits 0 AND some daemon check reports
+  # `"status": "ok"`. Do NOT grep the human output for 'ok|pass': the doctor
+  # summary always prints "N ok · N warn …", which matches even when NO
+  # check is ok — so a warn-only daemon step (or any status drift in
+  # doctor's check text) printed "Daemon already healthy" with nothing
+  # running. The machine-readable status is the contract.
+  if agentproto doctor --only daemon --json >/dev/null 2>&1 &&
+    agentproto doctor --only daemon --json 2>/dev/null | grep -q '"status": "ok"'; then
     info "Daemon already healthy"
     return 0
   fi
