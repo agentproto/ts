@@ -15,4 +15,10 @@ describe("continuedLabel", () => {
   it("leaves labels that merely contain the word alone", () => {
     expect(continuedLabel("continued-work")).toBe("continued-work (continued)")
   })
+  it("counts a mixed numbered-then-plain tail", () => {
+    expect(continuedLabel("foo (continued 2) (continued)")).toBe("foo (continued 4)")
+  })
+  it("drops extra whitespace before the suffix", () => {
+    expect(continuedLabel("foo  (continued)")).toBe("foo (continued 2)")
+  })
 })

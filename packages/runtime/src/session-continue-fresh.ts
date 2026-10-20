@@ -144,6 +144,22 @@ function formatPostureForSpawn(
 }
 
 /**
+ * Label for a fresh continuation: `foo` -> `foo (continued)` -> `foo (continued 2)` -> `foo (continued 3)`.
+ * Strips any earlier suffix (including the legacy repeated `(continued) (continued)` form, and a
+ * mixed `(continued 2) (continued)` tail) so the label never grows with each generation.
+ */
+export function continuedLabel(label: string): string {
+  const tail = label.match(/(?:\s+\(continued(?:\s\d+)?\))+$/)
+  if (!tail) return `${label} (continued)`
+  let generation = 0
+  for (const part of tail[0].matchAll(/\(continued(?:\s(\d+))?\)/g)) {
+    generation = part[1] ? Number(part[1]) : generation + 1
+  }
+  const base = label.slice(0, label.length - tail[0].length)
+  return `${base} (continued ${generation + 1})`
+}
+
+/**
  * Build a fresh continuation session for `prev`.
  *
  * The original session descriptor is updated with `continuedTo` and
@@ -151,20 +167,6 @@ function formatPostureForSpawn(
  * `checkpointId`.
  */
 
-/**
- * Label for a fresh continuation: `foo` -> `foo (continued)` -> `foo (continued 2)` -> `foo (continued 3)`.
- * Strips any earlier suffix (including the legacy repeated `(continued) (continued)` form) so the
- * label never grows with each generation.
- */
-export function continuedLabel(label: string): string {
-  const suffix = /(?:\s\(continued(?:\s(\d+))?\))+$/
-  const match = label.match(suffix)
-  if (!match) return `${label} (continued)`
-  const legacyRepeats = (match[0].match(/\(continued/g) ?? []).length
-  const previous = match[1] ? Number(match[1]) : legacyRepeats
-  const base = label.slice(0, label.length - match[0].length)
-  return `${base} (continued ${previous + 1})`
-}
 
 export async function continueAgentSessionFresh(
   deps: SpawnAgentSessionDeps,
