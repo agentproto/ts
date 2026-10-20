@@ -84,11 +84,16 @@ interface ToolHook {
 
 An `OnRef` is one of:
 
-| Form | Meaning |
-|---|---|
-| `"agent_start"` \| `"agent_prompt"` \| `"task_create"` \| … | A specific tool name from `DAEMON_TOOL_NAMES` (`packages/runtime/src/daemon-tool-names.generated.ts`). Fires after that tool's handler returns successfully. |
-| `"tool-call"` \| `"tool-result"` \| `"tool-error"` | The AIP-37 vocabulary names — fires for *any* tool, narrowed by `match.tools`. |
-| `"session:spawned"` \| `"task:changed"` \| `"session:turn-end"` … | A daemon bus event from `SessionEventType` (`packages/runtime/src/session-event-bus.ts`). Same dispatcher, different feed. |
+| Form | Fires | Result available? |
+|---|---|---|
+| `"agent_start"` \| `"agent_prompt"` \| `"task_create"` \| … | **After that tool's handler returns successfully** (a named-tool trigger is post-success by definition — that is where `$result` lives). | yes (`$result`) |
+| `"tool-call"` | Around invocation for *any* tool (AIP-37's "before a tool is invoked"), narrowed by `match.tools`. | no |
+| `"tool-result"` \| `"tool-error"` | After any tool returns success / error (AIP-37). | yes / yes |
+| `"session:spawned"` \| `"task:changed"` \| `"session:turn-end"` … | When that daemon bus event fires (`SessionEventType`, `packages/runtime/src/session-event-bus.ts`). Same dispatcher, different feed. | event payload |
+
+Named-tool triggers must be members of `DAEMON_TOOL_NAMES`
+(`packages/runtime/src/daemon-tool-names.generated.ts`); anything else is a
+config error reported at load.
 
 `delegate` is not a distinct daemon tool name in this repo — a delegation *is*
 an `agent_start` / `agent_prompt` from a session that holds a supervisor role
@@ -250,17 +255,17 @@ holds a ≤15-line block that makes "we already did this" impossible to miss.
 }
 ```
 
-### 3.2 Pipeline (all deterministic unless step 5 opts in)
+### 3.2 Pipeline (all deterministic unless step 7 opts in)
 
 | # | Step | How | Cost |
 |---|---|---|---|
 | 1 | **Keywords** from the delegated prompt | Pure function: strip stopwords + code punctuation, keep tokens ≥3 chars, prefer quoted spans / `snake_case` / `camelCase` / `kebab-case` identifiers and Title-ish nouns, dedupe, cap at 8. No LLM. (Free model permitted as an *optional* re-ranker; off by default.) | **0 tokens** |
 | 2 | **`git grep` in the target workspace** | `execFile("git", ["grep","-n","-I","--fixed-strings","-e",k1,"-e",k2,…,"--","*.ts","*.md","*.json"], { cwd: workspaceRoot, timeout })` — cwd anchored like `command-tools.ts`, `maxBuffer` capped; collapse hits → top 5 files by hit count with one representative line each. Runs on the workspace the spawn will use (the worktree if `agent_start.worktree` resolved one). | **0 tokens** |
 | 3 | **`gh pr list --search`**, merged **and** open, last 30 days | Two calls through the injectable `GhRunner` type (`packages/runtime/src/review-pr.ts`): `gh pr list --state merged --search "<kw> merged:>='<date>'" --limit 8 --json number,title,mergedAt,url` and the same with `--state open --search "<kw> updated:>=…"`. `gh` missing ⇒ step skipped, block still produced. | **0 tokens** (one `gh` process each) |
-| 4 | **Memory search** | (a) BM25 brain: `WorkspaceBrains.query(workspaceSlug, promptText, topk 5)` — the engine behind `workspace_brain_query`; (b) keyword pass over the workspace's `memory/**/MEMORY.md` (memory/v1 draft doctype) when present. | **0 tokens** |
+| 4 | **Memory search** | (a) BM25 brain, same call the `workspace_brain_query` tool makes: `brains.getBrain(slug).getProvider().query({ query, topK: 5 })` (`packages/runtime/src/brain-tools.ts`); (b) keyword pass over the workspace's `memory/**/MEMORY.md` (memory/v1 draft doctype) when present. | **0 tokens** |
 | 5 | **Read `PROJECT.md` / `RAPPORT.md`** | Head-read both from `workspaceRoot` if present (≤80 lines / 4 KB each); extract section headings + any line containing a step-4 keyword. Missing file ⇒ skipped. | **0 tokens** |
 | 6 | **Compose** the block (§3.3) | Template + truncation to `maxBlockLines` (15). Deterministic order: files → PRs → memory → decisions. | **0 tokens** |
-| 7 | **Optional summary line** | Only if `budget.maxLlmCalls ≥ 1` **and** a free route resolves: one `complete({system, prompt})` call, `max_tokens ≤ 400`, `timeoutMs ≤ 8000`, model `"free"` → `model-roles` free preset (`opencode-go/longcat-2.5-preview-free`) or the OpenRouter path `session-titler.ts` already uses. No free route ⇒ **refuse the summary and ship the deterministic block** (AIP-68 §5 rule: a host without a free-route catalogue refuses the model pass rather than falling back to a paid one). | 0 or ~400 tokens, hard-capped |
+| 7 | **Optional summary line** | Only if `budget.maxLlmCalls ≥ 1` **and** a free route resolves: one `ModelLike.complete({ system, prompt })` call (the shape `summarize-session-tool.ts` / `session-activity.ts` already use), `max_tokens ≤ 400`, `timeoutMs ≤ 8000`, model `"free"` → `model-roles` free preset (`opencode-go/longcat-2.5-preview-free`) or the OpenRouter path `session-titler.ts` already uses. No free route ⇒ **refuse the summary and ship the deterministic block** (AIP-68 §5 rule: a host without a free-route catalogue refuses the model pass rather than falling back to a paid one). | 0 or ~400 tokens, hard-capped |
 
 Partial failure is the normal case: any step can drop out (no `gh`, no repo,
 no brain, no PROJECT.md) and step 6 still composes a block from whatever
@@ -279,10 +284,14 @@ Existing work detected — confirm BEFORE you start:
 - PRs: #1858 "tool hooks: queue delivery" merged 5d ago; #1902 open (same topic)
 - memory: mem_qc8f407g "Pygmalion prior-art check" (sess_5f9a3c38)
 - decisions: PROJECT.md §Hooks; RAPPORT.md 2026-10-15 — "async enrichers, no per-message reviewer"
-- summary: prior art is design-doc + merged PR 1858; extend rather than re-add.   ← step 7, optional
+- summary: prior art is design-doc + merged PR 1858; extend rather than re-add.
 First step: reply "modify existing" (name the file/PR) or "new" — then proceed.
 </agentproto-enrichment>
 ```
+
+(The `- summary:` bullet exists only when §3.2 step 7 ran; with
+`maxLlmCalls: 0` — phase 1 of the rollout — the example above is 8 lines
+instead of 9. Either way, well inside the 15.)
 
 Rules: one bullet kind per line; evidence is quoted/verbatim (file path, PR
 number + title, memory id + title) — no free-form claims about what the
@@ -427,7 +436,7 @@ third-party scripts would (candidate: AIP-69). Until then the doc form in
 
 ### 8.1 Draft amendment text (paste-ready, AIP-46)
 
-```markdown
+````markdown
 ### Tool hooks and enrichers (draft, 2026-10-20)
 
 A host MAY run **enrichers** — read-only background passes over the
@@ -489,7 +498,7 @@ shape from AIP-60 `match`; budget posture from AIP-68 §5; delivery rides the
 queue, context-slice and metadata surfaces this AIP defines. AIP-41
 `schedule.kind: "event"` MAY reference the same events for scheduled
 replays; a routine target does not carry `deliver` and is not required to.
-```
+````
 
 ---
 
@@ -511,7 +520,7 @@ replays; a routine target does not carry `deliver` and is not required to.
 | `packages/runtime/src/__tests__/prior-art.test.ts` | keyword extraction, block ≤15 lines, partial-failure composition, free-route refusal. |
 | `docs/design/tool-hooks-enrichers.md` | This document. |
 | *(optional)* `packages/runtime/docs/mcp-tools/hook_list.md` + `hook_list` tool | Resolved-config inspection; regenerate `daemon-tool-names.generated.ts` via `pnpm --filter @agentproto/runtime gen:daemon-tool-names`. |
-| *(phase 2.7b)* `specs/resources/pending/hook/draft/HOOK.schema.json` | The `hook/v1` frontmatter draft, pending like `memory`. |
+| *(§2.7b, second step)* `specs/resources/pending/hook/draft/HOOK.schema.json` | The `hook/v1` frontmatter draft, pending like `memory`. |
 
 **Modified**
 
@@ -520,6 +529,7 @@ replays; a routine target does not carry `deliver` and is not required to.
 | `packages/runtime/src/config-schema.ts` | `hooksConfigSchema` + top-level `hooks` key + `CONFIG_KEYS` entries (`apply: "hot"`). |
 | `packages/runtime/src/config.ts` | `AgentprotoConfig.hooks?: HooksConfig` (+ the compile-time key check). |
 | `packages/runtime/src/session-event-bus.ts` | `hook:ran` / `hook:skipped` event types. |
+| `packages/runtime/src/orchestration-tools.ts` | *(only if hooks should be followable)* add the two names to the `session_follow` `events` enum. |
 | `packages/runtime/src/index.ts` | Build the dispatcher at gateway construction (module scope), wrap the registration server with `withToolHooks` next to where `withDeferredTools` / `withToolSubset` are applied. |
 | `packages/runtime/src/http-server.ts` | *(parity)* the handful of REST routes that duplicate a hooked tool (`POST /sessions/agent`, `POST /sessions/:id/prompt`) call `dispatcher.fire` too — MCP and REST must not diverge. |
 
