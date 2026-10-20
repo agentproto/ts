@@ -115,6 +115,13 @@ export interface SessionAwaitingQuestion {
   text: string
   options?: string[]
   source: "structured" | "heuristic"
+  /**
+   * The option the daemon itself recommends, when it has an opinion —
+   * mirroring `options[i]` exactly (case-sensitive) so a client can offer
+   * one-click answers with a visual "recommended" marker with no own
+   * classification logic. Absent when the daemon has no recommendation —
+   * clients must render nothing rather than guess one. */
+  recommended?: string
 }
 
 export interface SessionTurnEndEvent {

@@ -56,6 +56,10 @@ export interface SessionAwaitingQuestion {
   text: string
   options?: string[]
   source: "structured" | "heuristic"
+  /** Mirrors `@agentproto/runtime` SessionAwaitingQuestion.recommended — the
+   *  daemon-recommended option (exact match against `options[i]`), shown as
+   *  the recommended quick-pick/button. Absent when the daemon has none. */
+  recommended?: string
 }
 
 /** Mirrors @agentproto/runtime SessionWatcherInfo — one live waiter behind

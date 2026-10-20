@@ -102,6 +102,37 @@ describe("descriptionFor", () => {
   describe("with a DescriptionContext", () => {
     const now = Date.parse("2026-01-06T00:00:00Z")
 
+    it("leads with the awaitingQuestion text when one is pending — the why-it-waits answer", () => {
+      const s = session({
+        startedAt: "2026-01-01T00:00:00Z",
+        awaitingInput: true,
+        awaitingQuestion: {
+          text: "Context is at 69%. Continue fresh to avoid losing continuity?",
+          options: ["continue-fresh", "keep-going"],
+          source: "structured",
+        },
+        activitySummary: { text: "build daemon", state: "idle", at: "2026-01-01T12:00:00Z" },
+      })
+      expect(descriptionFor(s, { now })).toBe(
+        "Context is at 69%. Continue fresh to avoid losing continuity? · build daemon · in-place · 5 days ago",
+      )
+    })
+    it("truncates an over-long question to ACTIVITY_ROW_MAX", () => {
+      const long = "x".repeat(120) + "?"
+      const s = session({
+        awaitingInput: true,
+        awaitingQuestion: { text: long, source: "heuristic" },
+      })
+      expect(descriptionFor(s, {})).toBe(`${"x".repeat(71)}… · in-place`)
+    })
+    it("shows the calm parked phrase (not the question glyph's implication) when awaitingInput has no question", () => {
+      const s = session({ awaitingInput: true })
+      expect(descriptionFor(s, {})).toBe("idle, waiting for next prompt · in-place")
+      // A permission-parked session is NOT the parked phrase — it stays on
+      // the permissions vocabulary.
+      expect(descriptionFor(session({ awaitingPermission: true }), {})).toBe("in-place")
+    })
+
     it("renders isolation · relative time, worktree first", () => {
       const s = session({
         startedAt: "2026-01-01T00:00:00Z",
@@ -208,6 +239,27 @@ describe("tooltipFieldsFor — activity", () => {
   it("omits the activity field when there is no summary", () => {
     const fields = tooltipFieldsFor(session())
     expect(fields.find(f => f.label === "activity")).toBeUndefined()
+  })
+  it("carries the awaitingQuestion as the leading 'waiting on' field", () => {
+    const s = session({
+      awaitingInput: true,
+      awaitingQuestion: {
+        text: "Context is at 69%. Continue fresh to avoid losing continuity?",
+        options: ["continue-fresh", "handoff:gemini", "keep-going"],
+        source: "structured",
+        recommended: "continue-fresh",
+      },
+    })
+    const fields = tooltipFieldsFor(s)
+    expect(fields[0]).toEqual({ label: "id", value: "s1" })
+    const waiting = fields.find(f => f.label === "waiting on")
+    expect(waiting?.value).toContain("Context is at 69%. Continue fresh to avoid losing continuity?")
+    expect(waiting?.value).toContain("$(check) continue-fresh")
+    expect(waiting?.value).toContain("· handoff:gemini")
+  })
+  it("carries the calm parked phrase when awaitingInput has no question", () => {
+    const fields = tooltipFieldsFor(session({ awaitingInput: true }))
+    expect(fields.find(f => f.label === "waiting on")?.value).toBe("idle, waiting for next prompt")
   })
 })
 
@@ -603,10 +655,23 @@ describe("iconForSession — the shared classifier drives the tree row icon", ()
     })
   })
 
-  it("keeps the needed-amber for something waiting on the human", () => {
+  it("keeps the needed-amber only for a session blocked on a real question", () => {
+    expect(
+      iconForSession(session({ awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } }), NOW),
+    ).toEqual({ id: "question", color: "warning" })
+  })
+
+  it("calms an awaitingInput session with NO question into the parked read — no alarming glyph", () => {
+    // Nothing to answer: the row is parked until the next prompt ("idle,
+    // waiting for next prompt"), so it wears the idle dot like any other
+    // resting session instead of the amber "?" — the unread fill logic
+    // carries over unchanged.
+    expect(iconForSession(session({ awaitingInput: true }), NOW, false)).toEqual({
+      id: "circle-outline",
+    })
+    // Unread unknown → the filled read-receipt dot, same as a plain idle row.
     expect(iconForSession(session({ awaitingInput: true }), NOW)).toEqual({
-      id: "question",
-      color: "warning",
+      id: "circle-filled",
     })
   })
 
@@ -645,6 +710,15 @@ describe("contextValueFor", () => {
   })
   it("session-awaiting when awaitingPermission", () => {
     expect(contextValueFor(session({ awaitingPermission: true }))).toBe("session-awaiting")
+  })
+  it("session-awaiting-question when awaitingInput carries a question — the answer button's gate", () => {
+    expect(
+      contextValueFor(session({ awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } })),
+    ).toBe("session-awaiting-question")
+    // The suffixed forms the treeContextValueFor layer must still produce.
+    expect(
+      treeContextValueFor(session({ awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } }), true),
+    ).toBe("session-awaiting-question-watched")
   })
   it("session-done for exited/killed/error regardless of awaiting flags", () => {
     expect(contextValueFor(session({ status: "exited" }))).toBe("session-done")

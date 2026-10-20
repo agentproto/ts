@@ -9087,6 +9087,9 @@ export function createSessionsRegistry(opts?: {
             ...handoffHarnesses.map(h => `${HANDOFF_OPTION_PREFIX}${h}`),
             "keep-going",
           ],
+          // The question IS the recommendation — "Continue fresh" is the
+          // daemon's own sentence — so surface it for one-click answers.
+          recommended: "continue-fresh",
         }
         appendLine(
           rt,

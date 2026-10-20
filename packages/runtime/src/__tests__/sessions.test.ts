@@ -873,6 +873,7 @@ describe("createSessionsRegistry", () => {
         source: "structured",
         text: "Context is at 25%. Continue fresh to avoid losing continuity?",
         options: ["continue-fresh", "keep-going"],
+        recommended: "continue-fresh",
       })
 
       await reg.sendPrompt(desc.id, "  Keep-Going  ") // case/whitespace-insensitive match
@@ -900,6 +901,7 @@ describe("createSessionsRegistry", () => {
         source: "structured",
         text: "Context is at 30%. Continue fresh to avoid losing continuity?",
         options: ["continue-fresh", "keep-going"],
+        recommended: "continue-fresh",
       })
 
       reg.shutdown()
