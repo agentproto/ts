@@ -119,22 +119,36 @@ strips `agent_start`/`agent_prompt` for it), so the daemon's own
 ~190-tool `/mcp` surface is mostly dead weight in its context; hiding it
 behind `tool_search` (see `deferred-tools.ts`) saves real turn-0 tokens
 without losing any capability (every tool stays fully callable, just
-absent from `tools/list` until searched; on a harness with native tool
-search the role default yields to eager loading). `supervisor` has no opinion
-(`undefined`) and falls through to whatever the daemon's own boot-time
-default is.
+absent from `tools/list` until searched). Two harness checks gate when
+that role default can take effect: a harness with native tool search
+(`capabilities.nativeToolSearch`, claude-code) is always eager, and a
+harness that cannot drive deferred discovery
+(`capabilities.deferredToolDiscovery` absent/false — every adapter today,
+including opencode, which validates tool calls against its last
+`tools/list` and rejects a hidden tool client-side with "Model tried to
+call unavailable tool ...") is eager too. The role default therefore only
+reaches a harness that declares `capabilities.deferredToolDiscovery: true`.
+`supervisor` has no opinion (`undefined`) and falls through to
+whatever the daemon's own boot-time default is (subject to the same
+capability gate).
 
 This composes with the same `?denyTools=`-carrying self-mount URL
-described above: when the resolved role (or an explicit
-`agent_start.deferredTools` override, which always wins) has an opinion,
-`session-spawn.ts` appends `&deferred=1` or `&deferred=0` to the injected
-`mcpServers` ref — e.g. an executor's hermes self-mount ends up
-`...?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=...`.
+described above: when the spawn resolves a value — an explicit
+`agent_start.deferredTools` override (which always wins), or any spawn
+whose harness checks rule deferral out — `session-spawn.ts` appends
+`&deferred=1` or `&deferred=0` to the injected `mcpServers` ref — e.g.
+today an executor's hermes self-mount (executor defaults it on, but
+hermes declares no `deferredToolDiscovery`) ends up
+`...?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=...`.
 Precedence, highest first: explicit `agent_start.deferredTools` → a
 caller-supplied mount's own `?deferred=` → a harness whose manifest declares
 `capabilities.nativeToolSearch` (claude-code ⇒ **eager**, since it already
 defers MCP tools behind its own `ToolSearch` — see
 [MCP in coding CLIs](../guides/mcp-in-coding-cli.md#native-tool-search-per-harness))
+→ a harness that cannot drive deferred discovery (manifest
+`capabilities.deferredToolDiscovery` absent/false ⇒ **eager**: it validates
+tool calls against its last `tools/list`, so a tool the daemon hid is
+rejected client-side before the call reaches the gateway)
 → the resolved role's `deferredTools` → (no override at all) the gateway's
 own `defaults.mcp.deferredTools` config.json default, which is **off**
 globally unless an operator opts in.

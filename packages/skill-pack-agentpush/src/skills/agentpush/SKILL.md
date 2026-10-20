@@ -107,9 +107,9 @@ without one of these, the corresponding tools are simply absent — check
 - `text` — required unless `attachments` is given.
 - `attachments[]` — `{ type: photo|document|video|audio, path, caption? }`,
   local files; multiple become an album/media group where supported.
-- `sessionId` — **required by the tool schema itself** (not merely "used
-  when binding") — every call must pass one, even if you intend `bind:
-  false`.
+- `sessionId` — required whenever `bind` is left at its default `true` (the
+  call is refused with `sessionId required to bind` otherwise). Omit it only
+  for a fire-and-forget send with `bind: false`, which binds nothing.
 - `bind` — default `true`: upserts `(alias, source, contact_ref) ->
   sessionId` with `mode: "route-or-spawn"` and the resolved `provider`. A
   failed send (`sent: false`) never binds.
@@ -257,8 +257,10 @@ doesn't match expectations.
 
 ## Gotchas
 
-- **`transmit_message.sessionId` is not conditionally required** — the tool
-  schema requires it on every call, `bind: false` or not.
+- **`transmit_message.sessionId` is only conditionally required** — the tool
+  schema makes it optional; pass it (with the default `bind: true`) to bind
+  replies to a session, or pass `bind: false` without one for a
+  fire-and-forget send.
 - **Telegram's binding `source` is the literal string `"telegram"`**, never
   the chat id — collapsing it to the chat id would collide with
   `contactRef` in the `(alias, source, contactRef)` key and break every

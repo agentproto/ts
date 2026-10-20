@@ -665,9 +665,13 @@ Resolution order (first with an opinion wins): this field > the mount's own
 `?deferred=1|0` (caller-supplied `mcpServers` entries) > a harness that
 defers MCP tools natively (manifest `capabilities.nativeToolSearch`, today
 claude-code ⇒ eager, so the daemon doesn't stack a second deferral layer on
-top of the harness's own `ToolSearch`) > the resolved role's default
-('executor' defaults ON, 'supervisor' has no opinion) > the daemon's
-boot-time `defaults.mcp.deferredTools` config.
+top of the harness's own `ToolSearch`) > a harness that cannot drive
+deferred discovery (manifest `capabilities.deferredToolDiscovery`
+absent/false — every adapter today ⇒ eager: it validates tool calls
+against its own last `tools/list`, so a hidden tool is rejected
+client-side before the call reaches the gateway) > the resolved role's
+default ('executor' defaults ON, 'supervisor' has no opinion) > the
+daemon's boot-time `defaults.mcp.deferredTools` config.
 
 ## browser
 
