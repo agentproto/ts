@@ -827,11 +827,13 @@ this overrides.
 `false` disables checkpointing entirely for this spawn (teardown still
 delivers the branch itself — pushes committed commits — it just stops
 rescuing uncommitted work). An object overrides individual knobs over the
-global default: `enabled` (master switch), `on` (`["turn-end",
-"teardown"]` — which triggers take a checkpoint; `"turn-end"` controls the
-periodic timer AND the per-turn hook together, `"teardown"` controls
+global default: `enabled` (master switch), `on` (`["turn-end", "teardown",
+"interval"]` — which triggers take a checkpoint; `"turn-end"` controls the
+per-turn hook, `"interval"` the periodic timer so a turn longer than the
+box lifetime is still checkpointed mid-flight, `"teardown"` controls
 whether the teardown delivery snapshots uncommitted work or only counts
 it), `refPrefix` (remote branch namespace the snapshot lands under —
-changing this only affects a FUTURE checkpoint), `minIntervalMs` (periodic
-checkpoint spacing; `0` disables the timer AND the turn-end hook even when
+changing this only affects a FUTURE checkpoint), `minIntervalMs` /
+`intervalMs` (periodic checkpoint spacing — `intervalMs` wins when both
+are set; `0` disables the timer AND the turn-end hook even when
 `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs` (per-checkpoint wall-clock budget).

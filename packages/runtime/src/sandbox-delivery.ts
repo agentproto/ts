@@ -809,6 +809,41 @@ export function resolveSandboxCheckpointConfig(
   }
 }
 
+/** DISK GUARD — free-space fraction of the box's root disk below which the
+ *  proxy's periodic tick forces a checkpoint and emits a warning. A box
+ *  running out of disk dies badly (the agent's writes fail mid-turn, and a
+ *  crash skips the teardown hook — no checkpoint at all), so the guard runs
+ *  BEFORE the disk is full, while the tar/push path can still get the tree
+ *  out. */
+export const DISK_GUARD_MIN_FREE_FRACTION = 0.1
+export const DISK_GUARD_PROBE_TIMEOUT_MS = 10_000
+
+/** `df -Pk`'s POSIX layout (1K blocks) for `dir` — the box's root by default:
+ *  it is the disk the agent's checkout, builds and adapter store grow on. */
+export function buildDiskFreeCommand(dir = "/"): string {
+  return `df -Pk ${shellQuote(dir)}`
+}
+
+/** Parse `df -Pk` output: `{ totalBytes, freeBytes }` from the row whose
+ *  mount point is `/`. `undefined` for a header-only or unparseable output —
+ *  the guard stays silent rather than guessing. */
+export function parseDiskFree(stdout: string): { totalBytes: number; freeBytes: number } | undefined {
+  for (const line of stdout.split("\n")) {
+    // `Filesystem 1024-blocks Used Available Capacity Mounted-on`
+    const m = /^\S+\s+(\d+)\s+\d+\s+(\d+)\s+\d+%\s+\/$/.exec(line.trim())
+    if (m) return { totalBytes: Number(m[1]) * 1024, freeBytes: Number(m[2]) * 1024 }
+  }
+  return undefined
+}
+
+/** Free fraction of a disk — the number the {@link DISK_GUARD_MIN_FREE_FRACTION}
+ *  threshold compares against. Unknown totals (a zero-column row) read as 1
+ *  (never low): a broken probe must not force-checkpoint forever. */
+export function diskFreeFraction(disk: { totalBytes: number; freeBytes: number }): number {
+  if (!Number.isFinite(disk.totalBytes) || disk.totalBytes <= 0) return 1
+  return disk.freeBytes / disk.totalBytes
+}
+
 /** The proxy's `checkpoint` option for a box with a work branch — empty when
  *  neither the per-turn hook (`config.onTurnEnd`) nor the periodic timer
  *  (`config.onInterval`) is on. Shared by the spawn and restart paths. */

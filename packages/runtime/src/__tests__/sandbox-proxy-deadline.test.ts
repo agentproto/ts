@@ -126,7 +126,7 @@ describe("sandbox proxy — heartbeat renewal and deadline guard", () => {
     // still BEFORE the deadline.
     expect(extendTimeout.mock.calls.length).toBeGreaterThan(1)
     expect(checkpoint.run).toHaveBeenCalledTimes(1)
-    expect(checkpoint.run).toHaveBeenCalledWith(1)
+    expect(checkpoint.run).toHaveBeenCalledWith(1, undefined)
 
     stream.end()
     await proxy.close()

@@ -6417,6 +6417,9 @@ export async function bootSandboxAgentSession(opts: {
           }
         : {}),
       ...(trackedDeliveryOpts?.checkpoint ? { checkpoint: trackedDeliveryOpts.checkpoint } : {}),
+      // DISK GUARD — the guard's warning lands in the session's transcript
+      // as a notice, the same channel the tar checkpoint's notices use.
+      ...(opts.onNotice ? { onWarning: opts.onNotice } : {}),
       ...(tarTarget && deliverySessionId
         ? tarCheckpointProxyOpts({
             exec: boxExec,

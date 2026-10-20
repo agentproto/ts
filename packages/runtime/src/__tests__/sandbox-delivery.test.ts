@@ -34,8 +34,12 @@ import {
   runSandboxDelivery,
   shouldPush,
   withinBundleLimit,
+  buildDiskFreeCommand,
+  diskFreeFraction,
+  parseDiskFree,
   DEFAULT_CHECKPOINT_INTERVAL_MS,
   DEFAULT_CHECKPOINT_DEADLINE_MS,
+  DISK_GUARD_MIN_FREE_FRACTION,
   CHECKPOINT_BRANCH_PREFIX,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
@@ -762,6 +766,26 @@ describe("createSandboxCheckpointer force", () => {
     expect(exec.mock.calls.length).toBeGreaterThan(afterUnchanged)
     expect(probeCalls).toBeGreaterThan(0)
     await rm(outDir, { recursive: true, force: true })
+  })
+})
+
+describe("disk guard", () => {
+  it("builds a POSIX df probe of the box root", () => {
+    expect(buildDiskFreeCommand()).toBe("df -Pk '/'")
+  })
+
+  it("parses the / row of df -Pk output into total and free bytes", () => {
+    const out =
+      "Filesystem 1024-blocks Used Available Capacity Mounted on\n" +
+      "/dev/sda1 8412340 1412340 7000000 17% /\n" +
+      "tmpfs 64000 0 64000 0% /run\n"
+    expect(parseDiskFree(out)).toEqual({ totalBytes: 8_412_340 * 1024, freeBytes: 7_000_000 * 1024 })
+    expect(parseDiskFree("Filesystem 1024-blocks Used Available Capacity Mounted on\n")).toBeUndefined()
+  })
+
+  it("diskFreeFraction reads an unknown total as never-low", () => {
+    expect(diskFreeFraction({ totalBytes: 1000, freeBytes: 100 })).toBe(0.1)
+    expect(diskFreeFraction({ totalBytes: 0, freeBytes: 0 })).toBe(1)
   })
 })
 

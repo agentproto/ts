@@ -33,7 +33,7 @@ import type {
   SandboxDetachRecord,
   SandboxReattachProbe,
 } from "./sessions.js"
-import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, isFullyDelivered, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, DISK_GUARD_MIN_FREE_FRACTION, DISK_GUARD_PROBE_TIMEOUT_MS, buildDiskFreeCommand, diskFreeFraction, isFullyDelivered, parseDiskFree, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
 import { buildWorktreeRemoveCommand } from "./sandbox-workspace-remote.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
@@ -319,6 +319,11 @@ export interface SandboxAgentSessionProxyOpts {
     periodic?: boolean
     onTurnEnd?: boolean
   }
+  /** DISK GUARD — told when the box's free disk drops under
+   *  `DISK_GUARD_MIN_FREE_FRACTION` (10%) on a periodic tick, right before
+   *  the guard forces a checkpoint. Wired to the spawn's `onNotice` so the
+   *  warning lands in the session's transcript as a notice event. */
+  onWarning?: (text: string) => void
   /** Box-daemon liveness watchdog. Without it a daemon that dies BETWEEN
    *  turns (OOM-killed in a small box) leaves the host row `running` forever:
    *  nothing reads the box until the next prompt. When `failureThreshold`
@@ -974,9 +979,43 @@ export function createSandboxAgentSessionProxy(
     const timer = setInterval(() => {
       if (closed || detached) return
       void runCheckpoint(turnsSent)
+      void checkDiskSpace()
     }, opts.checkpoint.intervalMs ?? DEFAULT_CHECKPOINT_INTERVAL_MS)
     timer.unref?.()
     timers.push(timer)
+  }
+  // DISK GUARD — on each periodic tick, read the box's free disk; under
+  // DISK_GUARD_MIN_FREE_FRACTION, force a checkpoint (a full disk kills the
+  // box WITHOUT a checkpoint: the agent's writes fail, the crash skips the
+  // teardown hook, so the rescue must happen while there is still room to
+  // pack/push) and warn through `onWarning`. Best-effort: a failed probe is
+  // silent, and the whole guard is skipped for a provider without exec.
+  const checkDiskSpace = async (): Promise<void> => {
+    const exec = host.exec
+    if (!exec || !opts.checkpoint || closed || detached) return
+    let disk: { totalBytes: number; freeBytes: number } | undefined
+    try {
+      const result = await exec({ command: buildDiskFreeCommand(), timeoutMs: DISK_GUARD_PROBE_TIMEOUT_MS })
+      disk = result.exitCode === 0 ? parseDiskFree(result.stdout) : undefined
+    } catch {
+      return
+    }
+    if (!disk) return
+    const fraction = diskFreeFraction(disk)
+    if (fraction >= DISK_GUARD_MIN_FREE_FRACTION) {
+      return
+    }
+    const freePct = Math.floor(fraction * 100)
+    const warning =
+      `[sandbox] the box's free disk is at ${freePct}% (below the ${DISK_GUARD_MIN_FREE_FRACTION * 100}% guard) — ` +
+      "forcing a checkpoint now so the work survives a disk-full crash"
+    console.warn(`[sandbox-proxy] remote session "${remoteSessionId}": ${warning}`)
+    try {
+      opts.onWarning?.(warning)
+    } catch {
+      // a listener's failure is its own
+    }
+    await runCheckpoint(turnsSent, { force: true }).catch(() => undefined)
   }
   let deadError: Error | undefined
   const disconnectListeners: Array<(err: Error) => void> = []
