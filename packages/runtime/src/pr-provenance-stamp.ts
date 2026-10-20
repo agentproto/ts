@@ -31,6 +31,7 @@ import {
   footerSessionId,
   footerIsRicherThan,
   collectBranchAuthors,
+  sessionIdsFromTrailers,
   replaceProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
@@ -184,12 +185,32 @@ export async function stampFooterOnPr(input: {
   refresh?: boolean
 }): Promise<StampOutcome> {
   try {
-    const authors =
-      input.authors ??
-      collectBranchAuthors(
+    const run = input.run ?? defaultGhRunner
+    const view = await run(["pr", "view", input.prUrl, "--json", "body", "--jq", ".body"], input.cwd)
+    if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
+    const body = view.stdout.replace(/\n+$/, "")
+
+    let authors = input.authors
+    if (!authors) {
+      // `Agentproto-Session:` trailers on the PR's own commits keep a box
+      // branch attributable after the registry forgot its session. Only box
+      // sessions (or a `pr_open` on their behalf) carry them, so a plain
+      // local stamp skips the extra `gh` call. Best-effort: a failed read
+      // only loses the trailer source.
+      let trailerIds: string[] = []
+      if (input.session.sandboxDeliveryTarget || input.openedBy) {
+        const commits = await run(
+          ["pr", "view", input.prUrl, "--json", "commits", "--jq", '.commits[] | .messageHeadline + "\\n" + .messageBody'],
+          input.cwd,
+        )
+        if (commits.exitCode === 0) trailerIds = sessionIdsFromTrailers(commits.stdout)
+      }
+      authors = collectBranchAuthors(
         input.registry.list(),
         input.session.sandboxDeliveryTarget?.branch ?? "",
+        trailerIds,
       )
+    }
     const footer = buildSessionPrFooter(input.session, {
       supervisor: input.supervisor,
       host: input.host ?? hostname(),
@@ -197,11 +218,6 @@ export async function stampFooterOnPr(input: {
       ...(authors.length ? { authors } : {}),
       ...(input.openedBy ? { openedBy: input.openedBy } : {}),
     })
-
-    const run = input.run ?? defaultGhRunner
-    const view = await run(["pr", "view", input.prUrl, "--json", "body", "--jq", ".body"], input.cwd)
-    if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
-    const body = view.stdout.replace(/\n+$/, "")
 
     const alreadyStamped = hasProvenanceFooter(body)
     const ownFooter = alreadyStamped && footerSessionId(body) === input.session.id

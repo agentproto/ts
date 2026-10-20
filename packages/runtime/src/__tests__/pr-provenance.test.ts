@@ -453,6 +453,16 @@ describe("buildFooter — authorship (Authored by / Opened by)", () => {
     },
   ]
 
+  it("renders 'Opened by' and hides the opener's ledger even with no authors", () => {
+    const footer = buildFooter({
+      prov: { sessionId: "sess_box1", costUsd: 469, tokensIn: 10, tokensOut: 20, openedBy: "sess_orchestrator" },
+      kind: "PR",
+    })
+    expect(footer).toContain("Opened by `sess_orchestrator`")
+    expect(footer).not.toContain("$469")
+    expect(footer).not.toContain("10 in")
+  })
+
   it("renders one 'Authored by' entry per author, with its own cost", () => {
     const footer = buildFooter({
       prov: {

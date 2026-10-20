@@ -12,8 +12,9 @@
  * sessions:
  *
  *   - the branch's authoring sessions ("Authored by", each with its own
- *     model/wallet/box provider and per-session cost — see
- *     `collectBranchAuthors`);
+ *     model/wallet/box provider and per-session cost — registry sessions on
+ *     the branch plus `Agentproto-Session:` trailers on the PR's commits,
+ *     resolved by `stampFooterOnPr` via `collectBranchAuthors`);
  *   - the opener, as reported by the caller ("Opened by") — usually the
  *     orchestrator session that invoked `pr_open`, shown for what it IS;
  *   - cost rendered is the AUTHORS' spend, never the opener's ledger.
@@ -21,12 +22,7 @@
  * The `gh` runner is injected so tests drive everything without `gh`.
  */
 
-import {
-  collectBranchAuthors,
-  parseGhPrCreate,
-  type FooterAuthor,
-  type FooterSession,
-} from "./pr-provenance.js"
+import { parseGhPrCreate, type FooterSession } from "./pr-provenance.js"
 import { stampFooterOnPr, defaultGhRunner, type GhRunner } from "./pr-provenance-stamp.js"
 
 /** Registry slice `openPrForSession` needs — the full `SessionsRegistry`
@@ -47,11 +43,9 @@ export interface OpenPrForSessionInput {
    *  path (a sandboxed session's own cwd lives inside its box). Required:
    *  `gh` has no session for a cwd we can't resolve. */
   workspacePath?: string
-  /** PR title/body. Pass BOTH to control them; omitting either falls back
-   *  to `gh pr create --fill` (title/body derived from the branch's last
-   *  commit — reasonable for a box session's rescue work). */
-  title?: string
-  body?: string
+  /** PR title and body (both required — `--fill` is not supported). */
+  title: string
+  body: string
   /** The session that invoked the open (e.g. the orchestrator) — rendered
    *  as "Opened by" when it differs from the authoring session. */
   openedBy?: string
@@ -88,7 +82,7 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
       return { opened: false, reason: "no host checkout (workspace path) to run gh from" }
     }
     if (!input.title || !input.body) {
-      return { opened: false, reason: "pass both title and body, or the call should use --fill (not yet supported)" }
+      return { opened: false, reason: "title and body are required" }
     }
 
     const run = input.run ?? defaultGhRunner
@@ -98,7 +92,6 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
     const created = parseGhPrCreate("gh", args, create.stdout)
     if (!created) return { opened: false, reason: "gh pr create printed no PR url" }
 
-    const authors: readonly FooterAuthor[] = collectBranchAuthors(input.registry.list(), branch)
     const supervisor =
       desc.parentSessionId != null
         ? (input.registry.get(desc.parentSessionId) ?? { id: desc.parentSessionId })
@@ -110,12 +103,13 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
       prNumber: created.number,
       prUrl: created.url,
       cwd: input.workspacePath,
-      authors,
       ...(input.openedBy && input.openedBy !== desc.id ? { openedBy: input.openedBy } : {}),
       ...(input.run ? { run: input.run } : {}),
       ...(input.host ? { host: input.host } : {}),
     })
-    if (stamp.stamped || stamp.reason === "command failed") {
+    // A stamped footer already recorded the PR; otherwise record it here so
+    // a created PR is never lost to a failed footer edit.
+    if (!stamp.stamped) {
       input.registry.recordOpenedPr(input.sessionId, {
         adapter: desc.harness ?? desc.adapterSlug ?? "gh",
         number: created.number,

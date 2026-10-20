@@ -24,21 +24,39 @@ type Row = {
 
 const row = (over: Row): Row => ({ kind: "agent-cli", ...over })
 
-function makeRegistry(rows: Row[]): OpenPrRegistry {
-  const recorded: Array<{ sessionId: string; number: number; url: string }> = []
+type Recorded = { sessionId: string; adapter: string; number: number; url: string }
+
+function makeRegistry(rows: Row[]): OpenPrRegistry & { recorded: Recorded[] } {
+  const recorded: Recorded[] = []
   return {
     get: id => rows.find(r => r.id === id),
     list: () => rows,
     recordOpenedPr: (sessionId, input) => {
       recorded.push({ sessionId, ...input })
     },
-    // Exposed on the fake for assertions (cast keeps the structural type).
-    ...( { recorded } as object),
-  } as OpenPrRegistry & { recorded: typeof recorded }
+    recorded,
+  }
 }
 
-const runner = (stdout = "https://github.com/agentproto/agentproto/pull/77") =>
-  async (args: readonly string[]) => ({ exitCode: 0, stdout: [...args, stdout].join(" ") })
+/** A fake `gh`: create prints the PR url, `pr view --json commits` replays
+ *  `commitText`, `pr view --json body` replays `prBody`, `pr edit` captures
+ *  the new body. */
+function fakeGh(opts: { commitText?: string; prBody?: string; editExit?: number } = {}) {
+  const calls: Array<{ args: readonly string[]; cwd: string }> = []
+  const edits: string[] = []
+  const run = async (args: readonly string[], cwd: string) => {
+    calls.push({ args, cwd })
+    if (args[1] === "create") return { exitCode: 0, stdout: "https://github.com/agentproto/agentproto/pull/77" }
+    if (args[1] === "view" && args.includes("commits")) return { exitCode: 0, stdout: opts.commitText ?? "" }
+    if (args[1] === "view") return { exitCode: 0, stdout: opts.prBody ?? "does things" }
+    if (args[1] === "edit") {
+      edits.push(args[args.indexOf("--body") + 1] ?? "")
+      return { exitCode: opts.editExit ?? 0, stdout: "" }
+    }
+    return { exitCode: 1, stdout: "" }
+  }
+  return { run, calls, edits }
+}
 
 describe("openPrForSession — gh runs on the host, attributed to the authoring session", () => {
   const rows: Row[] = [
@@ -70,37 +88,54 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
   }
 
   it("opens the PR with the box branch's head and stamps an authorship footer", async () => {
-    const calls: Array<{ args: readonly string[]; cwd: string }> = []
-    const outcome = await openPrForSession({
-      ...input,
-      run: async (args, cwd) => {
-        calls.push({ args, cwd })
-        return { exitCode: 0, stdout: "https://github.com/agentproto/agentproto/pull/77" }
-      },
-    })
+    const registry = makeRegistry(rows)
+    const gh = fakeGh()
+    const outcome = await openPrForSession({ ...input, registry, run: gh.run })
     expect(outcome).toMatchObject({ opened: true, number: 77, sessionId: "sess_box1", stamped: true })
-    expect(calls[0].args.slice(0, 3)).toEqual(["pr", "create", "--head"])
-    expect(calls[0].args[3]).toBe("wt/feat")
-    expect(calls[0].cwd).toBe(input.workspacePath)
-    // Authorship is on the footer the stamper renders: buildFooter is the
-    // renderer the stamp path uses — assert the canonical render containing
-    // the authoring session's own wallet/cost, not the opener's cumulative $469.
-    const footer = buildFooter({
-      prov: {
-        sessionId: "sess_box1",
-        adapter: "codex",
-        model: "free-model",
-        costUsd: 0.0031,
-        authors: [
-          { sessionId: "sess_box1", adapter: "codex", model: "free-model", sandboxProvider: "e2b", costUsd: 0.0031 },
-        ],
-        openedBy: "sess_orchestrator",
-      },
-      kind: "PR",
-    })
+    const create = gh.calls[0]
+    expect(create?.args.slice(0, 4)).toEqual(["pr", "create", "--head", "wt/feat"])
+    expect(create?.cwd).toBe(input.workspacePath)
+    const footer = gh.edits[0] ?? ""
     expect(footer).toContain("Authored by `sess_box1` (codex · model `free-model` · e2b · $0.0031)")
     expect(footer).toContain("Opened by `sess_orchestrator`")
     expect(footer).not.toContain("$469")
+    expect(registry.recorded).toEqual([expect.objectContaining({ sessionId: "sess_box1", number: 77 })])
+  })
+
+  it("credits a session known only by an Agentproto-Session trailer on the PR's commits", async () => {
+    const gh = fakeGh({ commitText: "checkpoint\n\nAgentproto-Session: sess_gone\n" })
+    const outcome = await openPrForSession({ ...input, registry: makeRegistry(rows), run: gh.run })
+    expect(outcome).toMatchObject({ opened: true, stamped: true })
+    expect(gh.edits[0]).toContain("Authored by `sess_gone`")
+    expect(gh.edits[0]).toContain("Authored by `sess_box1`")
+  })
+
+  it("still names the opener and hides its ledger when no authors resolve", async () => {
+    // The authoring session is `get`-able but absent from `list()` (the
+    // archived-session case), and no commit carries a trailer: no authors.
+    const gh = fakeGh()
+    const outcome = await openPrForSession({
+      ...input,
+      sessionId: "sess_orchestrator",
+      registry: {
+        get: id => (id === "sess_orchestrator" ? row({ id, sandboxDeliveryTarget: { branch: "wt/feat" }, costUsd: 469 }) : undefined),
+        list: () => [],
+        recordOpenedPr: () => {},
+      },
+      openedBy: "sess_box1",
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ opened: true })
+    expect(gh.edits[0]).toContain("Opened by `sess_box1`")
+    expect(gh.edits[0]).not.toContain("$469")
+  })
+
+  it("records the PR even when the footer edit fails", async () => {
+    const registry = makeRegistry(rows)
+    const gh = fakeGh({ editExit: 1 })
+    const outcome = await openPrForSession({ ...input, registry, run: gh.run })
+    expect(outcome).toMatchObject({ opened: true, stamped: false })
+    expect(registry.recorded).toEqual([expect.objectContaining({ sessionId: "sess_box1", number: 77 })])
   })
 
   it("fails closed when the session has no box work branch", async () => {
@@ -109,7 +144,7 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
       ...input,
       sessionId: "sess_local",
       registry,
-      run: runner(),
+      run: fakeGh().run,
     })
     expect(outcome).toMatchObject({ opened: false })
     const reason = "reason" in outcome ? outcome.reason : ""

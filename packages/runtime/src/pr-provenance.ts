@@ -155,12 +155,14 @@ export const buildFooter = ({
       if (typeof author.costUsd === "number") inner.push(`$${author.costUsd.toFixed(4)}`)
       parts.push(`Authored by \`${author.sessionId}\`${inner.length ? ` (${inner.join(" · ")})` : ""}`)
     }
-    if (prov.openedBy) parts.push(`Opened by \`${prov.openedBy}\``)
   }
-  // The opener's own tokens/spend only when authorship isn't attributed via
-  // `authors` (see FooterProvenance.authors) — else it would render the
+  // "Opened by" stands on its own: a `pr_open` whose authors didn't resolve
+  // (registry lost the box session, no trailers) must still name the opener.
+  if (prov?.openedBy) parts.push(`Opened by \`${prov.openedBy}\``)
+  // The opener's own tokens/spend only when the PR isn't attributed to other
+  // sessions (`authors`, or a distinct `openedBy`) — else it would render the
   // cumulative opener ledger as the PR's cost.
-  const suppressOpenerSpend = (prov?.authors?.length ?? 0) > 0
+  const suppressOpenerSpend = (prov?.authors?.length ?? 0) > 0 || !!prov?.openedBy
   const tin = fmtTokens(prov?.tokensIn)
   const tout = fmtTokens(prov?.tokensOut)
   if (!suppressOpenerSpend && (tin || tout)) parts.push(`${tin ?? "?"} in / ${tout ?? "?"} out`)

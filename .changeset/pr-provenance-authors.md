@@ -1,6 +1,5 @@
 ---
 "@agentproto/runtime": minor
-"@agentproto/cli": minor
 ---
 
 PR provenance is fixed to the sessions that actually wrote the code, not the session that ran `gh pr create`. Box sessions (E2B, computer) push their work branch but have no `gh`, so the host's orchestrator session used to open the PR and every PR was credited to the orchestrator: its model, its wallet, its cumulative ledger.
