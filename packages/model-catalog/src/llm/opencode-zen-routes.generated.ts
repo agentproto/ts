@@ -620,6 +620,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "minimax",
     provider: "opencode",
   },
+  "opencode/minimax-m3.1-flash-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-10-19",
+    vendor: "minimax",
+    provider: "opencode",
+  },
   "opencode/mistral-large-4": {
     inputPer1M: 0.68,
     outputPer1M: 2.09,
@@ -699,13 +706,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     cacheWriteMultiplier: 1.25,
     addedAt: "2026-08-03",
     vendor: "qwen",
-    provider: "opencode",
-  },
-  "opencode/space-bunny-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-09-23",
-    vendor: "opencode",
     provider: "opencode",
   },
 }

@@ -197,6 +197,13 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "minimax",
     provider: "opencode-go",
   },
+  "opencode-go/minimax-m3.1-flash-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-10-19",
+    vendor: "minimax",
+    provider: "opencode-go",
+  },
   "opencode-go/muse-spark-1.2-contributor": {
     inputPer1M: 0.1,
     outputPer1M: 0.2,
@@ -238,15 +245,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     cacheWriteMultiplier: 1.25,
     addedAt: "2026-08-03",
     vendor: "qwen",
-    provider: "opencode-go",
-  },
-  "opencode-go/space-bunny": {
-    inputPer1M: 0.15,
-    outputPer1M: 0.6,
-    cacheReadMultiplier: 0.2,
-    cacheWriteMultiplier: 0,
-    addedAt: "2026-09-23",
-    vendor: "opencode",
     provider: "opencode-go",
   },
   "opencode-go/step-5-preview": {
