@@ -26,7 +26,8 @@ import { createMcpServer, registerEventsMethods, registerUiResource } from "@age
 import type { DoctypeSpec } from "@agentproto/manifest"
 
 import { writeRuntimeMeta } from "./agentproto-dir.js"
-import { registerCommandTools } from "./command-tools.js"
+import { makeCwdAnchor, registerCommandTools } from "./command-tools.js"
+import { isCommandAllowed, loadAllowlistEntries } from "./command-allowlist.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
@@ -2953,6 +2954,10 @@ export async function createGateway(
       }).config,
     runPass: createClerkPassRunner({
       triggerRoutine: routineId => routineRegistrar.trigger(routineId),
+      // The command arm is default-deny: same allowlist as `command_execute`.
+      allowCommand: async spec =>
+        isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
+      anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
     }),
   })
 

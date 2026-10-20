@@ -91,7 +91,8 @@ export interface ClerkHookConfig {
   debounceMs: number
   /** What the pass launches. */
   run: ClerkHookRun
-  /** Sessions this hook never touches - session ids, labels or agent ids. */
+  /** Sessions this hook never touches - matched against a session's id,
+   *  label, title, slug or origin. */
   exclude?: string[]
 }
 
@@ -180,14 +181,58 @@ export function parseClerkHookLevel(raw: unknown): Partial<ClerkHookConfig> {
     if (typeof r.timeoutMs === "number" && Number.isFinite(r.timeoutMs) && r.timeoutMs > 0) {
       run.timeoutMs = r.timeoutMs
     }
+    // A level names ONE arm: when it states both, the routine wins (the
+    // runner's own order), so the command and its args are dropped.
+    if (run.routine) {
+      delete run.command
+      delete run.args
+    }
     if (Object.keys(run).length > 0) out.run = run
   }
   return out
 }
 
+/** True when a level's `run` selects an arm (a routine or a command), as
+ *  opposed to only tuning `cwd` / `timeoutMs`. */
+function statesRunArm(run: ClerkHookRun | undefined): boolean {
+  return run !== undefined && (run.routine !== undefined || run.command !== undefined)
+}
+
+/**
+ * Merge a more specific `run` over an inherited one. The `routine` and
+ * `command` arms are MUTUALLY EXCLUSIVE: a level that states one arm
+ * replaces the other arm entirely (a per-field spread would keep the
+ * built-in `routine: "steward"` alive under an agent that only names a
+ * `command`, and the runner, which tries the routine first, would never
+ * run the command). `cwd` and `timeoutMs` are options of the pass, not of
+ * an arm, so they are still inherited field by field.
+ */
+export function mergeClerkRun(base: ClerkHookRun, over: ClerkHookRun): ClerkHookRun {
+  let arm: ClerkHookRun
+  if (over.routine !== undefined) {
+    arm = { routine: over.routine }
+  } else if (over.command !== undefined) {
+    arm = { command: over.command, ...(over.args ? { args: over.args } : {}) }
+  } else if (base.routine !== undefined) {
+    arm = { routine: base.routine }
+  } else if (base.command !== undefined) {
+    const args = over.args ?? base.args
+    arm = { command: base.command, ...(args ? { args } : {}) }
+  } else {
+    arm = {}
+  }
+  const cwd = over.cwd ?? base.cwd
+  const timeoutMs = over.timeoutMs ?? base.timeoutMs
+  return {
+    ...arm,
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }
+}
+
 /** Merge two levels: `over` wins per field, but only for fields it
- *  actually states. `run` is merged FIELD BY FIELD too (an agent that only
- *  names a `routine` keeps the workspace's `timeoutMs`). */
+ *  actually states. `run` follows {@link mergeClerkRun}: the arm is
+ *  exclusive, `cwd` / `timeoutMs` are inherited. */
 export function mergeClerkHookLevels(
   base: ClerkHookConfig,
   over: Partial<ClerkHookConfig>,
@@ -197,7 +242,7 @@ export function mergeClerkHookLevels(
   if (over.on !== undefined) merged.on = over.on
   if (over.debounceMs !== undefined) merged.debounceMs = over.debounceMs
   if (over.exclude !== undefined) merged.exclude = [...over.exclude]
-  if (over.run !== undefined) merged.run = { ...merged.run, ...over.run }
+  if (over.run !== undefined) merged.run = mergeClerkRun(merged.run, over.run)
   return merged
 }
 
@@ -242,8 +287,10 @@ export function resolveClerkHookConfig(input: {
       sources.debounceMs = source
     }
     if (level.run !== undefined) {
-      config.run = { ...config.run, ...level.run }
-      sources.run = source
+      config.run = mergeClerkRun(config.run, level.run)
+      // Provenance follows the ARM: a level that only tunes timeoutMs does
+      // not claim the routine/command it did not choose.
+      if (statesRunArm(level.run)) sources.run = source
     }
     if (level.exclude !== undefined) {
       config.exclude = [...level.exclude]
@@ -310,7 +357,7 @@ function mergePartialLevels(
   if (over.on !== undefined) merged.on = over.on
   if (over.debounceMs !== undefined) merged.debounceMs = over.debounceMs
   if (over.exclude !== undefined) merged.exclude = [...over.exclude]
-  if (over.run !== undefined) merged.run = { ...(merged.run ?? {}), ...over.run }
+  if (over.run !== undefined) merged.run = mergeClerkRun(merged.run ?? {}, over.run)
   return merged
 }
 
@@ -338,17 +385,4 @@ export function parseAgentClerkHook(raw: unknown): Partial<ClerkHookConfig> {
   const generic = parseClerkHookLevel(hooks)
   const named = isRecord(hooks.clerk) ? parseClerkHookLevel(hooks.clerk) : {}
   return mergePartialLevels(generic, named)
-}
-
-/** True when the file at `<workspace>/.agentproto/hooks.json` exists and
- *  carries a `hooks` section - used by diagnostics/tests. */
-export function workspaceHasHooksFile(workspace: string): boolean {
-  const path = resolve(workspace, HOOKS_CONFIG_REL)
-  if (!existsSync(path)) return false
-  try {
-    statSync(path)
-    return true
-  } catch {
-    return false
-  }
 }

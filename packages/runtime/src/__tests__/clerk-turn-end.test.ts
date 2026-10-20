@@ -185,6 +185,22 @@ describe("clerk-turn-end controller", () => {
     controller.dispose()
   })
 
+  it("ignores a session spawned by the clerk's own routine", () => {
+    const bus = createSessionEventBus()
+    const runPass = vi.fn()
+    const controller = createClerkTurnEndController({
+      registry: { get: () => ({ id: "sess_clerk", kind: "agent-cli", origin: "routine:steward" }) },
+      sessionEvents: bus,
+      resolveConfig: () => enabledConfig({ run: { routine: "steward" } }),
+      runPass,
+    })
+    bus.emit(turnEnd("sess_clerk"))
+    expect(controller.pendingIds()).toEqual([])
+    vi.advanceTimersByTime(60 * MIN)
+    expect(runPass).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
   it("does not fire for a session that is not an agent session", () => {
     const bus = createSessionEventBus()
     const runPass = vi.fn()
@@ -272,9 +288,43 @@ describe("clerk hook configuration - three levels, most specific wins", () => {
     })
     expect(resolved.config.enabled).toBe(false)
     expect(resolved.config.debounceMs).toBe(60_000)
-    expect(resolved.config.run).toEqual({ routine: "workspace-routine", command: "agentproto", args: ["steward"] })
+    // The arms are exclusive: the agent's command REPLACES the workspace routine.
+    expect(resolved.config.run).toEqual({ command: "agentproto", args: ["steward"] })
     expect(resolved.sources.enabled).toBe("agent")
     expect(resolved.sources.run).toBe("agent")
+  })
+
+  it("lets a command-only level replace the built-in steward routine", () => {
+    const resolved = resolveClerkHookConfig({
+      agent: { enabled: true, run: { command: "agentproto", args: ["steward", "act"] } },
+    })
+    expect(resolved.config.run).toEqual({ command: "agentproto", args: ["steward", "act"] })
+    expect(resolved.config.run.routine).toBeUndefined()
+  })
+
+  it("lets a routine level replace an inherited command (and its args)", () => {
+    const resolved = resolveClerkHookConfig({
+      daemon: { run: { command: "agentproto", args: ["steward"], timeoutMs: 5_000 } },
+      workspace: { run: { routine: "nightly" } },
+    })
+    expect(resolved.config.run).toEqual({ routine: "nightly", timeoutMs: 5_000 })
+    expect(resolved.sources.run).toBe("workspace")
+  })
+
+  it("keeps the inherited arm when a level only tunes timeoutMs, and keeps its provenance", () => {
+    const resolved = resolveClerkHookConfig({
+      workspace: { run: { routine: "workspace-routine" } },
+      agent: { run: { timeoutMs: 9_000 } },
+    })
+    expect(resolved.config.run).toEqual({ routine: "workspace-routine", timeoutMs: 9_000 })
+    expect(resolved.sources.run).toBe("workspace")
+  })
+
+  it("makes the routine win when one level names both arms", () => {
+    const resolved = resolveClerkHookConfig({
+      agent: { run: { routine: "r", command: "agentproto", args: ["x"] } },
+    })
+    expect(resolved.config.run).toEqual({ routine: "r" })
   })
 
   it("ignores malformed values instead of throwing", () => {
@@ -353,7 +403,7 @@ describe("clerk pass runner", () => {
 
   it("spawns the configured command in the session's cwd", async () => {
     const spawnCommand = vi.fn().mockResolvedValue({ code: 0 })
-    const runner = createClerkPassRunner({ spawnCommand })
+    const runner = createClerkPassRunner({ spawnCommand, allowCommand: () => true })
     await runner({
       sessionId: "sess_1",
       session: { id: "sess_1", cwd: "/tmp/work" },
@@ -368,6 +418,65 @@ describe("clerk pass runner", () => {
       args: ["steward", "act"],
       cwd: "/tmp/work",
     })
+  })
+
+  it("refuses the command arm unless the allowlist gate approves it", async () => {
+    const spawnCommand = vi.fn()
+    const config = { ...CLERK_HOOK_DEFAULTS, enabled: true, run: { command: "/usr/bin/rm", args: ["-rf", "x"] } }
+    const input = { sessionId: "sess_1", session: { id: "sess_1", cwd: "/tmp/work" }, config }
+
+    // No gate wired: default-deny.
+    await expect(createClerkPassRunner({ spawnCommand })(input)).rejects.toThrow(/not in the command allowlist/)
+    // Gate says no; it sees the basename and the final args.
+    const allowCommand = vi.fn().mockReturnValue(false)
+    await expect(createClerkPassRunner({ spawnCommand, allowCommand })(input)).rejects.toThrow(
+      /'rm' is not in the command allowlist/,
+    )
+    expect(allowCommand).toHaveBeenCalledWith({ command: "rm", args: ["-rf", "x"] })
+    expect(spawnCommand).not.toHaveBeenCalled()
+  })
+
+  it("interpolates $SESSION_ID in the command args", async () => {
+    const spawnCommand = vi.fn().mockResolvedValue({ code: 0 })
+    const runner = createClerkPassRunner({ spawnCommand, allowCommand: () => true })
+    await runner({
+      sessionId: "sess_42",
+      session: { id: "sess_42", cwd: "/tmp/work" },
+      config: {
+        ...CLERK_HOOK_DEFAULTS,
+        enabled: true,
+        run: { command: "agentproto", args: ["steward", "act", "--session", "$SESSION_ID"] },
+      },
+    })
+    expect(spawnCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ args: ["steward", "act", "--session", "sess_42"] }),
+    )
+  })
+
+  it("anchors an explicit run.cwd against the session cwd", async () => {
+    const spawnCommand = vi.fn().mockResolvedValue({ code: 0 })
+    const anchorCwd = vi.fn((base: string, cwd: string) => `${base}/${cwd}`)
+    const runner = createClerkPassRunner({ spawnCommand, allowCommand: () => true, anchorCwd })
+    await runner({
+      sessionId: "sess_1",
+      session: { id: "sess_1", cwd: "/tmp/work" },
+      config: { ...CLERK_HOOK_DEFAULTS, enabled: true, run: { command: "agentproto", cwd: "sub" } },
+    })
+    expect(spawnCommand).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/tmp/work/sub" }))
+  })
+
+  it("runs the agent's command when the agent only names a command (resolve to runner)", async () => {
+    const triggerRoutine = vi.fn()
+    const spawnCommand = vi.fn().mockResolvedValue({ code: 0 })
+    const runner = createClerkPassRunner({ triggerRoutine, spawnCommand, allowCommand: () => true })
+    const { config } = resolveClerkHookConfig({
+      agent: { enabled: true, run: { command: "agentproto", args: ["steward", "act"] } },
+    })
+    await runner({ sessionId: "sess_1", session: { id: "sess_1", cwd: "/tmp/work" }, config })
+    expect(triggerRoutine).not.toHaveBeenCalled()
+    expect(spawnCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "agentproto", args: ["steward", "act"] }),
+    )
   })
 
   it("reports a configuration that names neither a routine nor a command", async () => {

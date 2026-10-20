@@ -184,6 +184,10 @@ export function createClerkTurnEndController(
     if (config.on !== "turn_end") return
     // The clerk never grades its own homework.
     if (selfSessionIds.has(session.id)) return
+    // A session the clerk's own routine spawned (`origin: "routine:<id>"`,
+    // stamped by the routine registrar) is a clerk session too: its
+    // turn-end must not re-arm a pass.
+    if (config.run.routine && session.origin === `routine:${config.run.routine}`) return
     // Not an agent session - nothing to steward.
     if (session.kind !== undefined && session.kind !== "agent-cli") return
     // An empty turn (no output, no tool call) is not worth a pass.

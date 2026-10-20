@@ -49,9 +49,9 @@ states, so an agent that sets `enabled` alone still inherits the workspace's
 | `on` | `"turn_end"` | `"turn_end"` | The event the hook is bound to |
 | `debounceMs` | number | `600000` (10 min) | Idle debounce before the pass runs |
 | `run.routine` | string | `"steward"` | An AIP-41 routine the pass triggers |
-| `run.command` | string | - | A shell command the pass runs instead of a routine |
-| `run.args` | string[] | - | argv for `run.command` |
-| `run.cwd` | string | the session's cwd | Working directory for `run.command` |
+| `run.command` | string | - | A shell command the pass runs instead of a routine. Must pass the command allowlist (`.agentproto/allowed-commands.json`), same as `command_execute`; default-deny |
+| `run.args` | string[] | - | argv for `run.command`; `$SESSION_ID` is replaced by the id of the session the pass runs for |
+| `run.cwd` | string | the session's cwd | Working directory for `run.command`, anchored under the session's cwd |
 | `run.timeoutMs` | number | - | Hard cap on the pass's runtime |
 | `exclude` | string[] | - | Sessions the hook never touches (id / label / title / slug / origin) |
 
@@ -124,3 +124,19 @@ Daemon level - `~/.agentproto/config.json`:
 
 The daemon wires the controller at boot (`packages/runtime/src/index.ts`) and
 disposes it on shutdown, cancelling every pending debounce timer.
+
+## `run`: one arm, most specific level wins
+
+`run.routine` and `run.command` are mutually exclusive arms. A level that
+names one arm replaces the other arm entirely (so an agent that only names a
+`command` does not keep the built-in `steward` routine); a level naming both
+keeps the routine. `run.cwd` and `run.timeoutMs` are options of the pass and
+are inherited field by field. In the resolved provenance, `sources.run` is
+the level that chose the arm.
+
+## Recursion guard
+
+A session spawned by the clerk's own routine carries `origin:
+"routine:<id>"`; the controller ignores it, so its turn-end never re-arms a
+pass. A fresh continuation (`session_continue_fresh`) keeps the agent-level
+hook config of the session it replaces.
