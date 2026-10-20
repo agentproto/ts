@@ -88,7 +88,8 @@ scripts run per-tool, synchronously, able to block or rewrite input — exactly
 the AIP-40 sandbox problem (§8: user-authored code waits for a sibling AIP).
 v1 hooks are config entries whose `run` names a daemon-bundled enricher; no
 third-party script runs, and the only blocking is the bounded `sync` mode
-(§2.4).
+(§2.4 — specified, but installed only post-v1; the v1 wrapper is
+async-only).
 
 ### 3. This daemon's own policies and gates — policy_attach
 
@@ -699,7 +700,8 @@ interface ToolHook {
 1. **Non-blocking.** A host MUST NOT await an `async` hook before returning
    the tool's own result. A `sync` hook is bounded by `budget.timeoutMs`
    (hosts SHOULD clamp it to ≤ 2000 ms) and MUST still be unable to fail the
-   tool call.
+   tool call. A host that does not implement `sync` MUST reject a
+   `mode: "sync"` hook at load rather than silently treat it as async.
 2. **Failure containment.** A hook error, timeout, unknown enricher id or
    unresolvable delivery binding MUST degrade to a host log/event; it MUST
    NOT surface as a tool error, and MUST NOT retry by default.
