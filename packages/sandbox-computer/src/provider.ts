@@ -726,10 +726,16 @@ export const computerSandboxProvider: SandboxProvider = {
    * free that same capacity — on an exhausted host that was a deadlock
    * (`capacity exhausted (available 511)`). The controller's DELETE frees
    * the box as-is. An unknown id (404) is success; the box is gone either
-   * way. `force: true` releases whatever sessions this controller records
-   * against it — we are deleting it, nothing can outlive that.
+   * way.
+   * SHARED-BOX SAFETY (AIP-36): WITHOUT `opts.force` the controller's
+   * attached-session guard stands — a `409` ("computer has attached
+   * sessions") is a NON-FATAL soft "still in use": the box survives, the
+   * caller simply cannot destroy it now. ONLY the gc path passes
+   * `force: true`, and only after its candidate check proved every
+   * attaché's session is already terminal ("we are deleting it, nothing
+   * can outlive that").
    */
-  async remove(sandboxId: string): Promise<void> {
+  async remove(sandboxId: string, opts: { force?: boolean } = {}): Promise<void> {
     const fallbackConfig = () =>
       resolveClientConfig(
         { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
@@ -738,7 +744,7 @@ export const computerSandboxProvider: SandboxProvider = {
     for (const id of [sandboxId, resolveAlias(sandboxId)]) {
       const client = new ComputerControllerClient(probeClientConfigs.get(id) ?? fallbackConfig())
       try {
-        await client.remove(id, { force: true })
+        await client.remove(id, { force: opts.force === true })
         // Also prune this process's bookkeeping — the box is gone.
         for (const [from, to] of idAliases) {
           if (to === id) idAliases.delete(from)
@@ -748,6 +754,10 @@ export const computerSandboxProvider: SandboxProvider = {
         return
       } catch (err) {
         if (err instanceof ComputerApiError && err.status === 404) continue
+        // 409 without force is the shared-box "still in use" answer, not a
+        // teardown failure — surface nothing. WITH force the guard was
+        // asked to step aside; a 409 there is a REAL conflict, keep throwing.
+        if (err instanceof ComputerApiError && err.status === 409 && opts.force !== true) return
         throw err
       }
     }

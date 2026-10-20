@@ -330,10 +330,16 @@ export interface SandboxProvider {
    * (its RAM snapshot is freed), releasing MORE than it ever costs.
    * Must treat "the id is already gone" as SUCCESS (idempotent) so gc passes
    * converge; only a provider-side rejection propagates.
+   * SHARED-BOX SAFETY (AIP-36): by DEFAULT `remove` must NOT force the
+   * destroy past a controller that still counts attached sessions — a
+   * shared box under live sessions must not be destroyed just because one
+   * caller asked. Providers that accept `opts.force` treat `409` asked
+   * without force as a soft "still in use" (non-fatal), and the ONLY
+   * caller that may force the gc path, after its attaché candidate check.
    * Optional: providers that cannot destroy without a live control-plane
    * route omit it; callers fall back to `connect()` + `stop()`.
    */
-  remove?(sandboxId: string): Promise<void>
+  remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */
