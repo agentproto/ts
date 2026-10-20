@@ -522,6 +522,17 @@ interface RunState {
    *  suspend: enough to approve/reject, NOT the full record. Anything that
    *  mutates the run first re-reads the full one (`ensureFull`). */
   envelope?: boolean
+  /**
+   * Drains this run's app-ledger append queue (`createLedgerAppender`). Set
+   * only while a run attached to an installed app is executing. The ledger
+   * is a SEPARATE async chain from the run-file write chain, so a run that
+   * is still IN FLIGHT (not yet terminal) can still have a `stage-done`
+   * append on the wire. `flush()` awaits every resident run's `ledgerFlush`
+   * so a caller that wants a clean barrier (a shutdown path removing an
+   * app's data dir) can get one instead of racing a late `mkdir`/`open`
+   * into that dir. Cleared once the run's own drain completes.
+   */
+  ledgerFlush?: () => Promise<void>
 }
 
 // ── Translation: WorkflowStage[] → RuntimeWorkflow ──────────────────
@@ -1552,6 +1563,11 @@ async function executeRunWorkflow(
     ? createLedgerAppender(ledgerApp, state.run.appRunId, state.run.runId, state.run.item)
     : undefined
   const ledgerAppend = ledger?.append.bind(ledger)
+  // Expose the ledger drain on the run state so `flush()` can wait it out:
+  // the ledger is a separate async chain from the run files, so a caller
+  // that wants "no app-ledger write is in flight" (a shutdown path, a test
+  // cleanup) must be able to wait for it explicitly.
+  if (ledger) state.ledgerFlush = ledger.flush
   // Steps that started but never completed — the blocked-event candidates
   // when the run throws (step failed / gate retries exhausted / aborted).
   const runningSteps = new Set<string>()
@@ -2028,6 +2044,15 @@ async function executeRunWorkflow(
         }
       }
     }
+    // BARRIER — the app-ledger appends are a SEPARATE async chain from the
+    // run file, and the run must not be *considered finished* (terminal
+    // status visible to callers) while one of them is still in flight: a
+    // caller that tears the app's data dir down on terminal status would
+    // otherwise race the append's `mkdir`/`open` into it (the flaky
+    // ENOTEMPTY on `rmSync` of `apps/<app>/data/state`). Drain the queue
+    // HERE — before the terminal status is published — so "terminal" always
+    // means "this run's ledger writes have landed".
+    if (ledger) await ledger.flush()
     state.run.status = "done"
     state.run.endedAt = new Date().toISOString()
     if (runOutput !== undefined) state.run.output = boundForRun(state, runOutput, RUN_OUTPUT_REF, "run")
@@ -2044,6 +2069,10 @@ async function executeRunWorkflow(
         payload: { reason: blockedReason, runId: state.run.runId },
       })
     }
+    // BARRIER (failure / cancel path) — same rule as the success path: the
+    // terminal status below must not become visible while an app-ledger
+    // append is still in flight.
+    if (ledger) await ledger.flush()
     if (signal.aborted) {
       // `run.cancelled` is emitted by `cancel()` itself (the only caller
       // that ever aborts `signal`) — not here, to avoid a duplicate event.
@@ -2187,9 +2216,12 @@ async function executeRunWorkflow(
     for (const step of stage.steps) delete step.phase
   }
 
-  // Drain the ledger append queue before the run's terminal state is
-  // persisted, so the file reflects the run by the time status() flips.
-  if (ledger) await ledger.flush()
+  // Drain the ledger append queue one last time before the run is retired,
+  // so no app-ledger write for this run is left in flight.
+  if (ledger) {
+    await ledger.flush()
+    state.ledgerFlush = undefined
+  }
 
   fireNotifyUrl(state.run)
 }
@@ -3055,6 +3087,17 @@ export function createWorkflowRunner(opts: {
     flush: async () => {
       flushDirty()
       await writeChain
+      // The app-ledger append queue is a SEPARATE async chain from the run
+      // files, so a run that is still in flight can still have an app-ledger
+      // append on the wire. A caller that treats `flush()` as "nothing of
+      // this daemon's writes is in flight" (a shutdown path removing an
+      // app's data dir) must also drain it. Await every resident run's
+      // ledger drain to make `flush()` a complete barrier. Snapshot first: a
+      // concurrent `executeRunWorkflow` clears `ledgerFlush` when it finishes.
+      const ledgerDrains = Array.from(runs.values(), s => s.ledgerFlush).filter(
+        (f): f is () => Promise<void> => f !== undefined,
+      )
+      await Promise.all(ledgerDrains.map(f => f()))
     },
 
     // AIP-58 §2 owner liveness — see the interface doc comment. A run this
