@@ -222,4 +222,100 @@ describe("adapter_list", () => {
 
     await h.close()
   })
+
+  it("the `adapter` filter scopes the listing to ONE slug (compact and full branches)", async () => {
+    const three: AdapterListEntry[] = [
+      FULL_ADAPTER,
+      { ...FULL_ADAPTER, slug: "claude-code", name: "Claude Code" },
+      { ...FULL_ADAPTER, slug: "aider", name: "Aider" },
+    ]
+    const h = await harness(async () => three)
+
+    const compactOnly = parseAdapters(
+      await h.client.callTool({ name: "adapter_list", arguments: { adapter: "claude-code" } }),
+    )
+    expect(compactOnly).toEqual([
+      { slug: "claude-code", name: "Claude Code", version: "1.2.3", protocol: "acp", installed: true, modelCount: 2 },
+    ])
+
+    const fullOnly = parseAdapters(
+      await h.client.callTool({ name: "adapter_list", arguments: { adapter: "aider", full: true } }),
+    )
+    expect(fullOnly).toEqual([{ ...three[2] }])
+
+    // An unknown slug filters to an empty set — the caller reads it as
+    // "not installed" rather than paging the whole registry again.
+    const unknown = parseAdapters(
+      await h.client.callTool({ name: "adapter_list", arguments: { adapter: "nope" } }),
+    )
+    expect(unknown).toEqual([])
+
+    await h.close()
+  })
+})
+
+describe("adapter_models", () => {
+  it("reports 'not enabled' when no lister is wired", async () => {
+    const h = await harness()
+    const result = await h.client.callTool({ name: "adapter_models", arguments: { adapter: "hermes" } })
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    await h.close()
+  })
+
+  it("lists ONE adapter's models with provider/mode from the manifest (legacy { models } wrapper)", async () => {
+    const h = await harness(async () => [FULL_ADAPTER])
+    const raw = JSON.parse(
+      ((await h.client.callTool({ name: "adapter_models", arguments: { adapter: "hermes" } })) as { content: Array<{ text: string }> }).content[0]!.text,
+    ) as { models: Array<Record<string, unknown>> }
+    expect(raw.models).toEqual([{ id: "z-ai/glm-5.2", provider: "openrouter" }])
+    await h.close()
+  })
+
+  it("errors on an unknown adapter slug", async () => {
+    const h = await harness(async () => [FULL_ADAPTER])
+    const result = await h.client.callTool({ name: "adapter_models", arguments: { adapter: "nope" } })
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(((result as { content: Array<{ text: string }> }).content[0]!.text)).toMatch(/was not found/)
+    await h.close()
+  })
+
+  it("falls back to id-only rows when the manifest has no modelDetails", async () => {
+    const { modelDetails, ...metaOnly } = FULL_ADAPTER
+    void modelDetails
+    const h = await harness(async () => [metaOnly])
+    const raw = JSON.parse(
+      ((await h.client.callTool({ name: "adapter_models", arguments: { adapter: "hermes" } })) as { content: Array<{ text: string }> }).content[0]!.text,
+    ) as { models: Array<Record<string, unknown>> }
+    expect(raw.models).toEqual([{ id: "z-ai/glm-5.2" }, { id: "gpt-5" }])
+    await h.close()
+  })
+
+  it("pages a runaway model list with limit/cursor (the ~700-opencode-ids regression)", async () => {
+    const big: AdapterListEntry = {
+      ...FULL_ADAPTER,
+      models: Array.from({ length: 700 }, (_, i) => `openrouter/model-${i}`),
+      modelDetails: Array.from({ length: 700 }, (_, i) => ({ id: `openrouter/model-${i}`, provider: "openrouter" })),
+    }
+    const h = await harness(async () => [big])
+
+    const all: Array<{ id: string }> = []
+    let cursor: string | undefined
+    do {
+      const raw = JSON.parse(
+        (
+          (await h.client.callTool({
+            name: "adapter_models",
+            arguments: { adapter: "hermes", limit: 100, ...(cursor ? { cursor } : {}) },
+          })) as { content: Array<{ text: string }> }
+        ).content[0]!.text,
+      ) as { items: Array<{ id: string }>; total: number; truncated?: boolean; nextCursor?: string }
+      expect(raw.truncated).toBeUndefined()
+      raw.items.forEach(row => all.push(row))
+      cursor = raw.nextCursor
+    } while (cursor)
+    expect(all).toHaveLength(700)
+    expect(all.map(row => row.id).at(-1)).toBe("openrouter/model-699")
+
+    await h.close()
+  })
 })

@@ -689,6 +689,10 @@ export function buildConfigurationLabSnapshot(
 export async function fetchConfigurationLabData(
   fetchers: {
     listAdapters: () => Promise<AdapterInfo[]>
+    /** Optional per-adapter detail fetcher. The listing is compact, so the
+     *  selected harness's models/modes/route-selection are loaded lazily
+     *  here instead of in the over-budget full listing. */
+    getAdapter?: (slug: string) => Promise<AdapterInfo | undefined>
     harnessCapabilities: (adapter?: string) => Promise<HarnessCapabilities[]>
     catalogModels: () => Promise<CatalogModelsResponse>
     listAuthProfiles: () => Promise<AuthProfileSummary[]>
@@ -696,13 +700,20 @@ export async function fetchConfigurationLabData(
   },
   selectedAdapter?: string,
 ): Promise<ConfigurationLabRawData> {
-  const [adapters, capabilities, catalog, profiles, presets] = await Promise.all([
+  const [listedAdapters, capabilities, catalog, profiles, presets] = await Promise.all([
     fetchers.listAdapters().catch(() => [] as AdapterInfo[]),
     fetchers.harnessCapabilities(selectedAdapter).catch(() => [] as HarnessCapabilities[]),
     fetchers.catalogModels().catch(() => ({ vendors: [] }) as CatalogModelsResponse),
     fetchers.listAuthProfiles().catch(() => [] as AuthProfileSummary[]),
     fetchers.listProviderPresets().catch(() => [] as ProviderPresetEntry[]),
   ])
+  let adapters = listedAdapters
+  if (selectedAdapter && fetchers.getAdapter) {
+    const detail = await fetchers.getAdapter(selectedAdapter).catch(() => undefined)
+    if (detail) {
+      adapters = listedAdapters.map(adapter => (adapter.slug === detail.slug ? { ...adapter, ...detail } : adapter))
+    }
+  }
   return { adapters, capabilities, catalog, profiles, presets }
 }
 

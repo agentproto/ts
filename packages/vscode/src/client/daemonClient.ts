@@ -37,6 +37,7 @@ import type {
   ActivityListFilter,
   ActivityRecord,
   AdapterInfo,
+  AdapterModelInfo,
   CapabilitiesInventoryView,
   CapabilityBundle,
   SessionCapabilitiesView,
@@ -115,6 +116,22 @@ export class McpResultTruncatedError extends Error {
     super(message)
     this.name = "McpResultTruncatedError"
   }
+}
+
+/** An older daemon that predates an additive tool/argument rejects the call
+ *  either as invalid params (-32602) or as an unknown tool/method. */
+function isMissingToolOrParam(err: unknown): boolean {
+  if (err instanceof McpInvalidParamsError) return true
+  const message = err instanceof Error ? err.message : String(err)
+  return /unknown tool|method not found|not found/i.test(message)
+}
+
+/** Older listers omit the compact-only `installed` flag; derive the coarse
+ *  readiness status so callers that sort/install by `status` keep working
+ *  with compact rows. A full row already carries the exact status. */
+function normalizeCompactAdapter(adapter: AdapterInfo): AdapterInfo {
+  if (adapter.installed === undefined || adapter.status !== undefined) return adapter
+  return { ...adapter, status: adapter.installed ? "ready" : "supported" }
 }
 
 /** Raised by {@link DaemonClient.addWorkspace} on a 404 — the daemon predates
@@ -895,22 +912,105 @@ export class DaemonClient {
 
   /**
    * adapter_list is an MCP-only tool — fetch the daemon's installed
-   * adapter registry via mcpCall("adapter_list"). Full detail is paged
-   * with limit/cursor until done, because the FULL manifest echo can run
-   * past the daemon's MCP result budget — an unpaged call then comes back
-   * as a `{ truncated: true }` stub with NO adapters, which every caller
-   * used to misread as "nothing installed" (the « 0 installed » /
-   * « adapter no longer installed » bug). A truncated stub THROWS here,
-   * never resolves to an empty list. Older daemons that predate limit/
-   * cursor pagination fall back to the single unpaged call.
+   * adapter registry via mcpCall("adapter_list"). The COMPACT rows
+   * (slug/name/version/protocol/installed/modelCount) are paged with
+   * limit/cursor: shipping every model id is what pushed the old call past
+   * the daemon's MCP result budget and came back as a `{ truncated: true }`
+   * stub every caller misread as "nothing installed". A truncated stub
+   * THROWS here, never resolves to an empty list. Older daemons that predate
+   * limit/cursor pagination fall back to the single unpaged call.
    */
   async listAdapters(): Promise<AdapterInfo[]> {
-    const page = async (args: Record<string, unknown>) => {
+    // Page-walk with limit/cursor (daemon 0.20+ additive pagination). The
+    // typed McpInvalidParamsError distinguishes "daemon predates the
+    // limit/cursor params" (fall back to the single unpaged call) from any
+    // other failure — notably a truncation error, which must NOT re-enter
+    // the unpaged fallback (it would just truncate again).
+    try {
+      return (await this.pageAdapterList({ limit: 50 })).map(normalizeCompactAdapter)
+    } catch (err) {
+      if (err instanceof McpInvalidParamsError) {
+        return (await this.pageAdapterList({})).map(normalizeCompactAdapter)
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Fetch the FULL detail of ONE adapter (models/modelDetails/modes/
+   * routeSelection/provider/…). The listing is scoped with adapter_list's
+   * `adapter` filter, so a single row is requested instead of every adapter.
+   * If even that row trips the result cap, its metadata is fetched alone and
+   * its models are paged through {@link listAdapterModels}. Older daemons
+   * without the filter/method fall back to a full-list page-walk.
+   */
+  async getAdapter(slug: string): Promise<AdapterInfo | undefined> {
+    try {
+      const rows = await this.pageAdapterList({ adapter: slug, full: true, limit: 25 })
+      return rows.find(a => a.slug === slug)
+    } catch (err) {
+      if (err instanceof McpResultTruncatedError) return this.getAdapterPaged(slug)
+      if (err instanceof McpInvalidParamsError) return this.getAdapterFromFullListing(slug)
+      throw err
+    }
+  }
+
+  /**
+   * Page ONE adapter's declared models. Prefers the dedicated
+   * `adapter_models` tool so a runaway list (opencode is ~700 ids) can never
+   * blow the result cap; falls back to the adapter's full detail on daemons
+   * that predate the tool.
+   */
+  async listAdapterModels(slug: string): Promise<AdapterModelInfo[]> {
+    try {
+      const models: AdapterModelInfo[] = []
+      let cursor: string | undefined
+      do {
+        const result = await this.mcpCall<
+          | AdapterModelInfo[]
+          | { models?: AdapterModelInfo[] }
+          | { items?: AdapterModelInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
+        >("adapter_models", { adapter: slug, limit: 100, ...(cursor ? { cursor } : {}) })
+        if (!Array.isArray(result) && (result as { truncated?: unknown }).truncated === true) {
+          const bytes = (result as { totalBytes?: number }).totalBytes
+          throw new McpResultTruncatedError(
+            "adapter_models response was truncated by the daemon's MCP result cap" +
+              (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
+              " — page the request with limit/cursor",
+          )
+        }
+        if (Array.isArray(result)) {
+          models.push(...result)
+          break
+        }
+        const items = (result as { items?: AdapterModelInfo[] }).items
+        if (!items) {
+          models.push(...((result as { models?: AdapterModelInfo[] }).models ?? []))
+          break
+        }
+        models.push(...items)
+        cursor = (result as { nextCursor?: string }).nextCursor
+      } while (cursor)
+      return models
+    } catch (err) {
+      if (isMissingToolOrParam(err)) {
+        const adapter = await this.getAdapterFromFullListing(slug)
+        return adapter?.modelDetails ?? (adapter?.models ?? []).map(id => ({ id }))
+      }
+      throw err
+    }
+  }
+
+  /** Page-walk adapter_list, THROWING on the daemon's truncation stub. */
+  private async pageAdapterList(args: Record<string, unknown>): Promise<AdapterInfo[]> {
+    const adapters: AdapterInfo[] = []
+    let cursor: string | undefined
+    do {
       const result = await this.mcpCall<
         | AdapterInfo[]
         | { adapters?: AdapterInfo[] }
         | { items?: AdapterInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
-      >("adapter_list", args)
+      >("adapter_list", { ...args, ...(cursor ? { cursor } : {}) })
       // The daemon's over-budget marker replaces the whole payload — it is
       // neither an array nor an { adapters } wrapper. Never mistake it for
       // an empty list.
@@ -922,39 +1022,61 @@ export class DaemonClient {
             " — page the request with limit/cursor",
         )
       }
-      return result
-    }
+      if (Array.isArray(result)) {
+        adapters.push(...result)
+        break
+      }
+      const items = (result as { items?: AdapterInfo[] }).items
+      if (!items) {
+        // An unpaged envelope despite the limit — a daemon older than the
+        // pagination params echoing the legacy { adapters } shape.
+        adapters.push(...((result as { adapters?: AdapterInfo[] }).adapters ?? []))
+        break
+      }
+      adapters.push(...items)
+      cursor = (result as { nextCursor?: string }).nextCursor
+    } while (cursor)
+    return adapters
+  }
 
-    // Page-walk with limit/cursor (daemon 0.20+ additive pagination). The
-    // typed McpInvalidParamsError distinguishes "daemon predates the
-    // limit/cursor params" (fall back to the single unpaged call) from any
-    // other failure — notably the truncation error above, which must NOT
-    // re-enter the unpaged fallback (it would just truncate again).
+  /** Metadata-only detail + paged models, for a single row over the cap. */
+  private async getAdapterPaged(slug: string): Promise<AdapterInfo | undefined> {
+    const metaFields = [
+      "slug",
+      "name",
+      "version",
+      "protocol",
+      "modes",
+      "spawnEnforcedPostures",
+      "status",
+      "hint",
+      "source",
+      "modelApply",
+      "routeSelection",
+      "provider",
+    ]
+    const rows = await this.pageAdapterList({ adapter: slug, full: true, fields: metaFields, limit: 25 })
+    const row = rows.find(a => a.slug === slug)
+    if (!row) return undefined
+    const models = await this.listAdapterModels(slug)
+    return {
+      ...row,
+      models: models.map(m => m.id),
+      modelDetails: models,
+      modelCount: models.length,
+    }
+  }
+
+  /** Legacy path: page the full listing and pick one slug. A daemon that
+   *  predates the pagination params gets one unpaged full call. */
+  private async getAdapterFromFullListing(slug: string): Promise<AdapterInfo | undefined> {
     try {
-      const adapters: AdapterInfo[] = []
-      let cursor: string | undefined
-      do {
-        const result = await page({ full: true, limit: 25, ...(cursor ? { cursor } : {}) })
-        if (Array.isArray(result)) {
-          adapters.push(...result)
-          break
-        }
-        const items = (result as { items?: AdapterInfo[] }).items
-        if (!items) {
-          // An unpaged envelope despite the limit — a daemon older than the
-          // pagination params echoing the legacy { adapters } shape.
-          adapters.push(...((result as { adapters?: AdapterInfo[] }).adapters ?? []))
-          break
-        }
-        adapters.push(...items)
-        cursor = (result as { nextCursor?: string }).nextCursor
-      } while (cursor)
-      return adapters
+      const rows = await this.pageAdapterList({ full: true, limit: 25 })
+      return rows.find(a => a.slug === slug)
     } catch (err) {
       if (err instanceof McpInvalidParamsError) {
-        const result = await page({ full: true })
-        if (Array.isArray(result)) return result
-        return (result as { adapters?: AdapterInfo[] }).adapters ?? []
+        const rows = await this.pageAdapterList({ full: true })
+        return rows.find(a => a.slug === slug)
       }
       throw err
     }

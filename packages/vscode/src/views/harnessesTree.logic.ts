@@ -74,7 +74,7 @@ export function harnessTooltip(adapter: AdapterInfo): string {
   lines.push("")
   lines.push(`- **Protocol:** ${adapter.protocol ?? "—"}`)
   lines.push(`- **Version:** ${adapter.version ?? "—"}`)
-  const modelCount = adapter.models?.length ?? 0
+  const modelCount = adapter.modelCount ?? adapter.models?.length ?? 0
   lines.push(`- **Models:** ${modelCount}`)
   const modeIds = adapter.modes?.map(m => m.id) ?? []
   lines.push(`- **Modes:** ${modeIds.join(", ") || "—"}`)

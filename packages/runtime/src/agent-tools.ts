@@ -1550,6 +1550,10 @@ export function registerAgentTools(
     modelCount: a.models?.length ?? 0,
   })
   const adapterListSchema = z.object({
+    adapter: z
+      .string()
+      .optional()
+      .describe("Keep only this adapter slug — lets a client fetch ONE adapter's detail."),
     ...pageParamsShape,
   })
   type AdapterListInput = z.infer<typeof adapterListSchema>
@@ -1565,9 +1569,10 @@ export function registerAgentTools(
       "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
       "`modelCount` — pass `full: true` (or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
-      "KB; page through it with `limit`/`cursor`).",
+      "KB; page through it with `limit`/`cursor`). Pass `adapter` to scope " +
+      "the listing to one adapter before paging.",
     inputSchema: adapterListSchema,
-    handler: async () => {
+    handler: async ({ adapter }) => {
       if (!listAgentAdapters) {
         throw new Error(
           "adapter_list is not enabled — the daemon was started without " +
@@ -1575,7 +1580,8 @@ export function registerAgentTools(
             "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
         )
       }
-      return listAgentAdapters()
+      const adapters = await listAgentAdapters()
+      return adapter ? adapters.filter(a => a.slug === adapter) : adapters
     },
     transformers: [
       catchErrors(),
@@ -1584,6 +1590,52 @@ export function registerAgentTools(
         keyOf: a => a.slug,
         maxLimit: 200,
         itemKey: "adapters",
+      }),
+    ],
+  })
+
+  // ── adapter_models ──────────────────────────────────────────────
+  // Per-adapter model paging for clients that need ONE adapter's model list
+  // but cannot ship the full detail in a single MCP result. `adapter_list`
+  // with `adapter` + `full: true` returns the same rows, but a runaway model
+  // list (opencode is ~700 ids) can still trip the result cap; this tool
+  // pages the models themselves.
+  type AdapterModelRow = { id: string; provider?: string; mode?: string }
+  const adapterModelsSchema = z.object({
+    adapter: z.string().describe("Adapter slug whose declared models to list."),
+    ...pageParamsShape,
+  })
+  type AdapterModelsInput = z.infer<typeof adapterModelsSchema>
+
+  registerBuiltinTool<AdapterModelsInput, AdapterModelRow[]>(server, {
+    id: "adapter_models",
+    description: "List the models ONE agent CLI adapter declares, pageable with " +
+      "`limit`/`cursor`. Use this instead of `adapter_list`'s `full: true` when " +
+      "you need a single adapter's model ids but the full manifest could exceed " +
+      "the MCP result cap. Each row carries `id` and, when the manifest states " +
+      "them, `provider`/`mode`.",
+    inputSchema: adapterModelsSchema,
+    handler: async ({ adapter }) => {
+      if (!listAgentAdapters) {
+        throw new Error(
+          "adapter_models is not enabled — the daemon was started without " +
+            "an adapter lister. Wire `@agentproto/cli`'s " +
+            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+        )
+      }
+      const found = (await listAgentAdapters()).find(a => a.slug === adapter)
+      if (!found) throw new Error(`adapter_models: adapter "${adapter}" was not found.`)
+      const detailed = (found as AdapterListEntry & { modelDetails?: AdapterModelRow[] }).modelDetails
+      if (detailed && detailed.length > 0) return detailed
+      return (found.models ?? []).map(id => ({ id }))
+    },
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: row => row,
+        keyOf: row => row.id,
+        maxLimit: 500,
+        itemKey: "models",
       }),
     ],
   })

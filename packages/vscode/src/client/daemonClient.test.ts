@@ -271,15 +271,34 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
       if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
-          const args = rpc.params.arguments as { full?: boolean; limit?: number; cursor?: string }
+          const args = rpc.params.arguments as {
+            full?: boolean
+            limit?: number
+            cursor?: string
+            adapter?: string
+            fields?: string[]
+          }
           // The FULL manifest rows the fake daemon serves (daemon 0.20+
           // shape: modes/modelDetails/status on every row).
-          const rows = adapterListRows()
+          const allRows = adapterListRows()
+          const rows = args.adapter ? allRows.filter(row => row.slug === args.adapter) : allRows
+          const compact = (row: Record<string, unknown>) => ({
+            slug: row.slug,
+            name: row.name,
+            version: row.version,
+            protocol: row.protocol,
+            installed: row.status !== "supported",
+            modelCount: Array.isArray(row.models) ? row.models.length : 0,
+          })
           const envelope = (payload: unknown) => ({ status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } } })
           // Simulate the daemon's over-budget marker: the whole payload is
           // replaced by { truncated: true, totalBytes, hint }.
           if (adapterListTruncated) {
-            return envelope({ truncated: true, totalBytes: 109_340, hint: "use limit/cursor/fields" })
+            return envelope({ truncated: true, totalBytes: 325_984, hint: "use limit/cursor/fields" })
+          }
+          // A full single-adapter detail over the cap (the fallback path).
+          if (adapterDetailTruncated && args.full && args.fields === undefined) {
+            return envelope({ truncated: true, totalBytes: 150_000, hint: "page the models" })
           }
           // Daemon 0.20+ additive pagination: limit/cursor return the
           // { items, total, nextCursor } page envelope (opaque base64url
@@ -298,14 +317,38 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
             }
             const end = start + limit
             const next = end < rows.length ? Buffer.from(JSON.stringify({ k: rows[end]!.slug, i: end })).toString("base64url") : undefined
-            return envelope({ items: rows.slice(start, end), total: rows.length, ...(next ? { nextCursor: next } : {}) })
+            const items = args.full ? rows.slice(start, end) : rows.slice(start, end).map(compact)
+            return envelope({ items, total: rows.length, ...(next ? { nextCursor: next } : {}) })
           }
-          // Compact-by-default daemon (0.20+) drops modes/modelDetails/status
-          // without full: true.
+          // Compact-by-default daemon (0.20+): the model arrays/modes/status
+          // are dropped without full: true.
           if (!args.full) {
-            return envelope({ adapters: [{ slug: "claude-code" }] })
+            return envelope({ adapters: rows.map(compact) })
           }
           return envelope({ adapters: rows })
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "adapter_models") {
+          const args = rpc.params.arguments as { adapter: string; limit?: number; cursor?: string }
+          const row = adapterListRows().find(r => r.slug === args.adapter)
+          const envelope = (payload: unknown) => ({ status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } } })
+          if (adapterModelsTruncated) {
+            return envelope({ truncated: true, totalBytes: 120_000, hint: "page the models" })
+          }
+          if (!row) {
+            return envelope({ models: [] })
+          }
+          const detailed = Array.isArray(row.modelDetails)
+            ? (row.modelDetails as Array<Record<string, unknown>>)
+            : ((row.models as string[] | undefined) ?? []).map(id => ({ id }))
+          const limit = Math.min(args.limit ?? 50, 500)
+          let start = 0
+          if (args.cursor) {
+            const decoded = JSON.parse(Buffer.from(args.cursor, "base64url").toString("utf8")) as { i: number }
+            start = decoded.i
+          }
+          const end = start + limit
+          const next = end < detailed.length ? Buffer.from(JSON.stringify({ i: end })).toString("base64url") : undefined
+          return envelope({ items: detailed.slice(start, end), total: detailed.length, ...(next ? { nextCursor: next } : {}) })
         }
         if (rpc.method === "tools/call" && rpc.params.name === "harness_capabilities") {
           const args = rpc.params.arguments as { adapter?: string }
@@ -372,6 +415,8 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
     adapterListTruncated = false
     adapterListNoPaging = false
+    adapterDetailTruncated = false
+    adapterModelsTruncated = false
     adapterListRows = (): Array<Record<string, unknown>> => [
       {
         slug: "claude-code",
@@ -402,6 +447,8 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
   ]
   let adapterListTruncated = false
   let adapterListNoPaging = false
+  let adapterDetailTruncated = false
+  let adapterModelsTruncated = false
 
   function client(tokenPath = ""): DaemonClient {
     return new DaemonClient({ daemonUrl: daemon.url, tokenPath, pollIntervalMs: 5000 })
@@ -690,34 +737,48 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     expect(result.events).toEqual([])
   })
 
-  it("listAdapters() routes through mcpCall adapter_list", async () => {
+  it("listAdapters() requests COMPACT rows (no full) and keeps slug/name/version/protocol/installed/modelCount", async () => {
     const adapters = await client().listAdapters()
-    expect(adapters[0]?.slug).toBe("claude-code")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).not.toHaveProperty("full")
+    expect(args).toMatchObject({ limit: 50 })
+    expect(adapters[0]).toMatchObject({
+      slug: "claude-code",
+      name: "Claude Code",
+      version: "1.0.0",
+      protocol: "acp",
+      installed: true,
+      modelCount: 1,
+    })
+    // Models are not part of a compact row.
+    expect(adapters[0]?.models).toBeUndefined()
+    expect(adapters[0]?.modelDetails).toBeUndefined()
   })
 
-  it("listAdapters() page-walks full detail with limit/cursor and reassembles every adapter", async () => {
-    const all = Array.from({ length: 30 }, (_, i) => ({
+  it("listAdapters() page-walks the compact rows with limit/cursor and reassembles every adapter", async () => {
+    const all = Array.from({ length: 60 }, (_, i) => ({
       slug: `adapter-${i}`,
       name: `Adapter ${i}`,
       protocol: "acp",
       version: "1.0.0",
       status: "ready",
+      models: [`model-${i}`],
     }))
     adapterListRows = () => all
     const adapters = await client().listAdapters()
-    expect(adapters).toHaveLength(30)
-    expect(adapters.map(a => a.slug).at(-1)).toBe("adapter-29")
-    // Every page request asked for full manifest detail.
+    expect(adapters).toHaveLength(60)
+    expect(adapters.map(a => a.slug).at(-1)).toBe("adapter-59")
     const pageCalls = daemon.requests.filter(r => (r.body as { params?: { name?: string } })?.params?.name === "adapter_list")
     expect(pageCalls.length).toBe(2)
-    expect((pageCalls[0]!.body as { params: { arguments: Record<string, unknown> } }).params.arguments).toMatchObject({ full: true, limit: 25 })
-    expect((pageCalls[1]!.body as { params: { arguments: Record<string, unknown> } }).params.arguments).toMatchObject({ full: true, limit: 25 })
+    expect((pageCalls[0]!.body as { params: { arguments: Record<string, unknown> } }).params.arguments).toMatchObject({ limit: 50 })
+    expect((pageCalls[0]!.body as { params: { arguments: Record<string, unknown> } }).params.arguments).not.toHaveProperty("full")
     expect((pageCalls[1]!.body as { params: { arguments: Record<string, unknown> } }).params.arguments.cursor).toBeTruthy()
   })
 
   it("listAdapters() THROWS on a truncated stub — never resolves to an empty list", async () => {
     adapterListTruncated = true
-    await expect(client().listAdapters()).rejects.toThrow(/truncated/)
+    await expect(client().listAdapters()).rejects.toThrow(/truncated.*325984 bytes/)
     // The regression this pins: the old code returned `result.adapters ?? []`
     // for exactly this payload, so callers read a truncated response as
     // « 0 installed » / « adapter no longer installed ».
@@ -727,17 +788,53 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     adapterListNoPaging = true
     const adapters = await client().listAdapters()
     expect(adapters[0]?.slug).toBe("claude-code")
-    expect(adapters[0]?.modes).toEqual([{ id: "subscription", status: "active" }])
+    expect(adapters[0]?.installed).toBe(true)
+    expect(adapters[0]?.models).toBeUndefined()
   })
 
-  it("listAdapters() requests full manifest detail and keeps the full manifest fields", async () => {
-    const adapters = await client().listAdapters()
+  it("getAdapter() requests the detail of ONE adapter via the adapter filter", async () => {
+    const adapter = await client().getAdapter("claude-code")
+    expect(adapter?.slug).toBe("claude-code")
+    expect(adapter?.modelDetails?.[0]?.provider).toBe("anthropic")
+    expect(adapter?.modes).toEqual([{ id: "subscription", status: "active" }])
+    expect(adapter?.status).toBe("ready")
     const last = daemon.requests[daemon.requests.length - 1]!
     const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
-    expect(args).toMatchObject({ full: true, limit: 25 })
-    expect(adapters[0]?.modes).toEqual([{ id: "subscription", status: "active" }])
-    expect(adapters[0]?.modelDetails?.[0]?.provider).toBe("anthropic")
-    expect(adapters[0]?.status).toBe("ready")
+    expect(args).toMatchObject({ adapter: "claude-code", full: true, limit: 25 })
+  })
+
+  it("getAdapter() pages the models when ONE adapter's full detail still exceeds the cap", async () => {
+    adapterDetailTruncated = true
+    adapterListRows = () => [
+      {
+        slug: "opencode",
+        name: "OpenCode",
+        protocol: "acp",
+        version: "1.0.0",
+        models: ["openrouter/a", "openrouter/b"],
+        modelDetails: [
+          { id: "openrouter/a", provider: "openrouter" },
+          { id: "openrouter/b", provider: "openrouter" },
+        ],
+        modes: [{ id: "subscription", status: "active" }],
+        status: "ready",
+        routeSelection: "derived-from-model",
+      },
+    ]
+    const adapter = await client().getAdapter("opencode")
+    expect(adapter?.slug).toBe("opencode")
+    expect(adapter?.models).toEqual(["openrouter/a", "openrouter/b"])
+    expect(adapter?.modelDetails).toHaveLength(2)
+    expect(adapter?.routeSelection).toBe("derived-from-model")
+    const names = daemon.requests.map(r => (r.body as { params?: { name?: string } })?.params?.name)
+    expect(names).toContain("adapter_models")
+  })
+
+  it("listAdapterModels() pages one adapter's models and THROWS on a truncated stub", async () => {
+    const models = await client().listAdapterModels("claude-code")
+    expect(models).toEqual([{ id: "claude-opus-4-8", provider: "anthropic", mode: "subscription" }])
+    adapterModelsTruncated = true
+    await expect(client().listAdapterModels("claude-code")).rejects.toThrow(/truncated.*120000 bytes/)
   })
 
   it("listApps() routes through mcpCall app_list", async () => {

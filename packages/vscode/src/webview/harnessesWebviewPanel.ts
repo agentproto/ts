@@ -128,7 +128,15 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
       this.client.harnessCapabilities().catch((): HarnessCapabilities[] => []),
       this.client.listAuthProfiles().catch((): AuthProfileSummary[] => []),
     ])
-    this.adapters = adapterStatus.adapters
+    // Compact rows carry no model/provider detail. The reach strip and wallet
+    // badge need each adapter's own detail, so fetch it per adapter instead
+    // of shipping every model array in one over-budget response.
+    this.adapters = await Promise.all(
+      adapterStatus.adapters.map(async adapter => {
+        const detail = await this.client.getAdapter(adapter.slug).catch(() => undefined)
+        return detail ?? adapter
+      }),
+    )
     this.capabilities = capabilities
     this.profiles = profiles
     // A FAILED listing (truncated stub, unreachable daemon) is announced —
