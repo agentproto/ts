@@ -5,6 +5,11 @@
  */
 
 import { isPendingSession } from "../services/pending.logic.js"
+import {
+  AWAITING_WITHOUT_QUESTION_TEXT,
+  awaitingStatusFor,
+  questionTooltipFor,
+} from "../commands/answerSessionQuestion.logic.js"
 import { sessionDisplayName } from "../client/sessionName.js"
 import type { SessionDescriptor } from "../client/types.js"
 import {
@@ -17,6 +22,7 @@ export type SessionContextValue =
   | "session-pending"
   | "session-live"
   | "session-awaiting"
+  | "session-awaiting-question"
   | "session-done"
   | "session-interrupted"
 
@@ -158,6 +164,19 @@ export function isAwaiting(session: SessionDescriptor): boolean {
   return Boolean(session.awaitingInput || session.awaitingPermission)
 }
 
+/**
+ * A session flagged with `awaitingInput` but carrying no `awaitingQuestion`:
+ * "blocked on the human" is technically true, but there is nothing to READ
+ * (no question to answer), so the loud "?" glyph — whose only job is to get
+ * the row answered — misfires. These rows present instead as calm parked
+ * entries (quiet dot, "idle, waiting for next prompt" description lead).
+ */
+export function isIdleAwaiting(
+  session: Pick<SessionDescriptor, "awaitingInput" | "awaitingQuestion" | "awaitingPermission">,
+): boolean {
+  return session.awaitingInput === true && !session.awaitingQuestion && !session.awaitingPermission
+}
+
 /** Item label. Thin alias over the shared `sessionDisplayName` (SPEC-3 FIX D):
  *  `user-renamed-label > title > spawn-label > <adapter · short-id>`. A `label`
  *  a human wrote via `session_rename` (flagged `renamedByUser`) wins; otherwise
@@ -190,6 +209,22 @@ export function activityLineFor(session: SessionDescriptor): string | undefined 
 }
 
 /**
+ * The awaiting-input lead segment for a tree row description: the question
+ * text when the daemon derived one, the calm parked phrase when it framed
+ * `awaitingInput` without a question, undefined otherwise. The full (and
+ * even the truncated) question also reaches the tooltip — see
+ * questionTooltipFor (answerSessionQuestion.logic.ts) — so the row stays
+ * scannable and the tooltip stays complete.
+ */
+export function awaitingStatusLead(session: SessionDescriptor): string | undefined {
+  if (session.awaitingInput !== true) return undefined
+  const text = awaitingStatusFor(session)
+  if (!text) return undefined
+  if (text === AWAITING_WITHOUT_QUESTION_TEXT) return text
+  return text.length > ACTIVITY_ROW_MAX ? `${text.slice(0, ACTIVITY_ROW_MAX - 1)}…` : text
+}
+
+/**
  * Item description.
  *  - Without ctx (default): `adapterSlug ?? kind` + model (if any) + status —
  *    byte-identical to the pre-filter behavior existing call sites depend on.
@@ -217,6 +252,14 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
     return parts.join(" · ")
   }
   const parts: string[] = []
+  // An awaiting question LEADS the row ahead of the activity line — it's the
+  // "why is this waiting on me" answer, and the exact thing the operator
+  // needs to act on; everything after it (activity, isolation, time) is
+  // context. When `awaitingInput` flagged but NO question was derived, the
+  // calm parked phrase leads instead and the row reads as an ordinary quiet
+  // session, not an alarm (isIdleAwaiting / iconForSession).
+  const awaiting = awaitingStatusLead(session)
+  if (awaiting) parts.push(awaiting)
   // The live activity line LEADS the row when present — it's the "what is this
   // doing now" answer a list glance is for, so it outranks the isolation/time
   // metadata behind it (which the tooltip also carries). Absent (no turn-end
@@ -551,6 +594,13 @@ export function iconForSession(
   unread?: boolean,
   attentionDelaySec?: number,
 ): SessionIcon {
+  // `awaitingInput` with NO question: the shared presence classifier sees a
+  // live flag and paints attention — the loud amber "?" — but there is no
+  // question to answer and nothing to act on, so that glyph is pure alarm
+  // for what is a parked session. Render the calm quiet dot (the idle glyph,
+  // unchanged weight/unread logic) rather than the question mark; the row's
+  // description carries "idle, waiting for next prompt" instead.
+  if (isIdleAwaiting(session)) return iconForActivity("idle", unread)
   const activity = activityFor(session, now)
   if (TERMINAL_STATUSES.has(session.status) || activity === "stalled") {
     return iconForActivity(activity, unread)
@@ -617,7 +667,7 @@ export function isResumableInPlace(session: SessionDescriptor): boolean {
   )
 }
 
-/** contextValue for menu gating: session-pending / session-live / session-awaiting / session-done / session-interrupted. */
+/** contextValue for menu gating: session-pending / session-live / session-awaiting / session-awaiting-question / session-done / session-interrupted. */
 export function contextValueFor(session: SessionDescriptor): SessionContextValue {
   // An optimistic row is not a session yet — it has no daemon-side id, so every
   // action on it (prompt, stop, restart) would 404. Its own contextValue means
@@ -629,7 +679,13 @@ export function contextValueFor(session: SessionDescriptor): SessionContextValue
     // new-id `session_restart`. Every other terminal row stays `session-done`.
     return isResumableInPlace(session) ? "session-interrupted" : "session-done"
   }
-  if (isAwaiting(session)) return "session-awaiting"
+  // A session blocked on a real question carries an enumerated answer set the
+  // inline "answer" button can act on — its own value so the button shows only
+  // where an answer is one click away. An idle-awaiting row (awaiting input
+  // with no question — nothing to answer yet) stays the plain awaiting value.
+  if (isAwaiting(session)) {
+    return session.awaitingQuestion ? "session-awaiting-question" : "session-awaiting"
+  }
   return "session-live"
 }
 
@@ -686,6 +742,13 @@ export function contextPercent(used?: number, size?: number): string | undefined
 /** Ordered tooltip fields: id, cwd, isolation, pid, startedAt, activity, turnsCompleted, costUsd, tokensIn/Out, context %, blockedOn. */
 export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   const fields: TooltipField[] = [{ label: "id", value: session.id }]
+  // WHY the session waits: the daemon's own `awaitingQuestion` (context-
+  // continuity fork, agent question, structured prompt) reads "blocked on
+  // X — here are the options, check-marked for the recommended one" from the
+  // tooltip, so the user never has to open the transcript to learn what to
+  // do. Without a question, the calm parked phrase replaces the loud read.
+  const awaitingTooltip = questionTooltipFor(session)
+  if (awaitingTooltip) fields.push({ label: "waiting on", value: awaitingTooltip })
   if (session.cwd) fields.push({ label: "cwd", value: session.cwd })
   // The row shows only the worktree's leaf name (or "in-place"); the tooltip
   // carries the full worktree path and its generation id — the pair that pins

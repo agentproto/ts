@@ -46,6 +46,7 @@ import { isConversationTerminal } from "../../../runtime/src/conversation-store.
 import { isLiveSession } from "../commands/sessionActions.logic.js"
 import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
 import { outcomeHintFor } from "./sessionOutcome.logic.js"
+import { AWAITING_WITHOUT_QUESTION_TEXT } from "../commands/answerSessionQuestion.logic.js"
 import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
 import { shortSessionId } from "../client/sessionName.js"
 import { isMachineOrigin } from "../views/sessionsGroups.logic.js"
@@ -157,6 +158,7 @@ export type WebviewRowStatus =
   | "starting" // status "starting" — process is up but no agent behind it yet; in motion, not busy
   | "delegating" // idle itself, but its subtree is mid-turn (#session-visibility)
   | "awaiting"
+  | "idle-awaiting" // awaitingInput flagged but NO question derived — parked, nothing to answer
   | "awaiting-bg" // ended its turn with background tasks still pending — a silent dead end unless re-prompted
   | "parked" // idle + a supervisor is waiting on it — will be re-prompted
   | "idle"
@@ -187,6 +189,7 @@ export const ROW_STATUS_RANK: Readonly<Record<WebviewRowStatus, number>> = {
   starting: 9,
   delegating: 8,
   awaiting: 7,
+  "idle-awaiting": 7,
   stalled: 6,
   "awaiting-bg": 5,
   parked: 4,
@@ -248,6 +251,14 @@ export function webviewRowStatus(
   attentionDelaySec?: number,
 ): WebviewRowStatus {
   const base = ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
+  // `awaitingInput` with NO question: nothing to answer — split out of the
+  // alarming `awaiting` status into its own calm one (`idle-awaiting`, the
+  // idle dot + "waiting for next prompt" label), mirroring the tree's
+  // isIdleAwaiting handling. A real question (or a parked permission) keeps
+  // `awaiting`.
+  if (base === "awaiting" && session.awaitingInput === true && !session.awaitingQuestion) {
+    return "idle-awaiting"
+  }
   if (base === "idle") {
     // A session that JUST finished a turn is still "running" — it must not
     // sink into the Quiet section the instant it answers. The shared presence
@@ -635,6 +646,9 @@ const SECTION_HINTS: Readonly<Partial<Record<SectionKey, string>>> = {
  *  `now`-aware `activityFor`). */
 const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
   awaiting: "needs-you",
+  // Nothing to answer — parked. The quiet list keeps its row within view
+  // without branding it as blocked on the user (needs-you).
+  "idle-awaiting": "quiet",
   working: "running",
   // A starting session is coming up, not busy — but it is still live, so it
   // stays in Running rather than sinking into Quiet.
@@ -800,7 +814,17 @@ function toRow(
   // An ENDED session with a derived outcome says what it produced instead of
   // its last activity line ("no output", muted, when it produced nothing).
   const hint = outcomeHintFor(session)
-  const message = hint?.text ?? previewTextFor(session) ?? (rowStatus === "starting" ? "booting…" : undefined)
+  // WHY the row waits: the daemon's `awaitingQuestion` (context-continuity
+  // fork, agent question, structured prompt) becomes the row's line-2
+  // message — the "what do I do" answer, same text the tree row leads with.
+  // Flagged-without-question sessions get the calm parked phrase instead of
+  // an alarming read.
+  const questionOverride =
+    session.awaitingInput === true
+      ? session.awaitingQuestion?.text?.trim() ||
+        (session.awaitingPermission ? undefined : AWAITING_WITHOUT_QUESTION_TEXT)
+      : undefined
+  const message = questionOverride ?? hint?.text ?? previewTextFor(session) ?? (rowStatus === "starting" ? "booting…" : undefined)
   const inPlace = isolation === "in-place"
   const tagTitleParts = [session.cwd, inPlace ? "runs in-place" : "isolated worktree"].filter(
     (p): p is string => Boolean(p),
@@ -1259,6 +1283,7 @@ export function missionSummaryFor(tree: readonly WebviewRow[]): MissionSummary |
     starting: 0,
     delegating: 0,
     awaiting: 0,
+    "idle-awaiting": 0,
     "awaiting-bg": 0,
     parked: 0,
     idle: 0,
@@ -1276,6 +1301,7 @@ const MISSION_STATUS_LABELS: Readonly<Record<WebviewRowStatus, string>> = {
   starting: "starting",
   delegating: "delegating",
   awaiting: "needs you",
+  "idle-awaiting": "waiting for next prompt",
   stalled: "stalled",
   "awaiting-bg": "bg pending",
   parked: "parked",
