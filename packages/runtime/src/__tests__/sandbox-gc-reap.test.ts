@@ -18,7 +18,14 @@ import { readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { realpathSync } from "node:fs"
-import { reapGcEntry, runSandboxGcPass, startSandboxGcTimer, type SandboxGcProviderHandle } from "../sandbox-gc.js"
+import {
+  DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  reapGcEntry,
+  parseSandboxGcInterval,
+  runSandboxGcPass,
+  startSandboxGcTimer,
+  type SandboxGcProviderHandle,
+} from "../sandbox-gc.js"
 import type { SandboxLedgerEntry } from "../sandbox-ledger.js"
 
 const entryOf = (overrides: Partial<SandboxLedgerEntry> = {}): SandboxLedgerEntry => ({
@@ -78,7 +85,7 @@ describe("reapGcEntry — capacity-free reaping", () => {
       ledgerPath: ledger,
     })
     expect(res).toEqual({ ok: true, action: "stopped" })
-    expect(remove).toHaveBeenCalledWith("bx_1")
+    expect(remove).toHaveBeenCalledWith("bx_1", { force: true })
     expect(connect).not.toHaveBeenCalled()
     // The ledger row is stamped stopped so the candidate never reappears.
     expect(readFileSync(ledger, "utf8")).toContain('"stopped"')
@@ -202,6 +209,26 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
 const lines: string[] = []
 afterEach(() => {
   while (lines.length) lines.pop()
+})
+
+describe("parseSandboxGcInterval — the env knob", () => {
+  const FALLBACK = 123_456
+  it("unset or non-numeric falls back to the default", () => {
+    expect(parseSandboxGcInterval(undefined, FALLBACK)).toBe(FALLBACK)
+    expect(parseSandboxGcInterval("", FALLBACK)).toBe(FALLBACK)
+    expect(parseSandboxGcInterval("soon", FALLBACK)).toBe(FALLBACK)
+  })
+  it("a positive value overrides the default", () => {
+    expect(parseSandboxGcInterval("5000", FALLBACK)).toBe(5000)
+  })
+  it("an explicit 0 (or negative) DISABLES the timer — 0 is returned, not the default", () => {
+    expect(parseSandboxGcInterval("0", FALLBACK)).toBe(0)
+    expect(parseSandboxGcInterval("-1", FALLBACK)).toBe(0)
+  })
+  it("the documented default is the 1 h cadence", () => {
+    expect(DEFAULT_SANDBOX_GC_INTERVAL_MS).toBe(60 * 60_000)
+    expect(parseSandboxGcInterval(undefined)).toBe(60 * 60_000)
+  })
 })
 
 describe("startSandboxGcTimer — wiring shape", () => {

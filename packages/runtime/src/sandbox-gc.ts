@@ -88,8 +88,10 @@ export interface SandboxGcProviderHandle {
      *  remove`. Preferred over `connect()` + `stop()`: connecting to a
      *  suspended computer RESUMES it first (RAM requirement), exactly the
      *  capacity-need that made `sandbox rm`/gc fail on an exhausted host.
-     *  Optional: providers without it fall back to the connect path. */
-    remove?(sandboxId: string): Promise<void>
+     *  The gc runs AFTER its attaché candidate check, so it is the only
+     *  caller allowed to `force` past a shared-box 409. Optional: providers
+     *  without it fall back to the connect path. */
+    remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
   }
 }
 
@@ -139,7 +141,10 @@ export async function reapGcEntry(
   // lifecycle call. An id-already-gone outcome is a NO-OP success.
   if (opts.pause !== true && handle.provider.remove) {
     try {
-      await handle.provider.remove(entry.sandboxId)
+      // ALREADY FORCED ON PURPOSE: the pass only picked this row because
+      // every attaché's session status is terminal (collectGcCandidates),
+      // so no live session can be surprised by the force.
+      await handle.provider.remove(entry.sandboxId, { force: true })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       if (GONE_RE.test(message) || isGoneError(err)) {
@@ -260,6 +265,20 @@ export async function runSandboxGcPass(
 export const DEFAULT_SANDBOX_GC_INTERVAL_MS = 60 * 60_000
 export interface SandboxGcTimer {
   stop(): void
+}
+
+/**
+ * Parse the `AGENTPROTO_SANDBOX_GC_INTERVAL_MS` env knob. Unset (or
+ * non-numeric) falls back to the default; an explicit `0` or a negative
+ * value DISABLES the timer (`0` returned) — the sweep is destructive, so
+ * operators must have a working off-switch.
+ */
+export function parseSandboxGcInterval(
+  raw: string | undefined,
+  fallback: number = DEFAULT_SANDBOX_GC_INTERVAL_MS,
+): number {
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback
 }
 
 export function startSandboxGcTimer(

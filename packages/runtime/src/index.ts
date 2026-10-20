@@ -160,6 +160,7 @@ import {
 } from "./idle-reaper.js"
 import {
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  parseSandboxGcInterval,
   startSandboxGcTimer,
 } from "./sandbox-gc.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
@@ -4484,12 +4485,7 @@ export async function createGateway(
   // `remove` (control-plane destroy, no resume). Unref'd + never overlapped,
   // same shapes as the reaper above. Always armed (unlike the idle-reaper's
   // opt-in): it only ever GRAVES boxes whose session is already dead.
-  const rawGcInterval = process.env.AGENTPROTO_SANDBOX_GC_INTERVAL_MS
-  const parsedGcInterval = rawGcInterval ? Number.parseInt(rawGcInterval, 10) : NaN
-  const sandboxGcIntervalMs =
-    Number.isFinite(parsedGcInterval) && parsedGcInterval > 0
-      ? parsedGcInterval
-      : DEFAULT_SANDBOX_GC_INTERVAL_MS
+  const sandboxGcIntervalMs = parseSandboxGcInterval(rawGcInterval)
   let sandboxGcTimer: { stop(): void } | null = null
   if (sandboxGcIntervalMs > 0) {
     sandboxGcTimer = startSandboxGcTimer({
