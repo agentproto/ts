@@ -3,6 +3,14 @@
 Status: **design — docs only, no code landed yet.**
 Scope: agentproto daemon (`packages/runtime`), English docs.
 
+**Where the AIP prose lives.** Citations of the form `specs/aip-*.mdx`
+below refer to the canonical **`agentproto/agentproto`** repository — the
+prose registry — and *not* to this tree (`agentproto/ts` carries only the
+`specs/resources/**` JSON drafts). Read them there: clone it as a sibling
+(`git clone https://github.com/agentproto/agentproto ../agentproto`) or
+through `gh api repos/agentproto/agentproto/contents/specs`. Every AIP
+citation in this doc was verified against that repo's prose.
+
 ---
 
 ## Existing (field survey)
@@ -250,7 +258,9 @@ interface ToolHookEvent {
   on: string                       // resolved trigger name
   args: Record<string, unknown>
   result?: Record<string, unknown> // PARSED tool result (see §2.5) —
-                                  // e.g. agent_start → { descriptor: { id, cwd, … } }
+                                  // e.g. agent_start → { id, cwd, … }
+                                  // (the body IS the flattened descriptor,
+                                  //  agent-tools.ts:553-561 — no `descriptor` wrapper)
   caller?: { sessionId?: string; id?: string; label?: string
              role?: string; depth?: number; agentId?: string }
   workspaceSlug?: string
@@ -325,7 +335,8 @@ shape works for every tool:
 ```yaml
 deliver:
   to: append-to-session-queue
-  sessionId: "$result.descriptor.id"   # spawned child (agent_start)
+  sessionId: "$result.id"          # spawned child (agent_start — the body is the
+                                   # flattened descriptor, agent-tools.ts:553-561)
   # sessionId: "$caller.sessionId"     # push back to the delegator
   # taskId:    "$result.task.taskId"   # attach-to-task-meta (task_create)
   # taskId:    "$args.taskId"          # attach-to-task-meta (task_update)
@@ -335,14 +346,20 @@ deliver:
 skipped (event logged), never an error.
 
 **`$result` is the *parsed* payload.** These handlers return MCP wire
-results — `agent_start` → `{ content: [{ type: "text", text: JSON.stringify({ descriptor, … }) }] }`
-(`agent-tools.ts:561`), `task_create` → `{ content: [{ text: "{ task: … }" }] }`
+results — `agent_start` → `{ content: [{ type: "text", text: JSON.stringify(body) }] }`
+where `body = { ...result.descriptor, output?, warnings?, deduped?,
+dedupeSource?, costBudgetPolicyId? }` (`packages/runtime/src/agent-tools.ts:553-561`:
+the handler **spreads the descriptor into the body**, so the parsed `$result`
+*is* the flattened descriptor — `{ id, cwd, … }` — with **no `descriptor`
+wrapper**; the module comment documents the return the same way,
+`agent-tools.ts:120`), `task_create` → `{ content: [{ text: "{ task: … }" }] }`
 (`task-tools.ts` `writeResultContent`) — with no `structuredContent`. The
 dispatcher therefore sets `result` to `structuredContent` when the tool
 returns one, else JSON-parses the first text item, else leaves it
 `undefined` (so `$result.*` simply fails to resolve → delivery skipped,
-logged). That is what makes `$result.descriptor.id` and
-`$result.task.taskId` work as written.
+logged). That is what makes `$result.id` (agent_start's flattened
+descriptor) and `$result.task.taskId` (task_create) work as written — and
+why `$result.descriptor.id` would silently resolve to nothing.
 
 ### 2.6 `budget`
 
@@ -374,7 +391,7 @@ interface Budget {
         "mode": "async",
         "delayMs": 4000,
         "dedup": "task",
-        "deliver": { "to": "append-to-session-queue", "sessionId": "$result.descriptor.id" },
+        "deliver": { "to": "append-to-session-queue", "sessionId": "$result.id" },
         "budget": { "timeoutMs": 20000, "maxLlmCalls": 1, "maxTokens": 400, "model": "free" }
       }
     ],
@@ -474,8 +491,9 @@ so silence is never ambiguous.
 
 ### 3.4 Delivery timing
 
-1. `agent_start`'s handler returns normally (the caller already has
-   `{ descriptor: { id } }`).
+1. `agent_start`'s handler returns normally (the caller already has the
+   spawned session's id — the wire body is the flattened descriptor,
+   `agent-tools.ts:553-561`, so `$result.id` is the child).
 2. Dispatcher schedules the run at `delayMs` (default **4000 ms** — "a few
    seconds after start", long enough for the child to enter its first turn
    and short enough to beat a fast first tool call).
