@@ -430,8 +430,8 @@ with frontmatter `schema: "hook/v1"` (same markdown+frontmatter posture as
 `ROUTINE.md` / `AGENT.md`), merged **over** the daemon config for that
 workspace. It is pending, not canonical: the JSON draft would land at
 `specs/resources/pending/hook/draft/HOOK.schema.json`, beside
-`specs/resources/pending/memory/draft/MEMORY.schema.json` — no AIP number is
-consumed, and no generated file is hand-edited (the regen rule in
+`specs/resources/pending/memory/draft/MEMORY.schema.json` — unnumbered, no
+spec number consumed, and no generated file is hand-edited (the regen rule in
 `AGENTS.md` applies the moment a package owns that doctype).
 
 Precedence: **workspace doc > daemon config > built-in defaults.** A hook id
@@ -630,7 +630,7 @@ registry keys for the resolved config.
 | **`spec-echo` enricher** (§6) | v1 proves the seam with one enricher; each further enricher is one file plus one registry entry (§6), additive the moment the dispatcher is proven in production. | The first workspace with a real spec index (`specs/`, `docs/`, `WORK.md`) whose agents are asked to implement *the* spec — a concrete demand for the "existing spec sections" block. |
 | **`security-check` enricher** (§6) | Same posture: additive, zero dispatcher change, ships when someone will read it. | The first pre-delegation incident of the class the maintainer judge only catches at merge — an `agent_start` already touching `auth\|token\|migrations\|.env\|workflows` that would have escalated anyway. The note pays for itself exactly then. |
 | **Workspace `HOOK.md` loading** (§2.7b) | Two-source precedence (workspace doc > daemon config) is a config-surface change with drift risk; the daemon config alone covers Pygmalion (v1.1) and the second brain (v1.2). | The first real per-workspace divergence: a brain/team that needs a *different* hook set than the daemon-wide config. |
-| **User/agent-authored enrichment scripts** | AIP-40's parked sandbox problem: a config-declared script body is remote code execution by JSON. Config plus bundled enrichers do not cross that line; a `HOOK.md` that can run third-party scripts would (candidate AIP-69). | A sibling AIP with a sandbox-mediated execution model — AIP-40's explicit parking condition. |
+| **User/agent-authored enrichment scripts** | AIP-40's parked sandbox problem: a config-declared script body is remote code execution by JSON. Config plus bundled enrichers do not cross that line; a `HOOK.md` that can run third-party scripts would — and that would be a real spec of its own, deliberately left unnumbered while the decided path is the AIP-46 amendment (§8). | A sibling AIP with a sandbox-mediated execution model — AIP-40's explicit parking condition. |
 | **Clerk triggers on `fireExternal`** (§10.4 v2) | The clerk keeps its independently built AIP-68 §5 path in v1 so nothing breaks; the §10 shapes (record, dispatcher, dedup, budget, delivery) are already the ones it will join. | §10.4's v2 milestone: clerk integrations publish into `fireExternal` and their play passes register as enrichers. |
 | **Shared day-window cost accounting** (§10.4 v3) | Per-hook `maxCostUsd` exists in v1; one operator-wide day window spanning both populations is only worth building once both spend against it. | §10.4's v3 milestone: clerk passes and enricher runs share one hard stop. |
 
@@ -651,8 +651,8 @@ abort"; AIP-41 already has `schedule.kind: event` + `filter`; AIP-60 defines
 the `match` clause shape; AIP-68 defines out-of-band, single-flight, budgeted,
 free-tier-first passes. A new AIP would re-litigate all five.
 
-Why AIP-46 *does* need the amendment: the two things this design adds that
-no AIP says yet are (a) **the delivery contract** — daemon-authored text
+Why AIP-46 *does* need the amendment: the two things this design adds,
+which no existing AIP states today, are (a) **the delivery contract** — daemon-authored text
 injected into a session's queue/context from *outside* any prompt, with a
 never-interrupt guarantee — and (b) **the non-blocking guarantee** — a host
 MUST NOT let a hook delay or fail a delegation. Both are statements about the
@@ -665,7 +665,9 @@ allowed) or gate `agent_start` on it.
 execution model — AIP-40 explicitly parks that ("runtime hooks … belong in a
 sibling AIP … that includes a sandbox-mediated execution model"). Config +
 bundled enrichers do not cross that line; a `HOOK.md` doctype that can run
-third-party scripts would (candidate: AIP-69). Until then the doc form in
+third-party scripts would — a real spec of its own, which stays unnumbered
+until it exists (the decided path is the amendment in §8.1, so no number is
+pre-assigned). Until then the doc form in
 §2.7(b) stays pending (`specs/resources/pending/hook/`), like `memory`.
 
 ### 8.1 Proposed AIP-46 amendment (ready to port)
@@ -950,7 +952,7 @@ the end of §1 is satisfied exactly once.
 6. **No new AIP (owner-decided):** a ready-to-port, normative *Proposed
    AIP-46 amendment* (§8.1) covers the delivery and non-blocking
    guarantees; a standalone AIP waits until hooks can be user-authored
-   code (AIP-40's parked sibling, candidate AIP-69). v1 = the
+   code (AIP-40's parked sibling — unnumbered until it exists). v1 = the
    deterministic dispatcher **plus** the `prior-art` async enricher,
    shipped together (§7) — and everything out of v1 carries an explicit
    reason and a named trigger, never an undefined "later".
@@ -972,9 +974,10 @@ statements about the AIP-46 session surface. The amendment lives in this
 doc as §8.1, **"Proposed AIP-46 amendment"** — normative spec prose with
 no repo-specific references, ready to be copied into the canonical
 `agentproto/agentproto` AIP-46. The `HOOK.md` doctype stays **pending**
-(`specs/resources/pending/hook/`, like `memory`) and consumes no AIP
-number until user-authored hook *code* (AIP-40's parked sibling) forces
-a real spec — then it is a candidate AIP-69. *One operational ask left:*
+(`specs/resources/pending/hook/`, like `memory`) and stays unnumbered
+until user-authored hook *code* (AIP-40's parked sibling) forces a real
+spec of its own — deliberately no pre-assigned number, since the decided
+path is the amendment, not a new AIP. *One operational ask left:*
 name the reviewer for the §8.1 text before the port.
 
 **2) v1 scope — frozen: deterministic dispatcher + `prior-art`, together.**
