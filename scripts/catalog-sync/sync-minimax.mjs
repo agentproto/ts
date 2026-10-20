@@ -148,11 +148,11 @@ async function main() {
       if (!NATIVE_IDS.includes(id)) NATIVE_IDS.push(id)
     }
   } else {
-    console.warn(`  ⚠ official pricing unusable (${officialProblem}) — every price from OpenRouter`)
+    console.warn(`  ⚠ official pricing unusable (${officialProblem}) — committed first-party rows kept, the rest from OpenRouter`)
   }
 
   // ── Price every native id: MiniMax's page first, OpenRouter fallback ──
-  const committed = officialPrices ? readCommittedFirstPartyRows() : new Map()
+  const committed = readCommittedFirstPartyRows()
   for (const id of committed.keys()) {
     if (!NATIVE_IDS.includes(id)) NATIVE_IDS.push(id)
   }
@@ -167,7 +167,11 @@ async function main() {
     }
     if (committed.has(nativeId)) {
       priced.push({ id: nativeId, raw: committed.get(nativeId) })
-      console.warn(`  ⚠ ${nativeId}: no longer on MiniMax's page — committed first-party row kept (retired or renamed?)`)
+      console.warn(
+        officialPrices
+          ? `  ⚠ ${nativeId}: no longer on MiniMax's page — committed first-party row kept (retired or renamed?)`
+          : `  ⚠ ${nativeId}: committed first-party row kept (page unusable)`
+      )
       continue
     }
     const orSuffix = nativeIdToOrSuffix(nativeId)
@@ -202,7 +206,7 @@ async function main() {
 
   const priceSourceLabel = officialPrices
     ? "platform.minimax.io pay-as-you-go pricing page, OpenRouter /v1/models (minimax/*) fallback per row"
-    : `OpenRouter /v1/models (minimax/*) — MiniMax pricing page unusable: ${officialProblem}`
+    : `committed first-party rows + OpenRouter /v1/models (minimax/*) — MiniMax pricing page unusable: ${officialProblem}`
   const banner = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-minimax.mjs
 // (ids: MiniMax pricing page + committed PascalCase list, pricing: ${priceSourceLabel}, synced ${date})
 // OpenRouter fallback rows: normalization lowercase → prepend "minimax-" when

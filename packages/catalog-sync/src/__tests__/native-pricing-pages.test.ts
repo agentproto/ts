@@ -90,6 +90,7 @@ describe("parseMiniMaxPricingPage (current page)", () => {
       cacheReadMultiplier: 0.2,
       tiers: [{ aboveInputTokens: 512000, inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.2 }],
     })
+    expect(prices.get("MiniMax-M3.1-Flash")).toEqual({ inputPer1M: 0.15, outputPer1M: 0.6, cacheReadMultiplier: 0.1 })
     expect(prices.get("MiniMax-M3")).not.toHaveProperty("cacheWriteMultiplier")
     expect(checkMiniMaxPricingUsable(prices)).toBeNull()
   })

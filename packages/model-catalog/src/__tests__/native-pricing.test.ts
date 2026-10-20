@@ -41,6 +41,25 @@ describe("first-party priced rows", () => {
   })
 
   it("MiniMax-M2.7 still resolves to MiniMax's own row while the model is served", () => {
-    expect(resolvePricing("MiniMax-M2.7")).toMatchObject({ priceSource: "minimax", inputPer1M: 0.3, outputPer1M: 1.2 })
+    expect(resolvePricing("MiniMax-M2.7")).toMatchObject({
+      priceSource: "minimax",
+      inputPer1M: 0.3,
+      outputPer1M: 1.2,
+      cacheReadMultiplier: 0.2,
+      cacheWriteMultiplier: 1.25,
+    })
+  })
+
+  it("MiniMax-M3.1-Flash bills at MiniMax's $0.15 / $0.60, cache hits at $0.015", () => {
+    expect(resolvePricing("MiniMax-M3.1-Flash")).toMatchObject({
+      priceSource: "minimax",
+      inputPer1M: 0.15,
+      outputPer1M: 0.6,
+      cacheReadMultiplier: 0.1,
+    })
+    expect(calculateLLMCreditCost("MiniMax-M3.1-Flash", { inputTokens: 1_000_000, outputTokens: 1_000_000 }).productionCost).toBeCloseTo(
+      0.75,
+      10
+    )
   })
 })
