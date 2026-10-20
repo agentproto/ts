@@ -27,7 +27,7 @@
  * from this source for ANY MiniMax model, regardless of id. Flagged in
  * the generated banner; see the PR body for the consequence.
  */
-import { writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import {
@@ -57,6 +57,23 @@ const OUTPUT_PATH = resolve(
   import.meta.dirname,
   "../../packages/model-catalog/src/llm/minimax-pricing.generated.ts"
 )
+
+/**
+ * Rows already committed under `priceSource: "minimax"`, as raw lines keyed by
+ * id. Prices are per route: a bare id is MiniMax's own price, `minimax/*` is
+ * OpenRouter's. An id MiniMax stops listing (retired models leave the page
+ * before they stop being served) must not be re-priced from OpenRouter under
+ * the bare id: that would swap the route and drop the cache-write price.
+ */
+function readCommittedFirstPartyRows() {
+  const rows = new Map()
+  if (!existsSync(OUTPUT_PATH)) return rows
+  for (const line of readFileSync(OUTPUT_PATH, "utf-8").split("\n")) {
+    const m = line.match(/^  ("[^"]+"): \{.*priceSource: "minimax"/)
+    if (m) rows.set(JSON.parse(m[1]), line)
+  }
+  return rows
+}
 
 /** Round to 6 decimal places (matches sync-anthropic.mjs precision — cache
  *  ratios need more than 4 decimals). */
@@ -135,6 +152,10 @@ async function main() {
   }
 
   // ── Price every native id: MiniMax's page first, OpenRouter fallback ──
+  const committed = officialPrices ? readCommittedFirstPartyRows() : new Map()
+  for (const id of committed.keys()) {
+    if (!NATIVE_IDS.includes(id)) NATIVE_IDS.push(id)
+  }
   const priced = []
   const missing = []
   for (const nativeId of NATIVE_IDS) {
@@ -142,6 +163,11 @@ async function main() {
     if (official) {
       priced.push({ id: nativeId, ...official, priceSource: "minimax" })
       console.log(`  ✓ ${nativeId}: MiniMax pricing page`)
+      continue
+    }
+    if (committed.has(nativeId)) {
+      priced.push({ id: nativeId, raw: committed.get(nativeId) })
+      console.warn(`  ⚠ ${nativeId}: no longer on MiniMax's page — committed first-party row kept (retired or renamed?)`)
       continue
     }
     const orSuffix = nativeIdToOrSuffix(nativeId)
@@ -187,6 +213,7 @@ async function main() {
 
   const body = priced
     .map((e) => {
+      if (e.raw) return e.raw
       const pricing = `inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}`
       const parts = []
       if (e.cacheReadMultiplier !== undefined) parts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)

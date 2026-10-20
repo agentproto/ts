@@ -14,6 +14,8 @@ const KIMI_PAGE = readFileSync(join(FIXTURES, "kimi-pricing-chat.md"), "utf8")
 const ANTHROPIC_PAGE = readFileSync(join(FIXTURES, "anthropic-pricing.md"), "utf8")
 // MiniMax: the page head through the "## LLM" section.
 const MINIMAX_PAGE = readFileSync(join(FIXTURES, "minimax-pricing-paygo.md"), "utf8")
+// The page as it was before the M2.x rows left it (they carried a cache-write column).
+const MINIMAX_LEGACY_PAGE = readFileSync(join(FIXTURES, "minimax-pricing-paygo-legacy.md"), "utf8")
 
 describe("parseKimiPricingPage", () => {
   const prices = parseKimiPricingPage(KIMI_PAGE)
@@ -77,8 +79,24 @@ describe("parseAnthropicPricingPage", () => {
   })
 })
 
-describe("parseMiniMaxPricingPage", () => {
+describe("parseMiniMaxPricingPage (current page)", () => {
   const prices = parseMiniMaxPricingPage(MINIMAX_PAGE)
+
+  it("lists only the models the page still prices, with no cache-write column", () => {
+    expect([...prices.keys()].sort()).toEqual(["MiniMax-M3", "MiniMax-M3.1-Flash"])
+    expect(prices.get("MiniMax-M3")).toEqual({
+      inputPer1M: 0.3,
+      outputPer1M: 1.2,
+      cacheReadMultiplier: 0.2,
+      tiers: [{ aboveInputTokens: 512000, inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.2 }],
+    })
+    expect(prices.get("MiniMax-M3")).not.toHaveProperty("cacheWriteMultiplier")
+    expect(checkMiniMaxPricingUsable(prices)).toBeNull()
+  })
+})
+
+describe("parseMiniMaxPricingPage (legacy page with cache-write column)", () => {
+  const prices = parseMiniMaxPricingPage(MINIMAX_LEGACY_PAGE)
 
   it("reads MiniMax's own rates, cache writes included", () => {
     expect(prices.get("MiniMax-M2.7")).toEqual({ inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.2, cacheWriteMultiplier: 1.25 })

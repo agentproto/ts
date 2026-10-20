@@ -23,11 +23,24 @@ describe("first-party priced rows", () => {
     )
   })
 
-  it("MiniMax-M2.7 bills at MiniMax's $0.30 / $1.20 with its cache-write price", () => {
-    expect(resolvePricing("MiniMax-M2.7")).toMatchObject({ priceSource: "minimax", cacheWriteMultiplier: 1.25 })
-    expect(calculateLLMCreditCost("MiniMax-M2.7", { inputTokens: 1_000_000, outputTokens: 1_000_000 }).productionCost).toBeCloseTo(
-      1.5,
+  it("MiniMax-M3 bills at MiniMax's $0.30 / $1.20 and carries its >512k tier", () => {
+    expect(resolvePricing("MiniMax-M3")).toMatchObject({
+      priceSource: "minimax",
+      inputPer1M: 0.3,
+      outputPer1M: 1.2,
+      tiers: [{ aboveInputTokens: 512000, inputPer1M: 0.6, outputPer1M: 2.4 }],
+    })
+    expect(calculateLLMCreditCost("MiniMax-M3", { inputTokens: 100_000, outputTokens: 100_000 }).productionCost).toBeCloseTo(
+      0.1 * 0.3 + 0.1 * 1.2,
       10
     )
+    expect(calculateLLMCreditCost("MiniMax-M3", { inputTokens: 600_000, outputTokens: 100_000 }).productionCost).toBeCloseTo(
+      0.6 * 0.6 + 0.1 * 2.4,
+      10
+    )
+  })
+
+  it("MiniMax-M2.7 still resolves to MiniMax's own row while the model is served", () => {
+    expect(resolvePricing("MiniMax-M2.7")).toMatchObject({ priceSource: "minimax", inputPer1M: 0.3, outputPer1M: 1.2 })
   })
 })
