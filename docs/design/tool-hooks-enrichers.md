@@ -56,7 +56,7 @@ design was written; the "verdict" column is the reuse decision.
 | **`workspace_brain_query`** (`packages/runtime/src/brain-tools.ts`, `packages/workspace-brain/src`) | BM25 keyword search over ingested transcripts, per workspace bucket, zero tokens. | **This is the memory search** for `prior-art`. |
 | **`gh` / `git` runners** — `execGh` (`packages/runtime/src/review-pr.ts`), `git(...)` in `review-worktree.ts`, allowlist for the *tool* path (`packages/runtime/src/command-tools.ts`) | Daemon-side `execFile` runners with timeouts; the MCP `command_execute` allowlist governs agent-invoked commands, not daemon-internal ones. | **Reuse `GhRunner` (injectable) and the `execFile`+cwd-anchored pattern.** |
 | **`agentproto hook`** (`docs/cli/verbs/hook.md`) | A **Claude Code client-side** hook command that pulls the AIP-46 inbox. | **Name collision only** — unrelated mechanism. Config namespace is `hooks`, CLI (if any) is `agentproto hooks`. |
-| **Free model roles** (`packages/runtime/src/model-roles.ts`) | Presets incl. `go-free` → `opencode-go/longcat-2.5-preview-free`; `adapterForModelId` derives the adapter. | **This is the free-model route** for the optional summary. |
+| **Free model roles** (`packages/runtime/src/model-roles.ts`) | Presets incl. `go-free` → `opencode-go/longcat-2.5-preview-free`; entries carry an optional `route` hint (`route: "openrouter"`) and `resolveLlmModelRoute` decides how a model is reached. | **The free-model *catalogue*** — it says which model counts as free and through which route. The call itself rides the titler's OpenRouter fetch, because `@agentproto/runtime` has no inference client (see the `summarize-session-tool.ts` header). An adapter-spawned "free" model (the `go-free` preset) is **rejected** for hooks — spawning an agent per hook is the expensive path. |
 
 **The gap none of these fill:** a single place that says *"when **this** tool
 is called with **these** args, run **this** enricher in the background and
@@ -218,7 +218,8 @@ interface Budget {
   maxLlmCalls?: number      // default 0 = deterministic only
   maxTokens?: number        // per LLM call; default 0 (unset ⇒ enricher default)
   maxCostUsd?: number       // optional day-window cap, AIP-68 style
-  model?: string | "free"   // "free" resolves through model-roles' free preset
+  model?: string | "free"   // "free" ⇒ a free OpenRouter route from model-roles
+                            // (route hint, `:free` id) — never an adapter-spawned model
 }
 ```
 
@@ -298,11 +299,11 @@ holds a ≤15-line block that makes "we already did this" impossible to miss.
 |---|---|---|---|
 | 1 | **Keywords** from the delegated prompt | Pure function: strip stopwords + code punctuation, keep tokens ≥3 chars, prefer quoted spans / `snake_case` / `camelCase` / `kebab-case` identifiers and Title-ish nouns, dedupe, cap at 8. No LLM. (Free model permitted as an *optional* re-ranker; off by default.) | **0 tokens** |
 | 2 | **`git grep` in the target workspace** | `execFile("git", ["grep","-n","-I","--fixed-strings","-e",k1,"-e",k2,…,"--","*.ts","*.md","*.json"], { cwd: workspaceRoot, timeout })` — cwd anchored like `command-tools.ts`, `maxBuffer` capped; collapse hits → top 5 files by hit count with one representative line each. Runs on the workspace the spawn will use (the worktree if `agent_start.worktree` resolved one). | **0 tokens** |
-| 3 | **`gh pr list --search`**, merged **and** open, last 30 days | Two calls through the injectable `GhRunner` type (`packages/runtime/src/review-pr.ts`): `gh pr list --state merged --search "<kw> merged:>='<date>'" --limit 8 --json number,title,mergedAt,url` and the same with `--state open --search "<kw> updated:>=…"`. `gh` missing ⇒ step skipped, block still produced. | **0 tokens** (one `gh` process each) |
+| 3 | **`gh pr list --search`**, merged **and** open, last 30 days | Two calls through the injectable `GhRunner` type (`packages/runtime/src/review-pr.ts`): `gh pr list --state merged --search "<kw> merged:>=<YYYY-MM-DD>" --limit 8 --json number,title,mergedAt,url` and the same with `--state open --search "<kw> updated:>=<YYYY-MM-DD>"` (GitHub search qualifiers, run from the spawn cwd so the repo comes from the git remote — no `--repo` hardcoding). `gh` missing ⇒ step skipped, block still produced. | **0 tokens** (one `gh` process each) |
 | 4 | **Memory search** | (a) BM25 brain, same call the `workspace_brain_query` tool makes: `brains.getBrain(slug).getProvider().query({ query, topK: 5 })` (`packages/runtime/src/brain-tools.ts`); (b) keyword pass over the workspace's `memory/**/MEMORY.md` (memory/v1 draft doctype) when present. | **0 tokens** |
 | 5 | **Read `PROJECT.md` / `RAPPORT.md`** | Head-read both from `workspaceRoot` if present (≤80 lines / 4 KB each); extract section headings + any line containing a step-4 keyword. Missing file ⇒ skipped. | **0 tokens** |
 | 6 | **Compose** the block (§3.3) | Template + truncation to `maxBlockLines` (15). Deterministic order: files → PRs → memory → decisions. | **0 tokens** |
-| 7 | **Optional summary line** | Only if `budget.maxLlmCalls ≥ 1` **and** a free route resolves: one `ModelLike.complete({ system, prompt })` call (the shape `summarize-session-tool.ts` / `session-activity.ts` already use), `max_tokens ≤ 400`, `timeoutMs ≤ 8000`, model `"free"` → `model-roles` free preset (`opencode-go/longcat-2.5-preview-free`) or the OpenRouter path `session-titler.ts` already uses. No free route ⇒ **refuse the summary and ship the deterministic block** (AIP-68 §5 rule: a host without a free-route catalogue refuses the model pass rather than falling back to a paid one). | 0 or ~400 tokens, hard-capped |
+| 7 | **Optional summary line** | Only if `budget.maxLlmCalls ≥ 1` **and** a free route resolves: one call on the runtime's *only* existing daemon-side LLM primitive — `generateTitleViaLlm` (`session-titler.ts:164`: direct `POST https://openrouter.ai/api/v1/chat/completions`, `OPENROUTER_API_KEY`, `AbortSignal.timeout`) — with `max_tokens ≤ 400`, `timeoutMs ≤ 8000`, model from `budget.model` resolved via model-roles' `route: "openrouter"` hint (a free / `:free` id). **Deliberately not** `ModelLike.complete`: `@agentproto/runtime` has no inference client, and driver-agent-cli's `ModelLike.complete` spawns a fresh agent session per call (`summarize-session-tool.ts` header) — one spawn per hook is the anti-pattern this design exists to avoid. Missing key, no free route, or a free route that is adapter-spawn-only ⇒ **refuse the summary and ship the deterministic block** (AIP-68 §5: a host without a free-route catalogue refuses the model pass rather than falling back to a paid one). | 0 or ~400 tokens, hard-capped |
 
 Partial failure is the normal case: any step can drop out (no `gh`, no repo,
 no brain, no PROJECT.md) and step 6 still composes a block from whatever
@@ -319,7 +320,7 @@ instruction, and the daemon says so):
 Existing work detected — confirm BEFORE you start:
 - files: packages/runtime/src/tool-hooks.ts ("tool hook" ×7); docs/design/tool-hooks-enrichers.md
 - PRs: #1858 "tool hooks: queue delivery" merged 5d ago; #1902 open (same topic)
-- memory: mem_qc8f407g "Pygmalion prior-art check" (sess_5f9a3c38)
+- memory: "Pygmalion prior-art check" — memory/hooks/MEMORY.md §Prior-art
 - decisions: PROJECT.md §Hooks; RAPPORT.md 2026-10-15 — "async enrichers, no per-message reviewer"
 - summary: prior art is design-doc + merged PR 1858; extend rather than re-add.
 First step: reply "modify existing" (name the file/PR) or "new" — then proceed.
@@ -383,7 +384,7 @@ so silence is never ambiguous.
 | Path | Tokens | Money |
 |---|---|---|
 | keywords, `git grep`, 2× `gh pr list`, BM25 brain, file reads, block compose | **0** | 0 |
-| optional step-7 summary | ≤400 out, ~1–1.5k in | free-tier model only (`budget.model: "free"`); hard `maxLlmCalls: 1` per run |
+| optional step-7 summary | ≤400 out, ~1–1.5k in | free-route model only (`budget.model: "free"` → OpenRouter free id; adapter-spawn models rejected), hard `maxLlmCalls: 1` per run |
 | no free route configured | 0 — summary refused, deterministic block still delivered | 0 |
 | per delegation, worst case with summary | one free call | 0 |
 
@@ -411,7 +412,7 @@ export interface EnricherContext {
   gh(args: readonly string[]): Promise<string>          // GhRunner
   brainSearch(query: string, topk: number): Promise<BrainHit[]>
   readWorkspaceFile(rel: string, maxBytes?: number): Promise<string | null>
-  llm(system: string, prompt: string, budget: Budget): Promise<string | null>  // free-tier only
+  llm(system: string, prompt: string, budget: Budget): Promise<string | null>  // titler-shaped OpenRouter fetch; free route only
 }
 export type Enricher = (ctx: EnricherContext) => Promise<EnrichmentBlock | null>
 ```
@@ -664,9 +665,10 @@ item; the block never exceeds 15 lines.
 4. Async is normative: never await, never fail, timeout ⇒ no block, dedup
    per task (set-before-await + `coalesceKey`), delivery only via
    queue/context-slice/meta — never `interrupt`.
-5. Deterministic steps cost 0 tokens; the only model step is optional,
-   `≤400` output tokens on a **free** model with `maxLlmCalls: 1` and an
-   explicit refusal when no free route exists.
+5. Deterministic steps cost 0 tokens; the only model step is optional —
+   `≤400` output tokens on a **free OpenRouter route** through the titler's
+   own fetch (the runtime has no inference client), `maxLlmCalls: 1`, with an
+   explicit refusal when no free route or `OPENROUTER_API_KEY` exists.
 6. **No new AIP**: one paste-ready AIP-46 amendment covers the delivery and
    non-blocking guarantees (§8.1); a standalone AIP waits until hooks can be
    user-authored code (AIP-40's parked sibling) — rollout starts config-only
