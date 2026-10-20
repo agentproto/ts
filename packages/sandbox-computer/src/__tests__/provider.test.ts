@@ -742,7 +742,7 @@ describe("computerSandboxProvider.remove — shared-box semantics", () => {
     const client = new ComputerControllerClient({ baseUrl: controller.url, token: SERVICE_TOKEN, tenantId: "tenant-a" })
     controller.maxSessions.set(id, 2)
     await client.attach(id, { holder: "sess-peer" })
-    await expect(computerSandboxProvider.remove(id)).resolves.toBeUndefined()
+    await expect(computerSandboxProvider.remove!(id)).resolves.toBeUndefined()
     expect(controller.removed).not.toContain(id)
   })
 
@@ -752,7 +752,7 @@ describe("computerSandboxProvider.remove — shared-box semantics", () => {
     const client = new ComputerControllerClient({ baseUrl: controller.url, token: SERVICE_TOKEN, tenantId: "tenant-a" })
     controller.maxSessions.set(id, 2)
     await client.attach(id, { holder: "sess-peer" })
-    await expect(computerSandboxProvider.remove(id, { force: true })).resolves.toBeUndefined()
+    await expect(computerSandboxProvider.remove!(id, { force: true })).resolves.toBeUndefined()
     expect(controller.removed).toContain(id)
   })
 
@@ -760,6 +760,6 @@ describe("computerSandboxProvider.remove — shared-box semantics", () => {
     vi.stubEnv("COMPUTER_CONTROLLER_URL", controller.url)
     vi.stubEnv("COMPUTER_CONTROLLER_TOKEN", SERVICE_TOKEN)
     vi.stubEnv("COMPUTER_TENANT_ID", "tenant-a")
-    await expect(computerSandboxProvider.remove("cmp-does-not-exist")).resolves.toBeUndefined()
+    await expect(computerSandboxProvider.remove!("cmp-does-not-exist")).resolves.toBeUndefined()
   })
 })
