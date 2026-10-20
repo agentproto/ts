@@ -127,7 +127,8 @@ spec is evaluated against one plain object:
 interface ToolHookEvent {
   on: string                       // resolved trigger name
   args: Record<string, unknown>
-  result?: Record<string, unknown> // e.g. agent_start → { descriptor: { id, cwd, … } }
+  result?: Record<string, unknown> // PARSED tool result (see §2.5) —
+                                  // e.g. agent_start → { descriptor: { id, cwd, … } }
   caller?: { sessionId?: string; id?: string; label?: string
              role?: string; depth?: number; agentId?: string }
   workspaceSlug?: string
@@ -204,11 +205,22 @@ deliver:
   to: append-to-session-queue
   sessionId: "$result.descriptor.id"   # spawned child (agent_start)
   # sessionId: "$caller.sessionId"     # push back to the delegator
-  # taskId:    "$args.taskId"          # attach-to-task-meta
+  # taskId:    "$result.task.taskId"   # attach-to-task-meta (task_create)
+  # taskId:    "$args.taskId"          # attach-to-task-meta (task_update)
 ```
 
 `$…` paths resolve against `ToolHookEvent`; an unresolvable path ⇒ delivery
 skipped (event logged), never an error.
+
+**`$result` is the *parsed* payload.** These handlers return MCP wire
+results — `agent_start` → `{ content: [{ type: "text", text: JSON.stringify({ descriptor, … }) }] }`
+(`agent-tools.ts:561`), `task_create` → `{ content: [{ text: "{ task: … }" }] }`
+(`task-tools.ts` `writeResultContent`) — with no `structuredContent`. The
+dispatcher therefore sets `result` to `structuredContent` when the tool
+returns one, else JSON-parses the first text item, else leaves it
+`undefined` (so `$result.*` simply fails to resolve → delivery skipped,
+logged). That is what makes `$result.descriptor.id` and
+`$result.task.taskId` work as written.
 
 ### 2.6 `budget`
 
