@@ -20,7 +20,7 @@
  */
 
 import { readdirSync, readFileSync, existsSync } from "node:fs"
-import { join } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import { parseRoutineManifest, type RoutineFrontmatter } from "@agentproto/routine"
 import type { CronScheduler, CronAction } from "./cron-scheduler.js"
 import { toAgentStartCall } from "./agent-start-schema.js"
@@ -43,12 +43,26 @@ export interface RoutineDispatchTool {
  * same convention `cron-scheduler.ts`'s native `kind:"agent"` action uses
  * for `origin: "cron:<jobId>"` — so a routine-fired session is attributable back to its
  * routine in `session_list` / the sessions tree instead of looking like a
- * manual launch. `tool` / `workflow` targets pass inputs through verbatim
- * (unchanged): their tool handlers aren't guaranteed to accept `origin`.
+ * manual launch. `tool` targets pass inputs through verbatim (unchanged):
+ * their handlers aren't guaranteed to accept `origin`. A `workflow` target is
+ * additionally bound to the routine's workspace root when
+ * {@link RoutineTargetOptions.workspaceRoot} is set (see below).
  */
+export interface RoutineTargetOptions {
+  /**
+   * The workspace root whose `.routines/<id>/ROUTINE.md` this target came
+   * from. When set, a `target.workflow.file` relative path resolves against
+   * it, the dispatched `workflow_run_file` call is bound to it via `cwd`,
+   * and its `input.repoRoot` defaults to it unless the routine already sets
+   * one. Omit to lower the target verbatim (the pre-workspace behaviour).
+   */
+  workspaceRoot?: string
+}
+
 export function routineTargetToToolCall(
   target: RoutineFrontmatter["target"],
   routineId?: string,
+  opts: RoutineTargetOptions = {},
 ): RoutineDispatchTool {
   if ("tool" in target) {
     return { tool: target.tool, inputs: (target.inputs as Record<string, unknown> | undefined) ?? {} }
@@ -71,7 +85,22 @@ export function routineTargetToToolCall(
       )
     }
     const inputs = (target.inputs as Record<string, unknown> | undefined) ?? undefined
-    return { tool: "workflow_run_file", inputs: { path: file, ...(inputs ? { input: inputs } : {}) } }
+    const workspaceRoot = opts.workspaceRoot
+    const path = workspaceRoot && !isAbsolute(file) ? resolve(workspaceRoot, file) : file
+    // The routine's workspace is the run's default repo, never the daemon's
+    // active workspace. An explicit `repoRoot` input always wins.
+    const boundInputs =
+      workspaceRoot === undefined
+        ? inputs
+        : { ...(inputs ?? {}), ...(inputs && "repoRoot" in inputs ? {} : { repoRoot: workspaceRoot }) }
+    return {
+      tool: "workflow_run_file",
+      inputs: {
+        path,
+        ...(boundInputs ? { input: boundInputs } : {}),
+        ...(workspaceRoot !== undefined ? { cwd: workspaceRoot } : {}),
+      },
+    }
   }
   // target.action — AIP-39 ACTION ref. Validated by the schema, not dispatchable here.
   throw new Error(
@@ -207,7 +236,7 @@ export function createRoutineRegistrar(opts: {
 
         let call: RoutineDispatchTool
         try {
-          call = routineTargetToToolCall(frontmatter.target, id)
+          call = routineTargetToToolCall(frontmatter.target, id, { workspaceRoot: workspace })
         } catch (err) {
           skipped.push({ id, reason: err instanceof Error ? err.message : String(err) })
           continue
@@ -278,7 +307,7 @@ export function createRoutineRegistrar(opts: {
             : `routine '${routineId}' not found under ${routinesDir}`,
         )
       }
-      const call = routineTargetToToolCall(found.frontmatter.target, routineId)
+      const call = routineTargetToToolCall(found.frontmatter.target, routineId, { workspaceRoot: workspace })
       const result = await dispatchTool(call.tool, call.inputs)
       const r = result as { content?: Array<{ text?: string }>; isError?: boolean } | undefined
       const text = (r?.content ?? []).map(c => c.text ?? "").join("\n").trim()

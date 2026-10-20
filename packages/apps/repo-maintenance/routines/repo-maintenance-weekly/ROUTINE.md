@@ -75,7 +75,11 @@ to `false` (or drop the key) if you want the apply pass to touch only
 Same steps as `repo-maintenance-daily/ROUTINE.md`: copy this directory to
 `<workspace>/.routines/repo-maintenance-weekly/`, set `enabled: true`, point
 `target.workflow.file` at wherever `maintain/WORKFLOW.md` lives in that
-environment, set or drop `target.inputs.notify`, then reload routines. If
+environment, set or drop `target.inputs.notify`, then reload routines. A
+relative `target.workflow.file` resolves against this routine's workspace
+root; when `target.inputs.repoRoot` is omitted it defaults to that same
+workspace root (an explicit `repoRoot` always wins), so the run is scoped to
+this workspace rather than the daemon's active one. If
 `notify` is kept, make sure its provider is configured on the daemon: the
 notify step goes through `transmit_message` (`bind: false`), so the default
 `provider: telegram` needs a bot token from `telegram_bot_token_set` and

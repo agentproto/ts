@@ -429,7 +429,120 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     )
     const result = await registrar.trigger("workflow-demo")
     expect(result.ok).toBe(true)
-    expect(calls).toEqual([{ name: "workflow_run_file", inputs: { path: "WORKFLOW.md" } }])
+    expect(calls).toEqual([
+      {
+        name: "workflow_run_file",
+        inputs: {
+          path: join(workspace, "WORKFLOW.md"),
+          input: { repoRoot: workspace },
+          cwd: workspace,
+        },
+      },
+    ])
+  })
+
+  it("trigger() binds a relative workflow target to the routine's own workspace root", async () => {
+    const { workspace, calls, registrar } = setup()
+    writeRoutine(
+      workspace,
+      "workflow-scoped",
+      "schema: routine/v1\nid: workflow-scoped\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  workflow:\n    file: .agentproto/workflows/maintain/WORKFLOW.md",
+    )
+    await registrar.trigger("workflow-scoped")
+    expect(calls).toEqual([
+      {
+        name: "workflow_run_file",
+        inputs: {
+          path: join(workspace, ".agentproto/workflows/maintain/WORKFLOW.md"),
+          input: { repoRoot: workspace },
+          cwd: workspace,
+        },
+      },
+    ])
+  })
+
+  it("trigger() preserves an explicit repoRoot in a workflow target's inputs", async () => {
+    const { workspace, calls, registrar } = setup()
+    writeRoutine(
+      workspace,
+      "workflow-explicit-root",
+      [
+        "schema: routine/v1",
+        "id: workflow-explicit-root",
+        "description: test",
+        "schedule:",
+        "  kind: cron",
+        '  cron: "0 4 * * *"',
+        "target:",
+        "  workflow:",
+        "    file: WORKFLOW.md",
+        "  inputs:",
+        "    repoRoot: /elsewhere/explicit-repo",
+      ].join("\n"),
+    )
+    await registrar.trigger("workflow-explicit-root")
+    expect(calls).toEqual([
+      {
+        name: "workflow_run_file",
+        inputs: {
+          path: join(workspace, "WORKFLOW.md"),
+          input: { repoRoot: "/elsewhere/explicit-repo" },
+          cwd: workspace,
+        },
+      },
+    ])
+  })
+
+  it("trigger() leaves an already-absolute workflow file path unchanged", async () => {
+    const { workspace, calls, registrar } = setup()
+    const absolute = join(workspace, "elsewhere", "WORKFLOW.md")
+    writeRoutine(
+      workspace,
+      "workflow-absolute",
+      [
+        "schema: routine/v1",
+        "id: workflow-absolute",
+        "description: test",
+        "schedule:",
+        "  kind: cron",
+        '  cron: "0 4 * * *"',
+        "target:",
+        "  workflow:",
+        `    file: ${absolute}`,
+      ].join("\n"),
+    )
+    await registrar.trigger("workflow-absolute")
+    expect(calls[0]!.inputs).toMatchObject({ path: absolute })
+  })
+
+  it("trigger() preserves sibling inputs when defaulting repoRoot", async () => {
+    const { workspace, calls, registrar } = setup()
+    writeRoutine(
+      workspace,
+      "workflow-siblings",
+      [
+        "schema: routine/v1",
+        "id: workflow-siblings",
+        "description: test",
+        "schedule:",
+        "  kind: cron",
+        '  cron: "0 4 * * *"',
+        "target:",
+        "  workflow:",
+        "    file: WORKFLOW.md",
+        "  inputs:",
+        "    applyMerged: false",
+        "    notify:",
+        "      provider: telegram",
+        '      address: "123"',
+      ].join("\n"),
+    )
+    await registrar.trigger("workflow-siblings")
+    expect(calls[0]!.inputs.input).toEqual({
+      applyMerged: false,
+      notify: { provider: "telegram", address: "123" },
+      repoRoot: workspace,
+    })
   })
 
   it("trigger() on an unknown routine id throws a clear not-found error", async () => {
@@ -459,7 +572,7 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
     const calls: Array<{ name: string; args: unknown }> = []
     const server = new McpServer({ name: "test", version: "0.0.1" })
     for (const name of ["worktree_gc", "agent_start", "workflow_run_file"]) {
-      server.tool(name, `stub ${name}`, { apply: z.boolean().optional(), adapter: z.string().optional(), prompt: z.string().optional(), path: z.string().optional() }, async args => {
+      server.tool(name, `stub ${name}`, { apply: z.boolean().optional(), adapter: z.string().optional(), prompt: z.string().optional(), path: z.string().optional(), input: z.record(z.string(), z.unknown()).optional(), cwd: z.string().optional() }, async args => {
         calls.push({ name, args })
         return { content: [{ type: "text", text: `${name} ok` }] }
       })
@@ -525,7 +638,11 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
       const agentCall = calls.find(c => c.name === "agent_start")!
       expect(agentCall.args).toEqual({ adapter: "claude-code", prompt: "say hi", origin: "routine:agent-demo" })
       const workflowCall = calls.find(c => c.name === "workflow_run_file")!
-      expect(workflowCall.args).toEqual({ path: "WORKFLOW.md" })
+      expect(workflowCall.args).toEqual({
+        path: join(workspace, "WORKFLOW.md"),
+        input: { repoRoot: workspace },
+        cwd: workspace,
+      })
     } finally {
       cronScheduler.shutdown()
     }
