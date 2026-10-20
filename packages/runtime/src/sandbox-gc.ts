@@ -18,7 +18,7 @@
  */
 import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
 import type { SandboxLedgerEntry, SandboxLedgerState } from "./sandbox-ledger.js"
-import { recordSandboxState } from "./sandbox-ledger.js"
+import { readSandboxLedger, recordSandboxState } from "./sandbox-ledger.js"
 
 /** Host session statuses after which a session can never use its box again. */
 export const DEAD_SESSION_STATUSES: ReadonlySet<string> = new Set(["error", "killed", "exited"])
@@ -75,7 +75,7 @@ export interface SandboxGcReapDeps {
 /** The slice of `SandboxProviderHandle` the reaper needs. */
 export interface SandboxGcProviderHandle {
   provider: {
-    connect(
+    connect?(
       sandboxId: string,
       spec: { provider: string; config: Record<string, unknown> },
       opts: { env: Record<string, string> },
@@ -84,7 +84,24 @@ export interface SandboxGcProviderHandle {
       stop(): Promise<void>
       pause?(): Promise<void>
     }>
+    /** Control-plane destroy WITHOUT connecting — see `SandboxProvider.
+     *  remove`. Preferred over `connect()` + `stop()`: connecting to a
+     *  suspended computer RESUMES it first (RAM requirement), exactly the
+     *  capacity-need that made `sandbox rm`/gc fail on an exhausted host.
+     *  Optional: providers without it fall back to the connect path. */
+    remove?(sandboxId: string): Promise<void>
   }
+}
+
+/** Error-message shapes meaning "the box is already gone" — an idempotent
+ *  successful gc, never a failure. */
+const GONE_RE =
+  /\b404\b|doesn't exist|does not exist|not found|no such|box gone|sandbox not found/i
+
+/** Structural check — true when `err` means "the box is gone" (the typed
+ *  sentinel or any Error carrying its name). */
+function isGoneError(err: unknown): boolean {
+  return err instanceof Error && err.name === "SandboxBoxGoneError"
 }
 
 export type SandboxGcReapResult =
@@ -115,6 +132,25 @@ export async function reapGcEntry(
     }
   }
   if (!handle) return { ok: false, error: `provider "${entry.provider}" not found.` }
+  // CAPACITY-FREE TEARDOWN: when the provider can destroy the box straight
+  // on its control plane, never `connect()` first — connecting to a
+  // suspended computer RESUMES it (RAM), requiring the capacity gc is meant
+  // to free. `pause` keeps the connect path: pausing needs the handle's
+  // lifecycle call. An id-already-gone outcome is a NO-OP success.
+  if (opts.pause !== true && handle.provider.remove) {
+    try {
+      await handle.provider.remove(entry.sandboxId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (GONE_RE.test(message) || isGoneError(err)) {
+        recordSandboxState(entry.sandboxId, "stopped", opts.ledgerPath)
+        return { ok: true, action: "stopped" }
+      }
+      return { ok: false, error: `removing "${entry.sandboxId}" failed — ${message}` }
+    }
+    recordSandboxState(entry.sandboxId, "stopped", opts.ledgerPath)
+    return { ok: true, action: "stopped" }
+  }
   if (!handle.provider.connect) {
     return {
       ok: false,
@@ -155,3 +191,107 @@ export async function reapGcEntry(
 
 /** States that still name a box the gc might act on. */
 export const GC_REAPABLE_STATES: readonly SandboxLedgerState[] = ["booted", "connected", "paused"]
+/** Sources a session-status READ for the periodic gc. Injected so the
+ *  daemon pass reads its OWN registry and the CLI keeps its HTTP one. */
+export interface SandboxGcReadDeps {
+  fetchSessionStatuses: () => Promise<Map<string, string>> | Map<string, string>
+  resolveProvider: (slug: string) => Promise<SandboxGcProviderHandle | null>
+  ledgerPath?: string
+}
+
+/** Tally of one automatic gc pass. */
+export interface SandboxGcPassSummary {
+  ran: boolean
+  candidates: number
+  stopped: number
+  paused: number
+  failures: number
+}
+
+/**
+ * One automatic `sandbox gc` pass: read the session statuses, select the
+ * ledger rows whose origin session is DEAD (error/killed/exited —
+ * {@link collectGcCandidates}) and reap them with {@link reapGcEntry}.
+ * Unlike the CLI's dry-run-first command, the daemon pass applies by
+ * default (the operator chose to run a daemon; orphan boxes bill while
+ * nobody looks at them), but a failure is always logged, never thrown.
+ */
+export async function runSandboxGcPass(
+  deps: SandboxGcReadDeps,
+  log: (line: string) => void = () => undefined,
+): Promise<SandboxGcPassSummary> {
+  const statuses = await deps.fetchSessionStatuses()
+  const candidates = collectGcCandidates(readSandboxLedger(deps.ledgerPath), statuses)
+  const summary: SandboxGcPassSummary = {
+    ran: true,
+    candidates: candidates.length,
+    stopped: 0,
+    paused: 0,
+    failures: 0,
+  }
+  for (const candidate of candidates) {
+    const res = await reapGcEntry(candidate.entry, {
+      resolveProvider: deps.resolveProvider,
+      ...(deps.ledgerPath !== undefined ? { ledgerPath: deps.ledgerPath } : {}),
+    })
+    if (res.ok) {
+      if (res.action === "paused") summary.paused++
+      else summary.stopped++
+      log(
+        `sandbox gc: ${candidate.entry.sandboxId} ${res.action} (session ${candidate.entry.originSessionId} ${candidate.sessionStatus})`,
+      )
+    } else {
+      summary.failures++
+      log(`sandbox gc: failed for ${candidate.entry.sandboxId} — ${res.error}`)
+    }
+  }
+  return summary
+}
+
+/**
+ * The daemon's PERIODIC automatic gc for dead-session boxes. Every
+ * `intervalMs` (default {@link DEFAULT_SANDBOX_GC_INTERVAL_MS}) the pass
+ * reaps ledger boxes whose origin session is gone — a paused computer
+ * holding a RAM snapshot, a surviving-but-billing e2b box whose session
+ * crashed and whose owner never ran `sandbox gc --apply`.
+ * `.unref()` — the timer never keeps the process alive. Returns a handle
+ * whose `stop()` kills the timer (the gateway's `stop()` calls it).
+ */
+export const DEFAULT_SANDBOX_GC_INTERVAL_MS = 60 * 60_000
+export interface SandboxGcTimer {
+  stop(): void
+}
+
+export function startSandboxGcTimer(
+  deps: SandboxGcReadDeps & {
+    intervalMs?: number
+    log?: (line: string) => void
+  },
+): SandboxGcTimer {
+  const intervalMs = deps.intervalMs ?? DEFAULT_SANDBOX_GC_INTERVAL_MS
+  const log = deps.log ?? (line => console.log(line))
+  let running = false
+  const timer = setInterval(() => {
+    if (running) return
+    running = true
+    void (async () => {
+      try {
+        const summary = await runSandboxGcPass(deps, log)
+        if (summary.candidates > 0) {
+          log(
+            `sandbox gc: ${summary.candidates} dead-session box(es) — ` +
+              `${summary.stopped} stopped, ${summary.paused} paused, ${summary.failures} failed`,
+          )
+        }
+      } catch (err) {
+        log(`sandbox gc: pass failed — ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        running = false
+      }
+    })()
+  }, intervalMs)
+  timer.unref?.()
+  return {
+    stop: () => clearInterval(timer),
+  }
+}

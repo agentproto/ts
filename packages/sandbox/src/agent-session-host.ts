@@ -319,6 +319,21 @@ export interface SandboxProvider {
    * it; a caller reading `sandboxAlive` then reports "unknown".
    */
   probe?(sandboxId: string): Promise<SandboxProbeResult>
+  /**
+   * Destroy the box on the provider control plane WITHOUT connecting to it.
+   * The teardown/gc counterpart of `connect()` + `stop()`: connecting to an
+   * existing box implies RESUMING a suspended one first, on providers whose
+   * resume allocates RAM/CPU (the `computer` controller) — capacity a
+   * crowded host does not have, and exactly what made `sandbox rm --box`
+   * fail with "host capacity exhausted" even though deleting a box frees
+   * resources. `remove` needs no capacity: a suspended box is deleted as-is
+   * (its RAM snapshot is freed), releasing MORE than it ever costs.
+   * Must treat "the id is already gone" as SUCCESS (idempotent) so gc passes
+   * converge; only a provider-side rejection propagates.
+   * Optional: providers that cannot destroy without a live control-plane
+   * route omit it; callers fall back to `connect()` + `stop()`.
+   */
+  remove?(sandboxId: string): Promise<void>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */

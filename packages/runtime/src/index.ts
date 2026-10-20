@@ -158,6 +158,10 @@ import {
   runIdleReapPass,
   type IdleReapSummary,
 } from "./idle-reaper.js"
+import {
+  DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  startSandboxGcTimer,
+} from "./sandbox-gc.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
@@ -839,6 +843,14 @@ export {
   type IdleReapSummary,
   type IdleReaperRegistry,
 } from "./idle-reaper.js"
+export {
+  DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  startSandboxGcTimer,
+  runSandboxGcPass,
+  type SandboxGcTimer,
+  type SandboxGcPassSummary,
+  type SandboxGcReadDeps,
+} from "./sandbox-gc.js"
 export {
   runCrashDetectPass,
   type CrashDetectSummary,
@@ -4463,6 +4475,37 @@ export async function createGateway(
     idleReapTimer.unref?.()
   }
 
+  // Automatic periodic `sandbox gc` (no-lost-work plan, item (c)): the CLI
+  // command stays operator-driven, but a box whose origin session DIED
+  // (error/killed/exited) bills/idles on the provider until someone runs
+  // `sandbox gc --apply` — and a dead session never will. Reap those rows on
+  // the daemon (1 h cadence, AGENTPROTO_SANDBOX_GC_INTERVAL_MS overrides;
+  // non-positive disables). Capacity-free: the reaper prefers the provider's
+  // `remove` (control-plane destroy, no resume). Unref'd + never overlapped,
+  // same shapes as the reaper above. Always armed (unlike the idle-reaper's
+  // opt-in): it only ever GRAVES boxes whose session is already dead.
+  const rawGcInterval = process.env.AGENTPROTO_SANDBOX_GC_INTERVAL_MS
+  const parsedGcInterval = rawGcInterval ? Number.parseInt(rawGcInterval, 10) : NaN
+  const sandboxGcIntervalMs =
+    Number.isFinite(parsedGcInterval) && parsedGcInterval > 0
+      ? parsedGcInterval
+      : DEFAULT_SANDBOX_GC_INTERVAL_MS
+  let sandboxGcTimer: { stop(): void } | null = null
+  if (sandboxGcIntervalMs > 0) {
+    sandboxGcTimer = startSandboxGcTimer({
+      fetchSessionStatuses: () => {
+        const rows = new Map<string, string>()
+        for (const desc of sessions.list({ includeArchived: true })) {
+          rows.set(desc.id, desc.status)
+        }
+        return rows
+      },
+      resolveProvider: (slug: string) =>
+        (opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore()))(slug),
+    })
+    console.log(`[sandbox-gc] automatic dead-session box gc every ${sandboxGcIntervalMs}ms`)
+  }
+
   // On-disk session retention sweep (session-retention.ts). Deletes terminal
   // session dirs past their age threshold — review lanes after 7 days by
   // default, regular sessions only when `daemon.sessionRetentionDays` is set.
@@ -4794,6 +4837,8 @@ export async function createGateway(
       await sessions.detachSandboxSessions().catch(() => undefined)
       // Stop the idle-reaper sweep before sessions shut down (PR-6).
       if (idleReapTimer) clearInterval(idleReapTimer)
+      // Stop the automatic dead-session-box gc sweep (no-lost-work plan).
+      sandboxGcTimer?.stop()
       if (retentionBootTimer) clearTimeout(retentionBootTimer)
       if (retentionTimer) clearInterval(retentionTimer)
       // Stop the crash-detect sweep before sessions shut down (crash-detect PR-1).

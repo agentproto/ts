@@ -718,6 +718,40 @@ export const computerSandboxProvider: SandboxProvider = {
     if (aliased === sandboxId) return first
     return probeComputer(aliased, probeClientConfigs.get(aliased) ?? fallbackConfig())
   },
+
+  /**
+   * Destroy the computer through the controller WITHOUT resuming it: a
+   * suspended box holds a RAM snapshot, and `connect()` (the old gc/rm
+   * path) would first need capacity to RESUME it before `remove()` could
+   * free that same capacity — on an exhausted host that was a deadlock
+   * (`capacity exhausted (available 511)`). The controller's DELETE frees
+   * the box as-is. An unknown id (404) is success; the box is gone either
+   * way. `force: true` releases whatever sessions this controller records
+   * against it — we are deleting it, nothing can outlive that.
+   */
+  async remove(sandboxId: string): Promise<void> {
+    const fallbackConfig = () =>
+      resolveClientConfig(
+        { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
+        readComputerConfig({ provider: "computer", config: {} }),
+      )
+    for (const id of [sandboxId, resolveAlias(sandboxId)]) {
+      const client = new ComputerControllerClient(probeClientConfigs.get(id) ?? fallbackConfig())
+      try {
+        await client.remove(id, { force: true })
+        // Also prune this process's bookkeeping — the box is gone.
+        for (const [from, to] of idAliases) {
+          if (to === id) idAliases.delete(from)
+        }
+        idAliases.delete(id)
+        probeClientConfigs.delete(id)
+        return
+      } catch (err) {
+        if (err instanceof ComputerApiError && err.status === 404) continue
+        throw err
+      }
+    }
+  },
 }
 
 async function bootOnClient(

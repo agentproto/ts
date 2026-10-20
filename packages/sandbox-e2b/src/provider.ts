@@ -844,6 +844,21 @@ export const e2bSandboxProvider: SandboxProvider = {
       throw err
     }
   },
+
+  /**
+   * Destroy the sandbox through its control plane — no `connect()`, so an
+   * already-dead or paused box is reaped without touching its state. An
+   * already-gone id is success (the box this was asked to remove doesn't
+   * exist; the SIDE EFFECTS of removing it — the slot freed — are achieved).
+   */
+  async remove(sandboxId: string): Promise<void> {
+    try {
+      await Sandbox.kill(sandboxId, { apiKey: process.env.E2B_API_KEY })
+    } catch (err) {
+      if (err instanceof SandboxNotFoundError) return
+      throw err
+    }
+  },
 }
 
 /** Tail of `connect` — surface e2b's private-traffic token (when asked) and

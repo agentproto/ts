@@ -548,6 +548,18 @@ async function stopLedgerBox(entry: SandboxLedgerEntry): Promise<string | undefi
     return `provider "${entry.provider}" could not be resolved — ${err instanceof Error ? err.message : String(err)}`
   }
   if (!handle) return `provider "${entry.provider}" not found — check \`list_sandbox_providers\`.`
+  // Preferred path: a control-plane destroy WITHOUT connecting. Connecting
+  // to a suspended computer RESUMES it first — needing free RAM to free RAM
+  // (the observed `capacity exhausted (available 511)` on `sandbox rm
+  // --box`). `remove` deletes the box as-is; already-gone is success.
+  if (handle.provider.remove) {
+    try {
+      await handle.provider.remove(entry.sandboxId)
+      return undefined
+    } catch (err) {
+      return `removing sandbox "${entry.sandboxId}" failed — ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
   if (!handle.provider.connect) {
     return `provider "${entry.provider}" has no connect() — cannot reach the existing box to stop it.`
   }

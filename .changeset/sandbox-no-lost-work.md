@@ -1,6 +1,7 @@
 ---
 "@agentproto/runtime": patch
 "@agentproto/sandbox": patch
+"@agentproto/cli": patch
 "@agentproto/sandbox-e2b": patch
 "@agentproto/sandbox-computer": patch
 "@agentproto/sandbox-box": patch
