@@ -879,3 +879,40 @@ surface for both. No new event names, no new queue, no new event system — the
    non-blocking guarantees (§8.1); a standalone AIP waits until hooks can be
    user-authored code (AIP-40's parked sibling) — rollout starts config-only
    for the Pygmalion brain's delegations.
+
+---
+
+## 12. Decision needed (Jeremy)
+
+Two decisions block nothing except the amendment text and phase 1 — the
+design doc can keep landing as is.
+
+**1) New AIP vs amendment.** The doc's verdict (§8): **one short amendment
+to AIP-46** (the §8.1 draft is paste-ready), not a new AIP — every vocabulary
+piece (AIP-37 events, AIP-42 `on:`, AIP-41 `schedule.kind: event`, AIP-60
+`match`, AIP-68 budget) is already canonical; the two genuinely new
+normative statements — the never-interrupt/never-block delivery-and-run
+guarantees for daemon-authored enrichment — are statements about the
+AIP-46 session surface. The one thing to confirm: that this stays a
+**pending** `HOOK.md` doctype (like `memory`) and consumes no AIP number
+until user-authored hook *code* (AIP-40's parked sibling) forces a real
+spec — if you want that numbered later, it is a candidate AIP-69.
+
+**2) v1 scope — to freeze now:**
+- **In:** the daemon dispatcher + `withToolHooks` proxy (§9.1) with the three
+  delivery arms from existing primitives (queue append, `fyi`
+  prepend-to-prompt, `attach-to-task-meta`); config-only hooks in
+  `~/.agentproto/config.json` (hot, killable); one bundled enricher
+  — `prior-art` — shipped **deterministic-only** (\`maxLlmCalls: 0\`), on
+  Pygmalion/delegations first (phase 1) and opt-in free-model summary later
+  (phase 2); in-memory module-scope dedup (survives per-request server
+  rebuild, resets on daemon restart).
+- **Out of v1:** `sync` mode shipped (the bounded exception is specced, not
+  built), `hook_list` tool, `spec-echo` / `security-check` enrichers,
+  workspace `HOOK.md` loading, user/agent-authored enrichment scripts, and
+  the clerk unification beyond keeping the shared shapes from §10 (clerk
+  triggers join `fireExternal` in v2/v3).
+
+**Asks:** (a) confirm "amendment, not new AIP"; (b) confirm the v1 scope
+above and that phase 1 stays deterministic-only; (c) name the reviewer for
+the §8.1 amendment text.
