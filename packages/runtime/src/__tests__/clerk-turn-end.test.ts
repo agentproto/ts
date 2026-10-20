@@ -1,5 +1,5 @@
 /**
- * `clerk-turn-end` — the AIP-68 clerk pass that runs after a turn ends.
+ * `clerk-turn-end` - the AIP-68 clerk pass that runs after a turn ends.
  *
  * Covers the four invariants (debounce, single-flight, fire-and-forget,
  * disabled by default), what the clerk ignores (its own sessions, empty
@@ -76,7 +76,7 @@ describe("clerk-turn-end controller", () => {
     vi.advanceTimersByTime(5 * MIN)
     bus.emit(turnEnd("sess_1"))
     vi.advanceTimersByTime(5 * MIN)
-    // The second turn-end restarted the window — no pass yet.
+    // The second turn-end restarted the window - no pass yet.
     expect(runPass).not.toHaveBeenCalled()
     vi.advanceTimersByTime(10 * MIN)
     await vi.waitFor(() => expect(runPass).toHaveBeenCalledTimes(1))
@@ -234,7 +234,7 @@ describe("clerk-turn-end controller", () => {
   })
 })
 
-describe("clerk hook configuration — three levels, most specific wins", () => {
+describe("clerk hook configuration - three levels, most specific wins", () => {
   it("is disabled by default, with a 10-minute debounce and the steward routine", () => {
     const resolved = resolveClerkHookConfig({})
     expect(resolved.config.enabled).toBe(false)
@@ -258,7 +258,7 @@ describe("clerk hook configuration — three levels, most specific wins", () => 
       workspace: { enabled: true },
     })
     expect(resolved.config.enabled).toBe(true)
-    // The daemon's debounce is NOT reset by the workspace's `enabled` — the
+    // The daemon's debounce is NOT reset by the workspace's `enabled` - the
     // merge is per field.
     expect(resolved.config.debounceMs).toBe(60_000)
     expect(resolved.sources.enabled).toBe("workspace")

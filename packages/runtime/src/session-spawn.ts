@@ -1550,7 +1550,7 @@ export interface SpawnAgentSessionInput {
    *  here (`resolveTurnRetryPolicy`) before it lands on the descriptor.
    *  Omitted ⇒ no automatic retry. */
   turnRetry?: TurnRetryInput
-  /** AIP-68 clerk hook configuration — the AGENT level of the three-level
+  /** AIP-68 clerk hook configuration - the AGENT level of the three-level
    *  resolution (agent > workspace > daemon default). Either the
    *  `agent_start.hooks.clerk` option or the agent manifest's
    *  `metadata.hooks.clerk`; the explicit option wins over the manifest.
@@ -2622,14 +2622,14 @@ export async function spawnAgentSession(
       ...(input.skills === undefined && d.skills !== undefined ? { skills: d.skills } : {}),
       ...(input.allowTools === undefined && d.tools !== undefined ? { allowTools: d.tools } : {}),
       // The manifest's AGENT-level clerk hook (`metadata.hooks.clerk`),
-      // unless the caller stated one explicitly — the explicit
+      // unless the caller stated one explicitly - the explicit
       // `agent_start.hooks.clerk` option wins.
       ...(input.hooks === undefined && d.hooks !== undefined ? { hooks: d.hooks } : {}),
     }
     if (d.warnings.length > 0) spawnWarnings.push(...d.warnings)
   }
   // The AGENT level of the clerk hook, resolved once and recorded on the
-  // descriptor (`clerkHook`) — the daemon's clerk-turn-end controller
+  // descriptor (`clerkHook`) - the daemon's clerk-turn-end controller
   // resolves it against the workspace and daemon levels per session.
   const clerkHook = parseAgentClerkHook({ hooks: input.hooks })
   if (input.sandbox === undefined && !appBoundary) {

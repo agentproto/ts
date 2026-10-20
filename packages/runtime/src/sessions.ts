@@ -1770,7 +1770,7 @@ export interface SessionDescriptor {
   /** The AGENT level of the AIP-68 clerk hook (`agent_start.hooks.clerk`,
    *  or the agent manifest's `metadata.hooks.clerk`). Recorded verbatim so
    *  the clerk-turn-end controller can resolve the three-level
-   *  configuration (agent > workspace > daemon default) per session — see
+   *  configuration (agent > workspace > daemon default) per session - see
    *  `clerk-hook-config.ts`. Absent ⇒ this session contributes no agent
    *  level, and the less specific level applies. */
   clerkHook?: Partial<ClerkHookConfig>
@@ -5378,7 +5378,7 @@ export interface SpawnAgentInput {
   /** Opt-in turn-retry policy (`turn-retry.ts`), recorded verbatim onto
    *  {@link SessionDescriptor.turnRetry}. Absent ⇒ no automatic retry. */
   turnRetry?: TurnRetryPolicy
-  /** The AGENT level of the AIP-68 clerk hook — recorded verbatim onto
+  /** The AGENT level of the AIP-68 clerk hook - recorded verbatim onto
    *  {@link SessionDescriptor.clerkHook}. Absent ⇒ this session contributes
    *  no agent level and the less specific level applies. */
   clerkHook?: Partial<ClerkHookConfig>

@@ -1,5 +1,5 @@
 /**
- * What a clerk pass actually LAUNCHES — the routine arm and the command arm
+ * What a clerk pass actually LAUNCHES - the routine arm and the command arm
  * of `ClerkHookRun`.
  *
  * Both arms are fire-and-forget by construction: the runner returns as

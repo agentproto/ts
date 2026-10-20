@@ -1,11 +1,11 @@
 /**
- * `clerk` hook configuration — the AIP-68 "clerk pass" that runs after a
+ * `clerk` hook configuration - the AIP-68 "clerk pass" that runs after a
  * session's turn ends.
  *
  * ## WHAT THIS IS
  *
  * The clerk (AIP-68) is the daemon-side steward/secretary: when a session
- * finishes a turn, the daemon may — after an idle debounce — run ONE clerk
+ * finishes a turn, the daemon may - after an idle debounce - run ONE clerk
  * pass over that session's context. The pass is what the hook decides to
  * launch, and the hook is DISABLED by default: a daemon that never heard of
  * AIP-68 must not start running extra passes on its own.
@@ -19,15 +19,15 @@
  *      else the built-in default: `enabled:false`, a 10-minute debounce and
  *      the `steward` routine;
  *   2. the WORKSPACE level (`.agentproto/hooks.json` → `hooks.clerk`, the
- *      same file that already carries the semantic hook rules — see
+ *      same file that already carries the semantic hook rules - see
  *      `hooks-config.ts`);
- *   3. the AGENT level (the agent's manifest, or an `agent_start` option) —
+ *   3. the AGENT level (the agent's manifest, or an `agent_start` option) -
  *      the most specific, so it always wins.
  *
  * The merge is PER FIELD, not per object: an agent that only sets
  * `enabled:true` still inherits the workspace's `debounceMs` and `run`.
  * A field is only overridden when the more specific level actually states
- * it — an absent (or `null`) field never resets a less specific value.
+ * it - an absent (or `null`) field never resets a less specific value.
  *
  * ## VOCABULARY (PR #2142)
  *
@@ -56,7 +56,7 @@ import { resolve } from "node:path"
 
 import { z } from "zod"
 
-/** The event a clerk hook can be bound to. v1: turn-end only — the pass is
+/** The event a clerk hook can be bound to. v1: turn-end only - the pass is
  *  an AFTER-TURN reaction, and `on: "turn_end"` is the PR #2142 spelling. */
 export const CLERK_HOOK_EVENTS = ["turn_end"] as const
 export type ClerkHookEvent = (typeof CLERK_HOOK_EVENTS)[number]
@@ -80,18 +80,18 @@ export interface ClerkHookRun {
 }
 
 /** One clerk-hook configuration level (a partial view of the resolved
- *  configuration — every field optional). */
+ *  configuration - every field optional). */
 export interface ClerkHookConfig {
   /** Whether the hook fires at all. The built-in default is `false`. */
   enabled: boolean
   /** The event this hook is bound to. v1: `"turn_end"`. */
   on: ClerkHookEvent
-  /** Idle debounce before the pass runs (ms). Default 10 minutes — the
+  /** Idle debounce before the pass runs (ms). Default 10 minutes - the
    *  AIP-68 §3.6 idle-pause. */
   debounceMs: number
   /** What the pass launches. */
   run: ClerkHookRun
-  /** Sessions this hook never touches — session ids, labels or agent ids. */
+  /** Sessions this hook never touches - session ids, labels or agent ids. */
   exclude?: string[]
 }
 
@@ -105,7 +105,7 @@ export const CLERK_HOOK_DEFAULTS: ClerkHookConfig = {
   run: { routine: "steward" },
 }
 
-/** Where a resolved field came from — used for diagnostics and tests. */
+/** Where a resolved field came from - used for diagnostics and tests. */
 export type ClerkHookSource = "default" | "daemon" | "workspace" | "agent"
 
 export interface ResolvedClerkHookConfig {
@@ -135,7 +135,7 @@ export const clerkHookInputSchema = z.object({
   exclude: z.array(z.string().min(1)).optional(),
 })
 
-/** The `agent_start`'s `hooks` object — the agent level of the hook config.
+/** The `agent_start`'s `hooks` object - the agent level of the hook config.
  *  `hooks.clerk` is the clerk hook; a generic `hooks` object (the PR
  *  #2142 vocabulary: `hooks.enabled`, `on: "turn_end"`) is accepted too and
  *  applies to the clerk hook when no `hooks.clerk` is given. */
@@ -151,7 +151,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /** Parse ONE configuration level into a partial config. Tolerant: unknown
- *  keys are ignored, malformed values are dropped (never throw — a broken
+ *  keys are ignored, malformed values are dropped (never throw - a broken
  *  config file must not take the daemon down). */
 export function parseClerkHookLevel(raw: unknown): Partial<ClerkHookConfig> {
   if (!isRecord(raw)) return {}
@@ -271,7 +271,7 @@ let workspaceHookCache: WorkspaceHookCacheEntry | null = null
  * and it also carries the `hooks` section. Both the generic `hooks` object
  * and the namespaced `hooks.clerk` object are accepted (PR #2142's
  * vocabulary); the namespaced one wins. Missing file ⇒ no workspace level
- * (the daemon level applies). A malformed file is logged and ignored — the
+ * (the daemon level applies). A malformed file is logged and ignored - the
  * hook simply stays at the less specific level.
  */
 export function loadWorkspaceClerkHook(workspace: string): Partial<ClerkHookConfig> {
@@ -341,7 +341,7 @@ export function parseAgentClerkHook(raw: unknown): Partial<ClerkHookConfig> {
 }
 
 /** True when the file at `<workspace>/.agentproto/hooks.json` exists and
- *  carries a `hooks` section — used by diagnostics/tests. */
+ *  carries a `hooks` section - used by diagnostics/tests. */
 export function workspaceHasHooksFile(workspace: string): boolean {
   const path = resolve(workspace, HOOKS_CONFIG_REL)
   if (!existsSync(path)) return false

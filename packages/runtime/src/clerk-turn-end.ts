@@ -1,5 +1,5 @@
 /**
- * `clerk-turn-end` — the daemon subscriber that runs ONE clerk pass
+ * `clerk-turn-end` - the daemon subscriber that runs ONE clerk pass
  * (AIP-68, steward/secretary) after a session's turn ends.
  *
  * ## WHY IT EXISTS
@@ -8,28 +8,28 @@
  * the session-event bus). A clerk pass is what turns that knowledge into
  * housekeeping: the steward/secretary looks at the session's context and
  * decides whether it is done, stuck, or needs a nudge. Doing that on EVERY
- * turn-end would be both wasteful and wrong — most turns are followed by
- * another turn within seconds — so the pass is DEBOUNCED on the session's
+ * turn-end would be both wasteful and wrong - most turns are followed by
+ * another turn within seconds - so the pass is DEBOUNCED on the session's
  * idle time (AIP-68 §3.6: a 10-minute idle-pause by default).
  *
  * ## THE FOUR INVARIANTS
  *
- *   1. DEBOUNCED — one pass per session per idle window. Every turn-end
+ *   1. DEBOUNCED - one pass per session per idle window. Every turn-end
  *      RESTARTS the session's timer; the pass runs only once the session
  *      has been quiet for `debounceMs` (10 min by default).
- *   2. SINGLE-FLIGHT — never two passes on the SAME session at the same
+ *   2. SINGLE-FLIGHT - never two passes on the SAME session at the same
  *      time. A pass that is still running when the timer fires makes that
  *      firing a no-op (the next turn-end re-arms the timer).
- *   3. FIRE-AND-FORGET — the pass is launched and NOT awaited. The bus
+ *   3. FIRE-AND-FORGET - the pass is launched and NOT awaited. The bus
  *      handler returns in microseconds; a slow (or hanging) pass can never
  *      slow a turn down, let alone block it.
- *   4. DISABLED BY DEFAULT — the resolved configuration's `enabled` decides;
+ *   4. DISABLED BY DEFAULT - the resolved configuration's `enabled` decides;
  *      with nothing configured the hook never fires.
  *
  * ## WHAT THE CLERK IGNORES
  *
  *   - its OWN sessions: the sessions the clerk itself runs in (the pass's
- *     own session, and anything the caller marks as a clerk session) — a
+ *     own session, and anything the caller marks as a clerk session) - a
  *     clerk must never grade its own homework;
  *   - EMPTY turns (`session:turn-end` with `empty: true`): a turn that
  *     produced no assistant output and no tool call is not a session that
@@ -41,7 +41,7 @@
  *
  * ## CONFIGURATION
  *
- * Three levels, most specific wins, resolved per field — see
+ * Three levels, most specific wins, resolved per field - see
  * `clerk-hook-config.ts` for the shapes and the precedence table.
  */
 
@@ -50,7 +50,7 @@ import type { ClerkHookConfig } from "./clerk-hook-config.js"
 
 /** The slice of a session descriptor this controller reads. Structural on
  *  purpose: the controller never imports `sessions.ts` (that would be an
- *  import cycle — `sessions.ts` owns the registry). */
+ *  import cycle - `sessions.ts` owns the registry). */
 export interface ClerkSessionLike {
   id: string
   kind?: string
@@ -88,7 +88,7 @@ export interface ClerkTurnEndControllerOptions {
    */
   runPass: (input: ClerkPassInput) => Promise<unknown> | unknown
   /**
-   * Sessions the clerk must ignore — its OWN sessions (the pass's own
+   * Sessions the clerk must ignore - its OWN sessions (the pass's own
    * session, the clerk's helper sessions). Ids only.
    */
   selfSessionIds?: Iterable<string>
@@ -104,9 +104,9 @@ export interface ClerkTurnEndControllerOptions {
 
 export interface ClerkTurnEndController {
   dispose(): void
-  /** Sessions with a pending (debounced) pass — for diagnostics/tests. */
+  /** Sessions with a pending (debounced) pass - for diagnostics/tests. */
   pendingIds(): string[]
-  /** Sessions with a pass currently running — for diagnostics/tests. */
+  /** Sessions with a pass currently running - for diagnostics/tests. */
   inFlightIds(): string[]
 }
 
@@ -160,7 +160,7 @@ export function createClerkTurnEndController(
   async function fire(session: ClerkSessionLike, config: ClerkHookConfig): Promise<void> {
     const id = session.id
     if (inFlight.has(id)) {
-      // SINGLE-FLIGHT — a pass for this session is already running. The
+      // SINGLE-FLIGHT - a pass for this session is already running. The
       // next turn-end re-arms the timer; nothing to do here.
       return
     }
@@ -184,7 +184,7 @@ export function createClerkTurnEndController(
     if (config.on !== "turn_end") return
     // The clerk never grades its own homework.
     if (selfSessionIds.has(session.id)) return
-    // Not an agent session — nothing to steward.
+    // Not an agent session - nothing to steward.
     if (session.kind !== undefined && session.kind !== "agent-cli") return
     // An empty turn (no output, no tool call) is not worth a pass.
     if (ev.empty === true) return

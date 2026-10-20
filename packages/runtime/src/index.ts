@@ -388,7 +388,7 @@ export {
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { createActivityProjector } from "./activities.js"
-// AIP-68 clerk hook — the turn-end subscriber + its configuration
+// AIP-68 clerk hook - the turn-end subscriber + its configuration
 // resolution (three levels: agent > workspace > daemon default).
 export {
   createClerkTurnEndController,
@@ -2936,11 +2936,11 @@ export async function createGateway(
     dispatchTool,
   })
 
-  // AIP-68 clerk hook — a daemon subscriber that runs ONE clerk pass
+  // AIP-68 clerk hook - a daemon subscriber that runs ONE clerk pass
   // (steward/secretary) after a session's turn ends, debounced on the
   // session's idle time (10 min by default), single-flight per session and
   // fire-and-forget: the pass can never slow a turn down. DISABLED unless
-  // configured — the three levels (agent > workspace > daemon default) are
+  // configured - the three levels (agent > workspace > daemon default) are
   // resolved per session; see `clerk-hook-config.ts`.
   const clerkTurnEnd = createClerkTurnEndController({
     registry: sessions,

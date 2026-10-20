@@ -95,7 +95,7 @@ export interface AgentManifestSpawnDefaults {
   readonly tools?: string[]
   /** The manifest's AGENT level of the AIP-68 clerk hook, read from the
    *  manifest's `metadata.hooks.clerk`. Undefined when the manifest states
-   *  none — the less specific levels (workspace, daemon) then apply. */
+   *  none - the less specific levels (workspace, daemon) then apply. */
   readonly hooks?: { clerk?: Partial<ClerkHookConfig> }
   readonly warnings: string[]
 }
@@ -176,7 +176,7 @@ async function projectionCapsFor(
 /**
  * Read the AGENT level of the AIP-68 clerk hook out of a manifest's
  * `metadata` (`metadata.hooks.clerk`). Undefined when the manifest states
- * none — the manifest's `metadata` is the namespaced home for
+ * none - the manifest's `metadata` is the namespaced home for
  * daemon-specific settings (the AIP-42 frontmatter has no free-form
  * top-level key).
  */
