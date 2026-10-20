@@ -150,6 +150,22 @@ function formatPostureForSpawn(
  * `checkpointId`; the new descriptor gets `continuedFrom` and
  * `checkpointId`.
  */
+
+/**
+ * Label for a fresh continuation: `foo` -> `foo (continued)` -> `foo (continued 2)` -> `foo (continued 3)`.
+ * Strips any earlier suffix (including the legacy repeated `(continued) (continued)` form) so the
+ * label never grows with each generation.
+ */
+export function continuedLabel(label: string): string {
+  const suffix = /(?:\s\(continued(?:\s(\d+))?\))+$/
+  const match = label.match(suffix)
+  if (!match) return `${label} (continued)`
+  const legacyRepeats = (match[0].match(/\(continued/g) ?? []).length
+  const previous = match[1] ? Number(match[1]) : legacyRepeats
+  const base = label.slice(0, label.length - match[0].length)
+  return `${base} (continued ${previous + 1})`
+}
+
 export async function continueAgentSessionFresh(
   deps: SpawnAgentSessionDeps,
   prev: SessionDescriptor,
@@ -212,8 +228,8 @@ export async function continueAgentSessionFresh(
     posture: formatPostureForSpawn(prev),
     contextProfile: prev.contextProfile,
     mcpServers: stripOwnCallerStamp(prev.mcpServers, prev.id),
-    label: prev.label ? `${prev.label} (continued)` : undefined,
-    title: prev.title ? `${prev.title} (continued)` : undefined,
+    label: prev.label ? continuedLabel(prev.label) : undefined,
+    title: prev.title ? continuedLabel(prev.title) : undefined,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,
     prompt: renderCheckpointPrompt(checkpoint),
     // Preserve lineage so the fresh session nests under the same parent
