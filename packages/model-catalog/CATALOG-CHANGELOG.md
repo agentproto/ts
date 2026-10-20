@@ -404,3 +404,24 @@ for that.
 ### llm:huggingface
 - Added: CohereLabs/c4ai-command-r7b-arabic-02-2025, deepseek-ai/DeepSeek-V4.1-Flash-1017, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8
 - Removed: XiaomiMiMo/MiMo-V2.6-Pro-RL, zai-org/GLM-5.1
+
+## 2026-10-20
+
+### llm:openrouter
+- Added: inception/mercury-3
+- Removed: google/gemini-2.5-flash:batch, google/gemini-2.5-pro:batch
+
+### llm:requesty
+- Added: melious/deepseek-v4.1-flash-1017, minimaxi/minimax-m3.1-flash
+
+### llm:opencode-go
+- Added: opencode-go/minimax-m3.1-flash-free
+- Removed: opencode-go/space-bunny
+
+### llm:opencode-zen
+- Added: opencode/minimax-m3.1-flash-free
+- Removed: opencode/space-bunny-free
+
+### llm:huggingface
+- Added: BSC-LT/ALIA-40b-instruct-2606, XiaomiMiMo/MiMo-V2.6-Pro-RL, aisingapore/Nemotron-SEA-LION-v4.8-120B-A12B, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-v1.5-70B, zai-org/GLM-5.1, zai-org/GLM-5.1-FP8
+- Removed: CohereLabs/command-a-plus-05-2026-bf16, CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, Qwen/Qwen3-Coder-30B-A3B-Instruct, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8
