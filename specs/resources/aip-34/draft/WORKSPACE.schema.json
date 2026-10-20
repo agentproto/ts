@@ -49,6 +49,10 @@
       "$ref": "#/$defs/workRef",
       "description": "AIP-20 WORK.md block. Optional — when present, this node's status/board is tracked there (items are AIP-18 ITEM.md records under the collection(s) WORK.md declares), not in a flat status file. Same inline/ref/file union shape as `code`."
     },
+    "presence": {
+      "$ref": "#/$defs/presenceRef",
+      "description": "PRESENCE.md block (presence/v1, see AIP-34 §Presence block). Optional. How this node speaks in public: audience, topics, forbidden words, channels, cadence, approval. Same inline/ref/file union as `work`; a `file` is path-confined."
+    },
     "identity": { "$ref": "#/$defs/identityRefBlock" },
     "wall": {
       "enum": ["shared", "isolated", "sealed", "hard"],
@@ -349,6 +353,28 @@
           "required": ["file"],
           "additionalProperties": false,
           "properties": { "file": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
+    "presenceRef": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["inline"],
+          "additionalProperties": false,
+          "properties": { "inline": { "type": "object" } }
+        },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": false,
+          "properties": { "ref": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": false,
+          "properties": { "file": { "$ref": "#/$defs/safeRelativePath" } }
         }
       ]
     },

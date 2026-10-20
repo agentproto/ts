@@ -343,6 +343,11 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
    *  `BootedSandbox.ports` so the runtime can record them on the session
    *  descriptor without reaching into the booted handle after the fact. */
   ports?: Record<number, string>
+  /** The egress address brokered for the box — forwarded from
+   *  `BootedSandbox.egressIp` so a caller can record it without reaching
+   *  into the booted handle after the fact. Absent when the provider has no
+   *  egress-IP concept. */
+  egressIp?: BootedSandbox["egressIp"]
   /** The paired host's resolved fingerprint — forwarded from
    *  `BootedSandbox.device`, present only for the `device` provider
    *  (BOOTSTRAP P7a's `hostFingerprint` source). */
@@ -435,6 +440,7 @@ export async function createSandboxAgentSessionHost(
     sandboxId: booted.sandboxId,
     ...(headers ? { authHeaders: headers } : {}),
     ...(booted.ports ? { ports: booted.ports } : {}),
+    ...(booted.egressIp !== undefined ? { egressIp: booted.egressIp } : {}),
     ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
     ...(booted.exec ? { exec: booted.exec.bind(booted) } : {}),
     ...(booted.readFile ? { readFile: booted.readFile.bind(booted) } : {}),

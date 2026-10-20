@@ -330,7 +330,10 @@ function mapControllerError(err: unknown): unknown {
   if (code === undefined) return err
 
   if (code === "sandbox_capacity") {
-    const resource = err.resource !== undefined ? ` for resource "${err.resource}"` : ""
+    // The controller's `resource` is not part of the stable contract: only
+    // the two values it actually sizes ("memory" and "cpus") are usable in a
+    // message; anything else is reported as unknown.
+    const resource = err.resource === "memory" || err.resource === "cpus" ? err.resource : "unknown"
     const amounts =
       err.requested !== undefined || err.available !== undefined
         ? ` (requested ${err.requested ?? "unknown"}, available ${err.available ?? "unknown"})`
@@ -341,7 +344,7 @@ function mapControllerError(err: unknown): unknown {
         : ""
     return new ComputerSandboxError(
       code,
-      `computer sandbox: host capacity exhausted${resource}${amounts}${retry}`,
+      `computer sandbox: host capacity exhausted for resource "${resource}"${amounts}${retry}`,
       {
         status: err.status,
         resource: err.resource,
@@ -652,7 +655,12 @@ export const computerSandboxProvider: SandboxProvider = {
     const clientConfig = resolveClientConfig(spec, base)
     const config = applyDaemonRoute(base, clientConfig)
     const client = new ComputerControllerClient(clientConfig)
-    const booted = await connectForExecOnClient(client, sandboxId, config)
+    let booted: BootedSandbox
+    try {
+      booted = await connectForExecOnClient(client, sandboxId, config)
+    } catch (err) {
+      throw mapControllerError(err)
+    }
     probeClientConfigs.set(booted.sandboxId, clientConfig)
     return booted
   },
@@ -743,25 +751,10 @@ async function bootOnClient(
     throw err
   }
 
-  const createdEgressIp = readEgressIp((created as Record<string, unknown>).egressIp)
-  const statusEgressIp = readEgressIp((status as Record<string, unknown>).egressIp)
-  const egressIp = createdEgressIp !== undefined ? createdEgressIp : statusEgressIp
+  const egressIp = created.egressIp !== undefined ? created.egressIp : status.egressIp
 
   acquireSessionSlot(sandboxId, config.maxSessions ?? 1)
   return wrapBox(client, sandboxId, spec, config, port, published, daemonToken, egressIp)
-}
-
-/** Read the controller's `egressIp` field: `undefined` when the controller
- *  is older and omits it, `null` when it explicitly reports no dedicated
- *  address, otherwise the `{ id, publicIp }` object. Malformed values are
- *  treated as absent rather than trusted. */
-function readEgressIp(value: unknown): { id: string; publicIp: string } | null | undefined {
-  if (value === undefined) return undefined
-  if (value === null) return null
-  if (typeof value !== "object") return undefined
-  const record = value as Record<string, unknown>
-  if (typeof record.id !== "string" || typeof record.publicIp !== "string") return undefined
-  return { id: record.id, publicIp: record.publicIp }
 }
 
 /** Resolve an existing computer to a running id (resuming when suspended and
@@ -779,7 +772,7 @@ async function resolveRunningComputer(
   // rebuild it under a NEW id — adopt it, remember the alias.
   let currentId = sandboxId
   let published: readonly PortPublish[] = status.ports ?? []
-  let egressIp = readEgressIp((status as Record<string, unknown>).egressIp)
+  let egressIp = status.egressIp
   if (status.state !== "running") {
     const resumeResult = await client.resume(sandboxId)
     const targetId = resumeResult.id ?? sandboxId
@@ -787,8 +780,7 @@ async function resolveRunningComputer(
     currentId = targetId
     const running = await waitRunning(client, currentId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
     published = running.ports ?? []
-    const runningEgressIp = readEgressIp((running as Record<string, unknown>).egressIp)
-    if (runningEgressIp !== undefined) egressIp = runningEgressIp
+    if (running.egressIp !== undefined) egressIp = running.egressIp
   }
   if (config.gatewayUrl?.includes("{hostPort}") && !published.some((p) => p.guest === port)) {
     published = await recoverPublishedPort(client, currentId, port, published)

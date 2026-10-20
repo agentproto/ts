@@ -44,7 +44,25 @@ export class ComputerSandboxError extends Error {
   }
 }
 
-/** Structural check that works across package boundaries and with mocks. */
+const COMPUTER_SANDBOX_ERROR_CODES = new Set<ComputerSandboxErrorCode>([
+  "sandbox_egress_pool_unavailable",
+  "sandbox_egress_pool_exhausted",
+  "sandbox_egress_slot_dedicated",
+  "sandbox_egress_slot_unknown",
+  "sandbox_capacity",
+])
+
+/** Structural check that works across package boundaries and with mocks:
+ *  `instanceof` is a fast path for errors from this exact module instance,
+ *  but the name + a known `code` also recognises a duplicate install or a
+ *  plain object shaped like the error. */
 export function isComputerSandboxError(err: unknown): err is ComputerSandboxError {
-  return err instanceof ComputerSandboxError
+  if (err instanceof ComputerSandboxError) return true
+  if (typeof err !== "object" || err === null) return false
+  const candidate = err as { name?: unknown; code?: unknown }
+  return (
+    candidate.name === "ComputerSandboxError" &&
+    typeof candidate.code === "string" &&
+    COMPUTER_SANDBOX_ERROR_CODES.has(candidate.code as ComputerSandboxErrorCode)
+  )
 }

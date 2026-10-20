@@ -44,7 +44,8 @@
       "properties": {
         "timeout_ms": { "type": "integer", "minimum": 1 },
         "memory_mb": { "type": "integer", "minimum": 1 },
-        "cpu_ms": { "type": "integer", "minimum": 1 }
+        "cpu_ms": { "type": "integer", "minimum": 1 },
+        "cpus": { "type": "number", "minimum": 0.1, "description": "vCPUs, may be fractional (AIP-36 v1.3). Provider config-level cpus maps onto this." }
       },
       "description": "Resource caps per command."
     },
@@ -77,9 +78,9 @@
         },
         "egressIp": {
           "type": "string",
-          "minLength": 1,
           "pattern": "^(shared|auto|dedicated|[a-z0-9]{1,8})$",
-          "description": "Egress IP selection for providers that broker shared or dedicated public addresses: \"shared\" (default), \"auto\", \"dedicated\", or a 1-8 character lowercase alphanumeric pool slot id. Provider config wins over this spec-level value; setting both to different values is an error."
+          "default": "shared",
+          "description": "Public source address for outbound traffic (AIP-36 v1.3): shared | auto | dedicated | pool slot id. A provider without an address pool MUST refuse any value other than shared with sandbox_egress_pool_unavailable."
         }
       }
     },

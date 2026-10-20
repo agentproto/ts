@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { SandboxSpec } from "@agentproto/sandbox"
 import { computerSandboxProvider } from "../provider.js"
-import { ComputerSandboxError } from "../errors.js"
+import { ComputerSandboxError, isComputerSandboxError } from "../errors.js"
 import { FakeController } from "./fake-controller.js"
 
 const SERVICE_TOKEN = "svc-secret-egress-0123456789abcdef"
@@ -128,6 +128,55 @@ describe("computerSandboxProvider egressIp", () => {
     expect((err as Error).message).not.toContain(SERVICE_TOKEN)
   })
 
+  it("recognises a structural ComputerSandboxError from another install or a mock", () => {
+    const plain = { name: "ComputerSandboxError", code: "sandbox_capacity", message: "nope" }
+    expect(isComputerSandboxError(plain)).toBe(true)
+    expect(isComputerSandboxError({ name: "ComputerSandboxError", code: "not_a_code" })).toBe(false)
+    expect(isComputerSandboxError(new Error("ordinary"))).toBe(false)
+    expect(isComputerSandboxError(null)).toBe(false)
+  })
+
+  it("maps a 503 host-capacity on the exec-connect path to sandbox_capacity", async () => {
+    controller.options.egressIp = EGRESS_IP
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+
+    controller.options.statusStatus = 503
+    controller.options.statusError = "host-capacity"
+    controller.options.statusErrorExtra = { resource: "memory", requested: 8192, available: 2048 }
+    controller.options.statusRetryAfter = "5"
+
+    const err = await computerSandboxProvider
+      .connectForExec!(booted.sandboxId, spec(controller.url), bootOpts)
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ComputerSandboxError)
+    expect(err).toMatchObject({
+      code: "sandbox_capacity",
+      status: 503,
+      resource: "memory",
+      requested: 8192,
+      available: 2048,
+      retryAfterMs: 5_000,
+    })
+  })
+
+  it("updates egressIp from the resumed row when connect resumes a suspended computer", async () => {
+    controller.options.egressIp = EGRESS_IP
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 99 }), bootOpts)
+    await booted.pause!()
+
+    const resumed = { id: "slot-b", publicIp: "203.0.113.11" }
+    controller.options.egressIpAfterResume = resumed
+    const again = await computerSandboxProvider.connect!(
+      booted.sandboxId,
+      spec(controller.url, { maxSessions: 99 }),
+      bootOpts,
+    )
+    expect(controller.resumed).toEqual([booted.sandboxId])
+    expect(again.sandboxId).not.toBe(booted.sandboxId)
+    expect(again.egressIp).toEqual(resumed)
+    await again.stop()
+  })
+
   it("maps host-capacity with its details and Retry-After to sandbox_capacity", async () => {
     controller.options.createStatus = 503
     controller.options.createError = "host-capacity"
@@ -146,6 +195,18 @@ describe("computerSandboxProvider egressIp", () => {
       available: 1,
       retryAfterMs: 12_000,
     })
+    expect((err as Error).message).toContain('for resource "unknown"')
     expect((err as Error).message).not.toContain(SERVICE_TOKEN)
+  })
+
+  it.each(["memory", "cpus"])("keeps the controller's real resource %s in the capacity message", async (resource) => {
+    controller.options.createStatus = 503
+    controller.options.createError = "host-capacity"
+    controller.options.createErrorExtra = { resource, requested: 4, available: 1 }
+
+    const err = await computerSandboxProvider.boot(spec(controller.url, { egressIp: "auto" }), bootOpts).catch(
+      (e: unknown) => e,
+    )
+    expect((err as Error).message).toContain(`for resource "${resource}"`)
   })
 })

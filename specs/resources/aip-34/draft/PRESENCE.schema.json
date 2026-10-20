@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-34/PRESENCE.schema.json",
+  "title": "PRESENCE.md frontmatter (AIP-34, presence/v1)",
+  "description": "Validates the YAML frontmatter of a presence/v1 document: the editorial and channel policy of one workspace node (who it talks to, about what, where, how often, in which words). The voice itself lives in the AIP-25 PERSONA.md named by `persona`. The body is markdown and is not validated.",
+  "type": "object",
+  "required": ["schema", "name", "title", "description", "version", "status"],
+  "additionalProperties": false,
+  "$defs": {
+    "kebab": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$", "minLength": 2, "maxLength": 64 },
+    "approvalMode": { "type": "string", "pattern": "^(always|policy:.+)$" },
+    "cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "posts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "perWeek": { "type": "integer", "minimum": 0, "maximum": 50 },
+            "maxPerDay": { "type": "integer", "minimum": 0, "maximum": 10 }
+          }
+        },
+        "comments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "perDay": { "type": "integer", "minimum": 0, "maximum": 50 }
+          }
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "days": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
+            },
+            "hours": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$" },
+            "timezone": { "type": "string" }
+          }
+        }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "required": ["id", "network"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/kebab" },
+        "network": { "type": "string", "description": "linkedin, x, instagram, tiktok, youtube, facebook, threads, bluesky, mastodon, or a custom slug." },
+        "account": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "handle": { "type": "string" },
+            "kind": { "enum": ["personal", "brand"] },
+            "owner": { "type": "string", "description": "Principal ref, e.g. user:jeremy. Whose account it is." }
+          }
+        },
+        "connection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "type": "string", "description": "How an approved action leaves: postiz, chrome-live, manual, or a custom slug." },
+            "credentials": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Slug of an AIP-19 secret in this node's SECRETS.md or granted through uses_secrets. Credentials are never inline." }
+          }
+        },
+        "locale": { "type": "string" },
+        "formats": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "cadence": { "$ref": "#/$defs/cadence" },
+        "actions": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Which kinds of action are allowed on this channel. Absent means post and comment are both allowed.",
+          "properties": {
+            "post": { "type": "boolean" },
+            "comment": { "type": "boolean" }
+          }
+        },
+        "publish": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Provider per action after approval. Overrides connection.provider.",
+          "properties": {
+            "post": { "type": "string" },
+            "comment": { "type": "string" }
+          }
+        },
+        "approval": { "$ref": "#/$defs/approvalMode" }
+      }
+    }
+  },
+  "properties": {
+    "schema": { "const": "presence/v1" },
+    "name": { "$ref": "#/$defs/kebab" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+" },
+    "status": { "enum": ["draft", "active", "paused"] },
+    "extends": { "type": "string", "description": "Relative path to a parent PRESENCE.md (company defaults)." },
+    "persona": { "type": "string", "description": "AIP-25 PERSONA.md: a relative path or a ws://personas ref. Required in the effective (merged) document." },
+    "audience": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary": { "type": "string" },
+        "pains": { "type": "array", "items": { "type": "string" } },
+        "notTargeted": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "topics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pillars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "title"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "$ref": "#/$defs/kebab" },
+              "title": { "type": "string" },
+              "angle": { "type": "string" }
+            }
+          }
+        },
+        "exclude": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "lexicon": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "forbidden": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["term"],
+            "additionalProperties": false,
+            "properties": {
+              "term": { "type": "string" },
+              "reason": { "type": "string" },
+              "instead": { "type": "string" }
+            }
+          }
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["phrase"],
+            "additionalProperties": false,
+            "properties": {
+              "phrase": { "type": "string" },
+              "context": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "channels": { "type": "array", "items": { "$ref": "#/$defs/channel" } },
+    "watch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keywords": { "type": "array", "items": { "type": "string" } },
+        "accounts": { "type": "array", "items": { "type": "string" } },
+        "hashtags": { "type": "array", "items": { "type": "string" } },
+        "communities": { "type": "array", "items": { "type": "string" } },
+        "commentRules": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "$ref": "#/$defs/approvalMode" },
+        "approver": { "type": "string", "description": "Principal ref, e.g. user:jeremy." }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "status", "blocks"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/kebab" },
+          "description": { "type": "string" },
+          "status": { "enum": ["open", "cleared"] },
+          "blocks": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "pattern": "^(links|posts|comments|channel:[a-z][a-z0-9-]*)$" }
+          }
+        }
+      }
+    },
+    "examples": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "good": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text"],
+            "additionalProperties": false,
+            "properties": { "channel": { "type": "string" }, "text": { "type": "string" }, "why": { "type": "string" } }
+          }
+        },
+        "bad": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text", "why"],
+            "additionalProperties": false,
+            "properties": { "channel": { "type": "string" }, "text": { "type": "string" }, "why": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cadence": { "enum": ["weekly", "monthly"] },
+        "day": { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+        "kpis": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "metadata": { "type": "object" }
+  }
+}

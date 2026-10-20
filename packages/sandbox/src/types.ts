@@ -68,6 +68,10 @@ export interface SandboxDefinition {
     timeout_ms?: number
     memory_mb?: number
     cpu_ms?: number
+    /**
+     * vCPUs, may be fractional (AIP-36 v1.3). Provider config-level cpus maps onto this.
+     */
+    cpus?: number
   }
   env?: {
     auth?: AuthBlock
@@ -93,10 +97,7 @@ export interface SandboxDefinition {
      */
     egress?: string[]
     /**
-     * Egress IP selection for providers that broker shared or dedicated public addresses:
-     * `"shared"` (default), `"auto"`, `"dedicated"`, or a 1-8 character lowercase
-     * alphanumeric pool slot id. Provider config wins over this spec-level value;
-     * setting both to different values is an error.
+     * Public source address for outbound traffic (AIP-36 v1.3): shared | auto | dedicated | pool slot id. A provider without an address pool MUST refuse any value other than shared with sandbox_egress_pool_unavailable.
      */
     egressIp?: string
   }

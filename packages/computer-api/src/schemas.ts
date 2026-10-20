@@ -10,6 +10,8 @@
  *   POST   /v1/computers/:id/attach   take a session slot
  *   POST   /v1/computers/:id/detach   release a session slot
  *   DELETE /v1/computers/:id        rm + snapshot cleanup (?force=true skips the session check)
+ *   GET    /v1/capacity             host capacity budget/committed/available
+ *   GET    /v1/egress-pool          egress address pool slots
  *
  * These are deliberately MINIMAL: only the fields a client actually
  * consumes are declared, and every schema allows (and preserves) extra
@@ -39,6 +41,22 @@ export const egressRuleSchema = z.object({
   port: z.number().int(),
 })
 export type EgressRule = z.infer<typeof egressRuleSchema>
+
+/**
+ * Egress IP selection in the create body: `"shared"` (default), `"auto"`,
+ * `"dedicated"`, or a 1-8 character lowercase alphanumeric pool slot id.
+ */
+export const egressIpSelectionSchema = z
+  .string()
+  .regex(/^(shared|auto|dedicated|[a-z0-9]{1,8})$/)
+export type EgressIpSelection = z.infer<typeof egressIpSelectionSchema>
+
+/** The public egress address a controller brokered for a computer. */
+export const egressIpSchema = z.object({
+  id: z.string(),
+  publicIp: z.string(),
+}).passthrough()
+export type EgressIp = z.infer<typeof egressIpSchema>
 
 /**
  * Controller error bodies are always `{ error: string }`, sometimes with a
@@ -71,6 +89,8 @@ export const createComputerRequestSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   /** Deny-by-default egress allowlist; a computer created without one has no DNS. */
   egress: z.object({ allow: z.array(egressRuleSchema) }).optional(),
+  /** Egress IP selection; omitted means the controller default (`"shared"`). */
+  egressIp: egressIpSelectionSchema.optional(),
 }).passthrough()
 export type CreateComputerRequest = z.infer<typeof createComputerRequestSchema>
 
@@ -80,6 +100,7 @@ export const createComputerResponseSchema = z.object({
   template: z.string(),
   state: z.string(),
   ports: z.array(portPublishSchema).optional(),
+  egressIp: egressIpSchema.nullable().optional(),
 }).passthrough()
 export type CreateComputerResponse = z.infer<typeof createComputerResponseSchema>
 
@@ -96,6 +117,7 @@ export const computerStatusSchema = z.object({
   ports: z.array(portPublishSchema).optional(),
   template: z.string().optional(),
   tenantId: z.string().optional(),
+  egressIp: egressIpSchema.nullable().optional(),
 }).passthrough()
 export type ComputerStatus = z.infer<typeof computerStatusSchema>
 
@@ -174,3 +196,63 @@ export const sessionsResponseSchema = z.object({
   maxSessions: z.number().int().optional(),
 }).passthrough()
 export type SessionsResponse = z.infer<typeof sessionsResponseSchema>
+
+// ── controller errors ─────────────────────────────────────────────────
+
+/**
+ * Egress-selection errors: `400 egress-pool-disabled`, `400
+ * egress-pool-unknown`, `409 egress-pool-exhausted`, `409
+ * egress-slot-dedicated`.
+ */
+export const egressErrorResponseSchema = z.object({
+  error: z.enum([
+    "egress-pool-disabled",
+    "egress-pool-unknown",
+    "egress-pool-exhausted",
+    "egress-slot-dedicated",
+  ]),
+}).passthrough()
+export type EgressErrorResponse = z.infer<typeof egressErrorResponseSchema>
+
+/** `503 host-capacity` body. The controller also sends a `Retry-After`
+ *  response header, which is not part of the JSON body. */
+export const hostCapacityErrorResponseSchema = z.object({
+  error: z.literal("host-capacity"),
+  resource: z.string(),
+  requested: z.number(),
+  available: z.number(),
+}).passthrough()
+export type HostCapacityErrorResponse = z.infer<typeof hostCapacityErrorResponseSchema>
+
+// ── GET /v1/capacity ──────────────────────────────────────────────────
+
+/** One host resource's capacity: total budget, amount committed, amount free. */
+export const resourceCapacitySchema = z.object({
+  budget: z.number(),
+  committed: z.number(),
+  available: z.number(),
+}).passthrough()
+export type ResourceCapacity = z.infer<typeof resourceCapacitySchema>
+
+/** Response of `GET /v1/capacity` — host capacity plus the computer count. */
+export const capacityResponseSchema = z.object({
+  memoryMiB: resourceCapacitySchema,
+  cpus: resourceCapacitySchema,
+  computers: z.number().int(),
+}).passthrough()
+export type CapacityResponse = z.infer<typeof capacityResponseSchema>
+
+// ── GET /v1/egress-pool ───────────────────────────────────────────────
+
+/** One egress pool entry: slot id, source address, public address, usage. */
+export const egressPoolEntrySchema = z.object({
+  id: z.string(),
+  sourceIp: z.string(),
+  publicIp: z.string(),
+  computers: z.number().int(),
+}).passthrough()
+export type EgressPoolEntry = z.infer<typeof egressPoolEntrySchema>
+
+/** Response of `GET /v1/egress-pool`. */
+export const egressPoolResponseSchema = z.array(egressPoolEntrySchema)
+export type EgressPoolResponse = z.infer<typeof egressPoolResponseSchema>

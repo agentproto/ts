@@ -17,6 +17,8 @@ export type { ComputerState } from "./computer-states.js"
 export {
   portPublishSchema,
   egressRuleSchema,
+  egressIpSelectionSchema,
+  egressIpSchema,
   errorResponseSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
@@ -27,11 +29,19 @@ export {
   resumeResponseSchema,
   attachRequestSchema,
   sessionsResponseSchema,
+  egressErrorResponseSchema,
+  hostCapacityErrorResponseSchema,
+  resourceCapacitySchema,
+  capacityResponseSchema,
+  egressPoolEntrySchema,
+  egressPoolResponseSchema,
 } from "./schemas.js"
 
 export type {
   PortPublish,
   EgressRule,
+  EgressIpSelection,
+  EgressIp,
   ErrorResponse,
   CreateComputerRequest,
   CreateComputerResponse,
@@ -42,4 +52,10 @@ export type {
   ResumeResponse,
   AttachRequest,
   SessionsResponse,
+  EgressErrorResponse,
+  HostCapacityErrorResponse,
+  ResourceCapacity,
+  CapacityResponse,
+  EgressPoolEntry,
+  EgressPoolResponse,
 } from "./schemas.js"
