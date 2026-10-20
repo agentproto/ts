@@ -30,9 +30,11 @@ import {
   footerHasCost,
   footerSessionId,
   footerIsRicherThan,
+  collectBranchAuthors,
   replaceProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
+  type FooterAuthor,
   type FooterSession,
 } from "./pr-provenance.js"
 
@@ -166,6 +168,14 @@ export async function stampFooterOnPr(input: {
   cwd: string
   run?: GhRunner
   host?: string
+  /** The branch's authoring sessions, rendered as "Authored by" entries with
+   *  each one's model/wallet/provider + cost (the opener's cumulative ledger
+   *  is then suppressed). Defaults to the branch's registered sandboxed
+   *  sessions when absent — pass `[]` to skip authorship. */
+  authors?: readonly FooterAuthor[]
+  /** The session that opened the PR, when it isn't `session` itself (a
+   *  daemon `pr_open` on behalf of a box session). */
+  openedBy?: string
   /** Re-render an ALREADY-stamped footer when the session has learned its
    *  spend since the first stamp (the first stamp lands mid-turn, before a
    *  claude-code/claude-sdk session reports any cost). Only edits when the
@@ -174,10 +184,18 @@ export async function stampFooterOnPr(input: {
   refresh?: boolean
 }): Promise<StampOutcome> {
   try {
+    const authors =
+      input.authors ??
+      collectBranchAuthors(
+        input.registry.list(),
+        input.session.sandboxDeliveryTarget?.branch ?? "",
+      )
     const footer = buildSessionPrFooter(input.session, {
       supervisor: input.supervisor,
       host: input.host ?? hostname(),
       sha: undefined,
+      ...(authors.length ? { authors } : {}),
+      ...(input.openedBy ? { openedBy: input.openedBy } : {}),
     })
 
     const run = input.run ?? defaultGhRunner
@@ -251,7 +269,7 @@ export async function stampFooterOnPr(input: {
 }
 
 /** Real `gh` runner — spawns `gh` with the given argv, capturing stdout. */
-const defaultGhRunner: GhRunner = async (args, cwd) => {
+export const defaultGhRunner: GhRunner = async (args, cwd) => {
   const { spawn } = await import("node:child_process")
   return await new Promise(resolve => {
     let stdout = ""
