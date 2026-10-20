@@ -759,6 +759,16 @@ export interface AdapterListMode {
   status_note?: string
 }
 
+/** One row of `adapter_models`' paged projection — the per-model metadata a
+ *  manifest's `models.allowed` entry carries (`provider`/`mode` are present
+ *  only when the manifest states them). Mirrors `@agentproto/cli`'s
+ *  `AdapterInfo.modelDetails[]` without importing it. */
+export interface AdapterModelRow {
+  id: string
+  provider?: string
+  mode?: string
+}
+
 /**
  * Compact adapter metadata for the discovery endpoints. Independent
  * of the resolver function above — hosts that can list installed
@@ -777,6 +787,10 @@ export interface AdapterListEntry {
    *  client can see e.g. hermes' `lean` mode is a measured no-op instead
    *  of being silently accepted. Empty when the adapter declares none. */
   modes: AdapterListMode[]
+  /** Short human hint shown in pickers (setup/auth remediation, rebuild
+   *  notice — the lister computes it from the adapter's status). Absent
+   *  when the adapter has nothing special to say. */
+  hint?: string
   /**
    * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
    * launch-menu drill-down): `"free"` = the route is an independent choice;
@@ -793,6 +807,13 @@ export interface AdapterListEntry {
    *  of ids per adapter — `adapter_list`'s COMPACT projection only surfaces
    *  its COUNT; the array itself is `full: true` material. */
   models?: string[]
+  /**
+   * Same models as `models`, each carrying the `provider`/`mode` a
+   * structured `models.allowed` entry states (`@agentproto/cli`'s
+   * `AdapterInfo.modelDetails`, forwarded verbatim). Undefined when the
+   * lister doesn't populate it — `adapter_models` serves these rows paged,
+   * and `adapter_list`'s COMPACT projection only surfaces their COUNT. */
+  modelDetails?: AdapterModelRow[]
   /**
    * Live readiness status as the daemon's merged listing reports it
    * (`"supported"` = known but not installed). Optional: older listers

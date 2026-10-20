@@ -36,6 +36,7 @@ import type {
   CatalogModelsLister,
   AdapterCapabilitiesLister,
   AdapterListEntry,
+  AdapterModelRow,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
@@ -1547,6 +1548,22 @@ export function registerAgentTools(
     // "ready", and an absent status (older listers only listed installed
     // adapters) all count as installed.
     installed: a.status !== "supported",
+    // The exact readiness status rides along so paging UI clients that only
+    // ever see compact rows still render it (a UI that misbehaves when it
+    // receives `available` AND `installed: true` would collapse both to
+    // "ready" — surface `status` precisely instead).
+    ...(a.status !== undefined ? { status: a.status } : {}),
+    // Short picker hint (setup/auth remediation, rebuild notice). It can be
+    // several SHORT sentences — still tiny next to the model array, and it
+    // is what installable rows display as their description.
+    ...(a.hint !== undefined ? { hint: a.hint } : {}),
+    // Modes with their honest support status (id + status only; the
+    // per-mode `description`/`spawn internals` stay `full: true` material).
+    modes: a.modes.map(m => ({
+      id: m.id,
+      status: m.status,
+      ...(m.status_note !== undefined ? { status_note: m.status_note } : {}),
+    })),
     modelCount: a.models?.length ?? 0,
   })
   const adapterListSchema = z.object({
@@ -1567,7 +1584,8 @@ export function registerAgentTools(
       "`agent_start` when the model doesn't already know what's available. " +
       "COMPACT BY DEFAULT (and sized to fit the MCP result budget): each " +
       "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
-      "`modelCount` — pass `full: true` (or `compact: false`) for the full " +
+      "`status`, `hint`, `modes`, `modelCount` — pass `full: true` " +
+      "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
       "KB; page through it with `limit`/`cursor`). Pass `adapter` to scope " +
       "the listing to one adapter before paging.",
@@ -1600,7 +1618,6 @@ export function registerAgentTools(
   // with `adapter` + `full: true` returns the same rows, but a runaway model
   // list (opencode is ~700 ids) can still trip the result cap; this tool
   // pages the models themselves.
-  type AdapterModelRow = { id: string; provider?: string; mode?: string }
   const adapterModelsSchema = z.object({
     adapter: z.string().describe("Adapter slug whose declared models to list."),
     ...pageParamsShape,
@@ -1625,7 +1642,7 @@ export function registerAgentTools(
       }
       const found = (await listAgentAdapters()).find(a => a.slug === adapter)
       if (!found) throw new Error(`adapter_models: adapter "${adapter}" was not found.`)
-      const detailed = (found as AdapterListEntry & { modelDetails?: AdapterModelRow[] }).modelDetails
+      const detailed = found.modelDetails
       if (detailed && detailed.length > 0) return detailed
       return (found.models ?? []).map(id => ({ id }))
     },
