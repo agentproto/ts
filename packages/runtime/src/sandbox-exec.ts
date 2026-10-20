@@ -296,7 +296,12 @@ export async function execSandboxCommand(
   // boot an ephemeral box and own its teardown for the rest of this call.
   let booted
   if (opts.sandboxId !== undefined) {
-    if (!handle.provider.connect) {
+    // Prefer a provider's exec-only attach: a one-shot command is not a
+    // session, so it must not take a session slot or disturb a daemon that
+    // an existing session is driving. Providers without it keep using
+    // connect() unchanged.
+    const connectForExec = handle.provider.connectForExec
+    if (!connectForExec && !handle.provider.connect) {
       return {
         ok: false,
         code: "sandbox_no_connect",
@@ -306,7 +311,9 @@ export async function execSandboxCommand(
       }
     }
     try {
-      booted = await handle.provider.connect(opts.sandboxId, spec, { env: {} })
+      booted = connectForExec
+        ? await connectForExec.call(handle.provider, opts.sandboxId, spec, { env: {} })
+        : await handle.provider.connect!(opts.sandboxId, spec, { env: {} })
     } catch (err) {
       return {
         ok: false,

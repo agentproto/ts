@@ -283,6 +283,16 @@ export interface SandboxProvider {
    *  errors clearly when reuse is requested against such a provider. */
   connect?(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
   /**
+   * Open an existing box for a ONE-SHOT command (`sandbox_exec`) without
+   * joining a session. Optional: providers that can expose `exec` on an
+   * already-running box without taking a session slot (and without probing,
+   * restarting or re-tokening its daemon) implement it; `sandbox_exec` uses
+   * it when present and falls back to `connect()` otherwise. The returned
+   * handle is not an ownership claim: its `stop()` must never detach a
+   * session or tear down the box.
+   */
+  connectForExec?(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
+  /**
    * Liveness probe against the PROVIDER (not the box's daemon): answers
    * whether the sandbox id still exists at all — the signal a box death
    * needs, distinct from a session dying. Polling the provider's control

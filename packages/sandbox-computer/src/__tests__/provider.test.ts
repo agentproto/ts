@@ -479,6 +479,33 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.removed).toEqual([first.sandboxId])
   })
 
+  it("runs an exec on a box whose only session slot is held, without probing or re-tokening the daemon", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 1 }), bootOpts)
+    const token = booted.token
+    const serves = controller.serveCount
+    const attaches = controller.attachBodies.length
+    controller.execs.length = 0
+
+    const execBox = await computerSandboxProvider.connectForExec!(
+      booted.sandboxId,
+      spec(controller.url, { maxSessions: 1 }),
+      bootOpts,
+    )
+
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    expect(controller.serveCount).toBe(serves)
+    expect(controller.daemonToken).toBe(token)
+    expect(controller.attachBodies.length).toBe(attaches)
+
+    const result = await execBox.exec!({ command: "echo hi" })
+    expect(result.exitCode).toBe(0)
+    // Only the caller's command: no health probe, token read or serve.
+    expect(controller.execs).toHaveLength(1)
+    expect(controller.execs[0]!.argv[2]).toContain("echo hi")
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    await booted.stop()
+  })
+
   it("stop keeps the computer when the detach is not answered", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
     controller.options.detachStatus = 500
