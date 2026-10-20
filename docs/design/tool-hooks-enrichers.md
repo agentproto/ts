@@ -372,7 +372,7 @@ so silence is never ambiguous.
 | **R4 — dedup** | Default scope `"task"`: key = `"<hookId>:<taskId ?? targetSessionId ?? argsHash>"`. Implementation mirrors the titler's *set-before-await* guard (so concurrent triggers can't double-fire), plus `coalesceKey` on the queue arm so a burst collapses to one queued item with `coalescedCount++`. Scope `"session"` keys on the target session; `"none"` disables. `attach-to-task-meta` dedups for free (same meta key, last write wins). Persisted keys are optional in v1 (in-memory set, module scope, so it survives the per-request server rebuild and resets on daemon restart — acceptable: a restart also loses the window that mattered). |
 | **R5 — containment** | No unhandled rejections: every dispatched promise gets its own `.catch`. Enricher authors get the guarantee for free by returning `null` instead of throwing. |
 | **R6 — delivery safety** | Arms are only `queue` / `context-slice` / `meta`. A hook never interrupts, never force-delivers (`deliverWithinMs` unset), never steers into a turn the session started autonomously, never kills, and never spawns or re-prompts anything itself. The one cost it can incur is a queued item dispatching as a turn on an *idle* recipient — identical to AIP-46 `next-turn` on an idle recipient, and never forced. The dispatcher refuses a config that names an unknown `deliver.to` or pairs a deadline with `deliverVia: "interrupt" \| "auto"`. |
-| **R7 — statelessness-safe** | Dispatcher, dedup sets and the enricher registry are module-scope (`background-jobs.ts` rule); nothing hook-shaped lives inside `registerSessionTools`'s closure. |
+| **R7 — statelessness-safe** | Dispatcher, dedup sets, the enricher registry and the wrapper-install `WeakSet` are module-scope (`background-jobs.ts` rule). The only hook-shaped thing inside `registerSessionTools`'s closure is the wrapper install itself — a call that *binds* module-scope state to that request's deps; no hook state is created there. |
 | **R8 — observable** | Bus events `hook:ran {hookId, enricher, deliverTo, ms, lines, llmCalls}` and `hook:skipped {hookId, reason}` on `session-event-bus.ts`; inspectable via `session_events_poll`, and (optional tool) `hook_list` returning the resolved config. `session_queue_list` shows the delivered item. |
 | **R9 — injection hygiene** | The block is wrapped in an `agentproto-enrichment` envelope with `untrusted="true"`, sentinels escaped exactly like `escapeMessageBody`, capped at 15 lines / ~1500 chars, and carries only quoted evidence + a directive to *check*, never an instruction to *skip* checks. A prompt-injection attempt inside a PR title or memory body arrives as quoted data inside the envelope. |
 
@@ -575,8 +575,16 @@ replays; a routine target does not carry `deliver` and is not required to.
 | `packages/runtime/src/session-event-bus.ts` | `hook:ran` / `hook:skipped` event types. |
 | `packages/runtime/src/task-ledger.ts` | One internal wiring verb, `setMeta(taskId, key, value, caller)`, cloned from `linkApproval`'s shape: no `rev`, last-write-wins on the `meta` map, `task:changed` on success. (`task-tools.ts` unchanged — hooks write through the ledger, not through a new MCP tool.) |
 | `packages/runtime/src/session-follow-store.ts` | *(only if hooks should be followable)* append `"hook-ran"` / `"hook-skipped"` to `FOLLOW_EVENTS` (kebab, like every entry there); `session-follow-tools.ts` derives its `z.enum(FOLLOW_EVENTS)` from that one constant, so it needs no edit of its own. |
-| `packages/runtime/src/index.ts` | Build the dispatcher at gateway construction (module scope), wrap the registration server with `withToolHooks` next to where `withDeferredTools` / `withToolSubset` are applied. |
+| `packages/runtime/src/session-tools.ts` | **Where the wrapper actually installs.** Next to the existing `withToolSubset(rawServer, opts.toolSubset)` (`session-tools.ts:1332`, inside `registerSessionTools`), so `withToolHooks` receives the *same* per-request closure the tools do: `callerSessionId` / `callerScope` (the caller identity `resolveCaller` in `task-tools.ts` / `message-tools.ts` derives), `registry`, the task ledger, `brains`. Caller identity exists nowhere else at registration time — this is why the seam lives here and not only at gateway level. |
+| `packages/runtime/src/index.ts` | Build the module-scope dispatcher (one per daemon) and install the wrapper on servers built here too — guarded so a server already wrapped by `session-tools.ts` is not wrapped twice (see the note below). |
 | `packages/runtime/src/http-server.ts` | *(parity)* the handful of REST routes that duplicate a hooked tool (`POST /sessions/agent`, `POST /sessions/:id/prompt`) call `dispatcher.fire` too — MCP and REST must not diverge. |
+
+**Install exactly once per server.** `index.ts` *and* `session-tools.ts`
+already apply proxies to overlapping server objects, so `withToolHooks`
+carries its own idempotence: a module-scope `WeakSet<McpServer>` of already
+wrapped servers (same statelessness posture as the dispatcher), checked at
+install. Double-wrapping would double-fire every hook, so this is a
+correctness requirement, not hygiene.
 
 ### 9.2 Interfaces (sketch)
 
@@ -611,7 +619,8 @@ export interface ToolHookDispatcher {
 
 // with-tool-hooks.ts
 export function withToolHooks(server: McpServer, d: ToolHookDispatcher, deps: HookDeps): McpServer
-// deps: resolveCaller(), registry (enqueuePrompt / sendMessage), taskLedger, brains, config reader
+// deps (from the registration closure — see §9.1): callerSessionId, callerScope,
+//   registry (enqueuePrompt / sendMessage), taskLedger, brains, config reader
 
 // prior-art.ts
 export const priorArt: Enricher = async ctx => { … }  // returns null ⇒ skip delivery
