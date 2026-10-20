@@ -15,6 +15,7 @@
 import { z } from "zod"
 import { jsonTolerant } from "./json-tolerant.js"
 import { turnRetryInputSchema } from "./turn-retry-policy.js"
+import { clerkHooksInputSchema } from "./clerk-hook-config.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import { sandboxCheckpointOverrideSchema } from "./sandbox-checkpoint-schema.js"
 import {
@@ -379,6 +380,11 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       `Retries a transiently failed turn; executor/sandbox on, supervisors off; null opts out. ${help("turnRetry")}`
+    ),
+  hooks: jsonTolerant(opaque(clerkHooksInputSchema))
+    .optional()
+    .describe(
+      `Semantic hooks for this session (the AGENT level of the three-level config: agent > workspace > daemon). "clerk" configures the AIP-68 clerk pass that runs after a turn ends.`
     ),
   contextContinuity: jsonTolerant(
     opaque(contextContinuityInputSchema)

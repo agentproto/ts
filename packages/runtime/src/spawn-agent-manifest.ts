@@ -23,6 +23,7 @@ import { loadAgent } from "@agentproto/agent"
 import { stripOwner } from "@agentproto/app-kit"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
+import { parseAgentClerkHook, type ClerkHookConfig } from "./clerk-hook-config.js"
 
 export interface AgentManifestRef {
   /** Logical agent id, resolved under `<root>/.agents/<id>/AGENT.md`. */
@@ -92,6 +93,10 @@ export interface AgentManifestSpawnDefaults {
   readonly skills?: string[]
   /** Gateway allowlist (`?allowTools=`). */
   readonly tools?: string[]
+  /** The manifest's AGENT level of the AIP-68 clerk hook, read from the
+   *  manifest's `metadata.hooks.clerk`. Undefined when the manifest states
+   *  none — the less specific levels (workspace, daemon) then apply. */
+  readonly hooks?: { clerk?: Partial<ClerkHookConfig> }
   readonly warnings: string[]
 }
 
@@ -123,6 +128,9 @@ export async function loadAgentManifestDefaults(
   }
 
   const caps = await projectionCapsFor(opts.resolveAgentAdapter, opts.adapter)
+  // The AGENT level of the clerk hook, when the manifest carries one
+  // (`metadata.hooks.clerk`).
+  const manifestHooks = manifestClerkHook(loaded.handle.metadata)
   const model = typeof loaded.handle.model === "string" ? loaded.handle.model : undefined
   const projected = projectAgentToSpawn(
     { path, handle: loaded.handle, body: loaded.body, ...(model !== undefined ? { model } : {}) },
@@ -140,6 +148,7 @@ export async function loadAgentManifestDefaults(
       ...(projected.systemPrompt !== undefined ? { systemPrompt: projected.systemPrompt } : {}),
       ...(projected.skills !== undefined ? { skills: projected.skills } : {}),
       ...(projected.tools !== undefined ? { tools: projected.tools } : {}),
+      ...(manifestHooks !== undefined ? { hooks: manifestHooks } : {}),
       warnings: projected.warnings,
     },
   }
@@ -162,4 +171,19 @@ async function projectionCapsFor(
     ...(resolved.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
     ...(resolved.declaredOptions !== undefined ? { declaredOptions: resolved.declaredOptions } : {}),
   }
+}
+
+/**
+ * Read the AGENT level of the AIP-68 clerk hook out of a manifest's
+ * `metadata` (`metadata.hooks.clerk`). Undefined when the manifest states
+ * none — the manifest's `metadata` is the namespaced home for
+ * daemon-specific settings (the AIP-42 frontmatter has no free-form
+ * top-level key).
+ */
+function manifestClerkHook(metadata: unknown): { clerk?: Partial<ClerkHookConfig> } | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined
+  const hooks = (metadata as Record<string, unknown>).hooks
+  if (!hooks || typeof hooks !== "object") return undefined
+  const clerk = parseAgentClerkHook({ hooks: hooks as Record<string, unknown> })
+  return Object.keys(clerk).length > 0 ? { clerk } : undefined
 }
