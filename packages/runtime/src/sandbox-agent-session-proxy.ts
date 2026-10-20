@@ -225,6 +225,7 @@ export interface SandboxAgentSessionProxyOpts {
     | "currentEventsCursor"
     | "stop"
     | "pause"
+    | "detach"
     | "mcpUrl"
     | "exec"
   > &
@@ -1229,6 +1230,13 @@ export function createSandboxAgentSessionProxy(
             } else {
               await host.stop()
             }
+          } else if (host.detach) {
+            // Survivors keep the box running, but THIS session must still
+            // release the provider-side slot it took at attach. Skipping it
+            // leaked the attach (a computer controller kept reporting the
+            // box busy with sessions that had already been killed) and left
+            // the final DELETE 409ing until forced.
+            await host.detach()
           }
         } finally {
           // PLAN-D1 — stamp the teardown outcome into the sandbox ledger.

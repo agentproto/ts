@@ -32,6 +32,8 @@ function makeHost(): FakeHost {
     waitForAny: vi.fn(async () => ({ timedOut: false, event: "turn-end" as const, sessionIds: [] })),
     currentEventsCursor: vi.fn(async () => 0),
     stop: vi.fn(async () => {}),
+    pause: vi.fn(async () => {}),
+    detach: vi.fn(async () => {}),
     mcpUrl: "http://127.0.0.1:18790/mcp",
   }
 }
@@ -72,6 +74,23 @@ describe("shared sandbox — detach refcount", () => {
     expect(entryOf()?.attachedSessions).toEqual(["sess_b"])
     const survivors = readSandboxLedger(ledgerFile).find(e => e.sandboxId === "bx_shared")
     expect(survivors?.state).not.toBe("stopped")
+  })
+
+  it("a survivor-detach releases the provider slot without pausing or stopping the box", async () => {
+    recordSandboxBoot({ sandboxId: "bx_shared", provider: "fake", state: "booted", sessionId: "sess_b" })
+    const host = makeHost()
+    const proxyA = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_a",
+      lifecyclePolicy: { teardown: "pause" },
+      ledger: { sandboxId: "bx_shared", provider: "fake", sessionId: "sess_a" },
+    })
+    await proxyA.close()
+
+    expect(host.detach).toHaveBeenCalledTimes(1)
+    expect(host.pause).not.toHaveBeenCalled()
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(entryOf()?.attachedSessions).toEqual(["sess_b"])
   })
 
   it("the LAST session detach stops the box and empties the list", async () => {

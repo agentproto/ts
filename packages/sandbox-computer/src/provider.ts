@@ -82,6 +82,11 @@ const READ_CHUNK_RAW = 700_000
 const activeSessions = new Map<string, number>()
 /** Controller-side session slots this process holds, per computer. */
 const controllerSlots = new Map<string, number>()
+/** Holder identities this process actually took a controller slot under.
+ *  Scopes detach to OUR slot: a repeated detach (or a detach after the
+ *  controller already released it) is a no-op, never a decrement that hides
+ *  another session's still-held slot. */
+const controllerHolders = new Map<string, Set<string>>()
 
 // ── config ─────────────────────────────────────────────────────────────
 
@@ -533,6 +538,17 @@ async function attachController(
 ): Promise<void> {
   try {
     await client.attach(id, holder !== undefined ? { holder } : {})
+    if (holder !== undefined) {
+      let holders = controllerHolders.get(id)
+      if (!holders) {
+        holders = new Set()
+        controllerHolders.set(id, holders)
+      }
+      // A same-holder re-attach is idempotent on the controller: it answers
+      // 200 without taking a second slot, so it must not count twice here.
+      if (holders.has(holder)) return
+      holders.add(holder)
+    }
     controllerSlots.set(id, (controllerSlots.get(id) ?? 0) + 1)
   } catch (err) {
     if (err instanceof ComputerApiError && err.status === 404) return
@@ -551,6 +567,11 @@ async function detachController(
 ): Promise<number | undefined> {
   const held = controllerSlots.get(id) ?? 0
   if (held === 0) return 0
+  const holders = controllerHolders.get(id)
+  // This process no longer holds THIS holder's slot (already detached, or
+  // never ours): report what we still track instead of decrementing again,
+  // which would misreport another session's slot as released.
+  if (holder !== undefined && !holders?.has(holder)) return held
   let remaining: number
   try {
     remaining = (await client.detach(id, holder !== undefined ? { holder } : {})).sessions ?? 0
@@ -558,9 +579,14 @@ async function detachController(
     // The slot stays counted so a retried stop detaches it again.
     return undefined
   }
+  if (holder !== undefined) holders?.delete(holder)
   const now = controllerSlots.get(id) ?? 0
-  if (now <= 1) controllerSlots.delete(id)
-  else controllerSlots.set(id, now - 1)
+  if (now <= 1) {
+    controllerSlots.delete(id)
+    controllerHolders.delete(id)
+  } else {
+    controllerSlots.set(id, now - 1)
+  }
   return remaining
 }
 
@@ -1128,6 +1154,7 @@ async function wrapBox(
       }
       idAliases.delete(id)
       activeSessions.delete(id)
+      controllerHolders.delete(id)
       probeClientConfigs.delete(id)
     },
     async pause(): Promise<void> {
@@ -1135,6 +1162,15 @@ async function wrapBox(
       releaseSessionSlot(id)
       await detachController(client, id, config.sessionHolder)
       await client.suspend(id)
+    },
+    /** Release this session's controller slot without stopping or suspending
+     *  the computer — the survivor half of a shared-box teardown. The box
+     *  keeps running for the sessions still attached. Idempotent: once this
+     *  process's slot count reaches zero no further detach is sent. */
+    async detach(): Promise<void> {
+      closeProxy()
+      releaseSessionSlot(id)
+      await detachController(client, id, config.sessionHolder)
     },
     async extendTimeout(): Promise<void> {
       // The controller sets a computer TTL at create time and has no
